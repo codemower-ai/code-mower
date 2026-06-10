@@ -134,6 +134,9 @@ PACKAGE_FILES = (
     ("tools/CODE_MOWER_AUTHORING_INTELLIGENCE.md", "docs/authoring-intelligence.md", "doc"),
     ("tools/CODE_MOWER_BUILDER_EXPERIMENTS.md", "docs/builder-experiments.md", "doc"),
     ("tools/CODE_MOWER_CLOUD_BENCHMARKING.md", "docs/cloud-benchmarking.md", "doc"),
+    ("tools/CODE_MOWER_REPO_STRATEGY.md", "docs/repo-strategy.md", "doc"),
+    ("tools/CODE_MOWER_COMMERCIAL_BOUNDARY.md", "docs/commercial-boundary.md", "doc"),
+    ("tools/CODE_MOWER_PUBLIC_RELEASE_CHECKLIST.md", "docs/public-release-checklist.md", "doc"),
     ("tools/CODE_MOWER_GITHUB_SETUP.md", "docs/github-setup.md", "doc"),
     ("tools/CODE_MOWER_PROVIDER_MATRIX.md", "docs/provider-matrix.md", "doc"),
     ("tools/CODE_MOWER_OSS_V1_CHECKLIST.md", "docs/oss-v1-checklist.md", "doc"),
@@ -196,10 +199,15 @@ STATIC_PACKAGE_FILES = (
                 "controls, and support are commercial surfaces unless licensed "
                 "otherwise.",
                 "",
-                "This package tree is generated from the reference repo tooling. "
-                "Start with `code-mower init --easy`, then run "
+                "Code Mower is extracted from a production multi-repo development "
+                "workflow and packaged as a standalone OSS tool. Start with "
+                "`code-mower init --easy`, then run "
                 "`code-mower doctor --easy` to verify local CLIs, "
                 "tokens, provider catalog coverage, and runtime probes.",
+                "",
+                "For public release readiness, see `docs/repo-strategy.md`, "
+                "`docs/commercial-boundary.md`, and "
+                "`docs/public-release-checklist.md`.",
                 "",
             ]
         ),
@@ -889,6 +897,9 @@ def render_package_plan(
             "docs/getting-started.md",
             "docs/package-skeleton.md",
             "docs/package-customization.md",
+            "docs/repo-strategy.md",
+            "docs/commercial-boundary.md",
+            "docs/public-release-checklist.md",
             "docs/github-setup.md",
             "docs/provider-matrix.md",
             "docs/providers.md",

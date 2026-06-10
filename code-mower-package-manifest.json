@@ -379,6 +379,21 @@
     },
     {
       "kind": "doc",
+      "source": "tools/CODE_MOWER_REPO_STRATEGY.md",
+      "target": "docs/repo-strategy.md"
+    },
+    {
+      "kind": "doc",
+      "source": "tools/CODE_MOWER_COMMERCIAL_BOUNDARY.md",
+      "target": "docs/commercial-boundary.md"
+    },
+    {
+      "kind": "doc",
+      "source": "tools/CODE_MOWER_PUBLIC_RELEASE_CHECKLIST.md",
+      "target": "docs/public-release-checklist.md"
+    },
+    {
+      "kind": "doc",
       "source": "tools/CODE_MOWER_GITHUB_SETUP.md",
       "target": "docs/github-setup.md"
     },
