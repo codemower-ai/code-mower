@@ -8,6 +8,16 @@
   ],
   "files_written": [
     {
+      "kind": "package",
+      "source": "tools/CODE_MOWER_APACHE_LICENSE.txt",
+      "target": "LICENSE"
+    },
+    {
+      "kind": "package",
+      "source": "tools/CODE_MOWER_NOTICE.txt",
+      "target": "NOTICE"
+    },
+    {
       "kind": "core",
       "source": "tools/code_mower_cli.py",
       "target": "src/code_mower/cli.py"
@@ -574,7 +584,7 @@
     }
   ],
   "mode": "materialize",
-  "output_dir": "/private/tmp/code-mower-standalone",
+  "output_dir": ".",
   "package": {
     "console_script": "code-mower=code_mower.cli:main",
     "module": "code_mower",

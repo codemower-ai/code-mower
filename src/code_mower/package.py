@@ -36,6 +36,8 @@ else:  # pragma: no cover - exercised after package extraction.
 DEFAULT_PROVIDER_TEMPLATES = "code-mower.provider-templates.yml"
 
 PACKAGE_FILES = (
+    ("tools/CODE_MOWER_APACHE_LICENSE.txt", "LICENSE", "package"),
+    ("tools/CODE_MOWER_NOTICE.txt", "NOTICE", "package"),
     ("tools/code_mower_cli.py", "src/code_mower/cli.py", "core"),
     ("tools/code_mower_bootstrap.py", "src/code_mower/bootstrap.py", "core"),
     ("tools/code_mower_builder_experiment.py", "src/code_mower/builder_experiment.py", "core"),
@@ -152,6 +154,8 @@ DEFERRED_PACKAGE_FILES = (
 )
 
 TEMPLATE_FILES = (
+    ("package", "LICENSE"),
+    ("package", "NOTICE"),
     ("package", "pyproject.toml"),
     ("package", "README.md"),
     ("package", "MANIFEST.in"),
@@ -186,6 +190,12 @@ STATIC_PACKAGE_FILES = (
                 "reviewers deliver the best quality, speed, and cost results for "
                 "your actual product.",
                 "",
+                "The Code Mower open-source core is licensed under Apache-2.0. "
+                "Hosted benchmarking and reporting, managed integrations, "
+                "private telemetry and benchmark data products, enterprise "
+                "controls, and support are commercial surfaces unless licensed "
+                "otherwise.",
+                "",
                 "This package tree is generated from the reference repo tooling. "
                 "Start with `code-mower init --easy`, then run "
                 "`code-mower doctor --easy` to verify local CLIs, "
@@ -202,6 +212,8 @@ STATIC_PACKAGE_FILES = (
                 "recursive-include src/code_mower/templates *.md",
                 "recursive-include templates *.j2 *.json *.md *.yml *.yaml",
                 "include requirements/*.txt",
+                "include LICENSE",
+                "include NOTICE",
                 "",
             ]
         ),
@@ -519,6 +531,7 @@ def _pyproject_text(package_name: str) -> str:
                 'description = "Multi-reviewer AI code audit orchestration"',
                 'requires-python = ">=3.11"',
                 'readme = "README.md"',
+                'license = {text = "Apache-2.0"}',
                 'dependencies = ["PyYAML>=6.0"]',
                 "",
                 "[project.scripts]",

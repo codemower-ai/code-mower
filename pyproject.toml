@@ -8,6 +8,7 @@ version = "0.0.0"
 description = "Multi-reviewer AI code audit orchestration"
 requires-python = ">=3.11"
 readme = "README.md"
+license = {text = "Apache-2.0"}
 dependencies = ["PyYAML>=6.0"]
 
 [project.scripts]
