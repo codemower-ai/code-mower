@@ -1,0 +1,26 @@
+greptile:
+  provider: "greptile"
+  driver: "saas_event"
+  type: "audit"
+  adapter: "greptile"
+  trailer_lane: null
+  spend_policy: "paid"
+  merge_authority: false
+  informational: true
+  enabled_by_default: true
+  events:
+    - "pull_request_review"
+    - "check_run"
+  token_env:
+    - "GREPTILE_AUDIT_LABEL_TOKEN"
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "label"
+  provider_config:
+    bot_authors:
+      - "greptile-apps[bot]"
+      - "greptile-apps"
+    check_runs:
+      - app_slug: "greptile-apps"
+        name: "Greptile Review"
+  review_hygiene: {}

@@ -1,0 +1,23 @@
+aider:
+  provider: "aider"
+  driver: "local_cli"
+  type: "audit"
+  adapter: null
+  trailer_lane: null
+  spend_policy: "local"
+  merge_authority: false
+  informational: true
+  enabled_by_default: false
+  events: []
+  token_env:
+    - "AIDER_AUDIT_LABEL_TOKEN"
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "manual"
+  provider_config:
+    command: "aider"
+    mode: "review-only"
+    model_env: "AIDER_MODEL"
+    api_base_env: "AIDER_API_BASE"
+    status: "optional tool lane; provider-specific invocation belongs in an adapter"
+  review_hygiene: {}

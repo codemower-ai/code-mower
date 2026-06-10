@@ -1,0 +1,381 @@
+version: 1
+
+project:
+  name: example-project
+  state_dir: ${CODE_MOWER_STATE_DIR:-~/.cache/code-mower}
+
+repositories:
+  - slug: owner/example
+    default_branch: main
+    local_path_env: EXAMPLE_REPO_PATH
+
+lanes:
+  codex:
+    type: audit
+    driver: local_cli
+    provider: codex
+    merge_authority: true
+    labels:
+      needs: needs-codex-audit
+      done: codex-audit-done
+      blocked: codex-audit-blocked
+    token_env:
+      - CODEX_AUDIT_LABEL_TOKEN
+      - GITHUB_TOKEN
+
+  claude_review:
+    type: review
+    driver: manual
+    provider: claude
+    informational: true
+    merge_authority: false
+    trigger_policy: manual
+    review_hygiene:
+      workflow: .github/workflows/claude-clear-stale.yml
+      token_env: CLAUDE_REVIEW_LABEL_TOKEN
+    labels:
+      needs: needs-claude-review
+      done: claude-review-done
+      blocked: claude-review-blocked
+
+  claude_audit:
+    type: audit
+    driver: local_cli
+    provider: claude
+    trailer_lane: claude
+    merge_authority: true
+    labels:
+      needs: needs-claude-audit
+      done: claude-audit-done
+      blocked: claude-audit-blocked
+    token_env:
+      - CLAUDE_AUDIT_LABEL_TOKEN
+      - GITHUB_TOKEN
+
+  greptile:
+    type: audit
+    driver: saas_event
+    provider: greptile
+    adapter: greptile
+    informational: true
+    spend_policy: paid
+    events:
+      - pull_request_review
+      - check_run
+    labels:
+      needs: needs-greptile-audit
+      done: greptile-audit-done
+      blocked: greptile-audit-blocked
+    token_env:
+      - GREPTILE_AUDIT_LABEL_TOKEN
+      - GITHUB_TOKEN
+    provider_config:
+      bot_authors:
+        - greptile-apps[bot]
+        - greptile-apps
+      check_runs:
+        - app_slug: greptile-apps
+          name: Greptile Review
+
+  gitar:
+    type: audit
+    driver: saas_event
+    provider: gitar
+    adapter: gitar
+    informational: true
+    events:
+      - issue_comment
+    labels:
+      needs: needs-gitar-audit
+      done: gitar-audit-done
+      blocked: gitar-audit-blocked
+    token_env:
+      - GITAR_AUDIT_LABEL_TOKEN
+      - GITHUB_TOKEN
+    provider_config:
+      bot_authors:
+        - gitar-ai[bot]
+        - gitar-bot
+        - gitar-bot[bot]
+
+  qodo:
+    type: audit
+    driver: saas_event
+    provider: qodo
+    adapter: qodo
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: paid
+    events:
+      - issue_comment
+    labels:
+      needs: needs-qodo-audit
+      done: qodo-audit-done
+      blocked: qodo-audit-blocked
+    token_env:
+      - QODO_AUDIT_LABEL_TOKEN
+      - GITHUB_TOKEN
+    provider_config:
+      bot_authors:
+        - qodo-code-review[bot]
+        - qodo-code-review
+      spend_policy: never trigger automatically from generated workflows
+
+  cursor_bugbot:
+    type: audit
+    driver: saas_event
+    provider: cursor_bugbot
+    adapter: cursor_bugbot
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: paid
+    events:
+      - issue_comment
+    labels:
+      needs: needs-cursor-bugbot-audit
+      done: cursor-bugbot-audit-done
+      blocked: cursor-bugbot-audit-blocked
+    token_env:
+      - CURSOR_BUGBOT_AUDIT_LABEL_TOKEN
+      - GITHUB_TOKEN
+    provider_config:
+      bot_authors:
+        - cursor[bot]
+        - cursor
+      trigger_comments:
+        - bugbot run
+        - "@cursor review"
+      rules_file: .cursor/BUGBOT.md
+      status: manual informational lane; keep calibration-only until enabled BugBot output shape is captured and adjudicated
+
+  local_llm:
+    type: audit
+    driver: api_model
+    provider: openai_compatible
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: local
+    labels:
+      needs: needs-local-llm-audit
+      done: local-llm-audit-done
+      blocked: local-llm-audit-blocked
+    token_env:
+      - LOCAL_LLM_AUDIT_LABEL_TOKEN
+      - LOCAL_LLM_API_KEY
+      - GITHUB_TOKEN
+    provider_config:
+      api_base_env: LOCAL_LLM_API_BASE
+      model_env: LOCAL_LLM_MODEL
+      bot_authors_env: LOCAL_LLM_BOT_AUTHORS
+      default_api_base: http://localhost:1234/v1
+      profile_env: LOCAL_LLM_PROFILE
+      profiles:
+        qwen3-coder-next-lmstudio:
+          api_base: http://localhost:1234/v1
+          model: qwen/qwen3-coder-next
+          context_window: 128000
+          endpoint: lmstudio
+        gemma4-ollama:
+          api_base: http://localhost:11434/v1
+          model: gemma4:e4b-mlx
+          context_window: 128000
+          endpoint: ollama
+      status: informational calibration lane, not merge authority
+
+  aider:
+    type: audit
+    driver: local_cli
+    provider: aider
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: local
+    labels:
+      needs: needs-aider-audit
+      done: aider-audit-done
+      blocked: aider-audit-blocked
+    token_env:
+      - AIDER_AUDIT_LABEL_TOKEN
+      - GITHUB_TOKEN
+    provider_config:
+      command: aider
+      mode: review-only
+      model_env: AIDER_MODEL
+      api_base_env: AIDER_API_BASE
+      status: optional tool lane; provider-specific invocation belongs in an adapter
+
+  gemini_cli:
+    type: audit
+    driver: local_cli
+    provider: gemini
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: included
+    labels:
+      needs: needs-gemini-cli-audit
+      done: gemini-cli-audit-done
+      blocked: gemini-cli-audit-blocked
+    token_env:
+      - GITHUB_TOKEN
+    token_env_any: [[GEMINI_API_KEY, GOOGLE_API_KEY]]
+    provider_config:
+      command: gemini
+      command_env: GEMINI_CLI_COMMAND
+      model_env: GEMINI_MODEL
+      prompt_lenses:
+        - base-audit
+      status: optional third-peer CLI lane; not merge authority until calibrated
+
+  antigravity_cli:
+    type: audit
+    driver: local_cli
+    provider: antigravity
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: included
+    labels:
+      needs: needs-antigravity-cli-audit
+      done: antigravity-cli-audit-done
+      blocked: antigravity-cli-audit-blocked
+    token_env:
+      - GITHUB_TOKEN
+    provider_config:
+      command: agy
+      alternate_commands:
+        - antigravity
+      command_env: ANTIGRAVITY_CLI_COMMAND
+      model_env: ANTIGRAVITY_MODEL
+      prompt_lenses:
+        - base-audit
+      required_env_truthy:
+        - ANTIGRAVITY_CLI_USE_AMBIENT_HOME
+      auth: run `agy` login/install locally; set ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1 to opt into local OAuth state in trusted environments
+      status: forward Google CLI research lane; not merge authority until calibrated
+
+  hermes_cli:
+    type: audit
+    driver: local_cli
+    provider: hermes
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: included
+    labels:
+      needs: needs-hermes-cli-audit
+      done: hermes-cli-audit-done
+      blocked: hermes-cli-audit-blocked
+    token_env:
+      - GITHUB_TOKEN
+    provider_config:
+      command: hermes
+      command_env: HERMES_CLI_COMMAND
+      model_env: HERMES_INFERENCE_MODEL
+      provider_env: HERMES_PROVIDER
+      prompt_lenses:
+        - base-audit
+      required_env_truthy:
+        - HERMES_CLI_USE_AMBIENT_HOME
+      doctor_probe_args:
+        - --version
+      auth: run `hermes setup` or provider login locally; set HERMES_CLI_USE_AMBIENT_HOME=1 to opt into local Hermes auth/session state in trusted environments
+      status: informational Hermes Agent one-shot lane; not merge authority until calibrated
+
+  coderabbit_cli:
+    type: audit
+    driver: local_cli
+    provider: coderabbit
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: included
+    labels:
+      needs: needs-coderabbit-cli-audit
+      done: coderabbit-cli-audit-done
+      blocked: coderabbit-cli-audit-blocked
+    token_env:
+      - GITHUB_TOKEN
+    provider_config:
+      command: coderabbit
+      alternate_commands:
+        - cr
+      status: optional CLI lane for local/on-demand review capture
+
+  acp_bridge:
+    type: audit
+    driver: local_cli
+    provider: acp
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: none
+    labels:
+      needs: needs-acp-audit
+      done: acp-audit-done
+      blocked: acp-audit-blocked
+    token_env:
+      - GITHUB_TOKEN
+    provider_config:
+      command_env: CODE_MOWER_ACP_COMMAND
+      protocol: agent-client-protocol
+      prompt_lenses:
+        - base-audit
+      status: protocol research lane; no automatic merge authority
+
+profiles:
+  recommended:
+    description: Fast path for most teams; two local CLI peers plus an always-on advisory SaaS reviewer.
+    lanes:
+      - codex
+      - claude_audit
+      - gitar
+
+  public_oss:
+    description: Public repository starter; use recommended today, swap Gitar for CodeRabbit once the CodeRabbit adapter lands.
+    lanes:
+      - codex
+      - claude_audit
+      - gitar
+
+  deep_review:
+    description: Higher-scrutiny private repository profile; Greptile remains opt-in and informational to avoid surprise spend.
+    lanes:
+      - codex
+      - claude_audit
+      - greptile
+
+  privacy:
+    description: Experimental low-cost/private calibration floor; local LLM is informational only until false-positive rates are measured.
+    lanes:
+      - local_llm
+
+  tool_lane:
+    description: Optional local tool-lane proof; Aider stays manual and informational until its review adapter is calibrated.
+    lanes:
+      - aider
+
+  third_peer:
+    description: Optional third local CLI reviewer calibration profile; Google and Hermes CLI lanes stay informational until catch rate and false positives are measured.
+    lanes:
+      - gemini_cli
+      - antigravity_cli
+      - hermes_cli
+
+  cli_research:
+    description: Optional local CLI and protocol research profile; use for on-demand review capture, not routine merge gates.
+    lanes:
+      - gemini_cli
+      - antigravity_cli
+      - hermes_cli
+      - coderabbit_cli
+      - acp_bridge
+
+  saas_research:
+    description: Optional manually triggered SaaS reviewer calibration profile; use for capture and value reports, not merge gates.
+    lanes:
+      - cursor_bugbot
+      - qodo

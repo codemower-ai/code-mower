@@ -1,0 +1,269 @@
+# Code Mower Package Customization
+
+Code Mower should be headless by default, but not opaque. The package exposes
+three review-runtime customization surfaces that teams can edit without changing
+provider wrappers.
+
+## Prompt Lenses
+
+Prompt lenses live in `tools/lane_prompts/` in the reference repo and in
+`src/code_mower/templates/lane_prompts/` after package extraction. A lane can
+load one or more lenses with `CODE_MOWER_REVIEW_LENSES` or the lane-specific
+wrapper flag.
+
+Use lenses for review doctrine, not PR content. Good lenses describe what to
+catch, what to ignore, severity policy, and when to return a terse clean pass.
+They should not mention external inspiration sources, private conversation
+threads, or one-off implementation history.
+
+Recommended package overrides:
+
+- Keep `base-audit` as the default correctness lens.
+- Add `calibration-policy` for calibration corpus, value-report, lane policy,
+  spend, latency, and reviewer disposition changes.
+- Add `docs-design` for roadmap, PRD, architecture, or process PRs.
+- Add `package-runtime` for bootstrap, provider catalog, CLI dispatch, prompt,
+  artifact, and extracted-package changes.
+
+Inspect and validate packaged lenses with:
+
+```bash
+code-mower prompts list --json
+code-mower prompts show base-audit --json
+code-mower prompts validate --lenses base-audit,calibration-policy,package-runtime --json
+```
+
+## Context Packs
+
+Context packs are bounded manifests for surrounding files. They let a review
+lane request important context explicitly instead of stuffing every audit prompt
+with full file contents.
+
+Example:
+
+```json
+{
+  "repo": "owner/repo",
+  "pr_number": 123,
+  "head_sha": "abc123",
+  "changed_files": [
+    {"filename": "tools/code_mower_cli.py"},
+    {"filename": "tools/code_mower_package.py"}
+  ],
+  "packs": [
+    {
+      "id": "package-runtime",
+      "reason": "package import and CLI context",
+      "include": ["tools/code_mower_*.py"],
+      "extra_files": [
+        {"repo": "owner/related-backend", "path": "app.py"}
+      ],
+      "max_files": 8,
+      "max_file_bytes": 60000
+    }
+  ]
+}
+```
+
+Render the plan with:
+
+```bash
+code-mower context-packs templates/context-packs.example.json --json
+```
+
+The plan lists file paths and byte caps. It does not read file contents. A lane
+runner can materialize only the packs it needs:
+
+```bash
+code-mower context-packs templates/context-packs.example.json \
+  --write \
+  --output-dir .code-mower/context-packs \
+  --repo-root-map owner/related-backend=/path/to/related-backend \
+  --json
+```
+
+Materialization writes bounded file copies plus
+`.code-mower/context-packs/context-pack-manifest.json`. Use `--require-files`
+when missing context should fail the lane instead of producing a warning.
+Related-repo files are written under a reserved `_repos/<owner__repo>/`
+artifact directory, so `owner/related-backend:app.py` cannot collide with
+primary-repo paths such as `owner__related-backend/app.py`.
+
+The standalone package ships `templates/context-packs.example.json` as the
+starter customization file. Keep context pack ids stable enough to reference
+from calibration corpus entries, such as `package-runtime`,
+`calibration-policy`, or a repo-local `auth-context` pack.
+
+## Calibration And Metrics
+
+Use `calibration run` to collect reviewer outputs, calibration dispositions to
+adjudicate them, and reviewer metrics to compare accuracy and value.
+
+Set up local Gemini auth without committing secrets:
+
+```bash
+code-mower init auth gemini --from-stdin --print-shell
+export GEMINI_API_KEY_FILE="$HOME/.config/code-mower/gemini.env"
+```
+
+The Antigravity CLI lane uses the local `agy` authentication state created by
+`agy install`/login. Because that OAuth state currently lives in the operator's
+normal home directory, Code Mower fails closed by default: set
+`ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1` only in a trusted local environment where
+you accept inheriting the local Antigravity config, with Code Mower still passing
+`--sandbox` and a prompt-file workspace. Verify the CLI itself with
+`agy -p "Reply with exactly: ok"`. Prefer `antigravity-cli` for new Google CLI
+calibration once the `agy` command is installed, and keep `gemini-cli` for
+compatibility with earlier local runs.
+
+The Hermes CLI lane uses local Hermes Agent authentication created by
+`hermes setup`. Because Hermes currently relies on local session/config state,
+Code Mower fails closed unless the operator explicitly opts into inheriting that
+trusted local state:
+
+```bash
+hermes setup
+hermes --oneshot "Reply with exactly: ok"
+export HERMES_CLI_USE_AMBIENT_HOME=1
+```
+
+Code Mower still passes `--ignore-user-config`, `--ignore-rules`, and an empty
+`--toolsets` list for the audit run, and it uses Hermes' `@prompt-file`
+context-reference expansion so the full audit prompt is not placed in process
+argv.
+Treat `hermes-cli` as an informational calibration lane until it has
+known-clean, known-blocked, latency, and spend evidence in the value report.
+
+```bash
+code-mower calibration plan templates/calibration-corpus.json \
+  --replicates 2 \
+  --json
+
+code-mower calibration run templates/calibration-corpus.json \
+  --lanes antigravity-cli,gemini-cli,hermes-cli,coderabbit-cli,local-llm \
+  --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree \
+  --results-dir .code-mower/calibration-results \
+  --json
+
+code-mower calibration evidence templates/calibration-corpus.json --json
+
+code-mower reviewer-metrics calibration.json \
+  --spend templates/reviewer-spend.example.json \
+  --json
+
+code-mower calibration value-report templates/calibration-corpus.json \
+  --runs .code-mower/calibration-results/calibration-run-results.json \
+  --output reviewer-value-report.md
+```
+
+The runner persists raw command arguments, stdout, stderr, lane summaries, and a
+single `calibration-run-results.json` manifest. Treat raw stdout/stderr files as
+local debugging artifacts because reviewers may print account state, local paths,
+or token-shaped strings. Share the manifest and value report by default; the
+manifest records paths and structured summaries, while doctor auth probes redact
+probe output content. Feed the manifest back into the value report with `--runs`;
+terminal output alone is not durable calibration evidence.
+
+`--repo-path-map` accepts `owner/repo=PATH`, `owner/repo#PR=PATH`,
+`owner/repo@HEAD=PATH`, and `owner/repo#PR@HEAD=PATH`. Prefer the specific forms
+for multi-PR corpora so each archived PR head uses the matching clean worktree.
+If a corpus item includes `base_ref`, generated Antigravity CLI, Gemini CLI,
+Hermes CLI, CodeRabbit CLI, and local LLM commands pass it through as
+`--base-ref`, which keeps historical calibration diffs reproducible.
+
+Spend reports can be a plain profile-to-USD mapping or a `profiles` object:
+
+```json
+{
+  "profiles": {
+    "gemini-cli": {"cost_usd": 0.42},
+    "coderabbit-cli": {"cost_usd": 0.0}
+  }
+}
+```
+
+The value report includes cost per run, seconds per run, cost per useful
+finding, and seconds per known-blocked catch when those inputs are available.
+
+For archived or merged PR heads, use a detached clean checkout plus
+`--allow-historical-head`:
+
+```bash
+code-mower gemini-cli --repo owner/repo --pr 123 \
+  --repo-path /tmp/pr-123-head \
+  --base-ref BASE_SHA \
+  --expected-head-sha HEAD_SHA \
+  --allow-historical-head \
+  --output-dir .code-mower/calibration/pr-123/gemini-cli \
+  --json
+
+code-mower antigravity-cli --repo owner/repo --pr 123 \
+  --repo-path /tmp/pr-123-head \
+  --base-ref BASE_SHA \
+  --expected-head-sha HEAD_SHA \
+  --allow-historical-head \
+  --output-dir .code-mower/calibration/pr-123/antigravity-cli \
+  --json
+
+code-mower hermes-cli --repo owner/repo --pr 123 \
+  --repo-path /tmp/pr-123-head \
+  --base-ref BASE_SHA \
+  --expected-head-sha HEAD_SHA \
+  --allow-historical-head \
+  --historical-calibration \
+  --output-dir .code-mower/calibration/pr-123/hermes-cli \
+  --json
+```
+
+Treat these reports as evidence for lane promotion, trigger policy, and spend
+policy. Corpus items can set `review_class` and `context_packs`; generated policy
+uses those fields to distinguish routine merge-gate candidates from selective
+package/runtime, auth, docs/design, or calibration-policy triggers. They are not
+automatic merge authority by themselves.
+
+Structured Codex and Claude audit wrappers also save the exact public verdict
+comment before attempting to post it. If a network hiccup or GitHub error
+interrupts posting, replay the saved artifact instead of rerunning the model:
+
+```bash
+tools/run_codex_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
+tools/run_claude_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
+```
+
+By default, verdict artifacts live under
+`~/.cache/cube-agent-audits/verdicts/`. Use
+`CODE_MOWER_VERDICT_ARTIFACT_DIR` in CI or package installs when that cache
+should be pinned to a workspace-owned state directory.
+
+## Cloud Benchmark Export
+
+The package should deliver value locally before cloud upload exists. Export a
+local, inspectable benchmark bundle with:
+
+```bash
+code-mower cloud export \
+  --report reviewer-metrics=reviewer-metrics.json \
+  --report value-report=reviewer-value-report.md \
+  --output-dir .code-mower/cloud-benchmark-bundle \
+  --json
+```
+
+The bundle manifest records that it is local-only and not upload-ready. It
+excludes source code, raw diffs, raw model transcripts, raw stdout/stderr, auth
+output, and secrets by default. Future cloud upload should require an explicit
+dry run that prints the manifest before any network transfer.
+
+## Merge Command Planning
+
+Use `merge-plan` when a PR already satisfies the repository merge bar and you
+want repo-scoped GitHub commands that do not depend on the current local
+checkout:
+
+```bash
+code-mower merge-plan owner/repo#123 --json
+```
+
+The rendered commands use `gh pr ... --repo owner/repo` and
+`gh api repos/owner/repo/...` for post-merge verification. The planner is a
+command generator only; it does not merge, grant merge authority, or replace
+the audit protocol.

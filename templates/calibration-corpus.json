@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "name": "small-known-pr-pilot",
+  "description": "Small calibration corpus for comparing reviewer overlap, useful findings, and noise before promoting informational lanes.",
+  "corpus": [
+    {
+      "repo": "owner/repo",
+      "pr_number": 123,
+      "head_sha": "0123456789abcdef0123456789abcdef01234567",
+      "difficulty": "medium",
+      "source": "known-pr",
+      "expected_findings": [],
+      "reviewer_runs": [
+        {
+          "reviewer": "codex-audit",
+          "status": "pass",
+          "finding_count": 0,
+          "known_clean": true,
+          "duration_seconds": 120
+        }
+      ],
+      "notes": "Replace with a recent merged PR whose final outcome is known."
+    },
+    {
+      "repo": "owner/repo",
+      "pr_number": 124,
+      "head_sha": "fedcba9876543210fedcba9876543210fedcba98",
+      "base_ref": "main",
+      "difficulty": "hard",
+      "source": "seeded-bug-history-quota",
+      "expected_findings": [
+        {
+          "path": "tools/example.py",
+          "summary": "Seeded bug description used for adjudication."
+        }
+      ],
+      "context_packs": [
+        "package-runtime"
+      ],
+      "notes": "Seeded-bug entries make catch rate measurable. Keep the seed branch and base ref available so local CLI lanes can reproduce the same diff."
+    },
+    {
+      "repo": "owner/repo",
+      "pr_number": 125,
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "base_ref": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "difficulty": "hard",
+      "source": "seeded-bug-auth-or-secret",
+      "expected_findings": [
+        {
+          "path": "src/auth/session.ts",
+          "summary": "Seeded auth or secret-handling bug expected to block merge."
+        }
+      ],
+      "context_packs": [
+        "auth-context"
+      ],
+      "notes": "Use for token leakage, auth-state drift, RLS, or permission-boundary calibration."
+    },
+    {
+      "repo": "owner/repo",
+      "pr_number": 126,
+      "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "base_ref": "dddddddddddddddddddddddddddddddddddddddd",
+      "difficulty": "hard",
+      "review_class": "package-runtime",
+      "source": "seeded-bug-runtime-packaging",
+      "expected_findings": [
+        {
+          "path": "tools/code_mower_doctor.py",
+          "summary": "Seeded runtime setup bug expected to be caught by package/runtime lenses."
+        }
+      ],
+      "context_packs": [
+        "package-runtime",
+        "calibration-policy"
+      ],
+      "notes": "Use for Python version, CLI auth, subprocess isolation, package extraction, or artifact durability calibration."
+    },
+    {
+      "repo": "owner/repo",
+      "pr_number": 127,
+      "head_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "base_ref": "ffffffffffffffffffffffffffffffffffffffff",
+      "difficulty": "hard",
+      "review_class": "calibration-policy",
+      "source": "seeded-bug-calibration-privacy",
+      "expected_findings": [
+        {
+          "path": "tools/code_mower_doctor.py",
+          "summary": "Seeded privacy bug where auth probe output is persisted in shareable reports."
+        }
+      ],
+      "context_packs": [
+        "calibration-policy"
+      ],
+      "notes": "Use for output-preview redaction, metrics trust, value report, and lane policy calibration."
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+hermes_cli:
+  provider: "hermes"
+  driver: "local_cli"
+  type: "audit"
+  adapter: null
+  trailer_lane: null
+  spend_policy: "included"
+  merge_authority: false
+  informational: true
+  enabled_by_default: false
+  events: []
+  token_env:
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "manual"
+  provider_config:
+    command: "hermes"
+    command_env: "HERMES_CLI_COMMAND"
+    model_env: "HERMES_INFERENCE_MODEL"
+    provider_env: "HERMES_PROVIDER"
+    prompt_lenses:
+      - "base-audit"
+    required_env_truthy:
+      - "HERMES_CLI_USE_AMBIENT_HOME"
+    doctor_probe_args:
+      - "--version"
+    auth: "run `hermes setup` or provider login locally; set HERMES_CLI_USE_AMBIENT_HOME=1 to opt into local Hermes auth/session state in trusted environments"
+    status: "informational Hermes Agent one-shot lane; not merge authority until calibrated"
+  review_hygiene: {}

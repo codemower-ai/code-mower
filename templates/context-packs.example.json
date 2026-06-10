@@ -1,0 +1,50 @@
+{
+  "repo": "owner/repo",
+  "pr_number": 123,
+  "head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "changed_files": [
+    {
+      "filename": "tools/code_mower_cli.py"
+    },
+    {
+      "filename": "tools/code_mower_package.py"
+    },
+    {
+      "filename": "tools/code_mower_doctor.py"
+    },
+    {
+      "filename": "tools/lane_prompts/calibration-policy.md"
+    }
+  ],
+  "packs": [
+    {
+      "id": "package-runtime",
+      "reason": "CLI dispatch, package extraction, and setup diagnostics changed.",
+      "include": [
+        "tools/code_mower_*.py",
+        "tools/reviewer_metrics.py"
+      ],
+      "extra_files": [
+        {
+          "path": "code-mower.example.yml"
+        },
+        {
+          "path": "code-mower.provider-templates.yml"
+        }
+      ],
+      "max_files": 10,
+      "max_file_bytes": 60000
+    },
+    {
+      "id": "calibration-policy",
+      "reason": "Reviewer value policy depends on corpus and docs context.",
+      "include": [
+        "tools/calibration_corpus*.json",
+        "tools/CODE_MOWER_*.md",
+        "tools/lane_prompts/calibration-policy.md"
+      ],
+      "max_files": 10,
+      "max_file_bytes": 80000
+    }
+  ]
+}

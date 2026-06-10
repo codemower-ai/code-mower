@@ -1,0 +1,23 @@
+qodo:
+  provider: "qodo"
+  driver: "saas_event"
+  type: "audit"
+  adapter: "qodo"
+  trailer_lane: null
+  spend_policy: "paid"
+  merge_authority: false
+  informational: true
+  enabled_by_default: false
+  events:
+    - "issue_comment"
+  token_env:
+    - "QODO_AUDIT_LABEL_TOKEN"
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "manual"
+  provider_config:
+    bot_authors:
+      - "qodo-code-review[bot]"
+      - "qodo-code-review"
+    spend_policy: "never trigger automatically from generated workflows"
+  review_hygiene: {}

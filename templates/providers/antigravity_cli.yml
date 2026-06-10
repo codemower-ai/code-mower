@@ -1,0 +1,28 @@
+antigravity_cli:
+  provider: "antigravity"
+  driver: "local_cli"
+  type: "audit"
+  adapter: null
+  trailer_lane: null
+  spend_policy: "included"
+  merge_authority: false
+  informational: true
+  enabled_by_default: false
+  events: []
+  token_env:
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "manual"
+  provider_config:
+    command: "agy"
+    alternate_commands:
+      - "antigravity"
+    command_env: "ANTIGRAVITY_CLI_COMMAND"
+    model_env: "ANTIGRAVITY_MODEL"
+    prompt_lenses:
+      - "base-audit"
+    required_env_truthy:
+      - "ANTIGRAVITY_CLI_USE_AMBIENT_HOME"
+    auth: "run `agy` login/install locally; set ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1 to opt into local OAuth state in trusted environments"
+    status: "forward Google CLI research lane; not merge authority until calibrated"
+  review_hygiene: {}
