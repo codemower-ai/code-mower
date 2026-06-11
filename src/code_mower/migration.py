@@ -78,6 +78,9 @@ def _resolve_command(command_text: str) -> tuple[str, ...]:
 
 
 def _default_local_command(repo_path: Path) -> tuple[str, ...] | None:
+    command_candidate = repo_path / "tools" / "code_mower"
+    if command_candidate.is_file():
+        return (str(command_candidate),)
     candidate = repo_path / "tools" / "code_mower_cli.py"
     if candidate.is_file():
         return (sys.executable, str(candidate))
@@ -231,6 +234,145 @@ def render_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _relative_existing_files(repo_path: Path, candidates: Sequence[str]) -> list[str]:
+    return [
+        candidate
+        for candidate in candidates
+        if (repo_path / candidate).exists()
+    ]
+
+
+def _glob_relative_files(repo_path: Path, patterns: Sequence[str]) -> list[str]:
+    found: set[str] = set()
+    for pattern in patterns:
+        for path in repo_path.glob(pattern):
+            if path.is_file():
+                found.add(path.relative_to(repo_path).as_posix())
+    return sorted(found)
+
+
+def render_mirror_removal_plan(
+    *,
+    repo_path: Path,
+    shadow_cycles: int,
+    required_shadow_cycles: int,
+    standalone_default_cycles: int,
+    required_standalone_default_cycles: int,
+) -> dict[str, Any]:
+    repo_path = repo_path.expanduser().resolve()
+    if not repo_path.is_dir():
+        raise ValueError(f"repo path is not a directory: {repo_path}")
+
+    support_files = _relative_existing_files(
+        repo_path,
+        (
+            "tools/code_mower_standalone_pin.env",
+            "tools/code_mower_standalone_shadow.sh",
+        ),
+    )
+    local_command = _default_local_command(repo_path)
+    mirrored_candidates = _glob_relative_files(
+        repo_path,
+        (
+            "tools/code_mower",
+            "tools/code_mower_*.py",
+            "tools/*_audit_pr.py",
+            "tools/*_labeler.py",
+            "tools/lane_prompts/*.md",
+            "tools/calibration_corpus*.json",
+            "tools/reviewer_spend*.json",
+            "tools/context_packs*.json",
+            "tools/CODE_MOWER*.md",
+        ),
+    )
+    ready_for_shadow = {
+        "standalone_pin_file_present": "tools/code_mower_standalone_pin.env"
+        in support_files,
+        "standalone_shadow_wrapper_present": "tools/code_mower_standalone_shadow.sh"
+        in support_files,
+        "product_local_command_present": local_command is not None,
+        "mirrored_files_detected": bool(mirrored_candidates),
+    }
+    support_ready = all(ready_for_shadow.values())
+    shadow_ready = support_ready and shadow_cycles >= required_shadow_cycles
+    removal_ready = (
+        shadow_ready
+        and standalone_default_cycles >= required_standalone_default_cycles
+    )
+    blockers = []
+    if not ready_for_shadow["standalone_pin_file_present"]:
+        blockers.append("add tools/code_mower_standalone_pin.env")
+    if not ready_for_shadow["standalone_shadow_wrapper_present"]:
+        blockers.append("add tools/code_mower_standalone_shadow.sh")
+    if not ready_for_shadow["product_local_command_present"]:
+        blockers.append("identify the product-local Code Mower command")
+    if shadow_cycles < required_shadow_cycles:
+        blockers.append(
+            f"complete {required_shadow_cycles - shadow_cycles} more clean shadow cycle(s)"
+        )
+    if shadow_ready and standalone_default_cycles < required_standalone_default_cycles:
+        blockers.append(
+            "flip to pinned standalone by default and complete "
+            f"{required_standalone_default_cycles - standalone_default_cycles} "
+            "clean standalone-default cycle(s)"
+        )
+    if removal_ready:
+        status = "ready_to_remove_mirrors"
+    elif shadow_ready:
+        status = "ready_to_flip_default"
+    else:
+        status = "shadow_required"
+    return {
+        "mode": "code-mower-mirror-removal-plan",
+        "repo_path": str(repo_path),
+        "status": status,
+        "shadow_cycles": shadow_cycles,
+        "required_shadow_cycles": required_shadow_cycles,
+        "standalone_default_cycles": standalone_default_cycles,
+        "required_standalone_default_cycles": required_standalone_default_cycles,
+        "support_files": support_files,
+        "local_command": list(local_command or ()),
+        "mirrored_file_count": len(mirrored_candidates),
+        "mirrored_files": mirrored_candidates,
+        "readiness": ready_for_shadow,
+        "blockers": blockers,
+        "steps": [
+            "Run code-mower migration wrapper-rehearsal against the pinned standalone release and require mismatch_count: 0.",
+            "Run at least the required number of clean product release cycles with the pinned standalone wrapper available.",
+            "Flip product workflows or wrapper defaults to the pinned standalone command while keeping the product-local mirrors in place.",
+            "Run the normal product merge gates and post-merge deploy checks.",
+            "Remove mirrored implementation files in a dedicated PR after the standalone default cycle stays clean.",
+        ],
+        "notes": [
+            "This plan is intentionally conservative: mirrored files are inventory, not deletion approval.",
+            "Keep product feature work independent from mirror-removal PRs.",
+        ],
+    }
+
+
+def render_mirror_removal_text(payload: dict[str, Any]) -> str:
+    lines = [
+        "Code Mower mirror-removal plan",
+        f"Status: {payload['status']}",
+        f"Repo: {payload['repo_path']}",
+        f"Shadow cycles: {payload['shadow_cycles']}/{payload['required_shadow_cycles']}",
+        "Standalone-default cycles: "
+        f"{payload['standalone_default_cycles']}/"
+        f"{payload['required_standalone_default_cycles']}",
+        f"Mirrored files detected: {payload['mirrored_file_count']}",
+        "",
+        "Next steps:",
+    ]
+    for step in payload["steps"]:
+        lines.append(f"- {step}")
+    if payload["blockers"]:
+        lines.append("")
+        lines.append("Blockers:")
+        for blocker in payload["blockers"]:
+            lines.append(f"- {blocker}")
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -248,6 +390,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     wrapper.add_argument("--timeout", type=int, default=60)
     wrapper.add_argument("--json", action="store_true")
+    mirror = subparsers.add_parser("mirror-removal-plan")
+    mirror.add_argument("--repo-path", type=Path, default=Path.cwd())
+    mirror.add_argument("--shadow-cycles", type=int, default=0)
+    mirror.add_argument("--required-shadow-cycles", type=int, default=1)
+    mirror.add_argument("--standalone-default-cycles", type=int, default=0)
+    mirror.add_argument("--required-standalone-default-cycles", type=int, default=1)
+    mirror.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     if args.command == "wrapper-rehearsal":
@@ -278,6 +427,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(render_text(payload), end="")
         return 0 if payload["status"] == "pass" else 1
+
+    if args.command == "mirror-removal-plan":
+        try:
+            payload = render_mirror_removal_plan(
+                repo_path=args.repo_path,
+                shadow_cycles=args.shadow_cycles,
+                required_shadow_cycles=args.required_shadow_cycles,
+                standalone_default_cycles=args.standalone_default_cycles,
+                required_standalone_default_cycles=args.required_standalone_default_cycles,
+            )
+        except ValueError as exc:
+            payload = {
+                "mode": "code-mower-mirror-removal-plan",
+                "status": "fail",
+                "error": str(exc),
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(f"mirror-removal plan failed: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(render_mirror_removal_text(payload), end="")
+        return 0
 
     raise AssertionError(f"unhandled migration command: {args.command}")
 

@@ -61,6 +61,23 @@ evidence generation when a local calibration corpus is available. A pass means
 the repo is ready for standalone shadow mode. It does not mean the repo-local
 tools can be deleted yet.
 
+After at least one pinned standalone release is available in a product repo,
+render the mirror-removal plan:
+
+```bash
+code-mower migration mirror-removal-plan \
+  --repo-path /path/to/product-repo \
+  --shadow-cycles 1 \
+  --standalone-default-cycles 0 \
+  --json
+```
+
+The plan inventories mirrored files and reports whether the repo has completed
+enough clean shadow cycles to flip product wrappers to standalone by default.
+Deleting mirrors requires a later clean standalone-default cycle. The plan is
+deliberately conservative: inventory is not deletion approval, and product
+feature work should not depend on mirror removal.
+
 The expected migration order is:
 
 1. standalone command matches repo-local read-only commands
