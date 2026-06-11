@@ -100,9 +100,9 @@ Useful commands:
 ```bash
 code-mower doctor code-mower.yml --profile cli_research --probe-runtime --json
 code-mower context-packs templates/context-packs.example.json --json
-code-mower calibration run templates/calibration-corpus.json --lanes antigravity-cli,gemini-cli,hermes-cli,coderabbit-cli,local-llm --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --results-dir .code-mower/calibration-results --json
-code-mower calibration run templates/calibration-corpus.json --lanes gemini-cli --arms gemini-risk-ops-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --results-dir .code-mower/lens-fanout-results --json
-code-mower calibration run templates/calibration-corpus.json --lanes hermes-cli --arms hermes-doctrine-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --results-dir .code-mower/hermes-lens-fanout-results --json
+code-mower calibration run templates/calibration-corpus.json --lanes antigravity-cli,gemini-cli,hermes-cli,coderabbit-cli,local-llm --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --context-pack-manifest templates/context-packs.example.json --results-dir .code-mower/calibration-results --json
+code-mower calibration run templates/calibration-corpus.json --lanes gemini-cli --arms gemini-risk-ops-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --context-pack-manifest templates/context-packs.example.json --results-dir .code-mower/lens-fanout-results --json
+code-mower calibration run templates/calibration-corpus.json --lanes hermes-cli --arms hermes-doctrine-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --context-pack-manifest templates/context-packs.example.json --results-dir .code-mower/hermes-lens-fanout-results --json
 code-mower calibration value-report templates/calibration-corpus.json --runs .code-mower/calibration-results/calibration-run-results.json --output docs/reviewer-value-report.md
 code-mower local-llm calibrate .code-mower/calibration/pr-123/local-llm/summary.json --write-disposition-template .code-mower/calibration/pr-123/dispositions.json
 code-mower calibration evidence templates/calibration-corpus.json --json
@@ -125,6 +125,7 @@ code-mower gemini-cli --repo owner/repo --pr 123 \
   --base-ref BASE_SHA \
   --expected-head-sha HEAD_SHA \
   --allow-historical-head \
+  --context-pack-file .code-mower/context-packs/pr-123/context-pack.txt \
   --output-dir .code-mower/calibration/pr-123/gemini-cli \
   --json
 code-mower antigravity-cli --repo owner/repo --pr 123 \
@@ -132,6 +133,7 @@ code-mower antigravity-cli --repo owner/repo --pr 123 \
   --base-ref BASE_SHA \
   --expected-head-sha HEAD_SHA \
   --allow-historical-head \
+  --context-pack-file .code-mower/context-packs/pr-123/context-pack.txt \
   --output-dir .code-mower/calibration/pr-123/antigravity-cli \
   --json
 code-mower hermes-cli --repo owner/repo --pr 123 \
@@ -140,6 +142,7 @@ code-mower hermes-cli --repo owner/repo --pr 123 \
   --expected-head-sha HEAD_SHA \
   --allow-historical-head \
   --historical-calibration \
+  --context-pack-file .code-mower/context-packs/pr-123/context-pack.txt \
   --output-dir .code-mower/calibration/pr-123/hermes-cli \
   --json
 code-mower local-llm bakeoff --repo owner/repo --pr 123 \

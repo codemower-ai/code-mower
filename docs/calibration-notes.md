@@ -284,6 +284,13 @@ for `base-audit`, `generic-programming`, and `context-driven-quality` on the
 same head. This arm is also explicit-run only and should remain research-grade
 until human dispositions exist.
 
+Use `--context-pack-manifest` when a corpus item has `context_packs`, especially
+after a previous run produced `audit_input_insufficient`. The alpha.6 harness
+materializes only the selected packs from the mapped local checkout and passes a
+generated `--context-pack-file` to Gemini, Antigravity, and Hermes CLI prompts.
+That keeps routine prompts small while letting repeated blind spots get enough
+surrounding code to become real reviewer evidence.
+
 Run at least three comparison groups before drawing a conclusion:
 
 - same model, same lens, repeated: estimates repeated-run variance;

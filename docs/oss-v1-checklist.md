@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.5` of the standalone
+The current public-release baseline is `v0.1.0-alpha.6` of the standalone
 package. It has proved:
 
 - package install and fresh-clone rehearsal;
@@ -27,6 +27,9 @@ package. It has proved:
 - pinned standalone consumption from both CubeSnap product repos.
 - private-repo standalone checkout shape through a read-only deploy-key shadow
   workflow.
+- calibration context-pack injection for Gemini, Antigravity, and Hermes CLI
+  fan-out commands, including a dry-run proof on the known-problematic
+  `cube-snap#390` lens case.
 
 It has not yet proved:
 
@@ -34,6 +37,8 @@ It has not yet proved:
 - broad private-repo standalone checkout across arbitrary organizations and
   token policies;
 - mirror deletion in product repos;
+- a spend-bearing rerun of the `cube-snap#390` context-pack lens proof in an
+  environment with Gemini auth;
 - a large enough reviewer/lens corpus for new merge gates.
 
 ## Easy Mode Flow

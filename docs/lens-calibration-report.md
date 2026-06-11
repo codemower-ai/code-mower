@@ -359,3 +359,48 @@ The next Hermes experiment should rerun #390 with a context pack or larger diff
 budget that includes the omitted solver-cache implementation, then compare
 whether the lens catches the known cancellation blocker when the audit input is
 sufficient.
+
+## Alpha.6 Context-Pack Harness Proof
+
+`v0.1.0-alpha.6` adds context-pack injection to calibration fan-out. The runner
+can now:
+
+- load a context-pack manifest with `--context-pack-manifest`;
+- read each corpus item's `context_packs` ids;
+- compute changed files from the mapped historical checkout;
+- materialize only the selected bounded context files; and
+- pass the generated context text into Gemini, Antigravity, and Hermes CLI
+  prompts with `--context-pack-file`.
+
+A dry-run against the known-blocked `cube-snap#390` head
+(`2f7807300c2fe7118e48ff0c6271d2edba11166b`) proved the harness behavior for
+the `ios-solver-runtime` pack:
+
+| Proof item | Result |
+| --- | --- |
+| Corpus item | `jeffhuber/cube-snap#390` |
+| Arm | `gemini-doctrine-lens-fanout` |
+| Commands planned | 3 |
+| Commands with `--context-pack-file` | 3/3 |
+| Context pack | `ios-solver-runtime` |
+| Context text size | 141112 bytes |
+
+This is a harness proof, not a new reviewer-value result. The runtime used for
+this alpha.6 implementation did not have `GEMINI_API_KEY` available, so the
+spend-bearing Gemini rerun is intentionally left as a one-command follow-up
+rather than fabricating evidence. The next measurement should run the same
+command without `--dry-run`, then fold the resulting
+`calibration-run-results.json` into `docs/reviewer-value-report.md`.
+
+Example:
+
+```bash
+code-mower calibration run tools/calibration_corpus.json \
+  --lanes gemini-cli \
+  --arms gemini-doctrine-lens-fanout \
+  --repo-path-map jeffhuber/cube-snap#390@2f7807300c2fe7118e48ff0c6271d2edba11166b=/tmp/cube-snap-pr-390 \
+  --context-pack-manifest tools/context_packs.example.json \
+  --allow-historical-head \
+  --results-dir .code-mower/context-pack-lens-results \
+  --json
+```

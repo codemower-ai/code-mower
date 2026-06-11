@@ -355,6 +355,7 @@ def build_prompt(
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES,
     historical_calibration: bool = False,
     display_name: str = DEFAULT_GEMINI_DISPLAY_NAME,
+    context_pack_text: str = "",
 ) -> tuple[str, dict[str, Any]]:
     review_prompt = code_mower_prompts.load_review_prompt(
         prompt_lenses,
@@ -376,6 +377,18 @@ metadata and current branch ownership as calibration context only: measure the
 review signal on the supplied head and diff, report real code findings if you
 can, and classify missing/truncated audit input as a review limitation rather
 than guessing.
+
+"""
+    context_pack_section = ""
+    if context_pack_text.strip():
+        context_pack_section = f"""
+# Selected Context Packs
+
+These bounded context files were selected for this calibration item. Use them as
+supporting evidence for the diff. If the selected context is still insufficient,
+classify the limitation as audit_input_insufficient instead of guessing.
+
+{context_pack_text.strip()}
 
 """
     prompt = f"""You are the {display_name} informational reviewer inside Code Mower.
@@ -420,6 +433,7 @@ Title: {title}
 Body:
 {body}
 
+{context_pack_section}
 # Diff
 
 ```diff
@@ -432,6 +446,8 @@ Body:
         "max_diff_bytes": max_diff_bytes,
         "diff_truncated": truncated,
         "prompt_lenses": list(prompt_lenses),
+        "context_pack_bytes": len(context_pack_text.encode("utf-8")),
+        "context_pack_included": bool(context_pack_text.strip()),
         "prompt_bytes": len(prompt.encode("utf-8")),
         "historical_calibration": historical_calibration,
     }
@@ -585,6 +601,7 @@ def run_gemini_cli_audit(
     child_env_exclude: tuple[str, ...] = (),
     cli_transport: str = "stdin_json",
     preserve_ambient_home: bool = False,
+    context_pack_text: str = "",
 ) -> dict[str, Any]:
     pr_meta = fetch_pull_request(repo, pr_number, token=github_token)
     pr_head_sha = str(pr_meta.get("head", {}).get("sha") or "")
@@ -633,6 +650,7 @@ def run_gemini_cli_audit(
         max_diff_bytes=max_diff_bytes,
         historical_calibration=historical_calibration,
         display_name=display_name,
+        context_pack_text=context_pack_text,
     )
     diagnostics["diff_source"] = diff_source
     diagnostics["base_ref"] = base_ref if repo_path is not None else None
@@ -857,6 +875,13 @@ def main(argv: list[str] | None = None) -> int:
         default=",".join(code_mower_prompts.DEFAULT_REVIEW_LENSES),
     )
     parser.add_argument("--prompt-dir", type=Path, default=None)
+    parser.add_argument(
+        "--context-pack-file",
+        action="append",
+        type=Path,
+        default=[],
+        help="Bounded context-pack text file to append to the audit prompt.",
+    )
     parser.add_argument("--max-diff-bytes", type=int, default=DEFAULT_MAX_DIFF_BYTES)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -878,6 +903,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     try:
+        context_pack_text = "\n\n".join(
+            path.read_text(encoding="utf-8") for path in args.context_pack_file
+        )
         payload = run_gemini_cli_audit(
             repo=args.repo,
             pr_number=args.pr,
@@ -894,6 +922,7 @@ def main(argv: list[str] | None = None) -> int:
             base_ref=args.base_ref,
             allow_historical_head=args.allow_historical_head,
             historical_calibration=args.historical_calibration,
+            context_pack_text=context_pack_text,
         )
     except GeminiCliHeadChangedError as exc:
         print(f"error: {exc}", file=sys.stderr)

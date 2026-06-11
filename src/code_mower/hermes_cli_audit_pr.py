@@ -142,6 +142,7 @@ def run_hermes_cli_audit(
     allow_ambient_home: bool = False,
     model: str | None = None,
     provider: str | None = None,
+    context_pack_text: str = "",
 ) -> dict[str, Any]:
     if not allow_ambient_home:
         raise ValueError(
@@ -201,6 +202,7 @@ def run_hermes_cli_audit(
         max_diff_bytes=max_diff_bytes,
         historical_calibration=historical_calibration,
         display_name=DEFAULT_HERMES_DISPLAY_NAME,
+        context_pack_text=context_pack_text,
     )
     diagnostics["diff_source"] = diff_source
     diagnostics["base_ref"] = base_ref if repo_path is not None else None
@@ -347,6 +349,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--prompt-dir", type=Path, default=None)
     parser.add_argument(
+        "--context-pack-file",
+        action="append",
+        type=Path,
+        default=[],
+        help="Bounded context-pack text file to append to the audit prompt.",
+    )
+    parser.add_argument(
         "--max-diff-bytes",
         type=int,
         default=gemini_cli_audit_pr.DEFAULT_MAX_DIFF_BYTES,
@@ -368,6 +377,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     try:
+        context_pack_text = "\n\n".join(
+            path.read_text(encoding="utf-8") for path in args.context_pack_file
+        )
         payload = run_hermes_cli_audit(
             repo=args.repo,
             pr_number=args.pr,
@@ -386,6 +398,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_ambient_home=_env_flag_enabled(HERMES_AMBIENT_HOME_ENV),
             model=args.model,
             provider=args.provider,
+            context_pack_text=context_pack_text,
         )
     except HermesCliHeadChangedError as exc:
         print(f"error: {exc}", file=sys.stderr)

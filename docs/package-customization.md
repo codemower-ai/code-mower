@@ -90,9 +90,11 @@ artifact directory, so `owner/related-backend:app.py` cannot collide with
 primary-repo paths such as `owner__related-backend/app.py`.
 
 The standalone package ships `templates/context-packs.example.json` as the
-starter customization file. Keep context pack ids stable enough to reference
-from calibration corpus entries, such as `package-runtime`,
-`calibration-policy`, or a repo-local `auth-context` pack.
+starter customization file. It includes generic starter packs for recurring
+classes such as `auth-context`, `history-policy`, `ios-solver-runtime`,
+`package-runtime`, `calibration-policy`, `prompt-lenses`, `debug-upload-*`, and
+`build-info`. Keep context pack ids stable enough to reference from calibration
+corpus entries; changing an id breaks historical run comparisons.
 
 ## Calibration And Metrics
 
@@ -121,8 +123,16 @@ When running historical or multi-repo calibration, pass one
 code-mower calibration run templates/calibration-corpus.json \
   --repo-path-map owner/repo#123@abc123=/tmp/repo-pr-123 \
   --repo-path-map owner/other-repo#456@def456=/tmp/other-pr-456 \
+  --context-pack-manifest templates/context-packs.example.json \
   --results-dir .code-mower/calibration-results
 ```
+
+When `--context-pack-manifest` is provided, corpus entries with
+`context_packs` materialize only the named packs from their mapped local PR
+checkout. Supported local CLI lanes receive a generated `--context-pack-file`
+that is included in the review prompt. Missing files are warnings by default;
+add `--require-context-pack-files` for experiments where missing context should
+invalidate the run.
 
 Do not join mappings with commas; each flag value is parsed as one complete
 mapping.
@@ -244,6 +254,7 @@ code-mower gemini-cli --repo owner/repo --pr 123 \
   --base-ref BASE_SHA \
   --expected-head-sha HEAD_SHA \
   --allow-historical-head \
+  --context-pack-file .code-mower/context-packs/pr-123/context-pack.txt \
   --output-dir .code-mower/calibration/pr-123/gemini-cli \
   --json
 
@@ -252,6 +263,7 @@ code-mower antigravity-cli --repo owner/repo --pr 123 \
   --base-ref BASE_SHA \
   --expected-head-sha HEAD_SHA \
   --allow-historical-head \
+  --context-pack-file .code-mower/context-packs/pr-123/context-pack.txt \
   --output-dir .code-mower/calibration/pr-123/antigravity-cli \
   --json
 
@@ -261,6 +273,7 @@ code-mower hermes-cli --repo owner/repo --pr 123 \
   --expected-head-sha HEAD_SHA \
   --allow-historical-head \
   --historical-calibration \
+  --context-pack-file .code-mower/context-packs/pr-123/context-pack.txt \
   --output-dir .code-mower/calibration/pr-123/hermes-cli \
   --json
 ```

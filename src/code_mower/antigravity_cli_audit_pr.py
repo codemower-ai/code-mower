@@ -79,6 +79,7 @@ def run_antigravity_cli_audit(
     allow_historical_head: bool = False,
     historical_calibration: bool = False,
     allow_ambient_home: bool = False,
+    context_pack_text: str = "",
 ) -> dict[str, object]:
     if antigravity_api_key:
         raise ValueError(
@@ -118,6 +119,7 @@ def run_antigravity_cli_audit(
         child_env_exclude=("GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_MODEL"),
         cli_transport="prompt_file",
         preserve_ambient_home=use_ambient_home,
+        context_pack_text=context_pack_text,
     )
 
 
@@ -161,6 +163,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--prompt-dir", type=Path, default=None)
     parser.add_argument(
+        "--context-pack-file",
+        action="append",
+        type=Path,
+        default=[],
+        help="Bounded context-pack text file to append to the audit prompt.",
+    )
+    parser.add_argument(
         "--max-diff-bytes",
         type=int,
         default=gemini_cli_audit_pr.DEFAULT_MAX_DIFF_BYTES,
@@ -183,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     antigravity_api_key = resolve_antigravity_api_key() or None
     try:
+        context_pack_text = "\n\n".join(
+            path.read_text(encoding="utf-8") for path in args.context_pack_file
+        )
         payload = run_antigravity_cli_audit(
             repo=args.repo,
             pr_number=args.pr,
@@ -200,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_historical_head=args.allow_historical_head,
             historical_calibration=args.historical_calibration,
             allow_ambient_home=_env_flag_enabled(ANTIGRAVITY_AMBIENT_HOME_ENV),
+            context_pack_text=context_pack_text,
         )
     except AntigravityCliHeadChangedError as exc:
         print(f"error: {exc}", file=sys.stderr)
