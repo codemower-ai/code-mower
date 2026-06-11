@@ -15,6 +15,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if __package__ in {None, "", "tools"}:
+    from tools import __version__
     from tools import (
         antigravity_cli_audit_pr,
         blind_review_coordinator,
@@ -41,6 +42,7 @@ if __package__ in {None, "", "tools"}:
         reviewer_metrics,
     )
 else:  # pragma: no cover - exercised after package extraction.
+    from . import __version__
     from . import blind_review_coordinator
     from . import antigravity_cli_audit_pr
     from . import builder_experiment as code_mower_builder_experiment
@@ -320,6 +322,7 @@ def _local_llm_main(argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("antigravity-cli", add_help=False)
     subparsers.add_parser("blind-review", add_help=False)

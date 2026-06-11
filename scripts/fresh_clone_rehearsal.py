@@ -25,6 +25,13 @@ def _venv_python(venv_dir: Path) -> Path:
     return venv_dir / "Scripts" / "python.exe"
 
 
+def _venv_code_mower(venv_dir: Path) -> Path:
+    unix_command = venv_dir / "bin" / "code-mower"
+    if unix_command.exists():
+        return unix_command
+    return venv_dir / "Scripts" / "code-mower.exe"
+
+
 def _default_repo_url() -> str:
     package_root = Path(__file__).resolve().parents[1]
     return str(package_root)
@@ -77,6 +84,7 @@ def run_rehearsal(args: argparse.Namespace) -> dict[str, Any]:
     _run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"], cwd=clone_dir, steps=steps)
     _run([str(venv_python), "-m", "pip", "install", "-e", "."], cwd=clone_dir, steps=steps)
     _run([str(venv_python), "-m", "pip", "check"], cwd=clone_dir, steps=steps)
+    _run([str(_venv_code_mower(venv_dir)), "--version"], cwd=clone_dir, steps=steps)
     _run(
         [
             str(venv_python),

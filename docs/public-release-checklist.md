@@ -23,7 +23,25 @@ private to public.
 - Cloud export docs state that upload is opt-in and inspectable.
 - Issue templates, contributing guide, security policy, and support boundaries
   are ready enough for early OSS users.
-- Initial release tag/version policy is chosen.
+- Initial release tag/version policy is chosen and `code-mower --version`
+  reports the package version.
+
+## Alpha Release Gate
+
+Before tagging an early alpha, run these from a clean standalone checkout:
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/code-mower --version
+.venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json
+.venv/bin/code-mower doctor --easy --probe-runtime --json
+.venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python python3.12 --json
+```
+
+The alpha can remain private while product repos run pinned standalone shadow
+mode. Do not remove mirrored product-repo tools until at least one shadowed
+product release cycle has passed cleanly.
 
 ## Recommended Before Public Visibility
 
