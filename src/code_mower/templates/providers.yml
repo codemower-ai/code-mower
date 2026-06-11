@@ -70,6 +70,8 @@ provider_templates:
         - "base-audit"
       required_env_truthy:
         - "ANTIGRAVITY_CLI_USE_AMBIENT_HOME"
+      doctor_probe_args:
+        - "--version"
       auth: "run `agy` login/install locally; set ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1 to opt into local OAuth state in trusted environments"
       status: "forward Google CLI research lane; not merge authority until calibrated"
     review_hygiene: {}
@@ -89,7 +91,33 @@ provider_templates:
       - "GITHUB_TOKEN"
     token_env_any: []
     trigger_policy: "label"
-    provider_config: {}
+    provider_config:
+      command: "claude"
+      doctor_probe_args:
+        - "--print"
+        - "--output-format"
+        - "json"
+        - "--no-session-persistence"
+        - "--setting-sources"
+        - "local"
+        - "--strict-mcp-config"
+        - "--mcp-config"
+        - '{"mcpServers":{}}'
+        - "--disable-slash-commands"
+        - "--tools"
+        - ""
+        - "--model"
+        - "sonnet"
+        - "--max-budget-usd"
+        - "0.25"
+        - "Reply with exactly: ok"
+      doctor_probe_timeout_seconds: 30
+      doctor_probe_expect_json: true
+      doctor_probe_expect_json_field: "result"
+      doctor_probe_expect_json_value: "ok"
+      doctor_probe_error_fields:
+        - "is_error"
+        - "api_error_status"
     review_hygiene: {}
   claude_review:
     provider: "claude"
@@ -147,7 +175,10 @@ provider_templates:
       - "GITHUB_TOKEN"
     token_env_any: []
     trigger_policy: "label"
-    provider_config: {}
+    provider_config:
+      command: "codex"
+      doctor_probe_args:
+        - "--version"
     review_hygiene: {}
   cursor_bugbot:
     provider: "cursor_bugbot"
@@ -216,6 +247,16 @@ provider_templates:
       model_env: "GEMINI_MODEL"
       prompt_lenses:
         - "base-audit"
+      doctor_probe_args:
+        - "-p"
+        - "Reply with exactly: ok"
+        - "--output-format"
+        - "json"
+        - "--skip-trust"
+      doctor_probe_timeout_seconds: 45
+      doctor_probe_expect_json: true
+      doctor_probe_expect_json_field: "response"
+      doctor_probe_expect_json_value: "ok"
       status: "optional third-peer CLI lane; not merge authority until calibrated"
     review_hygiene: {}
   gitar:

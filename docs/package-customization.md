@@ -106,6 +106,14 @@ code-mower init auth gemini --from-stdin --print-shell
 export GEMINI_API_KEY_FILE="$HOME/.config/code-mower/gemini.env"
 ```
 
+`code-mower doctor --probe-runtime` runs a small Gemini sentinel prompt when
+`gemini-cli` is selected. The shareable JSON report records whether the CLI
+returned parseable JSON and the expected sentinel, but it redacts raw CLI output
+because provider CLIs can print account state, local paths, or auth hints. The
+doctor smoke uses Gemini's non-interactive trust bypass for the throwaway
+working directory; full audit runs already use the same explicit headless trust
+flag for stdin transport.
+
 The Antigravity CLI lane uses the local `agy` authentication state created by
 `agy install`/login. Because that OAuth state currently lives in the operator's
 normal home directory, Code Mower fails closed by default: set
@@ -115,6 +123,10 @@ you accept inheriting the local Antigravity config, with Code Mower still passin
 `agy -p "Reply with exactly: ok"`. Prefer `antigravity-cli` for new Google CLI
 calibration once the `agy` command is installed, and keep `gemini-cli` for
 compatibility with earlier local runs.
+
+The Antigravity doctor probe is currently a version check, not a paid model
+call. Run a full calibration or audit command when you want evidence about the
+authenticated review path.
 
 The Hermes CLI lane uses local Hermes Agent authentication created by
 `hermes setup`. Because Hermes currently relies on local session/config state,
@@ -133,6 +145,10 @@ context-reference expansion so the full audit prompt is not placed in process
 argv.
 Treat `hermes-cli` as an informational calibration lane until it has
 known-clean, known-blocked, latency, and spend evidence in the value report.
+
+The Hermes doctor probe is currently a version check. It confirms the CLI and
+trusted ambient-home opt-in are wired, while calibration runs measure reviewer
+quality and cost.
 
 ```bash
 code-mower calibration plan templates/calibration-corpus.json \

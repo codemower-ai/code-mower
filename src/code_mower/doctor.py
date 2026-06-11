@@ -1584,6 +1584,159 @@ def _local_cli_probe_args(lane: Mapping[str, Any], command: str) -> tuple[str, .
     return ("--help",)
 
 
+def _local_cli_probe_timeout(lane: Mapping[str, Any], default_timeout: int) -> int:
+    provider_config = lane.get("provider_config", {})
+    if not isinstance(provider_config, Mapping):
+        return default_timeout
+    raw_timeout = provider_config.get("doctor_probe_timeout_seconds")
+    if raw_timeout is None:
+        return default_timeout
+    try:
+        return max(1, int(raw_timeout))
+    except (TypeError, ValueError):
+        return default_timeout
+
+
+def _parse_probe_json(output: str) -> tuple[Mapping[str, Any] | None, dict[str, Any]]:
+    text = output.strip()
+    if not text:
+        return None, {"json_parsed": False, "json_error": "empty_output"}
+
+    candidates = [text]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = str(exc)
+            continue
+        if isinstance(payload, Mapping):
+            return payload, {
+                "json_parsed": True,
+                "json_extracted": candidate != text,
+            }
+        return None, {"json_parsed": False, "json_error": "not_object"}
+    return None, {"json_parsed": False, "json_error": last_error}
+
+
+def _json_field(payload: Mapping[str, Any], dotted_field: str) -> Any:
+    value: Any = payload
+    for part in dotted_field.split("."):
+        if not isinstance(value, Mapping) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def _probe_error_value_is_clean(value: Any) -> bool:
+    return value is None or value is False or value == "" or value == 0
+
+
+def _local_cli_probe_env(lane: Mapping[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
+    child_env = os.environ.copy()
+    forwarded: list[str] = []
+
+    token_names: list[str] = []
+    for item in _as_sequence(lane.get("token_env", [])):
+        token_names.append(str(item))
+    for group in _as_sequence(lane.get("token_env_any", [])):
+        for item in _as_sequence(group):
+            token_names.append(str(item))
+
+    for name in token_names:
+        if name not in SUPPORTED_TOKEN_FILE_ENV_NAMES or child_env.get(name):
+            continue
+        path_text = child_env.get(f"{name}_FILE", "").strip()
+        if not path_text:
+            continue
+        try:
+            result = code_mower_secrets.read_secret_file(
+                Path(path_text),
+                supported_env_names=SUPPORTED_TOKEN_FILE_ENV_NAMES,
+            )
+        except OSError:
+            continue
+        if not result.ok:
+            continue
+        child_env[name] = result.value
+        forwarded.append(f"{name}_FILE")
+
+    return child_env, {"token_file_env_forwarded": sorted(set(forwarded))}
+
+
+def _evaluate_json_probe(
+    provider_config: Mapping[str, Any],
+    output: str,
+    *,
+    returncode: int,
+) -> tuple[str, str, dict[str, Any]]:
+    payload, parse_detail = _parse_probe_json(output)
+    detail: dict[str, Any] = dict(parse_detail)
+    if payload is None:
+        if returncode != 0:
+            return (
+                STATUS_WARN,
+                f"probe exited {returncode} without parseable JSON",
+                detail,
+            )
+        return (
+            STATUS_WARN,
+            "probe output was not parseable JSON",
+            detail,
+        )
+
+    error_fields = [
+        str(field)
+        for field in _as_sequence(provider_config.get("doctor_probe_error_fields", []))
+        if str(field).strip()
+    ]
+    dirty_errors = []
+    for field in error_fields:
+        value = _json_field(payload, field)
+        if not _probe_error_value_is_clean(value):
+            dirty_errors.append(field)
+    detail["error_fields"] = error_fields
+    detail["dirty_error_fields"] = dirty_errors
+
+    field = str(provider_config.get("doctor_probe_expect_json_field", "")).strip()
+    expected = provider_config.get("doctor_probe_expect_json_value")
+    response_matches = True
+    if field:
+        value = _json_field(payload, field)
+        response_matches = (
+            expected is None
+            or str(value).strip() == str(expected).strip()
+        )
+        detail.update(
+            {
+                "response_field": field,
+                "response_present": value is not None,
+                "response_length": len(str(value)) if value is not None else 0,
+                "response_matches_expected": response_matches,
+            }
+        )
+
+    if returncode != 0:
+        return STATUS_WARN, f"probe exited {returncode}", detail
+    if dirty_errors:
+        return (
+            STATUS_WARN,
+            "probe reported provider/API error fields",
+            detail,
+        )
+    if not response_matches:
+        return (
+            STATUS_WARN,
+            "probe response did not match expected sentinel",
+            detail,
+        )
+    return STATUS_PASS, "auth smoke probe succeeded", detail
+
+
 def _check_local_cli_probe(
     lane_id: str,
     lane: Mapping[str, Any],
@@ -1611,13 +1764,16 @@ def _check_local_cli_probe(
         )
     command, resolved = resolved_pair
     probe_args = _local_cli_probe_args(lane, command)
+    timeout_seconds = _local_cli_probe_timeout(lane, http_timeout)
+    child_env, env_detail = _local_cli_probe_env(lane)
     try:
         completed = subprocess.run(
             [resolved, *probe_args],
             capture_output=True,
             text=True,
             check=False,
-            timeout=http_timeout,
+            timeout=timeout_seconds,
+            env=child_env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return DoctorCheck(
@@ -1625,28 +1781,51 @@ def _check_local_cli_probe(
             status=STATUS_WARN,
             lane=lane_id,
             message=f"{command} probe failed: {exc}",
-            detail={"command": command, "path": resolved, "args": list(probe_args)},
+            detail={
+                "command": command,
+                "path": resolved,
+                "args": list(probe_args),
+                "timeout_seconds": timeout_seconds,
+                **env_detail,
+            },
             remediation=(
                 f"Run `{command} {' '.join(probe_args)}` manually, fix CLI "
                 "installation or auth, then rerun doctor --probe-runtime."
             ),
         )
     output = (completed.stdout or completed.stderr or "").strip()
-    status = STATUS_PASS if completed.returncode == 0 else STATUS_WARN
+    provider_config = lane.get("provider_config", {})
+    json_detail: dict[str, Any] = {}
+    json_message = ""
+    if isinstance(provider_config, Mapping) and provider_config.get("doctor_probe_expect_json"):
+        status, json_message, json_detail = _evaluate_json_probe(
+            provider_config,
+            output,
+            returncode=completed.returncode,
+        )
+    else:
+        status = STATUS_PASS if completed.returncode == 0 else STATUS_WARN
     return DoctorCheck(
         name="runtime.local_cli.probe",
         status=status,
         lane=lane_id,
         message=(
-            f"{command} probe succeeded"
-            if status == STATUS_PASS
-            else f"{command} probe exited {completed.returncode}"
+            f"{command} {json_message}"
+            if json_message
+            else (
+                f"{command} probe succeeded"
+                if status == STATUS_PASS
+                else f"{command} probe exited {completed.returncode}"
+            )
         ),
         detail={
             "command": command,
             "path": resolved,
             "args": list(probe_args),
+            "timeout_seconds": timeout_seconds,
             "returncode": completed.returncode,
+            **env_detail,
+            **json_detail,
             **_auth_probe_output_detail(output),
         },
         remediation=(

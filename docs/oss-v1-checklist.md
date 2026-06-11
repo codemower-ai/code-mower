@@ -21,7 +21,7 @@ explicitly promotes them.
 pipx install code-mower
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower doctor --easy
+code-mower doctor --easy --probe-runtime
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower audit pr 123
@@ -81,6 +81,8 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 
 - Check GitHub CLI, GitHub auth, local provider CLIs, Python, provider catalog,
   required env vars, and optional runtime probes.
+- For local CLI lanes, support provider-declared smoke probes that can validate
+  a harmless version command or an auth-bearing sentinel prompt.
 - Support `code-mower doctor --github` for repository visibility, token
   write-adjacent permission hints, Actions permission inspection, branch
   protection inspection, recent billing blocks, sampled Actions cost hotspots,
@@ -88,6 +90,8 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 - Check the blessed runtime, Python version, and GitHub HTTPS/certificate
   behavior before provider commands run.
 - Emit content-free JSON suitable for sharing.
+- Redact raw provider-smoke stdout/stderr and expose only shape, status,
+  return code, JSON-parse status, expected-sentinel match, and remediation.
 - Provide exact remediation hints for missing provider auth, CLIs, runtime
   probes, provider catalog coverage, config loading, config validation, and
   Python version checks.
@@ -159,7 +163,7 @@ private repo can complete this sequence from a clean machine:
 1. install package
 2. run `code-mower init --easy`
 3. run generated smoke tests
-4. run `code-mower doctor --easy --github`
+4. run `code-mower doctor --easy --probe-runtime --github`
 5. run `code-mower next-steps --profile recommended`
 6. run at least one local/CLI audit lane in dry-run or PR-comment mode
 7. generate a value report

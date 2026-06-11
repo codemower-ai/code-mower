@@ -13,6 +13,8 @@ private to public.
 - Standalone CI passes from a clean clone.
 - `code-mower init --easy` and `code-mower doctor --easy` work in a fresh toy
   repo.
+- `code-mower doctor --easy --probe-runtime` runs provider-declared smoke probes
+  without leaking raw auth/provider output into shareable JSON.
 - `scripts/smoke_easy_mode.py --json` passes in a fresh virtual environment.
 - `scripts/fresh_clone_rehearsal.py --json` passes against the release commit.
 - Secret scans are clean.
