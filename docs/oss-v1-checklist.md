@@ -162,6 +162,8 @@ private repo can complete this sequence from a clean machine:
 8. export a local cloud benchmark bundle
 9. run the product-repo wrapper rehearsal from at least one existing product
    repo with `CODE_MOWER_STANDALONE_PATH=/path/to/code-mower`
+10. confirm `doctor --github` reports no recent Actions billing or spending
+    limit blocks before treating branch protection as an autonomous merge gate
 
 The generated package includes `scripts/smoke_easy_mode.py` to exercise the
 core v1.0 path in a throwaway toy repository:

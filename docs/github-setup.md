@@ -95,6 +95,25 @@ fallback needs:
 Do not store provider API keys in repository docs. Use environment variables,
 GitHub secrets, or provider-specific local auth stores.
 
+## Actions Billing And Spending Limits
+
+GitHub can report Actions as enabled while refusing to start every job because
+private-repo minutes, billing, or spending limits are not healthy. In that
+state branch protection may show failed CI, labeler, or deploy checks even
+though the jobs never executed.
+
+`code-mower doctor --github` inspects recent failed run annotations and warns
+when GitHub reports that jobs were blocked by billing or spending limits. Treat
+that as an account setup issue, not a code failure:
+
+1. fix GitHub billing or Actions spending limits
+2. rerun failed workflows
+3. only then rely on branch protection or deployment checks as merge signals
+
+If Actions are account-blocked during a migration, local validation plus clean
+audits can establish code quality, but the repo owner should still repair
+Actions before restoring unattended merge flow.
+
 ## Branch Protection And Merge Authority
 
 Code Mower should not assume it can merge. A repository should make merge
@@ -134,6 +153,7 @@ Safe defaults:
 - Are the repositories public or private?
 - Does the current token appear write-capable or read-only?
 - Are GitHub Actions permissions inspectable?
+- Are recent Actions failures actually billing/spending-limit blocks?
 - Is default-branch protection inspectable?
 - Are private repositories being used with hosted/SaaS lanes?
 - Which provider apps or token fallbacks are likely needed?
