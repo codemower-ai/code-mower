@@ -1,0 +1,169 @@
+{
+  "command_count": 3,
+  "commands": [
+    {
+      "arm_id": "gemini-doctrine-lens-fanout",
+      "command_index": 0,
+      "command_metadata": {
+        "lane_id": "gemini-cli",
+        "lenses": [
+          "base-audit"
+        ],
+        "reviewer_id": "gemini-base-audit"
+      },
+      "command_path": "/tmp/code-mower-pr390-context-pack-results-live/jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout/00-gemini-cli/command.json",
+      "duration_seconds": 102.562,
+      "extracted_reviewer_runs": 1,
+      "head_sha": "2f7807300c2fe7118e48ff0c6271d2edba11166b",
+      "lane_id": "gemini-cli",
+      "pr_number": 390,
+      "replicate": 1,
+      "repo": "jeffhuber/cube-snap",
+      "returncode": 0,
+      "reviewer_id": "gemini-base-audit",
+      "run_id": "jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout",
+      "status": "finished",
+      "stderr_path": "/tmp/code-mower-pr390-context-pack-results-live/jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout/00-gemini-cli/stderr.txt",
+      "stdout_path": "/tmp/code-mower-pr390-context-pack-results-live/jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout/00-gemini-cli/stdout.txt",
+      "summary_found": true,
+      "summary_mode": "gemini-cli-audit",
+      "summary_path": "/tmp/code-mower-pr390-context-pack-output-live/jeffhuber__cube-snap/pr-390-2f7807300c2f-4a20593e8ddd/r1/gemini-doctrine-lens-fanout/gemini-base-audit/gemini-cli.summary.json"
+    },
+    {
+      "arm_id": "gemini-doctrine-lens-fanout",
+      "command_index": 1,
+      "command_metadata": {
+        "lane_id": "gemini-cli",
+        "lenses": [
+          "base-audit",
+          "generic-programming"
+        ],
+        "reviewer_id": "gemini-generic-programming"
+      },
+      "command_path": "/tmp/code-mower-pr390-context-pack-results-live/jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout/01-gemini-cli/command.json",
+      "duration_seconds": 178.299,
+      "extracted_reviewer_runs": 1,
+      "head_sha": "2f7807300c2fe7118e48ff0c6271d2edba11166b",
+      "lane_id": "gemini-cli",
+      "pr_number": 390,
+      "replicate": 1,
+      "repo": "jeffhuber/cube-snap",
+      "returncode": 0,
+      "reviewer_id": "gemini-generic-programming",
+      "run_id": "jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout",
+      "status": "finished",
+      "stderr_path": "/tmp/code-mower-pr390-context-pack-results-live/jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout/01-gemini-cli/stderr.txt",
+      "stdout_path": "/tmp/code-mower-pr390-context-pack-results-live/jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout/01-gemini-cli/stdout.txt",
+      "summary_found": true,
+      "summary_mode": "gemini-cli-audit",
+      "summary_path": "/tmp/code-mower-pr390-context-pack-output-live/jeffhuber__cube-snap/pr-390-2f7807300c2f-4a20593e8ddd/r1/gemini-doctrine-lens-fanout/gemini-generic-programming/gemini-cli.summary.json"
+    },
+    {
+      "arm_id": "gemini-doctrine-lens-fanout",
+      "command_index": 2,
+      "command_metadata": {
+        "lane_id": "gemini-cli",
+        "lenses": [
+          "base-audit",
+          "context-driven-quality"
+        ],
+        "reviewer_id": "gemini-context-driven-quality"
+      },
+      "command_path": "/tmp/code-mower-pr390-context-pack-results-live/jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout/02-gemini-cli/command.json",
+      "duration_seconds": 130.813,
+      "extracted_reviewer_runs": 1,
+      "head_sha": "2f7807300c2fe7118e48ff0c6271d2edba11166b",
+      "lane_id": "gemini-cli",
+      "pr_number": 390,
+      "replicate": 1,
+      "repo": "jeffhuber/cube-snap",
+      "returncode": 0,
+      "reviewer_id": "gemini-context-driven-quality",
+      "run_id": "jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout",
+      "status": "finished",
+      "stderr_path": "/tmp/code-mower-pr390-context-pack-results-live/jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout/02-gemini-cli/stderr.txt",
+      "stdout_path": "/tmp/code-mower-pr390-context-pack-results-live/jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout/02-gemini-cli/stdout.txt",
+      "summary_found": true,
+      "summary_mode": "gemini-cli-audit",
+      "summary_path": "/tmp/code-mower-pr390-context-pack-output-live/jeffhuber__cube-snap/pr-390-2f7807300c2f-4a20593e8ddd/r1/gemini-doctrine-lens-fanout/gemini-context-driven-quality/gemini-cli.summary.json"
+    }
+  ],
+  "context_pack_manifest": true,
+  "context_pack_output_dir": "/tmp/code-mower-pr390-context-pack-materialized",
+  "corpus_name": "pr-390-context-pack-lens-proof",
+  "dry_run": false,
+  "finished_at": "2026-06-11T23:15:48Z",
+  "mode": "code-mower-calibration-run-results",
+  "output_dir": "/tmp/code-mower-pr390-context-pack-output-live",
+  "replicates": 1,
+  "results_dir": "/tmp/code-mower-pr390-context-pack-results-live",
+  "reviewer_runs": [
+    {
+      "artifact": "/tmp/code-mower-pr390-context-pack-output-live/jeffhuber__cube-snap/pr-390-2f7807300c2f-4a20593e8ddd/r1/gemini-doctrine-lens-fanout/gemini-base-audit/gemini-cli.summary.json",
+      "audit_input_insufficient_count": 0,
+      "calibration_run_id": "jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout",
+      "duration_seconds": 101.802,
+      "expected_finding_matches": 0,
+      "finding_count": 1,
+      "head_sha": "2f7807300c2fe7118e48ff0c6271d2edba11166b",
+      "known_blocked": true,
+      "known_clean": false,
+      "model": "",
+      "parse_status": "json",
+      "pr_number": 390,
+      "replicate": 1,
+      "repo": "jeffhuber/cube-snap",
+      "result_category": "",
+      "reviewer": "gemini-base-audit",
+      "status": "blocked"
+    },
+    {
+      "artifact": "/tmp/code-mower-pr390-context-pack-output-live/jeffhuber__cube-snap/pr-390-2f7807300c2f-4a20593e8ddd/r1/gemini-doctrine-lens-fanout/gemini-generic-programming/gemini-cli.summary.json",
+      "audit_input_insufficient_count": 0,
+      "calibration_run_id": "jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout",
+      "duration_seconds": 177.624,
+      "expected_finding_matches": 0,
+      "finding_count": 1,
+      "head_sha": "2f7807300c2fe7118e48ff0c6271d2edba11166b",
+      "known_blocked": true,
+      "known_clean": false,
+      "model": "",
+      "parse_status": "json",
+      "pr_number": 390,
+      "replicate": 1,
+      "repo": "jeffhuber/cube-snap",
+      "result_category": "",
+      "reviewer": "gemini-generic-programming",
+      "status": "pass"
+    },
+    {
+      "artifact": "/tmp/code-mower-pr390-context-pack-output-live/jeffhuber__cube-snap/pr-390-2f7807300c2f-4a20593e8ddd/r1/gemini-doctrine-lens-fanout/gemini-context-driven-quality/gemini-cli.summary.json",
+      "audit_input_insufficient_count": 0,
+      "calibration_run_id": "jeffhuber__cube-snap-pr-390-2f7807300c2f-4a20593e8ddd-r1-gemini-doctrine-lens-fanout",
+      "duration_seconds": 129.999,
+      "expected_finding_matches": 0,
+      "finding_count": 2,
+      "head_sha": "2f7807300c2fe7118e48ff0c6271d2edba11166b",
+      "known_blocked": true,
+      "known_clean": false,
+      "model": "",
+      "parse_status": "json",
+      "pr_number": 390,
+      "replicate": 1,
+      "repo": "jeffhuber/cube-snap",
+      "result_category": "",
+      "reviewer": "gemini-context-driven-quality",
+      "status": "blocked"
+    }
+  ],
+  "run_results_id": "7673c28d0f674d788d1dbea83ee20f5b",
+  "schema": "code_mower.calibrationRunResults.v1",
+  "selected_arms": [
+    "gemini-doctrine-lens-fanout"
+  ],
+  "selected_lanes": [
+    "gemini-cli"
+  ],
+  "skipped_command_count": 0,
+  "started_at": "2026-06-11T23:08:57Z"
+}

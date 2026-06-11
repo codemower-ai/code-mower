@@ -3,7 +3,7 @@
 Corpus: `code-mower-known-pr-starter`
 Items: 18
 Adjudicated findings: 70
-Reviewer runs: 100
+Reviewer runs: 103
 
 | Reviewer | Runs | Useful | Negative | Useful rate | Known-clean pass | Known-blocked caught/missed | Infra errors | Input gaps | Cost | Sec/run | Cost/useful | Policy | Recommended role |
 | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
@@ -11,10 +11,10 @@ Reviewer runs: 100
 | `coderabbit-cli` | 9 | 5 | 0 | 1.0 | 4 | 0/1 | 1 | 0 | 0.0 | 145.218 |  | `informational` | `informational` |
 | `coderabbit-hosted` | 8 | 1 | 0 | 1.0 | 8 | 0/0 | 0 | 0 | 0.0 | 0.0 |  | `selective_trigger_candidate` | `selective_trigger` |
 | `codex-audit` | 15 | 27 | 0 | 1.0 | 12 | 0/0 | 0 | 0 | 0.0 | 66.067 |  | `merge_gate_candidate` | `merge_gate_eligible` |
-| `gemini-base-audit` | 7 | 2 | 0 | 1.0 | 4 | 2/0 | 0 | 0 | 0.0 | 94.586 |  | `selective_trigger_candidate` | `selective_trigger` |
+| `gemini-base-audit` | 8 | 2 | 0 | 1.0 | 4 | 2/1 | 0 | 0 | 0.0 | 95.488 |  | `informational` | `informational` |
 | `gemini-cli` | 8 | 1 | 0 | 1.0 | 6 | 2/0 | 0 | 0 | 0.0 | 112.204 |  | `selective_trigger_candidate` | `selective_trigger` |
-| `gemini-context-driven-quality` | 2 | 0 | 0 |  | 1 | 1/0 | 0 | 0 | 0.0 | 83.192 |  | `informational` | `informational` |
-| `gemini-generic-programming` | 2 | 0 | 0 |  | 1 | 1/0 | 0 | 0 | 0.0 | 73.621 |  | `informational` | `informational` |
+| `gemini-context-driven-quality` | 3 | 0 | 0 |  | 1 | 1/1 | 0 | 0 | 0.0 | 98.794 |  | `informational` | `informational` |
+| `gemini-generic-programming` | 3 | 0 | 0 |  | 1 | 1/1 | 0 | 0 | 0.0 | 108.289 |  | `informational` | `informational` |
 | `gemini-operability` | 5 | 2 | 0 | 1.0 | 3 | 1/0 | 0 | 0 | 0.0 | 72.816 |  | `selective_trigger_candidate` | `selective_trigger` |
 | `gemini-security-threat-model` | 5 | 2 | 0 | 1.0 | 2 | 1/0 | 1 | 0 | 0.0 | 66.841 |  | `informational` | `informational` |
 | `gemma4-ollama` | 5 | 0 | 3 | 0.0 | 4 | 0/1 | 0 | 0 | 0.0 | 138.913 |  | `informational` | `informational` |
@@ -26,6 +26,7 @@ Reviewer runs: 100
 
 ## Recommendations
 - coderabbit-cli: missed known-blocked calibration runs; keep informational until catch rate improves.
+- gemini-base-audit: missed known-blocked calibration runs; keep informational until catch rate improves.
 - gemini-context-driven-quality: collect human dispositions before comparing reviewer accuracy.
 - gemini-generic-programming: collect human dispositions before comparing reviewer accuracy.
 - gemma4-ollama: low useful-rate; keep informational until prompt or context improves.
@@ -40,10 +41,10 @@ Reviewer runs: 100
 - `coderabbit-cli`: `informational` / `informational` / `manual_or_calibration_only` - needs at least 10 adjudicated findings; missed known-blocked calibration runs; has infra/setup failures to stabilize before promotion
 - `coderabbit-hosted`: `selective_trigger_candidate` / `selective_trigger` / `matching_review_class_only` - needs at least 10 adjudicated findings; suggested classes: web-debug-upload
 - `codex-audit`: `merge_gate_candidate` / `merge_gate_eligible` / `repo_merge_bar_opt_in` - evidence meets current threshold heuristics; keep human review in the loop
-- `gemini-base-audit`: `selective_trigger_candidate` / `selective_trigger` / `matching_review_class_only` - needs at least 10 adjudicated findings; suggested classes: auth-history
+- `gemini-base-audit`: `informational` / `informational` / `manual_or_calibration_only` - needs at least 10 adjudicated findings; missed known-blocked calibration runs
 - `gemini-cli`: `selective_trigger_candidate` / `selective_trigger` / `matching_review_class_only` - needs at least 10 adjudicated findings; suggested classes: auth-history
-- `gemini-context-driven-quality`: `informational` / `informational` / `manual_or_calibration_only` - needs at least 10 adjudicated findings; needs at least 2 known-clean zero-blocker runs; useful-rate below selective-trigger threshold
-- `gemini-generic-programming`: `informational` / `informational` / `manual_or_calibration_only` - needs at least 10 adjudicated findings; needs at least 2 known-clean zero-blocker runs; useful-rate below selective-trigger threshold
+- `gemini-context-driven-quality`: `informational` / `informational` / `manual_or_calibration_only` - needs at least 10 adjudicated findings; needs at least 2 known-clean zero-blocker runs; missed known-blocked calibration runs; useful-rate below selective-trigger threshold
+- `gemini-generic-programming`: `informational` / `informational` / `manual_or_calibration_only` - needs at least 10 adjudicated findings; needs at least 2 known-clean zero-blocker runs; missed known-blocked calibration runs; useful-rate below selective-trigger threshold
 - `gemini-operability`: `selective_trigger_candidate` / `selective_trigger` / `matching_review_class_only` - needs at least 10 adjudicated findings; suggested classes: auth-history
 - `gemini-security-threat-model`: `informational` / `informational` / `manual_or_calibration_only` - needs at least 10 adjudicated findings; has infra/setup failures to stabilize before promotion
 - `gemma4-ollama`: `informational` / `informational` / `manual_or_calibration_only` - needs at least 10 adjudicated findings; missed known-blocked calibration runs; useful-rate below selective-trigger threshold

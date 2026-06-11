@@ -385,14 +385,29 @@ the `ios-solver-runtime` pack:
 | Context pack | `ios-solver-runtime` |
 | Context text size | 141112 bytes |
 
-This is a harness proof, not a new reviewer-value result. The runtime used for
-this alpha.6 implementation did not have `GEMINI_API_KEY` available, so the
-spend-bearing Gemini rerun is intentionally left as a one-command follow-up
-rather than fabricating evidence. The next measurement should run the same
-command without `--dry-run`, then fold the resulting
-`calibration-run-results.json` into `docs/reviewer-value-report.md`.
+## Gemini Context-Pack Rerun
 
-Example:
+The spend-bearing rerun was completed on 2026-06-11 with Gemini auth available.
+It used the same `cube-snap#390` historical head, `gemini-doctrine-lens-fanout`,
+and `ios-solver-runtime` context pack. All three commands received the generated
+context-pack file, returned parseable JSON, and were folded into
+`docs/reviewer-value-report.md`. The compact manifest is tracked at
+`docs/calibration-results/pr390-gemini-context-pack-run-results.json`.
+
+| Reviewer | Status | Findings | Expected match | Runtime |
+| --- | --- | ---: | ---: | ---: |
+| `gemini-base-audit` | blocked | 1 | 0 | 101.802s |
+| `gemini-generic-programming` | pass | 1 | 0 | 177.624s |
+| `gemini-context-driven-quality` | blocked | 2 | 0 | 129.999s |
+
+The context pack removed the earlier audit-input gap and helped Gemini find
+real adjacent iOS solver/runtime issues, especially a zlib/raw-deflate mismatch
+and cache-isolation test weakness. It did not catch the corpus's expected
+cancellation blocker. Treat this as evidence that context packs improve
+reviewer viability, but not as evidence that the doctrine lenses are ready for
+promotion.
+
+Reproduction command:
 
 ```bash
 code-mower calibration run tools/calibration_corpus.json \

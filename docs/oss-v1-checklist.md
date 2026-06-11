@@ -37,8 +37,8 @@ It has not yet proved:
 - broad private-repo standalone checkout across arbitrary organizations and
   token policies;
 - mirror deletion in product repos;
-- a spend-bearing rerun of the `cube-snap#390` context-pack lens proof in an
-  environment with Gemini auth;
+- broader spend-bearing context-pack lens runs beyond the first `cube-snap#390`
+  Gemini proof;
 - a large enough reviewer/lens corpus for new merge gates.
 
 ## Easy Mode Flow

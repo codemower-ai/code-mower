@@ -135,6 +135,24 @@ Latest bounded lens smoke, 2026-06-11:
   experiment credible, but promotion still requires more known-clean controls,
   more known-blocked or seeded-bug catches, and adjudicated dispositions.
 
+Latest context-pack lens proof, 2026-06-11:
+
+- Corpus shape: one known-blocked iOS solver performance control
+  (`jeffhuber/cube-snap#390` at
+  `2f7807300c2fe7118e48ff0c6271d2edba11166b`).
+- Context: `ios-solver-runtime`, 141097 bytes of bounded surrounding files,
+  including `CubeJSBridge.swift`.
+- Runner: `gemini-doctrine-lens-fanout` with `base-audit`,
+  `generic-programming`, and `context-driven-quality`.
+- Outcome: base audit and context-driven-quality blocked with parseable JSON;
+  generic-programming passed with one non-blocking finding.
+- Evidence: all three missed the expected cancellation blocker, but base and
+  context-driven-quality found real adjacent solver-runtime risks around zlib
+  format compatibility and cache-contaminated tests.
+- Policy outcome: context packs are worth keeping in the calibration path, and
+  Gemini stays useful as an informational/selective candidate. Doctrine lenses
+  remain calibration-only until expected-finding matches improve on more cases.
+
 Summarize embedded historical evidence with:
 
 ```bash
