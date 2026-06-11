@@ -160,6 +160,8 @@ private repo can complete this sequence from a clean machine:
 6. run at least one local/CLI audit lane in dry-run or PR-comment mode
 7. generate a value report
 8. export a local cloud benchmark bundle
+9. run the product-repo wrapper rehearsal from at least one existing product
+   repo with `CODE_MOWER_STANDALONE_PATH=/path/to/code-mower`
 
 The generated package includes `scripts/smoke_easy_mode.py` to exercise the
 core v1.0 path in a throwaway toy repository:
