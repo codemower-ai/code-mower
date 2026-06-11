@@ -17,26 +17,28 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.6` of the standalone
+The current public-release baseline is `v0.1.0-alpha.8` of the standalone
 package. It has proved:
 
 - package install and fresh-clone rehearsal;
 - `code-mower init --easy` smoke behavior;
 - `doctor --easy --probe-runtime` provider probes for configured local CLIs;
 - product-wrapper rehearsal with zero mismatches against the repo-local mirror;
-- pinned standalone consumption from both CubeSnap product repos.
+- pinned standalone consumption from both CubeSnap product repos;
 - private-repo standalone checkout shape through a read-only deploy-key shadow
-  workflow.
+  workflow;
 - calibration context-pack injection for Gemini, Antigravity, and Hermes CLI
   fan-out commands, including a dry-run proof on the known-problematic
-  `cube-snap#390` lens case.
+  `cube-snap#390` lens case;
+- standalone labeler and bootstrap entrypoints for migrating product workflows
+  away from mirrored Python files.
 
 It has not yet proved:
 
 - public package installation from PyPI or another package index;
 - broad private-repo standalone checkout across arbitrary organizations and
   token policies;
-- mirror deletion in product repos;
+- workflow entrypoint migration and then mirror deletion in product repos;
 - broader spend-bearing context-pack lens runs beyond the first `cube-snap#390`
   Gemini proof;
 - a large enough reviewer/lens corpus for new merge gates.
