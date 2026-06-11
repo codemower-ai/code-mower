@@ -114,6 +114,18 @@ If Actions are account-blocked during a migration, local validation plus clean
 audits can establish code quality, but the repo owner should still repair
 Actions before restoring unattended merge flow.
 
+`doctor --github` also samples recent Actions runs and reports workflow names,
+events, run counts, and approximate minutes. In private repositories it warns
+when optional metadata or reviewer-labeler workflows dominate the sampled runs,
+or when scheduled workflows are still present. Tune the sample size with:
+
+```bash
+code-mower doctor --easy --github --actions-cost-sample 100 --json
+```
+
+The cost sample is content-free: it does not fetch logs, diffs, source, or
+secrets.
+
 ## Private Repo Cost Controls
 
 Private repositories consume GitHub Actions minutes for started jobs. Code
@@ -170,6 +182,7 @@ Safe defaults:
 - Does the current token appear write-capable or read-only?
 - Are GitHub Actions permissions inspectable?
 - Are recent Actions failures actually billing/spending-limit blocks?
+- Are recent Actions runs dominated by optional metadata/reviewer labelers?
 - Is default-branch protection inspectable?
 - Are private repositories being used with hosted/SaaS lanes?
 - Which provider apps or token fallbacks are likely needed?

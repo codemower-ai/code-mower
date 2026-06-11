@@ -138,6 +138,25 @@ def run_smoke(*, code_mower_bin: Path, work_dir: Path) -> dict[str, Any]:
             stdout_path=outputs / "next-steps.json",
         )
     )
+    steps.append(
+        _run(
+            [
+                cm,
+                "migration",
+                "wrapper-rehearsal",
+                "--repo-path",
+                str(toy_repo),
+                "--local-command",
+                cm,
+                "--package-command",
+                cm,
+                "--json",
+            ],
+            cwd=toy_repo,
+            env=env,
+            stdout_path=outputs / "wrapper-rehearsal.json",
+        )
+    )
 
     code_mower_dir = toy_repo / ".code-mower"
     code_mower_dir.mkdir(exist_ok=True)

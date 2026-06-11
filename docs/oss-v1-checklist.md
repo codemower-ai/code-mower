@@ -23,6 +23,7 @@ code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --easy
 code-mower next-steps --profile recommended
+code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower audit pr 123
 code-mower calibration value-report templates/calibration-corpus.json
 python scripts/smoke_easy_mode.py --json
@@ -64,6 +65,8 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 - Prove commands do not accidentally inherit unsupported ambient Python after
   bootstrap.
 - Include prompt lenses, context-pack example, provider templates, and docs.
+- Provide a product-wrapper rehearsal so existing product repos can compare
+  repo-local tools with a pinned standalone package before deleting mirrors.
 
 ### Init
 
@@ -80,7 +83,8 @@ do not spend v1.0 work on non-GitHub workflow rendering.
   required env vars, and optional runtime probes.
 - Support `code-mower doctor --github` for repository visibility, token
   write-adjacent permission hints, Actions permission inspection, branch
-  protection inspection, and private-repo/SaaS provider warnings.
+  protection inspection, recent billing blocks, sampled Actions cost hotspots,
+  and private-repo/SaaS provider warnings.
 - Check the blessed runtime, Python version, and GitHub HTTPS/certificate
   behavior before provider commands run.
 - Emit content-free JSON suitable for sharing.

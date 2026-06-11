@@ -45,6 +45,31 @@ product repo.
 6. Remove duplicated tool implementation files from product repos after at least
    one clean release cycle.
 
+## Wrapper Rehearsal
+
+Before a product repo flips any default, run the package against that repo and
+compare safe read-only commands with the repo-local tools:
+
+```bash
+code-mower migration wrapper-rehearsal \
+  --repo-path /path/to/product-repo \
+  --json
+```
+
+This command compares provider listing, prompt validation, and calibration
+evidence generation when a local calibration corpus is available. A pass means
+the repo is ready for standalone shadow mode. It does not mean the repo-local
+tools can be deleted yet.
+
+The expected migration order is:
+
+1. standalone command matches repo-local read-only commands
+2. product workflow wrappers can call the standalone command under
+   `CODE_MOWER_USE_STANDALONE=1`
+3. one release cycle runs standalone in shadow mode
+4. pinned standalone release becomes the default
+5. mirrored implementation files are removed from product repos
+
 ## Non-Goals
 
 - Do not immediately remove repo-local tools from active product/reference repos.

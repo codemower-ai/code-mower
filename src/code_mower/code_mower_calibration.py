@@ -777,7 +777,7 @@ def _default_code_mower_command() -> list[str]:
         return [sys.executable, str(sibling_cli)]
     packaged_cli = module_path.with_name("cli.py")
     if packaged_cli.exists():  # pragma: no cover - exercised after package extraction.
-        return [sys.executable, str(packaged_cli)]
+        return [sys.executable, "-m", "code_mower.cli"]
     return ["code-mower"]
 
 

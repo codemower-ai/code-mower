@@ -32,6 +32,7 @@ if __package__ in {None, "", "tools"}:
         code_mower_package,
         code_mower_prompts,
         code_mower_telemetry,
+        migration as code_mower_migration,
         gemini_cli_audit_pr,
         local_llm_bakeoff,
         local_llm_calibration,
@@ -59,6 +60,7 @@ else:  # pragma: no cover - exercised after package extraction.
     from . import local_llm_calibration
     from . import local_llm_audit_pr
     from . import local_llm_profiles
+    from . import migration as code_mower_migration
     from . import package as code_mower_package
     from . import prompts as code_mower_prompts
     from . import reviewer_metrics
@@ -332,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("hermes-cli", add_help=False)
     subparsers.add_parser("init", add_help=False)
     subparsers.add_parser("local-llm", add_help=False)
+    subparsers.add_parser("migration", add_help=False)
     subparsers.add_parser("merge-plan", add_help=False)
     subparsers.add_parser("next-steps", add_help=False)
     subparsers.add_parser("package", add_help=False)
@@ -380,6 +383,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "local-llm":
         return _local_llm_main(rest)
+    if args.command == "migration":
+        return code_mower_migration.main(rest)
     if args.command == "merge-plan":
         return code_mower_merge.main(rest)
     if args.command == "next-steps":

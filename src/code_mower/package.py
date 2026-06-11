@@ -205,6 +205,13 @@ STATIC_PACKAGE_FILES = (
                 "`code-mower doctor --easy` to verify local CLIs, "
                 "tokens, provider catalog coverage, and runtime probes.",
                 "",
+                "For existing repos that still carry product-local Code Mower "
+                "tools, run `code-mower migration wrapper-rehearsal "
+                "--repo-path /path/to/repo --json` before flipping to a pinned "
+                "standalone package. The rehearsal compares safe read-only "
+                "commands and gives a low-risk path away from mirrored "
+                "maintenance.",
+                "",
                 "For public release readiness, see `docs/repo-strategy.md`, "
                 "`docs/commercial-boundary.md`, and "
                 "`docs/public-release-checklist.md`.",
@@ -262,10 +269,10 @@ STATIC_PACKAGE_FILES = (
                 "    runs-on: ubuntu-latest",
                 "    steps:",
                 "      - name: Check out",
-                "        uses: actions/checkout@v4",
+                "        uses: actions/checkout@v6.0.3",
                 "",
                 "      - name: Set up Python",
-                "        uses: actions/setup-python@v5",
+                "        uses: actions/setup-python@v6.2.0",
                 "        with:",
                 "          python-version: '3.12'",
                 "",
@@ -432,6 +439,25 @@ def run_smoke(*, code_mower_bin: Path, work_dir: Path) -> dict[str, Any]:
             cwd=toy_repo,
             env=env,
             stdout_path=outputs / \"next-steps.json\",
+        )
+    )
+    steps.append(
+        _run(
+            [
+                cm,
+                \"migration\",
+                \"wrapper-rehearsal\",
+                \"--repo-path\",
+                str(toy_repo),
+                \"--local-command\",
+                cm,
+                \"--package-command\",
+                cm,
+                \"--json\",
+            ],
+            cwd=toy_repo,
+            env=env,
+            stdout_path=outputs / \"wrapper-rehearsal.json\",
         )
     )
 
@@ -757,7 +783,7 @@ def _workflow_template_text(target: str) -> str:
                 "    timeout-minutes: 10",
                 "    steps:",
                 "      - name: Check out workflow code",
-                "        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
+                "        uses: actions/checkout@v6.0.3",
                 "        with:",
                 "          persist-credentials: false",
                 "      - name: Build synthetic manifests",
@@ -885,6 +911,7 @@ CLI_COMMANDS = (
     "code-mower init --profile recommended --dry-run",
     "code-mower init --profile recommended --apply --output-dir .code-mower.generated",
     "code-mower merge-plan owner/repo#123 --json",
+    "code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json",
     "code-mower local-llm profiles --json",
     "code-mower local-llm probe --profile qwen3-coder-next-lmstudio --json",
     "code-mower local-llm probe --profile gemma4-ollama --json",

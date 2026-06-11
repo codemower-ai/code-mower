@@ -124,7 +124,7 @@ def build_next_steps(
     if profile == DEFAULT_PROFILE:
         init_plan_command = "code-mower init --easy"
         init_apply_command = "code-mower init --easy --apply --output-dir .code-mower.generated"
-        doctor_command = "code-mower doctor --easy --probe-runtime --json"
+        doctor_command = "code-mower doctor --easy --probe-runtime --github --json"
     else:
         init_plan_command = f"code-mower init --profile {quoted_profile} --dry-run"
         init_apply_command = (
@@ -158,7 +158,16 @@ def build_next_steps(
             "command": doctor_command,
             "why": (
                 "Checks GitHub auth, Python, provider catalog coverage, CLI "
-                "availability, token env, and harmless runtime probes."
+                "availability, token env, Actions cost traps, and harmless runtime probes."
+            ),
+        },
+        {
+            "id": "wrapper-rehearsal",
+            "title": "Compare standalone package behavior with any repo-local Code Mower tools",
+            "command": "code-mower migration wrapper-rehearsal --repo-path . --json",
+            "why": (
+                "Gives existing product repos a shadow-mode migration check before "
+                "they replace mirrored tool files with a pinned standalone package."
             ),
         },
         {

@@ -13,7 +13,9 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -61,6 +63,15 @@ ACTIONS_INSPECTABLE_FAILURE_CONCLUSIONS = frozenset(
 )
 MAX_ACTIONS_FAILED_RUNS_TO_INSPECT = 5
 MAX_ACTIONS_FAILED_JOBS_TO_INSPECT = 20
+ACTIONS_COST_SAMPLE_DEFAULT = 100
+ACTIONS_COST_SAMPLE_MAX = 100
+ACTIONS_METADATA_WORKFLOW_MARKERS = (
+    "audit-labeler",
+    "labeler",
+    "clear-stale",
+    "audit-label-cleanup",
+    "devin-audit-bridge",
+)
 
 
 @dataclass(frozen=True)
@@ -834,11 +845,173 @@ def _check_recent_actions_billing_blocks(
     )
 
 
+def _parse_github_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        text = str(value)
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _approx_run_seconds(run: Mapping[str, Any]) -> float:
+    started = _parse_github_timestamp(
+        run.get("run_started_at") or run.get("created_at")
+    )
+    updated = _parse_github_timestamp(run.get("updated_at"))
+    if started is None or updated is None or updated < started:
+        return 0.0
+    return (updated - started).total_seconds()
+
+
+def _is_metadata_workflow(name: str, path: str) -> bool:
+    haystack = f"{name}\n{path}".lower()
+    return any(marker in haystack for marker in ACTIONS_METADATA_WORKFLOW_MARKERS)
+
+
+def _check_actions_cost_sample(
+    *,
+    gh_path: str,
+    slug: str,
+    private: bool,
+    http_timeout: int,
+    sample_limit: int,
+) -> DoctorCheck:
+    bounded_limit = max(1, min(sample_limit, ACTIONS_COST_SAMPLE_MAX))
+    runs_payload, runs_detail = _github_api_json(
+        gh_path,
+        f"repos/{slug}/actions/runs?per_page={bounded_limit}",
+        http_timeout=http_timeout,
+    )
+    if runs_payload is None:
+        return DoctorCheck(
+            name="github.actions.cost_sample",
+            status=STATUS_WARN,
+            message=f"could not sample recent GitHub Actions usage for {slug}",
+            detail={"repo": slug, **runs_detail},
+            remediation=(
+                "Verify gh auth can read Actions run metadata. Private repos "
+                "should periodically inspect Actions usage metrics after enabling "
+                "hosted or informational lanes."
+            ),
+        )
+
+    raw_runs = runs_payload.get("workflow_runs")
+    if not isinstance(raw_runs, list):
+        return DoctorCheck(
+            name="github.actions.cost_sample",
+            status=STATUS_WARN,
+            message=f"Actions usage response for {slug} did not include workflow_runs",
+            detail={"repo": slug},
+        )
+
+    workflow_counts: Counter[str] = Counter()
+    event_counts: Counter[str] = Counter()
+    workflow_seconds: defaultdict[str, float] = defaultdict(float)
+    metadata_counts: Counter[str] = Counter()
+    metadata_seconds: defaultdict[str, float] = defaultdict(float)
+    schedule_runs = 0
+    total_seconds = 0.0
+
+    for run in raw_runs:
+        if not isinstance(run, Mapping):
+            continue
+        workflow_name = str(run.get("name") or run.get("display_title") or "unknown")
+        workflow_path = str(run.get("path") or "")
+        event = str(run.get("event") or "unknown")
+        seconds = _approx_run_seconds(run)
+        workflow_counts[workflow_name] += 1
+        event_counts[event] += 1
+        workflow_seconds[workflow_name] += seconds
+        total_seconds += seconds
+        if event == "schedule":
+            schedule_runs += 1
+        if _is_metadata_workflow(workflow_name, workflow_path):
+            metadata_counts[workflow_name] += 1
+            metadata_seconds[workflow_name] += seconds
+
+    sample_size = sum(workflow_counts.values())
+    metadata_run_count = sum(metadata_counts.values())
+    metadata_share = (metadata_run_count / sample_size) if sample_size else 0.0
+    top_workflows = [
+        {
+            "workflow": workflow,
+            "runs": count,
+            "approx_minutes": round(workflow_seconds[workflow] / 60, 2),
+        }
+        for workflow, count in workflow_counts.most_common(10)
+    ]
+    top_metadata_workflows = [
+        {
+            "workflow": workflow,
+            "runs": count,
+            "approx_minutes": round(metadata_seconds[workflow] / 60, 2),
+        }
+        for workflow, count in metadata_counts.most_common(10)
+    ]
+    detail = {
+        "repo": slug,
+        "private": private,
+        "sample_limit": bounded_limit,
+        "sampled_runs": sample_size,
+        "approx_total_minutes": round(total_seconds / 60, 2),
+        "metadata_workflow_runs": metadata_run_count,
+        "metadata_workflow_share": round(metadata_share, 3),
+        "schedule_runs": schedule_runs,
+        "top_workflows": top_workflows,
+        "top_metadata_workflows": top_metadata_workflows,
+        "events": [
+            {"event": event, "runs": count}
+            for event, count in event_counts.most_common(10)
+        ],
+    }
+    if not sample_size:
+        return DoctorCheck(
+            name="github.actions.cost_sample",
+            status=STATUS_PASS,
+            message=f"{slug} has no recent Actions runs in the sampled window",
+            detail=detail,
+        )
+
+    noisy_metadata = private and metadata_run_count >= max(5, int(sample_size * 0.2))
+    scheduled_private = private and schedule_runs > 0
+    if noisy_metadata or scheduled_private:
+        reasons: list[str] = []
+        if noisy_metadata:
+            reasons.append(
+                f"{metadata_run_count}/{sample_size} sampled runs look like metadata or reviewer labeler workflows"
+            )
+        if scheduled_private:
+            reasons.append(f"{schedule_runs} sampled runs were scheduled")
+        return DoctorCheck(
+            name="github.actions.cost_sample",
+            status=STATUS_WARN,
+            message=f"{slug} private-repo Actions sample suggests avoidable spend: {'; '.join(reasons)}",
+            detail=detail,
+            remediation=(
+                "Prefer label, trusted-comment, or workflow_dispatch triggers for "
+                "optional hosted reviewers; add job-level if guards before checkout; "
+                "keep informational lanes out of branch protection."
+            ),
+        )
+
+    return DoctorCheck(
+        name="github.actions.cost_sample",
+        status=STATUS_PASS,
+        message=f"{slug} recent Actions sample has no obvious private-repo cost traps",
+        detail=detail,
+    )
+
+
 def _check_github_setup(
     *,
     config: Mapping[str, Any],
     lanes: Sequence[tuple[str, Mapping[str, Any]]],
     http_timeout: int,
+    actions_cost_sample: int = ACTIONS_COST_SAMPLE_DEFAULT,
 ) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     gh_path = shutil.which("gh")
@@ -1034,6 +1207,15 @@ def _check_github_setup(
                 gh_path=gh_path,
                 slug=slug,
                 http_timeout=http_timeout,
+            )
+        )
+        checks.append(
+            _check_actions_cost_sample(
+                gh_path=gh_path,
+                slug=slug,
+                private=is_private,
+                http_timeout=http_timeout,
+                sample_limit=actions_cost_sample,
             )
         )
 
@@ -1801,6 +1983,7 @@ def run_doctor(
     probe_runtime: bool = False,
     github: bool = False,
     http_timeout: int = 5,
+    actions_cost_sample: int = ACTIONS_COST_SAMPLE_DEFAULT,
 ) -> DoctorReport:
     config, templates, checks = _load_inputs(config_path, provider_templates_path)
     if config is None or templates is None:
@@ -1891,6 +2074,7 @@ def run_doctor(
                 config=config,
                 lanes=effective_lanes,
                 http_timeout=http_timeout,
+                actions_cost_sample=actions_cost_sample,
             )
         )
 
@@ -1957,6 +2141,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="inspect GitHub repo visibility, branch protection, and provider setup hints",
     )
     parser.add_argument("--http-timeout", type=int, default=5)
+    parser.add_argument(
+        "--actions-cost-sample",
+        type=int,
+        default=ACTIONS_COST_SAMPLE_DEFAULT,
+        help=(
+            "number of recent Actions runs to sample for private-repo cost "
+            f"diagnostics, capped at {ACTIONS_COST_SAMPLE_MAX}"
+        ),
+    )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -1973,6 +2166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             probe_runtime=args.probe_runtime,
             github=args.github,
             http_timeout=args.http_timeout,
+            actions_cost_sample=args.actions_cost_sample,
         )
     except code_mower_config.ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
