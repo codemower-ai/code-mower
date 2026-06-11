@@ -15,6 +15,25 @@ CodeRabbit CLI, local models, and protocol bridges should be discoverable and
 calibratable, but they should start informational unless the repository
 explicitly promotes them.
 
+## Current Alpha Baseline
+
+The current public-release baseline is `v0.1.0-alpha.3` of the standalone
+package. It has proved:
+
+- package install and fresh-clone rehearsal;
+- `code-mower init --easy` smoke behavior;
+- `doctor --easy --probe-runtime` provider probes for configured local CLIs;
+- product-wrapper rehearsal with zero mismatches against the repo-local mirror;
+- pinned standalone consumption from both CubeSnap product repos.
+
+It has not yet proved:
+
+- public package installation from PyPI or another package index;
+- private-repo standalone checkout from GitHub Actions without local operator
+  credentials;
+- mirror deletion in product repos;
+- a large enough reviewer/lens corpus for new merge gates.
+
 ## Easy Mode Flow
 
 ```bash
@@ -67,6 +86,10 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 - Include prompt lenses, context-pack example, provider templates, and docs.
 - Provide a product-wrapper rehearsal so existing product repos can compare
   repo-local tools with a pinned standalone package before deleting mirrors.
+- Decide the distribution and checkout story before mirror deletion. A public
+  Code Mower repo can use unauthenticated HTTPS checkout; a private repo needs a
+  documented deploy key, fine-grained PAT, GitHub App token, or package-index
+  install path.
 
 ### Init
 
@@ -125,6 +148,9 @@ do not spend v1.0 work on non-GitHub workflow rendering.
   merge authority.
 - Keep Cursor BugBot informational and manual until enabled-output examples are
   captured, parsed, and adjudicated.
+- Treat bounded lens-smoke runs as evidence only after the raw artifacts or
+  summarized reviewer runs are promoted into the corpus. Temporary `/tmp`
+  artifacts are useful debugging output, not durable product evidence.
 
 ### Authoring Intelligence
 
@@ -172,6 +198,9 @@ private repo can complete this sequence from a clean machine:
    repo with `CODE_MOWER_STANDALONE_PATH=/path/to/code-mower`
 10. confirm `doctor --github` reports no recent Actions billing or spending
     limit blocks before treating branch protection as an autonomous merge gate
+11. confirm a private-repo install path can fetch the standalone package in CI,
+    or explicitly document that v1.0 requires a public Code Mower source or
+    package-index install for CI usage
 
 The generated package includes `scripts/smoke_easy_mode.py` to exercise the
 core v1.0 path in a throwaway toy repository:

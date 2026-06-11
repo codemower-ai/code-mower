@@ -114,6 +114,19 @@ doctor smoke uses Gemini's non-interactive trust bypass for the throwaway
 working directory; full audit runs already use the same explicit headless trust
 flag for stdin transport.
 
+When running historical or multi-repo calibration, pass one
+`--repo-path-map` flag per mapped checkout:
+
+```bash
+code-mower calibration run templates/calibration-corpus.json \
+  --repo-path-map owner/repo#123@abc123=/tmp/repo-pr-123 \
+  --repo-path-map owner/other-repo#456@def456=/tmp/other-pr-456 \
+  --results-dir .code-mower/calibration-results
+```
+
+Do not join mappings with commas; each flag value is parsed as one complete
+mapping.
+
 The Antigravity CLI lane uses the local `agy` authentication state created by
 `agy install`/login. Because that OAuth state currently lives in the operator's
 normal home directory, Code Mower fails closed by default: set
@@ -237,9 +250,10 @@ uses those fields to distinguish routine merge-gate candidates from selective
 package/runtime, auth, docs/design, or calibration-policy triggers. They are not
 automatic merge authority by themselves.
 
-Structured Codex and Claude audit wrappers also save the exact public verdict
-comment before attempting to post it. If a network hiccup or GitHub error
-interrupts posting, replay the saved artifact instead of rerunning the model:
+Product-repo compatibility wrappers for structured Codex and Claude audits can
+also save the exact public verdict comment before attempting to post it. If a
+network hiccup or GitHub error interrupts posting, replay the saved artifact
+instead of rerunning the model:
 
 ```bash
 tools/run_codex_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json

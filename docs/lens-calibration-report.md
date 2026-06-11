@@ -27,7 +27,7 @@ catches more bugs.
 
 ## Generated Value Snapshot
 
-`tools/CODE_MOWER_REVIEWER_VALUE_REPORT.md` was regenerated from the corpus:
+`docs/reviewer-value-report.md` was regenerated from the corpus:
 
 - Corpus items: 18
 - Adjudicated findings: 70
@@ -94,7 +94,7 @@ are explicit-run only so normal lane-only calibration runs do not accidentally
 multiply provider spend.
 
 ```bash
-code-mower calibration run tools/calibration_corpus.json \
+code-mower calibration run templates/calibration-corpus.json \
   --lanes gemini-cli \
   --arms gemini-risk-ops-lens-fanout \
   --repo-path-map OWNER/REPO#PR@HEAD=/path/to/pr-worktree \
@@ -107,7 +107,7 @@ Run the doctrine fan-out when the experiment needs to compare a base audit
 against `generic-programming` and `context-driven-quality` on the same model:
 
 ```bash
-code-mower calibration run tools/calibration_corpus.json \
+code-mower calibration run templates/calibration-corpus.json \
   --lanes gemini-cli \
   --arms gemini-doctrine-lens-fanout \
   --repo-path-map OWNER/REPO#PR@HEAD=/path/to/pr-worktree \
@@ -121,7 +121,7 @@ local Hermes auth is configured and the ambient-home trust opt-in is set:
 
 ```bash
 HERMES_CLI_USE_AMBIENT_HOME=1 \
-code-mower calibration run tools/calibration_corpus.json \
+code-mower calibration run templates/calibration-corpus.json \
   --lanes hermes-cli \
   --arms hermes-doctrine-lens-fanout \
   --repo-path-map OWNER/REPO#PR@HEAD=/path/to/pr-worktree \
@@ -139,6 +139,32 @@ The next definitive lens turn should run the explicit Gemini and Hermes doctrine
 arms against the same known-blocked PRs and known-clean controls. That gives
 Code Mower same-model, different-lens evidence plus a topology comparison
 without mixing live PR state into the measurement.
+
+## Alpha.3 Bounded Gemini Doctrine Smoke
+
+After `v0.1.0-alpha.3`, a bounded smoke run tested the Gemini doctrine fan-out
+against one known-clean control and one known-blocked historical PR:
+
+- `jeffhuber/cube-two-view-debugger#455`
+  (`363d054881863d45eee13e6dc6d076cec667f9b6`), known clean after prior
+  reviewer approvals and post-merge verification.
+- `jeffhuber/cube-snap#347`
+  (`0683a90fb349a16a698d92f982b8f1abfab2398b`), known blocked by auth/history
+  defects.
+
+Results:
+
+| Lens reviewer | Clean control | Known-blocked PR | Signal |
+| --- | --- | --- | --- |
+| `gemini-base-audit` | pass, 0 findings | setup failure on retry | clean control behaved correctly, but the blocked retry had provider/network instability |
+| `gemini-generic-programming` | pass, 0 findings | blocked, 2 findings | caught the replay-suppression/history-loss issue and produced one extra lower-severity concern |
+| `gemini-context-driven-quality` | pass, 0 findings | blocked, 3 findings | caught the replay-suppression/history-loss issue and added testability/RLS-oriented concerns |
+
+The run is promising but not promotion-grade. It suggests doctrine alone can
+change useful signal without producing false blockers on the clean control, but
+the sample is too small and the base retry had an infrastructure failure. Keep
+the doctrine lenses informational until the same experiment is promoted into the
+durable corpus with adjudicated dispositions and more controls.
 
 ## First Fan-Out Result
 

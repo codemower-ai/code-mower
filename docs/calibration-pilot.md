@@ -24,7 +24,7 @@ fields to recommend selective triggers instead of blanket merge gates.
 Run:
 
 ```bash
-code-mower calibration plan tools/calibration_corpus.json --replicates 2 --json
+code-mower calibration plan templates/calibration-corpus.json --replicates 2 --json
 ```
 
 For a pinned PR head SHA:
@@ -99,17 +99,21 @@ Useful commands:
 
 ```bash
 code-mower doctor code-mower.yml --profile cli_research --probe-runtime --json
-code-mower context-packs tools/context_packs.example.json --json
-code-mower calibration run tools/calibration_corpus.json --lanes antigravity-cli,gemini-cli,hermes-cli,coderabbit-cli,local-llm --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --results-dir .code-mower/calibration-results --json
-code-mower calibration run tools/calibration_corpus.json --lanes gemini-cli --arms gemini-risk-ops-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --results-dir .code-mower/lens-fanout-results --json
-code-mower calibration run tools/calibration_corpus.json --lanes hermes-cli --arms hermes-doctrine-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --results-dir .code-mower/hermes-lens-fanout-results --json
-code-mower calibration value-report tools/calibration_corpus.json --runs .code-mower/calibration-results/calibration-run-results.json --output tools/CODE_MOWER_REVIEWER_VALUE_REPORT.md
+code-mower context-packs templates/context-packs.example.json --json
+code-mower calibration run templates/calibration-corpus.json --lanes antigravity-cli,gemini-cli,hermes-cli,coderabbit-cli,local-llm --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --results-dir .code-mower/calibration-results --json
+code-mower calibration run templates/calibration-corpus.json --lanes gemini-cli --arms gemini-risk-ops-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --results-dir .code-mower/lens-fanout-results --json
+code-mower calibration run templates/calibration-corpus.json --lanes hermes-cli --arms hermes-doctrine-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --results-dir .code-mower/hermes-lens-fanout-results --json
+code-mower calibration value-report templates/calibration-corpus.json --runs .code-mower/calibration-results/calibration-run-results.json --output docs/reviewer-value-report.md
 code-mower local-llm calibrate .code-mower/calibration/pr-123/local-llm/summary.json --write-disposition-template .code-mower/calibration/pr-123/dispositions.json
-code-mower calibration evidence tools/calibration_corpus.json --json
-code-mower reviewer-metrics .code-mower/calibration/pr-123/calibration.json --spend tools/reviewer_spend.example.json --json
+code-mower calibration evidence templates/calibration-corpus.json --json
+code-mower reviewer-metrics .code-mower/calibration/pr-123/calibration.json --spend templates/reviewer-spend.example.json --json
 code-mower calibration overlap .code-mower/calibration/pr-123/calibration.json --json
 code-mower calibration policy .code-mower/calibration/reviewer-metrics.json --json
 ```
+
+Pass one `--repo-path-map` flag per mapped worktree. Do not combine multiple
+repo mappings into a comma-separated value; the parser treats each flag value
+as one mapping.
 
 For a merged or historical PR head, create a detached worktree at the archived
 head and compare it to the recorded base or merge-base:
@@ -205,8 +209,9 @@ argv. Use it only in trusted local calibration environments until Hermes has
 stable parser behavior, richer context-pack coverage, and enough adjudicated
 clean and blocked corpus evidence for selective-trigger consideration.
 
-If a structured audit completes but the final GitHub comment POST fails, replay
-the saved public comment artifact instead of rerunning the model:
+If a product-repo compatibility wrapper completes a structured audit but the
+final GitHub comment POST fails, replay the saved public comment artifact
+instead of rerunning the model:
 
 ```bash
 tools/run_codex_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json

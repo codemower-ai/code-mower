@@ -7,7 +7,7 @@ new model or CLI into a gate.
 Generate the current evidence-based recommendation with:
 
 ```bash
-code-mower calibration evidence tools/calibration_corpus.json --json > reviewer-evidence.json
+code-mower calibration evidence templates/calibration-corpus.json --json > reviewer-evidence.json
 code-mower reviewer-metrics reviewer-evidence.json --json > reviewer-metrics.json
 code-mower calibration policy reviewer-metrics.json --json
 ```
@@ -16,15 +16,15 @@ Collect fresh non-gating calibration runs with:
 
 ```bash
 code-mower doctor code-mower.yml --profile cli_research --probe-runtime --json
-code-mower context-packs tools/context_packs.example.json --json
-code-mower calibration run tools/calibration_corpus.json \
+code-mower context-packs templates/context-packs.example.json --json
+code-mower calibration run templates/calibration-corpus.json \
   --lanes antigravity-cli,gemini-cli,hermes-cli,coderabbit-cli,local-llm \
   --repo-path-map owner/repo#123@HEAD_SHA=/path/to/clean/pr-worktree \
   --results-dir .code-mower/calibration-results \
   --json
-code-mower calibration value-report tools/calibration_corpus.json \
+code-mower calibration value-report templates/calibration-corpus.json \
   --runs .code-mower/calibration-results/calibration-run-results.json \
-  --output tools/CODE_MOWER_REVIEWER_VALUE_REPORT.md
+  --output docs/reviewer-value-report.md
 ```
 
 The runner writes raw command, stdout, stderr, per-lane summaries, and a

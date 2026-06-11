@@ -1,7 +1,7 @@
 # Code Mower Calibration Notes
 
 These notes keep reviewer-quality context durable across runs. They are not a
-merge policy by themselves; use them with `tools/calibration_corpus.json`,
+merge policy by themselves; use them with `templates/calibration-corpus.json`,
 calibration outputs, disposition templates, and `code-mower reviewer-metrics`.
 
 ## Current Intent
@@ -85,7 +85,7 @@ These are working notes, not permanent rankings.
 
 ## Current Evidence Anchors
 
-Use the starter corpus in `tools/calibration_corpus.json` first. It includes:
+Use the starter corpus in `templates/calibration-corpus.json` first. It includes:
 
 - Known-clean Code Mower lane-semantics PRs.
 - A known-blocked auth/history slice with expected findings for solve-history
@@ -108,15 +108,37 @@ Use the starter corpus in `tools/calibration_corpus.json` first. It includes:
   Hermes doctrine proof as whole-review run evidence; human-disposition finding
   evidence still needs to be added before comparing useful-rate.
 
-See `tools/CODE_MOWER_LENS_CALIBRATION_REPORT.md` for the current lens-specific
+See `docs/lens-calibration-report.md` for the current lens-specific
 policy. The initial lens entries prove the lens package surface is clean; they
 do not prove that a lens should be promoted until it catches adjudicated
 findings.
 
+Latest bounded lens smoke, 2026-06-11:
+
+- Corpus shape: one known-clean control
+  (`jeffhuber/cube-two-view-debugger#455`) and one known-blocked auth/history
+  control (`jeffhuber/cube-snap#347`).
+- Runner: `gemini-doctrine-lens-fanout` with `base-audit`,
+  `generic-programming`, and `context-driven-quality`.
+- Known-clean outcome: all three Gemini doctrine variants passed with zero
+  findings.
+- Known-blocked outcome: `generic-programming` and
+  `context-driven-quality` both produced parseable blocked verdicts and caught
+  the replay-suppression/history-loss issue. The quality lens also raised
+  additional testability/RLS concerns that still need human disposition.
+- Infrastructure outcome: the base-audit retry failed before producing a
+  summary because of a URL/name-resolution error, and an earlier attempt showed
+  Gemini selecting `GOOGLE_API_KEY` when both `GOOGLE_API_KEY` and
+  `GEMINI_API_KEY` were present. Treat this as runtime hardening evidence, not
+  reviewer-quality evidence.
+- Policy outcome: doctrine lenses remain informational. The result makes the
+  experiment credible, but promotion still requires more known-clean controls,
+  more known-blocked or seeded-bug catches, and adjudicated dispositions.
+
 Summarize embedded historical evidence with:
 
 ```bash
-code-mower calibration evidence tools/calibration_corpus.json --json
+code-mower calibration evidence templates/calibration-corpus.json --json
 ```
 
 Fold that report into reviewer metrics with:
@@ -218,6 +240,12 @@ selective trigger, not a universal merge gate.
   certificate store, causing GitHub API fetches to fail before Gemini ran. Use
   the repo bootstrap interpreter or an explicit Python 3.11+ runtime for
   calibration batches.
+- `--repo-path-map` is a repeatable flag. Pass it once per repo or per
+  repo/PR/head selector; do not comma-separate multiple mappings in one value.
+- When using `GEMINI_API_KEY_FILE`, make sure ambient `GOOGLE_API_KEY` is unset
+  or intentionally equivalent. The current Gemini CLI chooses `GOOGLE_API_KEY`
+  when both variables are present, which can make a run use the wrong account or
+  quota pool.
 - Treat direct JSON, wrapped JSON, and malformed model output as separate parser
   cases. A parse failure should not look like a successful calibration run.
 - Preserve head-SHA pinning before and after long-running reviews.
@@ -230,10 +258,10 @@ selective trigger, not a universal merge gate.
    CLI, CodeRabbit CLI, Qwen, and Gemma can be scored on catch rate and miss
    rate, not only known-clean behavior.
 2. Write disposition templates for all new findings and adjudicate them.
-3. Render `tools/context_packs.example.json` or a repo-local context-pack
+3. Render `templates/context-packs.example.json` or a repo-local context-pack
    manifest before running expensive lanes that need surrounding files.
 4. Generate `reviewer-metrics` with spend and timing where available.
-5. Promote the best corpus entries into `tools/calibration_corpus.json`.
+5. Promote the best corpus entries into `templates/calibration-corpus.json`.
 6. Use the report to decide which lanes stay informational, which get narrower
    triggers, and which deserve merge authority.
 
