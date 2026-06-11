@@ -158,6 +158,21 @@ The workflow fetches the pinned standalone checkout over SSH, runs
 standalone package and the repo-local mirror. It is a proof and migration guard,
 not a reviewer lane or merge gate.
 
+During mirror removal, keep the thin product wrapper and pin files in place.
+Move GitHub workflow calls from mirrored scripts to standalone wrapper commands
+before deleting implementation files:
+
+```bash
+tools/code_mower trailer-comment-labeler --lane codex
+tools/code_mower saas-reviewer-labeler --adapter gitar
+tools/code_mower bootstrap --print-python
+```
+
+`tools/code_mower`, `tools/code_mower_standalone_shadow.sh`, and
+`tools/code_mower_standalone_pin.env` are migration support files. They should
+remain in product repos until the package is installed through a normal public
+dependency path.
+
 The Antigravity CLI lane uses the local `agy` authentication state created by
 `agy install`/login. Because that OAuth state currently lives in the operator's
 normal home directory, Code Mower fails closed by default: set

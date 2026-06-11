@@ -19,6 +19,7 @@ if __package__ in {None, "", "tools"}:
     from tools import (
         antigravity_cli_audit_pr,
         blind_review_coordinator,
+        bootstrap as code_mower_bootstrap,
         coderabbit_cli_audit_pr,
         hermes_cli_audit_pr,
         code_mower_builder_experiment,
@@ -40,11 +41,14 @@ if __package__ in {None, "", "tools"}:
         local_llm_audit_pr,
         local_llm_profiles,
         reviewer_metrics,
+        saas_reviewer_labeler,
+        trailer_comment_labeler,
     )
 else:  # pragma: no cover - exercised after package extraction.
     from . import __version__
     from . import blind_review_coordinator
     from . import antigravity_cli_audit_pr
+    from . import bootstrap as code_mower_bootstrap
     from . import builder_experiment as code_mower_builder_experiment
     from . import cloud as code_mower_cloud
     from . import coderabbit_cli_audit_pr
@@ -66,6 +70,8 @@ else:  # pragma: no cover - exercised after package extraction.
     from . import package as code_mower_package
     from . import prompts as code_mower_prompts
     from . import reviewer_metrics
+    from . import saas_reviewer_labeler
+    from . import trailer_comment_labeler
 
 
 def _has_positional_config(argv: list[str], options_with_values: set[str]) -> bool:
@@ -326,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("antigravity-cli", add_help=False)
     subparsers.add_parser("blind-review", add_help=False)
+    subparsers.add_parser("bootstrap", add_help=False)
     subparsers.add_parser("builder-experiment", add_help=False)
     subparsers.add_parser("calibration", add_help=False)
     subparsers.add_parser("cloud", add_help=False)
@@ -344,13 +351,17 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("prompts", add_help=False)
     subparsers.add_parser("providers", add_help=False)
     subparsers.add_parser("reviewer-metrics", add_help=False)
+    subparsers.add_parser("saas-reviewer-labeler", add_help=False)
     subparsers.add_parser("telemetry", add_help=False)
+    subparsers.add_parser("trailer-comment-labeler", add_help=False)
     args, rest = parser.parse_known_args(argv)
 
     if args.command == "antigravity-cli":
         return antigravity_cli_audit_pr.main(rest)
     if args.command == "blind-review":
         return blind_review_coordinator.main(rest)
+    if args.command == "bootstrap":
+        return code_mower_bootstrap.main(rest)
     if args.command == "builder-experiment":
         return code_mower_builder_experiment.main(rest)
     if args.command == "calibration":
@@ -410,8 +421,12 @@ def main(argv: list[str] | None = None) -> int:
         return _providers_main(rest)
     if args.command == "reviewer-metrics":
         return reviewer_metrics.main(rest)
+    if args.command == "saas-reviewer-labeler":
+        return saas_reviewer_labeler.main(rest)
     if args.command == "telemetry":
         return code_mower_telemetry.main(rest)
+    if args.command == "trailer-comment-labeler":
+        return trailer_comment_labeler.main(rest)
     raise AssertionError(f"unhandled command: {args.command}")
 
 

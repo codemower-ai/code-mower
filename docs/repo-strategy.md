@@ -83,9 +83,15 @@ The expected migration order is:
 1. standalone command matches repo-local read-only commands
 2. product workflow wrappers can call the standalone command under
    `CODE_MOWER_USE_STANDALONE=1`
-3. one release cycle runs standalone in shadow mode
-4. pinned standalone release becomes the default
-5. mirrored implementation files are removed from product repos
+3. issue-comment and SaaS reviewer labeler workflows call the standalone
+   wrapper entrypoints (`tools/code_mower trailer-comment-labeler ...` and
+   `tools/code_mower saas-reviewer-labeler ...`) instead of importing mirrored
+   Python files directly
+4. setup/bootstrap workflow helpers call `tools/code_mower bootstrap ...`
+   instead of `python3 tools/code_mower_bootstrap.py ...`
+5. one release cycle runs standalone in shadow mode
+6. pinned standalone release becomes the default
+7. mirrored implementation files are removed from product repos
 
 As of `v0.1.0-alpha.6`, the CubeSnap product repos have proved the private
 standalone checkout path and are in the standalone-default phase: product
@@ -96,6 +102,15 @@ product repo at a time to the alpha.6 pin, run
 `migration mirror-removal-plan --shadow-cycles 1 --standalone-default-cycles 1`.
 Even if the plan reports `ready_to_remove_mirrors`, mirror deletion should wait
 for a dedicated follow-up PR with no CubeSnap feature work mixed in.
+
+Keep thin migration support files in the product repos while removing mirrors:
+`tools/code_mower`, `tools/code_mower_standalone_shadow.sh`, and
+`tools/code_mower_standalone_pin.env` are wrappers/config, not duplicated
+implementation. Remove implementation mirrors only after workflows no longer
+call files such as `tools/trailer_comment_labeler.py` or
+`tools/saas_reviewer_labeler.py` directly. Workflows that need the Code Mower
+Python environment should call `tools/code_mower bootstrap --print-python`
+instead of importing `tools/code_mower_bootstrap.py` directly.
 
 ## Non-Goals
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -251,6 +252,55 @@ def _glob_relative_files(repo_path: Path, patterns: Sequence[str]) -> list[str]:
     return sorted(found)
 
 
+def _workflow_file_references(
+    repo_path: Path,
+    relative_files: Sequence[str],
+) -> list[dict[str, Any]]:
+    workflow_root = repo_path / ".github" / "workflows"
+    if not workflow_root.is_dir():
+        return []
+    tracked = set(relative_files)
+    references: list[dict[str, Any]] = []
+    for workflow in sorted(
+        path
+        for pattern in ("*.yml", "*.yaml")
+        for path in workflow_root.glob(pattern)
+        if path.is_file()
+    ):
+        try:
+            lines = workflow.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            lines = workflow.read_text(encoding="utf-8", errors="replace").splitlines()
+        for line_number, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            for relative_file in tracked:
+                if relative_file in line and _line_requires_workflow_file(
+                    line,
+                    relative_file,
+                ):
+                    references.append(
+                        {
+                            "workflow": workflow.relative_to(repo_path).as_posix(),
+                            "line": line_number,
+                            "file": relative_file,
+                            "text": stripped[:240],
+                        }
+                    )
+    return references
+
+
+def _line_requires_workflow_file(line: str, relative_file: str) -> bool:
+    escaped = re.escape(relative_file)
+    return bool(
+        re.search(rf"\bpython3?\b[^\n]*{escaped}", line)
+        or re.search(rf"\[\s*!\s*-f\s+{escaped}\s*\]", line)
+        or re.search(rf"\btest\s+!\s+-f\s+{escaped}\b", line)
+        or re.search(rf"\btest\s+-f\s+{escaped}\b", line)
+    )
+
+
 def render_mirror_removal_plan(
     *,
     repo_path: Path,
@@ -266,6 +316,7 @@ def render_mirror_removal_plan(
     support_files = _relative_existing_files(
         repo_path,
         (
+            "tools/code_mower",
             "tools/code_mower_standalone_pin.env",
             "tools/code_mower_standalone_shadow.sh",
         ),
@@ -274,7 +325,6 @@ def render_mirror_removal_plan(
     mirrored_candidates = _glob_relative_files(
         repo_path,
         (
-            "tools/code_mower",
             "tools/code_mower_*.py",
             "tools/*_audit_pr.py",
             "tools/*_labeler.py",
@@ -284,6 +334,10 @@ def render_mirror_removal_plan(
             "tools/context_packs*.json",
             "tools/CODE_MOWER*.md",
         ),
+    )
+    workflow_mirror_references = _workflow_file_references(
+        repo_path,
+        mirrored_candidates,
     )
     ready_for_shadow = {
         "standalone_pin_file_present": "tools/code_mower_standalone_pin.env"
@@ -295,10 +349,11 @@ def render_mirror_removal_plan(
     }
     support_ready = all(ready_for_shadow.values())
     shadow_ready = support_ready and shadow_cycles >= required_shadow_cycles
-    removal_ready = (
+    cycle_ready_for_removal = (
         shadow_ready
         and standalone_default_cycles >= required_standalone_default_cycles
     )
+    removal_ready = cycle_ready_for_removal and not workflow_mirror_references
     blockers = []
     if not ready_for_shadow["standalone_pin_file_present"]:
         blockers.append("add tools/code_mower_standalone_pin.env")
@@ -316,8 +371,15 @@ def render_mirror_removal_plan(
             f"{required_standalone_default_cycles - standalone_default_cycles} "
             "clean standalone-default cycle(s)"
         )
+    if workflow_mirror_references:
+        blockers.append(
+            "migrate workflow references from removable mirrored files to "
+            "standalone wrapper commands before deleting mirrors"
+        )
     if removal_ready:
         status = "ready_to_remove_mirrors"
+    elif cycle_ready_for_removal:
+        status = "workflow_entrypoint_migration_required"
     elif shadow_ready:
         status = "ready_to_flip_default"
     else:
@@ -331,20 +393,25 @@ def render_mirror_removal_plan(
         "standalone_default_cycles": standalone_default_cycles,
         "required_standalone_default_cycles": required_standalone_default_cycles,
         "support_files": support_files,
+        "support_file_count": len(support_files),
         "local_command": list(local_command or ()),
         "mirrored_file_count": len(mirrored_candidates),
         "mirrored_files": mirrored_candidates,
+        "workflow_mirrored_file_reference_count": len(workflow_mirror_references),
+        "workflow_mirrored_file_references": workflow_mirror_references,
         "readiness": ready_for_shadow,
         "blockers": blockers,
         "steps": [
             "Run code-mower migration wrapper-rehearsal against the pinned standalone release and require mismatch_count: 0.",
             "Run at least the required number of clean product release cycles with the pinned standalone wrapper available.",
+            "Move workflow calls from mirrored Python files to tools/code_mower standalone wrapper subcommands.",
             "Flip product workflows or wrapper defaults to the pinned standalone command while keeping the product-local mirrors in place.",
             "Run the normal product merge gates and post-merge deploy checks.",
             "Remove mirrored implementation files in a dedicated PR after the standalone default cycle stays clean.",
         ],
         "notes": [
             "This plan is intentionally conservative: mirrored files are inventory, not deletion approval.",
+            "Keep support wrappers such as tools/code_mower and the standalone pin/shadow files during mirror removal.",
             "Keep product feature work independent from mirror-removal PRs.",
         ],
     }
@@ -360,6 +427,8 @@ def render_mirror_removal_text(payload: dict[str, Any]) -> str:
         f"{payload['standalone_default_cycles']}/"
         f"{payload['required_standalone_default_cycles']}",
         f"Mirrored files detected: {payload['mirrored_file_count']}",
+        "Workflow mirrored-file references: "
+        f"{payload.get('workflow_mirrored_file_reference_count', 0)}",
         "",
         "Next steps:",
     ]
