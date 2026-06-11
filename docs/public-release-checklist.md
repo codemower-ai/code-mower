@@ -14,6 +14,7 @@ private to public.
 - `code-mower init --easy` and `code-mower doctor --easy` work in a fresh toy
   repo.
 - `scripts/smoke_easy_mode.py --json` passes in a fresh virtual environment.
+- `scripts/fresh_clone_rehearsal.py --json` passes against the release commit.
 - Secret scans are clean.
 - Generated package manifest contains no private repo paths or private product
   assumptions.

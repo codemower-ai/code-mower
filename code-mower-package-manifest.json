@@ -460,7 +460,17 @@
     {
       "kind": "package",
       "source": "generated",
+      "target": ".github/workflows/ci.yml"
+    },
+    {
+      "kind": "package",
+      "source": "generated",
       "target": "scripts/smoke_easy_mode.py"
+    },
+    {
+      "kind": "package",
+      "source": "generated",
+      "target": "scripts/fresh_clone_rehearsal.py"
     },
     {
       "kind": "package",
@@ -599,7 +609,7 @@
     }
   ],
   "mode": "materialize",
-  "output_dir": ".",
+  "output_dir": "/private/tmp/code-mower-standalone",
   "package": {
     "console_script": "code-mower=code_mower.cli:main",
     "module": "code_mower",
