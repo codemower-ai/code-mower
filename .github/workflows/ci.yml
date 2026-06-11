@@ -11,10 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: '3.12'
 
@@ -26,6 +26,9 @@ jobs:
 
       - name: Compile sources
         run: python -m compileall src scripts
+
+      - name: Guard package workflow templates
+        run: python scripts/guard_package_workflows.py
 
       - name: Easy-mode smoke
         run: python scripts/smoke_easy_mode.py --work-dir "$RUNNER_TEMP/code-mower-smoke" --json

@@ -17,7 +17,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CODE_MOWER_STANDALONE_REPO_URL: git@github.com:jeffhuber/code-mower.git
+  CODE_MOWER_STANDALONE_REPO_URL: {{ code_mower_standalone_repo_url | default('https://github.com/OWNER/code-mower.git', true) }}
   CODE_MOWER_STANDALONE_REINSTALL: "1"
   CODE_MOWER_BOOTSTRAP_PYTHON: python3
 
@@ -35,11 +35,11 @@ jobs:
       - name: Configure Code Mower deploy key
         shell: bash
         env:
-          CODE_MOWER_STANDALONE_DEPLOY_KEY: ${{ secrets.CODE_MOWER_STANDALONE_DEPLOY_KEY }}
+          CODE_MOWER_STANDALONE_DEPLOY_KEY: {% raw %}${{ secrets.CODE_MOWER_STANDALONE_DEPLOY_KEY }}{% endraw %}
         run: |
           set -euo pipefail
           if [ -z "${CODE_MOWER_STANDALONE_DEPLOY_KEY}" ]; then
-            echo "::error::Missing CODE_MOWER_STANDALONE_DEPLOY_KEY. Add a read-only deploy key for jeffhuber/code-mower to this repository's Actions secrets."
+            echo "::error::Missing CODE_MOWER_STANDALONE_DEPLOY_KEY. Add a read-only deploy key for the configured Code Mower standalone repository to this repository's Actions secrets."
             exit 1
           fi
           install -m 700 -d ~/.ssh

@@ -272,10 +272,10 @@ STATIC_PACKAGE_FILES = (
                 "    runs-on: ubuntu-latest",
                 "    steps:",
                 "      - name: Check out",
-                "        uses: actions/checkout@v6.0.3",
+                "        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
                 "",
                 "      - name: Set up Python",
-                "        uses: actions/setup-python@v6.2.0",
+                "        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405",
                 "        with:",
                 "          python-version: '3.12'",
                 "",
@@ -786,7 +786,7 @@ def _workflow_template_text(target: str) -> str:
                 "    timeout-minutes: 10",
                 "    steps:",
                 "      - name: Check out workflow code",
-                "        uses: actions/checkout@v6.0.3",
+                "        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
                 "        with:",
                 "          persist-credentials: false",
                 "      - name: Build synthetic manifests",
@@ -878,7 +878,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CODE_MOWER_STANDALONE_REPO_URL: git@github.com:jeffhuber/code-mower.git
+  CODE_MOWER_STANDALONE_REPO_URL: {{ code_mower_standalone_repo_url | default('https://github.com/OWNER/code-mower.git', true) }}
   CODE_MOWER_STANDALONE_REINSTALL: "1"
   CODE_MOWER_BOOTSTRAP_PYTHON: python3
 
@@ -896,11 +896,11 @@ jobs:
       - name: Configure Code Mower deploy key
         shell: bash
         env:
-          CODE_MOWER_STANDALONE_DEPLOY_KEY: ${{ secrets.CODE_MOWER_STANDALONE_DEPLOY_KEY }}
+          CODE_MOWER_STANDALONE_DEPLOY_KEY: {% raw %}${{ secrets.CODE_MOWER_STANDALONE_DEPLOY_KEY }}{% endraw %}
         run: |
           set -euo pipefail
           if [ -z "${CODE_MOWER_STANDALONE_DEPLOY_KEY}" ]; then
-            echo "::error::Missing CODE_MOWER_STANDALONE_DEPLOY_KEY. Add a read-only deploy key for jeffhuber/code-mower to this repository's Actions secrets."
+            echo "::error::Missing CODE_MOWER_STANDALONE_DEPLOY_KEY. Add a read-only deploy key for the configured Code Mower standalone repository to this repository's Actions secrets."
             exit 1
           fi
           install -m 700 -d ~/.ssh

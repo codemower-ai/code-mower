@@ -136,6 +136,9 @@ package publication. It expects:
 - `tools/code_mower` and `tools/code_mower_standalone_shadow.sh` in the product
   repo;
 - a pinned `tools/code_mower_standalone_pin.env`;
+- `code_mower_standalone_repo_url` rendered to the source checkout URL for your
+  standalone Code Mower repository, such as an SSH deploy-key URL while the
+  source repo is private;
 - a read-only deploy key on the standalone Code Mower repository; and
 - the private half of that key stored as
   `CODE_MOWER_STANDALONE_DEPLOY_KEY` in the product repo's Actions secrets.
