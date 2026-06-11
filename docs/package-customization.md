@@ -127,6 +127,24 @@ code-mower calibration run templates/calibration-corpus.json \
 Do not join mappings with commas; each flag value is parsed as one complete
 mapping.
 
+## Private Standalone Shadow Workflow
+
+The package includes `templates/workflows/private-standalone-shadow.yml.j2` for
+product repos that consume a private Code Mower source checkout before public
+package publication. It expects:
+
+- `tools/code_mower` and `tools/code_mower_standalone_shadow.sh` in the product
+  repo;
+- a pinned `tools/code_mower_standalone_pin.env`;
+- a read-only deploy key on the standalone Code Mower repository; and
+- the private half of that key stored as
+  `CODE_MOWER_STANDALONE_DEPLOY_KEY` in the product repo's Actions secrets.
+
+The workflow fetches the pinned standalone checkout over SSH, runs
+`doctor --easy`, and compares safe read-only commands between the pinned
+standalone package and the repo-local mirror. It is a proof and migration guard,
+not a reviewer lane or merge gate.
+
 The Antigravity CLI lane uses the local `agy` authentication state created by
 `agy install`/login. Because that OAuth state currently lives in the operator's
 normal home directory, Code Mower fails closed by default: set

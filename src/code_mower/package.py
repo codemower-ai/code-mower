@@ -170,6 +170,8 @@ TEMPLATE_FILES = (
     ("workflow", "templates/workflows/hosted-bridge.yml.j2"),
     ("workflow", "templates/workflows/audit-label-cleanup.yml.j2"),
     ("workflow", "templates/workflows/review-clear-stale.yml.j2"),
+    ("workflow", "templates/workflows/private-standalone-shadow.yml.j2"),
+    ("workflow", "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2"),
     ("config", "templates/code-mower.yml.j2"),
     ("provider-config", "templates/providers.yml"),
     ("provider-catalog", "src/code_mower/templates/providers.yml"),
@@ -225,6 +227,7 @@ STATIC_PACKAGE_FILES = (
             [
                 "recursive-include src/code_mower/templates *.yml *.yaml *.json",
                 "recursive-include src/code_mower/templates *.md",
+                "recursive-include src/code_mower/templates *.j2",
                 "recursive-include templates *.j2 *.json *.md *.yml *.yaml",
                 "include requirements/*.txt",
                 "include LICENSE",
@@ -855,6 +858,88 @@ def _workflow_template_text(target: str) -> str:
                 "",
             ]
         )
+    if target.endswith("private-standalone-shadow.yml.j2"):
+        return r"""name: Code Mower standalone shadow
+
+on:
+  pull_request:
+    paths:
+      - "tools/code_mower"
+      - "tools/code_mower_standalone_shadow.sh"
+      - "tools/code_mower_standalone_pin.env"
+      - "tools/code_mower_*.py"
+      - "tools/CODE_MOWER*.md"
+      - "code-mower*.yml"
+      - ".github/workflows/code-mower-standalone-shadow.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_STANDALONE_REPO_URL: git@github.com:jeffhuber/code-mower.git
+  CODE_MOWER_STANDALONE_REINSTALL: "1"
+  CODE_MOWER_BOOTSTRAP_PYTHON: python3
+
+jobs:
+  shadow:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out product repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Configure Code Mower deploy key
+        shell: bash
+        env:
+          CODE_MOWER_STANDALONE_DEPLOY_KEY: ${{ secrets.CODE_MOWER_STANDALONE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CODE_MOWER_STANDALONE_DEPLOY_KEY}" ]; then
+            echo "::error::Missing CODE_MOWER_STANDALONE_DEPLOY_KEY. Add a read-only deploy key for jeffhuber/code-mower to this repository's Actions secrets."
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${CODE_MOWER_STANDALONE_DEPLOY_KEY}" > ~/.ssh/code_mower_standalone
+          chmod 600 ~/.ssh/code_mower_standalone
+          ssh-keyscan github.com > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<'EOF'
+          Host github.com
+            IdentityFile ~/.ssh/code_mower_standalone
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Run standalone wrapper shadow proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .code-mower
+          tools/code_mower --version
+          tools/code_mower doctor --easy --json | tee .code-mower/standalone-doctor.json
+          tools/code_mower migration wrapper-rehearsal \
+            --repo-path "$GITHUB_WORKSPACE" \
+            --local-command "env CODE_MOWER_USE_LOCAL=1 tools/code_mower" \
+            --package-command "tools/code_mower" \
+            --timeout 120 \
+            --json | tee .code-mower/standalone-wrapper-rehearsal.json
+
+      - name: Upload shadow proof artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: code-mower-standalone-shadow
+          path: |
+            .code-mower/standalone-doctor.json
+            .code-mower/standalone-wrapper-rehearsal.json
+          if-no-files-found: ignore
+          retention-days: 7
+""".strip() + "\n"
     workflow_name = Path(target).stem.replace("-", " ").title()
     return "\n".join(
         [
@@ -1391,7 +1476,7 @@ def materialize_package_plan(
             content = _render_provider_catalog(provider_catalog)
         elif target == "templates/code-mower.yml.j2":
             content = _config_template_text()
-        elif target.startswith("templates/workflows/"):
+        elif target.startswith("templates/workflows/") or target.startswith("src/code_mower/templates/workflows/"):
             content = _workflow_template_text(target)
         else:
             continue

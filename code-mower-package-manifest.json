@@ -518,6 +518,16 @@
       "target": "templates/workflows/review-clear-stale.yml.j2"
     },
     {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/private-standalone-shadow.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2"
+    },
+    {
       "kind": "config",
       "source": "generated",
       "target": "templates/code-mower.yml.j2"

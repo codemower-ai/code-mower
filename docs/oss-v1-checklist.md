@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.3` of the standalone
+The current public-release baseline is `v0.1.0-alpha.4` of the standalone
 package. It has proved:
 
 - package install and fresh-clone rehearsal;
@@ -25,12 +25,14 @@ package. It has proved:
 - `doctor --easy --probe-runtime` provider probes for configured local CLIs;
 - product-wrapper rehearsal with zero mismatches against the repo-local mirror;
 - pinned standalone consumption from both CubeSnap product repos.
+- private-repo standalone checkout shape through a read-only deploy-key shadow
+  workflow.
 
 It has not yet proved:
 
 - public package installation from PyPI or another package index;
-- private-repo standalone checkout from GitHub Actions without local operator
-  credentials;
+- broad private-repo standalone checkout across arbitrary organizations and
+  token policies;
 - mirror deletion in product repos;
 - a large enough reviewer/lens corpus for new merge gates.
 
@@ -90,6 +92,8 @@ do not spend v1.0 work on non-GitHub workflow rendering.
   Code Mower repo can use unauthenticated HTTPS checkout; a private repo needs a
   documented deploy key, fine-grained PAT, GitHub App token, or package-index
   install path.
+- Ship a read-only deploy-key workflow template for private standalone source
+  checkout while the package remains private.
 
 ### Init
 

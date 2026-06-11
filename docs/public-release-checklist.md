@@ -27,6 +27,10 @@ private to public.
   are ready enough for early OSS users.
 - Initial release tag/version policy is chosen and `code-mower --version`
   reports the package version.
+- Private product repos can prove pinned standalone checkout in GitHub Actions
+  with either a read-only `CODE_MOWER_STANDALONE_DEPLOY_KEY` deploy key, a
+  documented fine-grained token/GitHub App path, or a public/package-index
+  source that needs no private checkout credential.
 
 ## Alpha Release Gate
 

@@ -1,5 +1,6 @@
 recursive-include src/code_mower/templates *.yml *.yaml *.json
 recursive-include src/code_mower/templates *.md
+recursive-include src/code_mower/templates *.j2
 recursive-include templates *.j2 *.json *.md *.yml *.yaml
 include requirements/*.txt
 include LICENSE

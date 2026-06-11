@@ -68,6 +68,25 @@ Local LLM lanes still send selected source context to the configured endpoint.
 That endpoint may be local, private, or hosted; the repo owner owns that trust
 decision.
 
+## Private Standalone Package Checkout
+
+When product repositories still consume a private standalone Code Mower source
+repo, GitHub Actions needs an explicit read credential. The recommended v1.0
+proof path is a read-only deploy key:
+
+1. Generate an Ed25519 SSH keypair dedicated to Code Mower package checkout.
+2. Add the public key as a read-only deploy key on the standalone
+   `code-mower` repository.
+3. Add the private key to each product repository as the Actions secret
+   `CODE_MOWER_STANDALONE_DEPLOY_KEY`.
+4. Use the `Code Mower standalone shadow` workflow to fetch the pinned
+   standalone commit over SSH, run `doctor --easy`, and run
+   `migration wrapper-rehearsal` against the repo-local mirror.
+
+This proves private-repo checkout without giving the product repository a broad
+personal token. The deploy key can be deleted once Code Mower is public or
+published through a package index.
+
 ## Token And Secret Model
 
 The built-in `GITHUB_TOKEN` is enough for some workflows, but not all repos.
