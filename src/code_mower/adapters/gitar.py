@@ -82,6 +82,18 @@ class GitarAdapter(SaaSReviewerAdapter):
         return "issue_comment"
 
     @property
+    def opt_in_required(self) -> bool:
+        return True
+
+    @property
+    def opt_in_label_names(self) -> frozenset[str]:
+        return frozenset({self.needs_label, self.done_label, self.blocked_label})
+
+    @property
+    def opt_in_label_prefixes(self) -> frozenset[str]:
+        return frozenset({"gitar-audit-"})
+
+    @property
     def token_env_vars(self) -> tuple[str, ...]:
         return ("GITAR_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN")
 

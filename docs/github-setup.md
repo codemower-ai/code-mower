@@ -114,6 +114,22 @@ If Actions are account-blocked during a migration, local validation plus clean
 audits can establish code quality, but the repo owner should still repair
 Actions before restoring unattended merge flow.
 
+## Private Repo Cost Controls
+
+Private repositories consume GitHub Actions minutes for started jobs. Code
+Mower should therefore keep metadata workflows cheap:
+
+- avoid recurring cron sweeps for hosted or informational lanes
+- prefer explicit labels, trusted comments, or manual `workflow_dispatch`
+- add job-level `if:` guards to every `issue_comment` labeler before checkout
+- require informational SaaS lanes to opt in with an existing lane label
+- keep branch-protection merge gates limited to promoted structured audit lanes
+
+The reference Devin bridge is event-driven plus manual dispatch only. The
+Gitar, Qodo, and Cursor BugBot labelers are passive: they do not trigger the
+hosted reviewer, and they skip unrelated issue comments before checking out
+code.
+
 ## Branch Protection And Merge Authority
 
 Code Mower should not assume it can merge. A repository should make merge

@@ -31,7 +31,7 @@ Everything else is opt-in until calibrated on the user's codebase.
 | `codex` | Codex CLI | Code Mower label/wrapper | included/provider account | local checkout plus GitHub token | merge-gating eligible |
 | `claude_audit` | Claude Code | Code Mower label/wrapper | included/provider account | local checkout plus GitHub token | merge-gating eligible |
 | `claude_review` | Claude Code/manual | human request | none | local/user context | advisory only |
-| `gitar` | Gitar | GitHub event/comment | included/provider plan | GitHub App enabled for repo | informational |
+| `gitar` | Gitar | GitHub event/comment after opt-in label | included/provider plan | GitHub App enabled for repo | informational |
 | `greptile` | Greptile | GitHub review/check | paid | GitHub App enabled for repo | informational |
 | `qodo` | Qodo | manual opt-in comment/event | paid | GitHub App enabled for repo | informational |
 | `cursor_bugbot` | Cursor BugBot | `bugbot run` or `@cursor review` | paid/Cursor usage | Cursor GitHub App and BugBot repo enablement | informational |
@@ -67,6 +67,19 @@ Skipping Bugbot: Bugbot is disabled for this repository.
 That proves GitHub comments and Cursor's bot response path work, but it does
 not prove the repo is enabled for BugBot reviews. Capture real enabled-output
 examples before promoting the adapter beyond setup diagnostics.
+
+## Private Repo Actions Cost Policy
+
+Private GitHub repos can spend Actions minutes even on small metadata
+workflows. The v1.0 posture is:
+
+- no recurring cron for optional hosted reviewers
+- issue-comment labelers must have job-level prefilters before checkout
+- paid/manual lanes require an explicit lane label or manual trigger
+- informational lanes must not be branch-protection requirements
+- external apps may still spend provider credits or post comments according to
+  their dashboards, but Code Mower should not spend Actions minutes parsing
+  them unless the PR opted into that lane
 
 ## Promotion Policy
 

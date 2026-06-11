@@ -156,6 +156,34 @@ def fetch_pull_request_reviews(
     )
 
 
+def fetch_issue_comments(
+    repo: str,
+    issue_number: int,
+    *,
+    tokens: Sequence[GitHubToken],
+    page_cap: int,
+) -> list[dict[str, Any]]:
+    """Fetch issue/PR comments with a safety cap."""
+    all_comments: list[dict[str, Any]] = []
+    page = 1
+    while page <= page_cap:
+        chunk = github_request_with_fallback(
+            "GET",
+            f"/repos/{repo}/issues/{issue_number}/comments?per_page=100&page={page}",
+            tokens=tokens,
+        ) or []
+        if not chunk:
+            return all_comments
+        all_comments.extend(chunk)
+        if len(chunk) < 100:
+            return all_comments
+        page += 1
+    raise ReviewCommentsTruncated(
+        f"hit pagination cap of {page_cap} pages ({page_cap * 100} comments) "
+        f"for {repo}#{issue_number}; refusing to classify on partial data"
+    )
+
+
 def has_same_head_review(
     reviews: list[dict[str, Any]],
     *,
@@ -499,6 +527,8 @@ def _event_pr_number(
 
 def _github_event_type(adapter: SaaSReviewerAdapter) -> str:
     raw_event_type = os.environ.get("GITHUB_EVENT_NAME") or ""
+    if raw_event_type == "issues" and adapter.event_type == "issue_comment":
+        return "issues"
     if raw_event_type in adapter.supported_event_types:
         return raw_event_type
     return adapter.event_type
@@ -702,6 +732,56 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if "pull_request" in issue and adapter.is_review_author(author):
             pr_current = fetch_pull_request(repo, pr_number, tokens=tokens)
             pr_labels = [label.get("name", "") for label in pr_current.get("labels") or []]
+    elif event_type == "issues" and pr_number and adapter.event_type == "issue_comment":
+        if event.get("action") != "labeled":
+            print(f"skip: unsupported issues action: {event.get('action')}")
+            return 0
+        issue = event.get("issue") or {}
+        if "pull_request" not in issue:
+            print("skip: label is on an issue, not a pull request")
+            return 0
+        label_name = str((event.get("label") or {}).get("name") or "")
+        if not adapter.is_opted_in([label_name]):
+            print(
+                f"skip: label `{label_name}` is not an opt-in "
+                f"{adapter.label_prefix} label"
+            )
+            return 0
+        pr_current = fetch_pull_request(repo, pr_number, tokens=tokens)
+        pr_labels = [label.get("name", "") for label in pr_current.get("labels") or []]
+        if adapter.opt_in_required and not adapter.is_opted_in(pr_labels):
+            print(f"skip: PR does not carry an opt-in {adapter.label_prefix} label")
+            return 0
+        try:
+            comments = fetch_issue_comments(
+                repo,
+                pr_number,
+                tokens=tokens,
+                page_cap=adapter.review_comments_page_cap,
+            )
+        except (GitHubRequestError, ReviewCommentsTruncated) as exc:
+            print(f"skip: could not fetch issue comments: {exc}")
+            return 0
+        for comment in reversed(comments):
+            synthetic_event = {
+                "action": "created",
+                "issue": issue,
+                "comment": comment,
+            }
+            decision, reason = resolve_label_decision(
+                synthetic_event,
+                adapter=adapter,
+                event_type=adapter.event_type,
+                pr_number=pr_number,
+                pr_labels=pr_labels,
+                current_head_sha=current_head_sha,
+            )
+            if decision is None:
+                continue
+            _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name)
+            return 0
+        print("skip: no existing issue comment produced a label update")
+        return 0
 
     decision, reason = resolve_label_decision(
         event,
