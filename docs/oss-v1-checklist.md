@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.18` of the standalone
+The current public-release baseline is `v0.1.0-alpha.19` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -55,6 +55,11 @@ package. It has proved:
   handling, and shell-safe GitHub comment helpers.
 - bounded Claude doctor probes that pin a cheap model/budget sentinel instead
   of relying on the local Claude CLI's default model selection.
+- private reference-repo generated-support pilot feedback from alpha.18,
+  including non-fatal
+  missing absolute Python candidates and hash-suffixed ref-scoped default
+  standalone checkout/venv directories so concurrent invocations do not mutate
+  one another's editable source checkout or console-script install.
 
 It has not yet proved:
 

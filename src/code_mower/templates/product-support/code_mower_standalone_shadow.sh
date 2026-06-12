@@ -26,7 +26,7 @@ if [ -n "${override_source_dir}" ]; then
 fi
 
 repo_url="${CODE_MOWER_STANDALONE_REPO_URL:-https://github.com/OWNER/code-mower.git}"
-source_dir="${CODE_MOWER_STANDALONE_SOURCE_DIR:-${repo_root}/.code-mower/standalone/code-mower}"
+source_dir="${CODE_MOWER_STANDALONE_SOURCE_DIR:-}"
 checkout_lock_acquired=0
 checkout_lock_dir=""
 
@@ -76,6 +76,22 @@ acquire_checkout_lock() {
   printf '%s\n' "$$" > "${checkout_lock_dir}/pid"
 }
 
+hash_ref_name() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -d ' ' -f1
+    return
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | cut -d ' ' -f1
+    return
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    printf '%s' "$1" | openssl dgst -sha256 -r | cut -d ' ' -f1
+    return
+  fi
+  printf '%s' "$1" | cksum | cut -d ' ' -f1
+}
+
 if [ -n "${CODE_MOWER_STANDALONE_COMMAND:-}" ]; then
   exec "${script_dir}/code_mower" "$@"
 fi
@@ -96,6 +112,14 @@ if [ -z "${CODE_MOWER_STANDALONE_PATH:-}" ]; then
     echo "error: replace the placeholder Code Mower standalone repository URL and ref before using standalone shadow mode." >&2
     echo "Update ${pin_file}, or set CODE_MOWER_STANDALONE_REPO_URL and CODE_MOWER_STANDALONE_REF explicitly." >&2
     exit 1
+  fi
+  if [ -z "${source_dir}" ]; then
+    ref_slug="$(printf '%s' "${ref}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-48)"
+    ref_hash="$(hash_ref_name "${ref}" | cut -c1-12)"
+    source_dir="${repo_root}/.code-mower/standalone/code-mower-${ref_slug}-${ref_hash}"
+    if [ -z "${CODE_MOWER_STANDALONE_VENV:-}" ]; then
+      export CODE_MOWER_STANDALONE_VENV="${repo_root}/.code-mower/standalone-venvs/code-mower-${ref_slug}-${ref_hash}"
+    fi
   fi
   acquire_checkout_lock
   if [ ! -d "${source_dir}/.git" ]; then

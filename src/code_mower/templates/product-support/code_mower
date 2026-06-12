@@ -13,7 +13,12 @@ python_is_supported() {
 
 resolve_python_candidate() {
   case "$1" in
-    */*) [ -x "$1" ] && printf '%s\n' "$1" ;;
+    */*)
+      if [ -x "$1" ]; then
+        printf '%s\n' "$1"
+      fi
+      return 0
+      ;;
     *) command -v "$1" 2>/dev/null || true ;;
   esac
 }
@@ -134,6 +139,7 @@ if [ -n "${CODE_MOWER_STANDALONE_PATH:-}" ]; then
     *) venv_dir="${repo_root}/${venv_dir}" ;;
   esac
   allowed_standalone_venv="${repo_root}/.code-mower-standalone-venv"
+  allowed_managed_venv_root="${repo_root}/.code-mower/standalone-venvs"
   venv_parent="$(dirname -- "${venv_dir}")"
   venv_name="$(basename -- "${venv_dir}")"
   if [ -d "${venv_parent}" ]; then
@@ -154,11 +160,11 @@ if [ -n "${CODE_MOWER_STANDALONE_PATH:-}" ]; then
     if [ ! -x "${venv_dir}/bin/code-mower" ] || [ "${installed_path}" != "${standalone_path}" ] || [ "${CODE_MOWER_STANDALONE_REINSTALL:-}" = "1" ]; then
       if [ -d "${venv_dir}" ] && [ "${CODE_MOWER_STANDALONE_REINSTALL:-}" = "1" ]; then
         case "${venv_dir}" in
-          "${allowed_standalone_venv}"|"${allowed_standalone_venv}"/*) rm -rf "${venv_dir}" ;;
+          "${allowed_standalone_venv}"|"${allowed_standalone_venv}"/*|"${allowed_managed_venv_root}"/*) rm -rf "${venv_dir}" ;;
           *)
             if [ ! -x "${venv_dir}/bin/python" ]; then
               echo "error: refusing to recreate unsafe custom standalone venv without an existing Python: ${venv_dir}" >&2
-              echo "Choose a venv under ${allowed_standalone_venv}, or remove/recreate the custom venv yourself." >&2
+              echo "Choose a venv under ${allowed_standalone_venv} or ${allowed_managed_venv_root}, or remove/recreate the custom venv yourself." >&2
               exit 1
             fi
             ;;

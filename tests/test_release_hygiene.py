@@ -25,8 +25,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_18(self) -> None:
-        self.assertEqual(__version__, "0.1.0a18")
+    def test_version_is_alpha_19(self) -> None:
+        self.assertEqual(__version__, "0.1.0a19")
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
@@ -340,6 +340,61 @@ def main():
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertIn("fake-code-mower providers list", second.stdout)
             self.assertNotIn("refusing to recreate unsafe standalone venv", second.stderr)
+
+    def test_wrapper_ignores_missing_absolute_python_candidates(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        plan = code_mower_init.render_init_plan(
+            code_mower_config.load_config(config_path),
+            package_mode=True,
+            package_command="code-mower",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+            missing_python = Path(tmp) / "definitely-missing-python"
+            completed = subprocess.run(
+                [str(output_dir / "tools/code_mower"), "providers", "list"],
+                cwd=output_dir,
+                env={
+                    "PATH": os.environ.get("PATH", os.defpath),
+                    "HOME": os.environ.get("HOME", ""),
+                    "CODE_MOWER_BOOTSTRAP_PYTHON_CANDIDATES": (
+                        f"{missing_python} {sys.executable}"
+                    ),
+                    "CODE_MOWER_USE_LOCAL": "1",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn(
+                "repo-local Code Mower mirror is unavailable",
+                completed.stderr,
+            )
+
+    def test_shadow_default_checkout_directory_is_ref_scoped(self) -> None:
+        text = (
+            ROOT
+            / "src/code_mower/templates/product-support/code_mower_standalone_shadow.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ref_slug=", text)
+        self.assertIn("cut -c1-48", text)
+        self.assertIn("hash_ref_name()", text)
+        self.assertIn("sha256sum", text)
+        self.assertIn("shasum -a 256", text)
+        self.assertIn("openssl dgst -sha256", text)
+        self.assertIn('ref_hash="$(hash_ref_name "${ref}" | cut -c1-12)"', text)
+        self.assertIn('code-mower-${ref_slug}-${ref_hash}', text)
+        self.assertIn("CODE_MOWER_STANDALONE_VENV", text)
+        self.assertIn("standalone-venvs/code-mower-${ref_slug}-${ref_hash}", text)
+        self.assertIn('CODE_MOWER_STANDALONE_SOURCE_DIR:-}', text)
+        wrapper_text = (
+            ROOT / "src/code_mower/templates/product-support/code_mower"
+        ).read_text(encoding="utf-8")
+        self.assertIn('allowed_managed_venv_root="${repo_root}/.code-mower/standalone-venvs"', wrapper_text)
+        self.assertIn('"${allowed_managed_venv_root}"/*', wrapper_text)
 
     def test_command_redaction_masks_secret_arguments(self) -> None:
         command = [

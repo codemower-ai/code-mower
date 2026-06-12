@@ -93,7 +93,7 @@ The expected migration order is:
 6. pinned standalone release becomes the default
 7. mirrored implementation files are removed from product repos
 
-As of `v0.1.0-alpha.18`, the private reference/product repos have proved the
+As of `v0.1.0-alpha.19`, the private reference/product repos have proved the
 standalone checkout path, the standalone-default wrapper path, and the
 mirror-removal path. Their product wrappers prefer the pinned standalone
 command, workflows call `tools/code_mower` entrypoints, and mirrored
@@ -107,6 +107,18 @@ support files (`tools/code_mower`, `tools/code_mower_standalone_shadow.sh`,
 `tools/safe_gh_comment.py`), but fixes to checkout locking, Python selection,
 deleted-mirror handling, token handling, or shell-safe commenting belong in the
 package templates first and are then regenerated into product repos.
+
+`v0.1.0-alpha.19` also makes the default managed checkout directory ref-scoped
+with a bounded readable slug plus a short hash of the full ref so sanitized names
+cannot collide or exceed normal filesystem component limits. That lets the
+shadow wrapper release its checkout lock before the delegated command runs
+without allowing a second process on a different ref to mutate the first
+process's editable source checkout. The managed venv path is ref-scoped and
+hash-suffixed alongside that checkout so one ref cannot reinstall the shared
+console script while another ref is about to execute it. Teams that override
+`CODE_MOWER_STANDALONE_SOURCE_DIR` or `CODE_MOWER_STANDALONE_VENV` are
+responsible for keeping those custom paths isolated per ref if they run
+concurrent refs.
 
 That does not make mirror deletion automatic for every user repo. The migration
 contract remains one repo at a time:
