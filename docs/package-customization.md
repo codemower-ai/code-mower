@@ -353,7 +353,7 @@ This keeps token handling and existing operator commands in the product repo
 while moving reviewer implementation ownership into the package.
 
 By default, verdict artifacts live under
-`~/.cache/cube-agent-audits/verdicts/`. Use
+`~/.cache/code-mower-audits/verdicts/`. Use
 `CODE_MOWER_VERDICT_ARTIFACT_DIR` in CI or package installs when that cache
 should be pinned to a workspace-owned state directory.
 

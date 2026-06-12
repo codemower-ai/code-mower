@@ -19,12 +19,12 @@ Standalone command + Python module. Reviews ONE PR end-to-end:
 CLI usage:
 
     GITHUB_TOKEN=... python3 tools/local_llm_audit_pr.py \
-        --repo jeffhuber/cube-snap --pr 142
+        --repo owner/repo --pr 142
 
 Module usage (called by `local_llm_audit_bridge.py`):
 
     from tools.local_llm_audit_pr import AuditConfig, audit_pr
-    result = audit_pr(config, "jeffhuber/cube-snap", 142)
+    result = audit_pr(config, "owner/repo", 142)
     # result.posted_comment_url, result.verdict, result.trailer
 
 Exit codes (CLI mode):
@@ -796,7 +796,7 @@ def review_one_file(
                 print(f"  json-retry {path} attempt={attempt}", file=sys.stderr, flush=True)
         try:
             # 2048 tokens is empirically enough for the verbose-concerns case on
-            # files up to ~15K chars (observed on cube-snap#142 per-file passes;
+            # files up to ~15K chars (observed on reference-app#142 per-file passes;
             # 1024 was hitting length truncation mid-JSON, which previously
             # silently became PASS — now becomes a parse-failure BLOCKER per
             # Codex's #231 review).
@@ -1160,7 +1160,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Local LLM audit CLI — review a single pull request.",
     )
-    ap.add_argument("--repo", required=True, help="owner/repo, e.g. jeffhuber/cube-snap")
+    ap.add_argument("--repo", required=True, help="owner/repo, e.g. owner/repo")
     ap.add_argument("--pr", type=int, required=True, help="PR number")
     ap.add_argument(
         "--profile",

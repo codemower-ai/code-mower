@@ -8,8 +8,8 @@ without depending on chat memory.
 
 Default storage lives outside the repo to avoid dirty worktrees:
 
-    ~/.cache/cube-agent-audits/events.jsonl
-    ~/.cache/cube-agent-audits/locks/*.json
+    ~/.cache/code-mower-audits/events.jsonl
+    ~/.cache/code-mower-audits/locks/*.json
 
 Set AUDIT_HANDOFF_LOG_DIR to override the directory in tests or local
 experiments.
@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - Python 3.8+ in normal use
     ZoneInfo = None  # type: ignore[assignment]
 
 
-DEFAULT_DIR = Path("~/.cache/cube-agent-audits").expanduser()
+DEFAULT_DIR = Path("~/.cache/code-mower-audits").expanduser()
 EVENTS_FILE = "events.jsonl"
 LOCKS_DIR = "locks"
 ACTIVE_EXIT_CODE = 20
@@ -43,10 +43,10 @@ def audit_dir() -> Path:
 
 
 def now_record() -> Dict[str, str]:
-    # Microsecond precision on `utc` (cube-snap#TBD / ctvd#TBD).
+    # Microsecond precision on `utc` (reference-app#TBD / reference-service#TBD).
     # Previously second-precision, which was sufficient for human-
     # readable display but caused a same-second race in the sweep-hook
-    # cross-check (cube-snap#204 P3, fixed via array-index ordering).
+    # cross-check (reference-app#204 P3, fixed via array-index ordering).
     # The display field (`pt`) stays at second precision because the
     # session-start sweep header renders it directly to the operator,
     # and microseconds add noise without value at that surface.

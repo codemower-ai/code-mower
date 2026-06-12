@@ -624,7 +624,7 @@
     }
   ],
   "mode": "materialize",
-  "output_dir": "/private/tmp/code-mower-standalone",
+  "output_dir": "<generated-output-dir>",
   "package": {
     "console_script": "code-mower=code_mower.cli:main",
     "module": "code_mower",

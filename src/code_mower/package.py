@@ -1052,7 +1052,7 @@ CLI_COMMANDS = (
     "code-mower blind-review artifacts blind-review-manifest.json --write --require-sources --json",
     "code-mower providers list",
     "code-mower providers show <provider>",
-    "code-mower telemetry summarize ~/.cache/cube-agent-audits/events.jsonl --json",
+    "code-mower telemetry summarize ~/.cache/code-mower-audits/events.jsonl --json",
     "code-mower cloud export --report reviewer-metrics=reviewer-metrics.json --report value-report=reviewer-value-report.md --output-dir .code-mower/cloud-benchmark-bundle --json",
     "python scripts/smoke_easy_mode.py --json",
     "python scripts/fresh_clone_rehearsal.py --json",

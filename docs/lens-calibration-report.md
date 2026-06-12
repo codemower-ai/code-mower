@@ -9,12 +9,12 @@ useful findings without adding noise.
 
 The starter corpus now includes 18 real PR outcomes:
 
-- 14 existing Code Mower and CubeSnap calibration items.
+- 14 existing Code Mower and reference product calibration items.
 - 4 known-clean prompt-lens calibration controls:
-  - `jeffhuber/cube-two-view-debugger#479` at `e0c909068dc59891f8711fbfadd1de56c6fd7e81`
-  - `jeffhuber/cube-snap#377` at `ebc0a99d36d4974e72fc15a6bdb79972903ba5c1`
-  - `jeffhuber/cube-two-view-debugger#481` at `a80c6c45d4fd33f7e35ffe65fb116299f8c701f4`
-  - `jeffhuber/cube-snap#380` at `c45ce1c00c37a97a44fc35f0efeaf32a4fad9393`
+  - `owner/other-repo#479` at `e0c909068dc59891f8711fbfadd1de56c6fd7e81`
+  - `owner/repo#377` at `ebc0a99d36d4974e72fc15a6bdb79972903ba5c1`
+  - `owner/other-repo#481` at `a80c6c45d4fd33f7e35ffe65fb116299f8c701f4`
+  - `owner/repo#380` at `c45ce1c00c37a97a44fc35f0efeaf32a4fad9393`
 
 The first two PRs added the `generic-programming`, `context-driven-quality`,
 `security-threat-model`, and `operability` lenses, mirrored package coverage,
@@ -145,10 +145,10 @@ without mixing live PR state into the measurement.
 After `v0.1.0-alpha.3`, a bounded smoke run tested the Gemini doctrine fan-out
 against one known-clean control and one known-blocked historical PR:
 
-- `jeffhuber/cube-two-view-debugger#455`
+- `owner/other-repo#455`
   (`363d054881863d45eee13e6dc6d076cec667f9b6`), known clean after prior
   reviewer approvals and post-merge verification.
-- `jeffhuber/cube-snap#347`
+- `owner/repo#347`
   (`0683a90fb349a16a698d92f982b8f1abfab2398b`), known blocked by auth/history
   defects.
 
@@ -171,10 +171,10 @@ durable corpus with adjudicated dispositions and more controls.
 The first real fan-out ran `gemini-base-audit`,
 `gemini-security-threat-model`, and `gemini-operability` against:
 
-- `jeffhuber/cube-snap#347`
+- `owner/repo#347`
   (`0683a90fb349a16a698d92f982b8f1abfab2398b`), a known-blocked auth/history
   PR with three expected findings.
-- `jeffhuber/cube-snap#377`
+- `owner/repo#377`
   (`ebc0a99d36d4974e72fc15a6bdb79972903ba5c1`), a known-clean prompt-lens
   control.
 
@@ -203,14 +203,14 @@ promotion.
 
 The next real fan-out added two clean controls:
 
-- `jeffhuber/cube-two-view-debugger#481`
+- `owner/other-repo#481`
   (`a80c6c45d4fd33f7e35ffe65fb116299f8c701f4`)
-- `jeffhuber/cube-snap#380`
+- `owner/repo#380`
   (`c45ce1c00c37a97a44fc35f0efeaf32a4fad9393`)
 
 Results:
 
-| Reviewer | CTVD #481 | cube-snap #380 | Decision |
+| Reviewer | reference service #481 | reference-app #380 | Decision |
 | --- | --- | --- | --- |
 | `gemini-cli` | pass | pass | Strongest new selective-trigger candidate, especially for auth/history or high-risk diffs. |
 | `gemini-base-audit` | pass | pass | Eligible as an explicit fan-out baseline, not a general gate. |
@@ -229,7 +229,7 @@ until reliability and precision improve.
 
 The next same-model doctrine fan-out ran `gemini-base-audit`,
 `gemini-generic-programming`, and `gemini-context-driven-quality` against the
-same `cube-snap#347` known-blocked auth/history PR and the same `cube-snap#377`
+same `reference-app#347` known-blocked auth/history PR and the same `reference-app#377`
 known-clean prompt-lens control.
 
 The first attempt exposed useful runner evidence: the repo-default `python3`
@@ -259,14 +259,14 @@ doctrine lenses.
 The next focused doctrine proof expanded the matrix to 24 runs:
 
 - 2 known-blocked PRs:
-  - `jeffhuber/cube-snap#347`
+  - `owner/repo#347`
     (`0683a90fb349a16a698d92f982b8f1abfab2398b`)
-  - `jeffhuber/cube-snap#390`
+  - `owner/repo#390`
     (`2f7807300c2fe7118e48ff0c6271d2edba11166b`)
 - 2 known-clean controls:
-  - `jeffhuber/cube-snap#377`
+  - `owner/repo#377`
     (`ebc0a99d36d4974e72fc15a6bdb79972903ba5c1`)
-  - `jeffhuber/cube-snap#380`
+  - `owner/repo#380`
     (`c45ce1c00c37a97a44fc35f0efeaf32a4fad9393`)
 - 2 providers: Claude and Gemini CLI.
 - 3 lenses: base audit, `generic-programming`, and
@@ -314,14 +314,14 @@ The first Hermes doctrine proof used the same four-head shape as the
 Claude/Gemini doctrine proof:
 
 - 2 known-blocked PRs:
-  - `jeffhuber/cube-snap#347`
+  - `owner/repo#347`
     (`0683a90fb349a16a698d92f982b8f1abfab2398b`)
-  - `jeffhuber/cube-snap#390`
+  - `owner/repo#390`
     (`2f7807300c2fe7118e48ff0c6271d2edba11166b`)
 - 2 known-clean controls:
-  - `jeffhuber/cube-snap#377`
+  - `owner/repo#377`
     (`ebc0a99d36d4974e72fc15a6bdb79972903ba5c1`)
-  - `jeffhuber/cube-snap#380`
+  - `owner/repo#380`
     (`c45ce1c00c37a97a44fc35f0efeaf32a4fad9393`)
 - 1 provider: Hermes CLI.
 - 3 lenses: base audit, `generic-programming`, and
@@ -372,13 +372,13 @@ can now:
 - pass the generated context text into Gemini, Antigravity, and Hermes CLI
   prompts with `--context-pack-file`.
 
-A dry-run against the known-blocked `cube-snap#390` head
+A dry-run against the known-blocked `reference-app#390` head
 (`2f7807300c2fe7118e48ff0c6271d2edba11166b`) proved the harness behavior for
 the `ios-solver-runtime` pack:
 
 | Proof item | Result |
 | --- | --- |
-| Corpus item | `jeffhuber/cube-snap#390` |
+| Corpus item | `owner/repo#390` |
 | Arm | `gemini-doctrine-lens-fanout` |
 | Commands planned | 3 |
 | Commands with `--context-pack-file` | 3/3 |
@@ -388,11 +388,13 @@ the `ios-solver-runtime` pack:
 ## Gemini Context-Pack Rerun
 
 The spend-bearing rerun was completed on 2026-06-11 with Gemini auth available.
-It used the same `cube-snap#390` historical head, `gemini-doctrine-lens-fanout`,
+It used the same `reference-app#390` historical head, `gemini-doctrine-lens-fanout`,
 and `ios-solver-runtime` context pack. All three commands received the generated
 context-pack file, returned parseable JSON, and were folded into
-`docs/reviewer-value-report.md`. The compact manifest is tracked at
-`docs/calibration-results/pr390-gemini-context-pack-run-results.json`.
+`docs/reviewer-value-report.md`. Raw command/stdout/stderr artifacts and live
+run manifests stay in `.code-mower/` or another private workspace by default;
+public docs should carry summarized, anonymized results unless the repository
+owner intentionally publishes the underlying corpus.
 
 | Reviewer | Status | Findings | Expected match | Runtime |
 | --- | --- | ---: | ---: | ---: |
@@ -413,7 +415,7 @@ Reproduction command:
 code-mower calibration run tools/calibration_corpus.json \
   --lanes gemini-cli \
   --arms gemini-doctrine-lens-fanout \
-  --repo-path-map jeffhuber/cube-snap#390@2f7807300c2fe7118e48ff0c6271d2edba11166b=/tmp/cube-snap-pr-390 \
+  --repo-path-map owner/repo#390@2f7807300c2fe7118e48ff0c6271d2edba11166b=/tmp/reference-app-pr-390 \
   --context-pack-manifest tools/context_packs.example.json \
   --allow-historical-head \
   --results-dir .code-mower/context-pack-lens-results \

@@ -161,13 +161,13 @@ Current generated value report:
 - Corpus items: 18
 - Adjudicated findings: 70
 - Reviewer runs: 100
-- Clean lens controls: CTVD #479/#481 and cube-snap #377/#380
-- First Gemini risk/ops fan-out: cube-snap #347 known-blocked plus cube-snap
+- Clean lens controls: reference service #479/#481 and reference-app #377/#380
+- First Gemini risk/ops fan-out: reference-app #347 known-blocked plus reference-app
   #377 known-clean control
-- Expanded clean-control fan-out: CTVD #481 and cube-snap #380 through Gemini
+- Expanded clean-control fan-out: reference service #481 and reference-app #380 through Gemini
   CLI, CodeRabbit CLI, Qwen, Gemma, and Gemini base/risk/ops lenses.
-- First Hermes doctrine proof: cube-snap #347 and #390 known-blocked heads plus
-  cube-snap #377 and #380 known-clean controls through Hermes base,
+- First Hermes doctrine proof: reference-app #347 and #390 known-blocked heads plus
+  reference-app #377 and #380 known-clean controls through Hermes base,
   generic-programming, and context-driven-quality lenses.
 
 - `codex-audit`: keep as a structured merge-gating lane where repo policy opts
@@ -202,7 +202,7 @@ Current generated value report:
   auth/history work. It has clean-control evidence and a known-blocked catch,
   but needs more PR classes before routine use.
 - `gemini-security-threat-model`: informational despite useful known-blocked
-  signal, because the expanded CTVD clean-control fan-out produced a parse/setup
+  signal, because the expanded reference service clean-control fan-out produced a parse/setup
   failure. Stabilize reliability before selective triggering.
 - `hermes-cli`: informational and manual. The wrapper can run Hermes Agent
   one-shot with prompt lenses and historical calibration mode. The first

@@ -223,7 +223,7 @@ tools/run_claude_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 
 Artifacts are written before posting under
 `CODE_MOWER_VERDICT_ARTIFACT_DIR` when set, otherwise under
-`~/.cache/cube-agent-audits/verdicts`.
+`~/.cache/code-mower-audits/verdicts`.
 
 Seeded-bug entries should include:
 

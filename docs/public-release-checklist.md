@@ -20,7 +20,7 @@ not know the original reference repos.
 - `README.md` is public-safe, product-oriented, and does not require access to
   private product/reference repositories.
 - Public docs explain repo strategy, commercial boundary, GitHub setup, provider
-  setup, cloud export privacy, and easy-mode first run.
+  setup, cloud export privacy, privacy/threat model, and easy-mode first run.
 - Standalone CI passes from a clean clone.
 - `code-mower init --easy` and `code-mower doctor --easy` work in a fresh toy
   repo.
@@ -29,6 +29,10 @@ not know the original reference repos.
 - `scripts/smoke_easy_mode.py --json` passes in a fresh virtual environment.
 - `scripts/fresh_clone_rehearsal.py --json` passes against the release commit.
 - Secret scans are clean.
+- Privacy scans are clean: no personal paths, private repo slugs, raw auth
+  output, or likely secrets.
+- Live calibration artifacts from proprietary products are either omitted,
+  anonymized, or intentionally published by the repository owner.
 - Generated package manifest contains no private repo paths or private product
   assumptions.
 - Provider matrix identifies which lanes are local, hosted, manual, optional,

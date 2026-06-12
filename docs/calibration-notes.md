@@ -116,8 +116,8 @@ findings.
 Latest bounded lens smoke, 2026-06-11:
 
 - Corpus shape: one known-clean control
-  (`jeffhuber/cube-two-view-debugger#455`) and one known-blocked auth/history
-  control (`jeffhuber/cube-snap#347`).
+  (`owner/other-repo#455`) and one known-blocked auth/history
+  control (`owner/repo#347`).
 - Runner: `gemini-doctrine-lens-fanout` with `base-audit`,
   `generic-programming`, and `context-driven-quality`.
 - Known-clean outcome: all three Gemini doctrine variants passed with zero
@@ -138,7 +138,7 @@ Latest bounded lens smoke, 2026-06-11:
 Latest context-pack lens proof, 2026-06-11:
 
 - Corpus shape: one known-blocked iOS solver performance control
-  (`jeffhuber/cube-snap#390` at
+  (`owner/repo#390` at
   `2f7807300c2fe7118e48ff0c6271d2edba11166b`).
 - Context: `ios-solver-runtime`, 141097 bytes of bounded surrounding files,
   including `CubeJSBridge.swift`.
@@ -352,7 +352,7 @@ severities.
 
 ## First Known-Blocked Auth/History Signal
 
-The first known-blocked auth/history calibration head was cube-snap PR #347 at
+The first known-blocked auth/history calibration head was reference-app PR #347 at
 `0683a90fb349a16a698d92f982b8f1abfab2398b`. Gemini CLI caught the replay
 suppression scope bug. Qwen caught a real solve-history concern but also
 produced several noisy or incorrect blockers. CodeRabbit CLI and Gemma produced
@@ -368,7 +368,7 @@ target.
 
 ## Second Gemini Known-Blocked Refresh
 
-The 2026-06-08 refresh reran Gemini CLI against cube-snap PR #347 and the
+The 2026-06-08 refresh reran Gemini CLI against reference-app PR #347 and the
 known-clean web-debug PR #363 using detached historical worktrees. Gemini again
 blocked #347 and matched one expected finding, while also raising server-side
 storage/quota concerns; it passed #363 with no findings. The run adds another
@@ -377,14 +377,14 @@ a merge gate because the adjudicated finding count is small and latency was
 roughly 81 seconds for the blocked head plus 184 seconds for the clean head.
 
 The follow-up package/customization slice also ran Gemini CLI through
-`calibration run` against CTVD PR #455. It passed a known-clean head in about 41
+`calibration run` against reference service PR #455. It passed a known-clean head in about 41
 seconds with zero findings, adding a fourth clean-control run to the starter
 corpus.
 
 ## Calibration-Policy Package Slice
 
-The 2026-06-08 calibration-policy/package slice added CTVD PR #472 and
-cube-snap PR #368 to the starter corpus. Both final heads were known-clean after
+The 2026-06-08 calibration-policy/package slice added reference service PR #472 and
+reference-app PR #368 to the starter corpus. Both final heads were known-clean after
 Codex caught real intermediate issues: GitHub auth could be treated as valid
 just because `gh` existed, CodeRabbit CLI could receive duplicate `--base-ref`
 arguments, token env variables needed runtime validation under
@@ -397,7 +397,7 @@ content and records only content-free shape diagnostics.
 
 ## Expanded Prompt-Lens Clean Controls
 
-The 2026-06-09 expanded calibration slice added CTVD PR #481 and cube-snap
+The 2026-06-09 expanded calibration slice added reference service PR #481 and reference-app
 PR #380 as known-clean prompt-lens controls. The same heads were run through
 Gemini CLI, CodeRabbit CLI, Qwen, Gemma, and the Gemini base/risk/ops fan-out.
 
@@ -407,8 +407,8 @@ What the slice showed:
   selective-trigger candidate, especially for auth/history and high-risk diffs.
 - Gemini `operability` passed both clean controls and has enough early evidence
   for the next narrow production-readiness trigger experiment.
-- Gemini `security-threat-model` passed the cube-snap clean control but hit a
-  parse/setup failure on the CTVD control, so it stays informational until
+- Gemini `security-threat-model` passed the reference-app clean control but hit a
+  parse/setup failure on the reference service control, so it stays informational until
   reliability improves.
 - CodeRabbit CLI passed after minor suggestions were normalized as non-blocking
   calibration evidence. Keep it informational until it catches known-blocked or

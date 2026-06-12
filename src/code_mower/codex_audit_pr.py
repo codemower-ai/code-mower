@@ -24,7 +24,7 @@ Pipeline per audit:
      prose via `--output-last-message`.
   5. Run generic `codex exec --ignore-user-config --output-schema`
      outside the PR worktree to convert that prose into the wrapper-owned
-     `cubesnap.codexAudit.v1` verdict JSON, then validate it with a
+     `codeMower.codexAudit.v1` verdict JSON, then validate it with a
      stdlib shape checker. Policy: P0/P1/P2 = blocker; P3 = concern
      (non-blocking). This matches how Codex's #233 findings broke down
      empirically.
@@ -37,10 +37,10 @@ Pipeline per audit:
 CLI usage:
 
     CODEX_AUDIT_REPO_PATHS=\\
-      jeffhuber/cube-snap:/path/to/cube-snap,\\
-      jeffhuber/cube-two-view-debugger:/path/to/cube-two-view-debugger \\
+      owner/repo:/path/to/reference-app,\\
+      owner/other-repo:/path/to/reference-service \\
     GITHUB_TOKEN=... \\
-    tools/run_codex_audit_pr.sh --repo jeffhuber/cube-two-view-debugger --pr 233
+    tools/run_codex_audit_pr.sh --repo owner/other-repo --pr 233
 
 Prefer the wrapper over direct `python3 tools/codex_audit_pr.py`: it
 selects a controlled Python interpreter for this script and refuses to
@@ -50,7 +50,7 @@ Module usage (called by `codex_audit_bridge.py` if/when we add a polling
 daemon analogous to local_llm_audit_bridge.py):
 
     from tools.codex_audit_pr import AuditConfig, audit_pr
-    result = audit_pr(config, "jeffhuber/cube-two-view-debugger", 233)
+    result = audit_pr(config, "owner/other-repo", 233)
 
 Exit codes (CLI mode):
     0  comment posted (or dry-run printed)
@@ -98,10 +98,10 @@ else:  # pragma: no cover - exercised after package extraction.
 DEFAULT_CODEX_CLI_PATH = "/Applications/Codex.app/Contents/Resources/codex"
 DEFAULT_CODEX_TIMEOUT = 900  # 15 min; Codex review can take 5-10 min on a large diff
 DEFAULT_BASE_REF = "origin/main"
-DEFAULT_REPOS = "jeffhuber/cube-snap,jeffhuber/cube-two-view-debugger"
+DEFAULT_REPOS = "owner/repo,owner/other-repo"
 DEFAULT_IGNORE_USER_CONFIG = True
 DEFAULT_DIFF_DIAGNOSTIC_BUDGET_BYTES = 600_000
-CODEX_AUDIT_SCHEMA_ID = "cubesnap.codexAudit.v1"
+CODEX_AUDIT_SCHEMA_ID = "codeMower.codexAudit.v1"
 CODEX_AUDIT_VERDICT_SCHEMA_PATH = (
     Path(__file__).resolve().with_name("codex_audit_verdict.schema.json")
 )
@@ -316,7 +316,7 @@ def _verdict_artifact_root() -> Path:
     configured = os.environ.get(VERDICT_ARTIFACT_DIR_ENV, "").strip()
     if configured:
         return Path(configured).expanduser()
-    return Path.home() / ".cache" / "cube-agent-audits" / "verdicts"
+    return Path.home() / ".cache" / "code-mower-audits" / "verdicts"
 
 
 def write_audit_verdict_artifact(
@@ -619,7 +619,7 @@ def load_structured_codex_verdict(path: Path) -> CodexVerdict:
 
 
 DEFAULT_CLI_FAILURE_DIR = (
-    Path.home() / ".cache" / "cube-agent-audits" / "cli-failures"
+    Path.home() / ".cache" / "code-mower-audits" / "cli-failures"
 )
 
 
@@ -655,7 +655,7 @@ def dump_cli_failure(
     via `os.open(..., mode=0o600)` rather than `write_text()` +
     `chmod()` so there's no TOCTOU window where the file briefly
     exists with the umask perms before being restricted. (Codex P2
-    audit on cube-snap#196 5e97011.)
+    audit on reference-app#196 5e97011.)
 
     Symlink / pre-existing-path safety: open uses `O_EXCL | O_NOFOLLOW`
     in addition to `O_CREAT`, so a PR-controlled subprocess that
@@ -668,13 +668,13 @@ def dump_cli_failure(
     to writing potentially-credential-laden content into an attacker-
     controlled path. The timestamp includes microseconds to make
     natural collisions vanishingly rare. (Codex P2 audit on
-    cube-snap#196 17b4156.)
+    reference-app#196 17b4156.)
 
     Returns the dump path on success, or None if the dump failed
     (best-effort; we never want this helper to interrupt an audit).
 
     `base_dir` is parameterized for tests; defaults to
-    `DEFAULT_CLI_FAILURE_DIR` (`~/.cache/cube-agent-audits/cli-failures/`).
+    `DEFAULT_CLI_FAILURE_DIR` (`~/.cache/code-mower-audits/cli-failures/`).
     """
     try:
         if base_dir is None:
@@ -698,7 +698,7 @@ def dump_cli_failure(
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
         path = base_dir / f"{owner_name}_pr{pr_number}_{short_sha}_{ts}.log"
 
-        # Codex P3 audit on cube-snap#196 / ctvd#358 0eff691/9cd9213:
+        # Codex P3 audit on reference-app#196 / reference-service#358 0eff691/9cd9213:
         # `len(str)` counts Python characters, not UTF-8 bytes. The
         # CLI output frequently contains non-ASCII (em-dashes, smart
         # quotes, etc.), so a char-count header on a multi-byte body
@@ -941,7 +941,7 @@ def _discover_venv(local_repo: Path) -> Optional[Path]:
     Used by `audit_pr()` when `config.venv_path` is unset and
     `config.disable_venv` is False, so most repos get the right
     Python without any explicit configuration. Repos without a venv
-    (e.g. cube-snap, which uses npm/vitest for tests) get a no-op.
+    (e.g. reference-app, which uses npm/vitest for tests) get a no-op.
 
     The returned path is `resolve()`d so the subprocess (which runs
     with `cwd=worktree_path`) can still find `bin/python` when the
@@ -985,7 +985,7 @@ def _build_subprocess_env(venv_path: Optional[Path]) -> Dict[str, str]:
     # GITHUB_TOKEN / GH_TOKEN in this script's parent env are used for
     # GitHub API calls from THIS process (PR fetch, comment post). They
     # must not leak into the codex subprocess where the PR code runs.
-    # Caught by Codex P1 audit on cube-snap#194 / cube-two-view-debugger#354:
+    # Caught by Codex P1 audit on reference-app#194 / reference-service#354:
     # `gh auth token` fallback in the wrapper made every audit caller a
     # potential exposure, but the same issue applied to manually-exported
     # tokens before that. This sanitization closes both paths.
@@ -1496,7 +1496,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 # script exiting non-zero when posting fails so its
                 # finish_lock trap can log status="failed" instead of
                 # "completed". A silent catch would re-create the
-                # cube-snap#184 silent-failure mode where three audit
+                # reference-app#184 silent-failure mode where three audit
                 # runs reported exitCode=0 but never posted a GitHub
                 # comment. See run_codex_audit_pr.sh's finish_lock
                 # comment for the wrapper-side history and the memory
@@ -1673,7 +1673,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Codex audit CLI — review a single pull request.",
     )
-    ap.add_argument("--repo", help="owner/repo, e.g. jeffhuber/cube-snap")
+    ap.add_argument("--repo", help="owner/repo, e.g. owner/repo")
     ap.add_argument("--pr", type=int, help="PR number")
     ap.add_argument(
         "--repost-verdict-artifact",

@@ -113,3 +113,6 @@ Every non-default lane must say:
 - what secret or app access it needs
 - whether it can affect merge readiness
 - how to turn it off
+
+See `docs/privacy-threat-model.md` for the data minimization and cloud export
+rules that apply across providers.

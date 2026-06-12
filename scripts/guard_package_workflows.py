@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MUTABLE_ACTION_RE = re.compile(r"uses:\s+actions/[^@\s]+@v\d")
+HARDCODED_SSH_GITHUB_RE = re.compile(r"git@github\.com:[^{}\s]+")
 PRIVATE_SHADOW_TARGETS = (
     "templates/workflows/private-standalone-shadow.yml.j2",
     "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2",
@@ -37,16 +38,16 @@ def main() -> int:
         text = (ROOT / rel_path).read_text(encoding="utf-8")
         if "code_mower_standalone_repo_url" not in text:
             errors.append(f"{rel_path}: missing code_mower_standalone_repo_url placeholder")
-        if "git@github.com:jeffhuber/code-mower.git" in text:
-            errors.append(f"{rel_path}: hard-codes author private repository URL")
+        if HARDCODED_SSH_GITHUB_RE.search(text):
+            errors.append(f"{rel_path}: hard-codes a private SSH GitHub repository URL")
         if "{% raw %}${{ secrets.CODE_MOWER_STANDALONE_DEPLOY_KEY }}{% endraw %}" not in text:
             errors.append(f"{rel_path}: GitHub secret expression is not Jinja-raw protected")
 
     package_text = (ROOT / "src/code_mower/package.py").read_text(encoding="utf-8")
     if "code_mower_standalone_repo_url" not in package_text:
         errors.append("src/code_mower/package.py: generated private shadow template is not parameterized")
-    if "git@github.com:jeffhuber/code-mower.git" in package_text:
-        errors.append("src/code_mower/package.py: hard-codes author private repository URL")
+    if HARDCODED_SSH_GITHUB_RE.search(package_text):
+        errors.append("src/code_mower/package.py: hard-codes a private SSH GitHub repository URL")
 
     if errors:
         print("package workflow guard failed:", file=sys.stderr)
