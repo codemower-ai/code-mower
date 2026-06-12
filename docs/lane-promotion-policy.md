@@ -39,6 +39,33 @@ reviewer sees the same intended diff.
 When a corpus item includes `review_class` and `context_packs`, the generated
 policy report can recommend a narrow selective trigger instead of treating the
 lane as a general merge gate.
+When a corpus item includes `truth.expectation`, value reports use that
+first-class ground truth instead of inferring truth from `source` naming
+conventions. Prefer:
+
+```json
+{
+  "truth": {
+    "expectation": "known_clean"
+  }
+}
+```
+
+or:
+
+```json
+{
+  "truth": {
+    "expectation": "known_blocked",
+    "expected_themes": ["runtime packaging"]
+  }
+}
+```
+
+Use `reviewer_run_dispositions` to adjudicate folded run-results manifests when
+the useful evidence is "this reviewer caught the known blocker" rather than a
+specific finding string. The value report counts those dispositions toward
+useful-rate and known-blocked catch/miss metrics without duplicating the run.
 
 The generated policy is advisory. Repository-specific merge bars still require
 explicit configuration and the usual Code Mower audit protocol.
@@ -149,8 +176,9 @@ operational debt to repair before the next unattended merge cycle.
    the corpus. If the corpus item has `context_packs`, render the matching pack
    manifest before running expensive lanes and materialize only the packs that
    lane needs.
-4. Adjudicate findings into true positive, useful, false positive, noise, or
-   unknown. Unknowns are allowed, but they do not justify promotion.
+4. Adjudicate findings or reviewer runs into true positive, useful, false
+   positive, noise, or unknown. Unknowns are allowed, but they do not justify
+   promotion.
 5. Generate `calibration value-report --runs ...` and update lane policy from
    the combined historical corpus plus fresh-run evidence.
 
@@ -159,7 +187,7 @@ operational debt to repair before the next unattended merge cycle.
 Current generated value report:
 
 - Corpus items: 18
-- Adjudicated findings: 70
+- Adjudicated evidence: 70
 - Reviewer runs: 100
 - Clean lens controls: reference service #479/#481 and reference-app #377/#380
 - First Gemini risk/ops fan-out: reference-app #347 known-blocked plus reference-app

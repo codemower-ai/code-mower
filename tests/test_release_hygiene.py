@@ -17,8 +17,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_13(self) -> None:
-        self.assertEqual(__version__, "0.1.0a13")
+    def test_version_is_alpha_14(self) -> None:
+        self.assertEqual(__version__, "0.1.0a14")
 
     def test_privacy_scan_is_clean(self) -> None:
         self.assertEqual(privacy_scan.scan(ROOT), [])

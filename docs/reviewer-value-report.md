@@ -2,7 +2,9 @@
 
 Corpus: `code-mower-known-pr-starter`
 Items: 18
-Adjudicated findings: 70
+Adjudicated evidence: 70
+Finding evidence: 70
+Run dispositions: 0
 Reviewer runs: 103
 
 | Reviewer | Runs | Useful | Negative | Useful rate | Known-clean pass | Known-blocked caught/missed | Infra errors | Input gaps | Cost | Sec/run | Cost/useful | Policy | Recommended role |

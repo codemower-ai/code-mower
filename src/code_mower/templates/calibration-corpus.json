@@ -9,6 +9,10 @@
       "head_sha": "0123456789abcdef0123456789abcdef01234567",
       "difficulty": "medium",
       "source": "known-pr",
+      "truth": {
+        "expectation": "known_clean",
+        "notes": "A merged/control PR that should not produce blocking findings."
+      },
       "expected_findings": [],
       "reviewer_runs": [
         {
@@ -28,6 +32,13 @@
       "base_ref": "main",
       "difficulty": "hard",
       "source": "seeded-bug-history-quota",
+      "truth": {
+        "expectation": "known_blocked",
+        "expected_themes": [
+          "history quota enforcement"
+        ],
+        "notes": "A seeded or historical blocker that reviewers should catch."
+      },
       "expected_findings": [
         {
           "path": "tools/example.py",
@@ -46,6 +57,12 @@
       "base_ref": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "difficulty": "hard",
       "source": "seeded-bug-auth-or-secret",
+      "truth": {
+        "expectation": "known_blocked",
+        "expected_themes": [
+          "auth or secret boundary"
+        ]
+      },
       "expected_findings": [
         {
           "path": "src/auth/session.ts",
@@ -65,6 +82,12 @@
       "difficulty": "hard",
       "review_class": "package-runtime",
       "source": "seeded-bug-runtime-packaging",
+      "truth": {
+        "expectation": "known_blocked",
+        "expected_themes": [
+          "runtime packaging"
+        ]
+      },
       "expected_findings": [
         {
           "path": "tools/code_mower_doctor.py",
@@ -85,6 +108,12 @@
       "difficulty": "hard",
       "review_class": "calibration-policy",
       "source": "seeded-bug-calibration-privacy",
+      "truth": {
+        "expectation": "known_blocked",
+        "expected_themes": [
+          "shareable report privacy"
+        ]
+      },
       "expected_findings": [
         {
           "path": "tools/code_mower_doctor.py",

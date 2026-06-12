@@ -20,6 +20,21 @@ Add `review_class` and `context_packs` when a PR exercises a narrow specialty
 such as `auth-history`, `calibration-policy`, `package-runtime`,
 `backend-debug-upload`, or `web-debug-upload`; the policy report uses those
 fields to recommend selective triggers instead of blanket merge gates.
+For new corpora, set first-class truth explicitly:
+
+```json
+{
+  "truth": {
+    "expectation": "known_blocked",
+    "expected_themes": ["history quota enforcement"]
+  }
+}
+```
+
+Supported expectations are `known_clean`, `known_blocked`, and `unknown`.
+Legacy `source` prefixes such as `known-clean-*`, `known-blocked-*`, and
+`seeded-bug-*` still work, but explicit truth avoids making metrics depend on
+file naming conventions.
 
 Run:
 
@@ -91,9 +106,34 @@ produce more valuable independence.
 2. Store reviewer output under the plan's run directory and preserve
    `calibration-run-results.json`.
 3. Keep outputs hidden until every reviewer in the arm finishes.
-4. Build calibration summaries and write disposition templates.
-5. Fill dispositions with `true_positive`, `false_positive`, `useful`, `noise`, or `unknown`.
-6. Generate reviewer metrics and overlap reports.
+4. Mark corpus truth with `truth.expectation` before reading the value report.
+5. Adjudicate reviewer output with one of `true_positive`, `false_positive`,
+   `useful`, `noise`, or `unknown`.
+6. Prefer run-level `reviewer_run_dispositions` for historical CLI reruns where
+   the reviewer summary is useful but exact expected-finding matching is too
+   brittle.
+7. Generate reviewer metrics and overlap reports.
+
+Example run-level adjudication rule:
+
+```json
+{
+  "reviewer_run_dispositions": [
+    {
+      "reviewer": "gemini-base-audit",
+      "status": "blocked",
+      "min_finding_count": 1,
+      "disposition": "true_positive",
+      "expected_blocker_caught": true,
+      "notes": "Manual adjudication: finding covers the known blocker family."
+    }
+  ]
+}
+```
+
+Use `reviewer_evidence` for finding-level adjudication when you want to capture
+the specific path, severity, and summary. Use `reviewer_run_dispositions` when
+the useful unit of evidence is the reviewer run outcome itself.
 
 Useful commands:
 

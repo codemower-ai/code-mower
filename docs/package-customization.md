@@ -116,6 +116,13 @@ doctor smoke uses Gemini's non-interactive trust bypass for the throwaway
 working directory; full audit runs already use the same explicit headless trust
 flag for stdin transport.
 
+Google's June 18, 2026 migration makes Gemini CLI a legacy/compatibility lane
+for most individual free/Pro/Ultra setups. Keep it for historical comparison
+and enterprise/API-key continuity, but prefer Antigravity CLI for new Google
+provider calibration once the local `agy` path is authenticated and stable.
+See:
+<https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/>.
+
 When running historical or multi-repo calibration, pass one
 `--repo-path-map` flag per mapped checkout:
 

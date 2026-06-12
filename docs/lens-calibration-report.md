@@ -30,7 +30,7 @@ catches more bugs.
 `docs/reviewer-value-report.md` was regenerated from the corpus:
 
 - Corpus items: 18
-- Adjudicated findings: 70
+- Adjudicated evidence: 70
 - Reviewer runs: 100
 
 Generated policy classes from the current evidence:
@@ -461,13 +461,66 @@ What this adds:
 
 Harness lessons from the rerun:
 
-- The value reporter currently relies on `source` naming conventions such as
-  `known-clean-*` and `known-blocked-*` to classify corpus truth. That should
-  become an explicit corpus field before wider OSS use.
-- Obvious historical catches are not automatically credited as useful unless
-  expected findings or human disposition templates match them. The next
-  calibration slice should make disposition capture first-class so useful rate
-  reflects review value instead of only exact string/metadata matches.
+- The value reporter should not rely on `source` naming conventions such as
+  `known-clean-*` and `known-blocked-*` to classify corpus truth.
+- Obvious historical catches should be creditable through explicit run-level
+  adjudication, not only exact string/metadata matches.
 - Lenses should remain informational/calibration-only until the corpus contains
   richer dispositions and enough known-clean / known-blocked coverage to
   support promotion decisions.
+
+## Alpha.14 Truth And Disposition Rerender
+
+After the alpha.13 rerun, the same private four-head Gemini corpus was
+re-rendered with explicit corpus truth and conservative run-level dispositions.
+Only the obvious `#347` known-blocked catches were adjudicated as
+`true_positive`; `#390` stayed an audit-input-insufficient case.
+
+| Reviewer | Runs | Useful | Known-clean pass | Known-blocked caught/missed | Input gaps | Policy |
+| --- | ---: | ---: | ---: | --- | ---: | --- |
+| `gemini-base-audit` | 4 | 1 | 2 | 1/0 | 1 | informational |
+| `gemini-generic-programming` | 4 | 1 | 1 | 1/0 | 1 | informational |
+| `gemini-context-driven-quality` | 4 | 1 | 2 | 1/0 | 1 | informational |
+
+This is the first proof that the value report can now separate three concepts
+that were previously blurred:
+
+- first-class truth (`known_clean` vs `known_blocked`);
+- adjudicated useful signal (`true_positive` run dispositions); and
+- input sufficiency (`audit_input_insufficient` runs that should trigger
+  context-pack work rather than count as ordinary misses).
+
+Decision from this slice: the measurement machinery is strong enough to compare
+reviewer/lens signal, but the Gemini doctrine lenses remain informational
+because the corpus is tiny, one known-blocked case still needs richer context,
+and there are not yet enough adjudicated findings for promotion.
+
+## Alpha.14 Context-Pack Rerun
+
+The `#390` input-gap case was rerun with the `ios-solver-runtime` context pack
+after the truth/disposition value-report changes. This was intentionally a
+one-item spend-bearing rerun: the goal was to test whether richer context could
+turn an input-gap case into useful reviewer signal.
+
+| Reviewer | Status | Findings | Expected matches | Useful evidence | Runtime |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `gemini-base-audit` | audit-input-insufficient | 1 | 0 | 0 | 48.933s |
+| `gemini-generic-programming` | blocked | 2 | 1 | 1 | 218.047s |
+| `gemini-context-driven-quality` | blocked | 2 | 1 | 1 | 168.997s |
+
+What changed:
+
+- The context pack converted two of the three Gemini doctrine profiles from
+  input-gap evidence into expected blocker catches.
+- `gemini-base-audit` still reported insufficient audit input, which is useful
+  evidence that the base prompt either needs a larger pack or a different
+  context selection for this class of iOS solver-runtime changes.
+- Expected-finding matches now count as inferred `true_positive` run evidence
+  in the value report. That lets objective corpus matches move useful-rate
+  without requiring duplicate manual disposition rules.
+
+Decision from this slice: context packs materially improve lens calibration.
+The next proof should run the same shape through Antigravity CLI, because
+Antigravity is now the forward-looking Google CLI path for consumer/Pro/Ultra
+users while Gemini CLI remains useful for legacy/API-key continuity and
+historical comparison.

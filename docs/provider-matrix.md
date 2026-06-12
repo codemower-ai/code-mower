@@ -44,6 +44,18 @@ Everything else is opt-in until calibrated on the user's codebase.
 | `coderabbit_cli` | CodeRabbit CLI | local runner | provider account | local checkout plus CLI auth | informational |
 | `acp_bridge` | ACP-compatible agent | local runner | provider-dependent | depends on agent | research |
 
+## Google CLI Posture
+
+Google announced that Gemini CLI stops serving individual free/Pro/Ultra
+requests on June 18, 2026, while enterprise/API-key paths continue. Treat
+`gemini_cli` as a legacy compatibility and historical-comparison lane. New
+Google CLI calibration work should target `antigravity_cli` once the local
+`agy` runtime, auth, prompt transport, and parser behavior are stable enough for
+repeatable non-gating runs.
+
+Reference:
+<https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/>
+
 ## Cursor BugBot Policy
 
 Cursor BugBot is useful to test as a convenience reviewer, but it should not be

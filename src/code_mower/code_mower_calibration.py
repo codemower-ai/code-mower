@@ -66,6 +66,25 @@ KNOWN_EVIDENCE_DISPOSITIONS = {
     "unknown",
 }
 USEFUL_EVIDENCE_DISPOSITIONS = {"true_positive", "useful"}
+TRUTH_EXPECTATION_UNKNOWN = "unknown"
+TRUTH_EXPECTATION_KNOWN_CLEAN = "known_clean"
+TRUTH_EXPECTATION_KNOWN_BLOCKED = "known_blocked"
+TRUTH_EXPECTATION_ALIASES = {
+    "blocked": TRUTH_EXPECTATION_KNOWN_BLOCKED,
+    "bug": TRUTH_EXPECTATION_KNOWN_BLOCKED,
+    "catch": TRUTH_EXPECTATION_KNOWN_BLOCKED,
+    "known-blocked": TRUTH_EXPECTATION_KNOWN_BLOCKED,
+    "known_blocked": TRUTH_EXPECTATION_KNOWN_BLOCKED,
+    "seeded-bug": TRUTH_EXPECTATION_KNOWN_BLOCKED,
+    "seeded_bug": TRUTH_EXPECTATION_KNOWN_BLOCKED,
+    "clean": TRUTH_EXPECTATION_KNOWN_CLEAN,
+    "known-clean": TRUTH_EXPECTATION_KNOWN_CLEAN,
+    "known_clean": TRUTH_EXPECTATION_KNOWN_CLEAN,
+    "no-blocker": TRUTH_EXPECTATION_KNOWN_CLEAN,
+    "no_blocker": TRUTH_EXPECTATION_KNOWN_CLEAN,
+    "pass": TRUTH_EXPECTATION_KNOWN_CLEAN,
+    "unknown": TRUTH_EXPECTATION_UNKNOWN,
+}
 RUN_STATUS_PASS = "pass"
 RUN_STATUS_BLOCKED = "blocked"
 RUN_STATUS_AUDIT_INPUT_INSUFFICIENT = "audit_input_insufficient"
@@ -177,6 +196,10 @@ def load_corpus(path: Path) -> dict[str, Any]:
         if key in seen:
             raise ValueError(f"duplicate corpus PR entry: {repo}#{pr_number} {head_sha or '(head unspecified)'}")
         seen.add(key)
+        source = str(item.get("source") or "known-pr")
+        expected_findings = list(item.get("expected_findings", []))
+        truth = _normalize_truth(item, source=source)
+        expected_findings = list(truth.get("expected_findings") or expected_findings)
         items.append(
             {
                 "repo": repo,
@@ -185,11 +208,17 @@ def load_corpus(path: Path) -> dict[str, Any]:
                 "base_ref": str(item.get("base_ref") or ""),
                 "difficulty": str(item.get("difficulty") or "unknown"),
                 "review_class": str(item.get("review_class") or "general"),
-                "source": str(item.get("source") or "known-pr"),
-                "expected_findings": list(item.get("expected_findings", [])),
+                "source": source,
+                "truth": truth,
+                "known_clean": truth["known_clean"],
+                "known_blocked": truth["known_blocked"],
+                "expected_findings": expected_findings,
                 "context_packs": list(item.get("context_packs", [])),
                 "reviewer_evidence": list(item.get("reviewer_evidence", [])),
                 "reviewer_runs": list(item.get("reviewer_runs", [])),
+                "reviewer_run_dispositions": list(
+                    item.get("reviewer_run_dispositions", [])
+                ),
                 "notes": str(item.get("notes") or ""),
             }
         )
@@ -1027,6 +1056,72 @@ def _known_blocked_source(source: str) -> bool:
     return source.startswith("known-blocked") or source.startswith("seeded-bug")
 
 
+def _normalize_truth_expectation(value: Any) -> str:
+    expectation = str(value or "").strip().lower().replace("-", "_")
+    if not expectation:
+        return TRUTH_EXPECTATION_UNKNOWN
+    return TRUTH_EXPECTATION_ALIASES.get(expectation, TRUTH_EXPECTATION_UNKNOWN)
+
+
+def _truth_from_source(source: str) -> str:
+    if _known_clean_source(source):
+        return TRUTH_EXPECTATION_KNOWN_CLEAN
+    if _known_blocked_source(source):
+        return TRUTH_EXPECTATION_KNOWN_BLOCKED
+    return TRUTH_EXPECTATION_UNKNOWN
+
+
+def _normalize_truth(item: Mapping[str, Any], *, source: str | None = None) -> dict[str, Any]:
+    """Return the first-class calibration truth block for a corpus item.
+
+    Older corpora encoded ground truth in ``source`` prefixes and per-run
+    ``known_clean`` / ``known_blocked`` booleans. Keep those working, but prefer
+    an explicit ``truth.expectation`` field for new corpora so value reports do
+    not depend on naming conventions.
+    """
+
+    raw_truth = item.get("truth")
+    truth_mapping = raw_truth if isinstance(raw_truth, Mapping) else {}
+    expectation = _normalize_truth_expectation(
+        truth_mapping.get("expectation")
+        or truth_mapping.get("expected_outcome")
+        or truth_mapping.get("outcome")
+        or truth_mapping.get("status")
+    )
+    if expectation == TRUTH_EXPECTATION_UNKNOWN:
+        if bool(item.get("known_clean")):
+            expectation = TRUTH_EXPECTATION_KNOWN_CLEAN
+        elif bool(item.get("known_blocked")):
+            expectation = TRUTH_EXPECTATION_KNOWN_BLOCKED
+        else:
+            expectation = _truth_from_source(str(source if source is not None else item.get("source") or ""))
+    expected_findings = list(
+        truth_mapping.get("expected_findings")
+        or item.get("expected_findings")
+        or []
+    )
+    expected_themes = [
+        str(theme)
+        for theme in truth_mapping.get("expected_themes", []) or []
+        if str(theme).strip()
+    ]
+    return {
+        "expectation": expectation,
+        "known_clean": expectation == TRUTH_EXPECTATION_KNOWN_CLEAN,
+        "known_blocked": expectation == TRUTH_EXPECTATION_KNOWN_BLOCKED,
+        "expected_findings": expected_findings,
+        "expected_themes": expected_themes,
+        "notes": str(truth_mapping.get("notes") or ""),
+    }
+
+
+def _truth_for_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    truth = item.get("truth")
+    if isinstance(truth, Mapping):
+        return _normalize_truth({**dict(item), "truth": truth}, source=str(item.get("source") or ""))
+    return _normalize_truth(item, source=str(item.get("source") or ""))
+
+
 def _finding_path(finding: Mapping[str, Any]) -> str:
     return str(finding.get("path") or finding.get("file") or finding.get("filename") or "")
 
@@ -1134,9 +1229,9 @@ def _run_records_from_summary(
     pr_number = int(summary.get("pr_number") or item.get("pr_number") or 0)
     head_sha = str(item.get("head_sha") or "")
     observed_head_sha = str(summary.get("head_sha") or "")
-    source = str(item.get("source") or "")
-    known_clean = _known_clean_source(source)
-    known_blocked = _known_blocked_source(source)
+    truth = _truth_for_item(item)
+    known_clean = bool(truth.get("known_clean"))
+    known_blocked = bool(truth.get("known_blocked"))
     expected_findings = item.get("expected_findings", [])
     calibration_run_id = str(command_result.get("run_id") or "")
     replicate = command_result.get("replicate")
@@ -1338,17 +1433,17 @@ def _infra_run_record(
     duration_seconds: float,
     artifact: str,
 ) -> dict[str, Any]:
-    source = str(item.get("source") or "")
     reviewer = lane_id
     if reviewer == "local-llm":
         reviewer = "local-llm"
+    truth = _truth_for_item(item)
     return {
         "reviewer": reviewer,
         "status": status,
         "finding_count": 0,
         "expected_finding_matches": 0,
-        "known_clean": _known_clean_source(source),
-        "known_blocked": _known_blocked_source(source),
+        "known_clean": bool(truth.get("known_clean")),
+        "known_blocked": bool(truth.get("known_blocked")),
         "duration_seconds": round(duration_seconds, 3),
         "parse_status": status,
         "artifact": artifact,
@@ -1854,6 +1949,73 @@ def _load_run_results(paths: Iterable[Path]) -> list[Mapping[str, Any]]:
     return reports
 
 
+def _csv_values(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {part.strip() for part in value.split(",") if part.strip()}
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return {str(part).strip() for part in value if str(part).strip()}
+    if value is None:
+        return set()
+    return {str(value).strip()} if str(value).strip() else set()
+
+
+def _run_matches_disposition_rule(run: Mapping[str, Any], rule: Mapping[str, Any]) -> bool:
+    reviewers = _csv_values(rule.get("reviewer") or rule.get("profile_id") or rule.get("lane"))
+    if reviewers:
+        reviewer = str(
+            run.get("reviewer")
+            or run.get("profile_id")
+            or run.get("lane")
+            or "unknown-reviewer"
+        ).strip()
+        if reviewer not in reviewers:
+            return False
+    statuses = {
+        _normalize_run_status_category(status)
+        for status in _csv_values(rule.get("status") or rule.get("status_category"))
+    }
+    if statuses:
+        run_status = _normalize_run_status_category(
+            run.get("status") or run.get("verdict")
+        )
+        if run_status not in statuses:
+            return False
+    result_categories = _csv_values(rule.get("result_category"))
+    if result_categories:
+        if str(run.get("result_category") or "").strip() not in result_categories:
+            return False
+    try:
+        min_findings = int(rule.get("min_finding_count") or 0)
+    except (TypeError, ValueError):
+        min_findings = 0
+    if min_findings:
+        try:
+            finding_count = int(run.get("finding_count") or 0)
+        except (TypeError, ValueError):
+            finding_count = 0
+        if finding_count < min_findings:
+            return False
+    return True
+
+
+def _apply_run_disposition_rules(run: dict[str, Any], item: Mapping[str, Any]) -> None:
+    for rule in item.get("reviewer_run_dispositions", []) or []:
+        if not isinstance(rule, Mapping):
+            continue
+        if not _run_matches_disposition_rule(run, rule):
+            continue
+        disposition = _normalize_disposition(rule.get("disposition"))
+        if disposition != "unknown" and not run.get("disposition"):
+            run["disposition"] = disposition
+        if rule.get("expected_blocker_caught") is not None:
+            run["expected_blocker_caught"] = bool(rule.get("expected_blocker_caught"))
+        if rule.get("notes") and not run.get("disposition_notes"):
+            run["disposition_notes"] = str(rule.get("notes") or "")
+        # Apply the first matching adjudication rule. Additional notes can be
+        # modeled as reviewer_evidence if a corpus needs more detail.
+        return
+
+
 def corpus_with_run_results(
     corpus: Mapping[str, Any],
     run_results: Iterable[Mapping[str, Any]],
@@ -1896,6 +2058,7 @@ def corpus_with_run_results(
                 if key not in {"repo", "pr_number", "head_sha"}
             }
             folded_run.setdefault("calibration_manifest_id", manifest_id)
+            _apply_run_disposition_rules(folded_run, item)
             item.setdefault("reviewer_runs", []).append(folded_run)
     return merged
 
@@ -1934,6 +2097,7 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
     profile_useful_context_packs: dict[str, set[str]] = {}
     models: dict[str, str] = {}
     findings: list[dict[str, Any]] = []
+    run_dispositions: list[dict[str, Any]] = []
     run_records: list[dict[str, Any]] = []
 
     for item in corpus.get("corpus", []) or []:
@@ -1948,6 +2112,7 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
             for pack in item.get("context_packs", []) or []
             if str(pack).strip()
         ]
+        truth = _truth_for_item(item)
         run_key = (repo, pr_number, head_sha)
         for index, evidence in enumerate(item.get("reviewer_evidence", []) or []):
             if not isinstance(evidence, Mapping):
@@ -2031,20 +2196,22 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
                     pass
             if run.get("model"):
                 models[reviewer] = str(run.get("model"))
+            run_disposition = _normalize_disposition(
+                run.get("disposition")
+                or (
+                    run.get("adjudication", {}).get("disposition")
+                    if isinstance(run.get("adjudication"), Mapping)
+                    else None
+                )
+            )
             status = str(run.get("status") or run.get("verdict") or "unknown").strip().lower()
             status_category = _normalize_run_status_category(status)
             profile_run_statuses.setdefault(reviewer, {})
             profile_run_statuses[reviewer][status] = (
                 profile_run_statuses[reviewer].get(status, 0) + 1
             )
-            known_clean = bool(
-                run.get("known_clean")
-                or _known_clean_source(str(item.get("source") or ""))
-            )
-            known_blocked = bool(
-                run.get("known_blocked")
-                or _known_blocked_source(str(item.get("source") or ""))
-            )
+            known_clean = bool(run.get("known_clean") or truth.get("known_clean"))
+            known_blocked = bool(run.get("known_blocked") or truth.get("known_blocked"))
             try:
                 finding_count = int(run.get("finding_count") or 0)
             except (TypeError, ValueError):
@@ -2063,11 +2230,68 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
                 profile_blocking_false_positive_run_keys.setdefault(reviewer, set()).add(
                     reviewer_run_key
                 )
+            expected_blocker_caught = bool(
+                run.get("expected_blocker_caught")
+                or run.get("caught_expected_blocker")
+                or (
+                    run_disposition in USEFUL_EVIDENCE_DISPOSITIONS
+                    and status_category == RUN_STATUS_BLOCKED
+                )
+                or expected_finding_matches > 0
+            )
+            evidence_disposition = run_disposition
+            evidence_notes = str(
+                run.get("disposition_notes")
+                or (
+                    run.get("adjudication", {}).get("notes")
+                    if isinstance(run.get("adjudication"), Mapping)
+                    else ""
+                )
+                or ""
+            )
+            if evidence_disposition == "unknown" and expected_finding_matches > 0:
+                evidence_disposition = "true_positive"
+                evidence_notes = evidence_notes or "Matched an expected calibration finding."
+            if (
+                evidence_disposition == "unknown"
+                and known_clean
+                and status_category == RUN_STATUS_BLOCKED
+            ):
+                evidence_disposition = "false_positive"
+                evidence_notes = evidence_notes or "Blocked a known-clean calibration control."
+            if evidence_disposition != "unknown":
+                profile_counts.setdefault(reviewer, {})
+                profile_counts[reviewer][evidence_disposition] = (
+                    profile_counts[reviewer].get(evidence_disposition, 0) + 1
+                )
+                if evidence_disposition in USEFUL_EVIDENCE_DISPOSITIONS:
+                    profile_useful_review_classes.setdefault(reviewer, set()).add(
+                        review_class
+                    )
+                    profile_useful_context_packs.setdefault(reviewer, set()).update(
+                        context_packs
+                    )
+                run_dispositions.append(
+                    {
+                        "profile_id": reviewer,
+                        "repo": repo,
+                        "pr_number": pr_number,
+                        "head_sha": head_sha,
+                        "difficulty": str(item.get("difficulty") or "unknown"),
+                        "review_class": review_class,
+                        "context_packs": context_packs,
+                        "source": str(item.get("source") or ""),
+                        "run_index": run_index,
+                        "disposition": evidence_disposition,
+                        "inferred": run_disposition == "unknown",
+                        "notes": evidence_notes,
+                    }
+                )
             if known_blocked:
                 profile_known_blocked_run_keys.setdefault(reviewer, set()).add(
                     reviewer_run_key
                 )
-                if expected_finding_matches > 0:
+                if expected_blocker_caught:
                     profile_known_blocked_caught_run_keys.setdefault(reviewer, set()).add(
                         reviewer_run_key
                     )
@@ -2098,6 +2322,8 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
                     "known_blocked": known_blocked,
                     "finding_count": finding_count,
                     "expected_finding_matches": expected_finding_matches,
+                    "expected_blocker_caught": expected_blocker_caught,
+                    "disposition": evidence_disposition,
                     "duration_seconds": run.get("duration_seconds"),
                     "parse_status": str(run.get("parse_status") or ""),
                     "result_category": str(run.get("result_category") or ""),
@@ -2149,10 +2375,13 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
         "corpus_name": corpus.get("name", ""),
         "description": corpus.get("description", ""),
         "source_item_count": len(corpus.get("corpus", []) or []),
-        "evidence_count": len(findings),
+        "evidence_count": len(findings) + len(run_dispositions),
+        "finding_evidence_count": len(findings),
+        "run_disposition_count": len(run_dispositions),
         "sources": [str(corpus.get("name", "calibration-corpus"))],
         "profiles": profiles,
         "findings": findings,
+        "run_dispositions": run_dispositions,
         "reviewer_runs": run_records,
         "caveat": (
             "This report summarizes historical adjudicated evidence embedded in "
@@ -2466,7 +2695,9 @@ def render_evidence_text(report: Mapping[str, Any]) -> str:
     lines = [
         "Code Mower reviewer evidence",
         f"Corpus: {report.get('corpus_name', '')}",
-        f"Evidence findings: {report.get('evidence_count', 0)}",
+        f"Adjudicated evidence: {report.get('evidence_count', 0)}",
+        f"Finding evidence: {report.get('finding_evidence_count', 0)}",
+        f"Run dispositions: {report.get('run_disposition_count', 0)}",
         "",
         "Profiles:",
     ]
@@ -2532,6 +2763,8 @@ def build_value_report(
         "description": corpus.get("description", ""),
         "source_item_count": evidence["source_item_count"],
         "evidence_count": evidence["evidence_count"],
+        "finding_evidence_count": evidence.get("finding_evidence_count", 0),
+        "run_disposition_count": evidence.get("run_disposition_count", 0),
         "reviewer_run_count": len(evidence.get("reviewer_runs", [])),
         "evidence": evidence,
         "metrics": metrics,
@@ -2549,7 +2782,9 @@ def render_value_report_text(report: Mapping[str, Any]) -> str:
         "",
         f"Corpus: `{report.get('corpus_name', '')}`",
         f"Items: {report.get('source_item_count', 0)}",
-        f"Adjudicated findings: {report.get('evidence_count', 0)}",
+        f"Adjudicated evidence: {report.get('evidence_count', 0)}",
+        f"Finding evidence: {report.get('finding_evidence_count', 0)}",
+        f"Run dispositions: {report.get('run_disposition_count', 0)}",
         f"Reviewer runs: {report.get('reviewer_run_count', 0)}",
         "",
         "| Reviewer | Runs | Useful | Negative | Useful rate | Known-clean pass | Known-blocked caught/missed | Infra errors | Input gaps | Cost | Sec/run | Cost/useful | Policy | Recommended role |",

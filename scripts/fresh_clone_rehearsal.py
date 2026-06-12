@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,18 @@ def _venv_code_mower(venv_dir: Path) -> Path:
 def _default_repo_url() -> str:
     package_root = Path(__file__).resolve().parents[1]
     return str(package_root)
+
+
+def _resolve_python_command(value: str | None) -> Path:
+    if not value:
+        return Path(sys.executable)
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute() or any(separator in value for separator in ("/", "\\")):
+        return candidate.resolve()
+    resolved = shutil.which(value)
+    if resolved:
+        return Path(resolved).resolve()
+    return candidate.resolve()
 
 
 def _run(command: list[str], *, cwd: Path, steps: list[dict[str, Any]]) -> None:
@@ -78,7 +91,7 @@ def run_rehearsal(args: argparse.Namespace) -> dict[str, Any]:
     if args.ref:
         _run(["git", "checkout", args.ref], cwd=clone_dir, steps=steps)
 
-    python_bin = Path(args.python).expanduser().resolve() if args.python else Path(sys.executable)
+    python_bin = _resolve_python_command(args.python)
     _run([str(python_bin), "-m", "venv", str(venv_dir)], cwd=work_dir, steps=steps)
     venv_python = _venv_python(venv_dir)
     _run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"], cwd=clone_dir, steps=steps)
