@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -529,6 +530,31 @@ def _check_ripgrep() -> DoctorCheck:
     )
 
 
+def _check_pytest() -> DoctorCheck:
+    spec = importlib.util.find_spec("pytest")
+    if spec is not None:
+        return DoctorCheck(
+            name="runtime.pytest",
+            status=STATUS_PASS,
+            message="pytest import is available for product-side test wrappers",
+            detail={"module": "pytest"},
+        )
+    return DoctorCheck(
+        name="runtime.pytest",
+        status=STATUS_WARN,
+        message=(
+            "pytest is not installed in this Python environment; standalone "
+            "easy-mode does not require it, but product-side Code Mower test "
+            "wrappers often do"
+        ),
+        detail={"module": "pytest"},
+        remediation=(
+            "Install pytest in the product repository virtualenv before running "
+            "product-side wrapper tests, for example `python -m pip install pytest`."
+        ),
+    )
+
+
 def _global_runtime_checks(
     *,
     probe_runtime: bool,
@@ -536,6 +562,7 @@ def _global_runtime_checks(
 ) -> list[DoctorCheck]:
     return [
         _check_python_runtime(),
+        _check_pytest(),
         _check_github_auth_surface(
             probe_runtime=probe_runtime,
             http_timeout=http_timeout,

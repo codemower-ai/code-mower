@@ -93,14 +93,15 @@ The expected migration order is:
 6. pinned standalone release becomes the default
 7. mirrored implementation files are removed from product repos
 
-As of `v0.1.0-alpha.10`, the CubeSnap product repos have proved the private
-standalone checkout path and are in the standalone-default phase: product
-wrappers prefer the pinned standalone command and keep `CODE_MOWER_USE_LOCAL=1`
-as the explicit repo-local fallback. The next migration PR should update one
-product repo at a time to the alpha.10+ pin, migrate workflow entrypoints to
-`tools/code_mower`, run `migration wrapper-rehearsal`, run
-`migration package-install-rehearsal` with the pinned package spec, then render
-`migration mirror-removal-plan --shadow-cycles 1 --standalone-default-cycles 1`.
+As of `v0.1.0-alpha.11`, the CubeSnap product repos have proved the private
+standalone checkout path and CTVD has completed the first mirror-removal pilot:
+product wrappers prefer the pinned standalone command, workflows call
+`tools/code_mower` entrypoints, and mirrored implementation files can be absent
+without `migration mirror-removal-plan` reporting the repo as not-started. The
+next migration PR should update one product repo at a time to the alpha.11+ pin,
+run `migration wrapper-rehearsal`, run `migration package-install-rehearsal`
+with the pinned package spec, then render `migration mirror-removal-plan
+--shadow-cycles 1 --standalone-default-cycles 1`.
 
 While the standalone Code Mower repository is private, GitHub Actions jobs that
 run from product repos need either authenticated standalone checkout or an

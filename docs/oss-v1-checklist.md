@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.10` of the standalone
+The current public-release baseline is `v0.1.0-alpha.11` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -33,13 +33,21 @@ package. It has proved:
   `cube-snap#390` lens case;
 - standalone labeler and bootstrap entrypoints for migrating product workflows
   away from mirrored Python files.
+- explicit mirror-removal completion status when a product repo has already
+  deleted mirrored implementation files;
+- first-run doctor visibility for missing `pytest`, which is not required by
+  standalone easy-mode but is commonly required by product-side wrapper tests;
+- documented runner aliases for package-supported local reviewer commands and
+  explicit compatibility boundaries for legacy product Codex/Claude runner
+  shell wrappers.
 
 It has not yet proved:
 
 - public package installation from PyPI or another package index;
 - broad private-repo standalone checkout across arbitrary organizations and
   token policies;
-- workflow entrypoint migration and then mirror deletion in product repos;
+- workflow entrypoint migration and then mirror deletion across both product
+  repos;
 - broader spend-bearing context-pack lens runs beyond the first `cube-snap#390`
   Gemini proof;
 - a large enough reviewer/lens corpus for new merge gates.

@@ -399,6 +399,11 @@
     },
     {
       "kind": "doc",
+      "source": "tools/CODE_MOWER_MIRROR_REMOVAL_RUNBOOK.md",
+      "target": "docs/mirror-removal-runbook.md"
+    },
+    {
+      "kind": "doc",
       "source": "tools/CODE_MOWER_PROVIDER_MATRIX.md",
       "target": "docs/provider-matrix.md"
     },

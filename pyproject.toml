@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-mower"
-version = "0.1.0a10"
+version = "0.1.0a11"
 description = "Multi-reviewer AI code audit orchestration"
 requires-python = ">=3.11"
 readme = "README.md"

@@ -138,6 +138,11 @@ PACKAGE_FILES = (
     ("tools/CODE_MOWER_COMMERCIAL_BOUNDARY.md", "docs/commercial-boundary.md", "doc"),
     ("tools/CODE_MOWER_PUBLIC_RELEASE_CHECKLIST.md", "docs/public-release-checklist.md", "doc"),
     ("tools/CODE_MOWER_GITHUB_SETUP.md", "docs/github-setup.md", "doc"),
+    (
+        "tools/CODE_MOWER_MIRROR_REMOVAL_RUNBOOK.md",
+        "docs/mirror-removal-runbook.md",
+        "doc",
+    ),
     ("tools/CODE_MOWER_PROVIDER_MATRIX.md", "docs/provider-matrix.md", "doc"),
     ("tools/CODE_MOWER_OSS_V1_CHECKLIST.md", "docs/oss-v1-checklist.md", "doc"),
     ("tools/adapters/__init__.py", "src/code_mower/adapters/__init__.py", "adapter"),
@@ -215,6 +220,7 @@ STATIC_PACKAGE_FILES = (
                 "maintenance.",
                 "",
                 "For public release readiness, see `docs/repo-strategy.md`, "
+                "`docs/mirror-removal-runbook.md`, "
                 "`docs/commercial-boundary.md`, and "
                 "`docs/public-release-checklist.md`.",
                 "",
@@ -997,6 +1003,8 @@ CLI_COMMANDS = (
     "code-mower init --profile recommended --apply --output-dir .code-mower.generated",
     "code-mower merge-plan owner/repo#123 --json",
     "code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json",
+    "code-mower migration mirror-removal-plan --repo-path /path/to/product-repo --shadow-cycles 1 --standalone-default-cycles 1 --json",
+    "code-mower migration runner-aliases --json",
     "code-mower migration package-install-rehearsal --package-spec code-mower --repo-path /path/to/product-repo --json",
     "code-mower local-llm profiles --json",
     "code-mower local-llm probe --profile qwen3-coder-next-lmstudio --json",
@@ -1198,6 +1206,7 @@ def render_package_plan(
             "docs/package-skeleton.md",
             "docs/package-customization.md",
             "docs/repo-strategy.md",
+            "docs/mirror-removal-runbook.md",
             "docs/commercial-boundary.md",
             "docs/public-release-checklist.md",
             "docs/github-setup.md",

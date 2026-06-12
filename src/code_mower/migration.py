@@ -33,12 +33,89 @@ CALIBRATION_CANDIDATES = (
     "tools/calibration_corpus.example.json",
     "templates/calibration-corpus.json",
 )
+MIRRORED_IMPLEMENTATION_PATTERNS = (
+    "tools/code_mower_*.py",
+    "tools/*_audit_pr.py",
+    "tools/*_labeler.py",
+    "tools/lane_prompts/*.md",
+    "tools/calibration_corpus*.json",
+    "tools/reviewer_spend*.json",
+    "tools/context_packs*.json",
+    "tools/CODE_MOWER*.md",
+)
 CALIBRATION_EVIDENCE_ADDITIVE_KEYS = frozenset(
     {
         "audit_input_insufficient_count",
         "audit_input_insufficient_runs",
         "result_category",
     }
+)
+
+RUNNER_ALIASES = (
+    {
+        "legacy": "tools/gemini_cli_audit_pr.py",
+        "standalone": "code-mower gemini-cli",
+        "status": "supported",
+        "notes": "Gemini CLI compatibility runner.",
+    },
+    {
+        "legacy": "tools/antigravity_cli_audit_pr.py",
+        "standalone": "code-mower antigravity-cli",
+        "status": "supported",
+        "notes": "Preferred Google CLI lane after Antigravity migration.",
+    },
+    {
+        "legacy": "tools/hermes_cli_audit_pr.py",
+        "standalone": "code-mower hermes-cli",
+        "status": "supported",
+        "notes": "Hermes Agent calibration runner; requires explicit ambient-home opt-in.",
+    },
+    {
+        "legacy": "tools/coderabbit_cli_audit_pr.py",
+        "standalone": "code-mower coderabbit-cli",
+        "status": "supported",
+        "notes": "Manual informational CodeRabbit CLI evidence capture.",
+    },
+    {
+        "legacy": "tools/local_llm_audit_pr.py",
+        "standalone": "code-mower local-llm audit",
+        "status": "supported",
+        "notes": "OpenAI-compatible local model audit runner.",
+    },
+    {
+        "legacy": "tools/trailer_comment_labeler.py",
+        "standalone": "code-mower trailer-comment-labeler",
+        "status": "supported",
+        "notes": "Use for structured audit trailer/comment label state.",
+    },
+    {
+        "legacy": "tools/saas_reviewer_labeler.py",
+        "standalone": "code-mower saas-reviewer-labeler",
+        "status": "supported",
+        "notes": "Use for SaaS reviewer event label state.",
+    },
+    {
+        "legacy": "tools/run_codex_audit_pr.sh",
+        "standalone": "",
+        "status": "product-wrapper",
+        "notes": (
+            "No generic standalone Codex authoring runner exists yet. Keep the "
+            "product wrapper for model invocation/repost artifacts, and use "
+            "`code-mower trailer-comment-labeler --lane codex` for merge-bar "
+            "label state."
+        ),
+    },
+    {
+        "legacy": "tools/run_claude_audit_pr.sh",
+        "standalone": "",
+        "status": "product-wrapper",
+        "notes": (
+            "No generic standalone Claude authoring runner exists yet. Keep the "
+            "product wrapper for model invocation/repost artifacts, and use "
+            "`code-mower trailer-comment-labeler --lane claude` for merge-bar "
+            "label state."
+        ),
+    },
 )
 
 
@@ -94,6 +171,18 @@ def _default_local_command(repo_path: Path) -> tuple[str, ...] | None:
     if candidate.is_file():
         return (sys.executable, str(candidate))
     return None
+
+
+def _default_product_rehearsal_local_command(repo_path: Path) -> tuple[str, ...]:
+    """Prefer local fallback before mirror removal, wrapper default after it."""
+
+    wrapper = repo_path / "tools" / "code_mower"
+    if not wrapper.is_file():
+        return ("env", "CODE_MOWER_USE_LOCAL=1", "tools/code_mower")
+    mirrored_candidates = _glob_relative_files(repo_path, MIRRORED_IMPLEMENTATION_PATTERNS)
+    if mirrored_candidates:
+        return ("env", "CODE_MOWER_USE_LOCAL=1", "tools/code_mower")
+    return ("tools/code_mower",)
 
 
 def _default_package_command() -> tuple[str, ...]:
@@ -358,7 +447,7 @@ def run_package_install_rehearsal(
         product_local_command = (
             tuple(local_command)
             if local_command
-            else ("env", "CODE_MOWER_USE_LOCAL=1", "tools/code_mower")
+            else _default_product_rehearsal_local_command(repo_path)
         )
         product_local_command_text = " ".join(product_local_command)
         wrapper_completed = _run_rehearsal_step(
@@ -701,16 +790,7 @@ def render_mirror_removal_plan(
     local_command = _default_local_command(repo_path)
     mirrored_candidates = _glob_relative_files(
         repo_path,
-        (
-            "tools/code_mower_*.py",
-            "tools/*_audit_pr.py",
-            "tools/*_labeler.py",
-            "tools/lane_prompts/*.md",
-            "tools/calibration_corpus*.json",
-            "tools/reviewer_spend*.json",
-            "tools/context_packs*.json",
-            "tools/CODE_MOWER*.md",
-        ),
+        MIRRORED_IMPLEMENTATION_PATTERNS,
     )
     workflow_mirror_references = _workflow_file_references(
         repo_path,
@@ -718,6 +798,11 @@ def render_mirror_removal_plan(
     )
     workflow_local_fallback_references = _workflow_local_fallback_references(
         repo_path,
+    )
+    mirrors_absent = (
+        not mirrored_candidates
+        and not workflow_mirror_references
+        and not workflow_local_fallback_references
     )
     ready_for_shadow = {
         "standalone_pin_file_present": "tools/code_mower_standalone_pin.env"
@@ -727,7 +812,11 @@ def render_mirror_removal_plan(
         "product_local_command_present": local_command is not None,
         "mirrored_files_detected": bool(mirrored_candidates),
     }
-    support_ready = all(ready_for_shadow.values())
+    support_ready = (
+        ready_for_shadow["standalone_pin_file_present"]
+        and ready_for_shadow["standalone_shadow_wrapper_present"]
+        and ready_for_shadow["product_local_command_present"]
+    )
     shadow_ready = support_ready and shadow_cycles >= required_shadow_cycles
     cycle_ready_for_removal = (
         shadow_ready
@@ -739,13 +828,13 @@ def render_mirror_removal_plan(
         and not workflow_local_fallback_references
     )
     blockers = []
-    if not ready_for_shadow["standalone_pin_file_present"]:
+    if not mirrors_absent and not ready_for_shadow["standalone_pin_file_present"]:
         blockers.append("add tools/code_mower_standalone_pin.env")
-    if not ready_for_shadow["standalone_shadow_wrapper_present"]:
+    if not mirrors_absent and not ready_for_shadow["standalone_shadow_wrapper_present"]:
         blockers.append("add tools/code_mower_standalone_shadow.sh")
-    if not ready_for_shadow["product_local_command_present"]:
+    if not mirrors_absent and not ready_for_shadow["product_local_command_present"]:
         blockers.append("identify the product-local Code Mower command")
-    if shadow_cycles < required_shadow_cycles:
+    if not mirrors_absent and shadow_cycles < required_shadow_cycles:
         blockers.append(
             f"complete {required_shadow_cycles - shadow_cycles} more clean shadow cycle(s)"
         )
@@ -766,7 +855,11 @@ def render_mirror_removal_plan(
             "deleting mirrors; private repos need a public/package install path "
             "or authenticated standalone checkout for Actions"
         )
-    if removal_ready:
+    if mirrors_absent and support_ready:
+        status = "mirrors_removed"
+    elif mirrors_absent:
+        status = "no_mirrors_detected"
+    elif removal_ready:
         status = "ready_to_remove_mirrors"
     elif cycle_ready_for_removal and workflow_local_fallback_references:
         status = "local_fallback_dependency_blocks_mirror_removal"
@@ -796,6 +889,7 @@ def render_mirror_removal_plan(
         ),
         "workflow_local_fallback_references": workflow_local_fallback_references,
         "readiness": ready_for_shadow,
+        "mirrors_absent": mirrors_absent,
         "blockers": blockers,
         "steps": [
             "Run code-mower migration wrapper-rehearsal against the pinned standalone release and require mismatch_count: 0.",
@@ -834,11 +928,47 @@ def render_mirror_removal_text(payload: dict[str, Any]) -> str:
     ]
     for step in payload["steps"]:
         lines.append(f"- {step}")
+    if payload.get("mirrors_absent"):
+        lines.append("")
+        lines.append(
+            "Mirror inventory is empty: no removable mirrored implementation files "
+            "or workflow references were detected."
+        )
     if payload["blockers"]:
         lines.append("")
         lines.append("Blockers:")
         for blocker in payload["blockers"]:
             lines.append(f"- {blocker}")
+    return "\n".join(lines) + "\n"
+
+
+def render_runner_aliases(*, legacy: str | None = None) -> dict[str, Any]:
+    aliases = [dict(row) for row in RUNNER_ALIASES]
+    if legacy:
+        needle = legacy.strip()
+        aliases = [
+            row
+            for row in aliases
+            if row["legacy"] == needle or Path(row["legacy"]).name == needle
+        ]
+    return {
+        "mode": "code-mower-runner-aliases",
+        "status": "pass",
+        "aliases": aliases,
+    }
+
+
+def render_runner_aliases_text(payload: dict[str, Any]) -> str:
+    lines = ["Code Mower runner aliases", ""]
+    aliases = payload.get("aliases", [])
+    if not aliases:
+        lines.append("No aliases matched.")
+        return "\n".join(lines) + "\n"
+    for row in aliases:
+        standalone = row.get("standalone") or "(no generic standalone alias)"
+        lines.append(f"- {row['legacy']} -> {standalone}")
+        lines.append(f"  status: {row['status']}")
+        lines.append(f"  notes: {row['notes']}")
     return "\n".join(lines) + "\n"
 
 
@@ -866,6 +996,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     mirror.add_argument("--standalone-default-cycles", type=int, default=0)
     mirror.add_argument("--required-standalone-default-cycles", type=int, default=1)
     mirror.add_argument("--json", action="store_true")
+    aliases = subparsers.add_parser("runner-aliases")
+    aliases.add_argument(
+        "--legacy",
+        default=None,
+        help="optional legacy script path or basename to filter, e.g. run_codex_audit_pr.sh",
+    )
+    aliases.add_argument("--json", action="store_true")
     package_install = subparsers.add_parser("package-install-rehearsal")
     package_install.add_argument(
         "--package-spec",
@@ -960,6 +1097,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             print(render_mirror_removal_text(payload), end="")
+        return 0
+
+    if args.command == "runner-aliases":
+        payload = render_runner_aliases(legacy=args.legacy)
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(render_runner_aliases_text(payload), end="")
         return 0
 
     if args.command == "package-install-rehearsal":
