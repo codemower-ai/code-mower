@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.16` of the standalone
+The current public-release baseline is `v0.1.0-alpha.17` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -45,6 +45,10 @@ package. It has proved:
 - standalone Codex and Claude structured audit commands plus Codex env
   preflight/schema-smoke helpers, so product shell wrappers can remain thin
   compatibility shims without mirrored Python implementation files.
+- generated product-support wrappers for the standalone package launcher,
+  standalone checkout/pin files, Codex/Claude compatibility shims, and
+  shell-safe GitHub commenting, so future product repos can review generated
+  support files instead of hand-copying them from private reference repos.
 
 It has not yet proved:
 
@@ -126,7 +130,7 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 - `code-mower init --easy --apply --output-dir .code-mower.generated` writes a
   reviewable generated tree.
 - Generated output includes labels, required secrets, workflows, smoke tests,
-  and a manifest.
+  starter data, product-support wrappers, and a manifest.
 - Live repository mutation remains a later explicit feature.
 
 ### Doctor

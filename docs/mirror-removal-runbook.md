@@ -52,6 +52,20 @@ The product repo has removed mirrored implementation files such as:
 The thin wrapper and pin files stay in place until the package is consumed
 through a boring public install path.
 
+For new repos or follow-up cleanup after mirror removal, generate the support
+files instead of hand-copying them:
+
+```bash
+code-mower init --easy --apply --output-dir .code-mower.generated
+```
+
+Review `.code-mower.generated/tools/code_mower*`,
+`.code-mower.generated/tools/run_*_audit_pr.sh`, and
+`.code-mower.generated/tools/safe_gh_comment.py`, then copy only the support
+files your repository actually needs. Before copying
+`code_mower_standalone_pin.env`, replace the placeholder repository URL and ref
+with a reviewed Code Mower package source.
+
 Run:
 
 ```bash

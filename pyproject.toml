@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-mower"
-version = "0.1.0a16"
+version = "0.1.0a17"
 description = "Multi-reviewer AI code audit orchestration"
 requires-python = ">=3.11"
 readme = "README.md"
@@ -25,4 +25,5 @@ code_mower = [
     "templates/**/*.yml",
     "templates/**/*.yaml",
     "templates/**/*.j2",
+    "templates/product-support/*",
 ]

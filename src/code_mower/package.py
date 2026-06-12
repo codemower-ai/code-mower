@@ -141,6 +141,36 @@ PACKAGE_FILES = (
     ),
     ("tools/context_packs.example.json", "src/code_mower/templates/context-packs.example.json", "config"),
     ("tools/reviewer_spend.example.json", "src/code_mower/templates/reviewer-spend.example.json", "config"),
+    (
+        "src/code_mower/templates/product-support/code_mower",
+        "src/code_mower/templates/product-support/code_mower",
+        "template",
+    ),
+    (
+        "src/code_mower/templates/product-support/code_mower_standalone_pin.env",
+        "src/code_mower/templates/product-support/code_mower_standalone_pin.env",
+        "template",
+    ),
+    (
+        "src/code_mower/templates/product-support/code_mower_standalone_shadow.sh",
+        "src/code_mower/templates/product-support/code_mower_standalone_shadow.sh",
+        "template",
+    ),
+    (
+        "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
+        "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
+        "template",
+    ),
+    (
+        "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
+        "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
+        "template",
+    ),
+    (
+        "src/code_mower/templates/product-support/safe_gh_comment.py",
+        "src/code_mower/templates/product-support/safe_gh_comment.py",
+        "template",
+    ),
     ("tools/ACP_BRIDGE_SPIKE.md", "docs/acp-bridge-spike.md", "doc"),
     ("tools/CODE_MOWER_CALIBRATION_PILOT.md", "docs/calibration-pilot.md", "doc"),
     ("tools/CODE_MOWER_CALIBRATION_NOTES.md", "docs/calibration-notes.md", "doc"),
@@ -251,6 +281,7 @@ STATIC_PACKAGE_FILES = (
                 "recursive-include src/code_mower/templates *.yml *.yaml *.json",
                 "recursive-include src/code_mower/templates *.md",
                 "recursive-include src/code_mower/templates *.j2",
+                "recursive-include src/code_mower/templates/product-support *",
                 "include src/code_mower/*.json",
                 "recursive-include templates *.j2 *.json *.md *.yml *.yaml",
                 "include requirements/*.txt",
@@ -788,7 +819,7 @@ def _pyproject_text(package_name: str) -> str:
                 'where = ["src"]',
                 "",
                 "[tool.setuptools.package-data]",
-                'code_mower = ["*.json", "templates/**/*.json", "templates/**/*.md", "templates/**/*.yml", "templates/**/*.yaml", "templates/**/*.j2"]',
+                'code_mower = ["*.json", "templates/**/*.json", "templates/**/*.md", "templates/**/*.yml", "templates/**/*.yaml", "templates/**/*.j2", "templates/product-support/*"]',
                 "",
             ]
         )

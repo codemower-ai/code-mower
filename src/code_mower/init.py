@@ -81,6 +81,45 @@ STARTER_DATA_FILES = (
     ),
 )
 
+PRODUCT_SUPPORT_FILES = (
+    (
+        "tools/code_mower",
+        "templates/product-support/code_mower",
+        "product-support-wrapper",
+        "0755",
+    ),
+    (
+        "tools/code_mower_standalone_shadow.sh",
+        "templates/product-support/code_mower_standalone_shadow.sh",
+        "product-support-wrapper",
+        "0755",
+    ),
+    (
+        "tools/code_mower_standalone_pin.env",
+        "templates/product-support/code_mower_standalone_pin.env",
+        "product-support-config",
+        "0644",
+    ),
+    (
+        "tools/run_codex_audit_pr.sh",
+        "templates/product-support/run_codex_audit_pr.sh",
+        "product-support-wrapper",
+        "0755",
+    ),
+    (
+        "tools/run_claude_audit_pr.sh",
+        "templates/product-support/run_claude_audit_pr.sh",
+        "product-support-wrapper",
+        "0755",
+    ),
+    (
+        "tools/safe_gh_comment.py",
+        "templates/product-support/safe_gh_comment.py",
+        "product-support-helper",
+        "0755",
+    ),
+)
+
 
 @dataclass(frozen=True)
 class InitProfile:
@@ -421,10 +460,12 @@ def _placeholder_text(path: str, source: str) -> str:
 
 def _copy_source_candidates(source_root: Path, entry: Mapping[str, Any], path: str) -> tuple[Path, ...]:
     candidates: list[Path] = []
+    package_copy_from = entry.get("package_copy_from")
+    if entry.get("package_copy_first") and package_copy_from:
+        candidates.append(Path(__file__).resolve().parent / str(package_copy_from))
     copy_from = str(entry.get("copy_from", path))
     candidates.append(source_root / copy_from)
-    package_copy_from = entry.get("package_copy_from")
-    if package_copy_from:
+    if package_copy_from and not entry.get("package_copy_first"):
         candidates.append(Path(__file__).resolve().parent / str(package_copy_from))
     return tuple(candidates)
 
@@ -524,6 +565,8 @@ def apply_init_plan(
         else:
             destination.write_text(_placeholder_text(path, str(entry["source"])), encoding="utf-8")
             placeholder_files.append(str(destination))
+        if entry.get("mode") == "0755":
+            destination.chmod(0o755)
         written_files.append(str(destination))
 
     return {
@@ -657,6 +700,20 @@ def render_init_plan(
                 "source": source_name,
                 "copy_from": copy_from,
                 "package_copy_from": package_copy_from,
+            }
+        )
+    for target, package_copy_from, source_name, mode in PRODUCT_SUPPORT_FILES:
+        if target in generated_paths:
+            warnings.append(f"product support target {target} collides with another generated file")
+            continue
+        generated_paths.add(target)
+        generated_files.append(
+            {
+                "path": target,
+                "source": source_name,
+                "package_copy_from": package_copy_from,
+                "package_copy_first": True,
+                "mode": mode,
             }
         )
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,14 +16,17 @@ from code_mower import __version__
 from code_mower import audit_progress
 from code_mower import code_mower_calibration
 from code_mower import doctor
+from code_mower import init as code_mower_init
 from code_mower import next_steps
+from code_mower import package as code_mower_package
 from code_mower import secrets as code_mower_secrets
+from code_mower import config as code_mower_config
 from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_16(self) -> None:
-        self.assertEqual(__version__, "0.1.0a16")
+    def test_version_is_alpha_17(self) -> None:
+        self.assertEqual(__version__, "0.1.0a17")
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
@@ -52,6 +57,138 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("tools/run_codex_audit_pr.sh", payload["product_support_files"])
         self.assertIn("tools/safe_gh_comment.py", payload["product_support_files"])
 
+    def test_init_apply_generates_product_support_wrappers(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        plan = code_mower_init.render_init_plan(
+            code_mower_config.load_config(config_path),
+            package_mode=True,
+            package_command="code-mower",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / ".code-mower.generated"
+            result = code_mower_init.apply_init_plan(plan, output_dir)
+
+            generated = {
+                "tools/code_mower",
+                "tools/code_mower_standalone_shadow.sh",
+                "tools/code_mower_standalone_pin.env",
+                "tools/run_codex_audit_pr.sh",
+                "tools/run_claude_audit_pr.sh",
+                "tools/safe_gh_comment.py",
+            }
+            written = {
+                str(Path(path).relative_to(output_dir))
+                for path in result["written_files"]
+                if Path(path).is_relative_to(output_dir)
+            }
+            self.assertTrue(generated.issubset(written))
+            placeholder_files = {
+                str(Path(path).relative_to(output_dir))
+                for path in result["placeholder_files"]
+                if Path(path).is_relative_to(output_dir)
+            }
+            self.assertTrue(generated.isdisjoint(placeholder_files))
+            for rel_path in generated - {"tools/code_mower_standalone_pin.env"}:
+                self.assertTrue(output_dir.joinpath(rel_path).stat().st_mode & 0o111, rel_path)
+            self.assertIn(
+                "CODE_MOWER_STANDALONE_REF",
+                output_dir.joinpath("tools/code_mower_standalone_pin.env").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            result = subprocess.run(
+                [str(output_dir / "tools/code_mower"), "--version"],
+                cwd=output_dir,
+                env={
+                    "PATH": os.defpath,
+                    "HOME": os.environ.get("HOME", ""),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("replace the placeholder", result.stderr)
+            source_root = Path(tmp) / "stale-product-repo"
+            source_root.joinpath("tools").mkdir(parents=True)
+            source_root.joinpath("tools/code_mower").write_text("stale local wrapper\n", encoding="utf-8")
+            stale_output = Path(tmp) / ".code-mower.generated-stale-source"
+            stale_result = code_mower_init.apply_init_plan(
+                plan,
+                stale_output,
+                source_root=source_root,
+            )
+            self.assertIn(str(stale_output / "tools/code_mower"), stale_result["written_files"])
+            self.assertNotEqual(
+                stale_output.joinpath("tools/code_mower").read_text(encoding="utf-8"),
+                "stale local wrapper\n",
+            )
+            local_cli = output_dir / "tools/code_mower_cli.py"
+            local_cli.write_text(
+                """#!/usr/bin/env python3
+import sys
+print("local:" + " ".join(sys.argv[1:]))
+""",
+                encoding="utf-8",
+            )
+            local_completed = subprocess.run(
+                [str(output_dir / "tools/code_mower"), "providers", "list"],
+                cwd=output_dir,
+                env={
+                    "PATH": os.environ.get("PATH", os.defpath),
+                    "HOME": os.environ.get("HOME", ""),
+                    "CODE_MOWER_USE_LOCAL": "1",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(local_completed.returncode, 0, local_completed.stderr)
+            self.assertEqual(local_completed.stdout.strip(), "local:providers list")
+            fake_code_mower = output_dir / "tools/code_mower"
+            fake_code_mower.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+lane="$1"
+stdin_flag="$2"
+if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ]; then
+  echo "token leaked through environment" >&2
+  exit 42
+fi
+read -r token
+if [ "${stdin_flag}" != "--read-token-from-stdin" ]; then
+  echo "missing stdin flag: ${stdin_flag}" >&2
+  exit 43
+fi
+if [ "${token}" != "secret-token" ]; then
+  echo "wrong token: ${token}" >&2
+  exit 44
+fi
+printf '%s\\n' "${lane}"
+""",
+                encoding="utf-8",
+            )
+            fake_code_mower.chmod(0o755)
+            for wrapper, lane in (
+                ("tools/run_codex_audit_pr.sh", "codex-audit"),
+                ("tools/run_claude_audit_pr.sh", "claude-audit"),
+            ):
+                completed = subprocess.run(
+                    [str(output_dir / wrapper), "--repo", "owner/repo"],
+                    cwd=output_dir,
+                    env={
+                        "PATH": os.defpath,
+                        "HOME": os.environ.get("HOME", ""),
+                        "GITHUB_TOKEN": "secret-token",
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(completed.stdout.strip(), lane)
+
     def test_privacy_scan_is_clean(self) -> None:
         self.assertEqual(privacy_scan.scan(ROOT), [])
 
@@ -75,6 +212,18 @@ class ReleaseHygieneTests(unittest.TestCase):
             (ROOT / "code-mower-package-manifest.json").read_text(encoding="utf-8")
         )
         self.assertEqual(manifest["output_dir"], "<generated-output-dir>")
+
+    def test_package_materializer_includes_product_support_templates(self) -> None:
+        packaged_sources = {source for _, source, _ in code_mower_package.PACKAGE_FILES}
+        for source in (
+            "src/code_mower/templates/product-support/code_mower",
+            "src/code_mower/templates/product-support/code_mower_standalone_pin.env",
+            "src/code_mower/templates/product-support/code_mower_standalone_shadow.sh",
+            "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
+            "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
+            "src/code_mower/templates/product-support/safe_gh_comment.py",
+        ):
+            self.assertIn(source, packaged_sources)
 
     def test_command_redaction_masks_secret_arguments(self) -> None:
         command = [

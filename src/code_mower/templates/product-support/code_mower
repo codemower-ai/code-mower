@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(CDPATH= cd -- "${script_dir}/.." && pwd -P)"
+pin_file="${CODE_MOWER_STANDALONE_PIN_FILE:-${script_dir}/code_mower_standalone_pin.env}"
+
+python_is_supported() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
+
+resolve_python_candidate() {
+  case "$1" in
+    */*) [ -x "$1" ] && printf '%s\n' "$1" ;;
+    *) command -v "$1" 2>/dev/null || true ;;
+  esac
+}
+
+find_bootstrap_python() {
+  local candidate resolved
+  if [ -n "${CODE_MOWER_BOOTSTRAP_PYTHON:-}" ]; then
+    printf '%s\n' "${CODE_MOWER_BOOTSTRAP_PYTHON}"
+    return
+  fi
+  for candidate in ${CODE_MOWER_BOOTSTRAP_PYTHON_CANDIDATES:-python3.13 python3.12 python3.11 /opt/homebrew/bin/python3 /usr/local/bin/python3 python3 python}; do
+    resolved="$(resolve_python_candidate "${candidate}")"
+    if [ -n "${resolved}" ] && python_is_supported "${resolved}"; then
+      printf '%s\n' "${resolved}"
+      return
+    fi
+  done
+  printf '%s\n' "python3"
+}
+
+if [ "${CODE_MOWER_USE_LOCAL:-}" = "1" ]; then
+  local_cli="${script_dir}/code_mower_cli.py"
+  if [ ! -f "${local_cli}" ]; then
+    echo "error: CODE_MOWER_USE_LOCAL=1 requested, but ${local_cli} is missing." >&2
+    echo "Unset CODE_MOWER_USE_LOCAL, or restore the repo-local mirror for shadow comparison." >&2
+    exit 1
+  fi
+  bootstrap_python="$(find_bootstrap_python)"
+  if ! python_is_supported "${bootstrap_python}"; then
+    echo "error: Code Mower local mode requires Python >= 3.11. Set CODE_MOWER_BOOTSTRAP_PYTHON=/path/to/python3.11+." >&2
+    exit 1
+  fi
+  exec "${bootstrap_python}" "${local_cli}" "$@"
+fi
+
+if [ -n "${CODE_MOWER_STANDALONE_COMMAND:-}" ]; then
+  exec "${CODE_MOWER_STANDALONE_COMMAND}" "$@"
+fi
+
+if [ -z "${CODE_MOWER_STANDALONE_PATH:-}" ] && { [ -n "${CODE_MOWER_STANDALONE_REF:-}" ] || [ -f "${pin_file}" ]; }; then
+  exec "${script_dir}/code_mower_standalone_shadow.sh" "$@"
+fi
+
+if [ -n "${CODE_MOWER_STANDALONE_PATH:-}" ]; then
+  standalone_path="${CODE_MOWER_STANDALONE_PATH}"
+  if [ ! -f "${standalone_path}/pyproject.toml" ]; then
+    echo "error: CODE_MOWER_STANDALONE_PATH does not look like a Code Mower package: ${standalone_path}" >&2
+    exit 1
+  fi
+  standalone_path="$(CDPATH= cd -- "${standalone_path}" && pwd -P)"
+  venv_dir="${CODE_MOWER_STANDALONE_VENV:-${repo_root}/.code-mower-standalone-venv}"
+  case "${venv_dir}" in
+    /*) ;;
+    *) venv_dir="${repo_root}/${venv_dir}" ;;
+  esac
+  marker="${venv_dir}/.code-mower-standalone-path"
+  installed_path=""
+  if [ -f "${marker}" ]; then
+    installed_path="$(cat "${marker}")"
+  fi
+  if [ ! -x "${venv_dir}/bin/code-mower" ] || [ "${installed_path}" != "${standalone_path}" ] || [ "${CODE_MOWER_STANDALONE_REINSTALL:-}" = "1" ]; then
+    bootstrap_python="$(find_bootstrap_python)"
+    if ! python_is_supported "${bootstrap_python}"; then
+      echo "error: Code Mower requires Python >= 3.11. Set CODE_MOWER_BOOTSTRAP_PYTHON=/path/to/python3.11+." >&2
+      exit 1
+    fi
+    "${bootstrap_python}" -m venv "${venv_dir}"
+    "${venv_dir}/bin/python" -m pip install -e "${standalone_path}" 1>&2
+    printf '%s\n' "${standalone_path}" > "${marker}"
+  fi
+  exec "${venv_dir}/bin/code-mower" "$@"
+fi
+
+if command -v code-mower >/dev/null 2>&1; then
+  exec code-mower "$@"
+fi
+
+echo "error: Code Mower is not installed and no standalone path/ref is configured." >&2
+echo "Install with pipx/uv, set CODE_MOWER_STANDALONE_PATH, or configure tools/code_mower_standalone_pin.env." >&2
+exit 1
