@@ -43,6 +43,17 @@ MIRRORED_IMPLEMENTATION_PATTERNS = (
     "tools/context_packs*.json",
     "tools/CODE_MOWER*.md",
 )
+PRODUCT_SUPPORT_PATTERNS = (
+    "tools/run_code_mower_tests.sh",
+    "tools/run_code_mower_standalone_rehearsal.sh",
+    "tools/run_codex_audit_pr.sh",
+    "tools/run_claude_audit_pr.sh",
+    "tools/devin_audit_bridge.py",
+    "tools/audit_handoff_log.py",
+    "tools/request_review.py",
+    "tools/safe_gh_comment.py",
+    "tools/codex_audit_env.sh",
+)
 CALIBRATION_EVIDENCE_ADDITIVE_KEYS = frozenset(
     {
         "audit_input_insufficient_count",
@@ -787,6 +798,10 @@ def render_mirror_removal_plan(
             "tools/code_mower_standalone_shadow.sh",
         ),
     )
+    product_support_files = _relative_existing_files(
+        repo_path,
+        PRODUCT_SUPPORT_PATTERNS,
+    )
     local_command = _default_local_command(repo_path)
     mirrored_candidates = _glob_relative_files(
         repo_path,
@@ -879,6 +894,8 @@ def render_mirror_removal_plan(
         "required_standalone_default_cycles": required_standalone_default_cycles,
         "support_files": support_files,
         "support_file_count": len(support_files),
+        "product_support_files": product_support_files,
+        "product_support_file_count": len(product_support_files),
         "local_command": list(local_command or ()),
         "mirrored_file_count": len(mirrored_candidates),
         "mirrored_files": mirrored_candidates,
@@ -903,6 +920,7 @@ def render_mirror_removal_plan(
         "notes": [
             "This plan is intentionally conservative: mirrored files are inventory, not deletion approval.",
             "Keep support wrappers such as tools/code_mower and the standalone pin/shadow files during mirror removal.",
+            "Product-specific support files may remain after mirrored implementation files are removed.",
             "CODE_MOWER_USE_LOCAL=1 workflow calls are allowed for private-repo safety, but they intentionally depend on repo-local mirror files.",
             "Keep product feature work independent from mirror-removal PRs.",
         ],

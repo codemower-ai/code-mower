@@ -73,12 +73,13 @@ private reference/product repos. The successful end state is:
 - product repo keeps thin support files such as `tools/code_mower`,
   `tools/code_mower_standalone_shadow.sh`, and
   `tools/code_mower_standalone_pin.env`;
-- product shell shims may remain for operator muscle memory, but they delegate
-  to package commands;
+- product shell shims and support helpers may remain for operator muscle
+  memory or repo-specific bridges, but they delegate to package commands or
+  stay intentionally product-specific;
 - workflows invoke package-backed entrypoints instead of importing local Python
   mirrors;
-- mirrored implementation and Code Mower docs are removed from the product
-  repo; and
+- mirrored implementation files and package-owned Code Mower docs are removed
+  from the product repo; and
 - post-merge CI/deploy checks pass after deletion.
 
 Use that as confidence, not as permission to skip the runbook. New repos should
@@ -108,6 +109,33 @@ may keep thin shell wrappers such as `tools/run_codex_audit_pr.sh` and
 `tools/run_claude_audit_pr.sh` for token handling and operator muscle memory,
 but those wrappers should delegate to `tools/code_mower codex-audit` and
 `tools/code_mower claude-audit` instead of importing mirrored Python files.
+
+`mirror-removal-plan --json` reports two support groups:
+
+- `support_files`: core wrapper/pin/shadow files required for standalone
+  package delegation;
+- `product_support_files`: repo-specific helpers that can remain after mirror
+  deletion, such as audit shell shims, `devin_audit_bridge.py`,
+  `safe_gh_comment.py`, `request_review.py`, or local environment helpers.
+
+Do not delete product support files merely because they mention Code Mower.
+Delete only implementation mirrors that the standalone package now owns, or
+rewrite the support helper first so it delegates to `tools/code_mower`.
+
+## Reference Pilot Learning
+
+The first private reference pilot removed the implementation mirror after a
+clean standalone default cycle, but kept product support files. Two reviewer
+findings improved the migration shape:
+
+- blind-review artifact workflows should validate synthetic plans with
+  `tools/code_mower blind-review plan ...` before materializing held/released
+  artifacts; and
+- workflow tests should prove both hold and release call sites use
+  `tools/code_mower blind-review artifacts`, not just that the command appears
+  somewhere in the YAML.
+
+Carry those checks into any future product-repo migration.
 
 ## Recovery
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -19,8 +20,37 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_15(self) -> None:
-        self.assertEqual(__version__, "0.1.0a15")
+    def test_version_is_alpha_16(self) -> None:
+        self.assertEqual(__version__, "0.1.0a16")
+
+    def test_mirror_removal_plan_reports_product_support_files(self) -> None:
+        from code_mower import migration
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            support_paths = [
+                repo / "tools" / "code_mower",
+                repo / "tools" / "code_mower_standalone_pin.env",
+                repo / "tools" / "code_mower_standalone_shadow.sh",
+                repo / "tools" / "run_codex_audit_pr.sh",
+                repo / "tools" / "safe_gh_comment.py",
+            ]
+            for path in support_paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+
+            payload = migration.render_mirror_removal_plan(
+                repo_path=repo,
+                shadow_cycles=0,
+                required_shadow_cycles=1,
+                standalone_default_cycles=1,
+                required_standalone_default_cycles=1,
+            )
+
+        self.assertEqual(payload["status"], "mirrors_removed")
+        self.assertEqual(payload["mirrored_file_count"], 0)
+        self.assertIn("tools/run_codex_audit_pr.sh", payload["product_support_files"])
+        self.assertIn("tools/safe_gh_comment.py", payload["product_support_files"])
 
     def test_privacy_scan_is_clean(self) -> None:
         self.assertEqual(privacy_scan.scan(ROOT), [])

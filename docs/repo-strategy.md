@@ -93,7 +93,7 @@ The expected migration order is:
 6. pinned standalone release becomes the default
 7. mirrored implementation files are removed from product repos
 
-As of `v0.1.0-alpha.15`, the private reference/product repos have proved the
+As of `v0.1.0-alpha.16`, the private reference/product repos have proved the
 standalone checkout path, the standalone-default wrapper path, and the
 mirror-removal path. Their product wrappers prefer the pinned standalone
 command, workflows call `tools/code_mower` entrypoints, and mirrored
