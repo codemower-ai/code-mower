@@ -93,12 +93,20 @@ The expected migration order is:
 6. pinned standalone release becomes the default
 7. mirrored implementation files are removed from product repos
 
-As of `v0.1.0-alpha.17`, the private reference/product repos have proved the
+As of `v0.1.0-alpha.18`, the private reference/product repos have proved the
 standalone checkout path, the standalone-default wrapper path, and the
 mirror-removal path. Their product wrappers prefer the pinned standalone
 command, workflows call `tools/code_mower` entrypoints, and mirrored
 implementation files can be absent while `migration mirror-removal-plan` reports
 `mirrors_removed`.
+
+The package should now be treated as the source of truth for product-support
+wrapper behavior. Product repos may keep a small reviewed copy of generated
+support files (`tools/code_mower`, `tools/code_mower_standalone_shadow.sh`,
+`tools/code_mower_standalone_pin.env`, compatibility audit shims, and
+`tools/safe_gh_comment.py`), but fixes to checkout locking, Python selection,
+deleted-mirror handling, token handling, or shell-safe commenting belong in the
+package templates first and are then regenerated into product repos.
 
 That does not make mirror deletion automatic for every user repo. The migration
 contract remains one repo at a time:

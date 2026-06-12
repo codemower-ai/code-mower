@@ -3,7 +3,9 @@ set -euo pipefail
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(CDPATH= cd -- "${script_dir}/.." && pwd -P)"
-pin_file="${CODE_MOWER_STANDALONE_PIN_FILE:-${script_dir}/code_mower_standalone_pin.env}"
+standalone_shadow="${script_dir}/code_mower_standalone_shadow.sh"
+install_lock_acquired=0
+install_lock_dir=""
 
 python_is_supported() {
   "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
@@ -22,37 +24,100 @@ find_bootstrap_python() {
     printf '%s\n' "${CODE_MOWER_BOOTSTRAP_PYTHON}"
     return
   fi
-  for candidate in ${CODE_MOWER_BOOTSTRAP_PYTHON_CANDIDATES:-python3.13 python3.12 python3.11 /opt/homebrew/bin/python3 /usr/local/bin/python3 python3 python}; do
+  if [ -n "${CODE_MOWER_PYTHON:-}" ]; then
+    printf '%s\n' "${CODE_MOWER_PYTHON}"
+    return
+  fi
+
+  for candidate in ${CODE_MOWER_BOOTSTRAP_PYTHON_CANDIDATES:-python3.13 python3.12 python3.11 /opt/homebrew/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11 /usr/local/bin/python3.13 /usr/local/bin/python3.12 /usr/local/bin/python3.11 python3 python}; do
     resolved="$(resolve_python_candidate "${candidate}")"
     if [ -n "${resolved}" ] && python_is_supported "${resolved}"; then
       printf '%s\n' "${resolved}"
       return
     fi
   done
-  printf '%s\n' "python3"
+
+  resolved="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+  printf '%s\n' "${resolved:-python3}"
 }
 
-if [ "${CODE_MOWER_USE_LOCAL:-}" = "1" ]; then
-  local_cli="${script_dir}/code_mower_cli.py"
-  if [ ! -f "${local_cli}" ]; then
-    echo "error: CODE_MOWER_USE_LOCAL=1 requested, but ${local_cli} is missing." >&2
-    echo "Unset CODE_MOWER_USE_LOCAL, or restore the repo-local mirror for shadow comparison." >&2
-    exit 1
-  fi
-  bootstrap_python="$(find_bootstrap_python)"
-  if ! python_is_supported "${bootstrap_python}"; then
-    echo "error: Code Mower local mode requires Python >= 3.11. Set CODE_MOWER_BOOTSTRAP_PYTHON=/path/to/python3.11+." >&2
-    exit 1
-  fi
-  exec "${bootstrap_python}" "${local_cli}" "$@"
+bootstrap_python="$(find_bootstrap_python)"
+
+if [ "${CODE_MOWER_USE_LOCAL:-}" = "1" ] || [ "${CODE_MOWER_USE_STANDALONE:-1}" = "0" ]; then
+  unset CODE_MOWER_STANDALONE_COMMAND
+  unset CODE_MOWER_STANDALONE_PATH
 fi
+
+if [ -z "${CODE_MOWER_STANDALONE_COMMAND:-}" ] \
+  && [ -z "${CODE_MOWER_STANDALONE_PATH:-}" ] \
+  && [ -z "${CODE_MOWER_STANDALONE_DELEGATING:-}" ] \
+  && [ "${CODE_MOWER_USE_LOCAL:-}" != "1" ] \
+  && [ "${CODE_MOWER_USE_STANDALONE:-1}" != "0" ]; then
+  if [ -x "${standalone_shadow}" ]; then
+    export CODE_MOWER_STANDALONE_DELEGATING=1
+    exec "${standalone_shadow}" "$@"
+  fi
+  echo "warning: standalone delegation expected but ${standalone_shadow} is missing or not executable; running repo-local mirror" >&2
+fi
+
+release_install_lock() {
+  if [ "${install_lock_acquired}" = "1" ] && [ -n "${install_lock_dir}" ]; then
+    rm -rf "${install_lock_dir}"
+  fi
+  install_lock_acquired=0
+  install_lock_dir=""
+}
+trap release_install_lock EXIT
+
+acquire_install_lock() {
+  local lock_age lock_mtime lock_pid now parent_dir stale_seconds started timeout_seconds
+  install_lock_dir="${venv_dir}.install.lock"
+  parent_dir="$(dirname -- "${install_lock_dir}")"
+  stale_seconds="${CODE_MOWER_STANDALONE_LOCK_STALE_SECONDS:-30}"
+  timeout_seconds="${CODE_MOWER_STANDALONE_LOCK_TIMEOUT_SECONDS:-120}"
+  started="$(date +%s)"
+  mkdir -p "${parent_dir}"
+  while ! mkdir "${install_lock_dir}" 2>/dev/null; do
+    now="$(date +%s)"
+    lock_pid=""
+    if [ -f "${install_lock_dir}/pid" ]; then
+      lock_pid="$(cat "${install_lock_dir}/pid" 2>/dev/null || true)"
+    fi
+    lock_mtime="$(stat -c %Y "${install_lock_dir}" 2>/dev/null || stat -f %m "${install_lock_dir}" 2>/dev/null || echo "${now}")"
+    case "${lock_mtime}" in
+      ''|*[!0-9]*) lock_mtime="${now}" ;;
+    esac
+    lock_age=$((now - lock_mtime))
+    if [ -z "${lock_pid}" ] && [ "${lock_age}" -ge "${stale_seconds}" ]; then
+      rm -rf "${install_lock_dir}" 2>/dev/null || true
+      continue
+    fi
+    if [ -n "${lock_pid}" ] && ! kill -0 "${lock_pid}" 2>/dev/null; then
+      rm -rf "${install_lock_dir}" 2>/dev/null || true
+      continue
+    fi
+    if [ $((now - started)) -ge "${timeout_seconds}" ]; then
+      echo "error: timed out waiting for standalone install lock: ${install_lock_dir}" >&2
+      exit 1
+    fi
+    sleep 0.2
+  done
+  install_lock_acquired=1
+  printf '%s\n' "$$" > "${install_lock_dir}/pid"
+}
+
+check_standalone_python() {
+  if [ "${CODE_MOWER_SKIP_STANDALONE_PYTHON_CHECK:-}" = "1" ]; then
+    return
+  fi
+  if ! "${bootstrap_python}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+    echo "error: Code Mower standalone install requires Python >= 3.11; ${bootstrap_python} is unsupported. Set CODE_MOWER_BOOTSTRAP_PYTHON=/path/to/python3.11+ or install python3.11/python3.12." >&2
+    exit 1
+  fi
+}
 
 if [ -n "${CODE_MOWER_STANDALONE_COMMAND:-}" ]; then
   exec "${CODE_MOWER_STANDALONE_COMMAND}" "$@"
-fi
-
-if [ -z "${CODE_MOWER_STANDALONE_PATH:-}" ] && { [ -n "${CODE_MOWER_STANDALONE_REF:-}" ] || [ -f "${pin_file}" ]; }; then
-  exec "${script_dir}/code_mower_standalone_shadow.sh" "$@"
 fi
 
 if [ -n "${CODE_MOWER_STANDALONE_PATH:-}" ]; then
@@ -62,33 +127,77 @@ if [ -n "${CODE_MOWER_STANDALONE_PATH:-}" ]; then
     exit 1
   fi
   standalone_path="$(CDPATH= cd -- "${standalone_path}" && pwd -P)"
+
   venv_dir="${CODE_MOWER_STANDALONE_VENV:-${repo_root}/.code-mower-standalone-venv}"
   case "${venv_dir}" in
     /*) ;;
     *) venv_dir="${repo_root}/${venv_dir}" ;;
   esac
+  allowed_standalone_venv="${repo_root}/.code-mower-standalone-venv"
+  venv_parent="$(dirname -- "${venv_dir}")"
+  venv_name="$(basename -- "${venv_dir}")"
+  if [ -d "${venv_parent}" ]; then
+    venv_parent="$(CDPATH= cd -- "${venv_parent}" && pwd -P)"
+    venv_dir="${venv_parent}/${venv_name}"
+  fi
   marker="${venv_dir}/.code-mower-standalone-path"
   installed_path=""
   if [ -f "${marker}" ]; then
     installed_path="$(cat "${marker}")"
   fi
   if [ ! -x "${venv_dir}/bin/code-mower" ] || [ "${installed_path}" != "${standalone_path}" ] || [ "${CODE_MOWER_STANDALONE_REINSTALL:-}" = "1" ]; then
-    bootstrap_python="$(find_bootstrap_python)"
-    if ! python_is_supported "${bootstrap_python}"; then
-      echo "error: Code Mower requires Python >= 3.11. Set CODE_MOWER_BOOTSTRAP_PYTHON=/path/to/python3.11+." >&2
-      exit 1
+    acquire_install_lock
+    installed_path=""
+    if [ -f "${marker}" ]; then
+      installed_path="$(cat "${marker}")"
     fi
-    "${bootstrap_python}" -m venv "${venv_dir}"
-    "${venv_dir}/bin/python" -m pip install -e "${standalone_path}" 1>&2
-    printf '%s\n' "${standalone_path}" > "${marker}"
+    if [ ! -x "${venv_dir}/bin/code-mower" ] || [ "${installed_path}" != "${standalone_path}" ] || [ "${CODE_MOWER_STANDALONE_REINSTALL:-}" = "1" ]; then
+      if [ -d "${venv_dir}" ] && [ "${CODE_MOWER_STANDALONE_REINSTALL:-}" = "1" ]; then
+        case "${venv_dir}" in
+          "${allowed_standalone_venv}"|"${allowed_standalone_venv}"/*) rm -rf "${venv_dir}" ;;
+          *)
+            if [ ! -x "${venv_dir}/bin/python" ]; then
+              echo "error: refusing to recreate unsafe custom standalone venv without an existing Python: ${venv_dir}" >&2
+              echo "Choose a venv under ${allowed_standalone_venv}, or remove/recreate the custom venv yourself." >&2
+              exit 1
+            fi
+            ;;
+        esac
+      fi
+      if [ ! -x "${venv_dir}/bin/python" ]; then
+        check_standalone_python
+        "${bootstrap_python}" -m venv "${venv_dir}"
+      fi
+      "${venv_dir}/bin/python" -m pip install -e "${standalone_path}" 1>&2
+      printf '%s\n' "${standalone_path}" > "${marker}"
+    fi
+    release_install_lock
   fi
+  release_install_lock
   exec "${venv_dir}/bin/code-mower" "$@"
 fi
 
-if command -v code-mower >/dev/null 2>&1; then
-  exec code-mower "$@"
+if [ ! -f "${script_dir}/code_mower_bootstrap.py" ]; then
+  echo "error: repo-local Code Mower mirror is unavailable. Use the pinned standalone path via tools/code_mower_standalone_shadow.sh, or unset CODE_MOWER_USE_LOCAL/CODE_MOWER_USE_STANDALONE=0." >&2
+  exit 1
 fi
 
-echo "error: Code Mower is not installed and no standalone path/ref is configured." >&2
-echo "Install with pipx/uv, set CODE_MOWER_STANDALONE_PATH, or configure tools/code_mower_standalone_pin.env." >&2
-exit 1
+case "${1:-}" in
+  bootstrap)
+    shift
+    exec "${bootstrap_python}" "${script_dir}/code_mower_bootstrap.py" "$@"
+    ;;
+  trailer-comment-labeler)
+    shift
+    python_bin="$("${bootstrap_python}" "${script_dir}/code_mower_bootstrap.py" --repo-root "${repo_root}" --print-python)"
+    exec "${python_bin}" "${script_dir}/trailer_comment_labeler.py" "$@"
+    ;;
+  saas-reviewer-labeler)
+    shift
+    python_bin="$("${bootstrap_python}" "${script_dir}/code_mower_bootstrap.py" --repo-root "${repo_root}" --print-python)"
+    exec "${python_bin}" "${script_dir}/saas_reviewer_labeler.py" "$@"
+    ;;
+esac
+
+python_bin="$("${bootstrap_python}" "${script_dir}/code_mower_bootstrap.py" --repo-root "${repo_root}" --print-python)"
+exec "${python_bin}" "${script_dir}/code_mower_cli.py" "$@"

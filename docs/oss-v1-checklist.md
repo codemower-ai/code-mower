@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.17` of the standalone
+The current public-release baseline is `v0.1.0-alpha.18` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -49,6 +49,12 @@ package. It has proved:
   standalone checkout/pin files, Codex/Claude compatibility shims, and
   shell-safe GitHub commenting, so future product repos can review generated
   support files instead of hand-copying them from private reference repos.
+- generated product-support wrappers promoted from the private reference repos
+  back into the package, including standalone checkout/install locks,
+  Python-version selection, deleted-mirror error messages, portable `stat`
+  handling, and shell-safe GitHub comment helpers.
+- bounded Claude doctor probes that pin a cheap model/budget sentinel instead
+  of relying on the local Claude CLI's default model selection.
 
 It has not yet proved:
 
@@ -139,6 +145,9 @@ do not spend v1.0 work on non-GitHub workflow rendering.
   required env vars, and optional runtime probes.
 - For local CLI lanes, support provider-declared smoke probes that can validate
   a harmless version command or an auth-bearing sentinel prompt.
+- For paid or usage-metered local CLIs, provider-declared smoke probes should
+  pin a cheap model and budget cap when the CLI supports it. The default
+  Claude probe uses `--model sonnet` and `--max-budget-usd 0.25`.
 - Support `code-mower doctor --github` for repository visibility, token
   write-adjacent permission hints, Actions permission inspection, branch
   protection inspection, recent billing blocks, sampled Actions cost hotspots,

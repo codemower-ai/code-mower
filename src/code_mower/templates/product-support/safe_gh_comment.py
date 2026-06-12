@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""Post or edit GitHub issue/PR comments without shell-interpreting Markdown."""
+"""Post or edit GitHub issue/PR comments without shell-interpreting Markdown.
 
+Never pass Markdown through `gh ... --body "..."`: backticks and `$()` inside
+the body are shell syntax before GitHub ever sees them. This helper reads the
+body from a file or stdin, serializes it as JSON, and invokes `gh api` with
+argument-list subprocess calls.
+"""
 from __future__ import annotations
 
 import argparse
@@ -8,9 +13,14 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence
 
-RunFn = Callable[..., subprocess.CompletedProcess[str]]
+if TYPE_CHECKING:
+    RunFn = Callable[..., subprocess.CompletedProcess[str]]
+else:
+    # Keep the generated helper importable under older ambient Python 3.x
+    # interpreters that cannot evaluate subprocess.CompletedProcess[str].
+    RunFn = Callable[..., Any]
 
 
 def _read_body(*, body_file: Optional[Path], stdin_text: Optional[str] = None) -> str:
@@ -31,7 +41,7 @@ def _repo_from_gh(run: RunFn = subprocess.run) -> str:
     return result.stdout.strip()
 
 
-def _run_gh_api(args: Sequence[str], payload: dict[str, str], run: RunFn = subprocess.run) -> None:
+def _run_gh_api(args: Sequence[str], payload: "dict[str, str]", run: RunFn = subprocess.run) -> None:
     run(
         ["gh", "api", *args, "--input", "-"],
         input=json.dumps(payload),

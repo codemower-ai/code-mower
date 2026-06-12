@@ -25,8 +25,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_17(self) -> None:
-        self.assertEqual(__version__, "0.1.0a17")
+    def test_version_is_alpha_18(self) -> None:
+        self.assertEqual(__version__, "0.1.0a18")
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
@@ -123,6 +123,34 @@ class ReleaseHygieneTests(unittest.TestCase):
             self.assertNotEqual(
                 stale_output.joinpath("tools/code_mower").read_text(encoding="utf-8"),
                 "stale local wrapper\n",
+            )
+            removed_mirror_completed = subprocess.run(
+                [str(output_dir / "tools/code_mower"), "providers", "list"],
+                cwd=output_dir,
+                env={
+                    "PATH": os.environ.get("PATH", os.defpath),
+                    "HOME": os.environ.get("HOME", ""),
+                    "CODE_MOWER_USE_LOCAL": "1",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(removed_mirror_completed.returncode, 0)
+            self.assertIn(
+                "repo-local Code Mower mirror is unavailable",
+                removed_mirror_completed.stderr,
+            )
+            local_bootstrap = output_dir / "tools/code_mower_bootstrap.py"
+            local_bootstrap.write_text(
+                """#!/usr/bin/env python3
+import sys
+if "--print-python" in sys.argv:
+    print(sys.executable)
+else:
+    raise SystemExit("unexpected bootstrap args: " + " ".join(sys.argv[1:]))
+""",
+                encoding="utf-8",
             )
             local_cli = output_dir / "tools/code_mower_cli.py"
             local_cli.write_text(
@@ -224,6 +252,94 @@ printf '%s\\n' "${lane}"
             "src/code_mower/templates/product-support/safe_gh_comment.py",
         ):
             self.assertIn(source, packaged_sources)
+
+    def test_standalone_shadow_releases_checkout_lock_before_delegation(self) -> None:
+        text = (
+            ROOT
+            / "src/code_mower/templates/product-support/code_mower_standalone_shadow.sh"
+        ).read_text(encoding="utf-8")
+        release_index = text.rfind("release_checkout_lock")
+        delegate_index = text.rfind('"${script_dir}/code_mower" "$@"')
+        self.assertGreaterEqual(release_index, 0)
+        self.assertGreater(delegate_index, release_index)
+
+    def test_standalone_wrapper_reinstalls_into_custom_venv_without_deleting_it(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        plan = code_mower_init.render_init_plan(
+            code_mower_config.load_config(config_path),
+            package_mode=True,
+            package_command="code-mower",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+
+            fake_package = root / "fake-code-mower"
+            fake_package.mkdir()
+            fake_package.joinpath("pyproject.toml").write_text(
+                """[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fake-code-mower-wrapper-test"
+version = "0.0.0"
+
+[project.scripts]
+code-mower = "fake_code_mower:main"
+
+[tool.setuptools]
+py-modules = ["fake_code_mower"]
+""",
+                encoding="utf-8",
+            )
+            fake_package.joinpath("fake_code_mower.py").write_text(
+                """import sys
+
+
+def main():
+    print("fake-code-mower " + " ".join(sys.argv[1:]))
+    return 0
+""",
+                encoding="utf-8",
+            )
+            custom_venv = root / "custom-standalone-venv"
+            env = {
+                "PATH": os.environ.get("PATH", os.defpath),
+                "HOME": os.environ.get("HOME", ""),
+                "CODE_MOWER_BOOTSTRAP_PYTHON": sys.executable,
+                "CODE_MOWER_STANDALONE_PATH": str(fake_package),
+                "CODE_MOWER_STANDALONE_VENV": str(custom_venv),
+            }
+            first = subprocess.run(
+                [str(output_dir / "tools/code_mower"), "--version"],
+                cwd=output_dir,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=120,
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertIn("fake-code-mower --version", first.stdout)
+            self.assertTrue(custom_venv.joinpath("bin/python").is_file())
+
+            second_env = dict(env)
+            second_env["CODE_MOWER_STANDALONE_REINSTALL"] = "1"
+            second = subprocess.run(
+                [str(output_dir / "tools/code_mower"), "providers", "list"],
+                cwd=output_dir,
+                env=second_env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=120,
+            )
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertIn("fake-code-mower providers list", second.stdout)
+            self.assertNotIn("refusing to recreate unsafe standalone venv", second.stderr)
 
     def test_command_redaction_masks_secret_arguments(self) -> None:
         command = [
