@@ -421,3 +421,53 @@ code-mower calibration run tools/calibration_corpus.json \
   --results-dir .code-mower/context-pack-lens-results \
   --json
 ```
+
+## Alpha.13 Gemini Doctrine Rerun
+
+After `v0.1.0-alpha.13`, the Gemini doctrine proof was rerun from the
+package-installed Code Mower CLI against the same four-head historical corpus
+shape:
+
+- 2 known-blocked controls: `owner/repo#347` and `owner/repo#390`.
+- 2 known-clean controls: `owner/repo#377` and `owner/repo#380`.
+- 1 provider: Gemini CLI.
+- 3 reviewer profiles: `gemini-base-audit`,
+  `gemini-generic-programming`, and `gemini-context-driven-quality`.
+
+The run planned 12 commands, all 12 finished successfully, and all 12 produced
+parseable structured summaries. Raw command outputs and private artifact paths
+remain outside the public repository; this report intentionally carries only
+the anonymized calibration summary.
+
+| Case | `gemini-base-audit` | `gemini-generic-programming` | `gemini-context-driven-quality` |
+| --- | --- | --- | --- |
+| Known-blocked `#347` | blocked, 1 finding, 146.7s | blocked, 2 findings, 106.8s | blocked, 2 findings, 63.5s |
+| Known-blocked `#390` | audit-input-insufficient, 24.6s | audit-input-insufficient, 45.7s | audit-input-insufficient, 27.1s |
+| Known-clean `#377` | pass, 0 findings, 21.2s | pass, 0 findings, 20.7s | pass, 0 findings, 21.3s |
+| Known-clean `#380` | pass, 0 findings, 139.9s | pass, 1 non-blocking finding, 189.0s | pass, 0 findings, 105.4s |
+
+What this adds:
+
+- The alpha.13 package-installed runner path is viable for real calibration
+  fan-out, not just dry-run or source-checkout use.
+- Doctrine changed output shape on `#347`: the doctrine lenses produced more
+  findings than the base audit while preserving a blocking verdict.
+- `#390` remained an audit-input-insufficient case across all three Gemini
+  profiles. This is useful evidence for context-pack prioritization, not a
+  useful code-review miss.
+- The known-clean controls had no false blocking verdicts. The
+  `generic-programming` lens raised one non-blocking documentation concern on
+  `#380`, which should be dispositioned before being used as quality evidence.
+
+Harness lessons from the rerun:
+
+- The value reporter currently relies on `source` naming conventions such as
+  `known-clean-*` and `known-blocked-*` to classify corpus truth. That should
+  become an explicit corpus field before wider OSS use.
+- Obvious historical catches are not automatically credited as useful unless
+  expected findings or human disposition templates match them. The next
+  calibration slice should make disposition capture first-class so useful rate
+  reflects review value instead of only exact string/metadata matches.
+- Lenses should remain informational/calibration-only until the corpus contains
+  richer dispositions and enough known-clean / known-blocked coverage to
+  support promotion decisions.
