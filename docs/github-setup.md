@@ -68,24 +68,28 @@ Local LLM lanes still send selected source context to the configured endpoint.
 That endpoint may be local, private, or hosted; the repo owner owns that trust
 decision.
 
-## Private Standalone Package Checkout
+## Standalone Package Checkout
 
-When product repositories still consume a private standalone Code Mower source
-repo, GitHub Actions needs an explicit read credential. The recommended v1.0
-proof path is a read-only deploy key:
+The public Code Mower source repo can be fetched from GitHub Actions over
+unauthenticated HTTPS. Use that path when possible; it is the lowest-friction
+v1.0 setup and avoids spreading broad personal tokens across repositories.
+
+When a repository consumes a private Code Mower fork, a private source branch,
+or a private package index, GitHub Actions needs an explicit read credential.
+The recommended proof path is a read-only deploy key:
 
 1. Generate an Ed25519 SSH keypair dedicated to Code Mower package checkout.
-2. Add the public key as a read-only deploy key on the standalone
-   `code-mower` repository.
+2. Add the public key as a read-only deploy key on the private Code Mower source
+   repository or fork.
 3. Add the private key to each product repository as the Actions secret
    `CODE_MOWER_STANDALONE_DEPLOY_KEY`.
 4. Use the `Code Mower standalone shadow` workflow to fetch the pinned
    standalone commit over SSH, run `doctor --easy`, and run
    `migration wrapper-rehearsal` against the repo-local mirror.
 
-This proves private-repo checkout without giving the product repository a broad
-personal token. The deploy key can be deleted once Code Mower is public or
-published through a package index.
+This proves private-source checkout without giving the product repository a
+broad personal token. The deploy key can be deleted once the repo uses public
+source or a package-index install path.
 
 ## Token And Secret Model
 
@@ -177,6 +181,24 @@ The default v1.0 posture is:
 - Gitar and other SaaS reviewers start informational.
 - Cursor BugBot, CodeRabbit CLI, Gemini/Antigravity, Hermes, local LLMs, Qodo,
   Greptile, Devin, and future hosted lanes require calibration before promotion.
+
+## Provider-Unavailable Bypass
+
+A promoted reviewer can fail for reasons that are not code findings: expired
+local CLI auth, provider rate limits, malformed provider output, or unavailable
+hosted service state. Treat those as setup incidents.
+
+If repository policy allows a bypass, the maintainer should:
+
+- prove the provider failure with a harmless sanity command or provider status;
+- leave a PR comment that names the provider, head SHA, failure class, and other
+  clean merge evidence;
+- remove the stale `needs-*-audit` label only after the bypass is documented;
+- avoid counting the failed provider run as PASS evidence; and
+- repair provider auth/setup before relying on that lane again.
+
+Do not make this automatic in v1.0. A provider-unavailable bypass is an explicit
+human or delegated-maintainer action.
 
 ## Fork Pull Requests
 

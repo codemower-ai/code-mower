@@ -24,4 +24,4 @@ rehearsal installs Code Mower non-editably, creates a fresh toy repo, runs
 easy-mode init/doctor/next-steps/calibration starter checks, and optionally
 compares a product repo against the installed package.
 
-For public release readiness, see `docs/repo-strategy.md`, `docs/mirror-removal-runbook.md`, `docs/commercial-boundary.md`, and `docs/public-release-checklist.md`.
+For v1.0 readiness and migration guidance, see `docs/oss-v1-checklist.md`, `docs/repo-strategy.md`, `docs/mirror-removal-runbook.md`, `docs/github-setup.md`, `docs/provider-matrix.md`, `docs/commercial-boundary.md`, and `docs/public-release-checklist.md`.

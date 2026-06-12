@@ -1,11 +1,22 @@
-# Code Mower Public Release Checklist
+# Code Mower Public Release / v1.0 Checklist
 
-Use this checklist before changing the standalone `code-mower` repository from
-private to public.
+Use this checklist for public OSS readiness and v1.0 hardening. The standalone
+`code-mower` repository is public; the remaining work is to make the first
+install, first doctor run, first audit, and first report boring for users who do
+not know the original reference repos.
 
-## Required Before Public Visibility
+## Current Public Status
 
-- Apache-2.0 `LICENSE` and `NOTICE` are present and correct.
+- Public repository exists.
+- Apache-2.0 `LICENSE` and `NOTICE` are present.
+- The package has alpha releases and reports its version with
+  `code-mower --version`.
+- Private reference/product repos have proven pinned standalone consumption and
+  mirror removal while preserving their own CI/deploy gates.
+- Hosted/commercial service implementation remains outside the public OSS repo.
+
+## Required For v1.0
+
 - `README.md` is public-safe, product-oriented, and does not require access to
   private product/reference repositories.
 - Public docs explain repo strategy, commercial boundary, GitHub setup, provider
@@ -25,12 +36,10 @@ private to public.
 - Cloud export docs state that upload is opt-in and inspectable.
 - Issue templates, contributing guide, security policy, and support boundaries
   are ready enough for early OSS users.
-- Initial release tag/version policy is chosen and `code-mower --version`
-  reports the package version.
-- Private product repos can prove pinned standalone checkout in GitHub Actions
-  with either a read-only `CODE_MOWER_STANDALONE_DEPLOY_KEY` deploy key, a
-  documented fine-grained token/GitHub App path, or a public/package-index
-  source that needs no private checkout credential.
+- Public-source and package-index install paths are documented separately from
+  private-fork/deploy-key install paths.
+- At least one fresh public toy repo and one private GitHub repo complete the
+  easy-mode flow without reference-repo assumptions.
 
 ## Alpha Release Gate
 
@@ -45,11 +54,11 @@ python -m venv .venv
 .venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python python3.12 --json
 ```
 
-The alpha can remain private while product repos run pinned standalone shadow
-mode. Do not remove mirrored product-repo tools until at least one shadowed
-product release cycle has passed cleanly.
+For alpha releases, keep running this from a fresh clone before tagging. Do not
+promote an alpha toward v1.0 unless the generated package can pass the same
+path outside the developer's long-lived worktree.
 
-## Recommended Before Public Visibility
+## Recommended Before v1.0
 
 - Publish a short "easy mode" walkthrough using a toy repo.
 - Add a troubleshooting section for Python, GitHub auth, provider CLIs, and
@@ -59,13 +68,15 @@ product release cycle has passed cleanly.
 - Add a short explanation of how local benchmark reports can later be shared with
   the hosted service.
 
-## After Public Visibility
+## Ongoing Public-Repo Duties
 
-- Validate clone, install, init, doctor, and smoke test from a fresh machine.
 - Create the first GitHub release.
 - Keep commercial backend code and commercialization plans in a private repo.
 - Keep product repos private unless there is a separate product reason to make
   them public.
+- Keep private reference-repo names out of public docs unless they are necessary
+  examples and the repo owner has intentionally made them public.
+- Re-run the public fresh-clone/install rehearsal before every alpha promotion.
 
 ## Product Safety Rule
 

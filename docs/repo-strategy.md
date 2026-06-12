@@ -1,13 +1,13 @@
 # Code Mower Repo Strategy
 
-Code Mower should become a public Apache-2.0 OSS core without exposing private
-product repos or slowing ongoing product delivery.
+Code Mower is a public Apache-2.0 OSS core. The repo strategy is to keep the
+installable core useful on its own while private reference/product repos keep
+validating real-world velocity, quality, and migration behavior without leaking
+private product history into public docs.
 
 ## Repositories
 
-- `code-mower`: standalone OSS candidate. This repo should become the public
-  home for the installable Code Mower core when the public release checklist is
-  complete.
+- `code-mower`: public home for the installable Code Mower core.
 - Private product/reference repos: continue validating Code Mower against real
   development, but public docs should not require access to them or name them as
   dependencies.
@@ -33,11 +33,11 @@ product repo.
 
 ## Extraction Phases
 
-1. Keep hardening the private standalone repo until easy-mode install, doctor,
-   calibration, and package smoke tests are reliable.
-2. Add standalone CI and release packaging so the standalone repo can validate
+1. Keep hardening easy-mode install, doctor, calibration, and package smoke
+   tests until they are boring from a clean public checkout.
+2. Maintain standalone CI and release packaging so the standalone repo validates
    itself without relying on private reference repos.
-3. Add compatibility wrappers in the product repos that can call the standalone
+3. Add compatibility wrappers in reference/product repos that can call the standalone
    package when `CODE_MOWER_USE_STANDALONE=1`.
 4. Run shadow comparisons between repo-local tools and standalone tools on real
    Code Mower PRs.
@@ -93,24 +93,28 @@ The expected migration order is:
 6. pinned standalone release becomes the default
 7. mirrored implementation files are removed from product repos
 
-As of `v0.1.0-alpha.12`, the CubeSnap product repos have proved the private
-standalone checkout path and CTVD has completed the first mirror-removal pilot:
-product wrappers prefer the pinned standalone command, workflows call
-`tools/code_mower` entrypoints, and mirrored implementation files can be absent
-without `migration mirror-removal-plan` reporting the repo as not-started. The
-next migration PR should update one product repo at a time to the alpha.12+ pin,
-run `migration wrapper-rehearsal`, run `migration package-install-rehearsal`
-with the pinned package spec, then render `migration mirror-removal-plan
---shadow-cycles 1 --standalone-default-cycles 1`.
+As of `v0.1.0-alpha.12`, the private reference/product repos have proved the
+standalone checkout path, the standalone-default wrapper path, and the
+mirror-removal path. Their product wrappers prefer the pinned standalone
+command, workflows call `tools/code_mower` entrypoints, and mirrored
+implementation files can be absent while `migration mirror-removal-plan` reports
+`mirrors_removed`.
 
-While the standalone Code Mower repository is private, GitHub Actions jobs that
-run from product repos need either authenticated standalone checkout or an
-intentional repo-local fallback. `CODE_MOWER_USE_LOCAL=1 tools/code_mower ...`
-is the correct cost-safe/private-repo fallback for labeler workflows, but it is
-also a formal mirror-removal blocker: those workflows still depend on the
-repo-local mirrored scripts. Mirror deletion should wait for a dedicated
-follow-up PR after the standalone package is public/package-installable or the
-product workflows have authenticated standalone access.
+That does not make mirror deletion automatic for every user repo. The migration
+contract remains one repo at a time:
+
+1. pin a known Code Mower version
+2. run `migration wrapper-rehearsal`
+3. run `migration package-install-rehearsal` with the pinned package spec
+4. run at least one clean standalone-default cycle
+5. render `migration mirror-removal-plan --shadow-cycles 1
+   --standalone-default-cycles 1`
+6. remove mirrored implementation files only when the plan reports no blockers
+
+Now that `code-mower` is public, GitHub Actions can fetch public source over
+HTTPS without a deploy key. Deploy keys and fine-grained tokens are still useful
+when a team pins a private fork, consumes a private package index, or runs
+against private reference branches.
 
 Keep thin migration support files in the product repos while removing mirrors:
 `tools/code_mower`, `tools/code_mower_standalone_shadow.sh`, and
@@ -127,7 +131,8 @@ instead of importing `tools/code_mower_bootstrap.py` directly.
 
 ## Non-Goals
 
-- Do not immediately remove repo-local tools from active product/reference repos.
+- Do not immediately remove repo-local tools from a user repo before wrapper
+  rehearsal, package-install rehearsal, and a clean standalone-default cycle.
 - Do not make high-velocity feature work depend on Code Mower migration.
 - Do not publish private product history, product-specific secrets, or commercial
   roadmap details in the OSS repo.

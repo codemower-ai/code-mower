@@ -110,6 +110,27 @@ rate-limit, timeout, setup error, or tool failure should reduce confidence in a
 lane's reliability, but it is not the same as a reviewer incorrectly blocking a
 known-clean PR.
 
+## Provider-Unavailable Bypass
+
+Sometimes a promoted lane cannot run because the provider runtime is broken:
+local CLI auth expired, provider API returns 401/403/429, parser output is
+malformed, or the hosted reviewer is unavailable. That is neither PASS nor
+BLOCKED.
+
+Allowed handling:
+
+- record the failure as `infra_error` or `provider_unavailable`;
+- leave a PR-visible note with the provider, head SHA, failure class, and the
+  clean evidence from other lanes;
+- remove the stale request label only when repo policy or delegated maintainer
+  authority permits the bypass;
+- merge only if the remaining merge bar is clean; and
+- exclude the failed provider run from useful-rate, precision, and known-clean
+  PASS counts.
+
+Do not count provider-unavailable bypasses as reviewer approval. They are
+operational debt to repair before the next unattended merge cycle.
+
 ## Fresh-Run Workflow
 
 1. Run `code-mower doctor` for the profile you plan to calibrate. Use

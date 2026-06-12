@@ -25,16 +25,21 @@ package. It has proved:
 - `code-mower init --easy` smoke behavior;
 - `doctor --easy --probe-runtime` provider probes for configured local CLIs;
 - product-wrapper rehearsal with zero mismatches against the repo-local mirror;
-- pinned standalone consumption from both CubeSnap product repos;
+- pinned standalone consumption from both private reference/product repos;
 - private-repo standalone checkout shape through a read-only deploy-key shadow
   workflow;
+- public-source standalone checkout from the public GitHub repository;
 - calibration context-pack injection for Gemini, Antigravity, and Hermes CLI
-  fan-out commands, including a dry-run proof on the known-problematic
-  `cube-snap#390` lens case;
+  fan-out commands, including a dry-run proof on a known-problematic
+  solver-runtime lens case;
 - standalone labeler and bootstrap entrypoints for migrating product workflows
   away from mirrored Python files.
 - explicit mirror-removal completion status when a product repo has already
   deleted mirrored implementation files;
+- mirror-removal pilots in both private reference/product repos: wrappers
+  prefer the pinned standalone package, workflows use package-backed entrypoints,
+  mirrored implementation files are absent, and post-merge CI/deploy checks
+  remain green;
 - first-run doctor visibility for missing `pytest`, which is not required by
   standalone easy-mode but is commonly required by product-side wrapper tests;
 - standalone Codex and Claude structured audit commands plus Codex env
@@ -46,9 +51,8 @@ It has not yet proved:
 - public package installation from PyPI or another package index;
 - broad private-repo standalone checkout across arbitrary organizations and
   token policies;
-- workflow entrypoint migration and then mirror deletion across both product
-  repos;
-- broader spend-bearing context-pack lens runs beyond the first `cube-snap#390`
+- mirror deletion across arbitrary user repositories;
+- broader spend-bearing context-pack lens runs beyond the first solver-runtime
   Gemini proof;
 - a large enough reviewer/lens corpus for new merge gates.
 
@@ -109,12 +113,12 @@ do not spend v1.0 work on non-GitHub workflow rendering.
   a clean venv, creates a fresh toy repository, runs the easy-mode starter path,
   and optionally compares an existing product repo against that installed
   package.
-- Decide the distribution and checkout story before mirror deletion. A public
-  Code Mower repo can use unauthenticated HTTPS checkout; a private repo needs a
-  documented deploy key, fine-grained PAT, GitHub App token, or package-index
-  install path.
-- Ship a read-only deploy-key workflow template for private standalone source
-  checkout while the package remains private.
+- Keep the distribution and checkout story explicit. A public Code Mower repo
+  can use unauthenticated HTTPS checkout; a private fork, private source repo,
+  or private package index needs a documented deploy key, fine-grained PAT, or
+  GitHub App token.
+- Keep the read-only deploy-key workflow template for users who pin a private
+  fork or private source checkout.
 
 ### Init
 
@@ -176,6 +180,9 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 - Treat bounded lens-smoke runs as evidence only after the raw artifacts or
   summarized reviewer runs are promoted into the corpus. Temporary `/tmp`
   artifacts are useful debugging output, not durable product evidence.
+- Treat unavailable-provider bypasses as operational incidents, not reviewer
+  approvals. They require an explicit PR note and must not count as PASS
+  evidence in calibration metrics.
 
 ### Authoring Intelligence
 
@@ -226,6 +233,9 @@ private repo can complete this sequence from a clean machine:
 11. confirm a private-repo install path can fetch the standalone package in CI,
     or explicitly document that v1.0 requires a public Code Mower source or
     package-index install for CI usage
+12. confirm provider-unavailable bypass docs are followed when a promoted lane
+    cannot run, and that the failed run is excluded from reviewer-quality
+    metrics
 
 The generated package includes `scripts/smoke_easy_mode.py` to exercise the
 core v1.0 path in a throwaway toy repository:

@@ -65,6 +65,26 @@ code-mower migration mirror-removal-plan \
 Expected result after deletion: `status: mirrors_removed`, empty blockers, and
 `mirrors_absent: true`.
 
+## Current Reference Status
+
+The standalone-default and mirror-removal paths have now been exercised in the
+private reference/product repos. The successful end state is:
+
+- product repo keeps thin support files such as `tools/code_mower`,
+  `tools/code_mower_standalone_shadow.sh`, and
+  `tools/code_mower_standalone_pin.env`;
+- product shell shims may remain for operator muscle memory, but they delegate
+  to package commands;
+- workflows invoke package-backed entrypoints instead of importing local Python
+  mirrors;
+- mirrored implementation and Code Mower docs are removed from the product
+  repo; and
+- post-merge CI/deploy checks pass after deletion.
+
+Use that as confidence, not as permission to skip the runbook. New repos should
+still move through shadow, standalone-default, and mirrors-removed states in
+separate commits or PRs when product velocity matters.
+
 ## Workflow Entry Points
 
 Before deleting mirrors, workflows should call package-backed commands:
@@ -105,3 +125,22 @@ If a workflow still calls a deleted local file:
 
 Keep mirror removal separate from feature work. A failed migration should never
 block normal product development.
+
+## Provider-Unavailable During Migration
+
+Provider runtime failures are not reviewer findings. If a promoted lane cannot
+run because the local CLI is unauthenticated, rate-limited, or otherwise
+unavailable, do not mark it as passed.
+
+The safe bypass pattern is:
+
+1. run a minimal provider sanity prompt or version/auth check;
+2. leave a PR comment naming the provider, head SHA, failure class, and current
+   merge evidence;
+3. remove the stale `needs-*-audit` label only if an authorized maintainer or
+   repo policy allows an unavailable-provider bypass;
+4. exclude the failed run from reviewer-quality calibration metrics; and
+5. fix provider auth before relying on that lane again.
+
+This keeps delivery moving without teaching Code Mower that "provider broken"
+means "reviewer approved."
