@@ -93,7 +93,7 @@ The expected migration order is:
 6. pinned standalone release becomes the default
 7. mirrored implementation files are removed from product repos
 
-As of `v0.1.0-alpha.19`, the private reference/product repos have proved the
+As of `v0.1.0-alpha.20`, the private reference/product repos have proved the
 standalone checkout path, the standalone-default wrapper path, and the
 mirror-removal path. Their product wrappers prefer the pinned standalone
 command, workflows call `tools/code_mower` entrypoints, and mirrored
@@ -119,6 +119,12 @@ console script while another ref is about to execute it. Teams that override
 `CODE_MOWER_STANDALONE_SOURCE_DIR` or `CODE_MOWER_STANDALONE_VENV` are
 responsible for keeping those custom paths isolated per ref if they run
 concurrent refs.
+
+`v0.1.0-alpha.20` removes a Claude audit dependency on shared `FETCH_HEAD`
+state while building diffs. That matters once product repos run multiple
+reviewer lanes against the same checkout: each lane may fetch refs, so diff
+builders must use stable ref names or SHAs rather than assuming `FETCH_HEAD`
+still belongs to their own most recent fetch.
 
 That does not make mirror deletion automatic for every user repo. The migration
 contract remains one repo at a time:

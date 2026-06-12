@@ -29,8 +29,6 @@ if __package__ in {None, "", "tools"}:
         from tools import code_mower_prompts
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.codex_audit_pr import (
-            _fetch_base_ref,
-            _fetch_pr_head,
             _parse_repo_paths,
             _require_exact_keys,
             _one_line,
@@ -47,8 +45,6 @@ if __package__ in {None, "", "tools"}:
             import prompts as code_mower_prompts  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from codex_audit_pr import (  # type: ignore
-            _fetch_base_ref,
-            _fetch_pr_head,
             _parse_repo_paths,
             _require_exact_keys,
             _one_line,
@@ -62,8 +58,6 @@ else:  # pragma: no cover - exercised after package extraction.
     from . import prompts as code_mower_prompts
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .codex_audit_pr import (
-        _fetch_base_ref,
-        _fetch_pr_head,
         _parse_repo_paths,
         _require_exact_keys,
         _one_line,
@@ -370,6 +364,73 @@ def _run_git(local_repo: Path, args: List[str], *, timeout: int = 60) -> str:
     return result.stdout
 
 
+def _fetch_base_sha_for_diff(local_repo: Path, base_ref: str) -> str:
+    temporary_ref = False
+    if base_ref.startswith("origin/"):
+        remote_branch = base_ref[len("origin/") :]
+        local_ref = f"refs/remotes/origin/{remote_branch}"
+        fetch_refspec = f"+{remote_branch}:{local_ref}"
+    elif base_ref.startswith("refs/heads/"):
+        remote_branch = base_ref[len("refs/heads/") :]
+        local_ref = f"refs/remotes/origin/{remote_branch}"
+        fetch_refspec = f"+{base_ref}:{local_ref}"
+    elif "/" not in base_ref:
+        local_ref = f"refs/remotes/origin/{base_ref}"
+        fetch_refspec = f"+{base_ref}:{local_ref}"
+    else:
+        local_ref = f"refs/code-mower/base/{os.getpid()}-{secrets.token_hex(8)}"
+        fetch_refspec = f"+{base_ref}:{local_ref}"
+        temporary_ref = True
+    try:
+        subprocess.run(
+            ["git", "-C", str(local_repo), "fetch", "origin", fetch_refspec],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return _run_git(
+            local_repo,
+            ["rev-parse", "--verify", f"{local_ref}^{{commit}}"],
+        ).strip()
+    finally:
+        if temporary_ref:
+            subprocess.run(
+                ["git", "-C", str(local_repo), "update-ref", "-d", local_ref],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+
+def _fetch_pr_head_sha_for_diff(local_repo: Path, pr_number: int) -> str:
+    local_ref = f"refs/code-mower/pr/{pr_number}/{os.getpid()}-{secrets.token_hex(8)}"
+    try:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(local_repo),
+                "fetch",
+                "origin",
+                f"+pull/{pr_number}/head:{local_ref}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return _run_git(
+            local_repo,
+            ["rev-parse", "--verify", f"{local_ref}^{{commit}}"],
+        ).strip()
+    finally:
+        subprocess.run(
+            ["git", "-C", str(local_repo), "update-ref", "-d", local_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+
 def _clip_bytes(text: str, max_bytes: int) -> Tuple[str, bool]:
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
@@ -460,13 +521,11 @@ def _build_diff_context(
             "max_diff_hard_limit_bytes must be greater than or equal to max_diff_bytes"
         )
 
-    _fetch_base_ref(local_repo, base_ref)
-    fetched_base_ref = _run_git(local_repo, ["rev-parse", "FETCH_HEAD"]).strip()
-    _fetch_pr_head(local_repo, pr_number)
-    head_ref = _run_git(local_repo, ["rev-parse", "FETCH_HEAD"]).strip()
-    if head_ref.lower() != expected_head_sha.lower():
-        raise FetchedHeadMismatch(expected_head_sha, head_ref)
-    diff_range = f"{fetched_base_ref}...{head_ref}"
+    fetched_base_ref = _fetch_base_sha_for_diff(local_repo, base_ref)
+    fetched_head_ref = _fetch_pr_head_sha_for_diff(local_repo, pr_number)
+    if fetched_head_ref.lower() != expected_head_sha.lower():
+        raise FetchedHeadMismatch(expected_head_sha, fetched_head_ref)
+    diff_range = f"{fetched_base_ref}...{fetched_head_ref}"
     stat = _run_git(local_repo, ["diff", "--stat", "--find-renames", diff_range])
     included_diff, full_diff_bytes, was_truncated = _run_git_limited(
         local_repo,

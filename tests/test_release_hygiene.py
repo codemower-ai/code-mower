@@ -25,8 +25,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_19(self) -> None:
-        self.assertEqual(__version__, "0.1.0a19")
+    def test_version_is_alpha_20(self) -> None:
+        self.assertEqual(__version__, "0.1.0a20")
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
@@ -262,6 +262,19 @@ printf '%s\\n' "${lane}"
         delegate_index = text.rfind('"${script_dir}/code_mower" "$@"')
         self.assertGreaterEqual(release_index, 0)
         self.assertGreater(delegate_index, release_index)
+
+    def test_claude_diff_builder_does_not_use_fetch_head_for_pr_head(self) -> None:
+        text = (ROOT / "src/code_mower/claude_audit_pr.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("def _fetch_base_sha_for_diff", text)
+        self.assertIn("def _fetch_pr_head_sha_for_diff", text)
+        self.assertIn('fetch_refspec = f"+{base_ref}:{local_ref}"', text)
+        self.assertIn('f"+pull/{pr_number}/head:{local_ref}"', text)
+        self.assertIn('["git", "-C", str(local_repo), "update-ref", "-d", local_ref]', text)
+        self.assertIn("fetched_base_ref = _fetch_base_sha_for_diff", text)
+        self.assertIn("fetched_head_ref = _fetch_pr_head_sha_for_diff", text)
+        self.assertNotIn('["rev-parse", "FETCH_HEAD"]', text)
 
     def test_standalone_wrapper_reinstalls_into_custom_venv_without_deleting_it(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"

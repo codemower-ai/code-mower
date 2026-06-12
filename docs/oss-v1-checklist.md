@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.19` of the standalone
+The current public-release baseline is `v0.1.0-alpha.20` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -60,6 +60,9 @@ package. It has proved:
   missing absolute Python candidates and hash-suffixed ref-scoped default
   standalone checkout/venv directories so concurrent invocations do not mutate
   one another's editable source checkout or console-script install.
+- private reference-repo concurrent-audit feedback from alpha.19, including
+  Claude diff construction that no longer depends on shared `FETCH_HEAD` state
+  after fetching the PR head.
 
 It has not yet proved:
 
