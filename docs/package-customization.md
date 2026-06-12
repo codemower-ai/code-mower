@@ -168,6 +168,23 @@ tools/code_mower saas-reviewer-labeler --adapter gitar
 tools/code_mower bootstrap --print-python
 ```
 
+If the standalone Code Mower source repository is still private and the product
+repo's GitHub Actions jobs do not have authenticated standalone checkout,
+workflow entrypoints should temporarily use the explicit local fallback:
+
+```bash
+CODE_MOWER_USE_LOCAL=1 tools/code_mower trailer-comment-labeler --lane codex
+CODE_MOWER_USE_LOCAL=1 tools/code_mower saas-reviewer-labeler --adapter gitar
+CODE_MOWER_USE_LOCAL=1 tools/code_mower bootstrap --print-python
+```
+
+That fallback keeps private-repo labeler workflows from trying to clone the
+standalone repository over unauthenticated HTTPS, but it also means mirrored
+repo-local implementation files are still required. `migration
+mirror-removal-plan` treats these workflow calls as mirror-removal blockers
+until the standalone package is public/package-installable or the workflows
+have authenticated standalone access.
+
 `tools/code_mower`, `tools/code_mower_standalone_shadow.sh`, and
 `tools/code_mower_standalone_pin.env` are migration support files. They should
 remain in product repos until the package is installed through a normal public
