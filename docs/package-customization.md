@@ -339,6 +339,19 @@ tools/run_codex_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 tools/run_claude_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 ```
 
+In mirror-removal mode, those shell wrappers should be thin compatibility
+shims around the standalone package:
+
+```bash
+tools/code_mower codex-audit --repo OWNER/REPO --pr 123
+tools/code_mower claude-audit --repo OWNER/REPO --pr 123
+tools/code_mower codex-audit-env-preflight
+tools/code_mower codex-audit-schema-smoke
+```
+
+This keeps token handling and existing operator commands in the product repo
+while moving reviewer implementation ownership into the package.
+
 By default, verdict artifacts live under
 `~/.cache/cube-agent-audits/verdicts/`. Use
 `CODE_MOWER_VERDICT_ARTIFACT_DIR` in CI or package installs when that cache

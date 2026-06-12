@@ -20,7 +20,11 @@ if __package__ in {None, "", "tools"}:
         antigravity_cli_audit_pr,
         blind_review_coordinator,
         bootstrap as code_mower_bootstrap,
+        claude_audit_pr,
         coderabbit_cli_audit_pr,
+        codex_audit_env_preflight,
+        codex_audit_pr,
+        codex_audit_schema_smoke,
         hermes_cli_audit_pr,
         code_mower_builder_experiment,
         code_mower_cloud,
@@ -50,8 +54,12 @@ else:  # pragma: no cover - exercised after package extraction.
     from . import antigravity_cli_audit_pr
     from . import bootstrap as code_mower_bootstrap
     from . import builder_experiment as code_mower_builder_experiment
+    from . import claude_audit_pr
     from . import cloud as code_mower_cloud
     from . import coderabbit_cli_audit_pr
+    from . import codex_audit_env_preflight
+    from . import codex_audit_pr
+    from . import codex_audit_schema_smoke
     from . import config as code_mower_config
     from . import code_mower_calibration
     from . import code_mower_context_packs
@@ -335,10 +343,14 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("bootstrap", add_help=False)
     subparsers.add_parser("builder-experiment", add_help=False)
     subparsers.add_parser("calibration", add_help=False)
+    subparsers.add_parser("claude-audit", add_help=False)
     subparsers.add_parser("cloud", add_help=False)
     subparsers.add_parser("config", add_help=False)
     subparsers.add_parser("context-packs", add_help=False)
     subparsers.add_parser("coderabbit-cli", add_help=False)
+    subparsers.add_parser("codex-audit", add_help=False)
+    subparsers.add_parser("codex-audit-env-preflight", add_help=False)
+    subparsers.add_parser("codex-audit-schema-smoke", add_help=False)
     subparsers.add_parser("doctor", add_help=False)
     subparsers.add_parser("gemini-cli", add_help=False)
     subparsers.add_parser("hermes-cli", add_help=False)
@@ -366,6 +378,8 @@ def main(argv: list[str] | None = None) -> int:
         return code_mower_builder_experiment.main(rest)
     if args.command == "calibration":
         return code_mower_calibration.main(rest)
+    if args.command == "claude-audit":
+        return claude_audit_pr.main(rest)
     if args.command == "cloud":
         return code_mower_cloud.main(rest)
     if args.command == "config":
@@ -374,6 +388,12 @@ def main(argv: list[str] | None = None) -> int:
         return code_mower_context_packs.main(rest)
     if args.command == "coderabbit-cli":
         return coderabbit_cli_audit_pr.main(rest)
+    if args.command == "codex-audit":
+        return codex_audit_pr.main(rest)
+    if args.command == "codex-audit-env-preflight":
+        return codex_audit_env_preflight.main(rest)
+    if args.command == "codex-audit-schema-smoke":
+        return codex_audit_schema_smoke.main(rest)
     if args.command == "doctor":
         return code_mower_doctor.main(rest)
     if args.command == "gemini-cli":

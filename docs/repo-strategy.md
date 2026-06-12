@@ -93,12 +93,12 @@ The expected migration order is:
 6. pinned standalone release becomes the default
 7. mirrored implementation files are removed from product repos
 
-As of `v0.1.0-alpha.11`, the CubeSnap product repos have proved the private
+As of `v0.1.0-alpha.12`, the CubeSnap product repos have proved the private
 standalone checkout path and CTVD has completed the first mirror-removal pilot:
 product wrappers prefer the pinned standalone command, workflows call
 `tools/code_mower` entrypoints, and mirrored implementation files can be absent
 without `migration mirror-removal-plan` reporting the repo as not-started. The
-next migration PR should update one product repo at a time to the alpha.11+ pin,
+next migration PR should update one product repo at a time to the alpha.12+ pin,
 run `migration wrapper-rehearsal`, run `migration package-install-rehearsal`
 with the pinned package spec, then render `migration mirror-removal-plan
 --shadow-cycles 1 --standalone-default-cycles 1`.
@@ -117,7 +117,11 @@ Keep thin migration support files in the product repos while removing mirrors:
 `tools/code_mower_standalone_pin.env` are wrappers/config, not duplicated
 implementation. Remove implementation mirrors only after workflows no longer
 call files such as `tools/trailer_comment_labeler.py` or
-`tools/saas_reviewer_labeler.py` directly. Workflows that need the Code Mower
+`tools/saas_reviewer_labeler.py` directly. Product shell shims such as
+`tools/run_codex_audit_pr.sh` and `tools/run_claude_audit_pr.sh` may stay, but
+they should call `tools/code_mower codex-audit` and
+`tools/code_mower claude-audit` rather than importing local Python modules.
+Workflows that need the Code Mower
 Python environment should call `tools/code_mower bootstrap --print-python`
 instead of importing `tools/code_mower_bootstrap.py` directly.
 

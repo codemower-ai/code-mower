@@ -61,6 +61,23 @@ PACKAGE_FILES = (
     ("tools/audit_handoff_log.py", "src/code_mower/audit_handoff_log.py", "core"),
     ("tools/audit_labeler_lib.py", "src/code_mower/audit_labeler_lib.py", "core"),
     ("tools/audit_progress.py", "src/code_mower/audit_progress.py", "core"),
+    ("tools/codex_audit_pr.py", "src/code_mower/codex_audit_pr.py", "reviewer"),
+    (
+        "tools/codex_audit_env_preflight.py",
+        "src/code_mower/codex_audit_env_preflight.py",
+        "reviewer",
+    ),
+    (
+        "tools/codex_audit_schema_smoke.py",
+        "src/code_mower/codex_audit_schema_smoke.py",
+        "reviewer",
+    ),
+    (
+        "tools/codex_audit_verdict.schema.json",
+        "src/code_mower/codex_audit_verdict.schema.json",
+        "reviewer",
+    ),
+    ("tools/claude_audit_pr.py", "src/code_mower/claude_audit_pr.py", "reviewer"),
     ("tools/trailer_comment_labeler.py", "src/code_mower/trailer_comment_labeler.py", "labeler"),
     ("tools/saas_reviewer_labeler.py", "src/code_mower/saas_reviewer_labeler.py", "labeler"),
     ("tools/local_llm_audit_pr.py", "src/code_mower/local_llm_audit_pr.py", "reviewer"),
@@ -183,7 +200,7 @@ TEMPLATE_FILES = (
 )
 
 STATIC_PACKAGE_FILES = (
-    ("src/code_mower/__init__.py", '"""Code Mower package."""\n'),
+    ("src/code_mower/__init__.py", '"""Code Mower package."""\n\n__version__ = "0.0.0"\n'),
     (
         "README.md",
         "\n".join(
@@ -234,6 +251,7 @@ STATIC_PACKAGE_FILES = (
                 "recursive-include src/code_mower/templates *.yml *.yaml *.json",
                 "recursive-include src/code_mower/templates *.md",
                 "recursive-include src/code_mower/templates *.j2",
+                "include src/code_mower/*.json",
                 "recursive-include templates *.j2 *.json *.md *.yml *.yaml",
                 "include requirements/*.txt",
                 "include LICENSE",
@@ -768,6 +786,9 @@ def _pyproject_text(package_name: str) -> str:
                 "",
                 "[tool.setuptools.packages.find]",
                 'where = ["src"]',
+                "",
+                "[tool.setuptools.package-data]",
+                'code_mower = ["*.json", "templates/**/*.json", "templates/**/*.md", "templates/**/*.yml", "templates/**/*.yaml", "templates/**/*.j2"]',
                 "",
             ]
         )

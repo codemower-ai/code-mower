@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.11` of the standalone
+The current public-release baseline is `v0.1.0-alpha.12` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -37,9 +37,9 @@ package. It has proved:
   deleted mirrored implementation files;
 - first-run doctor visibility for missing `pytest`, which is not required by
   standalone easy-mode but is commonly required by product-side wrapper tests;
-- documented runner aliases for package-supported local reviewer commands and
-  explicit compatibility boundaries for legacy product Codex/Claude runner
-  shell wrappers.
+- standalone Codex and Claude structured audit commands plus Codex env
+  preflight/schema-smoke helpers, so product shell wrappers can remain thin
+  compatibility shims without mirrored Python implementation files.
 
 It has not yet proved:
 

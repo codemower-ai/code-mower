@@ -82,11 +82,12 @@ Inspect supported aliases with:
 code-mower migration runner-aliases
 ```
 
-The package provides standalone local reviewer commands for Gemini,
-Antigravity, Hermes, CodeRabbit CLI, and local LLM lanes. The historical
-`tools/run_codex_audit_pr.sh` and `tools/run_claude_audit_pr.sh` shell wrappers
-remain product-wrapper responsibilities until generic Codex/Claude authoring
-runners are intentionally designed for the OSS package.
+The package provides standalone local reviewer commands for Codex, Claude,
+Gemini, Antigravity, Hermes, CodeRabbit CLI, and local LLM lanes. Product repos
+may keep thin shell wrappers such as `tools/run_codex_audit_pr.sh` and
+`tools/run_claude_audit_pr.sh` for token handling and operator muscle memory,
+but those wrappers should delegate to `tools/code_mower codex-audit` and
+`tools/code_mower claude-audit` instead of importing mirrored Python files.
 
 ## Recovery
 
@@ -94,9 +95,9 @@ If a workflow still calls a deleted local file:
 
 1. Restore product velocity first by switching that workflow step to
    `tools/code_mower ...` when an equivalent package entrypoint exists.
-2. If it depends on legacy Codex/Claude product runner behavior, restore the
-   thin product wrapper in a small rollback PR and keep the mirror-removal PR
-   paused.
+2. If it depends on legacy Codex/Claude shell-wrapper behavior, restore the
+   thin product wrapper in a small rollback PR, then make that wrapper delegate
+   to the package command before retrying mirror deletion.
 3. Run `code-mower migration runner-aliases --legacy <script>` to confirm
    whether the package owns that command or the product repo still does.
 4. Re-run `code-mower migration mirror-removal-plan` and require zero workflow
