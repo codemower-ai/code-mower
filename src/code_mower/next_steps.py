@@ -196,9 +196,13 @@ def build_next_steps(
             "title": "Run a starter calibration corpus",
             "command": (
                 "code-mower calibration run .code-mower.generated/calibration-corpus.json "
-                "--lanes gemini-cli --results-dir .code-mower/calibration-results --json"
+                "--lanes antigravity-cli --results-dir .code-mower/calibration-results --json"
             ),
-            "why": "Persists raw reviewer results for quality, latency, and cost analysis.",
+            "why": (
+                "Persists raw reviewer results for quality, latency, and cost analysis. "
+                "Antigravity is the forward Google CLI lane; use gemini-cli only for "
+                "legacy/API-key compatibility or historical comparisons."
+            ),
         },
         {
             "id": "value-report",

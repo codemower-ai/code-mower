@@ -48,7 +48,7 @@ For a pinned PR head SHA:
 gh pr view 123 --repo owner/repo --json headRefOid --jq .headRefOid
 ```
 
-The generated plan contains nine arms:
+The generated plan contains eleven arms:
 
 - `topology-baseline`: different model families with the base audit lens.
 - `same-provider-lenses`: the same provider with different prompt lenses.
@@ -65,6 +65,12 @@ The generated plan contains nine arms:
   by default during `calibration run` so normal lane-only runs do not
   accidentally increase Gemini spend.
 - `gemini-doctrine-lens-fanout`: explicit-run Gemini CLI fan-out for
+  `base-audit`, `generic-programming`, and `context-driven-quality`.
+- `antigravity-risk-ops-lens-fanout`: explicit-run Antigravity CLI fan-out for
+  `base-audit`, `security-threat-model`, and `operability`. Use this for new
+  Google CLI calibration; Gemini remains useful for legacy/API-key continuity
+  and historical comparison.
+- `antigravity-doctrine-lens-fanout`: explicit-run Antigravity CLI fan-out for
   `base-audit`, `generic-programming`, and `context-driven-quality`.
 - `hermes-doctrine-lens-fanout`: explicit-run Hermes Agent fan-out for
   `base-audit`, `generic-programming`, and `context-driven-quality`. Hermes is
@@ -141,6 +147,7 @@ Useful commands:
 code-mower doctor code-mower.yml --profile cli_research --probe-runtime --json
 code-mower context-packs templates/context-packs.example.json --json
 code-mower calibration run templates/calibration-corpus.json --lanes antigravity-cli,gemini-cli,hermes-cli,coderabbit-cli,local-llm --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --context-pack-manifest templates/context-packs.example.json --results-dir .code-mower/calibration-results --json
+ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1 code-mower calibration run templates/calibration-corpus.json --lanes antigravity-cli --arms antigravity-doctrine-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --context-pack-manifest templates/context-packs.example.json --results-dir .code-mower/antigravity-lens-fanout-results --json
 code-mower calibration run templates/calibration-corpus.json --lanes gemini-cli --arms gemini-risk-ops-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --context-pack-manifest templates/context-packs.example.json --results-dir .code-mower/lens-fanout-results --json
 code-mower calibration run templates/calibration-corpus.json --lanes hermes-cli --arms hermes-doctrine-lens-fanout --repo-path-map owner/repo#123@HEAD_SHA=/path/to/pr-worktree --context-pack-manifest templates/context-packs.example.json --results-dir .code-mower/hermes-lens-fanout-results --json
 code-mower calibration value-report templates/calibration-corpus.json --runs .code-mower/calibration-results/calibration-run-results.json --output docs/reviewer-value-report.md

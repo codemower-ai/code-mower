@@ -11,14 +11,16 @@ sys.path.insert(0, str(ROOT))
 
 from code_mower import __version__
 from code_mower import audit_progress
+from code_mower import code_mower_calibration
 from code_mower import doctor
+from code_mower import next_steps
 from code_mower import secrets as code_mower_secrets
 from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_14(self) -> None:
-        self.assertEqual(__version__, "0.1.0a14")
+    def test_version_is_alpha_15(self) -> None:
+        self.assertEqual(__version__, "0.1.0a15")
 
     def test_privacy_scan_is_clean(self) -> None:
         self.assertEqual(privacy_scan.scan(ROOT), [])
@@ -85,6 +87,46 @@ class ReleaseHygieneTests(unittest.TestCase):
     def test_doctor_auth_probe_detail_redacts_output_content(self) -> None:
         detail = doctor._auth_probe_output_detail("email@example.com\nscope repo\n")
         self.assertEqual(detail, {"output_redacted": True, "output_line_count": 2})
+
+    def test_next_steps_prefers_antigravity_for_new_google_cli_calibration(self) -> None:
+        templates = next_steps.code_mower_package.load_provider_templates(
+            ROOT / "src/code_mower/templates/providers.yml"
+        )
+        plan = next_steps.build_next_steps(
+            templates,
+            repo="owner/repo",
+            pr="123",
+            profile="third_peer",
+        )
+        calibration = next(
+            item for item in plan["steps"] if item["id"] == "calibration-run"
+        )
+        first_audit = next(
+            item for item in plan["steps"] if item["id"] == "first-audit"
+        )
+        self.assertEqual(first_audit["label"], "needs-antigravity-cli-audit")
+        self.assertIn("--lanes antigravity-cli", calibration["command"])
+        self.assertNotIn("--lanes gemini-cli", calibration["command"])
+        self.assertIn("legacy/API-key compatibility", calibration["why"])
+
+    def test_calibration_arms_include_antigravity_lens_fanout(self) -> None:
+        arms = {
+            arm["arm_id"]: arm
+            for arm in code_mower_calibration.default_arms()
+        }
+        self.assertIn("antigravity-doctrine-lens-fanout", arms)
+        reviewer_ids = {
+            reviewer["reviewer_id"]
+            for reviewer in arms["antigravity-doctrine-lens-fanout"]["reviewers"]
+        }
+        self.assertEqual(
+            reviewer_ids,
+            {
+                "antigravity-base-audit",
+                "antigravity-generic-programming",
+                "antigravity-context-driven-quality",
+            },
+        )
 
 
 if __name__ == "__main__":

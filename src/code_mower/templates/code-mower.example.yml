@@ -404,15 +404,15 @@ profiles:
   third_peer:
     description: Optional third local CLI reviewer calibration profile; Google and Hermes CLI lanes stay informational until catch rate and false positives are measured.
     lanes:
-      - gemini_cli
       - antigravity_cli
+      - gemini_cli
       - hermes_cli
 
   cli_research:
     description: Optional local CLI and protocol research profile; use for on-demand review capture, not routine merge gates.
     lanes:
-      - gemini_cli
       - antigravity_cli
+      - gemini_cli
       - hermes_cli
       - coderabbit_cli
       - acp_bridge

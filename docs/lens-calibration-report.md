@@ -87,11 +87,26 @@ evidence and shows value beyond the base audit lane.
 
 ## Next Experiment
 
-Code Mower now has first-class Gemini CLI fan-out for the production-risk
-lenses and the doctrine lenses, plus Hermes Agent doctrine fan-out for
-`base-audit`, `generic-programming`, and `context-driven-quality`. These arms
-are explicit-run only so normal lane-only calibration runs do not accidentally
-multiply provider spend.
+Code Mower now has first-class Antigravity CLI and Gemini CLI fan-out for the
+production-risk lenses and the doctrine lenses, plus Hermes Agent doctrine
+fan-out for `base-audit`, `generic-programming`, and
+`context-driven-quality`. These arms are explicit-run only so normal lane-only
+calibration runs do not accidentally multiply provider spend.
+
+Antigravity is the forward Google CLI lane. Gemini remains useful for
+legacy/API-key continuity and historical comparison.
+
+```bash
+ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1 \
+code-mower calibration run templates/calibration-corpus.json \
+  --lanes antigravity-cli \
+  --arms antigravity-doctrine-lens-fanout \
+  --repo-path-map OWNER/REPO#PR@HEAD=/path/to/pr-worktree \
+  --context-pack-manifest templates/context-packs.example.json \
+  --allow-historical-head \
+  --output-dir .code-mower/antigravity-doctrine-lens-fanout \
+  --results-dir .code-mower/antigravity-doctrine-lens-fanout-results
+```
 
 ```bash
 code-mower calibration run templates/calibration-corpus.json \
@@ -135,10 +150,10 @@ cases used for the Claude/Gemini comparison. Treat its results as
 informational: the first run showed real catch potential, but also a
 known-clean false blocker, one parse failure, and multiple audit-input gaps.
 
-The next definitive lens turn should run the explicit Gemini and Hermes doctrine
-arms against the same known-blocked PRs and known-clean controls. That gives
-Code Mower same-model, different-lens evidence plus a topology comparison
-without mixing live PR state into the measurement.
+The next definitive lens turn should run Antigravity, Gemini, and Hermes
+doctrine arms against the same known-blocked PRs and known-clean controls.
+That gives Code Mower same-model, different-lens evidence plus a topology
+comparison without mixing live PR state into the measurement.
 
 ## Alpha.3 Bounded Gemini Doctrine Smoke
 
@@ -524,3 +539,40 @@ The next proof should run the same shape through Antigravity CLI, because
 Antigravity is now the forward-looking Google CLI path for consumer/Pro/Ultra
 users while Gemini CLI remains useful for legacy/API-key continuity and
 historical comparison.
+
+## Alpha.15 Antigravity Context-Pack Doctrine Proof
+
+The next run executed that Antigravity proof against the same historical
+`reference-app#390` head and the same `ios-solver-runtime` context pack.
+
+| Arm | `antigravity-doctrine-lens-fanout` |
+| --- | --- |
+| Provider runtime | Antigravity CLI `agy 1.0.7` |
+| Auth mode | local OAuth with explicit `ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1` |
+| Corpus | one known-blocked PR #390 item |
+| Context pack | `ios-solver-runtime` |
+| Commands | 3 |
+| Parse status | all JSON |
+| Runtime | 43.921s to 51.203s per run |
+
+Results:
+
+| Reviewer | Status | Findings | Expected matches | Input gaps |
+| --- | --- | ---: | ---: | ---: |
+| `antigravity-base-audit` | blocked | 2 | 0 | 0 |
+| `antigravity-generic-programming` | blocked | 1 | 0 | 0 |
+| `antigravity-context-driven-quality` | blocked | 1 | 0 | 0 |
+
+Interpretation:
+
+- Antigravity is now a runnable, parseable, context-pack-capable lane.
+- The run did not catch the expected #390 solver-cancellation blocker, so it
+  does not yet support promoting Antigravity to selective trigger or merge
+  authority.
+- It did produce blocker-shaped findings, including one explicit audit-input
+  insufficiency finding and adjacent build/runtime risks. Those need human
+  disposition before they can count as useful signal.
+- The context pack reduced the pure setup/auth/parser uncertainty for the
+  forward Google CLI lane, but it did not prove the doctrine lenses catch the
+  target issue. Antigravity should remain informational while the corpus grows
+  and context selection improves.

@@ -358,6 +358,67 @@ def default_arms() -> list[dict[str, Any]]:
             "requires_explicit_arm": True,
         },
         {
+            "arm_id": "antigravity-risk-ops-lens-fanout",
+            "kind": "executable-lens-fanout",
+            "reviewers": [
+                {
+                    "reviewer_id": "antigravity-base-audit",
+                    "provider": "local-cli",
+                    "lane_id": "antigravity_cli",
+                    "lenses": ["base-audit"],
+                },
+                {
+                    "reviewer_id": "antigravity-security-threat-model",
+                    "provider": "local-cli",
+                    "lane_id": "antigravity_cli",
+                    "lenses": ["base-audit", "security-threat-model"],
+                },
+                {
+                    "reviewer_id": "antigravity-operability",
+                    "provider": "local-cli",
+                    "lane_id": "antigravity_cli",
+                    "lenses": ["base-audit", "operability"],
+                },
+            ],
+            "purpose": (
+                "Execute Antigravity CLI against the same head with base, "
+                "security, and operability lenses so the forward Google CLI "
+                "lane can be calibrated separately from Gemini compatibility."
+            ),
+            "requires_explicit_arm": True,
+        },
+        {
+            "arm_id": "antigravity-doctrine-lens-fanout",
+            "kind": "executable-lens-fanout",
+            "reviewers": [
+                {
+                    "reviewer_id": "antigravity-base-audit",
+                    "provider": "local-cli",
+                    "lane_id": "antigravity_cli",
+                    "lenses": ["base-audit"],
+                },
+                {
+                    "reviewer_id": "antigravity-generic-programming",
+                    "provider": "local-cli",
+                    "lane_id": "antigravity_cli",
+                    "lenses": ["base-audit", "generic-programming"],
+                },
+                {
+                    "reviewer_id": "antigravity-context-driven-quality",
+                    "provider": "local-cli",
+                    "lane_id": "antigravity_cli",
+                    "lenses": ["base-audit", "context-driven-quality"],
+                },
+            ],
+            "purpose": (
+                "Execute Antigravity CLI against the same head with base, "
+                "generic programming, and context-driven quality lenses so "
+                "same-provider doctrine shifts can be measured on the forward "
+                "Google CLI lane."
+            ),
+            "requires_explicit_arm": True,
+        },
+        {
             "arm_id": "hermes-doctrine-lens-fanout",
             "kind": "executable-lens-fanout",
             "reviewers": [
