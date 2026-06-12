@@ -997,6 +997,7 @@ CLI_COMMANDS = (
     "code-mower init --profile recommended --apply --output-dir .code-mower.generated",
     "code-mower merge-plan owner/repo#123 --json",
     "code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json",
+    "code-mower migration package-install-rehearsal --package-spec code-mower --repo-path /path/to/product-repo --json",
     "code-mower local-llm profiles --json",
     "code-mower local-llm probe --profile qwen3-coder-next-lmstudio --json",
     "code-mower local-llm probe --profile gemma4-ollama --json",

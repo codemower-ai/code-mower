@@ -17,10 +17,11 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.9` of the standalone
+The current public-release baseline is `v0.1.0-alpha.10` of the standalone
 package. It has proved:
 
-- package install and fresh-clone rehearsal;
+- non-editable package-install rehearsal in a clean venv;
+- fresh toy-repo easy-mode rehearsal from the installed package;
 - `code-mower init --easy` smoke behavior;
 - `doctor --easy --probe-runtime` provider probes for configured local CLIs;
 - product-wrapper rehearsal with zero mismatches against the repo-local mirror;
@@ -52,6 +53,7 @@ code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --easy --probe-runtime
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
+code-mower migration package-install-rehearsal --package-spec code-mower --repo-path /path/to/product-repo --json
 code-mower audit pr 123
 code-mower calibration value-report templates/calibration-corpus.json
 python scripts/smoke_easy_mode.py --json
@@ -95,6 +97,10 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 - Include prompt lenses, context-pack example, provider templates, and docs.
 - Provide a product-wrapper rehearsal so existing product repos can compare
   repo-local tools with a pinned standalone package before deleting mirrors.
+- Provide a package-install rehearsal that installs Code Mower non-editably into
+  a clean venv, creates a fresh toy repository, runs the easy-mode starter path,
+  and optionally compares an existing product repo against that installed
+  package.
 - Decide the distribution and checkout story before mirror deletion. A public
   Code Mower repo can use unauthenticated HTTPS checkout; a private repo needs a
   documented deploy key, fine-grained PAT, GitHub App token, or package-index

@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -71,6 +73,12 @@ class RunOutput:
     stdout: str
 
 
+class RehearsalError(RuntimeError):
+    def __init__(self, message: str, steps: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.steps = steps
+
+
 def _resolve_command(command_text: str) -> tuple[str, ...]:
     parts = tuple(part for part in command_text.split(" ") if part)
     if not parts:
@@ -93,6 +101,19 @@ def _default_package_command() -> tuple[str, ...]:
     return (resolved or "code-mower",)
 
 
+def _venv_python(venv_dir: Path) -> Path:
+    unix_python = venv_dir / "bin" / "python"
+    if unix_python.exists():
+        return unix_python
+    return venv_dir / "Scripts" / "python.exe"
+
+
+def _venv_code_mower(venv_dir: Path) -> Path:
+    if os.name != "nt":
+        return venv_dir / "bin" / "code-mower"
+    return venv_dir / "Scripts" / "code-mower.exe"
+
+
 def _run(command: Sequence[str], *, cwd: Path, timeout: int) -> RunOutput:
     completed = subprocess.run(
         list(command),
@@ -107,6 +128,329 @@ def _run(command: Sequence[str], *, cwd: Path, timeout: int) -> RunOutput:
         public=CommandResult.from_completed(command, completed),
         stdout=completed.stdout,
     )
+
+
+def _run_rehearsal_step(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None,
+    steps: list[dict[str, Any]],
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        list(command),
+        cwd=cwd,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+    step = {
+        "command": list(command),
+        "cwd": str(cwd),
+        "returncode": completed.returncode,
+        "stdout_preview": completed.stdout[-4000:],
+        "stderr_preview": completed.stderr[-4000:],
+    }
+    steps.append(step)
+    if completed.returncode != 0:
+        raise RehearsalError(
+            f"command failed: {' '.join(str(part) for part in command)}",
+            steps,
+        )
+    return completed
+
+
+def _write_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_public_rehearsal_toy_repo(
+    toy_repo: Path,
+    *,
+    steps: list[dict[str, Any]],
+    env: dict[str, str],
+    timeout: int,
+) -> None:
+    toy_repo.mkdir(parents=True)
+    git = shutil.which("git")
+    if not git:
+        (toy_repo / "README.md").write_text(
+            "# Code Mower package-install rehearsal\n",
+            encoding="utf-8",
+        )
+        return
+    _run_rehearsal_step([git, "init", "-q"], cwd=toy_repo, env=env, steps=steps, timeout=timeout)
+    _run_rehearsal_step([git, "config", "user.name", "Code Mower Rehearsal"], cwd=toy_repo, env=env, steps=steps, timeout=timeout)
+    _run_rehearsal_step([git, "config", "user.email", "rehearsal@example.com"], cwd=toy_repo, env=env, steps=steps, timeout=timeout)
+    _run_rehearsal_step([git, "config", "commit.gpgSign", "false"], cwd=toy_repo, env=env, steps=steps, timeout=timeout)
+    (toy_repo / "README.md").write_text(
+        "# Code Mower package-install rehearsal\n",
+        encoding="utf-8",
+    )
+    _run_rehearsal_step([git, "add", "README.md"], cwd=toy_repo, env=env, steps=steps, timeout=timeout)
+    _run_rehearsal_step(
+        [git, "-c", "commit.gpgSign=false", "commit", "-q", "-m", "Initial rehearsal repo"],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+
+
+def run_package_install_rehearsal(
+    *,
+    package_spec: str,
+    repo_path: Path | None = None,
+    local_command: Sequence[str] | None = None,
+    python: Path | None = None,
+    work_dir: Path | None = None,
+    timeout: int = 180,
+    shadow_cycles: int = 1,
+    standalone_default_cycles: int = 1,
+) -> dict[str, Any]:
+    if work_dir is None:
+        work_dir = Path(tempfile.mkdtemp(prefix="code-mower-package-install-"))
+    else:
+        work_dir = work_dir.expanduser().resolve()
+    venv_dir = work_dir / "venv"
+    toy_repo = work_dir / "toy-repo"
+    outputs = work_dir / "outputs"
+    if venv_dir.exists() or toy_repo.exists():
+        raise ValueError(f"work directory is not clean: {work_dir}")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    outputs.mkdir(parents=True, exist_ok=True)
+
+    python_bin = python.expanduser().resolve() if python else Path(sys.executable)
+    steps: list[dict[str, Any]] = []
+
+    _run_rehearsal_step(
+        [str(python_bin), "-m", "venv", str(venv_dir)],
+        cwd=work_dir,
+        env=None,
+        steps=steps,
+        timeout=timeout,
+    )
+    venv_python = _venv_python(venv_dir)
+    code_mower_bin = _venv_code_mower(venv_dir)
+    _run_rehearsal_step(
+        [str(venv_python), "-m", "pip", "install", "--upgrade", "pip"],
+        cwd=work_dir,
+        env=None,
+        steps=steps,
+        timeout=timeout,
+    )
+    _run_rehearsal_step(
+        [str(venv_python), "-m", "pip", "install", package_spec],
+        cwd=work_dir,
+        env=None,
+        steps=steps,
+        timeout=timeout,
+    )
+    _run_rehearsal_step(
+        [str(venv_python), "-m", "pip", "check"],
+        cwd=work_dir,
+        env=None,
+        steps=steps,
+        timeout=timeout,
+    )
+    version = _run_rehearsal_step(
+        [str(code_mower_bin), "--version"],
+        cwd=work_dir,
+        env=None,
+        steps=steps,
+        timeout=timeout,
+    ).stdout.strip()
+
+    env = os.environ.copy()
+    env["PATH"] = f"{code_mower_bin.parent}{os.pathsep}{env.get('PATH', '')}"
+    _write_public_rehearsal_toy_repo(
+        toy_repo,
+        steps=steps,
+        env=env,
+        timeout=timeout,
+    )
+    _run_rehearsal_step(
+        [str(code_mower_bin), "providers", "list"],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+    _run_rehearsal_step(
+        [
+            str(code_mower_bin),
+            "init",
+            "--easy",
+            "--apply",
+            "--output-dir",
+            ".code-mower.generated",
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+    _run_rehearsal_step(
+        ["bash", ".code-mower.generated/smoke-tests.sh"],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+    _run_rehearsal_step(
+        [str(code_mower_bin), "doctor", "--easy", "--json"],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+    _run_rehearsal_step(
+        [str(code_mower_bin), "next-steps", "--profile", "recommended", "--json"],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+    _run_rehearsal_step(
+        [
+            str(code_mower_bin),
+            "migration",
+            "wrapper-rehearsal",
+            "--repo-path",
+            str(toy_repo),
+            "--local-command",
+            str(code_mower_bin),
+            "--package-command",
+            str(code_mower_bin),
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+    _run_rehearsal_step(
+        [
+            str(code_mower_bin),
+            "calibration",
+            "evidence",
+            ".code-mower.generated/calibration-corpus.json",
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+
+    product_wrapper_payload: dict[str, Any] | None = None
+    product_mirror_payload: dict[str, Any] | None = None
+    if repo_path is not None:
+        repo_path = repo_path.expanduser().resolve()
+        if not repo_path.is_dir():
+            raise ValueError(f"repo path is not a directory: {repo_path}")
+        product_local_command = (
+            tuple(local_command)
+            if local_command
+            else ("env", "CODE_MOWER_USE_LOCAL=1", "tools/code_mower")
+        )
+        product_local_command_text = " ".join(product_local_command)
+        wrapper_completed = _run_rehearsal_step(
+            [
+                str(code_mower_bin),
+                "migration",
+                "wrapper-rehearsal",
+                "--repo-path",
+                str(repo_path),
+                "--local-command",
+                product_local_command_text,
+                "--package-command",
+                str(code_mower_bin),
+                "--json",
+            ],
+            cwd=repo_path,
+            env=env,
+            steps=steps,
+            timeout=timeout,
+        )
+        product_wrapper_payload = _json_payload(wrapper_completed.stdout)
+        if (
+            not isinstance(product_wrapper_payload, dict)
+            or product_wrapper_payload.get("status") != "pass"
+        ):
+            raise RehearsalError(
+                "product wrapper rehearsal did not pass",
+                steps,
+            )
+        mirror_completed = _run_rehearsal_step(
+            [
+                str(code_mower_bin),
+                "migration",
+                "mirror-removal-plan",
+                "--repo-path",
+                str(repo_path),
+                "--shadow-cycles",
+                str(shadow_cycles),
+                "--standalone-default-cycles",
+                str(standalone_default_cycles),
+                "--json",
+            ],
+            cwd=repo_path,
+            env=env,
+            steps=steps,
+            timeout=timeout,
+        )
+        product_mirror_payload = _json_payload(mirror_completed.stdout)
+
+    payload = {
+        "mode": "code-mower-package-install-rehearsal",
+        "status": "pass",
+        "package_spec": package_spec,
+        "python": str(python_bin),
+        "work_dir": str(work_dir),
+        "venv_dir": str(venv_dir),
+        "code_mower_bin": str(code_mower_bin),
+        "version": version,
+        "toy_repo": str(toy_repo),
+        "repo_path": str(repo_path) if repo_path is not None else "",
+        "step_count": len(steps),
+        "steps": steps,
+        "product_wrapper_rehearsal": product_wrapper_payload,
+        "product_mirror_removal_plan": product_mirror_payload,
+    }
+    _write_json(outputs / "package-install-rehearsal.json", payload)
+    return payload
+
+
+def render_package_install_rehearsal_text(payload: dict[str, Any]) -> str:
+    lines = [
+        "Code Mower package-install rehearsal",
+        f"Status: {payload['status']}",
+        f"Package: {payload['package_spec']}",
+        f"Version: {payload.get('version', '')}",
+        f"Work dir: {payload['work_dir']}",
+        f"Toy repo: {payload['toy_repo']}",
+        f"Steps: {payload['step_count']}",
+    ]
+    if payload.get("repo_path"):
+        lines.extend(
+            [
+                f"Product repo: {payload['repo_path']}",
+                "Product wrapper rehearsal: "
+                f"{payload.get('product_wrapper_rehearsal', {}).get('status', 'not-run')}",
+                "Product mirror-removal status: "
+                f"{payload.get('product_mirror_removal_plan', {}).get('status', 'not-run')}",
+            ]
+        )
+    lines.append("")
+    lines.append(f"Full JSON: {Path(payload['work_dir']) / 'outputs' / 'package-install-rehearsal.json'}")
+    return "\n".join(lines) + "\n"
 
 
 def _json_payload(text: str) -> Any | None:
@@ -522,6 +866,45 @@ def main(argv: Sequence[str] | None = None) -> int:
     mirror.add_argument("--standalone-default-cycles", type=int, default=0)
     mirror.add_argument("--required-standalone-default-cycles", type=int, default=1)
     mirror.add_argument("--json", action="store_true")
+    package_install = subparsers.add_parser("package-install-rehearsal")
+    package_install.add_argument(
+        "--package-spec",
+        default="code-mower",
+        help=(
+            "package spec to pip install into a clean venv; use a local path, "
+            "git URL, or package index name"
+        ),
+    )
+    package_install.add_argument(
+        "--repo-path",
+        type=Path,
+        default=None,
+        help="optional product repo to compare against the installed package",
+    )
+    package_install.add_argument(
+        "--local-command",
+        default="",
+        help=(
+            "product-local command prefix for --repo-path, e.g. "
+            "'env CODE_MOWER_USE_LOCAL=1 tools/code_mower'"
+        ),
+    )
+    package_install.add_argument(
+        "--python",
+        type=Path,
+        default=None,
+        help="Python 3.11+ executable used to create the clean rehearsal venv",
+    )
+    package_install.add_argument(
+        "--work-dir",
+        type=Path,
+        default=None,
+        help="empty or absent directory for venv, toy repo, and JSON outputs",
+    )
+    package_install.add_argument("--timeout", type=int, default=180)
+    package_install.add_argument("--shadow-cycles", type=int, default=1)
+    package_install.add_argument("--standalone-default-cycles", type=int, default=1)
+    package_install.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     if args.command == "wrapper-rehearsal":
@@ -577,6 +960,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             print(render_mirror_removal_text(payload), end="")
+        return 0
+
+    if args.command == "package-install-rehearsal":
+        try:
+            payload = run_package_install_rehearsal(
+                package_spec=args.package_spec,
+                repo_path=args.repo_path,
+                local_command=_resolve_command(args.local_command)
+                if args.local_command
+                else None,
+                python=args.python,
+                work_dir=args.work_dir,
+                timeout=args.timeout,
+                shadow_cycles=args.shadow_cycles,
+                standalone_default_cycles=args.standalone_default_cycles,
+            )
+        except (OSError, subprocess.TimeoutExpired, ValueError, RehearsalError) as exc:
+            payload = {
+                "mode": "code-mower-package-install-rehearsal",
+                "status": "fail",
+                "error": str(exc),
+                "steps": getattr(exc, "steps", []),
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(f"package-install rehearsal failed: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(render_package_install_rehearsal_text(payload), end="")
         return 0
 
     raise AssertionError(f"unhandled migration command: {args.command}")

@@ -171,6 +171,19 @@ def build_next_steps(
             ),
         },
         {
+            "id": "package-install-rehearsal",
+            "title": "Prove the package-installed path before mirror removal",
+            "command": (
+                "code-mower migration package-install-rehearsal "
+                "--package-spec code-mower --repo-path . --json"
+            ),
+            "why": (
+                "Installs Code Mower into a clean venv, verifies the easy-mode "
+                "starter path in a fresh toy repo, then compares this repo against "
+                "the installed package."
+            ),
+        },
+        {
             "id": "first-audit",
             "title": "Run the first head-bound audit on a real PR",
             "command": f"gh pr edit {pr} --repo {repo} --add-label {first_audit_label}",

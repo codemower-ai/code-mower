@@ -180,10 +180,23 @@ CODE_MOWER_USE_LOCAL=1 tools/code_mower bootstrap --print-python
 
 That fallback keeps private-repo labeler workflows from trying to clone the
 standalone repository over unauthenticated HTTPS, but it also means mirrored
-repo-local implementation files are still required. `migration
-mirror-removal-plan` treats these workflow calls as mirror-removal blockers
-until the standalone package is public/package-installable or the workflows
-have authenticated standalone access.
+repo-local implementation files are still required. Before removing mirrors,
+run:
+
+```bash
+code-mower migration package-install-rehearsal \
+  --package-spec code-mower \
+  --repo-path /path/to/product-repo \
+  --json
+```
+
+During alpha testing, `--package-spec` can be a local path or git URL. The
+rehearsal installs Code Mower non-editably in a clean venv, proves the
+easy-mode starter path in a fresh toy repo, then compares product-wrapper
+behavior against the installed package. `migration mirror-removal-plan` treats
+local fallback workflow calls as mirror-removal blockers until the standalone
+package is public/package-installable or the workflows have authenticated
+standalone access.
 
 `tools/code_mower`, `tools/code_mower_standalone_shadow.sh`, and
 `tools/code_mower_standalone_pin.env` are migration support files. They should
