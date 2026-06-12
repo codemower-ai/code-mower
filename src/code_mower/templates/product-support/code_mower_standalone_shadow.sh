@@ -44,7 +44,7 @@ acquire_checkout_lock() {
   checkout_lock_dir="${source_dir}.checkout.lock"
   parent_dir="$(dirname -- "${checkout_lock_dir}")"
   stale_seconds="${CODE_MOWER_STANDALONE_CHECKOUT_LOCK_STALE_SECONDS:-30}"
-  timeout_seconds="${CODE_MOWER_STANDALONE_CHECKOUT_LOCK_TIMEOUT_SECONDS:-120}"
+  timeout_seconds="${CODE_MOWER_STANDALONE_CHECKOUT_LOCK_TIMEOUT_SECONDS:-7200}"
   started="$(date +%s)"
   mkdir -p "${parent_dir}"
   while ! mkdir "${checkout_lock_dir}" 2>/dev/null; do
@@ -144,7 +144,6 @@ if [ -z "${CODE_MOWER_STANDALONE_PATH:-}" ]; then
   export CODE_MOWER_STANDALONE_PATH="${source_dir}"
 fi
 
-release_checkout_lock
 set +e
 "${script_dir}/code_mower" "$@"
 rc=$?

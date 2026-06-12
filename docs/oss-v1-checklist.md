@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.20` of the standalone
+The current public-release baseline is `v0.1.0-alpha.21` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -63,6 +63,9 @@ package. It has proved:
 - private reference-repo concurrent-audit feedback from alpha.19, including
   Claude diff construction that no longer depends on shared `FETCH_HEAD` state
   after fetching the PR head.
+- private reference-repo editable-install feedback from alpha.20, including a
+  checkout lock that stays held through delegated standalone execution so a
+  shared editable source checkout cannot mutate under an active command.
 
 It has not yet proved:
 

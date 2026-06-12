@@ -25,8 +25,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_20(self) -> None:
-        self.assertEqual(__version__, "0.1.0a20")
+    def test_version_is_alpha_21(self) -> None:
+        self.assertEqual(__version__, "0.1.0a21")
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
@@ -253,15 +253,23 @@ printf '%s\\n' "${lane}"
         ):
             self.assertIn(source, packaged_sources)
 
-    def test_standalone_shadow_releases_checkout_lock_before_delegation(self) -> None:
+    def test_standalone_shadow_holds_checkout_lock_through_delegation(self) -> None:
         text = (
             ROOT
             / "src/code_mower/templates/product-support/code_mower_standalone_shadow.sh"
         ).read_text(encoding="utf-8")
+        self.assertIn(
+            'CODE_MOWER_STANDALONE_CHECKOUT_LOCK_TIMEOUT_SECONDS:-7200',
+            text,
+        )
         release_index = text.rfind("release_checkout_lock")
         delegate_index = text.rfind('"${script_dir}/code_mower" "$@"')
         self.assertGreaterEqual(release_index, 0)
         self.assertGreater(delegate_index, release_index)
+        self.assertNotIn(
+            'release_checkout_lock\nset +e\n"${script_dir}/code_mower" "$@"',
+            text,
+        )
 
     def test_claude_diff_builder_does_not_use_fetch_head_for_pr_head(self) -> None:
         text = (ROOT / "src/code_mower/claude_audit_pr.py").read_text(
