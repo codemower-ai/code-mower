@@ -18,6 +18,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CODE_MOWER_STANDALONE_REPO_URL: {{ code_mower_standalone_repo_url | default('https://github.com/OWNER/code-mower.git', true) }}
+  CODE_MOWER_STANDALONE_PACKAGE_REPO_URL: {{ code_mower_standalone_package_repo_url | default('git+ssh://git@github.com/OWNER/code-mower.git', true) }}
   CODE_MOWER_STANDALONE_REINSTALL: "1"
   CODE_MOWER_BOOTSTRAP_PYTHON: python3
 
@@ -67,6 +68,30 @@ jobs:
             --package-command "tools/code_mower" \
             --timeout 120 \
             --json | tee .code-mower/standalone-wrapper-rehearsal.json
+          code_mower_ref="${CODE_MOWER_STANDALONE_REF:-}"
+          if [ -z "${code_mower_ref}" ]; then
+            code_mower_ref="$(sed -n 's/^CODE_MOWER_STANDALONE_REF="\([^"]*\)"/\1/p' tools/code_mower_standalone_pin.env)"
+          fi
+          if [ -z "${code_mower_ref}" ]; then
+            echo "::error::tools/code_mower_standalone_pin.env does not define CODE_MOWER_STANDALONE_REF"
+            exit 1
+          fi
+          if [ "${code_mower_ref}" = "<pin-a-reviewed-code-mower-commit-or-tag>" ]; then
+            echo "::error::replace the placeholder CODE_MOWER_STANDALONE_REF before package-install rehearsal"
+            exit 1
+          fi
+          if [ "${CODE_MOWER_STANDALONE_PACKAGE_REPO_URL:-}" = "" ] || [ "${CODE_MOWER_STANDALONE_PACKAGE_REPO_URL}" = "git+ssh://git@github.com/OWNER/code-mower.git" ]; then
+            echo "::error::replace CODE_MOWER_STANDALONE_PACKAGE_REPO_URL with a pip-installable Code Mower package source"
+            exit 1
+          fi
+          package_spec="${CODE_MOWER_STANDALONE_PACKAGE_REPO_URL}@${code_mower_ref}"
+          tools/code_mower migration package-install-rehearsal \
+            --package-spec "$package_spec" \
+            --repo-path "$GITHUB_WORKSPACE" \
+            --local-command "env CODE_MOWER_USE_LOCAL=1 tools/code_mower" \
+            --work-dir "$GITHUB_WORKSPACE/.code-mower/package-install-rehearsal" \
+            --timeout 180 \
+            --json | tee .code-mower/package-install-rehearsal.json
 
       - name: Upload shadow proof artifacts
         if: always()
@@ -76,5 +101,6 @@ jobs:
           path: |
             .code-mower/standalone-doctor.json
             .code-mower/standalone-wrapper-rehearsal.json
+            .code-mower/package-install-rehearsal.json
           if-no-files-found: ignore
           retention-days: 7

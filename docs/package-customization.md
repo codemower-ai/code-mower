@@ -156,14 +156,37 @@ package publication. It expects:
 - `code_mower_standalone_repo_url` rendered to the source checkout URL for your
   standalone Code Mower repository, such as an SSH deploy-key URL while the
   source repo is private;
+- `code_mower_standalone_package_repo_url` rendered to the pip-installable form
+  of the same source, such as
+  `git+ssh://git@github.com/OWNER/code-mower.git`;
 - a read-only deploy key on the standalone Code Mower repository; and
 - the private half of that key stored as
   `CODE_MOWER_STANDALONE_DEPLOY_KEY` in the product repo's Actions secrets.
 
 The workflow fetches the pinned standalone checkout over SSH, runs
-`doctor --easy`, and compares safe read-only commands between the pinned
-standalone package and the repo-local mirror. It is a proof and migration guard,
-not a reviewer lane or merge gate.
+`doctor --easy`, compares safe read-only commands between the pinned standalone
+package and the repo-local mirror, and then runs `package-install-rehearsal`
+from the same pinned ref using a `git+ssh://...@REF` package spec. It is a
+proof and migration guard, not a reviewer lane or merge gate.
+
+When adapting the workflow for a private standalone repository, keep the SSH
+repository URL in the job environment, prefer an explicit
+`CODE_MOWER_STANDALONE_REF` workflow override when present, and otherwise read
+only `CODE_MOWER_STANDALONE_REF` from `tools/code_mower_standalone_pin.env`
+before the package-install step. Sourcing the whole pin file can overwrite the
+SSH deploy-key URL with an HTTPS URL and break the next wrapper invocation.
+The generated workflow exposes `CODE_MOWER_STANDALONE_PACKAGE_REPO_URL` so that
+private repos can keep the package-install rehearsal on the authenticated
+`git+ssh` path while public repos can use `git+https`.
+
+For a public standalone repository, the same rehearsal can use a pin-derived
+HTTPS package spec:
+
+```bash
+code_mower_ref="$(sed -n 's/^CODE_MOWER_STANDALONE_REF="\([^"]*\)"/\1/p' tools/code_mower_standalone_pin.env)"
+code_mower_repo="$(sed -n 's/^CODE_MOWER_STANDALONE_REPO_URL="\([^"]*\)"/\1/p' tools/code_mower_standalone_pin.env)"
+package_spec="git+${code_mower_repo}@${code_mower_ref}"
+```
 
 During mirror removal, keep the thin product wrapper and pin files in place.
 Move GitHub workflow calls from mirrored scripts to standalone wrapper commands

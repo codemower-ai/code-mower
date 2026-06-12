@@ -66,6 +66,19 @@ files your repository actually needs. Before copying
 `code_mower_standalone_pin.env`, replace the placeholder repository URL and ref
 with a reviewed Code Mower package source.
 
+For private standalone repositories, keep package-install rehearsal on the same
+authenticated path as checkout. Use the workflow deploy key, leave
+`CODE_MOWER_STANDALONE_REPO_URL` set to the SSH URL, prefer an explicit
+`CODE_MOWER_STANDALONE_REF` workflow override when present, and otherwise read
+only `CODE_MOWER_STANDALONE_REF` from the pin file when building a pip package
+spec. Do not `source` the entire pin file in the workflow after configuring an
+SSH URL; doing so can replace the deploy-key URL with an unauthenticated HTTPS
+URL.
+Use `CODE_MOWER_STANDALONE_PACKAGE_REPO_URL` for the pip-installable package
+source, for example `git+ssh://git@github.com/OWNER/code-mower.git`.
+For public standalone repositories, a `git+https://...@REF` package spec is
+fine.
+
 Run:
 
 ```bash

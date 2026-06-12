@@ -135,6 +135,16 @@ serialize through their shared lock. The default checkout-lock timeout is long
 enough for normal audit runs to queue instead of failing after two minutes;
 dead locks are still cleared by the PID/staleness checks.
 
+`v0.1.0-alpha.22` makes the generated private standalone shadow workflow run
+package-install rehearsal through the same authenticated path as checkout. It
+separates `CODE_MOWER_STANDALONE_REPO_URL` from
+`CODE_MOWER_STANDALONE_PACKAGE_REPO_URL`, prefers an explicit
+`CODE_MOWER_STANDALONE_REF` workflow override when present, and otherwise reads
+only the ref from the product pin file. That prevents the common failure where a
+workflow configures an SSH deploy-key URL, sources the whole pin file, silently
+replaces the URL with unauthenticated HTTPS, and fails on the next private
+checkout or package install.
+
 That does not make mirror deletion automatic for every user repo. The migration
 contract remains one repo at a time:
 

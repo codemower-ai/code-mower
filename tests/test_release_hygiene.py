@@ -25,8 +25,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_21(self) -> None:
-        self.assertEqual(__version__, "0.1.0a21")
+    def test_version_is_alpha_22(self) -> None:
+        self.assertEqual(__version__, "0.1.0a22")
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
@@ -269,6 +269,45 @@ printf '%s\\n' "${lane}"
         self.assertNotIn(
             'release_checkout_lock\nset +e\n"${script_dir}/code_mower" "$@"',
             text,
+        )
+
+    def test_private_shadow_workflow_uses_authenticated_package_rehearsal(self) -> None:
+        for rel_path in (
+            "templates/workflows/private-standalone-shadow.yml.j2",
+            "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2",
+        ):
+            with self.subTest(rel_path=rel_path):
+                text = (ROOT / rel_path).read_text(encoding="utf-8")
+                self.assertIn("CODE_MOWER_STANDALONE_DEPLOY_KEY", text)
+                self.assertIn("CODE_MOWER_STANDALONE_REPO_URL", text)
+                self.assertIn("CODE_MOWER_STANDALONE_PACKAGE_REPO_URL", text)
+                self.assertIn('code_mower_ref="${CODE_MOWER_STANDALONE_REF:-}"', text)
+                self.assertIn('if [ -z "${code_mower_ref}" ]; then', text)
+                self.assertIn("code_mower_ref=\"$(sed -n", text)
+                self.assertIn(
+                    'if [ "${code_mower_ref}" = "<pin-a-reviewed-code-mower-commit-or-tag>" ]; then',
+                    text,
+                )
+                self.assertIn(
+                    'replace CODE_MOWER_STANDALONE_PACKAGE_REPO_URL',
+                    text,
+                )
+                self.assertIn(
+                    'package_spec="${CODE_MOWER_STANDALONE_PACKAGE_REPO_URL}@${code_mower_ref}"',
+                    text,
+                )
+                self.assertIn("tools/code_mower migration package-install-rehearsal", text)
+                self.assertIn(".code-mower/package-install-rehearsal.json", text)
+                self.assertNotIn("source tools/code_mower_standalone_pin.env", text)
+
+        fallback_text = (ROOT / "src/code_mower/package.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("CODE_MOWER_STANDALONE_PACKAGE_REPO_URL", fallback_text)
+        self.assertIn('code_mower_ref="${CODE_MOWER_STANDALONE_REF:-}"', fallback_text)
+        self.assertIn(
+            'package_spec="${CODE_MOWER_STANDALONE_PACKAGE_REPO_URL}@${code_mower_ref}"',
+            fallback_text,
         )
 
     def test_claude_diff_builder_does_not_use_fetch_head_for_pr_head(self) -> None:

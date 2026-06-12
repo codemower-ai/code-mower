@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.21` of the standalone
+The current public-release baseline is `v0.1.0-alpha.22` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -42,6 +42,9 @@ package. It has proved:
   remain green;
 - first-run doctor visibility for missing `pytest`, which is not required by
   standalone easy-mode but is commonly required by product-side wrapper tests;
+- private-source package-install rehearsal that preserves the deploy-key path by
+  separating the checkout URL from the pip-installable package URL and reading
+  only the pinned ref from product support files;
 - standalone Codex and Claude structured audit commands plus Codex env
   preflight/schema-smoke helpers, so product shell wrappers can remain thin
   compatibility shims without mirrored Python implementation files.

@@ -38,6 +38,12 @@ def main() -> int:
         text = (ROOT / rel_path).read_text(encoding="utf-8")
         if "code_mower_standalone_repo_url" not in text:
             errors.append(f"{rel_path}: missing code_mower_standalone_repo_url placeholder")
+        if "code_mower_standalone_package_repo_url" not in text:
+            errors.append(f"{rel_path}: missing code_mower_standalone_package_repo_url placeholder")
+        if "package-install-rehearsal" not in text:
+            errors.append(f"{rel_path}: missing package-install rehearsal")
+        if 'code_mower_ref="${CODE_MOWER_STANDALONE_REF:-}"' not in text:
+            errors.append(f"{rel_path}: package rehearsal does not honor CODE_MOWER_STANDALONE_REF env override")
         if HARDCODED_SSH_GITHUB_RE.search(text):
             errors.append(f"{rel_path}: hard-codes a private SSH GitHub repository URL")
         if "{% raw %}${{ secrets.CODE_MOWER_STANDALONE_DEPLOY_KEY }}{% endraw %}" not in text:
@@ -46,6 +52,12 @@ def main() -> int:
     package_text = (ROOT / "src/code_mower/package.py").read_text(encoding="utf-8")
     if "code_mower_standalone_repo_url" not in package_text:
         errors.append("src/code_mower/package.py: generated private shadow template is not parameterized")
+    if "code_mower_standalone_package_repo_url" not in package_text:
+        errors.append("src/code_mower/package.py: generated private shadow template lacks package repo URL")
+    if "package-install-rehearsal" not in package_text:
+        errors.append("src/code_mower/package.py: generated private shadow template lacks package-install rehearsal")
+    if 'code_mower_ref="${CODE_MOWER_STANDALONE_REF:-}"' not in package_text:
+        errors.append("src/code_mower/package.py: package rehearsal does not honor CODE_MOWER_STANDALONE_REF env override")
     if HARDCODED_SSH_GITHUB_RE.search(package_text):
         errors.append("src/code_mower/package.py: hard-codes a private SSH GitHub repository URL")
 
