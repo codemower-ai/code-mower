@@ -244,9 +244,10 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 
 ## Not Required For v1.0
 
-- Hosted dashboards.
+- Hosted dashboards as a dependency for local value.
 - Automatic cloud upload.
-- Cloud account creation or login.
+- Cloud account creation or login for local install, local audit, local value
+  reports, or local export.
 - GitLab or Bitbucket support.
 - Live workflow mutation.
 - Paid-lane auto-triggering.
@@ -293,6 +294,8 @@ next?"
 
 ## Required Docs
 
+- `docs/current-state-and-roadmap.md`: current OSS/cloud state, v0.5 target,
+  v1.0 direction, and near-term roadmap.
 - `docs/github-setup.md`: GitHub auth, public/private repos, fork PRs, branch
   protection, token fallbacks, and the v1.0 GitHub-only scope.
 - `docs/provider-matrix.md`: provider class, trigger, cost, source exposure,

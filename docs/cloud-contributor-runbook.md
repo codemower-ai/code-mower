@@ -14,6 +14,17 @@ Use the production ingest endpoint:
 export CODE_MOWER_CLOUD_ENDPOINT="https://codemower.com/api/ingest"
 ```
 
+Create or manage team ingest tokens from:
+
+```text
+https://codemower.com/login
+https://codemower.com/dashboard
+```
+
+If OAuth providers are not yet enabled for the account you need, ask an
+operator to issue a team token through the server-side admin fallback, then
+replace it with a self-service dashboard token when login is available.
+
 ## Token Files
 
 Each agent/surface should have its own team ingest token. Recommended local

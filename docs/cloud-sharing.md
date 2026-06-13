@@ -109,6 +109,28 @@ code-mower cloud upload .code-mower/cloud-benchmark-bundle \
 
 Non-local HTTP endpoints are rejected; production uploads should use HTTPS.
 
+## Team Tokens And Login
+
+Human team/token management happens on CodeMower.com:
+
+```text
+https://codemower.com/login
+https://codemower.com/dashboard
+```
+
+The intended early-adopter flow is:
+
+1. sign in to CodeMower.com with GitHub, Google, or Apple;
+2. create or join a team;
+3. issue a team ingest token from the dashboard;
+4. store the token locally or in a CI secret; and
+5. run `cloud doctor`, `cloud upload --dry-run`, then `cloud upload --yes`.
+
+The local OSS package does not require login for local export, local value
+reports, or dry-run upload checks. Login is only needed to create and manage
+hosted team tokens. Operator-issued tokens remain a temporary fallback while
+OAuth providers are being enabled for early adopters.
+
 ## Routine Dogfood Upload
 
 For repositories that want ongoing metadata uploads, use the dogfood command.
@@ -133,9 +155,9 @@ For GitHub Actions, keep the workflow low-cost and optional: run it on `main`
 pushes, use `secrets.CODE_MOWER_CLOUD_TOKEN`, and skip the upload when the
 secret is absent.
 
-## What codemower.com Should Store First
+## What codemower.com Stores First
 
-The v0.5 cloud service should start with:
+The v0.5 cloud service starts with:
 
 - upload id;
 - privacy mode;
@@ -146,6 +168,6 @@ The v0.5 cloud service should start with:
 - excluded-content declaration; and
 - optional report text when `--include-reports` is explicit.
 
-Do not require account login for local export. Hosted dashboards can add
-accounts, teams, deletion, and retention controls after the ingest path is
-stable.
+CodeMower.com now has a protected dashboard for team and token management.
+Deletion, retention controls, richer hosted reports, and aggregate cohort views
+remain next-stage hosted-service work.

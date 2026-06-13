@@ -83,7 +83,7 @@ Promote upload beyond alpha only after the bundle schema and hosted ingestion
 path have real early-adopter mileage:
 
 ```bash
-code-mower cloud login
+open https://codemower.com/login
 code-mower cloud upload --dry-run
 code-mower cloud upload
 ```
@@ -92,7 +92,12 @@ Upload must continue to show exactly what will be sent before transfer. A dry
 run should remain the default first experience.
 
 The upload beta should support metadata-only uploads first. Rich report files,
-public-repo slugs, and team identity should each be separate opt-ins.
+public-repo slugs, and team identity should each be separate opt-ins. Human
+users manage team ingest tokens from:
+
+```text
+https://codemower.com/dashboard
+```
 
 ### v1.2: Premium Reporting
 
@@ -141,7 +146,7 @@ Every cloud path should be explicit:
 
 - `cloud export`: local only
 - `cloud upload --dry-run`: no transfer, prints manifest
-- `cloud upload`: requires login and confirmation
+- `cloud upload`: requires a team token and explicit confirmation
 
 Support modes:
 

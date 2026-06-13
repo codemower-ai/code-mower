@@ -46,6 +46,9 @@ Before inviting users:
 - `code-mower doctor --easy --github --probe-runtime` gives actionable
   remediation.
 - `code-mower cloud upload --dry-run` previews without network transfer.
+- `https://codemower.com/login` and `https://codemower.com/dashboard` are
+  verified for team token creation, or operator-issued tokens are ready as a
+  temporary fallback.
 - A toy repo and one private real repo have completed install, doctor,
   rehearsal, export, and upload dry-run.
 - Known limitations are documented plainly.
@@ -73,5 +76,7 @@ Cut a v0.5 alpha or beta only after:
 - cloud export and dry-run upload are tested;
 - codemower.com can receive an ingest payload;
 - the dashboard can show at least project count, upload count, report count,
-  and provider/lane summary rows; and
+  provider/lane summary rows, and structured event counts;
+- GitHub, Google, and Apple login are either fully configured or clearly marked
+  as pending with an operator-token fallback; and
 - the privacy boundary is documented and tested.

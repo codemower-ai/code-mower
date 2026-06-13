@@ -131,6 +131,24 @@ code-mower cloud doctor .code-mower/cloud-benchmark-bundle --json
 
 Nothing uploads unless you pass `--yes`.
 
+To upload to Code Mower Cloud, create a team ingest token from:
+
+```text
+https://codemower.com/login
+https://codemower.com/dashboard
+```
+
+Then configure the token locally:
+
+```bash
+export CODE_MOWER_CLOUD_TOKEN="TOKEN"
+export CODE_MOWER_CLOUD_ENDPOINT="https://codemower.com/api/ingest"
+code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
+```
+
+Operator-issued tokens remain a temporary fallback while GitHub, Google, and
+Apple sign-in are being enabled for early adopters.
+
 ## First Pilot Definition Of Done
 
 One repository is ready for broader Code Mower use when:
@@ -140,3 +158,5 @@ One repository is ready for broader Code Mower use when:
 - A small PR can be reviewed manually without recurring workflows.
 - Private-repo GitHub Actions cost is understood.
 - Cloud export output has been inspected before any upload.
+- If cloud upload is enabled, the team token was created intentionally and is
+  stored outside source control.
