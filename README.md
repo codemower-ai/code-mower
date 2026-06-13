@@ -29,5 +29,6 @@ For v0.5 early-adopter, v1.0 readiness, and migration guidance, see
 `docs/oss-v1-checklist.md`, `docs/repo-strategy.md`,
 `docs/mirror-removal-runbook.md`, `docs/github-setup.md`,
 `docs/provider-matrix.md`, `docs/cloud-sharing.md`,
-`docs/cloud-benchmarking.md`, `docs/privacy-threat-model.md`,
-`docs/commercial-boundary.md`, and `docs/public-release-checklist.md`.
+`docs/cloud-contributor-runbook.md`, `docs/cloud-benchmarking.md`,
+`docs/privacy-threat-model.md`, `docs/commercial-boundary.md`, and
+`docs/public-release-checklist.md`.

@@ -49,6 +49,12 @@ code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
 
 Without `--yes`, upload stays in dry-run mode.
 
+Check endpoint, token, and bundle readiness:
+
+```bash
+code-mower cloud doctor .code-mower/cloud-benchmark-bundle --json
+```
+
 ## Upload
 
 When you are ready to send metadata to Code Mower Cloud:

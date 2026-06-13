@@ -51,6 +51,24 @@ class CloudBundleError(ValueError):
     """Raised when a cloud bundle request is unsafe or invalid."""
 
 
+def _is_local_http_endpoint(endpoint: str) -> bool:
+    parsed_endpoint = urllib.parse.urlparse(endpoint)
+    return (
+        parsed_endpoint.scheme == "http"
+        and parsed_endpoint.hostname in {"localhost", "127.0.0.1"}
+    )
+
+
+def _validate_upload_endpoint(endpoint: str) -> None:
+    parsed_endpoint = urllib.parse.urlparse(endpoint)
+    if parsed_endpoint.scheme != "https" and not _is_local_http_endpoint(endpoint):
+        raise CloudBundleError(
+            "upload endpoint must be https:// or a local development endpoint"
+        )
+    if not parsed_endpoint.netloc:
+        raise CloudBundleError(f"upload endpoint is missing a host: {endpoint!r}")
+
+
 def _safe_kind(value: str) -> str:
     kind = value.strip()
     if kind not in SAFE_REPORT_KINDS:
@@ -361,15 +379,7 @@ def post_upload_payload(
     token: str = "",
     timeout: float = 20.0,
 ) -> dict[str, Any]:
-    parsed_endpoint = urllib.parse.urlparse(endpoint)
-    is_local_http = (
-        parsed_endpoint.scheme == "http"
-        and parsed_endpoint.hostname in {"localhost", "127.0.0.1"}
-    )
-    if parsed_endpoint.scheme != "https" and not is_local_http:
-        raise CloudBundleError(
-            "upload endpoint must be https:// or a local development endpoint"
-        )
+    _validate_upload_endpoint(endpoint)
     body = json.dumps(payload, sort_keys=True).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -399,6 +409,128 @@ def post_upload_payload(
         "status": status,
         "response": parsed,
     }
+
+
+def run_cloud_doctor(
+    *,
+    bundle_dir: Path,
+    endpoint: str,
+    token_env: str,
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+
+    try:
+        _validate_upload_endpoint(endpoint)
+        checks.append(
+            {
+                "name": "endpoint",
+                "status": "pass",
+                "message": f"upload endpoint is allowed: {endpoint}",
+            }
+        )
+    except CloudBundleError as exc:
+        checks.append(
+            {
+                "name": "endpoint",
+                "status": "fail",
+                "message": str(exc),
+            }
+        )
+
+    token_present = bool(os.environ.get(token_env, ""))
+    if token_present:
+        checks.append(
+            {
+                "name": "token",
+                "status": "pass",
+                "message": f"{token_env} is set",
+            }
+        )
+    elif _is_local_http_endpoint(endpoint):
+        checks.append(
+            {
+                "name": "token",
+                "status": "warn",
+                "message": (
+                    f"{token_env} is not set; local configless ingest may still work"
+                ),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "token",
+                "status": "fail",
+                "message": f"{token_env} is not set",
+                "remediation": (
+                    "Set CODE_MOWER_CLOUD_TOKEN to a team ingest token before "
+                    "running cloud upload --yes."
+                ),
+            }
+        )
+
+    manifest_path = bundle_dir / "code-mower-cloud-bundle.json"
+    if manifest_path.is_file():
+        try:
+            payload = build_upload_payload(bundle_dir=bundle_dir, include_reports=False)
+            checks.append(
+                {
+                    "name": "bundle",
+                    "status": "pass",
+                    "message": (
+                        f"bundle is readable with {len(payload['reports'])} report summaries"
+                    ),
+                }
+            )
+        except CloudBundleError as exc:
+            checks.append(
+                {
+                    "name": "bundle",
+                    "status": "fail",
+                    "message": str(exc),
+                }
+            )
+    else:
+        checks.append(
+            {
+                "name": "bundle",
+                "status": "warn",
+                "message": (
+                    f"bundle manifest not found at {manifest_path}; run cloud export first"
+                ),
+            }
+        )
+
+    failures = sum(1 for check in checks if check["status"] == "fail")
+    warnings = sum(1 for check in checks if check["status"] == "warn")
+    return {
+        "mode": "cloud-doctor",
+        "status": "fail" if failures else "pass",
+        "endpoint": endpoint,
+        "token_env": token_env,
+        "bundle_dir": str(bundle_dir),
+        "checks": checks,
+        "failures": failures,
+        "warnings": warnings,
+    }
+
+
+def render_cloud_doctor_text(report: dict[str, Any]) -> str:
+    lines = [
+        "Code Mower cloud doctor",
+        f"Status: {report['status']}",
+        f"Endpoint: {report['endpoint']}",
+        f"Token env: {report['token_env']}",
+        f"Bundle: {report['bundle_dir']}",
+        "",
+    ]
+    for check in report["checks"]:
+        lines.append(
+            f"- {check['status'].upper()} {check['name']}: {check['message']}"
+        )
+        if check.get("remediation"):
+            lines.append(f"  remediation: {check['remediation']}")
+    return "\n".join(lines) + "\n"
 
 
 def render_bundle_readme(manifest: dict[str, Any]) -> str:
@@ -484,6 +616,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     upload.add_argument("--timeout", type=float, default=20.0)
     upload.add_argument("--json", action="store_true")
+    doctor = subparsers.add_parser("doctor")
+    doctor.add_argument(
+        "bundle_dir",
+        nargs="?",
+        type=Path,
+        default=Path(DEFAULT_OUTPUT_DIR),
+        help="bundle directory created by `code-mower cloud export`",
+    )
+    doctor.add_argument(
+        "--endpoint",
+        default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
+    )
+    doctor.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    doctor.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -531,6 +677,10 @@ def main(argv: list[str] | None = None) -> int:
                     print("Network: skipped (pass --yes to upload)")
                 return 0
             token = os.environ.get(args.token_env, "")
+            if not token and not _is_local_http_endpoint(args.endpoint):
+                raise CloudBundleError(
+                    f"{args.token_env} is not set; refusing non-local upload without a token"
+                )
             result = post_upload_payload(
                 payload=payload,
                 endpoint=args.endpoint,
@@ -544,6 +694,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Endpoint: {result['endpoint']}")
                 print(f"Status: {result['status']}")
             return 0
+        if args.command == "doctor":
+            report = run_cloud_doctor(
+                bundle_dir=args.bundle_dir,
+                endpoint=args.endpoint,
+                token_env=args.token_env,
+            )
+            if args.json:
+                print(json.dumps(report, indent=2, sort_keys=True))
+            else:
+                print(render_cloud_doctor_text(report), end="")
+            return 1 if report["failures"] else 0
     except CloudBundleError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

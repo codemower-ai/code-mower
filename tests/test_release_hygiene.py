@@ -613,6 +613,77 @@ def main():
                         timeout=0.1,
                     )
 
+    def test_cloud_doctor_fails_for_missing_production_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+            code_mower_cloud.build_cloud_bundle(
+                reports=[(report, "value-report")],
+                output_dir=root / "bundle",
+                anonymous=True,
+            )
+            token_env = "CODE_MOWER_TEST_MISSING_TOKEN"
+            os.environ.pop(token_env, None)
+
+            payload = code_mower_cloud.run_cloud_doctor(
+                bundle_dir=root / "bundle",
+                endpoint="https://codemower.com/api/ingest",
+                token_env=token_env,
+            )
+
+            self.assertEqual(payload["status"], "fail")
+            self.assertEqual(payload["failures"], 1)
+            token_check = next(
+                check for check in payload["checks"] if check["name"] == "token"
+            )
+            self.assertEqual(token_check["status"], "fail")
+
+    def test_cloud_doctor_allows_local_missing_token_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_env = "CODE_MOWER_TEST_MISSING_LOCAL_TOKEN"
+            os.environ.pop(token_env, None)
+
+            payload = code_mower_cloud.run_cloud_doctor(
+                bundle_dir=Path(tmp) / "bundle",
+                endpoint="http://localhost:3000/api/ingest",
+                token_env=token_env,
+            )
+
+            self.assertEqual(payload["status"], "pass")
+            token_check = next(
+                check for check in payload["checks"] if check["name"] == "token"
+            )
+            self.assertEqual(token_check["status"], "warn")
+
+    def test_cloud_upload_command_requires_token_for_production(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+            code_mower_cloud.build_cloud_bundle(
+                reports=[(report, "value-report")],
+                output_dir=root / "bundle",
+                anonymous=True,
+            )
+            token_env = "CODE_MOWER_TEST_MISSING_UPLOAD_TOKEN"
+            os.environ.pop(token_env, None)
+
+            status = code_mower_cloud.main(
+                [
+                    "upload",
+                    str(root / "bundle"),
+                    "--endpoint",
+                    "https://codemower.com/api/ingest",
+                    "--token-env",
+                    token_env,
+                    "--yes",
+                    "--json",
+                ]
+            )
+
+            self.assertEqual(status, 1)
+
     def test_cloud_export_examples_include_lane_policy(self) -> None:
         smoke_text = (ROOT / "scripts/smoke_easy_mode.py").read_text(encoding="utf-8")
         package_text = (ROOT / "src/code_mower/package.py").read_text(encoding="utf-8")

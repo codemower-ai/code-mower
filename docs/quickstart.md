@@ -113,6 +113,12 @@ Preview an upload without sending data:
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
 ```
 
+Check endpoint, token, and bundle readiness:
+
+```bash
+code-mower cloud doctor .code-mower/cloud-benchmark-bundle --json
+```
+
 Nothing uploads unless you pass `--yes`.
 
 ## First Pilot Definition Of Done
