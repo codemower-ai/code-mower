@@ -25,8 +25,26 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_22(self) -> None:
-        self.assertEqual(__version__, "0.1.0a22")
+    def test_version_is_alpha_23(self) -> None:
+        self.assertEqual(__version__, "0.1.0a23")
+
+    def test_shared_templates_match_packaged_templates(self) -> None:
+        shared_templates = [
+            "builder-experiment.example.json",
+            "calibration-corpus.example.json",
+            "calibration-corpus.json",
+            "context-packs.example.json",
+            "providers.yml",
+            "reviewer-spend.example.json",
+        ]
+        for relative_path in shared_templates:
+            with self.subTest(template=relative_path):
+                self.assertEqual(
+                    (ROOT / "templates" / relative_path).read_text(encoding="utf-8"),
+                    (ROOT / "src/code_mower/templates" / relative_path).read_text(
+                        encoding="utf-8"
+                    ),
+                )
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
