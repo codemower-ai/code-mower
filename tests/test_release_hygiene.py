@@ -26,8 +26,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_24(self) -> None:
-        self.assertEqual(__version__, "0.1.0a24")
+    def test_version_is_alpha_25(self) -> None:
+        self.assertEqual(__version__, "0.1.0a25")
 
     def test_shared_templates_match_packaged_templates(self) -> None:
         shared_templates = [
@@ -559,6 +559,13 @@ def main():
             self.assertFalse(payload["upload_ready"])
             kinds = {entry["kind"] for entry in payload["included_reports"]}
             self.assertEqual(kinds, {"reviewer-metrics", "lane-policy", "value-report"})
+
+    def test_cloud_export_examples_include_lane_policy(self) -> None:
+        smoke_text = (ROOT / "scripts/smoke_easy_mode.py").read_text(encoding="utf-8")
+        package_text = (ROOT / "src/code_mower/package.py").read_text(encoding="utf-8")
+        for text in (smoke_text, package_text):
+            with self.subTest():
+                self.assertIn("lane-policy=lane-policy.json", text)
 
     def test_next_steps_prefers_antigravity_for_new_google_cli_calibration(self) -> None:
         templates = next_steps.code_mower_package.load_provider_templates(
