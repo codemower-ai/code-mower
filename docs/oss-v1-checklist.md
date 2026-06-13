@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.23` of the standalone
+The current public-release baseline is `v0.1.0-alpha.24` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -48,6 +48,9 @@ package. It has proved:
 - standalone Codex and Claude structured audit commands plus Codex env
   preflight/schema-smoke helpers, so product shell wrappers can remain thin
   compatibility shims without mirrored Python implementation files.
+- packaged starter value-report fixture generation, so the public starter
+  corpus has an expected first-run report that can be compared in tests and
+  shipped through `init --easy --apply`.
 - generated product-support wrappers for the standalone package launcher,
   standalone checkout/pin files, Codex/Claude compatibility shims, and
   shell-safe GitHub commenting, so future product repos can review generated
@@ -98,6 +101,8 @@ python scripts/smoke_easy_mode.py --json
 The bundled starter corpus is for proving the first report path. It should not
 be confused with Code Mower's richer reference corpus or a user's
 product-specific benchmark corpus.
+`reviewer-value-report.example.md` is the expected report for that starter
+corpus before users add real reviewer runs and human dispositions.
 
 `init --easy` is a safe alias for the recommended profile. It should render a
 dry-run by default. `--apply` writes generated output to a reviewable directory

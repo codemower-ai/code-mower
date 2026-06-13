@@ -135,8 +135,9 @@ serialize through their shared lock. The default checkout-lock timeout is long
 enough for normal audit runs to queue instead of failing after two minutes;
 dead locks are still cleared by the PID/staleness checks.
 
-`v0.1.0-alpha.23` keeps the public starter templates byte-identical to their
-packaged copies and keeps the private standalone shadow workflow running
+`v0.1.0-alpha.24` adds a packaged starter value-report fixture while keeping
+the public starter templates byte-identical to their packaged copies. Alpha.23
+kept the private standalone shadow workflow running
 package-install rehearsal through the same authenticated path as checkout. It
 separates `CODE_MOWER_STANDALONE_REPO_URL` from
 `CODE_MOWER_STANDALONE_PACKAGE_REPO_URL`, prefers an explicit

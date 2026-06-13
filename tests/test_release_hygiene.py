@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 from code_mower import __version__
 from code_mower import audit_progress
+from code_mower import cloud as code_mower_cloud
 from code_mower import code_mower_calibration
 from code_mower import doctor
 from code_mower import init as code_mower_init
@@ -25,8 +26,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_23(self) -> None:
-        self.assertEqual(__version__, "0.1.0a23")
+    def test_version_is_alpha_24(self) -> None:
+        self.assertEqual(__version__, "0.1.0a24")
 
     def test_shared_templates_match_packaged_templates(self) -> None:
         shared_templates = [
@@ -35,6 +36,7 @@ class ReleaseHygieneTests(unittest.TestCase):
             "calibration-corpus.json",
             "context-packs.example.json",
             "providers.yml",
+            "reviewer-value-report.example.md",
             "reviewer-spend.example.json",
         ]
         for relative_path in shared_templates:
@@ -45,6 +47,14 @@ class ReleaseHygieneTests(unittest.TestCase):
                         encoding="utf-8"
                     ),
                 )
+        self.assertEqual(
+            (ROOT / "tools/reviewer_value_report.example.md").read_text(
+                encoding="utf-8"
+            ),
+            (ROOT / "templates/reviewer-value-report.example.md").read_text(
+                encoding="utf-8"
+            ),
+        )
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
@@ -88,6 +98,7 @@ class ReleaseHygieneTests(unittest.TestCase):
             result = code_mower_init.apply_init_plan(plan, output_dir)
 
             generated = {
+                "reviewer-value-report.example.md",
                 "tools/code_mower",
                 "tools/code_mower_standalone_shadow.sh",
                 "tools/code_mower_standalone_pin.env",
@@ -107,11 +118,21 @@ class ReleaseHygieneTests(unittest.TestCase):
                 if Path(path).is_relative_to(output_dir)
             }
             self.assertTrue(generated.isdisjoint(placeholder_files))
-            for rel_path in generated - {"tools/code_mower_standalone_pin.env"}:
+            non_executable_generated = {
+                "reviewer-value-report.example.md",
+                "tools/code_mower_standalone_pin.env",
+            }
+            for rel_path in generated - non_executable_generated:
                 self.assertTrue(output_dir.joinpath(rel_path).stat().st_mode & 0o111, rel_path)
             self.assertIn(
                 "CODE_MOWER_STANDALONE_REF",
                 output_dir.joinpath("tools/code_mower_standalone_pin.env").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            self.assertIn(
+                "Code Mower Reviewer Value Report",
+                output_dir.joinpath("reviewer-value-report.example.md").read_text(
                     encoding="utf-8"
                 ),
             )
@@ -515,6 +536,29 @@ def main():
     def test_doctor_auth_probe_detail_redacts_output_content(self) -> None:
         detail = doctor._auth_probe_output_detail("email@example.com\nscope repo\n")
         self.assertEqual(detail, {"output_redacted": True, "output_line_count": 2})
+
+    def test_cloud_export_accepts_lane_policy_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metrics = root / "reviewer-metrics.json"
+            policy = root / "lane-policy.json"
+            value = root / "reviewer-value-report.md"
+            for path in (metrics, policy, value):
+                path.write_text("{}", encoding="utf-8")
+
+            payload = code_mower_cloud.build_cloud_bundle(
+                reports=[
+                    (metrics, "reviewer-metrics"),
+                    (policy, "lane-policy"),
+                    (value, "value-report"),
+                ],
+                output_dir=root / "bundle",
+                anonymous=True,
+            )
+
+            self.assertFalse(payload["upload_ready"])
+            kinds = {entry["kind"] for entry in payload["included_reports"]}
+            self.assertEqual(kinds, {"reviewer-metrics", "lane-policy", "value-report"})
 
     def test_next_steps_prefers_antigravity_for_new_google_cli_calibration(self) -> None:
         templates = next_steps.code_mower_package.load_provider_templates(

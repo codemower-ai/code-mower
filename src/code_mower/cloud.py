@@ -16,6 +16,7 @@ DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
 SAFE_REPORT_KINDS = {
     "authoring-runs",
     "calibration-runs",
+    "lane-policy",
     "reviewer-metrics",
     "spend",
     "value-report",

@@ -123,6 +123,7 @@ PACKAGE_FILES = (
     ("tools/builder_experiment.example.json", "templates/builder-experiment.example.json", "config"),
     ("tools/context_packs.example.json", "templates/context-packs.example.json", "config"),
     ("tools/reviewer_spend.example.json", "templates/reviewer-spend.example.json", "config"),
+    ("tools/reviewer_value_report.example.md", "templates/reviewer-value-report.example.md", "config"),
     (".cursor/BUGBOT.md", "templates/cursor/BUGBOT.md", "config"),
     (
         "tools/calibration_corpus.example.json",
@@ -141,6 +142,11 @@ PACKAGE_FILES = (
     ),
     ("tools/context_packs.example.json", "src/code_mower/templates/context-packs.example.json", "config"),
     ("tools/reviewer_spend.example.json", "src/code_mower/templates/reviewer-spend.example.json", "config"),
+    (
+        "tools/reviewer_value_report.example.md",
+        "src/code_mower/templates/reviewer-value-report.example.md",
+        "config",
+    ),
     (
         "src/code_mower/templates/product-support/code_mower",
         "src/code_mower/templates/product-support/code_mower",

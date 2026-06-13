@@ -395,6 +395,7 @@ local, inspectable benchmark bundle with:
 ```bash
 code-mower cloud export \
   --report reviewer-metrics=reviewer-metrics.json \
+  --report lane-policy=lane-policy.json \
   --report value-report=reviewer-value-report.md \
   --output-dir .code-mower/cloud-benchmark-bundle \
   --json

@@ -21,6 +21,18 @@ class CalibrationTruthTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
             return code_mower_calibration.load_corpus(path)
 
+    def test_starter_value_report_matches_packaged_example(self) -> None:
+        corpus = code_mower_calibration.load_corpus(
+            ROOT / "src/code_mower/templates/calibration-corpus.json"
+        )
+        report = code_mower_calibration.build_value_report(corpus)
+        self.assertEqual(
+            code_mower_calibration.render_value_report_text(report),
+            (ROOT / "src/code_mower/templates/reviewer-value-report.example.md").read_text(
+                encoding="utf-8"
+            ),
+        )
+
     def test_explicit_truth_marks_known_clean_without_source_prefix(self) -> None:
         corpus = self._load_corpus(
             {

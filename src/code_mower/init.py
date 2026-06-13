@@ -79,6 +79,12 @@ STARTER_DATA_FILES = (
         "templates/reviewer-spend.example.json",
         "starter-reviewer-spend",
     ),
+    (
+        "reviewer-value-report.example.md",
+        "tools/reviewer_value_report.example.md",
+        "templates/reviewer-value-report.example.md",
+        "starter-reviewer-value-report",
+    ),
 )
 
 PRODUCT_SUPPORT_FILES = (
