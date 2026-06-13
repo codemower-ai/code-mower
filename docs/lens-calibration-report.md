@@ -5,9 +5,12 @@ It is deliberately conservative: the new lenses are available and package-tested
 but they are not merge-gating signals until calibration shows that they catch
 useful findings without adding noise.
 
-## Current Corpus
+## Current Reference Corpus
 
-The starter corpus now includes 18 real PR outcomes:
+The reference corpus used for this checked-in report includes 18 real PR
+outcomes. This is richer than the public starter corpus shipped at
+`templates/calibration-corpus.json`; the public starter corpus is sanitized for
+easy-mode onboarding and does not reproduce the metrics below by itself.
 
 - 14 existing Code Mower and reference product calibration items.
 - 4 known-clean prompt-lens calibration controls:
@@ -27,7 +30,8 @@ catches more bugs.
 
 ## Generated Value Snapshot
 
-`docs/reviewer-value-report.md` was regenerated from the corpus:
+`docs/reviewer-value-report.md` was regenerated from the reference corpus and
+captured reviewer-run evidence:
 
 - Corpus items: 18
 - Adjudicated evidence: 70

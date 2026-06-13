@@ -95,6 +95,10 @@ code-mower calibration value-report templates/calibration-corpus.json
 python scripts/smoke_easy_mode.py --json
 ```
 
+The bundled starter corpus is for proving the first report path. It should not
+be confused with Code Mower's richer reference corpus or a user's
+product-specific benchmark corpus.
+
 `init --easy` is a safe alias for the recommended profile. It should render a
 dry-run by default. `--apply` writes generated output to a reviewable directory
 and still must not mutate live workflows, create labels, or trigger paid lanes.

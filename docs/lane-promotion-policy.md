@@ -24,7 +24,7 @@ code-mower calibration run templates/calibration-corpus.json \
   --json
 code-mower calibration value-report templates/calibration-corpus.json \
   --runs .code-mower/calibration-results/calibration-run-results.json \
-  --output docs/reviewer-value-report.md
+  --output .code-mower/reviewer-value-report.md
 ```
 
 The runner writes raw command, stdout, stderr, per-lane summaries, and a
@@ -183,6 +183,12 @@ operational debt to repair before the next unattended merge cycle.
    the combined historical corpus plus fresh-run evidence.
 
 ## Current Policy From Starter Evidence
+
+The checked-in `docs/reviewer-value-report.md` is a reference snapshot from the
+richer Code Mower development corpus plus captured reviewer-run evidence. The
+public starter corpus at `templates/calibration-corpus.json` is intentionally
+small and sanitized for onboarding, so it will not reproduce that snapshot by
+itself.
 
 Current generated value report:
 

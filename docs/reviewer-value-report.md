@@ -1,5 +1,13 @@
 # Code Mower Reviewer Value Report
 
+This checked-in snapshot comes from the richer reference calibration corpus plus
+captured reviewer-run evidence used during Code Mower development. It is not
+expected to be reproduced from the public starter file at
+`templates/calibration-corpus.json`, which is intentionally small and sanitized
+for OSS onboarding. Use the starter file to prove the command path in a new
+repo; use your own corpus and run manifests to produce a product-specific value
+report.
+
 Corpus: `code-mower-known-pr-starter`
 Items: 18
 Adjudicated evidence: 70

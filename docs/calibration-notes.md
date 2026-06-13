@@ -85,7 +85,11 @@ These are working notes, not permanent rankings.
 
 ## Current Evidence Anchors
 
-Use the starter corpus in `templates/calibration-corpus.json` first. It includes:
+Use the public starter corpus in `templates/calibration-corpus.json` first to
+prove the command path in a new repo. It is intentionally small and sanitized;
+it does not reproduce the richer checked-in reviewer value report by itself.
+
+The current reference corpus used for Code Mower development includes:
 
 - Known-clean Code Mower lane-semantics PRs.
 - A known-blocked auth/history slice with expected findings for solve-history
@@ -174,6 +178,10 @@ code-mower calibration policy reviewer-metrics.json --json
 Use `reviewer_evidence` for adjudicated findings and `reviewer_runs` for
 whole-review outcomes. A zero-finding pass on a known-clean PR is useful
 calibration evidence, but it is not the same thing as a useful finding.
+Do not overwrite `docs/reviewer-value-report.md` with the public starter corpus
+unless the goal is to replace the reference snapshot with a deliberately tiny
+example report; for product use, write a local report under `.code-mower/` or
+another repo-specific output path.
 
 Good future corpus additions:
 
