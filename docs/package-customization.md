@@ -387,10 +387,10 @@ By default, verdict artifacts live under
 `CODE_MOWER_VERDICT_ARTIFACT_DIR` in CI or package installs when that cache
 should be pinned to a workspace-owned state directory.
 
-## Cloud Benchmark Export
+## Cloud Benchmark Export And Upload Dry Run
 
-The package should deliver value locally before cloud upload exists. Export a
-local, inspectable benchmark bundle with:
+The package should deliver value locally without cloud upload. Export a local,
+inspectable benchmark bundle with:
 
 ```bash
 code-mower cloud export \
@@ -401,10 +401,16 @@ code-mower cloud export \
   --json
 ```
 
-The bundle manifest records that it is local-only and not upload-ready. It
-excludes source code, raw diffs, raw model transcripts, raw stdout/stderr, auth
-output, and secrets by default. Future cloud upload should require an explicit
-dry run that prints the manifest before any network transfer.
+The bundle excludes source code, raw diffs, raw model transcripts, raw
+stdout/stderr, auth output, and secrets by default. Preview the optional cloud
+handoff without sending data:
+
+```bash
+code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
+```
+
+Network transfer requires `--yes`. Report text is excluded from the upload
+payload unless the caller explicitly adds `--include-reports`.
 
 ## Merge Command Planning
 

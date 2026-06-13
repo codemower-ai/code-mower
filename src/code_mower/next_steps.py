@@ -254,6 +254,18 @@ def build_next_steps(
             ),
             "why": "Produces a local, source-free bundle for future opt-in benchmarking/reporting.",
         },
+        {
+            "id": "cloud-upload-dry-run",
+            "title": "Preview cloud sharing without sending data",
+            "command": (
+                "code-mower cloud upload .code-mower/cloud-benchmark-bundle "
+                "--dry-run --json"
+            ),
+            "why": (
+                "Shows the exact metadata-only upload shape before any network "
+                "transfer."
+            ),
+        },
     ]
 
     return {

@@ -6,7 +6,7 @@ It helps teams drive from plan to merge at maximum safe velocity while preservin
 
 The Code Mower open-source core is licensed under Apache-2.0. Hosted benchmarking and reporting, managed integrations, private telemetry and benchmark data products, enterprise controls, and support are commercial surfaces unless licensed otherwise.
 
-Code Mower is extracted from a production multi-repo development workflow and packaged as a standalone OSS tool. Start with `code-mower init --easy`, then run `code-mower doctor --easy` to verify local CLIs, tokens, provider catalog coverage, and runtime probes.
+Code Mower is extracted from a production multi-repo development workflow and packaged as a standalone OSS tool. Start with `code-mower init --easy`, then run `code-mower doctor --easy` to verify local CLIs, tokens, provider catalog coverage, and runtime probes. The current early-adopter path is documented in `docs/quickstart.md`.
 
 For existing repos that still carry product-local Code Mower tools, run `code-mower migration wrapper-rehearsal --repo-path /path/to/repo --json` before flipping to a pinned standalone package. The rehearsal compares safe read-only commands and gives a low-risk path away from mirrored maintenance.
 
@@ -24,8 +24,10 @@ rehearsal installs Code Mower non-editably, creates a fresh toy repo, runs
 easy-mode init/doctor/next-steps/calibration starter checks, and optionally
 compares a product repo against the installed package.
 
-For v1.0 readiness and migration guidance, see `docs/oss-v1-checklist.md`,
-`docs/repo-strategy.md`, `docs/mirror-removal-runbook.md`,
-`docs/github-setup.md`, `docs/provider-matrix.md`,
-`docs/privacy-threat-model.md`, `docs/commercial-boundary.md`, and
-`docs/public-release-checklist.md`.
+For v0.5 early-adopter, v1.0 readiness, and migration guidance, see
+`docs/quickstart.md`, `docs/early-adopter-v05.md`,
+`docs/oss-v1-checklist.md`, `docs/repo-strategy.md`,
+`docs/mirror-removal-runbook.md`, `docs/github-setup.md`,
+`docs/provider-matrix.md`, `docs/cloud-sharing.md`,
+`docs/cloud-benchmarking.md`, `docs/privacy-threat-model.md`,
+`docs/commercial-boundary.md`, and `docs/public-release-checklist.md`.

@@ -612,6 +612,21 @@ def run_smoke(*, code_mower_bin: Path, work_dir: Path) -> dict[str, Any]:
             stdout_path=toy_repo / \"cloud-export.json\",
         )
     )
+    steps.append(
+        _run(
+            [
+                cm,
+                \"cloud\",
+                \"upload\",
+                \".code-mower/cloud-benchmark-bundle\",
+                \"--dry-run\",
+                \"--json\",
+            ],
+            cwd=toy_repo,
+            env=env,
+            stdout_path=toy_repo / \"cloud-upload-dry-run.json\",
+        )
+    )
 
     summary = {
         \"mode\": \"code-mower-easy-mode-smoke\",
@@ -1119,6 +1134,7 @@ CLI_COMMANDS = (
     "code-mower providers show <provider>",
     "code-mower telemetry summarize ~/.cache/code-mower-audits/events.jsonl --json",
     "code-mower cloud export --report reviewer-metrics=reviewer-metrics.json --report lane-policy=lane-policy.json --report value-report=reviewer-value-report.md --output-dir .code-mower/cloud-benchmark-bundle --json",
+    "code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json",
     "python scripts/smoke_easy_mode.py --json",
     "python scripts/fresh_clone_rehearsal.py --json",
 )

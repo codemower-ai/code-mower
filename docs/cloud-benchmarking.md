@@ -29,9 +29,27 @@ observability/evaluation backend.
 
 ## Release Stages
 
+### v0.5: Early-Adopter Upload Alpha
+
+The v0.5 path adds an opt-in upload client for early adopters who explicitly
+want to share sanitized benchmark metadata with Code Mower Cloud. The OSS tool
+is still local-first:
+
+```bash
+code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
+code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
+```
+
+Dry run is the first-class experience. A network upload only happens when the
+caller passes `--yes`, and the default payload is metadata-only. Rich report
+text requires `--include-reports`.
+
 ### v1.0: Local-First, Cloud-Ready
 
-Ship no network upload by default.
+Ship no network upload by default. The local package may include an opt-in
+upload alpha, but a user should not need a Code Mower Cloud account to get
+value from install, doctor, first audit, calibration, value reports, or cloud
+export.
 
 Provide:
 
@@ -61,7 +79,8 @@ as part of the manifest until the exporter emits it and tests cover it.
 
 ### v1.1: Opt-In Upload Beta
 
-Add login and upload only after the v1.0 bundle schema is stable:
+Promote upload beyond alpha only after the bundle schema and hosted ingestion
+path have real early-adopter mileage:
 
 ```bash
 code-mower cloud login
@@ -69,8 +88,8 @@ code-mower cloud upload --dry-run
 code-mower cloud upload
 ```
 
-Upload must show exactly what will be sent before transfer. A dry run should be
-the default first experience.
+Upload must continue to show exactly what will be sent before transfer. A dry
+run should remain the default first experience.
 
 The upload beta should support metadata-only uploads first. Rich report files,
 public-repo slugs, and team identity should each be separate opt-ins.

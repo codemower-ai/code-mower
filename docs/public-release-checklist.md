@@ -37,7 +37,8 @@ not know the original reference repos.
   assumptions.
 - Provider matrix identifies which lanes are local, hosted, manual, optional,
   informational, or merge-gating eligible.
-- Cloud export docs state that upload is opt-in and inspectable.
+- Cloud export/upload docs state that upload is opt-in, dry-run-first, and
+  inspectable.
 - Issue templates, contributing guide, security policy, and support boundaries
   are ready enough for early OSS users.
 - Public-source and package-index install paths are documented separately from

@@ -26,8 +26,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_25(self) -> None:
-        self.assertEqual(__version__, "0.1.0a25")
+    def test_version_is_alpha_26(self) -> None:
+        self.assertEqual(__version__, "0.1.0a26")
 
     def test_shared_templates_match_packaged_templates(self) -> None:
         shared_templates = [
@@ -560,12 +560,66 @@ def main():
             kinds = {entry["kind"] for entry in payload["included_reports"]}
             self.assertEqual(kinds, {"reviewer-metrics", "lane-policy", "value-report"})
 
+    def test_cloud_upload_payload_is_metadata_only_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metrics = root / "reviewer-metrics.json"
+            metrics.write_text('{"safe": true}', encoding="utf-8")
+            code_mower_cloud.build_cloud_bundle(
+                reports=[(metrics, "reviewer-metrics")],
+                output_dir=root / "bundle",
+                anonymous=True,
+            )
+
+            payload = code_mower_cloud.build_upload_payload(
+                bundle_dir=root / "bundle",
+                include_reports=False,
+            )
+
+            self.assertEqual(payload["schema"], code_mower_cloud.UPLOAD_SCHEMA)
+            self.assertEqual(payload["upload_mode"], "metadata_only")
+            self.assertEqual(payload["reports"][0]["kind"], "reviewer-metrics")
+            self.assertNotIn("text", payload["reports"][0])
+
+    def test_cloud_upload_payload_includes_reports_only_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n\nsafe aggregate data\n", encoding="utf-8")
+            code_mower_cloud.build_cloud_bundle(
+                reports=[(report, "value-report")],
+                output_dir=root / "bundle",
+                anonymous=True,
+            )
+
+            payload = code_mower_cloud.build_upload_payload(
+                bundle_dir=root / "bundle",
+                include_reports=True,
+            )
+
+            self.assertEqual(payload["upload_mode"], "reports_included")
+            self.assertIn("safe aggregate data", payload["reports"][0]["text"])
+
+    def test_cloud_upload_rejects_non_https_non_local_endpoint(self) -> None:
+        for endpoint in (
+            "http://example.com/api/ingest",
+            "http://localhost.evil.test/api/ingest",
+        ):
+            with self.subTest(endpoint=endpoint):
+                with self.assertRaises(code_mower_cloud.CloudBundleError):
+                    code_mower_cloud.post_upload_payload(
+                        payload={"schema": code_mower_cloud.UPLOAD_SCHEMA},
+                        endpoint=endpoint,
+                        timeout=0.1,
+                    )
+
     def test_cloud_export_examples_include_lane_policy(self) -> None:
         smoke_text = (ROOT / "scripts/smoke_easy_mode.py").read_text(encoding="utf-8")
         package_text = (ROOT / "src/code_mower/package.py").read_text(encoding="utf-8")
         for text in (smoke_text, package_text):
             with self.subTest():
                 self.assertIn("lane-policy=lane-policy.json", text)
+                self.assertIn("cloud-upload-dry-run.json", text)
 
     def test_next_steps_prefers_antigravity_for_new_google_cli_calibration(self) -> None:
         templates = next_steps.code_mower_package.load_provider_templates(
@@ -587,6 +641,20 @@ def main():
         self.assertIn("--lanes antigravity-cli", calibration["command"])
         self.assertNotIn("--lanes gemini-cli", calibration["command"])
         self.assertIn("legacy/API-key compatibility", calibration["why"])
+
+    def test_next_steps_includes_cloud_upload_dry_run_after_export(self) -> None:
+        templates = next_steps.code_mower_package.load_provider_templates(
+            ROOT / "src/code_mower/templates/providers.yml"
+        )
+        plan = next_steps.build_next_steps(templates, profile="recommended")
+        ids = [step["id"] for step in plan["steps"]]
+
+        self.assertIn("cloud-export", ids)
+        self.assertIn("cloud-upload-dry-run", ids)
+        self.assertLess(ids.index("cloud-export"), ids.index("cloud-upload-dry-run"))
+        dry_run = next(step for step in plan["steps"] if step["id"] == "cloud-upload-dry-run")
+        self.assertIn("cloud upload", dry_run["command"])
+        self.assertIn("--dry-run", dry_run["command"])
 
     def test_calibration_arms_include_antigravity_lens_fanout(self) -> None:
         arms = {

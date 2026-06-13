@@ -5,14 +5,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 
 BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"
+UPLOAD_SCHEMA = "code_mower.cloudUpload.v1"
 DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
+DEFAULT_UPLOAD_ENDPOINT = "https://codemower.com/api/ingest"
+DEFAULT_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
+MAX_REPORT_UPLOAD_BYTES = 1_000_000
 SAFE_REPORT_KINDS = {
     "authoring-runs",
     "calibration-runs",
@@ -252,6 +260,147 @@ def build_cloud_bundle(
     }
 
 
+def load_bundle_manifest(bundle_dir: Path) -> dict[str, Any]:
+    manifest_path = bundle_dir / "code-mower-cloud-bundle.json"
+    if not manifest_path.is_file():
+        raise CloudBundleError(f"bundle manifest not found: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CloudBundleError(f"unable to read bundle manifest {manifest_path}: {exc}") from exc
+    if not isinstance(manifest, dict) or manifest.get("schema") != BUNDLE_SCHEMA:
+        raise CloudBundleError(f"unsupported bundle manifest schema in {manifest_path}")
+    return manifest
+
+
+def _report_path_from_manifest(bundle_dir: Path, target: str) -> Path:
+    if not target or target.startswith("/") or ".." in Path(target).parts:
+        raise CloudBundleError(f"unsafe report target in bundle manifest: {target!r}")
+    path = bundle_dir / target
+    try:
+        resolved = path.resolve()
+        bundle_resolved = bundle_dir.resolve()
+    except OSError as exc:
+        raise CloudBundleError(f"unable to resolve bundle report path {path}: {exc}") from exc
+    if not resolved.is_relative_to(bundle_resolved):
+        raise CloudBundleError(f"report target escapes bundle directory: {target!r}")
+    if not resolved.is_file():
+        raise CloudBundleError(f"bundle report file is missing: {target!r}")
+    return resolved
+
+
+def _included_report_payloads(
+    manifest: dict[str, Any],
+    bundle_dir: Path,
+    *,
+    include_reports: bool,
+) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for entry in manifest.get("included_reports", []):
+        if not isinstance(entry, dict):
+            raise CloudBundleError("bundle manifest has a non-object included_reports entry")
+        target = str(entry.get("target", ""))
+        report_payload = {
+            "kind": entry.get("kind", ""),
+            "target": target,
+            "bytes": entry.get("bytes", 0),
+            "source_basename": entry.get("source_basename", ""),
+        }
+        if include_reports:
+            path = _report_path_from_manifest(bundle_dir, target)
+            size = path.stat().st_size
+            if size > MAX_REPORT_UPLOAD_BYTES:
+                raise CloudBundleError(
+                    f"refusing to upload {target}: {size} bytes exceeds "
+                    f"{MAX_REPORT_UPLOAD_BYTES} byte limit"
+                )
+            try:
+                report_payload["text"] = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise CloudBundleError(f"report is not UTF-8 text: {target}") from exc
+            except OSError as exc:
+                raise CloudBundleError(f"unable to read report {target}: {exc}") from exc
+        payloads.append(report_payload)
+    return payloads
+
+
+def build_upload_payload(
+    *,
+    bundle_dir: Path,
+    include_reports: bool = False,
+) -> dict[str, Any]:
+    bundle_dir = bundle_dir.expanduser()
+    if not bundle_dir.is_dir():
+        raise CloudBundleError(f"bundle directory does not exist: {bundle_dir}")
+    manifest = load_bundle_manifest(bundle_dir)
+    return {
+        "schema": UPLOAD_SCHEMA,
+        "bundle_schema": manifest.get("schema"),
+        "privacy_mode": manifest.get("privacy_mode", ""),
+        "upload_mode": "reports_included" if include_reports else "metadata_only",
+        "repo_slug": manifest.get("repo_slug", ""),
+        "team_id": manifest.get("team_id", ""),
+        "install_id": manifest.get("install_id", ""),
+        "excluded_content": manifest.get("excluded_content", []),
+        "reports": _included_report_payloads(
+            manifest,
+            bundle_dir,
+            include_reports=include_reports,
+        ),
+        "notes": [
+            "This upload payload is built from an explicit local bundle.",
+            "Report contents are included only when --include-reports is set.",
+        ],
+    }
+
+
+def post_upload_payload(
+    *,
+    payload: dict[str, Any],
+    endpoint: str,
+    token: str = "",
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    parsed_endpoint = urllib.parse.urlparse(endpoint)
+    is_local_http = (
+        parsed_endpoint.scheme == "http"
+        and parsed_endpoint.hostname in {"localhost", "127.0.0.1"}
+    )
+    if parsed_endpoint.scheme != "https" and not is_local_http:
+        raise CloudBundleError(
+            "upload endpoint must be https:// or a local development endpoint"
+        )
+    body = json.dumps(payload, sort_keys=True).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "code-mower-cloud-upload",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response_body = response.read().decode("utf-8")
+            status = response.getcode()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise CloudBundleError(f"upload failed with HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise CloudBundleError(f"upload failed: {exc.reason}") from exc
+    try:
+        parsed = json.loads(response_body) if response_body else {}
+    except json.JSONDecodeError as exc:
+        raise CloudBundleError(f"upload response was not JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise CloudBundleError("upload response JSON must be an object")
+    return {
+        "mode": "cloud-upload",
+        "endpoint": endpoint,
+        "status": status,
+        "response": parsed,
+    }
+
+
 def render_bundle_readme(manifest: dict[str, Any]) -> str:
     lines = [
         "# Code Mower Cloud Benchmark Bundle",
@@ -313,6 +462,28 @@ def main(argv: list[str] | None = None) -> int:
     export.add_argument("--install-id", default="")
     export.add_argument("--anonymous", action="store_true")
     export.add_argument("--json", action="store_true")
+    upload = subparsers.add_parser("upload")
+    upload.add_argument(
+        "bundle_dir",
+        nargs="?",
+        type=Path,
+        default=Path(DEFAULT_OUTPUT_DIR),
+        help="bundle directory created by `code-mower cloud export`",
+    )
+    upload.add_argument(
+        "--endpoint",
+        default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
+    )
+    upload.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    upload.add_argument("--include-reports", action="store_true")
+    upload.add_argument("--dry-run", action="store_true")
+    upload.add_argument(
+        "--yes",
+        action="store_true",
+        help="perform the network upload; without this, upload prints a dry-run preview",
+    )
+    upload.add_argument("--timeout", type=float, default=20.0)
+    upload.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -332,6 +503,46 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Output: {payload['output_dir']}")
                 print(f"Manifest: {payload['manifest']}")
                 print("Upload: local export only")
+            return 0
+        if args.command == "upload":
+            payload = build_upload_payload(
+                bundle_dir=args.bundle_dir,
+                include_reports=args.include_reports,
+            )
+            dry_run = args.dry_run or not args.yes
+            if dry_run:
+                preview = {
+                    "mode": "cloud-upload-dry-run",
+                    "endpoint": args.endpoint,
+                    "would_upload": False,
+                    "requires_yes": not args.yes,
+                    "upload_mode": payload["upload_mode"],
+                    "report_count": len(payload["reports"]),
+                    "privacy_mode": payload["privacy_mode"],
+                    "excluded_content": payload["excluded_content"],
+                }
+                if args.json:
+                    print(json.dumps(preview, indent=2, sort_keys=True))
+                else:
+                    print("Code Mower cloud upload dry run")
+                    print(f"Endpoint: {preview['endpoint']}")
+                    print(f"Mode: {preview['upload_mode']}")
+                    print(f"Reports: {preview['report_count']}")
+                    print("Network: skipped (pass --yes to upload)")
+                return 0
+            token = os.environ.get(args.token_env, "")
+            result = post_upload_payload(
+                payload=payload,
+                endpoint=args.endpoint,
+                token=token,
+                timeout=args.timeout,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("Code Mower cloud upload complete")
+                print(f"Endpoint: {result['endpoint']}")
+                print(f"Status: {result['status']}")
             return 0
     except CloudBundleError as exc:
         print(f"error: {exc}", file=sys.stderr)

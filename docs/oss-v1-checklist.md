@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.25` of the standalone
+The current public-release baseline is `v0.1.0-alpha.26` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -72,6 +72,8 @@ package. It has proved:
 - private reference-repo editable-install feedback from alpha.20, including a
   checkout lock that stays held through delegated standalone execution so a
   shared editable source checkout cannot mutate under an active command.
+- optional cloud-upload dry run and explicit `--yes` upload path for sanitized
+  benchmark bundles, with metadata-only payloads by default.
 
 It has not yet proved:
 
@@ -229,7 +231,9 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 ### Cloud-Ready Export
 
 - `code-mower cloud export` creates a local benchmark bundle.
-- No upload in v1.0.
+- No upload is required in v1.0.
+- If upload is present, it must be explicit, dry-run-first, opt-in, and
+  metadata-only by default.
 - Bundle excludes source code, raw diffs, raw transcripts, auth output, and
   secrets by default.
 - Bundle vocabulary uses traces, spans, scores, datasets, and experiments so a

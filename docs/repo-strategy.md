@@ -135,9 +135,10 @@ serialize through their shared lock. The default checkout-lock timeout is long
 enough for normal audit runs to queue instead of failing after two minutes;
 dead locks are still cleared by the PID/staleness checks.
 
-`v0.1.0-alpha.25` keeps the smoke runner, package plan, docs, and next-step
-cloud export examples aligned on reviewer metrics, lane policy, and value
-report bundles. Alpha.24 added a packaged starter value-report fixture while
+`v0.1.0-alpha.26` keeps the smoke runner, package plan, docs, next-step cloud
+export examples, and opt-in upload dry run aligned on reviewer metrics, lane
+policy, and value report bundles. Alpha.24 added a packaged starter
+value-report fixture while
 keeping the public starter templates byte-identical to their packaged copies.
 Alpha.23 kept the private standalone shadow workflow running
 package-install rehearsal through the same authenticated path as checkout. It
