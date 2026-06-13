@@ -624,6 +624,116 @@ def main():
             self.assertEqual(payload["reports"][0]["kind"], "reviewer-metrics")
             self.assertNotIn("text", payload["reports"][0])
 
+    def test_cloud_upload_payload_includes_structured_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+            code_mower_cloud.build_cloud_bundle(
+                reports=[(report, "value-report")],
+                events=[
+                    {
+                        "event_type": "reviewer_run",
+                        "repo_slug": "owner/repo",
+                        "provider": "codex",
+                        "lens": "base",
+                        "status": "pass",
+                        "metrics": {"latency_ms": 1234},
+                    }
+                ],
+                output_dir=root / "bundle",
+                repo_slug="owner/repo",
+            )
+
+            payload = code_mower_cloud.build_upload_payload(
+                bundle_dir=root / "bundle",
+                include_reports=False,
+            )
+
+            self.assertEqual(payload["events"][0]["schema"], code_mower_cloud.EVENT_SCHEMA)
+            self.assertEqual(payload["events"][0]["event_type"], "reviewer_run")
+            self.assertEqual(payload["events"][0]["provider"], "codex")
+            self.assertEqual(payload["events"][0]["metrics"]["latency_ms"], 1234)
+
+    def test_cloud_anonymous_bundle_strips_structured_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            event = root / "event.json"
+            event.write_text(
+                json.dumps({"event_type": "dogfood_upload", "repo_slug": "owner/repo"}),
+                encoding="utf-8",
+            )
+            code_mower_cloud.build_cloud_bundle(
+                reports=[],
+                events=code_mower_cloud._parse_event_args(
+                    [f"dogfood_upload={event}"]
+                ),
+                output_dir=root / "bundle",
+                repo_slug="owner/repo",
+                anonymous=True,
+            )
+
+            payload = code_mower_cloud.build_upload_payload(
+                bundle_dir=root / "bundle",
+                include_reports=False,
+            )
+
+            self.assertEqual(payload["events"], [])
+
+    def test_cloud_dogfood_dry_run_adds_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.com"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test"],
+                cwd=root,
+                check=True,
+            )
+            docs = root / "docs"
+            docs.mkdir()
+            (docs / "reviewer-value-report.md").write_text("# Report\n", encoding="utf-8")
+            (root / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "fixture"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            token_env = "CODE_MOWER_TEST_DOGFOOD_TOKEN"
+            old_token = os.environ.get(token_env)
+            os.environ[token_env] = "test-token"
+            try:
+                result = code_mower_cloud._dogfood_upload(
+                    repo_path=root,
+                    output_dir=root / ".code-mower/cloud-benchmark-bundle",
+                    reports=[],
+                    events=[],
+                    repo_slug="owner/repo",
+                    team_id="team",
+                    install_id="install",
+                    source="test",
+                    endpoint="https://codemower.com/api/ingest",
+                    token_env=token_env,
+                    include_reports=False,
+                    yes=False,
+                    timeout=0.1,
+                )
+            finally:
+                if old_token is None:
+                    os.environ.pop(token_env, None)
+                else:
+                    os.environ[token_env] = old_token
+
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["upload"]["event_count"], 1)
+            self.assertEqual(result["export"]["event_count"], 1)
+
     def test_cloud_upload_payload_includes_reports_only_when_requested(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

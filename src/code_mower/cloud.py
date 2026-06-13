@@ -4,23 +4,30 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
 
 BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"
 UPLOAD_SCHEMA = "code_mower.cloudUpload.v1"
+EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
 DEFAULT_UPLOAD_ENDPOINT = "https://codemower.com/api/ingest"
 DEFAULT_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
+DEFAULT_TEAM_ID_ENV = "CODE_MOWER_CLOUD_TEAM_ID"
+DEFAULT_INSTALL_ID_ENV = "CODE_MOWER_INSTALL_ID"
 MAX_REPORT_UPLOAD_BYTES = 1_000_000
+MAX_EVENT_COUNT = 500
 SAFE_REPORT_KINDS = {
     "authoring-runs",
     "calibration-runs",
@@ -28,6 +35,14 @@ SAFE_REPORT_KINDS = {
     "reviewer-metrics",
     "spend",
     "value-report",
+}
+SAFE_EVENT_TYPES = {
+    "calibration_run",
+    "dogfood_upload",
+    "lane_policy_snapshot",
+    "reviewer_run",
+    "value_report_snapshot",
+    "workflow_run",
 }
 EXCLUDED_CONTENT = (
     "source_code",
@@ -75,6 +90,175 @@ def _safe_kind(value: str) -> str:
         allowed = ", ".join(sorted(SAFE_REPORT_KINDS))
         raise CloudBundleError(f"unsupported report kind {value!r}; allowed: {allowed}")
     return kind
+
+
+def _safe_event_type(value: str) -> str:
+    event_type = value.strip()
+    if event_type not in SAFE_EVENT_TYPES:
+        allowed = ", ".join(sorted(SAFE_EVENT_TYPES))
+        raise CloudBundleError(
+            f"unsupported event type {value!r}; allowed: {allowed}"
+        )
+    return event_type
+
+
+def _utc_now() -> str:
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
+
+
+def _run_git(repo_path: Path, args: list[str]) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=repo_path,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def _repo_slug_from_remote(remote_url: str) -> str:
+    remote = remote_url.strip()
+    if not remote:
+        return ""
+    if remote.startswith("git@github.com:"):
+        remote = remote.removeprefix("git@github.com:")
+    elif remote.startswith("https://github.com/"):
+        remote = remote.removeprefix("https://github.com/")
+    elif remote.startswith("http://github.com/"):
+        remote = remote.removeprefix("http://github.com/")
+    else:
+        return ""
+    remote = remote.removesuffix(".git").strip("/")
+    parts = remote.split("/")
+    if len(parts) >= 2 and parts[0] and parts[1]:
+        return f"{parts[0]}/{parts[1]}"
+    return ""
+
+
+def _detect_repo_slug(repo_path: Path) -> str:
+    return _repo_slug_from_remote(_run_git(repo_path, ["config", "--get", "remote.origin.url"]))
+
+
+def _build_dogfood_event(
+    *,
+    repo_path: Path,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+    report_count: int,
+    extra_event_count: int,
+) -> dict[str, Any]:
+    status = _run_git(repo_path, ["status", "--porcelain"])
+    return {
+        "schema": EVENT_SCHEMA,
+        "event_id": str(uuid.uuid4()),
+        "event_type": "dogfood_upload",
+        "created_at": _utc_now(),
+        "repo_slug": repo_slug,
+        "team_id": team_id,
+        "install_id": install_id,
+        "source": source,
+        "provider": "",
+        "lens": "",
+        "status": "observed",
+        "git": {
+            "sha": _run_git(repo_path, ["rev-parse", "HEAD"]),
+            "branch": _run_git(repo_path, ["branch", "--show-current"]),
+            "dirty": bool(status),
+        },
+        "metrics": {
+            "report_count": report_count,
+            "extra_event_count": extra_event_count,
+        },
+        "dimensions": {
+            "command": "code-mower cloud dogfood",
+        },
+    }
+
+
+def _normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
+    normalized = dict(value)
+    normalized["schema"] = str(normalized.get("schema") or EVENT_SCHEMA)
+    if normalized["schema"] != EVENT_SCHEMA:
+        raise CloudBundleError(
+            f"unsupported event schema {normalized['schema']!r}; expected {EVENT_SCHEMA}"
+        )
+    normalized["event_type"] = _safe_event_type(
+        str(normalized.get("event_type") or event_type)
+    )
+    normalized["event_id"] = str(normalized.get("event_id") or uuid.uuid4())
+    normalized["created_at"] = str(normalized.get("created_at") or _utc_now())
+    for key in ("repo_slug", "team_id", "install_id", "source", "provider", "lens", "status"):
+        normalized[key] = str(normalized.get(key) or "")
+    metrics = normalized.get("metrics")
+    if not isinstance(metrics, dict):
+        normalized["metrics"] = {}
+    dimensions = normalized.get("dimensions")
+    if not isinstance(dimensions, dict):
+        normalized["dimensions"] = {}
+    return normalized
+
+
+def _load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
+    source = path.expanduser()
+    if not source.is_file():
+        raise CloudBundleError(f"event file does not exist or is not a file: {source}")
+    try:
+        text = source.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise CloudBundleError(f"event file is not UTF-8 text: {source}") from exc
+    except OSError as exc:
+        raise CloudBundleError(f"unable to read event file {source}: {exc}") from exc
+    if not text.strip():
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = []
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                parsed.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise CloudBundleError(
+                    f"event file {source} line {line_number} is not JSON"
+                ) from exc
+    if isinstance(parsed, dict):
+        parsed_events = [parsed]
+    elif isinstance(parsed, list):
+        parsed_events = parsed
+    else:
+        raise CloudBundleError(f"event file must contain an object, array, or JSONL: {source}")
+    events: list[dict[str, Any]] = []
+    for item in parsed_events:
+        if not isinstance(item, dict):
+            raise CloudBundleError(f"event file contains a non-object event: {source}")
+        events.append(_normalize_event(item, event_type))
+    return events
+
+
+def _parse_event_args(values: list[str]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for raw in values:
+        if "=" not in raw:
+            raise CloudBundleError(
+                "--event entries must use EVENT_TYPE=PATH, for example reviewer_run=run.json"
+            )
+        event_type, path_text = raw.split("=", 1)
+        events.extend(_load_event_file(Path(path_text), _safe_event_type(event_type)))
+    if len(events) > MAX_EVENT_COUNT:
+        raise CloudBundleError(
+            f"too many events: {len(events)}; max {MAX_EVENT_COUNT}"
+        )
+    return events
 
 
 def _safe_target_name(path: Path, index: int, *, anonymous: bool = False) -> str:
@@ -189,6 +373,7 @@ def _unexpected_bundle_entries(output_dir: Path) -> list[str]:
 def build_cloud_bundle(
     *,
     reports: list[tuple[Path, str]],
+    events: list[dict[str, Any]] | None = None,
     output_dir: Path,
     repo_slug: str = "",
     install_id: str = "",
@@ -228,6 +413,14 @@ def build_cloud_bundle(
         for index, (path, kind) in enumerate(reports, start=1)
     ]
     included_reports, stage_dir = _stage_reports(planned_reports, output_dir)
+    included_events = [
+        _normalize_event(event, str(event.get("event_type") or "dogfood_upload"))
+        for event in events or []
+    ]
+    if len(included_events) > MAX_EVENT_COUNT:
+        raise CloudBundleError(
+            f"too many events: {len(included_events)}; max {MAX_EVENT_COUNT}"
+        )
     manifest = {
         "schema": BUNDLE_SCHEMA,
         "privacy_mode": "anonymous" if anonymous else "metadata_and_reports",
@@ -237,11 +430,13 @@ def build_cloud_bundle(
         "team_id": "" if anonymous else team_id,
         "install_id": "" if anonymous else install_id,
         "included_reports": included_reports,
+        "events": [] if anonymous else included_events,
         "excluded_content": list(EXCLUDED_CONTENT),
         "notes": [
             "This bundle is local-only; upload support must present a dry-run before network transfer.",
             "Do not include source code, raw diffs, raw transcripts, raw stdout/stderr, auth output, or secrets.",
             "Reports are copied exactly as supplied; review them before sharing outside your machine.",
+            "Structured events are metadata-only and should not contain source, diffs, transcripts, stdout/stderr, auth output, or secrets.",
         ],
     }
     manifest_path = output_dir / "code-mower-cloud-bundle.json"
@@ -274,6 +469,7 @@ def build_cloud_bundle(
         "manifest": str(manifest_path),
         "readme": str(readme),
         "included_reports": included_reports,
+        "event_count": len(manifest["events"]),
         "upload_ready": False,
     }
 
@@ -365,6 +561,7 @@ def build_upload_payload(
             bundle_dir,
             include_reports=include_reports,
         ),
+        "events": manifest.get("events", []),
         "notes": [
             "This upload payload is built from an explicit local bundle.",
             "Report contents are included only when --include-reports is set.",
@@ -478,7 +675,8 @@ def run_cloud_doctor(
                     "name": "bundle",
                     "status": "pass",
                     "message": (
-                        f"bundle is readable with {len(payload['reports'])} report summaries"
+                        f"bundle is readable with {len(payload['reports'])} report summaries "
+                        f"and {len(payload['events'])} structured events"
                     ),
                 }
             )
@@ -551,6 +749,15 @@ def render_bundle_readme(manifest: dict[str, Any]) -> str:
         )
     else:
         lines.append("- none")
+    lines.extend(["", "Structured events:"])
+    events = manifest.get("events", [])
+    if events:
+        lines.extend(
+            f"- {entry.get('event_type', 'unknown')} ({entry.get('event_id', 'no-id')})"
+            for entry in events
+        )
+    else:
+        lines.append("- none")
     lines.extend(
         [
             "",
@@ -574,6 +781,122 @@ def _parse_report_args(values: list[str]) -> list[tuple[Path, str]]:
     return reports
 
 
+def _default_dogfood_reports(repo_path: Path) -> list[tuple[Path, str]]:
+    candidates = [
+        (repo_path / "docs/reviewer-value-report.md", "value-report"),
+        (repo_path / "docs/lane-promotion-policy.md", "lane-policy"),
+        (repo_path / ".code-mower/reviewer-value-report.md", "value-report"),
+        (repo_path / ".code-mower/reviewer-metrics.json", "reviewer-metrics"),
+    ]
+    seen: set[Path] = set()
+    reports: list[tuple[Path, str]] = []
+    for path, kind in candidates:
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        reports.append((path, kind))
+    return reports
+
+
+def _dogfood_upload(
+    *,
+    repo_path: Path,
+    output_dir: Path,
+    reports: list[tuple[Path, str]],
+    events: list[dict[str, Any]],
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+    endpoint: str,
+    token_env: str,
+    include_reports: bool,
+    yes: bool,
+    timeout: float,
+) -> dict[str, Any]:
+    repo_path = repo_path.expanduser().resolve()
+    detected_repo_slug = repo_slug or _detect_repo_slug(repo_path)
+    if not detected_repo_slug:
+        raise CloudBundleError(
+            "unable to detect repo slug; pass --repo-slug OWNER/REPO"
+        )
+    resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
+    resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
+    resolved_reports = reports or _default_dogfood_reports(repo_path)
+    all_events = [
+        _build_dogfood_event(
+            repo_path=repo_path,
+            repo_slug=detected_repo_slug,
+            team_id=resolved_team_id,
+            install_id=resolved_install_id,
+            source=source,
+            report_count=len(resolved_reports),
+            extra_event_count=len(events),
+        ),
+        *events,
+    ]
+    export_result = build_cloud_bundle(
+        reports=resolved_reports,
+        events=all_events,
+        output_dir=output_dir,
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        anonymous=False,
+    )
+    doctor_result = run_cloud_doctor(
+        bundle_dir=output_dir,
+        endpoint=endpoint,
+        token_env=token_env,
+    )
+    if doctor_result["failures"]:
+        return {
+            "mode": "cloud-dogfood",
+            "status": "doctor_failed",
+            "export": export_result,
+            "doctor": doctor_result,
+        }
+    payload = build_upload_payload(
+        bundle_dir=output_dir,
+        include_reports=include_reports,
+    )
+    if not yes:
+        return {
+            "mode": "cloud-dogfood",
+            "status": "dry_run",
+            "export": export_result,
+            "doctor": doctor_result,
+            "upload": {
+                "mode": "cloud-upload-dry-run",
+                "endpoint": endpoint,
+                "would_upload": False,
+                "requires_yes": True,
+                "upload_mode": payload["upload_mode"],
+                "report_count": len(payload["reports"]),
+                "event_count": len(payload["events"]),
+                "privacy_mode": payload["privacy_mode"],
+                "excluded_content": payload["excluded_content"],
+            },
+        }
+    token = os.environ.get(token_env, "")
+    if not token and not _is_local_http_endpoint(endpoint):
+        raise CloudBundleError(
+            f"{token_env} is not set; refusing non-local upload without a token"
+        )
+    return {
+        "mode": "cloud-dogfood",
+        "status": "uploaded",
+        "export": export_result,
+        "doctor": doctor_result,
+        "upload": post_upload_payload(
+            payload=payload,
+            endpoint=endpoint,
+            token=token,
+            timeout=timeout,
+        ),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower cloud")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -586,6 +909,16 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "copy a shareable report into the bundle; kinds: "
             + ", ".join(sorted(SAFE_REPORT_KINDS))
+        ),
+    )
+    export.add_argument(
+        "--event",
+        action="append",
+        default=[],
+        metavar="EVENT_TYPE=PATH",
+        help=(
+            "include structured benchmark events from JSON/JSONL; event types: "
+            + ", ".join(sorted(SAFE_EVENT_TYPES))
         ),
     )
     export.add_argument("--output-dir", type=Path, default=Path(DEFAULT_OUTPUT_DIR))
@@ -630,12 +963,47 @@ def main(argv: list[str] | None = None) -> int:
     )
     doctor.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
     doctor.add_argument("--json", action="store_true")
+    dogfood = subparsers.add_parser("dogfood")
+    dogfood.add_argument("--repo-path", type=Path, default=Path.cwd())
+    dogfood.add_argument("--output-dir", type=Path, default=Path(DEFAULT_OUTPUT_DIR))
+    dogfood.add_argument("--repo-slug", default="")
+    dogfood.add_argument("--team-id", default="")
+    dogfood.add_argument("--install-id", default="")
+    dogfood.add_argument("--source", default="local")
+    dogfood.add_argument(
+        "--report",
+        action="append",
+        default=[],
+        metavar="KIND=PATH",
+        help="override default dogfood reports with explicit KIND=PATH entries",
+    )
+    dogfood.add_argument(
+        "--event",
+        action="append",
+        default=[],
+        metavar="EVENT_TYPE=PATH",
+        help="include additional structured benchmark events from JSON/JSONL",
+    )
+    dogfood.add_argument(
+        "--endpoint",
+        default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
+    )
+    dogfood.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    dogfood.add_argument("--include-reports", action="store_true")
+    dogfood.add_argument(
+        "--yes",
+        action="store_true",
+        help="perform the network upload; without this, dogfood is a dry run",
+    )
+    dogfood.add_argument("--timeout", type=float, default=20.0)
+    dogfood.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
         if args.command == "export":
             payload = build_cloud_bundle(
                 reports=_parse_report_args(args.report),
+                events=_parse_event_args(args.event),
                 output_dir=args.output_dir,
                 repo_slug=args.repo_slug,
                 team_id=args.team_id,
@@ -664,6 +1032,7 @@ def main(argv: list[str] | None = None) -> int:
                     "requires_yes": not args.yes,
                     "upload_mode": payload["upload_mode"],
                     "report_count": len(payload["reports"]),
+                    "event_count": len(payload["events"]),
                     "privacy_mode": payload["privacy_mode"],
                     "excluded_content": payload["excluded_content"],
                 }
@@ -674,6 +1043,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Endpoint: {preview['endpoint']}")
                     print(f"Mode: {preview['upload_mode']}")
                     print(f"Reports: {preview['report_count']}")
+                    print(f"Events: {preview['event_count']}")
                     print("Network: skipped (pass --yes to upload)")
                 return 0
             token = os.environ.get(args.token_env, "")
@@ -705,6 +1075,35 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(render_cloud_doctor_text(report), end="")
             return 1 if report["failures"] else 0
+        if args.command == "dogfood":
+            result = _dogfood_upload(
+                repo_path=args.repo_path,
+                output_dir=args.output_dir,
+                reports=_parse_report_args(args.report),
+                events=_parse_event_args(args.event),
+                repo_slug=args.repo_slug,
+                team_id=args.team_id,
+                install_id=args.install_id,
+                source=args.source,
+                endpoint=args.endpoint,
+                token_env=args.token_env,
+                include_reports=args.include_reports,
+                yes=args.yes,
+                timeout=args.timeout,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("Code Mower cloud dogfood")
+                print(f"Status: {result['status']}")
+                print(f"Bundle: {result['export']['output_dir']}")
+                print(f"Reports: {len(result['export']['included_reports'])}")
+                print(f"Events: {result['export']['event_count']}")
+                if result["status"] == "uploaded":
+                    print(f"Upload status: {result['upload']['status']}")
+                elif result["status"] == "dry_run":
+                    print("Network: skipped (pass --yes to upload)")
+            return 1 if result["status"] == "doctor_failed" else 0
     except CloudBundleError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

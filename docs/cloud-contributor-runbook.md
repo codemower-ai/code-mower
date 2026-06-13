@@ -43,6 +43,16 @@ From the Code Mower checkout:
 ```bash
 source ~/.config/code-mower/tokens/codex-code-mower.env
 
+code-mower cloud dogfood --source codex-code-mower --json
+code-mower cloud dogfood --source codex-code-mower --yes --json
+```
+
+The explicit export path is still available when you want to choose report
+files by hand:
+
+```bash
+source ~/.config/code-mower/tokens/codex-code-mower.env
+
 code-mower cloud export \
   --report lane-policy=docs/lane-promotion-policy.md \
   --report value-report=docs/reviewer-value-report.md \
@@ -60,6 +70,24 @@ code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 ## Codex: Product Repository Work
 
 Use a product-specific Codex token and the product repo slug:
+
+```bash
+source ~/.config/code-mower/tokens/codex-product.env
+
+code-mower cloud dogfood \
+  --repo-slug OWNER/PRODUCT_REPO \
+  --source codex-product \
+  --json
+
+code-mower cloud dogfood \
+  --repo-slug OWNER/PRODUCT_REPO \
+  --source codex-product \
+  --yes \
+  --json
+```
+
+The explicit export path remains useful when product-specific report files are
+available:
 
 ```bash
 source ~/.config/code-mower/tokens/codex-product.env
@@ -94,6 +122,27 @@ slug for the surface being worked:
 - `OWNER/WEB_REPO` for web work;
 - `OWNER/IOS_REPO` for iOS work; and
 - `OWNER/ANDROID_REPO` for Android work.
+
+Prefer `code-mower cloud dogfood --source claude-product-ios --repo-slug
+OWNER/IOS_REPO --yes --json` when no custom report files need to be selected.
+
+## GitHub Actions
+
+For always-on dogfood uploads, add a low-cost workflow that runs on `main`
+pushes and exits successfully when the token is not configured:
+
+```yaml
+env:
+  CODE_MOWER_CLOUD_TOKEN: ${{ secrets.CODE_MOWER_CLOUD_TOKEN }}
+  CODE_MOWER_CLOUD_TEAM_ID: ${{ vars.CODE_MOWER_CLOUD_TEAM_ID }}
+  CODE_MOWER_INSTALL_ID: github-actions-code-mower
+run: |
+  if [ -z "${CODE_MOWER_CLOUD_TOKEN:-}" ]; then
+    echo "CODE_MOWER_CLOUD_TOKEN is not configured; skipping."
+    exit 0
+  fi
+  code-mower cloud dogfood --repo-slug "${GITHUB_REPOSITORY}" --source github-actions --yes --json
+```
 
 ## Safety Rules
 

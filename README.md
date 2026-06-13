@@ -15,6 +15,11 @@ release script runs.
 
 For existing repos that still carry product-local Code Mower tools, run `code-mower migration wrapper-rehearsal --repo-path /path/to/repo --json` before flipping to a pinned standalone package. The rehearsal compares safe read-only commands and gives a low-risk path away from mirrored maintenance.
 
+For opt-in dogfooding, run `code-mower cloud dogfood --json` to create a
+metadata-only benchmark bundle and dry-run the upload path. Passing `--yes`
+uploads to [https://codemower.com/api/ingest](https://codemower.com/api/ingest)
+only when a team ingest token is configured.
+
 Before removing mirrors, prove the package-installed path in a clean venv:
 
 ```bash
