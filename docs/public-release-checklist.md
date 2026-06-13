@@ -45,23 +45,31 @@ not know the original reference repos.
   private-fork/deploy-key install paths.
 - At least one fresh public toy repo and one private GitHub repo complete the
   easy-mode flow without reference-repo assumptions.
+- Source-checkout and release-rehearsal commands use `scripts/dev-python` or
+  `.venv/bin/python`; docs and gates do not rely on ambient `python`/`python3`
+  resolving to a safe interpreter.
 
 ## Alpha Release Gate
 
 Before tagging an early alpha, run these from a clean standalone checkout:
 
 ```bash
-python -m venv .venv
+scripts/dev-python -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/code-mower --version
 .venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json
 .venv/bin/code-mower doctor --easy --probe-runtime --json
-.venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python python3.12 --json
+.venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python .venv/bin/python --json
 ```
 
 For alpha releases, keep running this from a fresh clone before tagging. Do not
 promote an alpha toward v1.0 unless the generated package can pass the same
 path outside the developer's long-lived worktree.
+
+`scripts/dev-python` is the checked-in source checkout interpreter resolver. It
+refuses Python older than 3.12, including stale virtualenvs and old system
+`python3` shims, so release work cannot accidentally use a broken local
+interpreter.
 
 ## Recommended Before v1.0
 

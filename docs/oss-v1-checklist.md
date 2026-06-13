@@ -141,6 +141,9 @@ do not spend v1.0 work on non-GitHub workflow rendering.
   runtime path.
 - Prove commands do not accidentally inherit unsupported ambient Python after
   bootstrap.
+- Treat `scripts/dev-python` as the source-checkout and release-rehearsal
+  interpreter contract: it must resolve Python 3.12+ and refuse stale virtualenvs
+  or old `python3` shims before any release gate runs.
 - Include prompt lenses, context-pack example, provider templates, and docs.
 - Provide a product-wrapper rehearsal so existing product repos can compare
   repo-local tools with a pinned standalone package before deleting mirrors.

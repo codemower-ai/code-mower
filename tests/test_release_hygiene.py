@@ -29,6 +29,49 @@ class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_alpha_26(self) -> None:
         self.assertEqual(__version__, "0.1.0a26")
 
+    def test_dev_python_wrapper_is_executable(self) -> None:
+        wrapper = ROOT / "scripts/dev-python"
+        self.assertTrue(wrapper.exists())
+        self.assertTrue(os.access(wrapper, os.X_OK))
+
+    def test_dev_python_wrapper_runs_supported_python(self) -> None:
+        completed = subprocess.run(
+            [
+                str(ROOT / "scripts/dev-python"),
+                "-c",
+                "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_dev_python_wrapper_rejects_unsupported_python(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_python = Path(tmp) / "python-old"
+            fake_python.write_text(
+                """#!/usr/bin/env bash
+if [[ "$1" == "-" ]]; then
+  exit 1
+fi
+exit 1
+""",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+            completed = subprocess.run(
+                [str(ROOT / "scripts/dev-python"), "--version"],
+                cwd=tmp,
+                env={"CODE_MOWER_PYTHON": str(fake_python), "PATH": os.defpath},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("Python 3.12+", completed.stderr)
+
     def test_shared_templates_match_packaged_templates(self) -> None:
         shared_templates = [
             "builder-experiment.example.json",

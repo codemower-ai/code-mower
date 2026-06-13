@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+required="3.12"
+
+resolve_candidate() {
+  local candidate="$1"
+  if [[ "${candidate}" == */* ]]; then
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+    return 1
+  fi
+  command -v "${candidate}" 2>/dev/null
+}
+
+version_ok() {
+  local python_bin="$1"
+  "${python_bin}" - <<'PY' >/dev/null 2>&1
+import sys
+
+raise SystemExit(0 if sys.version_info >= (3, 12) else 1)
+PY
+}
+
+describe_version() {
+  local python_bin="$1"
+  "${python_bin}" - <<'PY'
+import sys
+
+print(
+    f"{sys.executable} "
+    f"({sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro})"
+)
+PY
+}
+
+choose_python() {
+  local candidate resolved
+
+  if [[ -x ".venv/bin/python" ]]; then
+    if version_ok ".venv/bin/python"; then
+      printf '%s\n' ".venv/bin/python"
+      return 0
+    fi
+    echo "error: .venv/bin/python exists but is older than Python ${required}." >&2
+    describe_version ".venv/bin/python" >&2 || true
+    echo "Remove and recreate .venv with scripts/dev-python -m venv .venv." >&2
+    return 1
+  fi
+
+  if [[ -n "${CODE_MOWER_PYTHON:-}" ]]; then
+    if resolved="$(resolve_candidate "${CODE_MOWER_PYTHON}")" && version_ok "${resolved}"; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+    echo "error: CODE_MOWER_PYTHON does not point to Python ${required}+." >&2
+    echo "Set CODE_MOWER_PYTHON to a Python ${required}+ executable." >&2
+    return 1
+  fi
+
+  for candidate in python3.12 /opt/homebrew/bin/python3.12 python python3; do
+    if resolved="$(resolve_candidate "${candidate}")" && version_ok "${resolved}"; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+
+  echo "error: Code Mower source/release work requires Python ${required}+." >&2
+  echo "Install Python ${required}+ and rerun, or set CODE_MOWER_PYTHON=/path/to/python3.12." >&2
+  echo "Do not rely on ambient python3 unless it resolves to Python ${required}+." >&2
+  return 1
+}
+
+python_bin="$(choose_python)"
+
+if [[ "$#" -eq 0 ]]; then
+  describe_version "${python_bin}"
+  exit 0
+fi
+
+exec "${python_bin}" "$@"

@@ -14,6 +14,16 @@ pipx install --python python3.12 "git+https://github.com/jeffhuber/code-mower.gi
 code-mower --version
 ```
 
+If you are working from a source checkout instead of an installed package, use
+the checked-in development wrapper so old system Python shims cannot enter the
+release path:
+
+```bash
+scripts/dev-python
+scripts/dev-python -m venv .venv
+.venv/bin/python -m pip install -e .
+```
+
 If `code-mower` is not on your path:
 
 ```bash
@@ -80,7 +90,7 @@ This proves Code Mower can be installed fresh and run the starter workflow.
 code-mower migration package-install-rehearsal \
   --package-spec "git+https://github.com/jeffhuber/code-mower.git@v0.1.0-alpha.26" \
   --repo-path "$PWD" \
-  --python python3.12 \
+  --python "$(command -v python3.12)" \
   --json
 ```
 

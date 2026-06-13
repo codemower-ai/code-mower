@@ -8,6 +8,11 @@ The Code Mower open-source core is licensed under Apache-2.0. Hosted benchmarkin
 
 Code Mower is extracted from a production multi-repo development workflow and packaged as a standalone OSS tool. Start with `code-mower init --easy`, then run `code-mower doctor --easy` to verify local CLIs, tokens, provider catalog coverage, and runtime probes. The current early-adopter path is documented in `docs/quickstart.md`.
 
+For source checkout development and release rehearsal, use
+`scripts/dev-python` to create the local virtualenv. It resolves a Python
+3.12+ interpreter and refuses stale or old system Python shims before any
+release script runs.
+
 For existing repos that still carry product-local Code Mower tools, run `code-mower migration wrapper-rehearsal --repo-path /path/to/repo --json` before flipping to a pinned standalone package. The rehearsal compares safe read-only commands and gives a low-risk path away from mirrored maintenance.
 
 Before removing mirrors, prove the package-installed path in a clean venv:
