@@ -65,3 +65,26 @@ Reviewer runs: 103
 - `qwen3-coder-next-lmstudio`: `informational` / `informational` / `manual_or_calibration_only` - needs at least 2 known-clean zero-blocker runs; has known-clean blocking false positives; useful-rate below selective-trigger threshold
 
 _Caveat: This is a policy recommendation from calibration evidence, not an automatic repository merge-rule change._
+
+## Supplemental Antigravity Four-Head Lens Proof
+
+A live private calibration run widened the Antigravity CLI lane to 24 runs:
+two known-blocked reference-app heads, two known-clean controls, and five lens
+profiles across doctrine and risk/ops fan-out arms. Raw run manifests and
+private checkout paths remain outside this public snapshot; this section keeps
+only the anonymized manual interpretation of the generated run artifacts.
+
+| Reviewer | Runs | Known-clean behavior | Known-blocked behavior | Runtime signal | Recommended role |
+| --- | ---: | --- | --- | ---: | --- |
+| `antigravity-base-audit` | 8 | 4/4 pass | caught `#347` in both arms; classified `#390` as input-insufficient in both arms | 34.8s/run | informational |
+| `antigravity-context-driven-quality` | 4 | 2/2 pass | caught `#347`; returned unknown/nonzero on `#390` | 197.3s/run | informational |
+| `antigravity-generic-programming` | 4 | 2/2 pass, with one non-blocking P3 doc/count nit | caught `#347`; classified `#390` as missing context/source input | 89.2s/run | informational |
+| `antigravity-operability` | 4 | 2/2 pass | caught `#347`; classified `#390` as input-insufficient | 32.8s/run | informational |
+| `antigravity-security-threat-model` | 4 | 2/2 pass | caught `#347`; returned unknown/nonzero on `#390` | 188.4s/run | informational |
+
+Generated policy kept every Antigravity profile informational. The lane
+showed useful signal on the known-blocked auth/history control and stayed
+mostly quiet on known-clean controls, but the iOS solver-runtime control still
+surfaced context insufficiency, provider nonzero exits, and high-latency
+profiles. Treat Antigravity as a manual/calibration lane until the corpus is
+larger and the targeted context-pack story for that class improves.

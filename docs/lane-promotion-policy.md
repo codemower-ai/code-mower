@@ -194,7 +194,7 @@ Current generated value report:
 
 - Corpus items: 18
 - Adjudicated evidence: 70
-- Reviewer runs: 100
+- Reviewer runs: 103
 - Clean lens controls: reference service #479/#481 and reference-app #377/#380
 - First Gemini risk/ops fan-out: reference-app #347 known-blocked plus reference-app
   #377 known-clean control
@@ -203,6 +203,13 @@ Current generated value report:
 - First Hermes doctrine proof: reference-app #347 and #390 known-blocked heads plus
   reference-app #377 and #380 known-clean controls through Hermes base,
   generic-programming, and context-driven-quality lenses.
+
+Supplemental live evidence not included in the generated totals above:
+
+- Live Antigravity four-head proof: 24 fresh Antigravity runs over
+  reference-app #347 and #390 known-blocked heads plus reference-app #377 and
+  #380 known-clean controls, using base, generic-programming,
+  context-driven-quality, security-threat-model, and operability lenses.
 
 - `codex-audit`: keep as a structured merge-gating lane where repo policy opts
   in. Current evidence is strongest on integration, parser, runner, credential,
@@ -247,6 +254,13 @@ Current generated value report:
   in trusted local environments before using it. Do not promote until context
   packs or larger diff budgets eliminate the #390 input gap and human
   dispositions exist for the findings.
+- `antigravity-cli`: informational and manual. The four-head proof completed
+  24/24 runs and produced parseable summaries, which makes it viable for
+  calibration. It also showed two important limits: the #390 class still needs
+  richer targeted context, and the context-driven-quality/security profiles had
+  provider nonzero exits plus roughly 11-minute runtimes on that case. Keep
+  Antigravity out of merge authority until the #390 input gap is resolved and
+  the lane has more adjudicated clean/blocked evidence.
 - `coderabbit-cli`: informational until its head-bound local artifact summaries
   are calibrated separately from the existing hosted signal. The runner now
   treats low-severity CLI suggestions as non-blocking calibration evidence, but
@@ -255,10 +269,10 @@ Current generated value report:
 - `generic-programming`, `context-driven-quality`, `security-threat-model`,
   and `operability` lenses: calibration-only as lens doctrine. The Gemini
   `operability` lane is eligible for the next selective-trigger trial, while
-  `security-threat-model` needs reliability cleanup first. Hermes doctrine
-  lenses remain informational because the first proof showed context and parser
-  gaps. No lens should become a merge gate without broader clean and blocked
-  evidence.
+  `security-threat-model` needs reliability cleanup first. Antigravity and
+  Hermes doctrine lenses remain informational because the proofs showed context,
+  parser, latency, or provider-exit gaps. No lens should become a merge gate
+  without broader clean and blocked evidence.
 - `acp_bridge`: research until a real adapter and protocol runner exist.
 
 The value report now includes cost per run, seconds per run, cost per useful

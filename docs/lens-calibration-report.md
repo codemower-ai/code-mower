@@ -35,7 +35,7 @@ captured reviewer-run evidence:
 
 - Corpus items: 18
 - Adjudicated evidence: 70
-- Reviewer runs: 100
+- Reviewer runs: 103
 
 Generated policy classes from the current evidence:
 
@@ -580,3 +580,72 @@ Interpretation:
   forward Google CLI lane, but it did not prove the doctrine lenses catch the
   target issue. Antigravity should remain informational while the corpus grows
   and context selection improves.
+
+## Live Four-Head Antigravity Lens Proof
+
+A follow-up spend-bearing run widened Antigravity from the one-item alpha.15
+proof to the same four-head historical shape used for earlier doctrine
+calibration:
+
+- 2 known-blocked controls:
+  - `reference-app#347`
+    (`0683a90fb349a16a698d92f982b8f1abfab2398b`)
+  - `reference-app#390`
+    (`2f7807300c2fe7118e48ff0c6271d2edba11166b`)
+- 2 known-clean controls:
+  - `reference-app#377`
+    (`ebc0a99d36d4974e72fc15a6bdb79972903ba5c1`)
+  - `reference-app#380`
+    (`c45ce1c00c37a97a44fc35f0efeaf32a4fad9393`)
+- 1 provider: Antigravity CLI `agy 1.0.7`.
+- 5 lens profiles: base audit, `generic-programming`,
+  `context-driven-quality`, `security-threat-model`, and `operability`.
+- 2 fan-out arms: doctrine and risk/ops. The base audit appears once per arm,
+  so it has eight runs while each lens profile has four.
+
+The run completed all 24 commands and produced parseable summaries for all 24.
+Two runs returned a nonzero provider exit code while still producing a summary;
+both were on the known-blocked `#390` case.
+
+| Reviewer | Runs | Known-blocked signal | Known-clean signal | Runtime signal |
+| --- | ---: | --- | --- | --- |
+| `antigravity-base-audit` | 8 | caught `#347`; classified `#390` as input-insufficient | 4/4 pass | 34.8s/run |
+| `antigravity-generic-programming` | 4 | caught `#347`; classified `#390` as missing context/source input | 2/2 pass; 1 non-blocking P3 on `#380` | 89.2s/run |
+| `antigravity-context-driven-quality` | 4 | caught `#347`; `#390` returned unknown after a long run | 2/2 pass | 197.3s/run |
+| `antigravity-security-threat-model` | 4 | caught `#347`; `#390` returned unknown after a long run | 2/2 pass | 188.4s/run |
+| `antigravity-operability` | 4 | caught `#347`; classified `#390` as input-insufficient | 2/2 pass | 32.8s/run |
+
+Qualitative signal:
+
+- On `#347`, all Antigravity profiles caught the replay/history class of
+  blocker. The lenses changed the shape of the findings: `context-driven-quality`
+  emphasized cross-user history races, `security-threat-model` emphasized
+  user-data exposure and trust boundaries, and `operability` emphasized stuck
+  loading/deleting states and production recovery.
+- On `#390`, the diff remained truncated even with the `ios-solver-runtime`
+  context pack. Base, generic, and operability profiles mostly produced
+  `audit_input_insufficient`-style evidence rather than a verified catch.
+  The context-driven-quality and security profiles ran for roughly 11 minutes
+  each and returned unknown summaries. This is useful lane-reliability evidence,
+  not promotion evidence.
+- On clean controls, the lane was mostly quiet: all clean-control verdicts were
+  PASS except one non-blocking P3 documentation/count nit from
+  `generic-programming`. No clean control received a blocking verdict.
+
+Generated policy from this run keeps every Antigravity profile informational:
+
+| Reviewer | Generated policy | Reason to keep informational |
+| --- | --- | --- |
+| `antigravity-base-audit` | informational | missed or downgraded one known-blocked case to input-insufficient |
+| `antigravity-generic-programming` | informational | still lacks enough clean-control and useful-finding volume |
+| `antigravity-context-driven-quality` | informational | one provider/infra-style failure and high latency on `#390` |
+| `antigravity-security-threat-model` | informational | one provider/infra-style failure and high latency on `#390` |
+| `antigravity-operability` | informational | best latency among lenses, but still too little adjudicated evidence |
+
+Decision from this slice: doctrine and risk/ops lenses do change useful review
+signal on the same provider, but Antigravity should remain a manual/calibration
+lane until the corpus is larger and the `#390` context insufficiency is solved.
+The next experiment should either widen the `ios-solver-runtime` context pack or
+use a targeted context pack that includes the exact solver-cancellation files,
+then rerun `#390` before comparing Antigravity to Claude/Gemini/Hermes for
+promotion decisions.
