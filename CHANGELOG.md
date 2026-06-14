@@ -4,6 +4,24 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.7
+
+This alpha tightens the early-adopter handoff from local reports into the
+optional CodeMower.com dogfood loop.
+
+### Added
+
+- `code-mower next-steps` now includes the routine `cloud dogfood` dry-run and
+  confirmed-upload commands after the lower-level bundle upload preview.
+- Easy-mode smoke rehearsal coverage for `code-mower cloud dogfood`,
+  so release checks exercise the dashboard-oriented metadata path.
+
+### Changed
+
+- Public install docs now point to `v0.5.0-alpha.7`.
+- Cloud sharing docs more clearly separate one-off bundle upload from routine
+  dogfood metadata uploads.
+
 ## v0.5.0-alpha.5
 
 This alpha sharpens the first-user preflight path based on fresh-eyes feedback

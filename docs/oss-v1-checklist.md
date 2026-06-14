@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.5.0-alpha.6` of the standalone
+The current public-release baseline is `v0.5.0-alpha.7` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;

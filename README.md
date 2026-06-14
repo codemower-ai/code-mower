@@ -57,7 +57,7 @@ Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.6"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.7"
 code-mower --version
 ```
 
@@ -132,6 +132,18 @@ code-mower cloud setup \
   --out ~/.config/code-mower/tokens/your-laptop.env
 ```
 
+After token setup, use the dogfood path for repeated metadata uploads:
+
+```bash
+source ~/.config/code-mower/tokens/your-laptop.env
+code-mower cloud dogfood --json
+code-mower cloud dogfood --yes --json
+```
+
+The first command previews the metadata locally. The second sends only sanitized
+metadata and a `dogfood_upload` event so the dashboard can start showing repo,
+provider/lens, cost, latency, and recommendation rows.
+
 Cloud sharing details: [docs/cloud-sharing.md](docs/cloud-sharing.md).
 
 ## Provider Posture
@@ -153,7 +165,7 @@ Setup/auth fixes: [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Installation Status
 
-The current public alpha is `v0.5.0-alpha.6` from
+The current public alpha is `v0.5.0-alpha.7` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower). PyPI
 distribution builds now run from GitHub Releases. Publishing to PyPI remains
 off by default until trusted publishing is configured, so use the tagged GitHub

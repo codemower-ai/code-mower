@@ -260,6 +260,27 @@ def run_smoke(*, code_mower_bin: Path, work_dir: Path) -> dict[str, Any]:
             stdout_path=toy_repo / "cloud-upload-dry-run.json",
         )
     )
+    steps.append(
+        _run(
+            [
+                cm,
+                "cloud",
+                "dogfood",
+                "--repo-path",
+                str(toy_repo),
+                "--repo-slug",
+                "example/toy-repo",
+                "--source",
+                "easy-mode-smoke",
+                "--endpoint",
+                "http://localhost:3000/api/ingest",
+                "--json",
+            ],
+            cwd=toy_repo,
+            env=env,
+            stdout_path=toy_repo / "cloud-dogfood-dry-run.json",
+        )
+    )
 
     summary = {
         "mode": "code-mower-easy-mode-smoke",
