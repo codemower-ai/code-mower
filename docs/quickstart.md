@@ -93,10 +93,13 @@ This proves Code Mower can be installed fresh and run the starter workflow.
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.3" \
-  --repo-path "$PWD" \
   --python "$(command -v python3.12)" \
   --json
 ```
+
+Add `--repo-path /path/to/product-repo` only when the repository already has
+repo-local Code Mower wrapper files and you are comparing those wrappers
+against the installed package during a mirror-removal migration.
 
 ## 6. Generate A Local Value Report
 

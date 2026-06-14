@@ -98,11 +98,14 @@ code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --v05
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
-code-mower migration package-install-rehearsal --package-spec code-mower --repo-path /path/to/product-repo --json
+code-mower migration package-install-rehearsal --package-spec code-mower --json
 code-mower audit pr 123
 code-mower calibration value-report templates/calibration-corpus.json
 python scripts/smoke_easy_mode.py --json
 ```
+
+Use `--repo-path /path/to/product-repo` with `package-install-rehearsal` only
+for existing product repos that still carry repo-local Code Mower wrappers.
 
 The bundled starter corpus is for proving the first report path. It should not
 be confused with Code Mower's richer reference corpus or a user's
