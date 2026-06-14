@@ -13,7 +13,8 @@ The short version:
 - generate local reviewer value reports from known-clean and known-blocked PRs;
   and
 - optionally share sanitized metadata with [CodeMower.com](https://codemower.com)
-  for private team dashboards and aggregate benchmarks.
+  for private team dashboards today and aggregate benchmarks as that dataset
+  becomes useful.
 
 Code Mower is local-first. The OSS tool works without the hosted service.
 Default cloud bundles exclude source code, raw diffs, raw model transcripts,
@@ -78,10 +79,30 @@ known-clean and known-blocked PRs before using any lane as a merge gate.
 
 Full walkthrough: [docs/try-in-10-minutes.md](docs/try-in-10-minutes.md).
 
+## Why Not Just Run Codex Or Claude Yourself?
+
+You should, at first. Code Mower is not a replacement for a good local agent or
+reviewer CLI.
+
+Code Mower adds the operating layer around those tools:
+
+- consistent reviewer lanes on real pull requests;
+- setup checks for auth, Python, GitHub permissions, private-repo Actions cost,
+  provider CLIs, and cloud-token posture;
+- calibration against known-clean and known-blocked PRs instead of vibes;
+- evidence-gated lane promotion: informational, selective, or merge-gating;
+- spend/latency/usefulness reporting across providers and lenses; and
+- privacy boundaries for optional metadata sharing.
+
+The goal is to learn which AI builders and reviewers are worth trusting on your
+actual codebase, at what cost, and under which merge policy.
+
 ## Optional Cloud Sharing
 
-Code Mower Cloud is for teams that want private dashboards and benchmark
-comparison over time. The local OSS path stays useful without it.
+Code Mower Cloud currently provides private team dashboards from opt-in
+metadata. Cross-team cohort benchmarking is a roadmap feature that becomes
+valuable only as enough teams contribute sanitized data. The local OSS path
+stays useful without the hosted service.
 
 Create an inspectable metadata-only bundle:
 
@@ -151,8 +172,13 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
   roadmap items.
 - Hosted/SaaS reviewers start informational or manual until calibration data
   supports promotion.
-- CodeMower.com cohort benchmarks are early. Local reports are useful now;
-  aggregate comparison improves as more teams opt in.
+- CodeMower.com currently provides private team dashboards; cohort benchmarks
+  are roadmap work and should not be treated as live product value yet.
+- Self-service cloud data deletion/export and a published retention policy are
+  required before broad cloud-data collection.
+- The CLI still exposes some advanced/operator commands. The early-adopter path
+  should stay focused on `init`, `doctor`, local audits, value reports, and
+  optional cloud export/upload.
 
 ## Docs Map
 

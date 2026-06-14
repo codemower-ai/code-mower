@@ -30,6 +30,9 @@ not know the original reference repos.
 - Public docs explain repo strategy, commercial boundary, GitHub setup, provider
   setup, cloud export privacy, cloud data contract, architecture,
   privacy/threat model, and easy-mode first run.
+- README answers why Code Mower exists beyond manually running a single AI
+  reviewer: lane consistency, setup diagnostics, calibration, spend/latency, and
+  evidence-gated promotion.
 - Standalone CI passes from a clean clone.
 - `code-mower init --easy` and `code-mower doctor --v05` work in a fresh toy
   repo.
@@ -65,6 +68,10 @@ not know the original reference repos.
   resolving to a safe interpreter.
 - Ruff linting runs in CI with a deliberately small `E`/`F` rule set before
   broader formatting/type-checking decisions.
+- Core behavior has direct tests for verdict parsing, calibration/value-report
+  math, cloud bundle privacy, and at least one provider-runner stub path.
+- CodeMower.com has a published retention policy and user-visible deletion or
+  export path before broad cloud-data invitations.
 
 ## Alpha Release Gate
 
@@ -106,6 +113,11 @@ interpreter.
 - Decompose the largest extraction-era modules before v1.0 where it materially
   improves contributor onboarding: calibration, doctor, cloud, package, and
   provider runners.
+- Make the public repository the clear source of truth for OSS users. Private
+  product repos should consume pinned public releases, not appear to generate or
+  overwrite the public package.
+- Split CLI docs into first-user commands and operator/internal commands so
+  `--help` does not bury the early-adopter path under bridge/labeler verbs.
 
 ## Ongoing Public-Repo Duties
 

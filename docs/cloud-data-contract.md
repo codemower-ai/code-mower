@@ -112,6 +112,24 @@ derived from metadata.
 It should not store source, raw diffs, raw transcripts, stdout/stderr, auth
 output, or secrets by default.
 
+## Data Controls In v0.5
+
+Current controls:
+
+- uploads are opt-in and dry-run-first;
+- team ingest tokens can be revoked;
+- full token values are not stored after creation; and
+- report text is excluded unless explicitly included by the uploader.
+
+Known gap:
+
+- self-service deletion, export, and retention settings are not implemented
+  yet.
+
+For early adopter pilots, deletion/export requests should be handled manually by
+the CodeMower.com operator. Broad cloud-data collection should wait until
+self-service deletion/export and a published retention policy are available.
+
 ## Roadmap
 
 Before broad public adoption, Code Mower Cloud should add user-visible deletion
