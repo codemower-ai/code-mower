@@ -10,7 +10,7 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.4"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.5"
 code-mower --version
 ```
 
@@ -93,7 +93,7 @@ This proves Code Mower can be installed fresh and run the starter workflow.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.4" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.5" \
   --python "$(command -v python3.12)" \
   --json
 ```

@@ -11,14 +11,14 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha releases and reports its version with
   `code-mower --version`.
-- The v0.5 alpha entrypoint is `v0.5.0-alpha.4`, with `code-mower doctor
+- The v0.5 alpha entrypoint is `v0.5.0-alpha.5`, with `code-mower doctor
   --preflight` as the first-run setup diagnostic. `doctor --v05` remains the
   versioned equivalent for scripts.
 - The README now shows a shortened `doctor --preflight` example so fresh users can
   see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and
   changelog exist as public trust/readiness artifacts.
-- `docs/first-user-install-rehearsal-alpha4.md` records the alpha.4 install,
+- `docs/first-user-install-rehearsal-alpha5.md` records the alpha.5 install,
   release-gate, easy-mode smoke, and fresh-clone rehearsal shape.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
