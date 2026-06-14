@@ -42,6 +42,8 @@ after the org move. It has proved:
 - GitHub-first setup checks, including private-repo Actions cost visibility.
 - public repo hygiene artifacts: issue templates, pull request template,
   Dependabot config, security policy, and an explicit repo-hardening checklist.
+- first-impression adoption improvements: README sample output,
+  `docs/sample-doctor-output.md`, and a clearer cloud value-exchange section.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
@@ -112,19 +114,23 @@ authoring-run capture remain post-v1.0 work.
 
 1. Finish the public/installable v0.5 path: docs, package install, doctor,
    first audit, first value report, and optional cloud token setup.
-2. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
+2. Create a public GitHub Release for the current alpha and publish to PyPI
+   before widening beyond friendly early adopters.
+3. Add a short terminal recording or screenshot showing `doctor --v05` and the
+   first value-report path.
+4. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
    and Apple login end to end.
-3. Continue dogfooding metadata uploads from Code Mower and private product
+5. Continue dogfooding metadata uploads from Code Mower and private product
    work.
-4. Expand the calibration corpus with known-clean, known-blocked, and subtle
+6. Expand the calibration corpus with known-clean, known-blocked, and subtle
    architecture-risk PRs.
-5. Run reviewer/lens calibration across Codex, Claude, Antigravity/Gemini,
+7. Run reviewer/lens calibration across Codex, Claude, Antigravity/Gemini,
    Gitar, and available informational lanes.
-6. Produce durable reviewer value reports with useful-rate, false positives,
+8. Produce durable reviewer value reports with useful-rate, false positives,
    latency, and cost.
-7. Promote lanes only after evidence shows they deserve informational,
+9. Promote lanes only after evidence shows they deserve informational,
    selective, or merge-gating status.
-8. Keep commercial implementation, hosted reporting, telemetry products, and
+10. Keep commercial implementation, hosted reporting, telemetry products, and
    monetization plans in the private CodeMower.com repo.
 
 ## Documentation Ownership

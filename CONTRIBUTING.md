@@ -9,7 +9,7 @@ Use Python 3.11 or newer. Python 3.12 is the preferred local and CI runtime.
 ```bash
 python3.12 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install -e . ruff
 ```
 
 ## Local Checks
@@ -18,6 +18,7 @@ Run the focused checks before opening a pull request:
 
 ```bash
 .venv/bin/python scripts/privacy_scan.py
+.venv/bin/python -m ruff check .
 .venv/bin/python -m unittest discover -s tests
 .venv/bin/python -m compileall -q src scripts
 .venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json

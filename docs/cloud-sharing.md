@@ -4,6 +4,25 @@ Code Mower is local-first. Cloud sharing is optional and exists to help users
 compare AI builders and reviewers across time, repositories, languages, and
 teams.
 
+## Why Share Metadata?
+
+Local reports answer "what happened in this repository?" CodeMower.com is meant
+to answer the questions that become more useful over time and across teams:
+
+- Which reviewer lanes catch real blockers without drowning the team in noise?
+- Which providers are slow, expensive, or redundant on repositories like mine?
+- Which prompt lenses improve useful signal, and which only change wording?
+- What should this team enable next: another local reviewer, a SaaS reviewer,
+  a security lens, an operability lens, or nothing?
+- How are reviewer usefulness, false positives, latency, and cost trending over
+  the last few weeks?
+
+The network-effect value is comparison. As more teams opt in, CodeMower.com can
+show private team dashboards plus anonymized aggregate benchmarks such as
+"your Codex audit useful-rate is above/below the cohort median" or "this SaaS
+lane is noisy for repos with similar shape." The default upload payload is
+metadata-only so teams can contribute to that benchmark without sharing source.
+
 ## Setup Personas
 
 There are two different setup jobs:

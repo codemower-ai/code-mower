@@ -1,60 +1,163 @@
 # Code Mower
 
-Code Mower is the fastest way to build a peer-programmer and reviewer system around the best AI coding agents.
+Code Mower helps teams set up AI peer-programmer and reviewer lanes on real
+GitHub pull requests, then measure which builders and reviewers are useful on
+their actual codebase.
 
-It helps teams drive from plan to merge at maximum safe velocity while preserving code quality, architecture, and deployment confidence. It also turns your real codebase into a quality-and-velocity benchmark, measuring which AI builders and reviewers deliver the best quality, speed, and cost results for your actual product.
+The short version:
 
-The Code Mower open-source core is licensed under Apache-2.0. Hosted benchmarking and reporting, managed integrations, private telemetry and benchmark data products, enterprise controls, and support are commercial surfaces unless licensed otherwise.
+- create safe, manual-first reviewer lanes for Codex, Claude, Gitar, and other
+  AI review tools;
+- run setup diagnostics before a lane can surprise you with spend, source
+  exposure, or GitHub Actions churn;
+- generate local reviewer value reports from known-clean and known-blocked PRs;
+  and
+- optionally share sanitized metadata with [CodeMower.com](https://codemower.com)
+  for private team dashboards and aggregate benchmarks.
 
-Code Mower is extracted from a production multi-repo development workflow and packaged as a standalone OSS tool. Start with `code-mower init --easy`, then run `code-mower doctor --v05` to verify local CLIs, tokens, provider catalog coverage, GitHub setup, optional cloud-token setup, Actions cost traps, and runtime probes. The current early-adopter path is documented in `docs/try-in-10-minutes.md` and `docs/quickstart.md`.
+Code Mower is local-first. The OSS tool works without the hosted service.
+Default cloud bundles exclude source code, raw diffs, raw model transcripts,
+raw stdout/stderr, auth output, and secrets.
+
+## What It Looks Like
+
+`code-mower doctor --v05` is the first useful command. It checks your runtime,
+GitHub setup, provider CLIs, token posture, optional cloud setup, and private-repo
+Actions cost traps.
+
+Example, shortened:
+
+```text
+$ code-mower doctor --v05
+PASS  config.validate             config validates
+PASS  profile.select              selected profile: codex, claude_audit, gitar
+PASS  runtime.python              Python 3.12 satisfies Code Mower requirements
+PASS  runtime.github_auth         GitHub CLI auth probe succeeded
+PASS  runtime.local_cli codex     codex found
+PASS  runtime.local_cli claude    claude auth smoke probe succeeded
+WARN  env.tokens codex            missing CODEX_AUDIT_LABEL_TOKEN or GITHUB_TOKEN
+WARN  github.actions_cost         private repo has high-frequency metadata workflows
+PASS  cloud.token                 optional Code Mower Cloud token file is configured
+
+Summary: warn, 20 checks, 0 failures, 5 warnings
+Next: fix token warnings, keep paid lanes manual, then generate a value report.
+```
+
+The warnings are the point: Code Mower should make setup, cost, and trust
+boundaries visible before you promote any reviewer lane.
 
 ## Try It In 10 Minutes
+
+Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
 pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.3"
 code-mower --version
+```
+
+From the repository you want to pilot:
+
+```bash
 code-mower init --easy
+code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --v05 --json
 ```
 
-Start with one GitHub repository, keep reviewer lanes manual, and inspect all
-generated output before enabling cloud upload or paid reviewers. The short path
-is [docs/try-in-10-minutes.md](docs/try-in-10-minutes.md); the fuller setup is
-[docs/quickstart.md](docs/quickstart.md).
-
-For source checkout development and release rehearsal, use
-`scripts/dev-python` to create the local virtualenv. It resolves a Python
-3.12+ interpreter and refuses stale or old system Python shims before any
-release script runs.
-
-For existing repos that still carry product-local Code Mower tools, run `code-mower migration wrapper-rehearsal --repo-path /path/to/repo --json` before flipping to a pinned standalone package. The rehearsal compares safe read-only commands and gives a low-risk path away from mirrored maintenance.
-
-For opt-in dogfooding, run `code-mower cloud dogfood --json` to create a
-metadata-only benchmark bundle and dry-run the upload path. Passing `--yes`
-uploads to [https://codemower.com/api/ingest](https://codemower.com/api/ingest)
-only when a team ingest token is configured.
-
-Before removing mirrors, prove the package-installed path in a clean venv:
+Then generate the starter local report:
 
 ```bash
-code-mower migration package-install-rehearsal \
-  --package-spec code-mower \
-  --repo-path /path/to/product-repo \
-  --json
+code-mower calibration value-report .code-mower.generated/calibration-corpus.json \
+  --output .code-mower/reviewer-value-report.md
 ```
 
-Use a local path or git URL for `--package-spec` during alpha testing. This
-rehearsal installs Code Mower non-editably, creates a fresh toy repo, runs
-easy-mode init/doctor/next-steps/calibration starter checks, and optionally
-compares a product repo against the installed package.
+The generated starter corpus proves the command path. Replace it with your own
+known-clean and known-blocked PRs before using any lane as a merge gate.
 
-For current state, v0.5 early-adopter, v1.0 readiness, and migration guidance,
-see `docs/current-state-and-roadmap.md`, `docs/try-in-10-minutes.md`, `docs/quickstart.md`,
-`docs/early-adopter-v05.md`,
-`docs/oss-v1-checklist.md`, `docs/repo-strategy.md`,
-`docs/mirror-removal-runbook.md`, `docs/github-setup.md`,
-`docs/provider-matrix.md`, `docs/cloud-sharing.md`,
-`docs/cloud-contributor-runbook.md`, `docs/cloud-benchmarking.md`,
-`docs/privacy-threat-model.md`, `docs/commercial-boundary.md`, and
-`docs/public-release-checklist.md`.
+Full walkthrough: [docs/try-in-10-minutes.md](docs/try-in-10-minutes.md).
+
+## Optional Cloud Sharing
+
+Code Mower Cloud is for teams that want private dashboards and benchmark
+comparison over time. The local OSS path stays useful without it.
+
+Create an inspectable metadata-only bundle:
+
+```bash
+code-mower cloud export \
+  --report value-report=.code-mower/reviewer-value-report.md \
+  --output-dir .code-mower/cloud-benchmark-bundle \
+  --anonymous \
+  --json
+
+code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
+```
+
+Nothing uploads unless you pass `--yes`.
+
+To connect to [CodeMower.com](https://codemower.com), sign in at
+[https://codemower.com/login](https://codemower.com/login), create or receive a
+team token, then run:
+
+```bash
+code-mower cloud setup \
+  --token-stdin \
+  --team-id "YOUR_TEAM_SLUG" \
+  --install-id "your-laptop" \
+  --out ~/.config/code-mower/tokens/your-laptop.env
+```
+
+Cloud sharing details: [docs/cloud-sharing.md](docs/cloud-sharing.md).
+
+## Provider Posture
+
+The first recommended lanes are local/manual:
+
+| Lane | Default role | Merge posture |
+| --- | --- | --- |
+| Codex audit | structured local peer audit | merge-gating eligible after setup |
+| Claude audit | structured local peer audit | merge-gating eligible after setup |
+| Gitar | advisory third signal | informational until calibrated |
+
+Everything else starts manual or informational until your own calibration data
+proves it is useful: Antigravity/Gemini, Hermes, CodeRabbit CLI, Cursor BugBot,
+Qodo, Greptile, Devin, local LLMs, and future ACP bridges.
+
+Provider details: [docs/provider-matrix.md](docs/provider-matrix.md).
+
+## Installation Status
+
+The current public alpha is `v0.5.0-alpha.3` from
+[codemower-ai/code-mower](https://github.com/codemower-ai/code-mower). PyPI
+publishing is on the release checklist; until then, use the tagged GitHub
+install command above.
+
+For source checkout development and release rehearsal, use:
+
+```bash
+scripts/dev-python
+scripts/dev-python -m venv .venv
+.venv/bin/python -m pip install -e . ruff
+```
+
+The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
+
+## Docs Map
+
+- [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
+- [Quickstart](docs/quickstart.md)
+- [Sample Doctor Output](docs/sample-doctor-output.md)
+- [Provider Matrix](docs/provider-matrix.md)
+- [GitHub Setup](docs/github-setup.md)
+- [Cloud Sharing](docs/cloud-sharing.md)
+- [Privacy And Threat Model](docs/privacy-threat-model.md)
+- [Current State And Roadmap](docs/current-state-and-roadmap.md)
+- [Public Release Checklist](docs/public-release-checklist.md)
+- [Contributing](CONTRIBUTING.md)
+
+## License
+
+The Code Mower open-source core is licensed under Apache-2.0. Hosted
+benchmarking and reporting, managed integrations, private telemetry and
+benchmark data products, enterprise controls, and support are commercial
+surfaces unless licensed otherwise.
