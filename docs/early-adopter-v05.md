@@ -67,7 +67,11 @@ future ACP bridges.
 Before inviting users:
 
 - README has a five-minute quickstart.
+- README shows a concrete sample of `code-mower doctor --v05` output or links
+  to a screenshot/terminal capture near the top.
 - `docs/quickstart.md` works from a clean machine.
+- `docs/sample-doctor-output.md` shows what a successful/warn first run looks
+  like before users install anything.
 - OSS-user docs never require Supabase, Vercel, OAuth-app, DNS, service-role,
   migration, or hosted-secret setup.
 - CodeMower.com operator docs clearly own hosted setup, token administration,
@@ -87,6 +91,8 @@ Before inviting users:
 - Known limitations are documented plainly.
 - `docs/early-adopter-invite-runbook.md` has the current tagged install command
   and invite copy for the first 5-10 friendly users.
+- A public GitHub Release exists for the current alpha tag, so users do not
+  have to infer release state from tags alone.
 
 ## Cloud Sharing Positioning
 
@@ -107,6 +113,8 @@ bundle before upload.
 Cut a v0.5 alpha or beta only after:
 
 - package install works through `pipx`;
+- PyPI publishing is either complete or explicitly called out as the next
+  friction-reduction milestone;
 - docs are sufficient for a new user;
 - cloud export and dry-run upload are tested;
 - codemower.com can receive an ingest payload;

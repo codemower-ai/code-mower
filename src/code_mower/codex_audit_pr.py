@@ -1315,7 +1315,7 @@ def format_comment(
             header
             + f"\nHead SHA changed during review (`{head_sha[:8]}` → "
             + f"`{(stale_end_sha or '?')[:8]}`). Skipping this verdict and "
-            + f"requeuing for re-review of the new head.\n\n"
+            + "requeuing for re-review of the new head.\n\n"
             + STALE_TRAILER
             + "\n"
         )
@@ -1451,7 +1451,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     # rather than crashing on the worktree create.
     try:
         worktree_path = _create_temp_worktree(local_repo, head_sha_start)
-    except subprocess.CalledProcessError as exc:
+    except subprocess.CalledProcessError:
         # Worktree create failed — likely because the SHA isn't in the
         # local repo anymore (force-push race). Refetch and compare;
         # if the head has moved, emit the stale-requeue comment.

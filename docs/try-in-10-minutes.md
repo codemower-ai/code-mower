@@ -50,6 +50,8 @@ code-mower doctor --v05 --json
 - optional Code Mower Cloud token setup diagnostics.
 
 Warnings are setup guidance. They are only fatal when you pass `--strict`.
+If you want to see the shape of the output before installing, start with
+`docs/sample-doctor-output.md`.
 
 ## 5. Generate The Starter Value Report
 
@@ -108,6 +110,7 @@ code-mower cloud setup \
 ## What To Read Next
 
 - `docs/quickstart.md` for the fuller walkthrough.
+- `docs/sample-doctor-output.md` for a sanitized example of doctor output.
 - `docs/github-setup.md` for private repositories, Actions cost, and branch
   protection.
 - `docs/provider-matrix.md` for provider cost, privacy, and merge authority.

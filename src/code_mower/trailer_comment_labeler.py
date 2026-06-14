@@ -18,7 +18,6 @@ from typing import Any, Dict, Optional, Sequence
 
 if __package__ and __package__.startswith("code_mower"):
     from .audit_labeler_lib import (
-        GitHubToken,
         LaneConfig,
         LabelDecision,
         apply_label_decision,
@@ -31,7 +30,6 @@ if __package__ and __package__.startswith("code_mower"):
 else:
     try:
         from tools.audit_labeler_lib import (
-            GitHubToken,
             LaneConfig,
             LabelDecision,
             apply_label_decision,
@@ -43,7 +41,6 @@ else:
         from tools.lane_configs import load_lane_config
     except ImportError:  # pragma: no cover - direct `python tools/foo.py` execution
         from audit_labeler_lib import (
-            GitHubToken,
             LaneConfig,
             LabelDecision,
             apply_label_decision,

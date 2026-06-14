@@ -13,6 +13,8 @@ not know the original reference repos.
   `code-mower --version`.
 - The v0.5 alpha entrypoint is `v0.5.0-alpha.3`, with `code-mower doctor
   --v05` as the first-run setup diagnostic.
+- The README now shows a shortened `doctor --v05` example so fresh users can
+  see the payoff before installing.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
 - Hosted/commercial service implementation remains outside the public OSS repo.
@@ -21,6 +23,8 @@ not know the original reference repos.
 
 - `README.md` is public-safe, product-oriented, and does not require access to
   private product/reference repositories.
+- README and first-run docs show concrete output, not only positioning and
+  abstract architecture.
 - Public docs explain repo strategy, commercial boundary, GitHub setup, provider
   setup, cloud export privacy, privacy/threat model, and easy-mode first run.
 - Standalone CI passes from a clean clone.
@@ -56,6 +60,8 @@ not know the original reference repos.
 - Source-checkout and release-rehearsal commands use `scripts/dev-python` or
   `.venv/bin/python`; docs and gates do not rely on ambient `python`/`python3`
   resolving to a safe interpreter.
+- Ruff linting runs in CI with a deliberately small `E`/`F` rule set before
+  broader formatting/type-checking decisions.
 
 ## Alpha Release Gate
 
@@ -63,8 +69,9 @@ Before tagging an early alpha, run these from a clean standalone checkout:
 
 ```bash
 scripts/dev-python -m venv .venv
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install -e . ruff
 .venv/bin/code-mower --version
+.venv/bin/python -m ruff check .
 .venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json
 .venv/bin/code-mower doctor --v05 --json
 .venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python .venv/bin/python --json
@@ -82,12 +89,20 @@ interpreter.
 ## Recommended Before v1.0
 
 - Publish a short "easy mode" walkthrough using a toy repo.
+- Publish a GitHub Release for the current public alpha tag.
+- Publish to PyPI before widening beyond friendly alpha users, or document why
+  the project is intentionally staying GitHub-install-only.
+- Add a short terminal recording, screenshot, or transcript of the first
+  `doctor --v05` run to the README/website.
 - Add a troubleshooting section for Python, GitHub auth, provider CLIs, and
   private repository permissions.
 - Add a migration note for teams that want to start with informational-only
   lanes.
 - Add a short explanation of how local benchmark reports can later be shared with
   the hosted service.
+- Decompose the largest extraction-era modules before v1.0 where it materially
+  improves contributor onboarding: calibration, doctor, cloud, package, and
+  provider runners.
 
 ## Ongoing Public-Repo Duties
 
