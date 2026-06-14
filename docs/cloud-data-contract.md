@@ -119,20 +119,21 @@ Current controls:
 - uploads are opt-in and dry-run-first;
 - team ingest tokens can be revoked;
 - full token values are not stored after creation; and
-- report text is excluded unless explicitly included by the uploader.
+- report text is excluded unless explicitly included by the uploader;
+- signed-in team members can export team metadata; and
+- team owners/admins can delete uploaded metadata and related summaries/events.
 
 Known gap:
 
-- self-service deletion, export, and retention settings are not implemented
-  yet.
+- automated retention jobs and user-configurable retention windows are not
+  implemented yet.
 
-For early adopter pilots, deletion/export requests should be handled manually by
-the CodeMower.com operator. Broad cloud-data collection should wait until
-self-service deletion/export and a published retention policy are available.
+For early adopter pilots, deletion/export basics are live, but broad cloud-data
+collection should wait until a published retention policy and automated
+retention jobs are available.
 
 ## Roadmap
 
-Before broad public adoption, Code Mower Cloud should add user-visible deletion
-controls, retention settings, team export, clearer anonymization/cohort rules,
-schema migration notes, and public examples of useful aggregate benchmark
-outputs.
+Before broad public adoption, Code Mower Cloud should add retention settings,
+clearer anonymization/cohort rules, schema migration notes, and public examples
+of useful aggregate benchmark outputs.

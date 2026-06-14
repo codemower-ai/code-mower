@@ -19,6 +19,11 @@ known PR outcomes, and optionally upload sanitized metadata to CodeMower.com.
   to measure reviewer usefulness.
 - **Value report:** a local report that compares useful findings, false
   positives, cost, latency, and lane recommendations.
+- **Run role:** a normalized purpose for a measured event, such as
+  `implement`, `review`, `calibrate`, `release`, or `explore`.
+- **Builder experiment:** a bounded authoring run that measures which builder
+  plus reviewer loop produces verified code with the best quality, speed, and
+  cost.
 - **Cloud bundle:** an inspectable metadata-only export that can optionally be
   uploaded to CodeMower.com.
 
@@ -46,6 +51,21 @@ docs/                            public setup, privacy, roadmap, release docs
 The package intentionally keeps provider-specific behavior in adapters and lane
 configs. Generic orchestration should not know provider-specific auth quirks
 unless they are part of the declared provider contract.
+
+## Local Runner And Optional Cloud
+
+Code Mower's security model depends on a simple split:
+
+- local runners hold source code, diffs, provider credentials, GitHub tokens,
+  worktrees, raw transcripts, and raw command output;
+- generated GitHub support files coordinate labels, comments, workflows, and
+  wrapper entrypoints in the user's repository; and
+- CodeMower.com receives only explicit, metadata-only uploads when the user opts
+  in.
+
+The hosted service should not be required for install, doctor, first audit, or
+local value reports. It exists to turn repeated sanitized events into private
+team dashboards and eventually aggregate benchmarks.
 
 ## First-Run Flow
 
@@ -77,6 +97,23 @@ Code Mower starts conservative:
 Provider integrations should expose setup docs, auth/runtime doctor checks,
 source/diff exposure posture, local/hosted/manual/automatic posture, and
 cost/latency fields when available.
+
+## Builder And Orchestrator Boundary
+
+Code Mower can learn from orchestrator systems without becoming one by default.
+The v1.0 architecture should keep the first builder-experiment layer
+harness-only:
+
+- one task contract per run;
+- one worktree/branch per builder attempt;
+- provider/lens/context-pack metadata captured as structured events;
+- reviewer isolation through diff plus task contract rather than builder
+  transcript;
+- normal Code Mower audit gates before merge; and
+- optional metadata upload after local inspection.
+
+Future orchestrator adapters can drive authoring sessions, but the public core
+should first make the measurement loop reliable and source-free by default.
 
 ## Generated Product Support
 

@@ -104,6 +104,25 @@ The default lane policy remains conservative: Codex and Claude are the first
 local structured audit lanes; Gitar and other hosted reviewers start
 informational/manual until a user's own data supports promotion.
 
+## Senior-Engineer Readiness Gate
+
+The next product gate is a first-impression gate, not a new-provider gate. A
+fresh senior engineer landing on the public repository should be able to answer
+these questions in the first few minutes:
+
+- What problem does Code Mower solve that a single local agent does not?
+- What happens locally, and what is optional cloud sharing?
+- What commands prove the install path without mutating a repository?
+- What data, if any, leaves the machine?
+- Which provider lanes are safe to try first?
+- What would make a lane eligible for merge-gating?
+- Where is the code intentionally structured, and where is it still being
+  refactored from extraction-era shape?
+
+The v0.5-to-v1.0 work should optimize for that trust test. More provider
+adapters are useful only after install, doctor, first report, privacy, and code
+structure feel boring and credible.
+
 ## v1.0 Direction
 
 v1.0 should be "easy mode with a path to power":
@@ -115,46 +134,76 @@ v1.0 should be "easy mode with a path to power":
 - Provider and lens expansion gated by calibration evidence, not enthusiasm.
 - Product repos consume a pinned standalone package instead of mirrored
   implementation files.
+- Public docs explain Code Mower as a local operating layer for peer
+  programmers and reviewer lanes, not as a hosted service that must be adopted
+  wholesale.
 
 GitLab, Bitbucket, ACP bridges, hosted builder harnesses, and fully automated
 authoring-run capture remain post-v1.0 work.
 
+## Builder And Orchestrator Direction
+
+Reviewer calibration is the current executable loop: compare reviewers and
+lenses against known-clean, known-blocked, and subtle-risk PRs. Builder-side
+experiments are the next major extension: compare which AI peer programmer plus
+review policy ships verified code fastest and cleanest.
+
+The roadmap should borrow the useful shape from multi-agent/orchestrator
+systems without adopting their full runtime:
+
+- record a normalized `run_role` or `purpose` such as `implement`, `review`,
+  `calibrate`, `release`, or `explore`;
+- keep one worktree/branch per builder run;
+- review via diff plus task contract, not builder transcript;
+- record provider, lens, context pack, elapsed time, user interventions, audit
+  blocker iterations, checks, merge result, post-merge health, and known cost;
+- keep local runners responsible for source and credentials;
+- keep CodeMower.com responsible for optional metadata storage, private team
+  dashboards, and future aggregate benchmarks.
+
+This keeps Code Mower's center of gravity GitHub-native and local-first while
+leaving room for future orchestrator adapters.
+
 ## Near-Term Roadmap
 
-1. Finish the public/installable v0.5 path: docs, package install, doctor,
+1. Pass the senior-engineer readiness gate: README, quickstart, architecture,
+   privacy, install, and first report should tell one coherent story.
+2. Finish the public/installable v0.5 path: docs, package install, doctor,
    first audit, first value report, and optional cloud token setup.
-2. Make the public repository the unambiguous source of truth: keep public docs
+3. Make the public repository the unambiguous source of truth: keep public docs
    and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
    compatibility shims where they confuse contributors, and keep private
    product repos as consumers of pinned releases.
-3. Create a public GitHub Release for the current alpha, verify the release
+4. Create a public GitHub Release for the current alpha, verify the release
    workflow builds source/wheel artifacts, and configure PyPI trusted
    publishing before widening beyond friendly early adopters.
-4. Add a short terminal recording or screenshot showing `doctor --preflight`
+5. Add a short terminal recording or screenshot showing `doctor --preflight`
    and the first value-report path. A static transcript now exists in
    `docs/first-run-transcript.md`; replace or augment it with a recording
    before a wider launch.
-5. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
+6. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
    and Apple login end to end.
-6. Turn the current team-controlled deletion/export basics into a published
+7. Turn the current team-controlled deletion/export basics into a published
    retention policy with automated retention jobs before broad cloud-data
    invitations.
-7. Continue dogfooding metadata uploads from Code Mower and private product
+8. Continue dogfooding metadata uploads from Code Mower and private product
    work.
-8. Expand the calibration corpus with known-clean, known-blocked, and subtle
+9. Expand the calibration corpus with known-clean, known-blocked, and subtle
    architecture-risk PRs.
-9. Run reviewer/lens calibration across Codex, Claude, Antigravity/Gemini,
+10. Run reviewer/lens calibration across Codex, Claude, Antigravity/Gemini,
    Gitar, and available informational lanes.
-10. Produce durable reviewer value reports with useful-rate, false positives,
+11. Produce durable reviewer value reports with useful-rate, false positives,
    latency, and cost.
-11. Promote lanes only after evidence shows they deserve informational,
+12. Promote lanes only after evidence shows they deserve informational,
    selective, or merge-gating status.
-12. Increase tests around verdict parsing, calibration/value-report math,
+13. Increase tests around verdict parsing, calibration/value-report math,
     provider runner stubs, and cloud bundle privacy before presenting Code
     Mower as merge-gate infrastructure.
-13. Triage CLI help into a smaller first-user command set, with advanced
+14. Triage CLI help into a smaller first-user command set, with advanced
     operator/internal commands documented separately.
-14. Keep commercial implementation, hosted reporting, telemetry products, and
+15. Add builder-experiment capture only after the reviewer/value loop is
+    producing durable evidence.
+16. Keep commercial implementation, hosted reporting, telemetry products, and
    monetization plans in the private CodeMower.com repo.
 
 ## Documentation Ownership
