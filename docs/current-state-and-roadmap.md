@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/jeffhuber/code-mower
 ```
 
-The current public alpha baseline is `v0.1.0-alpha.26`. It has proved:
+The current public alpha baseline is `v0.5.0-alpha.1`. It has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
 - `code-mower init --easy`, `doctor --easy`, `next-steps`, and starter
@@ -33,6 +33,9 @@ The current public alpha baseline is `v0.1.0-alpha.26`. It has proved:
 - generated product-support wrappers for compatibility shims and shell-safe
   GitHub comments;
 - optional sanitized cloud export/upload commands;
+- `code-mower doctor --v05` as a single early-adopter preset for easy mode,
+  runtime probes, GitHub/private-repo setup, Actions cost diagnostics, and
+  optional cloud-token setup;
 - Code Mower Cloud dogfood events from the OSS repo and product work; and
 - GitHub-first setup checks, including private-repo Actions cost visibility.
 
@@ -76,7 +79,7 @@ The v0.5 experience should be:
 
 1. install Code Mower from GitHub or a package index;
 2. run `code-mower init --easy`;
-3. run `code-mower doctor --easy --github --probe-runtime`;
+3. run `code-mower doctor --v05`;
 4. run a first manual/local audit;
 5. generate a local reviewer value report;
 6. optionally create or receive a CodeMower.com developer/team token; and

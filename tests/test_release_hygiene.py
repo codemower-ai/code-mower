@@ -26,8 +26,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_alpha_26(self) -> None:
-        self.assertEqual(__version__, "0.1.0a26")
+    def test_version_is_v05_alpha_1(self) -> None:
+        self.assertEqual(__version__, "0.5.0a1")
 
     def test_dev_python_wrapper_is_executable(self) -> None:
         wrapper = ROOT / "scripts/dev-python"
@@ -580,6 +580,85 @@ def main():
         detail = doctor._auth_probe_output_detail("email@example.com\nscope repo\n")
         self.assertEqual(detail, {"output_redacted": True, "output_line_count": 2})
 
+    def test_doctor_v05_preset_sets_early_adopter_checks(self) -> None:
+        import argparse
+
+        args = argparse.Namespace(
+            v05=True,
+            easy=False,
+            profile=None,
+            probe_runtime=False,
+            github=False,
+            cloud=False,
+        )
+
+        doctor._apply_v05_defaults(args)
+
+        self.assertTrue(args.easy)
+        self.assertEqual(args.profile, "recommended")
+        self.assertTrue(args.probe_runtime)
+        self.assertTrue(args.github)
+        self.assertTrue(args.cloud)
+
+    def test_doctor_cloud_token_check_is_optional_and_content_free(self) -> None:
+        old_token = os.environ.pop("CODE_MOWER_TEST_CLOUD_TOKEN", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                missing = doctor._check_cloud_token_surface(
+                    token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+                    token_dir=Path(tmp) / "missing",
+                )
+                self.assertEqual(missing.status, doctor.STATUS_SKIP)
+                self.assertNotIn("secret", json.dumps(missing.as_dict()).lower())
+
+                token_dir = Path(tmp) / "tokens"
+                token_dir.mkdir()
+                token_file = token_dir / "local.env"
+                fake_token = "cmw_live_" + "secret_token"
+                token_file.write_text(
+                    f"export CODE_MOWER_TEST_CLOUD_TOKEN='{fake_token}'\n",
+                    encoding="utf-8",
+                )
+                token_file.chmod(0o600)
+
+                configured = doctor._check_cloud_token_surface(
+                    token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+                    token_dir=token_dir,
+                )
+                payload = configured.as_dict()
+                self.assertEqual(configured.status, doctor.STATUS_PASS)
+                self.assertEqual(payload["detail"]["token_files"], ["local.env"])
+                self.assertNotIn(fake_token, json.dumps(payload))
+        finally:
+            if old_token is not None:
+                os.environ["CODE_MOWER_TEST_CLOUD_TOKEN"] = old_token
+
+    def test_doctor_cloud_token_check_warns_on_broad_permissions(self) -> None:
+        old_token = os.environ.pop("CODE_MOWER_TEST_CLOUD_TOKEN", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                token_dir = Path(tmp) / "tokens"
+                token_dir.mkdir()
+                token_file = token_dir / "local.env"
+                fake_token = "cmw_live_" + "secret_token"
+                token_file.write_text(
+                    f"CODE_MOWER_TEST_CLOUD_TOKEN={fake_token}\n",
+                    encoding="utf-8",
+                )
+                token_file.chmod(0o644)
+
+                check = doctor._check_cloud_token_surface(
+                    token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+                    token_dir=token_dir,
+                )
+                payload = check.as_dict()
+                self.assertEqual(check.status, doctor.STATUS_WARN)
+                self.assertEqual(payload["detail"]["insecure_files"], ["local.env"])
+                self.assertNotIn(fake_token, json.dumps(payload))
+        finally:
+            if old_token is not None:
+                os.environ["CODE_MOWER_TEST_CLOUD_TOKEN"] = old_token
+
     def test_cloud_export_accepts_lane_policy_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -956,6 +1035,8 @@ def main():
         self.assertIn("cloud-export", ids)
         self.assertIn("cloud-setup", ids)
         self.assertIn("cloud-upload-dry-run", ids)
+        doctor_step = next(step for step in plan["steps"] if step["id"] == "doctor-easy")
+        self.assertIn("doctor --v05", doctor_step["command"])
         self.assertLess(ids.index("cloud-export"), ids.index("cloud-setup"))
         self.assertLess(ids.index("cloud-setup"), ids.index("cloud-upload-dry-run"))
         self.assertLess(ids.index("cloud-export"), ids.index("cloud-upload-dry-run"))

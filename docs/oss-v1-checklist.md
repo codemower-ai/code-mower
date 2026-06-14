@@ -17,13 +17,14 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.1.0-alpha.26` of the standalone
+The current public-release baseline is `v0.5.0-alpha.1` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
 - `code-mower init --easy` smoke behavior;
-- `doctor --easy --probe-runtime` provider probes for configured local CLIs;
+- `doctor --v05` provider probes for configured local CLIs, GitHub setup,
+  Actions cost traps, and optional cloud-token setup;
 - product-wrapper rehearsal with zero mismatches against the repo-local mirror;
 - pinned standalone consumption from both private reference/product repos;
 - private-repo standalone checkout shape through a read-only deploy-key shadow
@@ -74,6 +75,9 @@ package. It has proved:
   shared editable source checkout cannot mutate under an active command.
 - optional cloud-upload dry run and explicit `--yes` upload path for sanitized
   benchmark bundles, with metadata-only payloads by default.
+- `code-mower doctor --v05` as the early-adopter preset for easy profile,
+  runtime probes, GitHub setup, private-repo caveats, Actions cost diagnostics,
+  and optional cloud-token setup.
 
 It has not yet proved:
 
@@ -91,7 +95,7 @@ It has not yet proved:
 pipx install code-mower
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower doctor --easy --probe-runtime
+code-mower doctor --v05
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal --package-spec code-mower --repo-path /path/to/product-repo --json
@@ -265,7 +269,7 @@ private repo can complete this sequence from a clean machine:
 1. install package
 2. run `code-mower init --easy`
 3. run generated smoke tests
-4. run `code-mower doctor --easy --probe-runtime --github`
+4. run `code-mower doctor --v05`
 5. run `code-mower next-steps --profile recommended`
 6. run at least one local/CLI audit lane in dry-run or PR-comment mode
 7. generate a value report

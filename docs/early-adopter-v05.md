@@ -30,6 +30,14 @@ A new user can:
 4. generate a local reviewer value report; and
 5. optionally share a sanitized benchmark bundle to Code Mower Cloud.
 
+The one-command first-run diagnostic is:
+
+```bash
+code-mower doctor --v05 --json
+```
+
+It expands to `--easy --profile recommended --probe-runtime --github --cloud`.
+
 ## Recommended First-Run Profile
 
 Keep the default small:
@@ -64,8 +72,8 @@ Before inviting users:
   migration, or hosted-secret setup.
 - CodeMower.com operator docs clearly own hosted setup, token administration,
   and production secrets.
-- `code-mower doctor --easy --github --probe-runtime` gives actionable
-  remediation.
+- `code-mower doctor --v05 --json` works as the recommended early-adopter
+  preset.
 - `code-mower cloud upload --dry-run` previews without network transfer.
 - `code-mower cloud setup --token-stdin` writes a private local token file
   without echoing the full token.

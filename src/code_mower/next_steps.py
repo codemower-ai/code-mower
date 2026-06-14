@@ -124,7 +124,7 @@ def build_next_steps(
     if profile == DEFAULT_PROFILE:
         init_plan_command = "code-mower init --easy"
         init_apply_command = "code-mower init --easy --apply --output-dir .code-mower.generated"
-        doctor_command = "code-mower doctor --easy --probe-runtime --github --json"
+        doctor_command = "code-mower doctor --v05 --json"
     else:
         init_plan_command = f"code-mower init --profile {quoted_profile} --dry-run"
         init_apply_command = (
@@ -158,7 +158,8 @@ def build_next_steps(
             "command": doctor_command,
             "why": (
                 "Checks GitHub auth, Python, provider catalog coverage, CLI "
-                "availability, token env, Actions cost traps, and harmless runtime probes."
+                "availability, token env, optional cloud-token setup, Actions "
+                "cost traps, and harmless runtime probes."
             ),
         },
         {

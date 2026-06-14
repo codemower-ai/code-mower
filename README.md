@@ -6,7 +6,7 @@ It helps teams drive from plan to merge at maximum safe velocity while preservin
 
 The Code Mower open-source core is licensed under Apache-2.0. Hosted benchmarking and reporting, managed integrations, private telemetry and benchmark data products, enterprise controls, and support are commercial surfaces unless licensed otherwise.
 
-Code Mower is extracted from a production multi-repo development workflow and packaged as a standalone OSS tool. Start with `code-mower init --easy`, then run `code-mower doctor --easy` to verify local CLIs, tokens, provider catalog coverage, and runtime probes. The current early-adopter path is documented in `docs/quickstart.md`.
+Code Mower is extracted from a production multi-repo development workflow and packaged as a standalone OSS tool. Start with `code-mower init --easy`, then run `code-mower doctor --v05` to verify local CLIs, tokens, provider catalog coverage, GitHub setup, optional cloud-token setup, Actions cost traps, and runtime probes. The current early-adopter path is documented in `docs/try-in-10-minutes.md` and `docs/quickstart.md`.
 
 For source checkout development and release rehearsal, use
 `scripts/dev-python` to create the local virtualenv. It resolves a Python
@@ -35,7 +35,7 @@ easy-mode init/doctor/next-steps/calibration starter checks, and optionally
 compares a product repo against the installed package.
 
 For current state, v0.5 early-adopter, v1.0 readiness, and migration guidance,
-see `docs/current-state-and-roadmap.md`, `docs/quickstart.md`,
+see `docs/current-state-and-roadmap.md`, `docs/try-in-10-minutes.md`, `docs/quickstart.md`,
 `docs/early-adopter-v05.md`,
 `docs/oss-v1-checklist.md`, `docs/repo-strategy.md`,
 `docs/mirror-removal-runbook.md`, `docs/github-setup.md`,

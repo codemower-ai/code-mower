@@ -11,6 +11,8 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha releases and reports its version with
   `code-mower --version`.
+- The v0.5 alpha entrypoint is `v0.5.0-alpha.1`, with `code-mower doctor
+  --v05` as the first-run setup diagnostic.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
 - Hosted/commercial service implementation remains outside the public OSS repo.
@@ -22,10 +24,11 @@ not know the original reference repos.
 - Public docs explain repo strategy, commercial boundary, GitHub setup, provider
   setup, cloud export privacy, privacy/threat model, and easy-mode first run.
 - Standalone CI passes from a clean clone.
-- `code-mower init --easy` and `code-mower doctor --easy` work in a fresh toy
+- `code-mower init --easy` and `code-mower doctor --v05` work in a fresh toy
   repo.
-- `code-mower doctor --easy --probe-runtime` runs provider-declared smoke probes
-  without leaking raw auth/provider output into shareable JSON.
+- `code-mower doctor --v05` runs provider-declared smoke probes and optional
+  cloud-token diagnostics without leaking raw auth/provider output or token
+  values into shareable JSON.
 - `scripts/smoke_easy_mode.py --json` passes in a fresh virtual environment.
 - `scripts/fresh_clone_rehearsal.py --json` passes against the release commit.
 - Secret scans are clean.
@@ -58,7 +61,7 @@ scripts/dev-python -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/code-mower --version
 .venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json
-.venv/bin/code-mower doctor --easy --probe-runtime --json
+.venv/bin/code-mower doctor --v05 --json
 .venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python .venv/bin/python --json
 ```
 

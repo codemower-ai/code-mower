@@ -10,7 +10,7 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/jeffhuber/code-mower.git@v0.1.0-alpha.26"
+pipx install --python python3.12 "git+https://github.com/jeffhuber/code-mower.git@v0.5.0-alpha.1"
 code-mower --version
 ```
 
@@ -75,12 +75,16 @@ From a clean checkout of the repository you want to pilot:
 ```bash
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower doctor --easy --github --probe-runtime --actions-cost-sample 50
+code-mower doctor --v05 --json
 code-mower next-steps --profile recommended --repo OWNER/REPO
 ```
 
 `init --easy` is non-mutating by default. `--apply` writes a generated tree for
 review; it does not edit live workflows or trigger paid providers.
+`doctor --v05` is the recommended early-adopter preset for GitHub auth,
+Python/runtime checks, provider CLI probes, private-repo caveats, Actions cost
+diagnostics, and optional cloud-token setup. Use `--strict` only when warnings
+should fail a bootstrap job.
 
 ## 5. Rehearse The Package Install Path
 
@@ -88,7 +92,7 @@ This proves Code Mower can be installed fresh and run the starter workflow.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/jeffhuber/code-mower.git@v0.1.0-alpha.26" \
+  --package-spec "git+https://github.com/jeffhuber/code-mower.git@v0.5.0-alpha.1" \
   --repo-path "$PWD" \
   --python "$(command -v python3.12)" \
   --json
@@ -165,7 +169,7 @@ self-service dashboard yet.
 
 One repository is ready for broader Code Mower use when:
 
-- `doctor --easy --github --probe-runtime` has no unexplained failures.
+- `doctor --v05` has no unexplained failures.
 - Codex and Claude can both run local audits.
 - A small PR can be reviewed manually without recurring workflows.
 - Private-repo GitHub Actions cost is understood.

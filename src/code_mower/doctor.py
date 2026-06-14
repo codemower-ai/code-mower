@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import urllib.error
@@ -73,6 +74,8 @@ ACTIONS_METADATA_WORKFLOW_MARKERS = (
     "audit-label-cleanup",
     "devin-audit-bridge",
 )
+DEFAULT_CLOUD_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
+DEFAULT_CLOUD_TOKEN_DIR = Path("~/.config/code-mower/tokens")
 
 
 @dataclass(frozen=True)
@@ -552,6 +555,123 @@ def _check_pytest() -> DoctorCheck:
             "Install pytest in the product repository virtualenv before running "
             "product-side wrapper tests, for example `python -m pip install pytest`."
         ),
+    )
+
+
+def _token_file_mentions_cloud_token(path: Path, token_env: str) -> bool | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped.removeprefix("export ").strip()
+        if stripped.startswith(f"{token_env}="):
+            return True
+    return False
+
+
+def _check_cloud_token_surface(
+    *,
+    token_env: str = DEFAULT_CLOUD_TOKEN_ENV,
+    token_dir: Path | None = None,
+) -> DoctorCheck:
+    """Check optional Code Mower Cloud token setup without exposing secrets."""
+
+    if os.environ.get(token_env):
+        return DoctorCheck(
+            name="cloud.token",
+            status=STATUS_PASS,
+            message="Code Mower Cloud token env is set",
+            detail={"token_env": token_env, "source": "env"},
+        )
+
+    directory = (token_dir or DEFAULT_CLOUD_TOKEN_DIR).expanduser()
+    redacted_dir = "~/.config/code-mower/tokens"
+    if not directory.exists():
+        return DoctorCheck(
+            name="cloud.token",
+            status=STATUS_SKIP,
+            message="optional Code Mower Cloud token is not configured",
+            detail={"token_env": token_env, "token_dir": redacted_dir},
+            remediation=(
+                "Cloud upload is optional. To enable it, create or receive a "
+                "developer/team token, then run `code-mower cloud setup "
+                "--token-stdin` and source the generated env file."
+            ),
+        )
+
+    token_files: list[str] = []
+    unreadable_files: list[str] = []
+    insecure_files: list[str] = []
+    for path in sorted(directory.glob("*.env")):
+        has_token = _token_file_mentions_cloud_token(path, token_env)
+        if has_token is None:
+            unreadable_files.append(path.name)
+            continue
+        if not has_token:
+            continue
+        token_files.append(path.name)
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            unreadable_files.append(path.name)
+            continue
+        if mode & 0o077:
+            insecure_files.append(path.name)
+
+    if unreadable_files:
+        return DoctorCheck(
+            name="cloud.token",
+            status=STATUS_WARN,
+            message="could not inspect one or more Code Mower Cloud token files",
+            detail={
+                "token_env": token_env,
+                "token_dir": redacted_dir,
+                "unreadable_file_count": len(unreadable_files),
+                "unreadable_files": unreadable_files,
+            },
+            remediation=(
+                "Verify token files under ~/.config/code-mower/tokens are UTF-8 "
+                "env files owned by the current user."
+            ),
+        )
+
+    if not token_files:
+        return DoctorCheck(
+            name="cloud.token",
+            status=STATUS_SKIP,
+            message="optional Code Mower Cloud token file was not found",
+            detail={"token_env": token_env, "token_dir": redacted_dir},
+            remediation=(
+                "Cloud upload is optional. To enable it, run `code-mower cloud "
+                "setup --token-stdin` and source the generated env file."
+            ),
+        )
+
+    detail = {
+        "token_env": token_env,
+        "token_dir": redacted_dir,
+        "token_file_count": len(token_files),
+        "token_files": token_files,
+    }
+    if insecure_files:
+        return DoctorCheck(
+            name="cloud.token",
+            status=STATUS_WARN,
+            message="Code Mower Cloud token file permissions are too broad",
+            detail={**detail, "insecure_files": insecure_files},
+            remediation="Run `chmod 600 ~/.config/code-mower/tokens/*.env`.",
+        )
+
+    return DoctorCheck(
+        name="cloud.token",
+        status=STATUS_PASS,
+        message="Code Mower Cloud token file is configured",
+        detail=detail,
     )
 
 
@@ -2188,6 +2308,7 @@ def run_doctor(
     profile: str | None,
     probe_runtime: bool = False,
     github: bool = False,
+    cloud: bool = False,
     http_timeout: int = 5,
     actions_cost_sample: int = ACTIONS_COST_SAMPLE_DEFAULT,
 ) -> DoctorReport:
@@ -2284,6 +2405,9 @@ def run_doctor(
             )
         )
 
+    if cloud:
+        checks.append(_check_cloud_token_surface())
+
     return DoctorReport(
         config_path=str(config_path),
         provider_templates_path=str(provider_templates_path),
@@ -2324,6 +2448,17 @@ def resolve_doctor_provider_templates_path(path_text: str) -> Path:
     return code_mower_package.resolve_provider_templates_path(path_text)
 
 
+def _apply_v05_defaults(args: argparse.Namespace) -> None:
+    if not getattr(args, "v05", False):
+        return
+    args.easy = True
+    if args.profile is None:
+        args.profile = "recommended"
+    args.probe_runtime = True
+    args.github = True
+    args.cloud = True
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config", nargs="?", default="code-mower.yml")
@@ -2340,11 +2475,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             "absent, use the packaged example config"
         ),
     )
+    parser.add_argument(
+        "--v05",
+        action="store_true",
+        help=(
+            "v0.5 early-adopter preset: --easy --profile recommended "
+            "--probe-runtime --github --cloud"
+        ),
+    )
     parser.add_argument("--probe-runtime", action="store_true")
     parser.add_argument(
         "--github",
         action="store_true",
         help="inspect GitHub repo visibility, branch protection, and provider setup hints",
+    )
+    parser.add_argument(
+        "--cloud",
+        action="store_true",
+        help="check optional Code Mower Cloud token setup without reading or printing token values",
     )
     parser.add_argument("--http-timeout", type=int, default=5)
     parser.add_argument(
@@ -2360,6 +2508,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
+    _apply_v05_defaults(args)
     if args.easy and args.profile is None:
         args.profile = "recommended"
 
@@ -2371,6 +2520,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             profile=args.profile,
             probe_runtime=args.probe_runtime,
             github=args.github,
+            cloud=args.cloud,
             http_timeout=args.http_timeout,
             actions_cost_sample=args.actions_cost_sample,
         )
