@@ -138,7 +138,7 @@ and still must not mutate live workflows, create labels, or trigger paid lanes.
 
 ## Release Plan
 
-v1.0 should ship in four ordered slices:
+v1.0 should ship in six ordered slices:
 
 1. **Install and easy-mode setup.** Package the CLI, render a starter config,
    and make `doctor --easy` produce actionable remediation without mutating a
