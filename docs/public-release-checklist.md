@@ -15,6 +15,8 @@ not know the original reference repos.
   --v05` as the first-run setup diagnostic.
 - The README now shows a shortened `doctor --v05` example so fresh users can
   see the payoff before installing.
+- The first-run transcript, architecture overview, cloud data contract, and
+  changelog exist as public trust/readiness artifacts.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
 - Hosted/commercial service implementation remains outside the public OSS repo.
@@ -26,7 +28,8 @@ not know the original reference repos.
 - README and first-run docs show concrete output, not only positioning and
   abstract architecture.
 - Public docs explain repo strategy, commercial boundary, GitHub setup, provider
-  setup, cloud export privacy, privacy/threat model, and easy-mode first run.
+  setup, cloud export privacy, cloud data contract, architecture,
+  privacy/threat model, and easy-mode first run.
 - Standalone CI passes from a clean clone.
 - `code-mower init --easy` and `code-mower doctor --v05` work in a fresh toy
   repo.

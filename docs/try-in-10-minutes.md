@@ -51,7 +51,7 @@ code-mower doctor --v05 --json
 
 Warnings are setup guidance. They are only fatal when you pass `--strict`.
 If you want to see the shape of the output before installing, start with
-`docs/sample-doctor-output.md`.
+`docs/first-run-transcript.md` and `docs/sample-doctor-output.md`.
 
 ## 5. Generate The Starter Value Report
 
