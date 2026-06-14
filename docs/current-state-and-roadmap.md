@@ -74,6 +74,10 @@ The cloud service currently supports:
 - GitHub, Google, and Apple login UI through Supabase Auth; and
 - dogfood uploads from Code Mower and product development.
 
+It does not yet provide self-service data deletion/export, a published
+retention policy, or true cross-team cohort benchmark calculations. Those are
+preconditions for broad cloud-data collection beyond friendly pilots.
+
 OAuth, Supabase, Vercel, DNS, and hosted-secret setup are CodeMower.com
 operator responsibilities. OSS users should only need a dashboard-issued or
 operator-issued developer/team token when they opt into cloud sharing.
@@ -116,25 +120,36 @@ authoring-run capture remain post-v1.0 work.
 
 1. Finish the public/installable v0.5 path: docs, package install, doctor,
    first audit, first value report, and optional cloud token setup.
-2. Create a public GitHub Release for the current alpha and publish to PyPI
+2. Make the public repository the unambiguous source of truth: keep public docs
+   and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
+   compatibility shims where they confuse contributors, and keep private
+   product repos as consumers of pinned releases.
+3. Create a public GitHub Release for the current alpha and publish to PyPI
    before widening beyond friendly early adopters.
-3. Add a short terminal recording or screenshot showing `doctor --v05` and the
+4. Add a short terminal recording or screenshot showing `doctor --v05` and the
    first value-report path. A static transcript now exists in
    `docs/first-run-transcript.md`; replace or augment it with a recording
    before a wider launch.
-4. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
+5. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
    and Apple login end to end.
-5. Continue dogfooding metadata uploads from Code Mower and private product
+6. Add CodeMower.com self-service data deletion/export and publish a retention
+   policy before broad cloud-data invitations.
+7. Continue dogfooding metadata uploads from Code Mower and private product
    work.
-6. Expand the calibration corpus with known-clean, known-blocked, and subtle
+8. Expand the calibration corpus with known-clean, known-blocked, and subtle
    architecture-risk PRs.
-7. Run reviewer/lens calibration across Codex, Claude, Antigravity/Gemini,
+9. Run reviewer/lens calibration across Codex, Claude, Antigravity/Gemini,
    Gitar, and available informational lanes.
-8. Produce durable reviewer value reports with useful-rate, false positives,
+10. Produce durable reviewer value reports with useful-rate, false positives,
    latency, and cost.
-9. Promote lanes only after evidence shows they deserve informational,
+11. Promote lanes only after evidence shows they deserve informational,
    selective, or merge-gating status.
-10. Keep commercial implementation, hosted reporting, telemetry products, and
+12. Increase tests around verdict parsing, calibration/value-report math,
+    provider runner stubs, and cloud bundle privacy before presenting Code
+    Mower as merge-gate infrastructure.
+13. Triage CLI help into a smaller first-user command set, with advanced
+    operator/internal commands documented separately.
+14. Keep commercial implementation, hosted reporting, telemetry products, and
    monetization plans in the private CodeMower.com repo.
 
 ## Documentation Ownership

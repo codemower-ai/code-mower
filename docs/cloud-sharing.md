@@ -20,11 +20,12 @@ to answer the questions that become more useful over time and across teams:
 - How are reviewer usefulness, false positives, latency, and cost trending over
   the last few weeks?
 
-The network-effect value is comparison. As more teams opt in, CodeMower.com can
-show private team dashboards plus anonymized aggregate benchmarks such as
-"your Codex audit useful-rate is above/below the cohort median" or "this SaaS
-lane is noisy for repos with similar shape." The default upload payload is
-metadata-only so teams can contribute to that benchmark without sharing source.
+The live v0.5 value is private team signal. The network-effect value is a
+roadmap feature: as enough teams opt in, CodeMower.com can add anonymized
+aggregate benchmarks such as "your Codex audit useful-rate is above/below the
+cohort median" or "this SaaS lane is noisy for repos with similar shape." The
+default upload payload is metadata-only so teams can contribute toward that
+future benchmark without sharing source.
 
 ## Setup Personas
 
