@@ -4,6 +4,29 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.8
+
+This alpha hardens the first-user trust path: clearer package-index release
+steps, tested cloud dogfood defaults, and a recorded fresh-install rehearsal.
+
+### Added
+
+- `cloud_client.dogfood` helpers for routine dogfood report discovery and
+  dry-run preview shape.
+- Public CLI contract tests for `code-mower cloud dogfood` dry-run default
+  behavior and `code-mower cloud setup` token redaction.
+- PyPI/TestPyPI release runbook for moving from GitHub-tag installs to package
+  index installs once trusted publishing is configured.
+- Alpha.8 first-user install rehearsal transcript.
+
+### Changed
+
+- Public install docs now point to `v0.5.0-alpha.8`.
+- Cloud dogfood docs more clearly distinguish preview-by-default from
+  confirmed upload with `--yes`.
+- Packaging metadata now uses the modern SPDX license string form, removing a
+  setuptools release-build deprecation warning.
+
 ## v0.5.0-alpha.7
 
 This alpha tightens the early-adopter handoff from local reports into the

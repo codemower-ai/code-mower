@@ -1,0 +1,93 @@
+# PyPI Release Runbook
+
+Code Mower alpha users currently install from a tagged GitHub release. The
+release workflow already builds source and wheel distributions; package-index
+publishing should be enabled in this order so first-user installs become:
+
+```bash
+pipx install code-mower
+```
+
+## Current Status
+
+- GitHub Release workflow builds distributions on every published release.
+- PyPI publishing is gated behind the `pypi` GitHub environment and the
+  `CODE_MOWER_PYPI_PUBLISH` repository variable or manual
+  `workflow_dispatch` input.
+- Trusted publishing must be configured before using this for public users.
+- GitHub-tag install remains the documented alpha path until a TestPyPI install
+  rehearsal passes.
+
+## One-Time TestPyPI Setup
+
+1. Create or verify a project on [https://test.pypi.org](https://test.pypi.org)
+   named `code-mower`.
+2. Configure trusted publishing for
+   [https://github.com/codemower-ai/code-mower](https://github.com/codemower-ai/code-mower):
+   - owner: `codemower-ai`
+   - repository: `code-mower`
+   - workflow: `release.yml`
+   - environment: `testpypi`
+3. Add a `testpypi` GitHub environment at
+   [https://github.com/codemower-ai/code-mower/settings/environments](https://github.com/codemower-ai/code-mower/settings/environments).
+4. Add a dedicated TestPyPI publish job before enabling production PyPI. Keep
+   the production `pypi` environment separate.
+
+## One-Time Production PyPI Setup
+
+1. Create or claim the project on [https://pypi.org](https://pypi.org).
+2. Configure trusted publishing for the same repository and workflow:
+   - owner: `codemower-ai`
+   - repository: `code-mower`
+   - workflow: `release.yml`
+   - environment: `pypi`
+3. Keep the production `pypi` GitHub environment protected until at least one
+   TestPyPI release has been installed in a fresh repo.
+
+## Release Verification
+
+Before switching docs to package-index install:
+
+```bash
+python3.12 -m venv /tmp/code-mower-pypi-smoke
+/tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
+/tmp/code-mower-pypi-smoke/bin/python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ code-mower==0.5.0a8
+/tmp/code-mower-pypi-smoke/bin/code-mower --version
+```
+
+Then run the normal first-user toy-repo flow:
+
+```bash
+mkdir /tmp/code-mower-toy && cd /tmp/code-mower-toy
+git init
+git config user.email code-mower-smoke@example.com
+git config user.name "Code Mower Smoke"
+printf '# Toy Repo\n' > README.md
+git add README.md && git commit -m 'Initial commit'
+/tmp/code-mower-pypi-smoke/bin/code-mower init --easy --apply --output-dir .code-mower.generated
+bash .code-mower.generated/smoke-tests.sh
+/tmp/code-mower-pypi-smoke/bin/code-mower doctor --preflight --json
+/tmp/code-mower-pypi-smoke/bin/code-mower cloud dogfood --repo-slug example/toy-repo --endpoint http://localhost:3000/api/ingest --json
+```
+
+Promotion criteria:
+
+- `code-mower --version` reports the intended version.
+- The generated smoke tests pass.
+- `doctor --preflight` has no failures.
+- `cloud dogfood` stays dry-run by default and does not require a production
+  token against a local endpoint.
+- Public docs still describe privacy boundaries and do not imply cloud upload is
+  required.
+
+## When To Switch The README
+
+Only change the primary README install command from GitHub-tag install to
+`pipx install code-mower` after:
+
+- TestPyPI install has passed.
+- Production PyPI trusted publishing has passed.
+- `pipx install code-mower` has been tested in a clean shell.
+- A fresh toy repo completes `init --easy`, generated smoke tests,
+  `doctor --preflight`, a starter value report, and cloud dogfood dry run.
+
