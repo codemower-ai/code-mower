@@ -85,6 +85,15 @@ code-mower cloud doctor .code-mower/cloud-benchmark-bundle --json
 
 Nothing uploads unless you pass `--yes`.
 
+When you are ready to connect to CodeMower.com, add the service probe:
+
+```bash
+code-mower cloud doctor .code-mower/cloud-benchmark-bundle --probe-service --json
+```
+
+The service probe checks the upload endpoint's health route and reports the
+dashboard URL plus the next setup/upload commands without echoing your token.
+
 If you choose to connect Code Mower Cloud, create or receive a developer/team
 token, then store it locally without putting the token in shell history:
 

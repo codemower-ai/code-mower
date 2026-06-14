@@ -28,6 +28,8 @@ DEFAULT_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
 DEFAULT_TEAM_ID_ENV = "CODE_MOWER_CLOUD_TEAM_ID"
 DEFAULT_INSTALL_ID_ENV = "CODE_MOWER_INSTALL_ID"
 DEFAULT_SETUP_INSTALL_ID = "code-mower-local"
+DEFAULT_HEALTH_PATH = "/api/health"
+DEFAULT_DASHBOARD_PATH = "/dashboard"
 MAX_REPORT_UPLOAD_BYTES = 1_000_000
 MAX_EVENT_COUNT = 500
 SAFE_REPORT_KINDS = {
@@ -84,6 +86,91 @@ def _validate_upload_endpoint(endpoint: str) -> None:
         )
     if not parsed_endpoint.netloc:
         raise CloudBundleError(f"upload endpoint is missing a host: {endpoint!r}")
+
+
+def _origin_for_endpoint(endpoint: str) -> str:
+    parsed_endpoint = urllib.parse.urlparse(endpoint)
+    if not parsed_endpoint.scheme or not parsed_endpoint.netloc:
+        return ""
+    return urllib.parse.urlunparse(
+        (parsed_endpoint.scheme, parsed_endpoint.netloc, "", "", "", "")
+    )
+
+
+def _url_for_endpoint_path(endpoint: str, path: str) -> str:
+    origin = _origin_for_endpoint(endpoint)
+    if not origin:
+        return ""
+    return urllib.parse.urljoin(origin + "/", path.lstrip("/"))
+
+
+def dashboard_url_for_endpoint(endpoint: str) -> str:
+    return _url_for_endpoint_path(endpoint, DEFAULT_DASHBOARD_PATH)
+
+
+def health_url_for_endpoint(endpoint: str) -> str:
+    return _url_for_endpoint_path(endpoint, DEFAULT_HEALTH_PATH)
+
+
+def _probe_cloud_service(endpoint: str, *, timeout: float) -> dict[str, Any]:
+    health_url = health_url_for_endpoint(endpoint)
+    if not health_url:
+        return {
+            "name": "service",
+            "status": "fail",
+            "message": "unable to derive health URL from upload endpoint",
+        }
+    request = urllib.request.Request(
+        health_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "code-mower-cloud-doctor",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response_body = response.read().decode("utf-8", errors="replace")
+            status_code = response.getcode()
+    except urllib.error.HTTPError as exc:
+        return {
+            "name": "service",
+            "status": "fail",
+            "message": f"health check failed with HTTP {exc.code}",
+            "detail": {"health_url": health_url, "status_code": exc.code},
+        }
+    except urllib.error.URLError as exc:
+        return {
+            "name": "service",
+            "status": "fail",
+            "message": f"health check failed: {exc.reason}",
+            "detail": {"health_url": health_url},
+        }
+    parsed: dict[str, Any] = {}
+    if response_body.strip():
+        try:
+            maybe_parsed = json.loads(response_body)
+            if isinstance(maybe_parsed, dict):
+                parsed = maybe_parsed
+        except json.JSONDecodeError:
+            parsed = {}
+    if 200 <= status_code < 300:
+        detail: dict[str, Any] = {"health_url": health_url, "status_code": status_code}
+        for key in ("app", "supabaseConfigured"):
+            if key in parsed and isinstance(parsed[key], str | bool | int | float):
+                detail[key] = parsed[key]
+        return {
+            "name": "service",
+            "status": "pass",
+            "message": f"health endpoint is reachable: {health_url}",
+            "detail": detail,
+        }
+    return {
+        "name": "service",
+        "status": "fail",
+        "message": f"health check returned HTTP {status_code}",
+        "detail": {"health_url": health_url, "status_code": status_code},
+    }
 
 
 def _token_prefix(token: str) -> str:
@@ -793,11 +880,15 @@ def run_cloud_doctor(
     bundle_dir: Path,
     endpoint: str,
     token_env: str,
+    probe_service: bool = False,
+    timeout: float = 5.0,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
+    endpoint_is_valid = False
 
     try:
         _validate_upload_endpoint(endpoint)
+        endpoint_is_valid = True
         checks.append(
             {
                 "name": "endpoint",
@@ -811,6 +902,18 @@ def run_cloud_doctor(
                 "name": "endpoint",
                 "status": "fail",
                 "message": str(exc),
+            }
+        )
+
+    if probe_service and endpoint_is_valid:
+        checks.append(_probe_cloud_service(endpoint, timeout=timeout))
+    elif endpoint_is_valid:
+        checks.append(
+            {
+                "name": "service",
+                "status": "skip",
+                "message": "service health probe skipped; pass --probe-service to check it",
+                "detail": {"health_url": health_url_for_endpoint(endpoint)},
             }
         )
 
@@ -885,11 +988,38 @@ def run_cloud_doctor(
         "mode": "cloud-doctor",
         "status": "fail" if failures else "pass",
         "endpoint": endpoint,
+        "dashboard_url": dashboard_url_for_endpoint(endpoint),
+        "health_url": health_url_for_endpoint(endpoint),
         "token_env": token_env,
         "bundle_dir": str(bundle_dir),
         "checks": checks,
         "failures": failures,
         "warnings": warnings,
+        "next_steps": [
+            {
+                "id": "open-dashboard",
+                "label": "Open the Code Mower Cloud dashboard",
+                "url": dashboard_url_for_endpoint(endpoint),
+            },
+            {
+                "id": "setup-token",
+                "label": "Store a dashboard-issued token locally",
+                "command": (
+                    "code-mower cloud setup --token-stdin "
+                    "--team-id YOUR_TEAM_SLUG --install-id YOUR_INSTALL_ID"
+                ),
+            },
+            {
+                "id": "dry-run-upload",
+                "label": "Preview the metadata upload without network transfer",
+                "command": f"code-mower cloud upload {shlex.quote(str(bundle_dir))} --dry-run --json",
+            },
+            {
+                "id": "upload",
+                "label": "Upload metadata after inspecting the dry run",
+                "command": f"code-mower cloud upload {shlex.quote(str(bundle_dir))} --yes --json",
+            },
+        ],
     }
 
 
@@ -898,6 +1028,7 @@ def render_cloud_doctor_text(report: dict[str, Any]) -> str:
         "Code Mower cloud doctor",
         f"Status: {report['status']}",
         f"Endpoint: {report['endpoint']}",
+        f"Dashboard: {report.get('dashboard_url', '')}",
         f"Token env: {report['token_env']}",
         f"Bundle: {report['bundle_dir']}",
         "",
@@ -1178,6 +1309,12 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
     )
     doctor.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    doctor.add_argument(
+        "--probe-service",
+        action="store_true",
+        help="perform a lightweight GET against the endpoint's /api/health route",
+    )
+    doctor.add_argument("--timeout", type=float, default=5.0)
     doctor.add_argument("--json", action="store_true")
     dogfood = subparsers.add_parser("dogfood")
     dogfood.add_argument("--repo-path", type=Path, default=Path.cwd())
@@ -1312,6 +1449,8 @@ def main(argv: list[str] | None = None) -> int:
                 bundle_dir=args.bundle_dir,
                 endpoint=args.endpoint,
                 token_env=args.token_env,
+                probe_service=args.probe_service,
+                timeout=args.timeout,
             )
             if args.json:
                 print(json.dumps(report, indent=2, sort_keys=True))

@@ -133,6 +133,15 @@ Check endpoint, token, and bundle readiness:
 code-mower cloud doctor .code-mower/cloud-benchmark-bundle --json
 ```
 
+When you want to verify the hosted service too:
+
+```bash
+code-mower cloud doctor .code-mower/cloud-benchmark-bundle --probe-service --json
+```
+
+`--probe-service` calls the endpoint's health route, includes the dashboard URL,
+and returns token-safe next-step commands.
+
 Nothing uploads unless you pass `--yes`.
 
 You do not need Supabase, Vercel, OAuth-app, DNS, service-role, database, or

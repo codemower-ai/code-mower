@@ -6,7 +6,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -967,6 +969,93 @@ def main():
                 check for check in payload["checks"] if check["name"] == "token"
             )
             self.assertEqual(token_check["status"], "warn")
+
+    def test_cloud_doctor_reports_dashboard_and_next_steps_without_token_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_env = "CODE_MOWER_TEST_STATUS_TOKEN"
+            os.environ[token_env] = "cmw_live_secret_for_status"
+            try:
+                payload = code_mower_cloud.run_cloud_doctor(
+                    bundle_dir=Path(tmp) / "bundle",
+                    endpoint="https://codemower.com/api/ingest",
+                    token_env=token_env,
+                )
+            finally:
+                os.environ.pop(token_env, None)
+
+        encoded = json.dumps(payload)
+        self.assertEqual(payload["dashboard_url"], "https://codemower.com/dashboard")
+        self.assertEqual(payload["health_url"], "https://codemower.com/api/health")
+        self.assertIn("next_steps", payload)
+        self.assertIn("cloud setup --token-stdin", encoded)
+        self.assertNotIn("cmw_live_secret_for_status", encoded)
+
+    def test_cloud_doctor_service_probe_uses_endpoint_health_url(self) -> None:
+        captured: dict[str, str] = {}
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"ok": true, "app": "codemower.com", "supabaseConfigured": true}'
+
+            def getcode(self) -> int:
+                return 200
+
+        def fake_urlopen(request: object, timeout: float = 0) -> FakeResponse:
+            captured["url"] = getattr(request, "full_url", "")
+            captured["timeout"] = str(timeout)
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "urllib.request.urlopen", side_effect=fake_urlopen
+        ):
+            token_env = "CODE_MOWER_TEST_STATUS_TOKEN"
+            os.environ[token_env] = "cmw_live_secret_for_status"
+            try:
+                payload = code_mower_cloud.run_cloud_doctor(
+                    bundle_dir=Path(tmp) / "bundle",
+                    endpoint="https://codemower.com/api/ingest",
+                    token_env=token_env,
+                    probe_service=True,
+                    timeout=0.25,
+                )
+            finally:
+                os.environ.pop(token_env, None)
+
+        service_check = next(check for check in payload["checks"] if check["name"] == "service")
+        self.assertEqual(captured["url"], "https://codemower.com/api/health")
+        self.assertEqual(service_check["status"], "pass")
+        self.assertEqual(service_check["detail"]["app"], "codemower.com")
+        self.assertTrue(service_check["detail"]["supabaseConfigured"])
+
+    def test_cloud_doctor_service_probe_failure_is_a_failed_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError("offline"),
+        ):
+            token_env = "CODE_MOWER_TEST_STATUS_TOKEN"
+            os.environ[token_env] = "cmw_live_secret_for_status"
+            try:
+                payload = code_mower_cloud.run_cloud_doctor(
+                    bundle_dir=Path(tmp) / "bundle",
+                    endpoint="https://codemower.com/api/ingest",
+                    token_env=token_env,
+                    probe_service=True,
+                    timeout=0.25,
+                )
+            finally:
+                os.environ.pop(token_env, None)
+
+        service_check = next(check for check in payload["checks"] if check["name"] == "service")
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(service_check["status"], "fail")
+        self.assertIn("offline", service_check["message"])
+        self.assertNotIn("cmw_live_secret_for_status", json.dumps(payload))
 
     def test_cloud_upload_command_requires_token_for_production(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

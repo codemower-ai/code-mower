@@ -94,6 +94,16 @@ Check endpoint, token, and bundle readiness:
 code-mower cloud doctor .code-mower/cloud-benchmark-bundle --json
 ```
 
+To also verify the CodeMower.com service is reachable:
+
+```bash
+code-mower cloud doctor .code-mower/cloud-benchmark-bundle --probe-service --json
+```
+
+The service probe checks the endpoint's `/api/health` route. Doctor output also
+includes the dashboard URL and token-safe next-step commands, so it is suitable
+for support screenshots and CI logs.
+
 ## Upload
 
 When you are ready to send metadata to Code Mower Cloud:

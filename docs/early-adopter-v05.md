@@ -75,6 +75,8 @@ Before inviting users:
 - `code-mower doctor --v05 --json` works as the recommended early-adopter
   preset.
 - `code-mower cloud upload --dry-run` previews without network transfer.
+- `code-mower cloud doctor --probe-service` verifies CodeMower.com health and
+  returns dashboard/setup guidance without echoing tokens.
 - `code-mower cloud setup --token-stdin` writes a private local token file
   without echoing the full token.
 - `https://codemower.com/login` and `https://codemower.com/dashboard` are
