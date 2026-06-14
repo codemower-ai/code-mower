@@ -166,10 +166,8 @@ Non-local HTTP endpoints are rejected; production uploads should use HTTPS.
 
 Human team/token management happens on CodeMower.com:
 
-```text
-https://codemower.com/login
-https://codemower.com/dashboard
-```
+- [https://codemower.com/login](https://codemower.com/login)
+- [https://codemower.com/dashboard](https://codemower.com/dashboard)
 
 The intended early-adopter flow is:
 

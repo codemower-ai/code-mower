@@ -8,13 +8,20 @@ Reviewer calibration answers which reviewers catch useful defects. Builder
 experiments answer which peer-programmer loop can safely carry a task from
 agreed direction to merged, verified code with the least waste.
 
+The important distinction for v1.0: this is a measurement harness, not a
+requirement to adopt a full orchestrator. Manual Codex, Claude, Devin, or other
+agent sessions can write the same result artifacts as an automated runner.
+
 ## What To Measure
 
 A builder experiment should record:
 
-- task class and repository
+- run role or purpose, usually `implement`
+- task contract, task class, and repository
 - builder provider, tool, model, and prompt lenses
 - context packs used
+- branch and worktree identity
+- pull request URL or number when created
 - elapsed wall time
 - user interventions
 - audit blocker iterations
@@ -36,6 +43,7 @@ measurement surface useful while preserving the normal Code Mower merge bar.
   "tasks": [
     {
       "task_id": "package-doctor-check",
+      "run_role": "implement",
       "repo": "owner/repo",
       "base_ref": "origin/main",
       "task_class": "package-runtime",
@@ -101,7 +109,11 @@ authoring session:
   "runs": [
     {
       "run_id": "starter-builder-loop-abc123-package-doctor-check-codex-base-r1",
+      "run_role": "implement",
       "status": "verified",
+      "branch": "codex/package-doctor-check",
+      "worktree": "/tmp/code-mower-runs/package-doctor-check",
+      "pull_request": "https://github.com/owner/repo/pull/123",
       "elapsed_seconds": 3600,
       "cost_usd": 4.25,
       "user_interventions": 1,
@@ -126,9 +138,24 @@ code-mower builder-experiment report builder-experiment.json \
 - Use a fresh worktree for every builder run.
 - Keep reviewer output hidden until the builder declares the run complete.
 - Do not share patches between experiment arms.
+- Review through diff plus task contract. Do not require reviewers to inspect
+  the builder's raw transcript.
 - Record interventions honestly; they are part of velocity measurement.
 - Merge only through the normal Code Mower audit protocol.
 - Count a delivery as successful only after post-merge health is verified.
+- Keep source code, raw diffs, transcripts, stdout/stderr, auth output, and
+  secrets out of cloud-bound result artifacts by default.
+
+## Orchestrator Adapter Posture
+
+Systems that manage agent sessions, worktrees, policies, or sub-agents can be
+valuable future adapters. They should feed Code Mower's measurement contract
+instead of replacing it. A good adapter reports task contract, branch/worktree,
+provider, lens, elapsed time, spend, audit iterations, and merge health while
+leaving source and credentials local.
+
+Until the manual builder-experiment path is useful, orchestrator integrations
+should stay experimental and disabled by default.
 
 ## How This Connects To Lenses
 

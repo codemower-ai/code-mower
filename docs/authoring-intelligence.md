@@ -27,8 +27,10 @@ Starter fields:
 {
   "schema": "code_mower.authoringRun.v1",
   "run_id": "2026-06-09-codemower-oss-easy-mode",
+  "run_role": "implement",
   "repo": "owner/repo",
   "task_class": "package-extraction",
+  "task_contract_hash": "sha256:example",
   "builder": {
     "provider": "codex",
     "tool": "codex-desktop",
@@ -39,6 +41,8 @@ Starter fields:
   "pull_requests": [
     {"repo": "owner/repo", "number": 123, "head_sha": "abc123"}
   ],
+  "branch": "codex/oss-easy-mode",
+  "worktree": "/tmp/code-mower-runs/oss-easy-mode",
   "user_interventions": 0,
   "blocker_iterations": 0,
   "tests_added": 0,
@@ -56,6 +60,10 @@ Starter fields:
 The first version can be a JSONL artifact written by a human or agent. Later
 versions can collect timestamps, PR ids, review iterations, and post-merge
 health automatically.
+
+Use `run_role` or `purpose` consistently across authoring and reviewer events:
+`implement`, `review`, `calibrate`, `release`, and `explore` are enough for the
+first measurement loop.
 
 ## Delivery Report
 

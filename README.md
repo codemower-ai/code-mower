@@ -20,6 +20,21 @@ Code Mower is local-first. The OSS tool works without the hosted service.
 Default cloud bundles exclude source code, raw diffs, raw model transcripts,
 raw stdout/stderr, auth output, and secrets.
 
+## Design Principles
+
+Code Mower should feel like an engineering tool, not a demo harness:
+
+- **Local first:** install, diagnose, audit, and report without a hosted
+  account.
+- **Manual first:** new reviewer lanes start explicit and observable before
+  they can affect merge policy.
+- **Evidence first:** promote lanes from real calibration data on your
+  repository, not from generic benchmark claims.
+- **Privacy first:** cloud sharing is opt-in metadata by default, with source,
+  diffs, transcripts, auth output, and secrets excluded.
+- **Composable by design:** providers, lenses, context packs, calibration, and
+  cloud upload stay separate so teams can adopt only the parts they trust.
+
 ## What It Looks Like
 
 `code-mower doctor --preflight` is the first useful command. It checks your
@@ -162,6 +177,25 @@ Qodo, Greptile, Devin, local LLMs, and future ACP bridges.
 
 Provider details: [docs/provider-matrix.md](docs/provider-matrix.md).
 Setup/auth fixes: [docs/troubleshooting.md](docs/troubleshooting.md).
+
+## Road To v1.0
+
+The v1.0 bar is not "every provider works." The v1.0 bar is that a fresh senior
+engineer can:
+
+1. install Code Mower in a clean repo;
+2. understand the local/cloud trust boundary;
+3. run `init --easy` and `doctor --preflight`;
+4. produce a local value report from known PR outcomes;
+5. decide which lanes should stay informational, selective, or merge-gating;
+   and
+6. optionally upload sanitized metadata to CodeMower.com and see useful team
+   dashboard signal.
+
+Future builder/orchestrator experiments extend the same loop from "who reviews
+best?" to "which AI builder plus reviewer loop ships best on this product?" See
+[docs/builder-experiments.md](docs/builder-experiments.md) and
+[docs/authoring-intelligence.md](docs/authoring-intelligence.md).
 
 ## Installation Status
 

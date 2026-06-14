@@ -52,6 +52,20 @@ surface should eventually be small:
 
 Everything else can remain CLI-first.
 
+## Senior-Engineer Readability Goal
+
+The structure goal for v1.0 is that a new contributor can answer four questions
+quickly:
+
+1. where command parsing ends and domain logic begins;
+2. where provider-specific behavior belongs;
+3. where privacy-sensitive cloud bundle decisions are enforced; and
+4. which modules are stable seams versus compatibility adapters.
+
+That is why the next refactors should prefer small packages with clear names
+over broad rewrites. A module can stay large temporarily if it is behind a
+tested seam and docs call out the planned split.
+
 ## Structural Progress
 
 The first hardening slice keeps the public API CLI-first while introducing
@@ -69,6 +83,9 @@ tested internal seams:
   and privacy metadata. It also owns dogfood report discovery and dry-run
   preview shape. `cloud.py` remains the CLI adapter for export, doctor, setup,
   dogfood, and upload.
+- `builder-experiment` and authoring-intelligence docs establish the future
+  `run_role`/`purpose` event shape without requiring a full orchestrator runtime
+  before v1.0.
 
 These are intentionally package seams, not a full rewrite. The next slices can
 move larger chunks of implementation behind those seams without breaking
@@ -105,7 +122,16 @@ existing commands.
    - Expose a small `create_bundle(...)` primitive for tests and future UI
      integrations.
 
-5. **Package/migration boundary**
+5. **Builder experiment primitives**
+   - Normalize `run_role`/`purpose`, task contract identity, provider/lens,
+     worktree/branch, PR, elapsed time, intervention counts, blocker
+     iterations, checks, merge result, post-merge health, and known cost.
+   - Keep these primitives source-free by default so they can feed local
+     reports and optional cloud events.
+   - Do not add a full orchestrator dependency until the metadata contract is
+     useful from manual and semi-manual runs.
+
+6. **Package/migration boundary**
    - Separate template rendering from migration policy.
    - Product-repo wrapper support should read like a compatibility layer, not
      the center of the project.
@@ -131,5 +157,7 @@ Before v1.0, the codebase should satisfy:
 - calibration and doctor have small tested submodules;
 - provider wrappers share common audit-runner primitives;
 - public docs explain the package layout;
+- builder-experiment metadata has a small source-free model before any
+  orchestrator adapter is promoted;
 - `ruff`, privacy scan, unit tests, easy-mode smoke, and fresh-clone rehearsal
   stay green after each structural slice.

@@ -15,6 +15,25 @@ CodeRabbit CLI, local models, and protocol bridges should be discoverable and
 calibratable, but they should start informational unless the repository
 explicitly promotes them.
 
+## Fresh-Eyes Acceptance Criteria
+
+Before calling Code Mower 1.0, assume an experienced engineer with no project
+history opens the repository. They should be able to confirm:
+
+- the README explains the product in one screen and shows the golden path;
+- `init --easy` and `doctor --preflight` are safe to run before any workflow
+  mutation;
+- local value reports work without CodeMower.com;
+- optional cloud sharing is inspectable, dry-run-first, and metadata-only by
+  default;
+- provider lanes start manual or informational unless calibrated;
+- docs say exactly which setup is OSS-user setup versus CodeMower.com operator
+  setup;
+- public docs do not depend on private reference repos or personal machine
+  context; and
+- the code structure has clear package seams for calibration, doctor, provider
+  runners, and cloud clients.
+
 ## Current Alpha Baseline
 
 The current public-release baseline is `v0.5.0-alpha.8` of the standalone
@@ -132,6 +151,12 @@ v1.0 should ship in four ordered slices:
    corpus.
 4. **Cloud-ready export.** Produce a sanitized local benchmark bundle that can
    later feed an opt-in cloud service, without uploading in v1.0.
+5. **Measured lane promotion.** Generate a value report from known-clean and
+   known-blocked PRs, then classify lanes as informational, selective, or
+   merge-gating eligible.
+6. **First builder-experiment scaffold.** Keep this harness-only for v1.0:
+   record authoring run metadata and reports, but do not require autonomous
+   orchestration or hosted source access.
 
 GitLab and Bitbucket stay post-v1.0. Keep schemas source-control-neutral, but
 do not spend v1.0 work on non-GitHub workflow rendering.
@@ -244,6 +269,13 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 - Define `authoring_runs.jsonl`.
 - Render a first delivery report from manually supplied authoring-run entries.
 - Connect authoring runs to reviewer outcomes in value reports.
+- Normalize `run_role`/`purpose`, task contract identity, provider/tool/model,
+  lens, context pack, worktree/branch, PR, elapsed time, intervention count,
+  blocker iterations, checks, merge result, post-merge health, and known cost.
+- Keep builder-experiment results source-free by default so they can feed local
+  reports and optional cloud events without sharing raw code artifacts.
+- Review builder output through diff plus task contract, not raw builder
+  transcript.
 
 ### Cloud-Ready Export
 
