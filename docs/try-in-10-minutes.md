@@ -4,6 +4,12 @@ This is the shortest v0.5 early-adopter path. It is local-first and safe to run
 on one GitHub repository before you enable any recurring workflows or paid
 reviewer lanes.
 
+If you want to see the output shape before installing, read the
+[Demo Calibration Example](../examples/demo-calibration/README.md) and
+[First-User Demo Transcript](first-user-demo-transcript.md). The demo is
+synthetic and contains no source, raw diffs, raw transcripts, auth output, or
+private repository names.
+
 ## 1. Install
 
 Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
@@ -142,6 +148,9 @@ code-mower cloud dogfood --yes --json
 ## What To Read Next
 
 - `docs/quickstart.md` for the fuller walkthrough.
+- `examples/demo-calibration/README.md` for a tiny known-clean/known-blocked
+  reviewer value example.
+- `docs/launch-command-surface.md` for the launch-safe command surface.
 - `docs/sample-doctor-output.md` for a sanitized example of doctor output.
 - `docs/github-setup.md` for private repositories, Actions cost, and branch
   protection.

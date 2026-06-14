@@ -4,6 +4,10 @@ This guide gets one developer from install to a first local Code Mower setup
 check. Code Mower is still alpha software; start on one repository and keep
 all reviewer lanes manual until the output is useful on your codebase.
 
+To see the value loop before you touch a product repository, open the
+[Demo Calibration Example](../examples/demo-calibration/README.md) and the
+[First-User Demo Transcript](first-user-demo-transcript.md).
+
 ## 1. Install
 
 Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
@@ -212,3 +216,6 @@ One repository is ready for broader Code Mower use when:
 - Cloud export output has been inspected before any upload.
 - If cloud upload is enabled, the team token was created intentionally and is
   stored outside source control.
+
+For a concise map of which commands are launch-safe versus advanced/operator
+surfaces, see [Launch Command Surface](launch-command-surface.md).

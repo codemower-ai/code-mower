@@ -480,6 +480,71 @@ printf '%s\\n' "${lane}"
     def test_privacy_scan_is_clean(self) -> None:
         self.assertEqual(privacy_scan.scan(ROOT), [])
 
+    def test_public_demo_calibration_artifacts_are_parseable_and_sanitized(self) -> None:
+        demo_dir = ROOT / "examples/demo-calibration"
+        required = {
+            "README.md",
+            "calibration-corpus.json",
+            "lane-policy.json",
+            "reviewer-metrics.json",
+            "reviewer-value-report.md",
+        }
+        self.assertTrue(demo_dir.is_dir())
+        self.assertTrue(required.issubset({path.name for path in demo_dir.iterdir()}))
+
+        for rel_path in (
+            "calibration-corpus.json",
+            "lane-policy.json",
+            "reviewer-metrics.json",
+        ):
+            with self.subTest(rel_path=rel_path):
+                json.loads(demo_dir.joinpath(rel_path).read_text(encoding="utf-8"))
+        metrics = json.loads(
+            demo_dir.joinpath("reviewer-metrics.json").read_text(encoding="utf-8")
+        )
+        policy = json.loads(demo_dir.joinpath("lane-policy.json").read_text(encoding="utf-8"))
+        self.assertEqual(metrics["mode"], "reviewer-metrics")
+        self.assertIn("codex-audit", metrics["profiles"])
+        self.assertEqual(policy["mode"], "code-mower-lane-policy")
+        self.assertIn("codex-audit", policy["policies"])
+
+        public_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(demo_dir.iterdir())
+            if path.is_file()
+        )
+        self.assertIn("known-clean", public_text)
+        self.assertIn("known-blocked", public_text)
+        self.assertIn("metadata", public_text)
+        forbidden_fragments = (
+            "/" + "Users/",
+            "/private" + "/tmp",
+            "raw diffs included",
+            "raw transcripts included",
+        )
+        for fragment in forbidden_fragments:
+            with self.subTest(fragment=fragment):
+                self.assertNotIn(fragment, public_text)
+
+    def test_public_demo_calibration_generates_expected_value_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "reviewer-value-report.md"
+            code = code_mower_calibration.main(
+                [
+                    "value-report",
+                    str(ROOT / "examples/demo-calibration/calibration-corpus.json"),
+                    "--output",
+                    str(output),
+                ]
+            )
+            self.assertEqual(code, 0)
+            report = output.read_text(encoding="utf-8")
+
+        self.assertIn("Corpus: `demo-two-pr-calibration`", report)
+        self.assertIn("| `codex-audit` | 2 | 1 | 0 | 1.0 | 1 | 1/0", report)
+        self.assertIn("| `claude-audit` | 2 | 1 | 0 | 1.0 | 1 | 1/0", report)
+        self.assertIn("| `experimental-lens` | 2 | 0 | 1 | 0.0 | 0 | 0/1", report)
+
     def test_schema_ids_are_code_mower_branded(self) -> None:
         schema = json.loads(
             (ROOT / "src/code_mower/codex_audit_verdict.schema.json").read_text(
