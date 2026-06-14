@@ -38,7 +38,11 @@ of depending on interactive Claude.ai OAuth state.
 
 Doctor redacts raw provider stdout/stderr. For provider smoke probes it reports
 only shape and status metadata such as return code, JSON parse status, expected
-sentinel match, output line count, and content-free auth failure flags.
+sentinel match, output line count, and content-free auth failure flags. Provider
+configs can declare `doctor_probe_auth_status_fields` to identify structured
+status-code fields such as `api_error_status`, `status_code`, or `http_status`.
+Doctor only reports sanitized auth status codes (`401` or `403`), never raw
+provider-supplied status text.
 
 ## Python Is Too Old
 
@@ -64,4 +68,3 @@ Private repositories need tokens and app installations that can read pull
 requests, comments, checks, and Actions metadata. If `doctor --github` reports
 recent Actions billing blocks or expensive labeler workflows, review
 [docs/github-setup.md](github-setup.md) before enabling hosted reviewer lanes.
-

@@ -82,6 +82,8 @@ lanes:
       doctor_probe_error_fields:
         - is_error
         - api_error_status
+      doctor_probe_auth_status_fields:
+        - api_error_status
 
   greptile:
     type: audit
