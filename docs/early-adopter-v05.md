@@ -113,8 +113,9 @@ bundle before upload.
 Cut a v0.5 alpha or beta only after:
 
 - package install works through `pipx`;
-- PyPI publishing is either complete or explicitly called out as the next
-  friction-reduction milestone;
+- release workflow builds source/wheel distributions, and PyPI publishing is
+  either configured or explicitly called out as the next friction-reduction
+  milestone;
 - docs are sufficient for a new user;
 - cloud export and dry-run upload are tested;
 - codemower.com can receive an ingest payload;
@@ -126,7 +127,7 @@ Cut a v0.5 alpha or beta only after:
 
 ## Current Alpha
 
-`v0.5.0-alpha.3` is the first alpha intended for the first friendly-user
+`v0.5.0-alpha.4` is the first alpha intended for the first friendly-user
 rehearsal. It keeps the local-first package path from alpha.1 and adds the
 cloud doctor service-readiness check so users can confirm CodeMower.com health
 before attempting an upload.

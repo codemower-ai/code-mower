@@ -11,12 +11,14 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha releases and reports its version with
   `code-mower --version`.
-- The v0.5 alpha entrypoint is `v0.5.0-alpha.3`, with `code-mower doctor
+- The v0.5 alpha entrypoint is `v0.5.0-alpha.4`, with `code-mower doctor
   --v05` as the first-run setup diagnostic.
 - The README now shows a shortened `doctor --v05` example so fresh users can
   see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and
   changelog exist as public trust/readiness artifacts.
+- `docs/first-user-install-rehearsal-alpha4.md` records the alpha.4 install,
+  release-gate, easy-mode smoke, and fresh-clone rehearsal shape.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
 - Hosted/commercial service implementation remains outside the public OSS repo.
@@ -100,8 +102,10 @@ interpreter.
 
 - Publish a short "easy mode" walkthrough using a toy repo.
 - Publish a GitHub Release for the current public alpha tag.
-- Publish to PyPI before widening beyond friendly alpha users, or document why
-  the project is intentionally staying GitHub-install-only.
+- Confirm the release workflow builds source/wheel distributions for every
+  public alpha.
+- Configure PyPI trusted publishing before widening beyond friendly alpha users,
+  or document why the project is intentionally staying GitHub-install-only.
 - Add a short terminal recording, screenshot, or transcript of the first
   `doctor --v05` run to the README/website.
 - Add a troubleshooting section for Python, GitHub auth, provider CLIs, and

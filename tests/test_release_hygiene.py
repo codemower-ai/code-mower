@@ -28,8 +28,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_v05_alpha_3(self) -> None:
-        self.assertEqual(__version__, "0.5.0a3")
+    def test_version_is_v05_alpha_4(self) -> None:
+        self.assertEqual(__version__, "0.5.0a4")
 
     def test_dev_python_wrapper_is_executable(self) -> None:
         wrapper = ROOT / "scripts/dev-python"

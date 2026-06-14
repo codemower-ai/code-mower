@@ -4,6 +4,30 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.4
+
+This alpha adds the public release plumbing needed before inviting a wider
+friendly-user cohort.
+
+### Added
+
+- GitHub release workflow that builds source/wheel distributions and can publish
+  to PyPI after trusted publishing is configured.
+- Reviewer-metrics core tests covering spend, latency, event-log aggregation,
+  and unsupported calibration report modes.
+- Alpha.4 first-run rehearsal transcript for the public org repository.
+
+### Changed
+
+- Version and public install docs now point to `v0.5.0-alpha.4`.
+- Public release checklist now treats PyPI packaging as present but gated until
+  repository publishing credentials are configured.
+
+### Known Limitations
+
+- GitHub tag install remains the primary early-adopter install path until PyPI
+  trusted publishing is enabled for `codemower-ai/code-mower`.
+
 ## v0.5.0-alpha.3
 
 This is the first public alpha intended to be shared from the

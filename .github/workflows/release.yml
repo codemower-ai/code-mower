@@ -1,0 +1,58 @@
+name: Code Mower Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: Publish the built distributions to PyPI.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build-distributions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: code-mower-dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish-pypi:
+    needs: build-distributions
+    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_pypi) || vars.CODE_MOWER_PYPI_PUBLISH == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    environment: pypi
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: code-mower-dist
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
