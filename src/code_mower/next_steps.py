@@ -173,15 +173,15 @@ def build_next_steps(
         },
         {
             "id": "package-install-rehearsal",
-            "title": "Prove the package-installed path before mirror removal",
+            "title": "Prove the package-installed path in a fresh toy repo",
             "command": (
                 "code-mower migration package-install-rehearsal "
-                "--package-spec code-mower --repo-path . --json"
+                "--package-spec code-mower --json"
             ),
             "why": (
                 "Installs Code Mower into a clean venv, verifies the easy-mode "
-                "starter path in a fresh toy repo, then compares this repo against "
-                "the installed package."
+                "starter path in a fresh toy repo, and optionally compares an "
+                "existing product repo when --repo-path is provided."
             ),
         },
         {
