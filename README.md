@@ -66,6 +66,20 @@ boundaries visible before you promote any reviewer lane.
 
 See a fuller static transcript: [docs/first-run-transcript.md](docs/first-run-transcript.md).
 
+## See The Value Shape First
+
+If you want to understand the product before installing anything, start with
+the checked-in demo calibration package:
+
+- [examples/demo-calibration/README.md](examples/demo-calibration/README.md)
+- [examples/demo-calibration/reviewer-value-report.md](examples/demo-calibration/reviewer-value-report.md)
+- [docs/first-user-demo-transcript.md](docs/first-user-demo-transcript.md)
+
+The example is intentionally tiny and synthetic: one known-clean control, one
+known-blocked control, and three reviewer lanes. It shows the decision Code
+Mower is built to support: which AI reviewers are useful, noisy, expensive,
+fast, or eligible for stronger merge policy on your actual codebase.
+
 ## Try It In 10 Minutes
 
 Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
@@ -95,6 +109,7 @@ The generated starter corpus proves the command path. Replace it with your own
 known-clean and known-blocked PRs before using any lane as a merge gate.
 
 Full walkthrough: [docs/try-in-10-minutes.md](docs/try-in-10-minutes.md).
+First-time command map: [docs/launch-command-surface.md](docs/launch-command-surface.md).
 
 ## Why Not Just Run Codex Or Claude Yourself?
 
@@ -239,7 +254,10 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 - [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
 - [Quickstart](docs/quickstart.md)
 - [First Run Transcript](docs/first-run-transcript.md)
+- [First-User Demo Transcript](docs/first-user-demo-transcript.md)
 - [First-User Install Rehearsal](docs/first-user-install-rehearsal.md)
+- [Launch Command Surface](docs/launch-command-surface.md)
+- [Demo Calibration Example](examples/demo-calibration/README.md)
 - [PyPI Release Runbook](docs/pypi-release.md)
 - [Sample Doctor Output](docs/sample-doctor-output.md)
 - [Architecture](docs/architecture.md)
