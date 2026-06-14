@@ -1,0 +1,106 @@
+name: Code Mower standalone shadow
+
+on:
+  pull_request:
+    paths:
+      - "tools/code_mower"
+      - "tools/code_mower_standalone_shadow.sh"
+      - "tools/code_mower_standalone_pin.env"
+      - "tools/code_mower_*.py"
+      - "tools/CODE_MOWER*.md"
+      - "code-mower*.yml"
+      - ".github/workflows/code-mower-standalone-shadow.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_STANDALONE_REPO_URL: {{ code_mower_standalone_repo_url | default('https://github.com/OWNER/code-mower.git', true) }}
+  CODE_MOWER_STANDALONE_PACKAGE_REPO_URL: {{ code_mower_standalone_package_repo_url | default('git+ssh://git@github.com/OWNER/code-mower.git', true) }}
+  CODE_MOWER_STANDALONE_REINSTALL: "1"
+  CODE_MOWER_BOOTSTRAP_PYTHON: python3
+
+jobs:
+  shadow:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out product repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Configure Code Mower deploy key
+        shell: bash
+        env:
+          CODE_MOWER_STANDALONE_DEPLOY_KEY: {% raw %}${{ secrets.CODE_MOWER_STANDALONE_DEPLOY_KEY }}{% endraw %}
+        run: |
+          set -euo pipefail
+          if [ -z "${CODE_MOWER_STANDALONE_DEPLOY_KEY}" ]; then
+            echo "::error::Missing CODE_MOWER_STANDALONE_DEPLOY_KEY. Add a read-only deploy key for the configured Code Mower standalone repository to this repository's Actions secrets."
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${CODE_MOWER_STANDALONE_DEPLOY_KEY}" > ~/.ssh/code_mower_standalone
+          chmod 600 ~/.ssh/code_mower_standalone
+          ssh-keyscan github.com > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<'EOF'
+          Host github.com
+            IdentityFile ~/.ssh/code_mower_standalone
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Run standalone wrapper shadow proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .code-mower
+          tools/code_mower --version
+          tools/code_mower doctor --easy --json | tee .code-mower/standalone-doctor.json
+          tools/code_mower migration wrapper-rehearsal \
+            --repo-path "$GITHUB_WORKSPACE" \
+            --local-command "env CODE_MOWER_USE_LOCAL=1 tools/code_mower" \
+            --package-command "tools/code_mower" \
+            --timeout 120 \
+            --json | tee .code-mower/standalone-wrapper-rehearsal.json
+          code_mower_ref="${CODE_MOWER_STANDALONE_REF:-}"
+          if [ -z "${code_mower_ref}" ]; then
+            code_mower_ref="$(sed -n 's/^CODE_MOWER_STANDALONE_REF="\([^"]*\)"/\1/p' tools/code_mower_standalone_pin.env)"
+          fi
+          if [ -z "${code_mower_ref}" ]; then
+            echo "::error::tools/code_mower_standalone_pin.env does not define CODE_MOWER_STANDALONE_REF"
+            exit 1
+          fi
+          if [ "${code_mower_ref}" = "<pin-a-reviewed-code-mower-commit-or-tag>" ]; then
+            echo "::error::replace the placeholder CODE_MOWER_STANDALONE_REF before package-install rehearsal"
+            exit 1
+          fi
+          if [ "${CODE_MOWER_STANDALONE_PACKAGE_REPO_URL:-}" = "" ] || [ "${CODE_MOWER_STANDALONE_PACKAGE_REPO_URL}" = "git+ssh://git@github.com/OWNER/code-mower.git" ]; then
+            echo "::error::replace CODE_MOWER_STANDALONE_PACKAGE_REPO_URL with a pip-installable Code Mower package source"
+            exit 1
+          fi
+          package_spec="${CODE_MOWER_STANDALONE_PACKAGE_REPO_URL}@${code_mower_ref}"
+          tools/code_mower migration package-install-rehearsal \
+            --package-spec "$package_spec" \
+            --repo-path "$GITHUB_WORKSPACE" \
+            --local-command "env CODE_MOWER_USE_LOCAL=1 tools/code_mower" \
+            --work-dir "$GITHUB_WORKSPACE/.code-mower/package-install-rehearsal" \
+            --timeout 180 \
+            --json | tee .code-mower/package-install-rehearsal.json
+
+      - name: Upload shadow proof artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: code-mower-standalone-shadow
+          path: |
+            .code-mower/standalone-doctor.json
+            .code-mower/standalone-wrapper-rehearsal.json
+            .code-mower/package-install-rehearsal.json
+          if-no-files-found: ignore
+          retention-days: 7

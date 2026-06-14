@@ -1,0 +1,24 @@
+gemini_cli:
+  provider: "gemini"
+  driver: "local_cli"
+  type: "audit"
+  adapter: null
+  trailer_lane: null
+  spend_policy: "included"
+  merge_authority: false
+  informational: true
+  enabled_by_default: false
+  events: []
+  token_env:
+    - "GITHUB_TOKEN"
+  token_env_any:
+    - ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+  trigger_policy: "manual"
+  provider_config:
+    command: "gemini"
+    command_env: "GEMINI_CLI_COMMAND"
+    model_env: "GEMINI_MODEL"
+    prompt_lenses:
+      - "base-audit"
+    status: "optional third-peer CLI lane; not merge authority until calibrated"
+  review_hygiene: {}

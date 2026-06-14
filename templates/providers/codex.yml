@@ -1,0 +1,18 @@
+codex:
+  provider: "codex"
+  driver: "local_cli"
+  type: "audit"
+  adapter: null
+  trailer_lane: null
+  spend_policy: "included"
+  merge_authority: true
+  informational: false
+  enabled_by_default: true
+  events: []
+  token_env:
+    - "CODEX_AUDIT_LABEL_TOKEN"
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "label"
+  provider_config: {}
+  review_hygiene: {}

@@ -1,0 +1,18 @@
+devin:
+  provider: "devin"
+  driver: "hosted_bridge"
+  type: "audit"
+  adapter: null
+  trailer_lane: null
+  spend_policy: "paid"
+  merge_authority: true
+  informational: false
+  enabled_by_default: false
+  events: []
+  token_env:
+    - "DEVIN_AUDIT_LABEL_TOKEN"
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "manual"
+  provider_config: {}
+  review_hygiene: {}

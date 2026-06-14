@@ -1,0 +1,27 @@
+cursor_bugbot:
+  provider: "cursor_bugbot"
+  driver: "saas_event"
+  type: "audit"
+  adapter: "cursor_bugbot"
+  trailer_lane: null
+  spend_policy: "paid"
+  merge_authority: false
+  informational: true
+  enabled_by_default: false
+  events:
+    - "issue_comment"
+  token_env:
+    - "CURSOR_BUGBOT_AUDIT_LABEL_TOKEN"
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "manual"
+  provider_config:
+    bot_authors:
+      - "cursor[bot]"
+      - "cursor"
+    trigger_comments:
+      - "bugbot run"
+      - "@cursor review"
+    rules_file: ".cursor/BUGBOT.md"
+    status: "manual informational lane; keep calibration-only until enabled BugBot output shape is captured and adjudicated"
+  review_hygiene: {}

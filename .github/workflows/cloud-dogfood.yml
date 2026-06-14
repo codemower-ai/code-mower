@@ -1,0 +1,40 @@
+name: Code Mower Cloud Dogfood
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Code Mower
+        run: python -m pip install -e .
+
+      - name: Upload metadata bundle
+        env:
+          CODE_MOWER_CLOUD_TOKEN: ${{ secrets.CODE_MOWER_CLOUD_TOKEN }}
+          CODE_MOWER_CLOUD_TEAM_ID: ${{ vars.CODE_MOWER_CLOUD_TEAM_ID }}
+          CODE_MOWER_INSTALL_ID: github-actions-code-mower
+        run: |
+          set -euo pipefail
+          if [ -z "${CODE_MOWER_CLOUD_TOKEN:-}" ]; then
+            echo "CODE_MOWER_CLOUD_TOKEN is not configured; skipping dogfood upload."
+            exit 0
+          fi
+          code-mower cloud dogfood \
+            --repo-slug "${GITHUB_REPOSITORY}" \
+            --source github-actions \
+            --yes \
+            --json

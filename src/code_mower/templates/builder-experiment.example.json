@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "name": "starter-builder-loop",
+  "description": "Starter Code Mower builder experiment for one bounded task.",
+  "tasks": [
+    {
+      "task_id": "small-package-runtime-change",
+      "repo": "owner/repo",
+      "base_ref": "origin/main",
+      "task_class": "package-runtime",
+      "prompt": "Make one small Code Mower package-runtime improvement.",
+      "success_criteria": [
+        "focused tests pass",
+        "full Code Mower tests pass",
+        "normal Code Mower audit protocol passes",
+        "post-merge health is verified"
+      ],
+      "context_packs": [
+        "package-runtime"
+      ],
+      "review_classes": [
+        "package-runtime"
+      ]
+    }
+  ],
+  "builders": [
+    {
+      "builder_id": "codex-base",
+      "provider": "codex",
+      "tool": "codex-desktop",
+      "prompt_lenses": [
+        "base-audit"
+      ],
+      "cost_policy": "provider-dependent"
+    },
+    {
+      "builder_id": "codex-context-driven-quality",
+      "provider": "codex",
+      "tool": "codex-desktop",
+      "prompt_lenses": [
+        "context-driven-quality"
+      ],
+      "cost_policy": "provider-dependent"
+    }
+  ],
+  "metrics": [
+    "elapsed_seconds",
+    "cost_usd",
+    "user_interventions",
+    "audit_blockers",
+    "resolved_blockers",
+    "tests_passed",
+    "post_merge_health"
+  ]
+}

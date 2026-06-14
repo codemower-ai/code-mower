@@ -1,0 +1,36 @@
+local_llm:
+  provider: "openai_compatible"
+  driver: "api_model"
+  type: "audit"
+  adapter: null
+  trailer_lane: null
+  spend_policy: "local"
+  merge_authority: false
+  informational: true
+  enabled_by_default: false
+  events: []
+  token_env:
+    - "LOCAL_LLM_AUDIT_LABEL_TOKEN"
+    - "LOCAL_LLM_API_KEY"
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "manual"
+  provider_config:
+    api_base_env: "LOCAL_LLM_API_BASE"
+    model_env: "LOCAL_LLM_MODEL"
+    bot_authors_env: "LOCAL_LLM_BOT_AUTHORS"
+    default_api_base: "http://localhost:1234/v1"
+    profile_env: "LOCAL_LLM_PROFILE"
+    profiles:
+      qwen3-coder-next-lmstudio:
+        api_base: "http://localhost:1234/v1"
+        model: "qwen/qwen3-coder-next"
+        context_window: "128000"
+        endpoint: "lmstudio"
+      gemma4-ollama:
+        api_base: "http://localhost:11434/v1"
+        model: "gemma4:e4b-mlx"
+        context_window: "128000"
+        endpoint: "ollama"
+    status: "informational calibration lane, not merge authority"
+  review_hygiene: {}

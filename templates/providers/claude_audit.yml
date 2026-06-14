@@ -1,0 +1,18 @@
+claude_audit:
+  provider: "claude"
+  driver: "local_cli"
+  type: "audit"
+  adapter: null
+  trailer_lane: "claude"
+  spend_policy: "included"
+  merge_authority: true
+  informational: false
+  enabled_by_default: true
+  events: []
+  token_env:
+    - "CLAUDE_AUDIT_LABEL_TOKEN"
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "label"
+  provider_config: {}
+  review_hygiene: {}

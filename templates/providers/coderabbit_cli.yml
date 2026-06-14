@@ -1,0 +1,21 @@
+coderabbit_cli:
+  provider: "coderabbit"
+  driver: "local_cli"
+  type: "audit"
+  adapter: null
+  trailer_lane: null
+  spend_policy: "included"
+  merge_authority: false
+  informational: true
+  enabled_by_default: false
+  events: []
+  token_env:
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "manual"
+  provider_config:
+    command: "coderabbit"
+    alternate_commands:
+      - "cr"
+    status: "optional CLI lane for local/on-demand review capture"
+  review_hygiene: {}

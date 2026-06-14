@@ -1,0 +1,83 @@
+# Code Mower blind-review artifact dry-run template
+# Install as .github/workflows/code-mower-blind-review-artifacts-dry-run.yml.
+name: Code Mower blind-review artifact dry run
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out workflow code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Build synthetic manifests
+        run: |
+          set -euo pipefail
+          mkdir -p .code-mower/dry-run-source
+          printf 'Codex Audit: PASS\n' > .code-mower/dry-run-source/codex.md
+          printf 'Claude Audit: PASS\n' > .code-mower/dry-run-source/claude.md
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          repo = os.environ.get('GITHUB_REPOSITORY', 'owner/repo')
+          head_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          base = {'repo': repo, 'pr_number': 0, 'head_sha': head_sha, 'required_lanes': ['codex', 'claude_audit']}
+          hold = {**base, 'events': [{'lane': 'codex', 'state': 'done', 'artifact': 'dry-run-source/codex.md', 'head_sha': head_sha}, {'lane': 'claude_audit', 'state': 'running', 'head_sha': head_sha}]}
+          release = {**base, 'events': [{'lane': 'codex', 'state': 'done', 'artifact': 'dry-run-source/codex.md', 'head_sha': head_sha}, {'lane': 'claude_audit', 'state': 'done', 'artifact': 'dry-run-source/claude.md', 'head_sha': head_sha}]}
+          for name, payload in (('hold', hold), ('release', release)):
+              with open(f'.code-mower/{name}-manifest.json', 'w', encoding='utf-8') as handle:
+                  json.dump(payload, handle, indent=2, sort_keys=True)
+                  handle.write('\n')
+          PY
+      - name: Install Code Mower
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install code-mower
+          code-mower --help
+      - name: Materialize held artifacts
+        run: |
+          code-mower blind-review artifacts .code-mower/hold-manifest.json --write --json
+      - name: Upload held artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: code-mower-blind-review-held-dry-run
+          path: .code-mower/blind-review
+          include-hidden-files: true
+          retention-days: 1
+      - name: Download held artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: code-mower-blind-review-held-dry-run
+          path: .code-mower/downloaded-held
+      - name: Release downloaded held artifacts
+        run: |
+          rm -f .code-mower/dry-run-source/codex.md
+          code-mower blind-review artifacts .code-mower/release-manifest.json --output-dir .code-mower/downloaded-held --write --json | tee .code-mower/release-plan.json
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          def sha256_file(path):
+              digest = hashlib.sha256()
+              with path.open('rb') as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                      digest.update(chunk)
+              return digest.hexdigest()
+          plan = json.loads(Path('.code-mower/release-plan.json').read_text())
+          release_path = Path(plan['release_manifest']['path'])
+          if not release_path.is_file():
+              raise SystemExit(f'release manifest was not written: {release_path}')
+          for artifact in plan['release_manifest']['artifacts']:
+              path = Path(artifact['release_path'])
+              if not path.is_file():
+                  raise SystemExit(f'release artifact was not written: {path}')
+              actual = sha256_file(path)
+              if artifact.get('release_sha256') != actual:
+                  raise SystemExit(f'release artifact hash mismatch: {path}')
+          PY
