@@ -180,6 +180,10 @@ do not spend v1.0 work on non-GitHub workflow rendering.
   required env vars, and optional runtime probes.
 - For local CLI lanes, support provider-declared smoke probes that can validate
   a harmless version command or an auth-bearing sentinel prompt.
+- Treat real provider prompt smoke as stronger evidence than CLI login/status
+  commands. Claude Code is the canonical example: `claude auth status` can say
+  logged in while `claude -p "Reply with exactly: ok" --output-format json`
+  returns a provider auth error.
 - For paid or usage-metered local CLIs, provider-declared smoke probes should
   pin a cheap model and budget cap when the CLI supports it. The default
   Claude probe uses `--model sonnet` and `--max-budget-usd 0.25`.

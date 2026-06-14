@@ -149,6 +149,7 @@ proves it is useful: Antigravity/Gemini, Hermes, CodeRabbit CLI, Cursor BugBot,
 Qodo, Greptile, Devin, local LLMs, and future ACP bridges.
 
 Provider details: [docs/provider-matrix.md](docs/provider-matrix.md).
+Setup/auth fixes: [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Installation Status
 

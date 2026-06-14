@@ -213,6 +213,7 @@ PACKAGE_FILES = (
     ("tools/CODE_MOWER_COMMERCIAL_BOUNDARY.md", "docs/commercial-boundary.md", "doc"),
     ("tools/CODE_MOWER_PUBLIC_RELEASE_CHECKLIST.md", "docs/public-release-checklist.md", "doc"),
     ("tools/CODE_MOWER_GITHUB_SETUP.md", "docs/github-setup.md", "doc"),
+    ("docs/troubleshooting.md", "docs/troubleshooting.md", "doc"),
     (
         "tools/CODE_MOWER_MIRROR_REMOVAL_RUNBOOK.md",
         "docs/mirror-removal-runbook.md",
@@ -1335,6 +1336,7 @@ def render_package_plan(
             "docs/commercial-boundary.md",
             "docs/public-release-checklist.md",
             "docs/github-setup.md",
+            "docs/troubleshooting.md",
             "docs/provider-matrix.md",
             "docs/providers.md",
             "docs/security.md",
