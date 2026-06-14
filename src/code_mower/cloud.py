@@ -31,6 +31,10 @@ if __package__ in {None, ""}:
         SAFE_EVENT_TYPES,
         SAFE_REPORT_KINDS,
         dashboard_url_for_endpoint,
+        build_dogfood_dry_run_preview,
+        build_dogfood_plan,
+        default_dogfood_reports,
+        DogfoodPlan,
         health_url_for_endpoint,
         is_local_http_endpoint,
         is_bundle_manifest,
@@ -48,6 +52,10 @@ else:  # pragma: no cover - exercised after package extraction.
         SAFE_EVENT_TYPES,
         SAFE_REPORT_KINDS,
         dashboard_url_for_endpoint,
+        build_dogfood_dry_run_preview,
+        build_dogfood_plan,
+        default_dogfood_reports,
+        DogfoodPlan,
         health_url_for_endpoint,
         is_local_http_endpoint,
         is_bundle_manifest,
@@ -327,12 +335,7 @@ def _detect_repo_slug(repo_path: Path) -> str:
 def _build_dogfood_event(
     *,
     repo_path: Path,
-    repo_slug: str,
-    team_id: str,
-    install_id: str,
-    source: str,
-    report_count: int,
-    extra_event_count: int,
+    plan: DogfoodPlan,
 ) -> dict[str, Any]:
     status = _run_git(repo_path, ["status", "--porcelain"])
     return {
@@ -340,10 +343,10 @@ def _build_dogfood_event(
         "event_id": str(uuid.uuid4()),
         "event_type": "dogfood_upload",
         "created_at": _utc_now(),
-        "repo_slug": repo_slug,
-        "team_id": team_id,
-        "install_id": install_id,
-        "source": source,
+        "repo_slug": plan.repo_slug,
+        "team_id": plan.team_id,
+        "install_id": plan.install_id,
+        "source": plan.source,
         "provider": "",
         "lens": "",
         "status": "observed",
@@ -353,8 +356,8 @@ def _build_dogfood_event(
             "dirty": bool(status),
         },
         "metrics": {
-            "report_count": report_count,
-            "extra_event_count": extra_event_count,
+            "report_count": plan.report_count,
+            "extra_event_count": plan.extra_event_count,
         },
         "dimensions": {
             "command": "code-mower cloud dogfood",
@@ -1005,20 +1008,7 @@ def _parse_report_args(values: list[str]) -> list[tuple[Path, str]]:
 
 
 def _default_dogfood_reports(repo_path: Path) -> list[tuple[Path, str]]:
-    candidates = [
-        (repo_path / "docs/reviewer-value-report.md", "value-report"),
-        (repo_path / "docs/lane-promotion-policy.md", "lane-policy"),
-        (repo_path / ".code-mower/reviewer-value-report.md", "value-report"),
-        (repo_path / ".code-mower/reviewer-metrics.json", "reviewer-metrics"),
-    ]
-    seen: set[Path] = set()
-    reports: list[tuple[Path, str]] = []
-    for path, kind in candidates:
-        if path in seen or not path.is_file():
-            continue
-        seen.add(path)
-        reports.append((path, kind))
-    return reports
+    return default_dogfood_reports(repo_path)
 
 
 def _dogfood_upload(
@@ -1046,15 +1036,18 @@ def _dogfood_upload(
     resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
     resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
     resolved_reports = reports or _default_dogfood_reports(repo_path)
+    dogfood_plan = build_dogfood_plan(
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        source=source,
+        reports=resolved_reports,
+        events=events,
+    )
     all_events = [
         _build_dogfood_event(
             repo_path=repo_path,
-            repo_slug=detected_repo_slug,
-            team_id=resolved_team_id,
-            install_id=resolved_install_id,
-            source=source,
-            report_count=len(resolved_reports),
-            extra_event_count=len(events),
+            plan=dogfood_plan,
         ),
         *events,
     ]
@@ -1089,17 +1082,7 @@ def _dogfood_upload(
             "status": "dry_run",
             "export": export_result,
             "doctor": doctor_result,
-            "upload": {
-                "mode": "cloud-upload-dry-run",
-                "endpoint": endpoint,
-                "would_upload": False,
-                "requires_yes": True,
-                "upload_mode": payload["upload_mode"],
-                "report_count": len(payload["reports"]),
-                "event_count": len(payload["events"]),
-                "privacy_mode": payload["privacy_mode"],
-                "excluded_content": payload["excluded_content"],
-            },
+            "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
         }
     token = os.environ.get(token_env, "")
     if not token and not _is_local_http_endpoint(endpoint):

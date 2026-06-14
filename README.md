@@ -57,7 +57,7 @@ Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.7"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8"
 code-mower --version
 ```
 
@@ -165,7 +165,7 @@ Setup/auth fixes: [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Installation Status
 
-The current public alpha is `v0.5.0-alpha.7` from
+The current public alpha is `v0.5.0-alpha.8` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower). PyPI
 distribution builds now run from GitHub Releases. Publishing to PyPI remains
 off by default until trusted publishing is configured, so use the tagged GitHub
@@ -184,7 +184,9 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 ## Known Limitations
 
 - PyPI distribution builds exist, but publishing is gated until trusted
-  publishing is configured; use the tagged GitHub install command.
+  publishing is configured; use the tagged GitHub install command. See
+  [docs/pypi-release.md](docs/pypi-release.md) for the TestPyPI/PyPI
+  activation path.
 - GitHub is the primary supported forge. GitLab, Bitbucket, and ACP bridges are
   roadmap items.
 - Hosted/SaaS reviewers start informational or manual until calibration data
@@ -203,6 +205,8 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 - [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
 - [Quickstart](docs/quickstart.md)
 - [First Run Transcript](docs/first-run-transcript.md)
+- [First-User Install Rehearsal](docs/first-user-install-rehearsal-alpha8.md)
+- [PyPI Release Runbook](docs/pypi-release.md)
 - [Sample Doctor Output](docs/sample-doctor-output.md)
 - [Architecture](docs/architecture.md)
 - [Provider Matrix](docs/provider-matrix.md)

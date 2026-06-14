@@ -35,8 +35,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_v05_alpha_7(self) -> None:
-        self.assertEqual(__version__, "0.5.0a7")
+    def test_version_is_v05_alpha_8(self) -> None:
+        self.assertEqual(__version__, "0.5.0a8")
 
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
@@ -92,6 +92,23 @@ class ReleaseHygieneTests(unittest.TestCase):
                 {"schema": cloud_client.BUNDLE_SCHEMA},
             )
         )
+        self.assertEqual(
+            cloud_client.default_dogfood_reports(ROOT)[0][1],
+            "value-report",
+        )
+        preview = cloud_client.build_dogfood_dry_run_preview(
+            endpoint="https://codemower.com/api/ingest",
+            payload={
+                "upload_mode": "metadata_only",
+                "reports": [{}],
+                "events": [{}, {}],
+                "privacy_mode": "metadata_and_reports",
+                "excluded_content": ["source_code"],
+            },
+        )
+        self.assertEqual(preview["mode"], "cloud-upload-dry-run")
+        self.assertEqual(preview["event_count"], 2)
+        self.assertEqual(preview["requires_yes"], True)
         self.assertEqual(
             code_mower_calibration._safe_slug("owner/repo with spaces"),
             "owner-repo-with-spaces",
@@ -1166,6 +1183,63 @@ def main():
             self.assertEqual(result["status"], "dry_run")
             self.assertEqual(result["upload"]["event_count"], 1)
             self.assertEqual(result["export"]["event_count"], 1)
+            self.assertTrue(result["upload"]["requires_yes"])
+
+    def test_cloud_dogfood_cli_is_dry_run_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = code_mower_cloud.main(
+                    [
+                        "dogfood",
+                        "--repo-path",
+                        str(root),
+                        "--output-dir",
+                        str(root / ".code-mower/cloud-benchmark-bundle"),
+                        "--repo-slug",
+                        "owner/repo",
+                        "--endpoint",
+                        "http://localhost:3000/api/ingest",
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["status"], "dry_run")
+            self.assertEqual(payload["upload"]["mode"], "cloud-upload-dry-run")
+            self.assertFalse(payload["upload"]["would_upload"])
+
+    def test_cloud_setup_cli_dry_run_redacts_token(self) -> None:
+        output = StringIO()
+        token = "cmw_live_cli_secret_never_print"
+        with redirect_stdout(output):
+            code = code_mower_cloud.main(
+                [
+                    "setup",
+                    "--token",
+                    token,
+                    "--team-id",
+                    "team",
+                    "--install-id",
+                    "install",
+                    "--dry-run",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        encoded = output.getvalue()
+        self.assertNotIn(token, encoded)
+        self.assertIn("cmw_live_cli...", encoded)
 
     def test_cloud_setup_writes_private_env_file_without_echoing_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

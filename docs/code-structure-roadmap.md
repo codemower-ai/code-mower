@@ -66,8 +66,9 @@ tested internal seams:
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
   stdin-safe audit wrappers and local CLI lanes.
 - `code_mower.cloud_client` now owns cloud endpoint probing plus bundle schema
-  and privacy metadata. `cloud.py` remains the CLI adapter for export, doctor,
-  setup, and upload.
+  and privacy metadata. It also owns dogfood report discovery and dry-run
+  preview shape. `cloud.py` remains the CLI adapter for export, doctor, setup,
+  dogfood, and upload.
 
 These are intentionally package seams, not a full rewrite. The next slices can
 move larger chunks of implementation behind those seams without breaking
