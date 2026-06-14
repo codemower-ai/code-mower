@@ -18,8 +18,9 @@ not know the original reference repos.
   see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and
   changelog exist as public trust/readiness artifacts.
-- `docs/first-user-install-rehearsal-alpha5.md` records the prior alpha.5
-  install, release-gate, easy-mode smoke, and fresh-clone rehearsal shape.
+- `docs/first-user-install-rehearsal-alpha6.md` records the current alpha.6
+  public-tag install, easy-mode smoke, first value report, and cloud upload
+  dry-run shape.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
 - Hosted/commercial service implementation remains outside the public OSS repo.
