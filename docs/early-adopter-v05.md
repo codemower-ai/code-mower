@@ -85,6 +85,8 @@ Before inviting users:
 - A toy repo and one private real repo have completed install, doctor,
   rehearsal, export, and upload dry-run.
 - Known limitations are documented plainly.
+- `docs/early-adopter-invite-runbook.md` has the current tagged install command
+  and invite copy for the first 5-10 friendly users.
 
 ## Cloud Sharing Positioning
 
@@ -113,3 +115,10 @@ Cut a v0.5 alpha or beta only after:
 - GitHub, Google, and Apple login have an operator-owned verification checklist
   with an operator-token fallback; and
 - the privacy boundary is documented and tested.
+
+## Current Alpha
+
+`v0.5.0-alpha.2` is the first alpha intended for the first friendly-user
+rehearsal. It keeps the local-first package path from alpha.1 and adds the
+cloud doctor service-readiness check so users can confirm CodeMower.com health
+before attempting an upload.

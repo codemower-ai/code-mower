@@ -10,7 +10,7 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/jeffhuber/code-mower.git@v0.5.0-alpha.1"
+pipx install --python python3.12 "git+https://github.com/jeffhuber/code-mower.git@v0.5.0-alpha.2"
 code-mower --version
 ```
 
