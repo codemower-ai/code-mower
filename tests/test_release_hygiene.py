@@ -7,6 +7,9 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+from argparse import Namespace
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -30,6 +33,71 @@ from scripts import privacy_scan
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_v05_alpha_4(self) -> None:
         self.assertEqual(__version__, "0.5.0a4")
+
+    def test_doctor_preflight_applies_v05_first_run_defaults(self) -> None:
+        args = Namespace(
+            v05=False,
+            preflight=True,
+            easy=False,
+            profile=None,
+            probe_runtime=False,
+            github=False,
+            cloud=False,
+        )
+
+        doctor._apply_first_run_defaults(args)
+
+        self.assertTrue(args.easy)
+        self.assertEqual(args.profile, "recommended")
+        self.assertTrue(args.probe_runtime)
+        self.assertTrue(args.github)
+        self.assertTrue(args.cloud)
+
+    def test_cloud_upload_dry_run_does_not_require_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            report = work / "reviewer-value-report.md"
+            report.write_text("# Reviewer Value Report\n\nNo findings.\n", encoding="utf-8")
+            bundle = work / "bundle"
+
+            export_out = StringIO()
+            with redirect_stdout(export_out):
+                export_code = code_mower_cloud.main(
+                    [
+                        "export",
+                        "--report",
+                        f"value-report={report}",
+                        "--repo-slug",
+                        "owner/repo",
+                        "--output-dir",
+                        str(bundle),
+                        "--anonymous",
+                        "--json",
+                    ]
+                )
+            self.assertEqual(export_code, 0)
+            self.assertEqual(
+                json.loads(export_out.getvalue())["mode"],
+                "cloud-export",
+            )
+
+            upload_out = StringIO()
+            with mock.patch.dict(os.environ, {"CODE_MOWER_CLOUD_TOKEN": ""}, clear=False):
+                with redirect_stdout(upload_out):
+                    upload_code = code_mower_cloud.main(
+                        [
+                            "upload",
+                            str(bundle),
+                            "--dry-run",
+                            "--json",
+                        ]
+                    )
+
+            self.assertEqual(upload_code, 0)
+            payload = json.loads(upload_out.getvalue())
+            self.assertEqual(payload["mode"], "cloud-upload-dry-run")
+            self.assertFalse(payload["would_upload"])
+            self.assertEqual(payload["report_count"], 1)
 
     def test_dev_python_wrapper_is_executable(self) -> None:
         wrapper = ROOT / "scripts/dev-python"
@@ -587,6 +655,7 @@ def main():
 
         args = argparse.Namespace(
             v05=True,
+            preflight=False,
             easy=False,
             profile=None,
             probe_runtime=False,
@@ -594,7 +663,7 @@ def main():
             cloud=False,
         )
 
-        doctor._apply_v05_defaults(args)
+        doctor._apply_first_run_defaults(args)
 
         self.assertTrue(args.easy)
         self.assertEqual(args.profile, "recommended")

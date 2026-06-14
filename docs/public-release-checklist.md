@@ -12,8 +12,9 @@ not know the original reference repos.
 - The package has alpha releases and reports its version with
   `code-mower --version`.
 - The v0.5 alpha entrypoint is `v0.5.0-alpha.4`, with `code-mower doctor
-  --v05` as the first-run setup diagnostic.
-- The README now shows a shortened `doctor --v05` example so fresh users can
+  --preflight` as the first-run setup diagnostic. `doctor --v05` remains the
+  versioned equivalent for scripts.
+- The README now shows a shortened `doctor --preflight` example so fresh users can
   see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and
   changelog exist as public trust/readiness artifacts.
@@ -36,9 +37,9 @@ not know the original reference repos.
   reviewer: lane consistency, setup diagnostics, calibration, spend/latency, and
   evidence-gated promotion.
 - Standalone CI passes from a clean clone.
-- `code-mower init --easy` and `code-mower doctor --v05` work in a fresh toy
+- `code-mower init --easy` and `code-mower doctor --preflight` work in a fresh toy
   repo.
-- `code-mower doctor --v05` runs provider-declared smoke probes and optional
+- `code-mower doctor --preflight` runs provider-declared smoke probes and optional
   cloud-token diagnostics without leaking raw auth/provider output or token
   values into shareable JSON.
 - `scripts/smoke_easy_mode.py --json` passes in a fresh virtual environment.
@@ -85,7 +86,7 @@ scripts/dev-python -m venv .venv
 .venv/bin/code-mower --version
 .venv/bin/python -m ruff check .
 .venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json
-.venv/bin/code-mower doctor --v05 --json
+.venv/bin/code-mower doctor --preflight --json
 .venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python .venv/bin/python --json
 ```
 
@@ -107,7 +108,7 @@ interpreter.
 - Configure PyPI trusted publishing before widening beyond friendly alpha users,
   or document why the project is intentionally staying GitHub-install-only.
 - Add a short terminal recording, screenshot, or transcript of the first
-  `doctor --v05` run to the README/website.
+  `doctor --preflight` run to the README/website.
 - Add a troubleshooting section for Python, GitHub auth, provider CLIs, and
   private repository permissions.
 - Add a migration note for teams that want to start with informational-only

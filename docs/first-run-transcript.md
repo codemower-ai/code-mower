@@ -45,7 +45,7 @@ Default posture:
 ## Run Doctor
 
 ```bash
-code-mower doctor --v05
+code-mower doctor --preflight
 ```
 
 Shortened example:

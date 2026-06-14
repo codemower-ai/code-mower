@@ -4,6 +4,20 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## Unreleased
+
+### Added
+
+- `code-mower doctor --preflight` as a friendlier alias for the v0.5
+  early-adopter doctor preset.
+- Release-hygiene tests proving preflight defaults and tokenless cloud
+  upload dry-run behavior.
+
+### Changed
+
+- First-user docs now lead with `doctor --preflight` while keeping
+  `doctor --v05` as the versioned scripting alias.
+
 ## v0.5.0-alpha.4
 
 This alpha adds the public release plumbing needed before inviting a wider

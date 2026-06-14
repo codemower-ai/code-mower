@@ -22,14 +22,16 @@ raw stdout/stderr, auth output, and secrets.
 
 ## What It Looks Like
 
-`code-mower doctor --v05` is the first useful command. It checks your runtime,
-GitHub setup, provider CLIs, token posture, optional cloud setup, and private-repo
-Actions cost traps.
+`code-mower doctor --preflight` is the first useful command. It checks your
+runtime, GitHub setup, provider CLIs, token posture, optional cloud setup, and
+private-repo Actions cost traps. `--preflight` is the friendly name for the
+versioned v0.5 first-run preset, so `doctor --v05` remains equivalent for
+scripts.
 
 Example, shortened:
 
 ```text
-$ code-mower doctor --v05
+$ code-mower doctor --preflight
 PASS  config.validate             config validates
 PASS  profile.select              selected profile: codex, claude_audit, gitar
 PASS  runtime.python              Python 3.12 satisfies Code Mower requirements
@@ -64,7 +66,7 @@ From the repository you want to pilot:
 ```bash
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower doctor --v05 --json
+code-mower doctor --preflight --json
 ```
 
 Then generate the starter local report:
@@ -176,8 +178,9 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
   supports promotion.
 - CodeMower.com currently provides private team dashboards; cohort benchmarks
   are roadmap work and should not be treated as live product value yet.
-- Self-service cloud data deletion/export and a published retention policy are
-  required before broad cloud-data collection.
+- Self-service cloud data deletion/export basics are live. Retention remains
+  conservative and team-controlled while automated retention jobs are roadmap
+  work.
 - The CLI still exposes some advanced/operator commands. The early-adopter path
   should stay focused on `init`, `doctor`, local audits, value reports, and
   optional cloud export/upload.

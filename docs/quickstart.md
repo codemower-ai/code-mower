@@ -75,16 +75,17 @@ From a clean checkout of the repository you want to pilot:
 ```bash
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower doctor --v05 --json
+code-mower doctor --preflight --json
 code-mower next-steps --profile recommended --repo OWNER/REPO
 ```
 
 `init --easy` is non-mutating by default. `--apply` writes a generated tree for
 review; it does not edit live workflows or trigger paid providers.
-`doctor --v05` is the recommended early-adopter preset for GitHub auth,
+`doctor --preflight` is the recommended early-adopter preset for GitHub auth,
 Python/runtime checks, provider CLI probes, private-repo caveats, Actions cost
-diagnostics, and optional cloud-token setup. Use `--strict` only when warnings
-should fail a bootstrap job.
+diagnostics, and optional cloud-token setup. It is equivalent to the versioned
+`doctor --v05` preset. Use `--strict` only when warnings should fail a
+bootstrap job.
 
 ## 5. Rehearse The Package Install Path
 
@@ -181,7 +182,7 @@ self-service dashboard yet.
 
 One repository is ready for broader Code Mower use when:
 
-- `doctor --v05` has no unexplained failures.
+- `doctor --preflight` has no unexplained failures.
 - Codex and Claude can both run local audits.
 - A small PR can be reviewed manually without recurring workflows.
 - Private-repo GitHub Actions cost is understood.

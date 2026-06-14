@@ -34,13 +34,14 @@ code-mower init --easy --apply --output-dir .code-mower.generated
 The generated tree is reviewable output. It does not mutate live workflows,
 create labels, trigger reviewers, or upload data.
 
-## 4. Run The v0.5 Doctor Preset
+## 4. Run The Preflight Doctor
 
 ```bash
-code-mower doctor --v05 --json
+code-mower doctor --preflight --json
 ```
 
-`--v05` expands to the first-run checks early adopters need:
+`--preflight` is the friendly alias for the versioned v0.5 first-run preset.
+It expands to the checks early adopters need:
 
 - recommended profile selection;
 - Python/runtime checks;
