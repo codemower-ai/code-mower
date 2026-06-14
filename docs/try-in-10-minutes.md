@@ -56,6 +56,24 @@ If you want to see the shape of the output before installing, start with
 
 ## 5. Generate The Starter Value Report
 
+If you want to prove the whole first-user path in one command, run the package
+install rehearsal instead:
+
+```bash
+code-mower migration package-install-rehearsal \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8" \
+  --python "$(command -v python3.12)" \
+  --json
+```
+
+That rehearsal installs Code Mower into a clean virtual environment, creates a
+fresh toy repository, runs `init --easy`, runs doctor, generates a starter value
+report, and proves cloud upload/dogfood paths stay dry-run. See
+[First-User Install Rehearsal](first-user-install-rehearsal.md) for the
+release-gate checklist.
+
+For the manual report path in your pilot repository:
+
 ```bash
 code-mower calibration evidence .code-mower.generated/calibration-corpus.json --json > calibration-evidence.json
 code-mower reviewer-metrics calibration-evidence.json --spend .code-mower.generated/reviewer-spend.json --json > reviewer-metrics.json

@@ -18,10 +18,11 @@ not know the original reference repos.
   see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and
   changelog exist as public trust/readiness artifacts.
-- `docs/first-user-install-rehearsal-alpha8.md` records the alpha.8
-  install-candidate path, easy-mode smoke, first value report, cloud upload
-  dry run, and dogfood dry run. Re-run it against the public tag before
-  widening beyond friendly alpha users.
+- `docs/first-user-install-rehearsal.md` records the executable release-gate
+  path: package install, easy-mode smoke, first value report, cloud upload dry
+  run, and dogfood dry run. Re-run it against the public tag before widening
+  beyond friendly alpha users. Alpha-specific rehearsal notes remain as
+  historical transcripts.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
 - Hosted/commercial service implementation remains outside the public OSS repo.

@@ -55,7 +55,22 @@ python3.12 -m venv /tmp/code-mower-pypi-smoke
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
-Then run the normal first-user toy-repo flow:
+Then run the release-gate first-user rehearsal. For TestPyPI, pass the package
+spec that points at the candidate distribution; for a GitHub tag, pass the tag
+URL:
+
+```bash
+code-mower migration package-install-rehearsal \
+  --package-spec code-mower==0.5.0a8 \
+  --pip-index-url https://test.pypi.org/simple/ \
+  --pip-extra-index-url https://pypi.org/simple/ \
+  --python "$(command -v python3.12)" \
+  --json
+```
+
+See [First-User Install Rehearsal](first-user-install-rehearsal.md) for the full
+artifact contract. If you need to debug a step manually, the equivalent toy-repo
+flow is:
 
 ```bash
 mkdir /tmp/code-mower-toy && cd /tmp/code-mower-toy
@@ -90,4 +105,3 @@ Only change the primary README install command from GitHub-tag install to
 - `pipx install code-mower` has been tested in a clean shell.
 - A fresh toy repo completes `init --easy`, generated smoke tests,
   `doctor --preflight`, a starter value report, and cloud dogfood dry run.
-

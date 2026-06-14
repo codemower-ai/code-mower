@@ -61,6 +61,16 @@ CALIBRATION_EVIDENCE_ADDITIVE_KEYS = frozenset(
         "result_category",
     }
 )
+FIRST_USER_ARTIFACTS = (
+    ("calibration_plan", ".code-mower/calibration-plan.json"),
+    ("calibration_evidence", "calibration-evidence.json"),
+    ("reviewer_metrics", "reviewer-metrics.json"),
+    ("lane_policy", "lane-policy.json"),
+    ("reviewer_value_report", "reviewer-value-report.md"),
+    ("cloud_export", "cloud-export.json"),
+    ("cloud_upload_dry_run", "cloud-upload-dry-run.json"),
+    ("cloud_dogfood_dry_run", "cloud-dogfood-dry-run.json"),
+)
 
 RUNNER_ALIASES = (
     {
@@ -264,9 +274,78 @@ def _run_rehearsal_step(
     return completed
 
 
+def _run_rehearsal_step_to_file(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None,
+    steps: list[dict[str, Any]],
+    timeout: int,
+    stdout_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    completed = _run_rehearsal_step(
+        command,
+        cwd=cwd,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    stdout_path.write_text(completed.stdout, encoding="utf-8")
+    return completed
+
+
 def _write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _first_user_artifacts(toy_repo: Path) -> dict[str, str]:
+    return {
+        key: str(toy_repo / relative_path)
+        for key, relative_path in FIRST_USER_ARTIFACTS
+    }
+
+
+def _resolve_install_package_spec(package_spec: str, *, base_dir: Path | None = None) -> str:
+    candidate_text = package_spec.strip()
+    if not candidate_text:
+        return package_spec
+    if candidate_text.startswith(("git+", "http://", "https://")):
+        return package_spec
+    looks_path_like = (
+        candidate_text.startswith((".", "/", "~"))
+        or os.sep in candidate_text
+        or (os.altsep is not None and os.altsep in candidate_text)
+    )
+    if not looks_path_like:
+        return package_spec
+
+    base = (base_dir or Path.cwd()).expanduser().resolve()
+    candidate = Path(candidate_text).expanduser()
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    candidate = candidate.resolve()
+    if not candidate.exists():
+        return package_spec
+    return str(candidate)
+
+
+def _pip_install_command(
+    venv_python: Path,
+    package_spec: str,
+    *,
+    pip_index_url: str = "",
+    pip_extra_index_urls: Sequence[str] | None = None,
+) -> list[str]:
+    command = [str(venv_python), "-m", "pip", "install"]
+    if pip_index_url:
+        command.extend(["--index-url", pip_index_url])
+    for extra_index_url in pip_extra_index_urls or ():
+        if extra_index_url:
+            command.extend(["--extra-index-url", extra_index_url])
+    command.append(package_spec)
+    return command
 
 
 def _write_public_rehearsal_toy_repo(
@@ -312,7 +391,11 @@ def run_package_install_rehearsal(
     timeout: int = 180,
     shadow_cycles: int = 1,
     standalone_default_cycles: int = 1,
+    pip_index_url: str = "",
+    pip_extra_index_urls: Sequence[str] | None = None,
 ) -> dict[str, Any]:
+    requested_package_spec = package_spec
+    package_spec = _resolve_install_package_spec(package_spec)
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="code-mower-package-install-"))
     else:
@@ -345,7 +428,12 @@ def run_package_install_rehearsal(
         timeout=timeout,
     )
     _run_rehearsal_step(
-        [str(venv_python), "-m", "pip", "install", package_spec],
+        _pip_install_command(
+            venv_python,
+            package_spec,
+            pip_index_url=pip_index_url,
+            pip_extra_index_urls=pip_extra_index_urls,
+        ),
         cwd=work_dir,
         env=None,
         steps=steps,
@@ -435,7 +523,23 @@ def run_package_install_rehearsal(
         steps=steps,
         timeout=timeout,
     )
-    _run_rehearsal_step(
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "calibration",
+            "plan",
+            ".code-mower.generated/calibration-corpus.json",
+            "--replicates",
+            "2",
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=toy_repo / ".code-mower" / "calibration-plan.json",
+    )
+    _run_rehearsal_step_to_file(
         [
             str(code_mower_bin),
             "calibration",
@@ -447,6 +551,112 @@ def run_package_install_rehearsal(
         env=env,
         steps=steps,
         timeout=timeout,
+        stdout_path=toy_repo / "calibration-evidence.json",
+    )
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "reviewer-metrics",
+            "calibration-evidence.json",
+            "--spend",
+            ".code-mower.generated/reviewer-spend.json",
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=toy_repo / "reviewer-metrics.json",
+    )
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "calibration",
+            "policy",
+            "reviewer-metrics.json",
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=toy_repo / "lane-policy.json",
+    )
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "calibration",
+            "value-report",
+            ".code-mower.generated/calibration-corpus.json",
+            "--spend",
+            ".code-mower.generated/reviewer-spend.json",
+            "--output",
+            "reviewer-value-report.md",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=outputs / "value-report.txt",
+    )
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "cloud",
+            "export",
+            "--report",
+            "reviewer-metrics=reviewer-metrics.json",
+            "--report",
+            "lane-policy=lane-policy.json",
+            "--report",
+            "value-report=reviewer-value-report.md",
+            "--output-dir",
+            ".code-mower/cloud-benchmark-bundle",
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=toy_repo / "cloud-export.json",
+    )
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "cloud",
+            "upload",
+            ".code-mower/cloud-benchmark-bundle",
+            "--dry-run",
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=toy_repo / "cloud-upload-dry-run.json",
+    )
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "cloud",
+            "dogfood",
+            "--repo-path",
+            str(toy_repo),
+            "--repo-slug",
+            "example/toy-repo",
+            "--source",
+            "package-install-rehearsal",
+            "--output-dir",
+            ".code-mower/cloud-dogfood-bundle",
+            "--endpoint",
+            "http://localhost:3000/api/ingest",
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=toy_repo / "cloud-dogfood-dry-run.json",
     )
 
     product_wrapper_payload: dict[str, Any] | None = None
@@ -512,12 +722,16 @@ def run_package_install_rehearsal(
         "mode": "code-mower-package-install-rehearsal",
         "status": "pass",
         "package_spec": package_spec,
+        "requested_package_spec": requested_package_spec,
+        "pip_index_url": pip_index_url,
+        "pip_extra_index_urls": list(pip_extra_index_urls or ()),
         "python": str(python_bin),
         "work_dir": str(work_dir),
         "venv_dir": str(venv_dir),
         "code_mower_bin": str(code_mower_bin),
         "version": version,
         "toy_repo": str(toy_repo),
+        "first_user_artifacts": _first_user_artifacts(toy_repo),
         "repo_path": str(repo_path) if repo_path is not None else "",
         "step_count": len(steps),
         "steps": steps,
@@ -538,6 +752,15 @@ def render_package_install_rehearsal_text(payload: dict[str, Any]) -> str:
         f"Toy repo: {payload['toy_repo']}",
         f"Steps: {payload['step_count']}",
     ]
+    artifacts = payload.get("first_user_artifacts") or {}
+    if artifacts:
+        lines.extend(
+            [
+                f"Value report: {artifacts.get('reviewer_value_report', '')}",
+                f"Cloud upload dry run: {artifacts.get('cloud_upload_dry_run', '')}",
+                f"Cloud dogfood dry run: {artifacts.get('cloud_dogfood_dry_run', '')}",
+            ]
+        )
     if payload.get("repo_path"):
         lines.extend(
             [
@@ -1056,6 +1279,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="empty or absent directory for venv, toy repo, and JSON outputs",
     )
+    package_install.add_argument(
+        "--pip-index-url",
+        default="",
+        help="optional pip --index-url for package-install rehearsal",
+    )
+    package_install.add_argument(
+        "--pip-extra-index-url",
+        action="append",
+        default=[],
+        help="optional pip --extra-index-url; may be provided multiple times",
+    )
     package_install.add_argument("--timeout", type=int, default=180)
     package_install.add_argument("--shadow-cycles", type=int, default=1)
     package_install.add_argument("--standalone-default-cycles", type=int, default=1)
@@ -1138,6 +1372,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timeout=args.timeout,
                 shadow_cycles=args.shadow_cycles,
                 standalone_default_cycles=args.standalone_default_cycles,
+                pip_index_url=args.pip_index_url,
+                pip_extra_index_urls=args.pip_extra_index_url,
             )
         except (OSError, subprocess.TimeoutExpired, ValueError, RehearsalError) as exc:
             payload = {
