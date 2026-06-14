@@ -28,6 +28,34 @@ code-mower next-steps --profile recommended
 `doctor --github` reads repository metadata and reports setup risks. It should
 not create labels, comments, workflows, or provider reviews.
 
+## Recommended Public Repo Hardening
+
+For the public Code Mower source repo, and for any repository that wants to run
+Code Mower as a normal development gate, use these GitHub defaults before
+inviting outside users:
+
+- protect `main`;
+- require the Code Mower CI check before merge;
+- block force pushes and branch deletion on protected branches;
+- enable automatic branch deletion after merge;
+- enable secret scanning and push protection where the plan allows it;
+- enable Dependabot alerts and dependency update pull requests;
+- add a security policy and clear private vulnerability reporting path;
+- add issue templates and a pull request template so first-user feedback is
+  structured;
+- keep Discussions enabled for setup questions that are not bugs;
+- require at least two owner/admin-capable maintainers on the org or repo; and
+- keep the old source location clearly redirected or archived so users do not
+  install from a stale repository.
+
+Use the repository settings URL directly when doing a manual pass:
+
+<https://github.com/codemower-ai/code-mower/settings>
+
+Code Mower should warn about missing required branch protection and dangerous
+workflow-token defaults, but it should not silently mutate a user's repo
+settings in easy mode.
+
 ## Public Repositories
 
 Public repositories are the lowest-friction OSS path:

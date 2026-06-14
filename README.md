@@ -8,6 +8,21 @@ The Code Mower open-source core is licensed under Apache-2.0. Hosted benchmarkin
 
 Code Mower is extracted from a production multi-repo development workflow and packaged as a standalone OSS tool. Start with `code-mower init --easy`, then run `code-mower doctor --v05` to verify local CLIs, tokens, provider catalog coverage, GitHub setup, optional cloud-token setup, Actions cost traps, and runtime probes. The current early-adopter path is documented in `docs/try-in-10-minutes.md` and `docs/quickstart.md`.
 
+## Try It In 10 Minutes
+
+```bash
+python3.12 --version
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.3"
+code-mower --version
+code-mower init --easy
+code-mower doctor --v05 --json
+```
+
+Start with one GitHub repository, keep reviewer lanes manual, and inspect all
+generated output before enabling cloud upload or paid reviewers. The short path
+is [docs/try-in-10-minutes.md](docs/try-in-10-minutes.md); the fuller setup is
+[docs/quickstart.md](docs/quickstart.md).
+
 For source checkout development and release rehearsal, use
 `scripts/dev-python` to create the local virtualenv. It resolves a Python
 3.12+ interpreter and refuses stale or old system Python shims before any

@@ -11,7 +11,7 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha releases and reports its version with
   `code-mower --version`.
-- The v0.5 alpha entrypoint is `v0.5.0-alpha.2`, with `code-mower doctor
+- The v0.5 alpha entrypoint is `v0.5.0-alpha.3`, with `code-mower doctor
   --v05` as the first-run setup diagnostic.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
@@ -44,6 +44,11 @@ not know the original reference repos.
   inspectable.
 - Issue templates, contributing guide, security policy, and support boundaries
   are ready enough for early OSS users.
+- The old personal source repo either points clearly to
+  `https://github.com/codemower-ai/code-mower` or is archived.
+- The public repo has branch protection, required CI, secret scanning,
+  Dependabot, security policy, issue templates, pull request template,
+  Discussions, and at least two owner/admin-capable maintainers.
 - Public-source and package-index install paths are documented separately from
   private-fork/deploy-key install paths.
 - At least one fresh public toy repo and one private GitHub repo complete the

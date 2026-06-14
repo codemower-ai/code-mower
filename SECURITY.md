@@ -1,28 +1,33 @@
 # Security Policy
 
-Code Mower coordinates local CLIs, GitHub workflows, and optional hosted
-reviewers. Treat it as automation that can read code and run configured tools.
+Code Mower coordinates local CLIs, GitHub workflows, optional hosted reviewers,
+and optional cloud metadata upload. Treat it as automation that can read code,
+run configured tools, and post back to GitHub when explicitly configured.
 
 ## Supported Versions
 
-Security fixes target the latest public alpha and the `main` branch until a
-stable release line exists.
+Security fixes target the latest published alpha tag and `main` until a stable
+release line exists.
 
 ## Reporting A Vulnerability
 
-Open a private security advisory or contact the maintainers through the
-repository security channel. Do not file public issues that include credentials,
-private repository URLs, raw audit prompts, or raw reviewer outputs containing
-proprietary code.
+Please do not open a public issue with exploit details, credentials, private
+repository URLs, raw audit prompts, raw reviewer outputs, proprietary code, or
+secrets.
+
+Report security concerns privately through GitHub private vulnerability
+reporting when available, or contact the maintainers out of band.
 
 Good reports include:
 
 - affected version or commit;
 - command or workflow used;
 - whether the issue involves local CLI execution, GitHub permissions, provider
-  output, cloud export, or generated files;
-- the smallest sanitized reproduction you can provide; and
-- whether any token, private key, or proprietary source text was exposed.
+  output, cloud export/upload, generated files, or hosted dashboard behavior;
+- the smallest sanitized reproduction you can provide;
+- whether source code, diffs, transcripts, tokens, provider auth output, or
+  private keys may have been exposed; and
+- suggested severity if you have one.
 
 ## Security Boundaries
 
@@ -34,8 +39,14 @@ Good reports include:
   keep code local, remote endpoints cannot.
 - Cloud bundle/export commands are opt-in and produce inspectable artifacts
   before upload.
+- Default cloud export and upload paths must not include source code, raw
+  diffs, raw model transcripts, raw stdout/stderr, auth probe output, or
+  secrets.
 - Generated GitHub workflows should use least-privilege tokens and should keep
   paid or hosted lanes manual or explicitly labeled until calibrated.
+
+If you find a default path that leaks source, raw diffs, raw transcripts, auth
+output, or secrets, treat it as a security issue.
 
 ## Maintainer Release Checks
 
