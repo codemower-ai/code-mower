@@ -85,7 +85,13 @@ code-mower cloud doctor .code-mower/cloud-benchmark-bundle --json
 When you are ready to send metadata to Code Mower Cloud:
 
 ```bash
-export CODE_MOWER_CLOUD_TOKEN="your-token"
+code-mower cloud setup \
+  --token-stdin \
+  --team-id "your-team-slug" \
+  --install-id "your-install-id" \
+  --out ~/.config/code-mower/tokens/your-install-id.env
+
+source ~/.config/code-mower/tokens/your-install-id.env
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 ```
 
@@ -123,7 +129,8 @@ The intended early-adopter flow is:
 1. sign in to CodeMower.com with GitHub, Google, or Apple;
 2. create or join a team;
 3. issue a team ingest token from the dashboard;
-4. store the token locally or in a CI secret; and
+4. run `code-mower cloud setup --token-stdin` to store it locally, or store it
+   directly in a CI secret; and
 5. run `cloud doctor`, `cloud upload --dry-run`, then `cloud upload --yes`.
 
 The local OSS package does not require login for local export, local value
@@ -145,9 +152,7 @@ code-mower cloud dogfood --source codex-local --json
 To upload after inspection:
 
 ```bash
-export CODE_MOWER_CLOUD_TOKEN="<token>"
-export CODE_MOWER_CLOUD_TEAM_ID="your-team-slug"
-export CODE_MOWER_INSTALL_ID="codex-code-mower"
+source ~/.config/code-mower/tokens/codex-code-mower.env
 code-mower cloud dogfood --source codex-local --yes --json
 ```
 

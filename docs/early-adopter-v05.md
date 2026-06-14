@@ -46,6 +46,8 @@ Before inviting users:
 - `code-mower doctor --easy --github --probe-runtime` gives actionable
   remediation.
 - `code-mower cloud upload --dry-run` previews without network transfer.
+- `code-mower cloud setup --token-stdin` writes a private local token file
+  without echoing the full token.
 - `https://codemower.com/login` and `https://codemower.com/dashboard` are
   verified for team token creation, or operator-issued tokens are ready as a
   temporary fallback.

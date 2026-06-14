@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ DEFAULT_UPLOAD_ENDPOINT = "https://codemower.com/api/ingest"
 DEFAULT_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
 DEFAULT_TEAM_ID_ENV = "CODE_MOWER_CLOUD_TEAM_ID"
 DEFAULT_INSTALL_ID_ENV = "CODE_MOWER_INSTALL_ID"
+DEFAULT_SETUP_INSTALL_ID = "code-mower-local"
 MAX_REPORT_UPLOAD_BYTES = 1_000_000
 MAX_EVENT_COUNT = 500
 SAFE_REPORT_KINDS = {
@@ -82,6 +84,184 @@ def _validate_upload_endpoint(endpoint: str) -> None:
         )
     if not parsed_endpoint.netloc:
         raise CloudBundleError(f"upload endpoint is missing a host: {endpoint!r}")
+
+
+def _token_prefix(token: str) -> str:
+    token = token.strip()
+    if not token:
+        return ""
+    visible = min(12, max(4, len(token) // 2), max(0, len(token) - 4))
+    if visible <= 0:
+        return "<redacted>"
+    return token[:visible] + "..."
+
+
+def _safe_config_stem(value: str) -> str:
+    stem = "".join(
+        char if char.isalnum() or char in {"-", "_", "."} else "-"
+        for char in value.strip()
+    )
+    return stem.strip("-_.") or DEFAULT_SETUP_INSTALL_ID
+
+
+def _default_setup_path(install_id: str) -> Path:
+    return (
+        Path.home()
+        / ".config"
+        / "code-mower"
+        / "tokens"
+        / f"{_safe_config_stem(install_id)}.env"
+    )
+
+
+def _read_token_file(path: Path) -> str:
+    source = path.expanduser()
+    if not source.is_file():
+        raise CloudBundleError(f"token file does not exist or is not a file: {source}")
+    try:
+        text = source.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise CloudBundleError(f"token file is not UTF-8 text: {source}") from exc
+    except OSError as exc:
+        raise CloudBundleError(f"unable to read token file {source}: {exc}") from exc
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped.removeprefix("export ").strip()
+        if stripped.startswith(f"{DEFAULT_TOKEN_ENV}="):
+            return stripped.split("=", 1)[1].strip().strip("'\"")
+    return text.strip()
+
+
+def _resolve_setup_token(
+    *,
+    token: str,
+    token_file: Path | None,
+    token_stdin: bool,
+    token_env: str,
+) -> str:
+    explicit_sources = sum(
+        1 for value in (bool(token), token_file is not None, token_stdin) if value
+    )
+    if explicit_sources > 1:
+        raise CloudBundleError("choose only one token source: --token, --token-file, or --token-stdin")
+    if token:
+        resolved = token.strip()
+    elif token_file is not None:
+        resolved = _read_token_file(token_file)
+    elif token_stdin:
+        resolved = sys.stdin.read().strip()
+    else:
+        resolved = os.environ.get(token_env, "").strip()
+    if not resolved:
+        raise CloudBundleError(
+            "cloud setup needs a token; pass --token-stdin, --token-file, "
+            f"or set {token_env}"
+        )
+    return resolved
+
+
+def render_setup_env(
+    *,
+    token: str,
+    endpoint: str,
+    team_id: str,
+    install_id: str,
+) -> str:
+    _validate_upload_endpoint(endpoint)
+    assignments = {
+        DEFAULT_TOKEN_ENV: token.strip(),
+        "CODE_MOWER_CLOUD_ENDPOINT": endpoint.strip(),
+        DEFAULT_TEAM_ID_ENV: team_id.strip(),
+        DEFAULT_INSTALL_ID_ENV: install_id.strip(),
+    }
+    lines = [
+        "# Code Mower Cloud local token file",
+        "# Keep this file private. It contains a bearer token.",
+    ]
+    lines.extend(
+        f"export {name}={shlex.quote(value)}"
+        for name, value in assignments.items()
+        if value
+    )
+    return "\n".join(lines) + "\n"
+
+
+def write_setup_env_file(
+    *,
+    path: Path,
+    text: str,
+    force: bool = False,
+) -> None:
+    target = path.expanduser()
+    if target.exists() and not force:
+        raise CloudBundleError(f"setup file already exists; pass --force to overwrite: {target}")
+    parent_existed = target.parent.exists()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not parent_existed:
+            target.parent.chmod(0o700)
+    except OSError as exc:
+        raise CloudBundleError(f"unable to prepare setup directory {target.parent}: {exc}") from exc
+    flags = os.O_WRONLY | os.O_CREAT
+    if not force:
+        flags |= os.O_EXCL
+    try:
+        fd = os.open(target, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.truncate(0)
+            handle.write(text)
+        target.chmod(0o600)
+    except FileExistsError as exc:
+        raise CloudBundleError(
+            f"setup file already exists; pass --force to overwrite: {target}"
+        ) from exc
+    except OSError as exc:
+        raise CloudBundleError(f"unable to write setup file {target}: {exc}") from exc
+
+
+def run_cloud_setup(
+    *,
+    token: str,
+    token_file: Path | None,
+    token_stdin: bool,
+    token_env: str,
+    endpoint: str,
+    team_id: str,
+    install_id: str,
+    out: Path | None,
+    force: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    resolved_install_id = install_id.strip() or DEFAULT_SETUP_INSTALL_ID
+    target = out.expanduser() if out else _default_setup_path(resolved_install_id)
+    resolved_token = _resolve_setup_token(
+        token=token,
+        token_file=token_file,
+        token_stdin=token_stdin,
+        token_env=token_env,
+    )
+    env_text = render_setup_env(
+        token=resolved_token,
+        endpoint=endpoint,
+        team_id=team_id,
+        install_id=resolved_install_id,
+    )
+    if not dry_run:
+        write_setup_env_file(path=target, text=env_text, force=force)
+    return {
+        "mode": "cloud-setup",
+        "status": "dry_run" if dry_run else "written",
+        "path": str(target),
+        "endpoint": endpoint,
+        "team_id": team_id,
+        "install_id": resolved_install_id,
+        "token_prefix": _token_prefix(resolved_token),
+        "shell": f"source {shlex.quote(str(target))}",
+    }
 
 
 def _safe_kind(value: str) -> str:
@@ -900,6 +1080,42 @@ def _dogfood_upload(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower cloud")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    setup = subparsers.add_parser("setup")
+    setup.add_argument(
+        "--token",
+        default="",
+        help="team ingest token; prefer --token-stdin to avoid shell history",
+    )
+    setup.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help="file containing either a raw token or CODE_MOWER_CLOUD_TOKEN assignment",
+    )
+    setup.add_argument(
+        "--token-stdin",
+        action="store_true",
+        help="read the team ingest token from stdin",
+    )
+    setup.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    setup.add_argument(
+        "--endpoint",
+        default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
+    )
+    setup.add_argument("--team-id", default=os.environ.get(DEFAULT_TEAM_ID_ENV, ""))
+    setup.add_argument(
+        "--install-id",
+        default=os.environ.get(DEFAULT_INSTALL_ID_ENV, DEFAULT_SETUP_INSTALL_ID),
+    )
+    setup.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="env file to write; defaults to ~/.config/code-mower/tokens/<install-id>.env",
+    )
+    setup.add_argument("--force", action="store_true")
+    setup.add_argument("--dry-run", action="store_true")
+    setup.add_argument("--json", action="store_true")
     export = subparsers.add_parser("export")
     export.add_argument(
         "--report",
@@ -1000,6 +1216,33 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "setup":
+            result = run_cloud_setup(
+                token=args.token,
+                token_file=args.token_file,
+                token_stdin=args.token_stdin,
+                token_env=args.token_env,
+                endpoint=args.endpoint,
+                team_id=args.team_id,
+                install_id=args.install_id,
+                out=args.out,
+                force=args.force,
+                dry_run=args.dry_run,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("Code Mower cloud setup")
+                print(f"Status: {result['status']}")
+                print(f"Path: {result['path']}")
+                print(f"Endpoint: {result['endpoint']}")
+                if result["team_id"]:
+                    print(f"Team: {result['team_id']}")
+                print(f"Install: {result['install_id']}")
+                print(f"Token: {result['token_prefix']}")
+                if result["status"] == "written":
+                    print(f"Load it with: {result['shell']}")
+            return 0
         if args.command == "export":
             payload = build_cloud_bundle(
                 reports=_parse_report_args(args.report),

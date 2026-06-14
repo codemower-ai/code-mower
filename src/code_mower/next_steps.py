@@ -255,6 +255,20 @@ def build_next_steps(
             "why": "Produces a local, source-free bundle for future opt-in benchmarking/reporting.",
         },
         {
+            "id": "cloud-setup",
+            "title": "Store a team ingest token locally when opting into cloud sharing",
+            "command": (
+                "code-mower cloud setup --token-stdin "
+                "--team-id YOUR_TEAM_SLUG "
+                "--install-id YOUR_INSTALL_ID "
+                "--out ~/.config/code-mower/tokens/YOUR_INSTALL_ID.env"
+            ),
+            "why": (
+                "Writes a private 0600 token file and avoids echoing the full "
+                "token in logs."
+            ),
+        },
+        {
             "id": "cloud-upload-dry-run",
             "title": "Preview cloud sharing without sending data",
             "command": (

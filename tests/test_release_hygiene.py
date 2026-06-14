@@ -734,6 +734,86 @@ def main():
             self.assertEqual(result["upload"]["event_count"], 1)
             self.assertEqual(result["export"]["event_count"], 1)
 
+    def test_cloud_setup_writes_private_env_file_without_echoing_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            token = "cmw_live_test_secret_token"
+            target = root / "tokens" / "codex-code-mower.env"
+
+            result = code_mower_cloud.run_cloud_setup(
+                token=token,
+                token_file=None,
+                token_stdin=False,
+                token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+                endpoint="https://codemower.com/api/ingest",
+                team_id="jeff-internal",
+                install_id="codex-code-mower",
+                out=target,
+                force=False,
+                dry_run=False,
+            )
+
+            self.assertEqual(result["status"], "written")
+            self.assertEqual(result["path"], str(target))
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            text = target.read_text(encoding="utf-8")
+            self.assertIn("export CODE_MOWER_CLOUD_TOKEN=", text)
+            self.assertIn("export CODE_MOWER_CLOUD_TEAM_ID=jeff-internal", text)
+            self.assertNotIn(token, json.dumps(result))
+
+    def test_cloud_setup_token_prefix_never_echoes_full_short_token(self) -> None:
+        for token in ("abc", "short13chars!", "sixteen-char-tok"):
+            with self.subTest(token=token):
+                prefix = code_mower_cloud._token_prefix(token)
+                self.assertNotIn(token, prefix)
+                if prefix != "<redacted>":
+                    self.assertLess(len(prefix.removesuffix("...")), len(token))
+
+    def test_cloud_setup_refuses_overwrite_without_force(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "token.env"
+            target.write_text("existing\n", encoding="utf-8")
+
+            with self.assertRaises(code_mower_cloud.CloudBundleError):
+                code_mower_cloud.run_cloud_setup(
+                    token="cmw_live_test_secret_token",
+                    token_file=None,
+                    token_stdin=False,
+                    token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+                    endpoint="https://codemower.com/api/ingest",
+                    team_id="team",
+                    install_id="install",
+                    out=target,
+                    force=False,
+                    dry_run=False,
+                )
+
+    def test_cloud_setup_token_file_parses_export_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            token_file = root / "source.env"
+            token_file.write_text(
+                "export CODE_MOWER_CLOUD_TOKEN='cmw_live_from_file'\n",
+                encoding="utf-8",
+            )
+            target = root / "out.env"
+
+            result = code_mower_cloud.run_cloud_setup(
+                token="",
+                token_file=token_file,
+                token_stdin=False,
+                token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+                endpoint="https://codemower.com/api/ingest",
+                team_id="team",
+                install_id="install",
+                out=target,
+                force=False,
+                dry_run=False,
+            )
+
+            self.assertEqual(result["status"], "written")
+            self.assertIn("cmw_live_from_file", target.read_text(encoding="utf-8"))
+
     def test_cloud_upload_payload_includes_reports_only_when_requested(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -874,8 +954,14 @@ def main():
         ids = [step["id"] for step in plan["steps"]]
 
         self.assertIn("cloud-export", ids)
+        self.assertIn("cloud-setup", ids)
         self.assertIn("cloud-upload-dry-run", ids)
+        self.assertLess(ids.index("cloud-export"), ids.index("cloud-setup"))
+        self.assertLess(ids.index("cloud-setup"), ids.index("cloud-upload-dry-run"))
         self.assertLess(ids.index("cloud-export"), ids.index("cloud-upload-dry-run"))
+        setup = next(step for step in plan["steps"] if step["id"] == "cloud-setup")
+        self.assertIn("cloud setup", setup["command"])
+        self.assertIn("--token-stdin", setup["command"])
         dry_run = next(step for step in plan["steps"] if step["id"] == "cloud-upload-dry-run")
         self.assertIn("cloud upload", dry_run["command"])
         self.assertIn("--dry-run", dry_run["command"])

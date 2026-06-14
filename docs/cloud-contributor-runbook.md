@@ -47,6 +47,19 @@ export CODE_MOWER_CLOUD_TEAM_ID="<team-slug>"
 export CODE_MOWER_CLOUD_ENDPOINT="https://codemower.com/api/ingest"
 ```
 
+Create one with the CLI after issuing a dashboard token:
+
+```bash
+code-mower cloud setup \
+  --token-stdin \
+  --team-id "<team-slug>" \
+  --install-id "codex-code-mower" \
+  --out ~/.config/code-mower/tokens/codex-code-mower.env
+```
+
+The command writes a private env file and prints only a token prefix. Use
+`--force` only when intentionally rotating a token.
+
 ## Codex: Code Mower Work
 
 From the Code Mower checkout:

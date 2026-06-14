@@ -141,13 +141,21 @@ https://codemower.com/dashboard
 Then configure the token locally:
 
 ```bash
-export CODE_MOWER_CLOUD_TOKEN="TOKEN"
-export CODE_MOWER_CLOUD_ENDPOINT="https://codemower.com/api/ingest"
+code-mower cloud setup \
+  --token-stdin \
+  --team-id "YOUR_TEAM_SLUG" \
+  --install-id "your-laptop" \
+  --out ~/.config/code-mower/tokens/your-laptop.env
+
+source ~/.config/code-mower/tokens/your-laptop.env
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 ```
 
-Operator-issued tokens remain a temporary fallback while GitHub, Google, and
-Apple sign-in are being enabled for early adopters.
+`cloud setup` writes a private `0600` env file and prints only a token prefix.
+Paste the dashboard token when prompted by stdin, then press Ctrl-D. Use
+`--force` only when intentionally replacing an existing token file.
+Operator-issued tokens remain a fallback for teams that cannot use the
+self-service dashboard yet.
 
 ## First Pilot Definition Of Done
 

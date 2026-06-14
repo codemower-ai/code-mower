@@ -1134,6 +1134,7 @@ CLI_COMMANDS = (
     "code-mower providers show <provider>",
     "code-mower telemetry summarize ~/.cache/code-mower-audits/events.jsonl --json",
     "code-mower cloud export --report reviewer-metrics=reviewer-metrics.json --report lane-policy=lane-policy.json --report value-report=reviewer-value-report.md --output-dir .code-mower/cloud-benchmark-bundle --json",
+    "code-mower cloud setup --token-stdin --team-id YOUR_TEAM_SLUG --install-id YOUR_INSTALL_ID --out ~/.config/code-mower/tokens/YOUR_INSTALL_ID.env",
     "code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json",
     "python scripts/smoke_easy_mode.py --json",
     "python scripts/fresh_clone_rehearsal.py --json",
