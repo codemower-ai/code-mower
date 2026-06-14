@@ -2448,8 +2448,8 @@ def resolve_doctor_provider_templates_path(path_text: str) -> Path:
     return code_mower_package.resolve_provider_templates_path(path_text)
 
 
-def _apply_v05_defaults(args: argparse.Namespace) -> None:
-    if not getattr(args, "v05", False):
+def _apply_first_run_defaults(args: argparse.Namespace) -> None:
+    if not (getattr(args, "v05", False) or getattr(args, "preflight", False)):
         return
     args.easy = True
     if args.profile is None:
@@ -2483,6 +2483,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--probe-runtime --github --cloud"
         ),
     )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help=(
+            "friendly alias for the v0.5 first-run preset: --easy "
+            "--profile recommended --probe-runtime --github --cloud"
+        ),
+    )
     parser.add_argument("--probe-runtime", action="store_true")
     parser.add_argument(
         "--github",
@@ -2508,7 +2516,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    _apply_v05_defaults(args)
+    _apply_first_run_defaults(args)
     if args.easy and args.profile is None:
         args.profile = "recommended"
 

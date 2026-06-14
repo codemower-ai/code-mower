@@ -1,7 +1,10 @@
 # Sample Doctor Output
 
-This page shows the kind of signal `code-mower doctor --v05` is meant to
+This page shows the kind of signal `code-mower doctor --preflight` is meant to
 produce before you enable reviewer lanes.
+
+`--preflight` is the friendly alias for the versioned v0.5 preset; `doctor
+--v05` remains equivalent for scripts.
 
 The exact checks depend on your repository, GitHub auth, provider CLIs, and
 optional cloud-token setup. This sample is sanitized and intentionally generic.
@@ -9,7 +12,7 @@ optional cloud-token setup. This sample is sanitized and intentionally generic.
 ## Human-Readable Shape
 
 ```text
-$ code-mower doctor --v05
+$ code-mower doctor --preflight
 PASS  config.validate                  config validates
 PASS  provider_templates.load          provider templates load
 PASS  profile.select                   selected profile recommended: codex, claude_audit, gitar
@@ -59,7 +62,7 @@ local run, start without `--strict`.
 Use JSON mode for support, automation, or CI:
 
 ```bash
-code-mower doctor --v05 --json > code-mower-doctor.json
+code-mower doctor --preflight --json > code-mower-doctor.json
 ```
 
 The output includes:

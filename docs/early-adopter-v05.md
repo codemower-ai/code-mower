@@ -8,11 +8,11 @@ requiring them to understand every provider or lane.
 Code Mower has two setup paths, and v0.5 docs should keep them separate.
 
 **Code Mower OSS user setup** is the early-adopter path. A user installs Code
-Mower, runs `code-mower init --easy`, runs `code-mower doctor`, runs a local
-audit or value report, and optionally pastes a CodeMower.com developer/team
-token into `code-mower cloud setup --token-stdin`. OSS users do not configure
-Supabase, Vercel, OAuth apps, DNS, service-role keys, database migrations, or
-hosted secrets.
+Mower, runs `code-mower init --easy`, runs `code-mower doctor --preflight`,
+runs a local audit or value report, and optionally pastes a CodeMower.com
+developer/team token into `code-mower cloud setup --token-stdin`. OSS users do
+not configure Supabase, Vercel, OAuth apps, DNS, service-role keys, database
+migrations, or hosted secrets.
 
 **CodeMower.com operator setup** is the hosted service path. Operators own the
 Supabase/Postgres project, Vercel deployment, OAuth provider credentials, DNS
@@ -36,7 +36,13 @@ The one-command first-run diagnostic is:
 code-mower doctor --v05 --json
 ```
 
-It expands to `--easy --profile recommended --probe-runtime --github --cloud`.
+For friendlier user-facing docs, prefer the equivalent alias:
+
+```bash
+code-mower doctor --preflight --json
+```
+
+Both expand to `--easy --profile recommended --probe-runtime --github --cloud`.
 
 ## Recommended First-Run Profile
 
@@ -67,7 +73,7 @@ future ACP bridges.
 Before inviting users:
 
 - README has a five-minute quickstart.
-- README shows a concrete sample of `code-mower doctor --v05` output or links
+- README shows a concrete sample of `code-mower doctor --preflight` output or links
   to a screenshot/terminal capture near the top.
 - `docs/quickstart.md` works from a clean machine.
 - `docs/sample-doctor-output.md` shows what a successful/warn first run looks
@@ -76,7 +82,7 @@ Before inviting users:
   migration, or hosted-secret setup.
 - CodeMower.com operator docs clearly own hosted setup, token administration,
   and production secrets.
-- `code-mower doctor --v05 --json` works as the recommended early-adopter
+- `code-mower doctor --preflight --json` works as the recommended early-adopter
   preset.
 - `code-mower cloud upload --dry-run` previews without network transfer.
 - `code-mower cloud doctor --probe-service` verifies CodeMower.com health and

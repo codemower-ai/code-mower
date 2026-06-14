@@ -27,7 +27,7 @@ intended to be installed from the `codemower-ai/code-mower` public repository
 after the org move. It has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
-- `code-mower init --easy`, `doctor --v05`, `next-steps`, and starter
+- `code-mower init --easy`, `doctor --preflight`, `next-steps`, and starter
   value-report generation;
 - pinned standalone consumption from the private reference/product repos;
 - mirror-removal pilots where product repos use package-backed wrappers instead
@@ -35,9 +35,10 @@ after the org move. It has proved:
 - generated product-support wrappers for compatibility shims and shell-safe
   GitHub comments;
 - optional sanitized cloud export/upload commands;
-- `code-mower doctor --v05` as a single early-adopter preset for easy mode,
-  runtime probes, GitHub/private-repo setup, Actions cost diagnostics, and
-  optional cloud-token setup;
+- `code-mower doctor --preflight` as the friendly early-adopter preset for easy
+  mode, runtime probes, GitHub/private-repo setup, Actions cost diagnostics,
+  and optional cloud-token setup. `doctor --v05` remains the versioned alias for
+  scripts;
 - Code Mower Cloud dogfood events from the OSS repo and product work; and
 - GitHub-first setup checks, including private-repo Actions cost visibility.
 - public repo hygiene artifacts: issue templates, pull request template,
@@ -91,7 +92,7 @@ The v0.5 experience should be:
 
 1. install Code Mower from GitHub or a package index;
 2. run `code-mower init --easy`;
-3. run `code-mower doctor --v05`;
+3. run `code-mower doctor --preflight`;
 4. run a first manual/local audit;
 5. generate a local reviewer value report;
 6. optionally create or receive a CodeMower.com developer/team token; and
@@ -127,8 +128,8 @@ authoring-run capture remain post-v1.0 work.
 3. Create a public GitHub Release for the current alpha, verify the release
    workflow builds source/wheel artifacts, and configure PyPI trusted
    publishing before widening beyond friendly early adopters.
-4. Add a short terminal recording or screenshot showing `doctor --v05` and the
-   first value-report path. A static transcript now exists in
+4. Add a short terminal recording or screenshot showing `doctor --preflight`
+   and the first value-report path. A static transcript now exists in
    `docs/first-run-transcript.md`; replace or augment it with a recording
    before a wider launch.
 5. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
