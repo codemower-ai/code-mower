@@ -4,6 +4,20 @@ Code Mower is local-first. Cloud sharing is optional and exists to help users
 compare AI builders and reviewers across time, repositories, languages, and
 teams.
 
+## Setup Personas
+
+There are two different setup jobs:
+
+- **OSS user:** install Code Mower, run local checks/reports, optionally create
+  or receive a CodeMower.com developer/team token, and store it with
+  `code-mower cloud setup --token-stdin`.
+- **CodeMower.com operator:** run the hosted service, including
+  Supabase/Postgres, Vercel, OAuth providers, DNS, service-role/admin secrets,
+  retention, abuse handling, and token administration fallback.
+
+An OSS user does not need Supabase, Vercel, OAuth-app, DNS, database, or
+service-role access to export local bundles or upload opt-in metadata.
+
 ## Privacy Boundary
 
 The default bundle excludes:
@@ -135,8 +149,8 @@ The intended early-adopter flow is:
 
 The local OSS package does not require login for local export, local value
 reports, or dry-run upload checks. Login is only needed to create and manage
-hosted team tokens. Operator-issued tokens remain a temporary fallback while
-OAuth providers are being enabled for early adopters.
+hosted team tokens. Operator-issued tokens remain a fallback for users who
+cannot use self-service login yet.
 
 ## Routine Dogfood Upload
 

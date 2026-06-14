@@ -131,6 +131,10 @@ code-mower cloud doctor .code-mower/cloud-benchmark-bundle --json
 
 Nothing uploads unless you pass `--yes`.
 
+You do not need Supabase, Vercel, OAuth-app, DNS, service-role, database, or
+hosted-secret setup to use Code Mower or opt into cloud sharing. Those are
+CodeMower.com operator responsibilities.
+
 To upload to Code Mower Cloud, create a team ingest token from:
 
 ```text

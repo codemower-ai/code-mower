@@ -63,9 +63,9 @@ The cloud service currently supports:
 - GitHub, Google, and Apple login UI through Supabase Auth; and
 - dogfood uploads from Code Mower and product development.
 
-OAuth provider credentials still need to be enabled in Supabase before external
-GitHub/Google/Apple sign-in is fully usable by early adopters. Until then,
-operator-issued team tokens remain the fallback.
+OAuth, Supabase, Vercel, DNS, and hosted-secret setup are CodeMower.com
+operator responsibilities. OSS users should only need a dashboard-issued or
+operator-issued developer/team token when they opt into cloud sharing.
 
 ## v0.5 Early-Adopter Goal
 
@@ -79,7 +79,7 @@ The v0.5 experience should be:
 3. run `code-mower doctor --easy --github --probe-runtime`;
 4. run a first manual/local audit;
 5. generate a local reviewer value report;
-6. optionally create a CodeMower.com team token; and
+6. optionally create or receive a CodeMower.com developer/team token; and
 7. optionally upload sanitized benchmark metadata.
 
 The default lane policy remains conservative: Codex and Claude are the first
@@ -125,3 +125,10 @@ authoring-run capture remain post-v1.0 work.
 Public OSS docs live in the Code Mower repo. Private SaaS deployment docs live
 in the CodeMower.com repo. Product repos should keep only thin support wrappers
 and product-specific notes.
+
+Keep setup docs split by persona:
+
+- OSS user docs: install, `doctor`, first audit, first report, optional
+  developer/team token.
+- CodeMower.com operator docs: Supabase/Postgres, Vercel, OAuth, DNS,
+  service-role/admin secrets, token fallback, retention, and hosted reporting.

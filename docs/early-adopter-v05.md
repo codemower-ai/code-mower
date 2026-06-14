@@ -3,6 +3,23 @@
 The v0.5 goal is to make Code Mower useful for 20-50 early OSS users without
 requiring them to understand every provider or lane.
 
+## Two Setup Personas
+
+Code Mower has two setup paths, and v0.5 docs should keep them separate.
+
+**Code Mower OSS user setup** is the early-adopter path. A user installs Code
+Mower, runs `code-mower init --easy`, runs `code-mower doctor`, runs a local
+audit or value report, and optionally pastes a CodeMower.com developer/team
+token into `code-mower cloud setup --token-stdin`. OSS users do not configure
+Supabase, Vercel, OAuth apps, DNS, service-role keys, database migrations, or
+hosted secrets.
+
+**CodeMower.com operator setup** is the hosted service path. Operators own the
+Supabase/Postgres project, Vercel deployment, OAuth provider credentials, DNS
+records, service-role/admin secrets, token administration fallback, retention,
+abuse handling, and hosted reporting. Those steps live in the private
+CodeMower.com repo, not in the normal OSS install guide.
+
 ## What v0.5 Should Prove
 
 A new user can:
@@ -43,6 +60,10 @@ Before inviting users:
 
 - README has a five-minute quickstart.
 - `docs/quickstart.md` works from a clean machine.
+- OSS-user docs never require Supabase, Vercel, OAuth-app, DNS, service-role,
+  migration, or hosted-secret setup.
+- CodeMower.com operator docs clearly own hosted setup, token administration,
+  and production secrets.
 - `code-mower doctor --easy --github --probe-runtime` gives actionable
   remediation.
 - `code-mower cloud upload --dry-run` previews without network transfer.
@@ -79,6 +100,6 @@ Cut a v0.5 alpha or beta only after:
 - codemower.com can receive an ingest payload;
 - the dashboard can show at least project count, upload count, report count,
   provider/lane summary rows, and structured event counts;
-- GitHub, Google, and Apple login are either fully configured or clearly marked
-  as pending with an operator-token fallback; and
+- GitHub, Google, and Apple login have an operator-owned verification checklist
+  with an operator-token fallback; and
 - the privacy boundary is documented and tested.
