@@ -1753,20 +1753,21 @@ def _probe_error_value_is_clean(value: Any) -> bool:
 def _probe_auth_error_detail(
     payload: Mapping[str, Any],
     error_fields: Sequence[str],
+    auth_status_fields: Sequence[str],
     output: str,
 ) -> dict[str, Any]:
     """Return content-free auth failure diagnostics for structured probes."""
     detail: dict[str, Any] = {}
-    status_value = (
-        _json_field(payload, "api_error_status")
-        if "api_error_status" in set(error_fields)
-        else None
-    )
-    if status_value is not None:
+    for field in auth_status_fields:
+        status_value = _json_field(payload, field)
+        if status_value is None:
+            continue
         status_text = str(status_value).strip()
         if status_text in {"401", "403"}:
-            detail["api_error_status_code"] = status_text
+            detail["auth_status_code"] = status_text
+            detail["auth_status_field"] = field
             detail["auth_error_detected"] = True
+            break
 
     lowered_output = output.lower()
     auth_markers = (
@@ -1853,7 +1854,25 @@ def _evaluate_json_probe(
             dirty_errors.append(field)
     detail["error_fields"] = error_fields
     detail["dirty_error_fields"] = dirty_errors
-    detail.update(_probe_auth_error_detail(payload, error_fields, output))
+    auth_status_fields = [
+        str(field)
+        for field in _as_sequence(
+            provider_config.get(
+                "doctor_probe_auth_status_fields",
+                ("api_error_status",),
+            )
+        )
+        if str(field).strip()
+    ]
+    detail["auth_status_fields"] = auth_status_fields
+    detail.update(
+        _probe_auth_error_detail(
+            payload,
+            error_fields,
+            auth_status_fields,
+            output,
+        )
+    )
 
     field = str(provider_config.get("doctor_probe_expect_json_field", "")).strip()
     expected = provider_config.get("doctor_probe_expect_json_value")

@@ -116,6 +116,12 @@ doctor smoke uses Gemini's non-interactive trust bypass for the throwaway
 working directory; full audit runs already use the same explicit headless trust
 flag for stdin transport.
 
+For JSON-speaking provider probes, configure `doctor_probe_error_fields` for
+fields that indicate provider/API failure and `doctor_probe_auth_status_fields`
+for fields that carry HTTP-style auth status codes. Doctor reports expose only
+sanitized `401`/`403` auth status codes and content-free flags, not raw
+provider-supplied error strings.
+
 Google's June 18, 2026 migration makes Gemini CLI a legacy/compatibility lane
 for most individual free/Pro/Ultra setups. Keep it for historical comparison
 and enterprise/API-key continuity, but prefer Antigravity CLI for new Google

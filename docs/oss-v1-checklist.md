@@ -17,7 +17,7 @@ explicitly promotes them.
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.5.0-alpha.5` of the standalone
+The current public-release baseline is `v0.5.0-alpha.6` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -196,6 +196,9 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 - Emit content-free JSON suitable for sharing.
 - Redact raw provider-smoke stdout/stderr and expose only shape, status,
   return code, JSON-parse status, expected-sentinel match, and remediation.
+- Keep auth-failure status diagnostics provider-configured through
+  `doctor_probe_auth_status_fields`; expose only sanitized `401`/`403` codes
+  and content-free flags in shareable doctor JSON.
 - Provide exact remediation hints for missing provider auth, CLIs, runtime
   probes, provider catalog coverage, config loading, config validation, and
   Python version checks.

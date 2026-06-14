@@ -35,8 +35,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_v05_alpha_5(self) -> None:
-        self.assertEqual(__version__, "0.5.0a5")
+    def test_version_is_v05_alpha_6(self) -> None:
+        self.assertEqual(__version__, "0.5.0a6")
 
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
@@ -785,7 +785,8 @@ def main():
         self.assertEqual(status, doctor.STATUS_WARN)
         self.assertEqual(message, "probe reported provider authentication failure")
         self.assertTrue(detail["auth_error_detected"])
-        self.assertEqual(detail["api_error_status_code"], "401")
+        self.assertEqual(detail["auth_status_code"], "401")
+        self.assertEqual(detail["auth_status_field"], "api_error_status")
         self.assertIn("api_error_status", detail["dirty_error_fields"])
         self.assertNotIn("Invalid authentication credentials", json.dumps(detail))
 
@@ -813,7 +814,61 @@ def main():
         self.assertEqual(status, doctor.STATUS_WARN)
         self.assertEqual(message, "probe reported provider authentication failure")
         self.assertTrue(detail["auth_error_detected"])
-        self.assertEqual(detail["api_error_status_code"], "401")
+        self.assertEqual(detail["auth_status_code"], "401")
+        self.assertEqual(detail["auth_status_field"], "api_error_status")
+
+    def test_doctor_json_probe_classifies_configured_auth_status_field(self) -> None:
+        payload = json.dumps(
+            {
+                "is_error": True,
+                "status_code": 403,
+                "result": "Forbidden",
+            }
+        )
+
+        status, message, detail = doctor._evaluate_json_probe(
+            {
+                "doctor_probe_error_fields": ("is_error", "status_code"),
+                "doctor_probe_auth_status_fields": ("status_code",),
+                "doctor_probe_expect_json_field": "result",
+                "doctor_probe_expect_json_value": "ok",
+            },
+            payload,
+            returncode=1,
+        )
+
+        self.assertEqual(status, doctor.STATUS_WARN)
+        self.assertEqual(message, "probe reported provider authentication failure")
+        self.assertTrue(detail["auth_error_detected"])
+        self.assertEqual(detail["auth_status_code"], "403")
+        self.assertEqual(detail["auth_status_field"], "status_code")
+
+    def test_doctor_json_probe_auth_status_field_can_be_status_only(self) -> None:
+        payload = json.dumps(
+            {
+                "is_error": True,
+                "status_code": 401,
+                "result": "Unauthorized",
+            }
+        )
+
+        status, message, detail = doctor._evaluate_json_probe(
+            {
+                "doctor_probe_error_fields": ("is_error",),
+                "doctor_probe_auth_status_fields": ("status_code",),
+                "doctor_probe_expect_json_field": "result",
+                "doctor_probe_expect_json_value": "ok",
+            },
+            payload,
+            returncode=1,
+        )
+
+        self.assertEqual(status, doctor.STATUS_WARN)
+        self.assertEqual(message, "probe reported provider authentication failure")
+        self.assertTrue(detail["auth_error_detected"])
+        self.assertEqual(detail["auth_status_code"], "401")
+        self.assertEqual(detail["auth_status_field"], "status_code")
+        self.assertEqual(detail["dirty_error_fields"], ["is_error"])
 
     def test_doctor_json_probe_does_not_copy_verbatim_auth_status_text(self) -> None:
         payload = json.dumps(
@@ -840,7 +895,7 @@ def main():
         detail_json = json.dumps(detail)
         self.assertNotIn("person@example.com", detail_json)
         self.assertNotIn("expired", detail_json)
-        self.assertNotIn("api_error_status_code", detail)
+        self.assertNotIn("auth_status_code", detail)
 
     def test_doctor_json_probe_ignores_unconfigured_auth_status_field(self) -> None:
         payload = json.dumps(
@@ -853,6 +908,7 @@ def main():
         status, message, detail = doctor._evaluate_json_probe(
             {
                 "doctor_probe_error_fields": ("is_error",),
+                "doctor_probe_auth_status_fields": (),
                 "doctor_probe_expect_json_field": "result",
                 "doctor_probe_expect_json_value": "ok",
             },
@@ -863,7 +919,7 @@ def main():
         self.assertEqual(status, doctor.STATUS_PASS)
         self.assertEqual(message, "auth smoke probe succeeded")
         self.assertNotIn("auth_error_detected", detail)
-        self.assertNotIn("api_error_status_code", detail)
+        self.assertNotIn("auth_status_code", detail)
 
     def test_doctor_claude_auth_failure_remediation_uses_real_prompt_smoke(self) -> None:
         remediation = doctor._local_cli_probe_remediation(

@@ -112,7 +112,9 @@ Default promotions:
 - Claude audit: eligible for merge authority after local setup.
 - Claude doctor probe: use the provider-configured JSON sentinel probe with a
   cheap explicit model and budget cap (`--model sonnet`, `--max-budget-usd
-  0.25`) instead of relying on the local Claude CLI's default model.
+  0.25`) instead of relying on the local Claude CLI's default model. Auth
+  status fields are configured through `doctor_probe_auth_status_fields` so
+  providers can use their own JSON field names without leaking raw output.
 - Gitar: informational until local corpus evidence justifies selective use.
 - Cursor BugBot and other SaaS/manual lanes: informational until calibrated.
 - Local/private model lanes: informational until false-positive rates are low.

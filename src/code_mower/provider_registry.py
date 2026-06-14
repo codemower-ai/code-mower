@@ -142,6 +142,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "doctor_probe_expect_json_field": "result",
             "doctor_probe_expect_json_value": "ok",
             "doctor_probe_error_fields": ("is_error", "api_error_status"),
+            "doctor_probe_auth_status_fields": ("api_error_status",),
         },
     ),
     "devin": ProviderLane(
