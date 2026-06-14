@@ -22,12 +22,15 @@ from code_mower import audit_progress
 from code_mower import cloud as code_mower_cloud
 from code_mower import code_mower_calibration
 from code_mower import cli as code_mower_cli
+from code_mower import cloud_client
 from code_mower import doctor
+from code_mower import doctor_checks
 from code_mower import init as code_mower_init
 from code_mower import next_steps
 from code_mower import package as code_mower_package
 from code_mower import secrets as code_mower_secrets
 from code_mower import config as code_mower_config
+from code_mower import provider_runners
 from scripts import privacy_scan
 
 
@@ -72,6 +75,54 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertTrue(
             all(callable(handler) for handler in code_mower_cli.COMMAND_HANDLERS.values())
         )
+
+    def test_internal_package_seams_keep_cli_first_surface(self) -> None:
+        self.assertIs(doctor.DoctorCheck, doctor_checks.DoctorCheck)
+        self.assertIs(doctor.DoctorReport, doctor_checks.DoctorReport)
+        self.assertEqual(
+            doctor_checks.default_check_group_ids(),
+            ("runtime", "github", "providers", "cloud", "output"),
+        )
+        self.assertEqual(
+            cloud_client.dashboard_url_for_endpoint("https://codemower.com/api/ingest"),
+            "https://codemower.com/dashboard",
+        )
+        self.assertTrue(
+            cloud_client.is_bundle_manifest(
+                {"schema": cloud_client.BUNDLE_SCHEMA},
+            )
+        )
+        self.assertEqual(
+            code_mower_calibration._safe_slug("owner/repo with spaces"),
+            "owner-repo-with-spaces",
+        )
+        self.assertEqual(code_mower_calibration._int("42", field="pr"), 42)
+        self.assertEqual(code_mower_calibration._float("0.75"), 0.75)
+
+    def test_provider_runner_github_token_helper_reads_stdin_and_clears_env(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"GITHUB_TOKEN": "env-token", "GH_TOKEN": "gh-token"},
+            clear=False,
+        ):
+            token = provider_runners.resolve_github_token_from_stdin_or_env(
+                True,
+                stdin=StringIO("stdin-token\n"),
+            )
+            self.assertEqual(token, "stdin-token")
+            self.assertNotIn("GITHUB_TOKEN", os.environ)
+            self.assertNotIn("GH_TOKEN", os.environ)
+
+    def test_provider_runner_github_token_helper_legacy_env_path(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"GITHUB_TOKEN": "env-token", "GH_TOKEN": "gh-token"},
+            clear=False,
+        ):
+            token = provider_runners.resolve_github_token_from_stdin_or_env(False)
+            self.assertEqual(token, "env-token")
+            self.assertNotIn("GITHUB_TOKEN", os.environ)
+            self.assertNotIn("GH_TOKEN", os.environ)
 
     def test_doctor_preflight_applies_v05_first_run_defaults(self) -> None:
         args = Namespace(
@@ -443,6 +494,27 @@ printf '%s\\n' "${lane}"
             "src/code_mower/templates/product-support/safe_gh_comment.py",
         ):
             self.assertIn(source, packaged_sources)
+
+    def test_package_materializer_includes_internal_package_seams(self) -> None:
+        packaged_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}
+        for target in (
+            "src/code_mower/calibration/__init__.py",
+            "src/code_mower/calibration/corpus.py",
+            "src/code_mower/calibration/evidence.py",
+            "src/code_mower/calibration/identity.py",
+            "src/code_mower/calibration/metrics.py",
+            "src/code_mower/calibration/policy.py",
+            "src/code_mower/cloud_client/__init__.py",
+            "src/code_mower/cloud_client/bundle.py",
+            "src/code_mower/cloud_client/endpoints.py",
+            "src/code_mower/doctor_checks/__init__.py",
+            "src/code_mower/doctor_checks/models.py",
+            "src/code_mower/doctor_checks/registry.py",
+            "src/code_mower/provider_runners/__init__.py",
+            "src/code_mower/provider_runners/github_auth.py",
+        ):
+            with self.subTest(target=target):
+                self.assertIn(target, packaged_targets)
 
     def test_standalone_shadow_holds_checkout_lock_through_delegation(self) -> None:
         text = (

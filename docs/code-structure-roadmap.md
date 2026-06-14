@@ -52,17 +52,41 @@ surface should eventually be small:
 
 Everything else can remain CLI-first.
 
+## Structural Progress
+
+The first hardening slice keeps the public API CLI-first while introducing
+tested internal seams:
+
+- `code_mower.calibration` now owns corpus parsing helpers, artifact identity,
+  evidence disposition constants, metric normalization, and lane-promotion
+  thresholds. `code_mower_calibration.py` remains the backwards-compatible
+  command adapter.
+- `code_mower.doctor_checks` now owns doctor result models and the named check
+  groups: runtime, GitHub, providers, cloud, and output.
+- `code_mower.provider_runners` now owns shared GitHub token resolution for
+  stdin-safe audit wrappers and local CLI lanes.
+- `code_mower.cloud_client` now owns cloud endpoint probing plus bundle schema
+  and privacy metadata. `cloud.py` remains the CLI adapter for export, doctor,
+  setup, and upload.
+
+These are intentionally package seams, not a full rewrite. The next slices can
+move larger chunks of implementation behind those seams without breaking
+existing commands.
+
 ## Recommended Refactor Order
 
 1. **Calibration package split**
-   - Move corpus parsing and truth models to `code_mower/calibration/corpus.py`.
+   - Move corpus parsing and truth models to `code_mower/calibration/corpus.py`
+     and related modules.
    - Move evidence/metrics/policy math to separate modules.
+   - Keep pulling value-report rendering into a smaller reporting module once
+     the current metrics path has more tests.
    - Keep `code_mower_calibration.py` as a thin backwards-compatible command
      adapter until v1.0.
 
 2. **Doctor check registry**
-   - Split checks into `doctor/runtime.py`, `doctor/github.py`,
-     `doctor/providers.py`, `doctor/cloud.py`, and `doctor/output.py`.
+   - Split checks into registry-backed modules for runtime, GitHub, providers,
+     cloud, and output.
    - Keep `doctor --preflight` behavior unchanged.
    - Add tests at the check-result level, not only command-output level.
 
@@ -108,4 +132,3 @@ Before v1.0, the codebase should satisfy:
 - public docs explain the package layout;
 - `ruff`, privacy scan, unit tests, easy-mode smoke, and fresh-clone rehearsal
   stay green after each structural slice.
-

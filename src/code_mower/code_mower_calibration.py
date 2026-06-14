@@ -26,12 +26,68 @@ if __package__ in {None, ""}:
             code_mower_telemetry,
             reviewer_metrics,
         )
+        from code_mower.calibration import (
+            KNOWN_EVIDENCE_DISPOSITIONS,
+            MERGE_GATE_MIN_CLEAN_RUNS,
+            MERGE_GATE_MIN_FINDINGS,
+            MERGE_GATE_USEFUL_RATE,
+            NON_BLOCKING_CODERABBIT_SEVERITIES,
+            SELECTIVE_USEFUL_RATE,
+            USEFUL_EVIDENCE_DISPOSITIONS,
+            float_or_zero as _float,
+            head_slug as _head_slug,
+            load_json_object as _load_json,
+            parse_int as _int,
+            safe_slug as _safe_slug,
+        )
     else:
         from tools import code_mower_context_packs, code_mower_telemetry, reviewer_metrics
+        from tools.calibration import (
+            KNOWN_EVIDENCE_DISPOSITIONS,
+            MERGE_GATE_MIN_CLEAN_RUNS,
+            MERGE_GATE_MIN_FINDINGS,
+            MERGE_GATE_USEFUL_RATE,
+            NON_BLOCKING_CODERABBIT_SEVERITIES,
+            SELECTIVE_USEFUL_RATE,
+            USEFUL_EVIDENCE_DISPOSITIONS,
+            float_or_zero as _float,
+            head_slug as _head_slug,
+            load_json_object as _load_json,
+            parse_int as _int,
+            safe_slug as _safe_slug,
+        )
 elif __package__ == "tools":
     from tools import code_mower_context_packs, code_mower_telemetry, reviewer_metrics
+    from tools.calibration import (
+        KNOWN_EVIDENCE_DISPOSITIONS,
+        MERGE_GATE_MIN_CLEAN_RUNS,
+        MERGE_GATE_MIN_FINDINGS,
+        MERGE_GATE_USEFUL_RATE,
+        NON_BLOCKING_CODERABBIT_SEVERITIES,
+        SELECTIVE_USEFUL_RATE,
+        USEFUL_EVIDENCE_DISPOSITIONS,
+        float_or_zero as _float,
+        head_slug as _head_slug,
+        load_json_object as _load_json,
+        parse_int as _int,
+        safe_slug as _safe_slug,
+    )
 else:  # pragma: no cover - exercised after package extraction.
     from . import code_mower_context_packs, code_mower_telemetry, reviewer_metrics
+    from .calibration import (
+        KNOWN_EVIDENCE_DISPOSITIONS,
+        MERGE_GATE_MIN_CLEAN_RUNS,
+        MERGE_GATE_MIN_FINDINGS,
+        MERGE_GATE_USEFUL_RATE,
+        NON_BLOCKING_CODERABBIT_SEVERITIES,
+        SELECTIVE_USEFUL_RATE,
+        USEFUL_EVIDENCE_DISPOSITIONS,
+        float_or_zero as _float,
+        head_slug as _head_slug,
+        load_json_object as _load_json,
+        parse_int as _int,
+        safe_slug as _safe_slug,
+    )
 
 
 DEFAULT_LOCAL_LLM_PROFILES = (
@@ -40,7 +96,6 @@ DEFAULT_LOCAL_LLM_PROFILES = (
 )
 DEFAULT_CLI_LANES = ("gemini_cli", "antigravity_cli", "hermes_cli", "coderabbit_cli")
 CONTEXT_PACK_CLI_LANES = {"antigravity-cli", "gemini-cli", "hermes-cli"}
-SAFE_SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 MATCH_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 MATCH_STOPWORDS = {
     "about",
@@ -58,14 +113,6 @@ MATCH_STOPWORDS = {
     "until",
     "with",
 }
-KNOWN_EVIDENCE_DISPOSITIONS = {
-    "true_positive",
-    "useful",
-    "false_positive",
-    "noise",
-    "unknown",
-}
-USEFUL_EVIDENCE_DISPOSITIONS = {"true_positive", "useful"}
 TRUTH_EXPECTATION_UNKNOWN = "unknown"
 TRUTH_EXPECTATION_KNOWN_CLEAN = "known_clean"
 TRUTH_EXPECTATION_KNOWN_BLOCKED = "known_blocked"
@@ -119,59 +166,8 @@ RUN_STATUS_CATEGORY_ALIASES = {
     "timeout": RUN_STATUS_INFRA_ERROR,
     "timed_out": RUN_STATUS_INFRA_ERROR,
 }
-NON_BLOCKING_CODERABBIT_SEVERITIES = {
-    "info",
-    "informational",
-    "low",
-    "minor",
-    "nit",
-    "notice",
-    "style",
-    "suggestion",
-}
-MERGE_GATE_USEFUL_RATE = 0.60
-SELECTIVE_USEFUL_RATE = 0.50
-MERGE_GATE_MIN_FINDINGS = 10
-MERGE_GATE_MIN_CLEAN_RUNS = 2
 CALIBRATION_RUN_RESULTS_MODE = "code-mower-calibration-run-results"
 CALIBRATION_RUN_RESULTS_SCHEMA = "code_mower.calibrationRunResults.v1"
-
-
-def _safe_slug(value: Any, fallback: str = "item") -> str:
-    text = SAFE_SLUG_RE.sub("-", str(value or "").strip()).strip("._-")
-    while ".." in text:
-        text = text.replace("..", ".")
-    text = text.strip("._-")
-    return text or fallback
-
-
-def _head_slug(value: Any) -> str:
-    head = str(value or "").strip()
-    if not head:
-        return ""
-    safe_head = _safe_slug(head, "")
-    digest = hashlib.sha256(head.encode("utf-8")).hexdigest()[:12]
-    return f"{safe_head[:12] or digest}-{digest}"
-
-
-def _load_json(path: Path) -> Mapping[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"unable to read {path}: {exc}") from exc
-    if not isinstance(payload, Mapping):
-        raise ValueError(f"{path} must contain a JSON object")
-    return payload
-
-
-def _int(value: Any, *, field: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{field} must be an integer")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
-    raise ValueError(f"{field} must be an integer")
 
 
 def load_corpus(path: Path) -> dict[str, Any]:
@@ -2450,19 +2446,6 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
             "blind runs before promoting lanes."
         ),
     }
-
-
-def _float(value: Any) -> float:
-    if isinstance(value, bool):
-        return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return 0.0
-    return 0.0
 
 
 def build_lane_policy_report(metrics: Mapping[str, Any]) -> dict[str, Any]:

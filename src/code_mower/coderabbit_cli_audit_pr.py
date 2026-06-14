@@ -15,6 +15,18 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+if __package__ in {None, ""}:
+    module_dir = Path(__file__).resolve().parent
+    sys.path.insert(0, str(module_dir.parent))
+    if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
+        from code_mower.provider_runners import resolve_github_token_from_env_or_gh
+    else:
+        from tools.provider_runners import resolve_github_token_from_env_or_gh
+elif __package__ == "tools":
+    from tools.provider_runners import resolve_github_token_from_env_or_gh
+else:  # pragma: no cover - exercised after package extraction.
+    from .provider_runners import resolve_github_token_from_env_or_gh
+
 
 DEFAULT_CODERABBIT_COMMAND = "coderabbit"
 DEFAULT_BASE_REF = "origin/main"
@@ -89,24 +101,7 @@ def fetch_pull_request(repo: str, pr_number: int, *, token: str) -> Mapping[str,
 
 
 def resolve_github_token() -> str:
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
-        return token
-    try:
-        completed = subprocess.run(
-            ["gh", "auth", "token"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (
-        FileNotFoundError,
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-    ):
-        return ""
-    return completed.stdout.strip()
+    return resolve_github_token_from_env_or_gh()
 
 
 def build_coderabbit_child_env() -> dict[str, str]:

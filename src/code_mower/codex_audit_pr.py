@@ -87,10 +87,22 @@ from typing import Any, Dict, List, Optional, Tuple
 if __package__ in {None, "", "tools"}:
     try:
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
+        from tools.provider_runners import (
+            pop_github_token_env,
+            resolve_github_token_from_stdin_or_env,
+        )
     except ImportError:  # pragma: no cover - direct script execution fallback
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
+        from provider_runners import (  # type: ignore
+            pop_github_token_env,
+            resolve_github_token_from_stdin_or_env,
+        )
 else:  # pragma: no cover - exercised after package extraction.
     from .audit_progress import AuditProgress, run_subprocess_with_progress
+    from .provider_runners import (
+        pop_github_token_env,
+        resolve_github_token_from_stdin_or_env,
+    )
 
 
 # ----- Configuration / defaults -----
@@ -1766,11 +1778,7 @@ def _extract_and_clear_github_token() -> Optional[str]:
     Returns the token value (kept only in a local variable, NOT
     re-exported via os.environ), or None if no token was present.
     """
-    token = os.environ.pop("GITHUB_TOKEN", None)
-    # GH_TOKEN is the gh CLI's alternate env name; strip it too even if
-    # unused here, since the same exposure applies.
-    os.environ.pop("GH_TOKEN", None)
-    return token
+    return pop_github_token_env()
 
 
 def _resolve_github_token(read_from_stdin: bool) -> Optional[str]:
@@ -1787,16 +1795,7 @@ def _resolve_github_token(read_from_stdin: bool) -> Optional[str]:
 
     Returns None if no token can be resolved by either mechanism.
     """
-    if read_from_stdin:
-        line = sys.stdin.readline()
-        # Belt-and-suspenders: even though the wrapper unsets these
-        # before exec, clear them if they somehow made it through.
-        os.environ.pop("GITHUB_TOKEN", None)
-        os.environ.pop("GH_TOKEN", None)
-        if not line:
-            return None
-        return line.rstrip("\r\n")
-    return _extract_and_clear_github_token()
+    return resolve_github_token_from_stdin_or_env(read_from_stdin)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

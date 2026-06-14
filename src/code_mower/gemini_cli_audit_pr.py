@@ -22,13 +22,17 @@ if __package__ in {None, ""}:
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower import prompts as code_mower_prompts
         from code_mower import secrets as code_mower_secrets
+        from code_mower.provider_runners import resolve_github_token_from_env_or_gh
     else:
         from tools import code_mower_prompts, code_mower_secrets
+        from tools.provider_runners import resolve_github_token_from_env_or_gh
 elif __package__ == "tools":
     from tools import code_mower_prompts, code_mower_secrets
+    from tools.provider_runners import resolve_github_token_from_env_or_gh
 else:  # pragma: no cover - exercised after package extraction.
     from . import prompts as code_mower_prompts
     from . import secrets as code_mower_secrets
+    from .provider_runners import resolve_github_token_from_env_or_gh
 
 
 DEFAULT_GEMINI_COMMAND = "gemini"
@@ -151,24 +155,7 @@ def fetch_local_checkout_diff(repo_path: Path, *, base_ref: str) -> tuple[str, s
 
 
 def resolve_github_token() -> str:
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
-        return token
-    try:
-        completed = subprocess.run(
-            ["gh", "auth", "token"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (
-        FileNotFoundError,
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-    ):
-        return ""
-    return completed.stdout.strip()
+    return resolve_github_token_from_env_or_gh()
 
 
 def parse_api_key_file(text: str) -> str:

@@ -16,7 +16,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -29,12 +28,28 @@ if __package__ in {None, ""}:
         from code_mower import local_llm_profiles
         from code_mower import package as code_mower_package
         from code_mower import secrets as code_mower_secrets
+        from code_mower.doctor_checks import (
+            STATUS_FAIL,
+            STATUS_PASS,
+            STATUS_SKIP,
+            STATUS_WARN,
+            DoctorCheck,
+            DoctorReport,
+        )
     else:
         from tools import (
             code_mower_config,
             code_mower_package,
             code_mower_secrets,
             local_llm_profiles,
+        )
+        from tools.doctor_checks import (
+            STATUS_FAIL,
+            STATUS_PASS,
+            STATUS_SKIP,
+            STATUS_WARN,
+            DoctorCheck,
+            DoctorReport,
         )
 elif __package__ == "tools":
     from tools import (
@@ -43,17 +58,28 @@ elif __package__ == "tools":
         code_mower_secrets,
         local_llm_profiles,
     )
+    from tools.doctor_checks import (
+        STATUS_FAIL,
+        STATUS_PASS,
+        STATUS_SKIP,
+        STATUS_WARN,
+        DoctorCheck,
+        DoctorReport,
+    )
 else:  # pragma: no cover - exercised after package extraction.
     from . import config as code_mower_config
     from . import local_llm_profiles
     from . import package as code_mower_package
     from . import secrets as code_mower_secrets
+    from .doctor_checks import (
+        STATUS_FAIL,
+        STATUS_PASS,
+        STATUS_SKIP,
+        STATUS_WARN,
+        DoctorCheck,
+        DoctorReport,
+    )
 
-
-STATUS_PASS = "pass"
-STATUS_WARN = "warn"
-STATUS_FAIL = "fail"
-STATUS_SKIP = "skip"
 SUPPORTED_TOKEN_FILE_ENV_NAMES = frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"})
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 ACTIONS_BILLING_BLOCK_PATTERNS = (
@@ -76,65 +102,6 @@ ACTIONS_METADATA_WORKFLOW_MARKERS = (
 )
 DEFAULT_CLOUD_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
 DEFAULT_CLOUD_TOKEN_DIR = Path("~/.config/code-mower/tokens")
-
-
-@dataclass(frozen=True)
-class DoctorCheck:
-    name: str
-    status: str
-    message: str
-    lane: str | None = None
-    detail: Mapping[str, Any] | None = None
-    remediation: str | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        if self.detail is None:
-            data.pop("detail")
-        if self.lane is None:
-            data.pop("lane")
-        if self.remediation is None:
-            data.pop("remediation")
-        return data
-
-
-@dataclass(frozen=True)
-class DoctorReport:
-    config_path: str
-    provider_templates_path: str
-    profile: str | None
-    checks: tuple[DoctorCheck, ...]
-
-    @property
-    def failures(self) -> int:
-        return sum(1 for check in self.checks if check.status == STATUS_FAIL)
-
-    @property
-    def warnings(self) -> int:
-        return sum(1 for check in self.checks if check.status == STATUS_WARN)
-
-    @property
-    def status(self) -> str:
-        if self.failures:
-            return STATUS_FAIL
-        if self.warnings:
-            return STATUS_WARN
-        return STATUS_PASS
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "mode": "doctor",
-            "status": self.status,
-            "profile": self.profile,
-            "config_path": self.config_path,
-            "provider_templates_path": self.provider_templates_path,
-            "summary": {
-                "checks": len(self.checks),
-                "failures": self.failures,
-                "warnings": self.warnings,
-            },
-            "checks": [check.as_dict() for check in self.checks],
-        }
 
 
 def _as_mapping(value: Any, name: str) -> Mapping[str, Any]:
