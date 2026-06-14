@@ -18,8 +18,44 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+if __package__ in {None, ""}:
+    module_dir = Path(__file__).resolve().parent
+    sys.path.insert(0, str(module_dir.parent))
+    from code_mower.cloud_client import (
+        BUNDLE_MANIFEST_FILENAME,
+        BUNDLE_SCHEMA,
+        EXCLUDED_CONTENT,
+        EXPECTED_BUNDLE_ENTRIES,
+        MAX_EVENT_COUNT,
+        MAX_REPORT_UPLOAD_BYTES,
+        SAFE_EVENT_TYPES,
+        SAFE_REPORT_KINDS,
+        dashboard_url_for_endpoint,
+        health_url_for_endpoint,
+        is_local_http_endpoint,
+        is_bundle_manifest,
+        probe_cloud_service,
+        validate_upload_endpoint,
+    )
+else:  # pragma: no cover - exercised after package extraction.
+    from .cloud_client import (
+        BUNDLE_MANIFEST_FILENAME,
+        BUNDLE_SCHEMA,
+        EXCLUDED_CONTENT,
+        EXPECTED_BUNDLE_ENTRIES,
+        MAX_EVENT_COUNT,
+        MAX_REPORT_UPLOAD_BYTES,
+        SAFE_EVENT_TYPES,
+        SAFE_REPORT_KINDS,
+        dashboard_url_for_endpoint,
+        health_url_for_endpoint,
+        is_local_http_endpoint,
+        is_bundle_manifest,
+        probe_cloud_service,
+        validate_upload_endpoint,
+    )
 
-BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"
+
 UPLOAD_SCHEMA = "code_mower.cloudUpload.v1"
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
@@ -28,42 +64,6 @@ DEFAULT_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
 DEFAULT_TEAM_ID_ENV = "CODE_MOWER_CLOUD_TEAM_ID"
 DEFAULT_INSTALL_ID_ENV = "CODE_MOWER_INSTALL_ID"
 DEFAULT_SETUP_INSTALL_ID = "code-mower-local"
-DEFAULT_HEALTH_PATH = "/api/health"
-DEFAULT_DASHBOARD_PATH = "/dashboard"
-MAX_REPORT_UPLOAD_BYTES = 1_000_000
-MAX_EVENT_COUNT = 500
-SAFE_REPORT_KINDS = {
-    "authoring-runs",
-    "calibration-runs",
-    "lane-policy",
-    "reviewer-metrics",
-    "spend",
-    "value-report",
-}
-SAFE_EVENT_TYPES = {
-    "calibration_run",
-    "dogfood_upload",
-    "lane_policy_snapshot",
-    "reviewer_run",
-    "value_report_snapshot",
-    "workflow_run",
-}
-EXCLUDED_CONTENT = (
-    "source_code",
-    "raw_diffs",
-    "raw_model_transcripts",
-    "raw_stdout_stderr",
-    "auth_probe_output",
-    "secrets",
-)
-EXPECTED_BUNDLE_ENTRIES = {
-    "README.md",
-    "code-mower-cloud-bundle.json",
-    "reports",
-    ".README.md.tmp",
-    ".code-mower-cloud-bundle.json.tmp",
-    ".reports.tmp",
-}
 
 
 class CloudBundleError(ValueError):
@@ -71,106 +71,18 @@ class CloudBundleError(ValueError):
 
 
 def _is_local_http_endpoint(endpoint: str) -> bool:
-    parsed_endpoint = urllib.parse.urlparse(endpoint)
-    return (
-        parsed_endpoint.scheme == "http"
-        and parsed_endpoint.hostname in {"localhost", "127.0.0.1"}
-    )
+    return is_local_http_endpoint(endpoint)
 
 
 def _validate_upload_endpoint(endpoint: str) -> None:
-    parsed_endpoint = urllib.parse.urlparse(endpoint)
-    if parsed_endpoint.scheme != "https" and not _is_local_http_endpoint(endpoint):
-        raise CloudBundleError(
-            "upload endpoint must be https:// or a local development endpoint"
-        )
-    if not parsed_endpoint.netloc:
-        raise CloudBundleError(f"upload endpoint is missing a host: {endpoint!r}")
-
-
-def _origin_for_endpoint(endpoint: str) -> str:
-    parsed_endpoint = urllib.parse.urlparse(endpoint)
-    if not parsed_endpoint.scheme or not parsed_endpoint.netloc:
-        return ""
-    return urllib.parse.urlunparse(
-        (parsed_endpoint.scheme, parsed_endpoint.netloc, "", "", "", "")
-    )
-
-
-def _url_for_endpoint_path(endpoint: str, path: str) -> str:
-    origin = _origin_for_endpoint(endpoint)
-    if not origin:
-        return ""
-    return urllib.parse.urljoin(origin + "/", path.lstrip("/"))
-
-
-def dashboard_url_for_endpoint(endpoint: str) -> str:
-    return _url_for_endpoint_path(endpoint, DEFAULT_DASHBOARD_PATH)
-
-
-def health_url_for_endpoint(endpoint: str) -> str:
-    return _url_for_endpoint_path(endpoint, DEFAULT_HEALTH_PATH)
+    try:
+        validate_upload_endpoint(endpoint)
+    except ValueError as exc:
+        raise CloudBundleError(str(exc)) from exc
 
 
 def _probe_cloud_service(endpoint: str, *, timeout: float) -> dict[str, Any]:
-    health_url = health_url_for_endpoint(endpoint)
-    if not health_url:
-        return {
-            "name": "service",
-            "status": "fail",
-            "message": "unable to derive health URL from upload endpoint",
-        }
-    request = urllib.request.Request(
-        health_url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "code-mower-cloud-doctor",
-        },
-        method="GET",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            response_body = response.read().decode("utf-8", errors="replace")
-            status_code = response.getcode()
-    except urllib.error.HTTPError as exc:
-        return {
-            "name": "service",
-            "status": "fail",
-            "message": f"health check failed with HTTP {exc.code}",
-            "detail": {"health_url": health_url, "status_code": exc.code},
-        }
-    except urllib.error.URLError as exc:
-        return {
-            "name": "service",
-            "status": "fail",
-            "message": f"health check failed: {exc.reason}",
-            "detail": {"health_url": health_url},
-        }
-    parsed: dict[str, Any] = {}
-    if response_body.strip():
-        try:
-            maybe_parsed = json.loads(response_body)
-            if isinstance(maybe_parsed, dict):
-                parsed = maybe_parsed
-        except json.JSONDecodeError:
-            parsed = {}
-    if 200 <= status_code < 300:
-        detail: dict[str, Any] = {"health_url": health_url, "status_code": status_code}
-        for key in ("app", "supabaseConfigured"):
-            if key in parsed and isinstance(parsed[key], str | bool | int | float):
-                detail[key] = parsed[key]
-        return {
-            "name": "service",
-            "status": "pass",
-            "message": f"health endpoint is reachable: {health_url}",
-            "detail": detail,
-        }
-    return {
-        "name": "service",
-        "status": "fail",
-        "message": f"health check returned HTTP {status_code}",
-        "detail": {"health_url": health_url, "status_code": status_code},
-    }
+    return probe_cloud_service(endpoint, timeout=timeout)
 
 
 def _token_prefix(token: str) -> str:
@@ -616,14 +528,14 @@ def _swap_reports(stage_dir: Path, reports_dir: Path) -> None:
 
 
 def _existing_bundle_manifest(output_dir: Path) -> bool:
-    manifest_path = output_dir / "code-mower-cloud-bundle.json"
+    manifest_path = output_dir / BUNDLE_MANIFEST_FILENAME
     if not manifest_path.is_file():
         return False
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
-    return isinstance(manifest, dict) and manifest.get("schema") == BUNDLE_SCHEMA
+    return is_bundle_manifest(manifest)
 
 
 def _unexpected_bundle_entries(output_dir: Path) -> list[str]:
@@ -706,9 +618,9 @@ def build_cloud_bundle(
             "Structured events are metadata-only and should not contain source, diffs, transcripts, stdout/stderr, auth output, or secrets.",
         ],
     }
-    manifest_path = output_dir / "code-mower-cloud-bundle.json"
+    manifest_path = output_dir / BUNDLE_MANIFEST_FILENAME
     readme = output_dir / "README.md"
-    manifest_tmp = output_dir / ".code-mower-cloud-bundle.json.tmp"
+    manifest_tmp = output_dir / f".{BUNDLE_MANIFEST_FILENAME}.tmp"
     readme_tmp = output_dir / ".README.md.tmp"
     try:
         manifest_tmp.write_text(
@@ -742,14 +654,14 @@ def build_cloud_bundle(
 
 
 def load_bundle_manifest(bundle_dir: Path) -> dict[str, Any]:
-    manifest_path = bundle_dir / "code-mower-cloud-bundle.json"
+    manifest_path = bundle_dir / BUNDLE_MANIFEST_FILENAME
     if not manifest_path.is_file():
         raise CloudBundleError(f"bundle manifest not found: {manifest_path}")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CloudBundleError(f"unable to read bundle manifest {manifest_path}: {exc}") from exc
-    if not isinstance(manifest, dict) or manifest.get("schema") != BUNDLE_SCHEMA:
+    if not is_bundle_manifest(manifest):
         raise CloudBundleError(f"unsupported bundle manifest schema in {manifest_path}")
     return manifest
 
@@ -949,7 +861,7 @@ def run_cloud_doctor(
             }
         )
 
-    manifest_path = bundle_dir / "code-mower-cloud-bundle.json"
+    manifest_path = bundle_dir / BUNDLE_MANIFEST_FILENAME
     if manifest_path.is_file():
         try:
             payload = build_upload_payload(bundle_dir=bundle_dir, include_reports=False)

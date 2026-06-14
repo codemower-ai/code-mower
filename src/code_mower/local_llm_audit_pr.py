@@ -70,13 +70,17 @@ if __package__ in {None, ""}:
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower import local_llm_profiles
         from code_mower import prompts as code_mower_prompts
+        from code_mower.provider_runners import resolve_github_token_from_env_or_gh
     else:
         from tools import code_mower_prompts, local_llm_profiles
+        from tools.provider_runners import resolve_github_token_from_env_or_gh
 elif __package__ == "tools":
     from tools import code_mower_prompts, local_llm_profiles
+    from tools.provider_runners import resolve_github_token_from_env_or_gh
 else:  # pragma: no cover - exercised after package extraction.
     from . import local_llm_profiles
     from . import prompts as code_mower_prompts
+    from .provider_runners import resolve_github_token_from_env_or_gh
 
 
 # ----- Configuration / defaults -----
@@ -1268,9 +1272,12 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
-    token = os.environ.get("GITHUB_TOKEN")
+    token = resolve_github_token_from_env_or_gh()
     if not token:
-        print("error: GITHUB_TOKEN env var is required", file=sys.stderr)
+        print(
+            "error: set GITHUB_TOKEN or authenticate gh so `gh auth token` works",
+            file=sys.stderr,
+        )
         return 1
     try:
         runtime_options = resolve_runtime_options(

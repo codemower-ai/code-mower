@@ -1,0 +1,6 @@
+"""Calibration lane-promotion policy thresholds."""
+
+MERGE_GATE_USEFUL_RATE = 0.60
+SELECTIVE_USEFUL_RATE = 0.50
+MERGE_GATE_MIN_FINDINGS = 10
+MERGE_GATE_MIN_CLEAN_RUNS = 2

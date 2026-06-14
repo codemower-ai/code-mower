@@ -28,6 +28,7 @@ if __package__ in {None, "", "tools"}:
     try:
         from tools import code_mower_prompts
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
+        from tools.provider_runners import resolve_github_token_from_stdin_or_env
         from tools.codex_audit_pr import (
             _parse_repo_paths,
             _require_exact_keys,
@@ -44,6 +45,7 @@ if __package__ in {None, "", "tools"}:
         except ImportError:
             import prompts as code_mower_prompts  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
+        from provider_runners import resolve_github_token_from_stdin_or_env  # type: ignore
         from codex_audit_pr import (  # type: ignore
             _parse_repo_paths,
             _require_exact_keys,
@@ -57,6 +59,7 @@ if __package__ in {None, "", "tools"}:
 else:  # pragma: no cover - exercised after package extraction.
     from . import prompts as code_mower_prompts
     from .audit_progress import AuditProgress, run_subprocess_with_progress
+    from .provider_runners import resolve_github_token_from_stdin_or_env
     from .codex_audit_pr import (
         _parse_repo_paths,
         _require_exact_keys,
@@ -1000,14 +1003,7 @@ def _env_flag(name: str) -> bool:
 
 
 def _resolve_github_token(read_from_stdin: bool) -> Optional[str]:
-    if read_from_stdin:
-        line = sys.stdin.readline()
-        os.environ.pop("GITHUB_TOKEN", None)
-        os.environ.pop("GH_TOKEN", None)
-        return line.rstrip("\r\n") if line else None
-    token = os.environ.pop("GITHUB_TOKEN", None)
-    os.environ.pop("GH_TOKEN", None)
-    return token
+    return resolve_github_token_from_stdin_or_env(read_from_stdin)
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
