@@ -32,7 +32,7 @@ not know the original reference repos.
   abstract architecture.
 - Public docs explain repo strategy, commercial boundary, GitHub setup, provider
   setup, cloud export privacy, cloud data contract, architecture,
-  privacy/threat model, and easy-mode first run.
+  privacy/threat model, code-structure direction, and easy-mode first run.
 - README answers why Code Mower exists beyond manually running a single AI
   reviewer: lane consistency, setup diagnostics, calibration, spend/latency, and
   evidence-gated promotion.

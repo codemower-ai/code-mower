@@ -21,6 +21,7 @@ from code_mower import __version__
 from code_mower import audit_progress
 from code_mower import cloud as code_mower_cloud
 from code_mower import code_mower_calibration
+from code_mower import cli as code_mower_cli
 from code_mower import doctor
 from code_mower import init as code_mower_init
 from code_mower import next_steps
@@ -33,6 +34,44 @@ from scripts import privacy_scan
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_v05_alpha_5(self) -> None:
         self.assertEqual(__version__, "0.5.0a5")
+
+    def test_cli_command_registry_is_single_source_of_truth(self) -> None:
+        self.assertEqual(
+            tuple(code_mower_cli.COMMAND_HANDLERS),
+            (
+                "antigravity-cli",
+                "blind-review",
+                "bootstrap",
+                "builder-experiment",
+                "calibration",
+                "claude-audit",
+                "cloud",
+                "config",
+                "context-packs",
+                "coderabbit-cli",
+                "codex-audit",
+                "codex-audit-env-preflight",
+                "codex-audit-schema-smoke",
+                "doctor",
+                "gemini-cli",
+                "hermes-cli",
+                "init",
+                "local-llm",
+                "migration",
+                "merge-plan",
+                "next-steps",
+                "package",
+                "prompts",
+                "providers",
+                "reviewer-metrics",
+                "saas-reviewer-labeler",
+                "telemetry",
+                "trailer-comment-labeler",
+            ),
+        )
+        self.assertTrue(
+            all(callable(handler) for handler in code_mower_cli.COMMAND_HANDLERS.values())
+        )
 
     def test_doctor_preflight_applies_v05_first_run_defaults(self) -> None:
         args = Namespace(
