@@ -18,6 +18,9 @@ not know the original reference repos.
   see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and
   changelog exist as public trust/readiness artifacts.
+- Top-level CLI help is first-user focused: `code-mower --help` shows the
+  launch-safe commands, while `code-mower --help-all` exposes provider,
+  migration, labeler, and operator commands.
 - `docs/first-user-install-rehearsal.md` records the executable release-gate
   path: package install, easy-mode smoke, first value report, cloud upload dry
   run, and dogfood dry run. Re-run it against the public tag before widening
@@ -42,6 +45,8 @@ not know the original reference repos.
 - Standalone CI passes from a clean clone.
 - `code-mower init --easy` and `code-mower doctor --preflight` work in a fresh toy
   repo.
+- `code-mower --help` makes the first-user path obvious without exposing all
+  advanced/operator commands by default.
 - `code-mower doctor --preflight` runs provider-declared smoke probes and optional
   cloud-token diagnostics without leaking raw auth/provider output or token
   values into shareable JSON.
@@ -113,6 +118,9 @@ interpreter.
 - Run [docs/pypi-release.md](pypi-release.md) against TestPyPI before
   switching first-user docs from GitHub-tag install to `pipx install
   code-mower`.
+- Add a calibration auto-discovery path that can produce a starter corpus from
+  recent merged PRs and review signals, then clearly labels the output as a
+  draft that needs human disposition.
 - Add a short terminal recording, screenshot, or transcript of the first
   `doctor --preflight` run to the README/website.
 - Expand [docs/troubleshooting.md](troubleshooting.md) as new setup traps are
@@ -124,6 +132,8 @@ interpreter.
 - Decompose the largest extraction-era modules before v1.0 where it materially
   improves contributor onboarding: calibration, doctor, cloud, package, and
   provider runners.
+- Add focused unit tests around the large modules instead of relying mostly on
+  release-hygiene integration tests.
 - Make the public repository the clear source of truth for OSS users. Private
   product repos should consume pinned public releases, not appear to generate or
   overwrite the public package.

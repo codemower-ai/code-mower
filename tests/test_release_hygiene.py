@@ -77,6 +77,39 @@ class ReleaseHygieneTests(unittest.TestCase):
             all(callable(handler) for handler in code_mower_cli.COMMAND_HANDLERS.values())
         )
 
+    def test_cli_default_help_is_first_user_focused(self) -> None:
+        out = StringIO()
+        with redirect_stdout(out):
+            exit_code = code_mower_cli.main(["--help"])
+
+        self.assertEqual(exit_code, 0)
+        help_text = out.getvalue()
+        self.assertIn("First-user commands:", help_text)
+        self.assertIn("code-mower --help-all", help_text)
+        self.assertIn("  init", help_text)
+        self.assertIn("  doctor", help_text)
+        self.assertIn("  calibration", help_text)
+        self.assertIn("  cloud", help_text)
+        self.assertNotIn("trailer-comment-labeler", help_text)
+        self.assertNotIn("codex-audit-env-preflight", help_text)
+        self.assertNotIn("  providers", help_text)
+        self.assertNotIn("  migration", help_text)
+
+    def test_cli_help_all_shows_operator_commands(self) -> None:
+        out = StringIO()
+        with redirect_stdout(out):
+            exit_code = code_mower_cli.main(["--help-all"])
+
+        self.assertEqual(exit_code, 0)
+        help_text = out.getvalue()
+        self.assertIn("First-user commands:", help_text)
+        self.assertIn("Advanced/provider/operator commands:", help_text)
+        self.assertIn("trailer-comment-labeler", help_text)
+        self.assertIn("codex-audit-env-preflight", help_text)
+        self.assertIn("builder-experiment", help_text)
+        self.assertIn("providers", help_text)
+        self.assertIn("migration", help_text)
+
     def test_internal_package_seams_keep_cli_first_surface(self) -> None:
         self.assertIs(doctor.DoctorCheck, doctor_checks.DoctorCheck)
         self.assertIs(doctor.DoctorReport, doctor_checks.DoctorReport)
