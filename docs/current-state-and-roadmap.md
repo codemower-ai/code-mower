@@ -46,7 +46,8 @@ after the org move. It has proved:
 - first-impression adoption improvements: README sample output,
   `docs/sample-doctor-output.md`, and a clearer cloud value-exchange section.
 - first-run and trust docs: `CHANGELOG.md`, `docs/first-run-transcript.md`,
-  `docs/architecture.md`, and `docs/cloud-data-contract.md`.
+  `docs/architecture.md`, `docs/cloud-data-contract.md`, and
+  `docs/code-structure-roadmap.md`.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.

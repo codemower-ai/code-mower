@@ -9,6 +9,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -334,120 +335,85 @@ def _local_llm_main(argv: list[str]) -> int:
     raise AssertionError(f"unhandled local-llm command: {args.command}")
 
 
+CommandHandler = Callable[[list[str]], int]
+
+
+def _init_main(argv: list[str]) -> int:
+    options_with_values = {"--profile", "--output-dir"}
+    if (
+        argv[:1] == ["auth"]
+        or _has_flag(argv, "--easy")
+        or _has_positional_config(argv, options_with_values)
+    ):
+        return code_mower_init.main(argv)
+    return code_mower_init.main(
+        _default_config_args(
+            argv,
+            default_config="code-mower.yml",
+            options_with_values=options_with_values,
+        )
+    )
+
+
+def _package_main(argv: list[str]) -> int:
+    return code_mower_package.main(
+        _default_config_args(
+            argv,
+            default_config="code-mower.example.yml",
+            options_with_values={
+                "--output-dir",
+                "--package-name",
+                "--provider-templates",
+            },
+        )
+    )
+
+
+COMMAND_HANDLERS: dict[str, CommandHandler] = {
+    "antigravity-cli": antigravity_cli_audit_pr.main,
+    "blind-review": blind_review_coordinator.main,
+    "bootstrap": code_mower_bootstrap.main,
+    "builder-experiment": code_mower_builder_experiment.main,
+    "calibration": code_mower_calibration.main,
+    "claude-audit": claude_audit_pr.main,
+    "cloud": code_mower_cloud.main,
+    "config": _config_main,
+    "context-packs": code_mower_context_packs.main,
+    "coderabbit-cli": coderabbit_cli_audit_pr.main,
+    "codex-audit": codex_audit_pr.main,
+    "codex-audit-env-preflight": codex_audit_env_preflight.main,
+    "codex-audit-schema-smoke": codex_audit_schema_smoke.main,
+    "doctor": code_mower_doctor.main,
+    "gemini-cli": gemini_cli_audit_pr.main,
+    "hermes-cli": hermes_cli_audit_pr.main,
+    "init": _init_main,
+    "local-llm": _local_llm_main,
+    "migration": code_mower_migration.main,
+    "merge-plan": code_mower_merge.main,
+    "next-steps": code_mower_next_steps.main,
+    "package": _package_main,
+    "prompts": code_mower_prompts.main,
+    "providers": _providers_main,
+    "reviewer-metrics": reviewer_metrics.main,
+    "saas-reviewer-labeler": saas_reviewer_labeler.main,
+    "telemetry": code_mower_telemetry.main,
+    "trailer-comment-labeler": trailer_comment_labeler.main,
+}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("antigravity-cli", add_help=False)
-    subparsers.add_parser("blind-review", add_help=False)
-    subparsers.add_parser("bootstrap", add_help=False)
-    subparsers.add_parser("builder-experiment", add_help=False)
-    subparsers.add_parser("calibration", add_help=False)
-    subparsers.add_parser("claude-audit", add_help=False)
-    subparsers.add_parser("cloud", add_help=False)
-    subparsers.add_parser("config", add_help=False)
-    subparsers.add_parser("context-packs", add_help=False)
-    subparsers.add_parser("coderabbit-cli", add_help=False)
-    subparsers.add_parser("codex-audit", add_help=False)
-    subparsers.add_parser("codex-audit-env-preflight", add_help=False)
-    subparsers.add_parser("codex-audit-schema-smoke", add_help=False)
-    subparsers.add_parser("doctor", add_help=False)
-    subparsers.add_parser("gemini-cli", add_help=False)
-    subparsers.add_parser("hermes-cli", add_help=False)
-    subparsers.add_parser("init", add_help=False)
-    subparsers.add_parser("local-llm", add_help=False)
-    subparsers.add_parser("migration", add_help=False)
-    subparsers.add_parser("merge-plan", add_help=False)
-    subparsers.add_parser("next-steps", add_help=False)
-    subparsers.add_parser("package", add_help=False)
-    subparsers.add_parser("prompts", add_help=False)
-    subparsers.add_parser("providers", add_help=False)
-    subparsers.add_parser("reviewer-metrics", add_help=False)
-    subparsers.add_parser("saas-reviewer-labeler", add_help=False)
-    subparsers.add_parser("telemetry", add_help=False)
-    subparsers.add_parser("trailer-comment-labeler", add_help=False)
+    for command in COMMAND_HANDLERS:
+        subparsers.add_parser(command, add_help=False)
     args, rest = parser.parse_known_args(argv)
 
-    if args.command == "antigravity-cli":
-        return antigravity_cli_audit_pr.main(rest)
-    if args.command == "blind-review":
-        return blind_review_coordinator.main(rest)
-    if args.command == "bootstrap":
-        return code_mower_bootstrap.main(rest)
-    if args.command == "builder-experiment":
-        return code_mower_builder_experiment.main(rest)
-    if args.command == "calibration":
-        return code_mower_calibration.main(rest)
-    if args.command == "claude-audit":
-        return claude_audit_pr.main(rest)
-    if args.command == "cloud":
-        return code_mower_cloud.main(rest)
-    if args.command == "config":
-        return _config_main(rest)
-    if args.command == "context-packs":
-        return code_mower_context_packs.main(rest)
-    if args.command == "coderabbit-cli":
-        return coderabbit_cli_audit_pr.main(rest)
-    if args.command == "codex-audit":
-        return codex_audit_pr.main(rest)
-    if args.command == "codex-audit-env-preflight":
-        return codex_audit_env_preflight.main(rest)
-    if args.command == "codex-audit-schema-smoke":
-        return codex_audit_schema_smoke.main(rest)
-    if args.command == "doctor":
-        return code_mower_doctor.main(rest)
-    if args.command == "gemini-cli":
-        return gemini_cli_audit_pr.main(rest)
-    if args.command == "hermes-cli":
-        return hermes_cli_audit_pr.main(rest)
-    if args.command == "init":
-        options_with_values = {"--profile", "--output-dir"}
-        if (
-            rest[:1] == ["auth"]
-            or _has_flag(rest, "--easy")
-            or _has_positional_config(rest, options_with_values)
-        ):
-            return code_mower_init.main(rest)
-        return code_mower_init.main(
-            _default_config_args(
-                rest,
-                default_config="code-mower.yml",
-                options_with_values=options_with_values,
-            )
-        )
-    if args.command == "local-llm":
-        return _local_llm_main(rest)
-    if args.command == "migration":
-        return code_mower_migration.main(rest)
-    if args.command == "merge-plan":
-        return code_mower_merge.main(rest)
-    if args.command == "next-steps":
-        return code_mower_next_steps.main(rest)
-    if args.command == "package":
-        return code_mower_package.main(
-            _default_config_args(
-                rest,
-                default_config="code-mower.example.yml",
-                options_with_values={
-                    "--output-dir",
-                    "--package-name",
-                    "--provider-templates",
-                },
-            )
-        )
-    if args.command == "prompts":
-        return code_mower_prompts.main(rest)
-    if args.command == "providers":
-        return _providers_main(rest)
-    if args.command == "reviewer-metrics":
-        return reviewer_metrics.main(rest)
-    if args.command == "saas-reviewer-labeler":
-        return saas_reviewer_labeler.main(rest)
-    if args.command == "telemetry":
-        return code_mower_telemetry.main(rest)
-    if args.command == "trailer-comment-labeler":
-        return trailer_comment_labeler.main(rest)
-    raise AssertionError(f"unhandled command: {args.command}")
+    try:
+        handler = COMMAND_HANDLERS[args.command]
+    except KeyError as exc:  # pragma: no cover - argparse validates commands.
+        raise AssertionError(f"unhandled command: {args.command}") from exc
+    return handler(rest)
 
 
 if __name__ == "__main__":
