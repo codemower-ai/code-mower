@@ -1,0 +1,19 @@
+claude_review:
+  provider: "claude"
+  driver: "manual"
+  type: "review"
+  adapter: null
+  trailer_lane: null
+  spend_policy: "none"
+  merge_authority: false
+  informational: true
+  enabled_by_default: true
+  events: []
+  token_env:
+    - "CLAUDE_REVIEW_LABEL_TOKEN"
+  token_env_any: []
+  trigger_policy: "manual"
+  provider_config: {}
+  review_hygiene:
+    workflow: ".github/workflows/claude-clear-stale.yml"
+    token_env: "CLAUDE_REVIEW_LABEL_TOKEN"

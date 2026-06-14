@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-mower"
+version = "0.5.0a2"
+description = "Multi-reviewer AI code audit orchestration"
+requires-python = ">=3.11"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+code-mower = "code_mower.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+code_mower = [
+    "*.json",
+    "templates/**/*.json",
+    "templates/**/*.md",
+    "templates/**/*.yml",
+    "templates/**/*.yaml",
+    "templates/**/*.j2",
+    "templates/product-support/*",
+]

@@ -1,0 +1,150 @@
+{
+  "repo": "owner/repo",
+  "pr_number": 123,
+  "head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "changed_files": [
+    {
+      "filename": "tools/code_mower_cli.py"
+    },
+    {
+      "filename": "tools/code_mower_package.py"
+    },
+    {
+      "filename": "tools/code_mower_doctor.py"
+    },
+    {
+      "filename": "tools/lane_prompts/calibration-policy.md"
+    }
+  ],
+  "packs": [
+    {
+      "id": "auth-context",
+      "reason": "Authentication, account state, profile, entitlement, or server-side policy changed.",
+      "include": [
+        "src/**/auth/**",
+        "src/**/*Auth*",
+        "src/**/*Profile*",
+        "supabase/migrations/**",
+        "supabase/functions/**",
+        "server/**/auth/**"
+      ],
+      "max_files": 12,
+      "max_file_bytes": 80000
+    },
+    {
+      "id": "history-policy",
+      "reason": "Solve-history correctness, replay suppression, retention, quota, or migration behavior changed.",
+      "include": [
+        "src/**/*History*",
+        "src/**/*history*",
+        "src/**/*Replay*",
+        "src/**/*Quota*",
+        "supabase/migrations/**",
+        "server/**/*history*"
+      ],
+      "max_files": 12,
+      "max_file_bytes": 80000
+    },
+    {
+      "id": "ios-solver-runtime",
+      "reason": "iOS solver table generation, runtime solver cache, cancellation, bundle loading, or solve UI behavior changed.",
+      "include": [
+        "ios/**/Solver/**",
+        "ios/**/*Solve*",
+        "ios/**/*Solver*",
+        "ios/**/*Bridge*",
+        "ios/**/*Cache*",
+        "ios/**/*Tests/**/*Bridge*",
+        "ios/**/*Tests/**/*Solver*",
+        "tools/*solver*",
+        "tools/generate_*solver*",
+        "package.json"
+      ],
+      "max_files": 14,
+      "max_file_bytes": 100000
+    },
+    {
+      "id": "prompt-lenses",
+      "reason": "Prompt lens definitions, review doctrine, or lens calibration behavior changed.",
+      "include": [
+        "tools/lane_prompts/*.md",
+        "src/code_mower/templates/lane_prompts/*.md",
+        "docs/lens-calibration-report.md",
+        "tools/CODE_MOWER_LENS_CALIBRATION_REPORT.md"
+      ],
+      "max_files": 12,
+      "max_file_bytes": 80000
+    },
+    {
+      "id": "package-runtime",
+      "reason": "CLI dispatch, package extraction, and setup diagnostics changed.",
+      "include": [
+        "src/code_mower/**",
+        "tools/code_mower*",
+        "scripts/*package*",
+        "scripts/*rehearsal*",
+        "pyproject.toml",
+        "code-mower*.yml"
+      ],
+      "max_files": 10,
+      "max_file_bytes": 60000
+    },
+    {
+      "id": "calibration-policy",
+      "reason": "Reviewer value policy depends on corpus and docs context.",
+      "include": [
+        "tools/calibration_corpus*.json",
+        "templates/context-packs*.json",
+        "src/code_mower/templates/lane_prompts/*.md",
+        "docs/*calibration*",
+        "tools/CODE_MOWER_*.md",
+        "tools/lane_prompts/calibration-policy.md"
+      ],
+      "max_files": 10,
+      "max_file_bytes": 80000
+    },
+    {
+      "id": "debug-upload-backend",
+      "reason": "Backend debug upload, Railway diagnostics, auth-safe capture, or recognition debug artifacts changed.",
+      "include": [
+        "app.py",
+        "rubik_recognizer/**",
+        "tools/*debug*",
+        "tools/*recognition*",
+        "tests/**/*debug*",
+        "tests/**/*recognition*"
+      ],
+      "max_files": 14,
+      "max_file_bytes": 100000
+    },
+    {
+      "id": "debug-upload-web",
+      "reason": "Web debug upload, user profile/About, build metadata, or mobile capture diagnostics changed.",
+      "include": [
+        "src/**/*Debug*",
+        "src/**/*debug*",
+        "src/**/*About*",
+        "src/**/*Profile*",
+        "src/**/*build*",
+        "src/**/*.tsx",
+        "src/**/*.ts"
+      ],
+      "max_files": 16,
+      "max_file_bytes": 80000
+    },
+    {
+      "id": "build-info",
+      "reason": "Build/version metadata, app About surfaces, deployment provenance, or release display changed.",
+      "include": [
+        "src/**/*build*",
+        "src/**/*version*",
+        "src/**/*About*",
+        "ios/**/Info.plist",
+        "package.json",
+        "vite.config.*"
+      ],
+      "max_files": 10,
+      "max_file_bytes": 60000
+    }
+  ]
+}

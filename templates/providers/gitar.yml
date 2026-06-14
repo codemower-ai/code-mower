@@ -1,0 +1,23 @@
+gitar:
+  provider: "gitar"
+  driver: "saas_event"
+  type: "audit"
+  adapter: "gitar"
+  trailer_lane: null
+  spend_policy: "included"
+  merge_authority: false
+  informational: true
+  enabled_by_default: true
+  events:
+    - "issue_comment"
+  token_env:
+    - "GITAR_AUDIT_LABEL_TOKEN"
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "label"
+  provider_config:
+    bot_authors:
+      - "gitar-ai[bot]"
+      - "gitar-bot"
+      - "gitar-bot[bot]"
+  review_hygiene: {}

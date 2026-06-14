@@ -1,0 +1,28 @@
+{
+  "profiles": {
+    "codex-audit": {
+      "cost_usd": 0.0,
+      "notes": "Set to the incremental cost you want attributed to this calibration batch."
+    },
+    "claude-audit": {
+      "cost_usd": 0.0,
+      "notes": "Use your team's billing export or a conservative estimate."
+    },
+    "gemini-cli": {
+      "cost_usd": 0.42,
+      "notes": "Example value only. Replace with the cost of the run-results batch."
+    },
+    "coderabbit-cli": {
+      "cost_usd": 0.0,
+      "notes": "Often a wrapper around account-level billing; record incremental cost if known."
+    },
+    "qwen3-coder-next-lmstudio": {
+      "cost_usd": 0.0,
+      "notes": "Local model run; track hardware or opportunity cost separately if useful."
+    },
+    "gemma4-ollama": {
+      "cost_usd": 0.0,
+      "notes": "Local model run; track hardware or opportunity cost separately if useful."
+    }
+  }
+}
