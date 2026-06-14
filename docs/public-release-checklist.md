@@ -109,8 +109,8 @@ interpreter.
   or document why the project is intentionally staying GitHub-install-only.
 - Add a short terminal recording, screenshot, or transcript of the first
   `doctor --preflight` run to the README/website.
-- Add a troubleshooting section for Python, GitHub auth, provider CLIs, and
-  private repository permissions.
+- Expand [docs/troubleshooting.md](troubleshooting.md) as new setup traps are
+  found in early-adopter installs.
 - Add a migration note for teams that want to start with informational-only
   lanes.
 - Add a short explanation of how local benchmark reports can later be shared with

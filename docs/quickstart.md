@@ -64,6 +64,10 @@ claude auth status
 claude -p "Reply with exactly: ok" --output-format json
 ```
 
+The prompt smoke is the real readiness check. If `claude auth status` says
+logged in but the prompt returns an auth error, follow
+[Troubleshooting](troubleshooting.md#claude-code-reports-logged-in-but-audits-fail).
+
 Keep SaaS reviewers such as Gitar, Cursor BugBot, CodeRabbit, Qodo, Greptile,
 and Devin informational/manual until your own calibration data supports
 promotion.
@@ -85,7 +89,8 @@ review; it does not edit live workflows or trigger paid providers.
 Python/runtime checks, provider CLI probes, private-repo caveats, Actions cost
 diagnostics, and optional cloud-token setup. It is equivalent to the versioned
 `doctor --v05` preset. Use `--strict` only when warnings should fail a
-bootstrap job.
+bootstrap job. For auth-specific doctor failures, see
+[Troubleshooting](troubleshooting.md).
 
 ## 5. Rehearse The Package Install Path
 

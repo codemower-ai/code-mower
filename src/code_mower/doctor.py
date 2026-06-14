@@ -1750,6 +1750,44 @@ def _probe_error_value_is_clean(value: Any) -> bool:
     return value is None or value is False or value == "" or value == 0
 
 
+def _probe_auth_error_detail(
+    payload: Mapping[str, Any],
+    error_fields: Sequence[str],
+    output: str,
+) -> dict[str, Any]:
+    """Return content-free auth failure diagnostics for structured probes."""
+    detail: dict[str, Any] = {}
+    status_value = (
+        _json_field(payload, "api_error_status")
+        if "api_error_status" in set(error_fields)
+        else None
+    )
+    if status_value is not None:
+        status_text = str(status_value).strip()
+        if status_text in {"401", "403"}:
+            detail["api_error_status_code"] = status_text
+            detail["auth_error_detected"] = True
+
+    lowered_output = output.lower()
+    auth_markers = (
+        "invalid authentication",
+        "authentication credentials",
+        "unauthorized",
+        "forbidden",
+        "not authenticated",
+        "auth token",
+        "api key",
+        "oauth",
+    )
+    has_dirty_error = any(
+        not _probe_error_value_is_clean(_json_field(payload, field))
+        for field in error_fields
+    )
+    if has_dirty_error and any(marker in lowered_output for marker in auth_markers):
+        detail["auth_error_detected"] = True
+    return detail
+
+
 def _local_cli_probe_env(lane: Mapping[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
     child_env = os.environ.copy()
     forwarded: list[str] = []
@@ -1815,6 +1853,7 @@ def _evaluate_json_probe(
             dirty_errors.append(field)
     detail["error_fields"] = error_fields
     detail["dirty_error_fields"] = dirty_errors
+    detail.update(_probe_auth_error_detail(payload, error_fields, output))
 
     field = str(provider_config.get("doctor_probe_expect_json_field", "")).strip()
     expected = provider_config.get("doctor_probe_expect_json_value")
@@ -1835,8 +1874,20 @@ def _evaluate_json_probe(
         )
 
     if returncode != 0:
+        if detail.get("auth_error_detected"):
+            return (
+                STATUS_WARN,
+                "probe reported provider authentication failure",
+                detail,
+            )
         return STATUS_WARN, f"probe exited {returncode}", detail
     if dirty_errors:
+        if detail.get("auth_error_detected"):
+            return (
+                STATUS_WARN,
+                "probe reported provider authentication failure",
+                detail,
+            )
         return (
             STATUS_WARN,
             "probe reported provider/API error fields",
@@ -1849,6 +1900,34 @@ def _evaluate_json_probe(
             detail,
         )
     return STATUS_PASS, "auth smoke probe succeeded", detail
+
+
+def _local_cli_probe_remediation(
+    command: str,
+    probe_args: Sequence[str],
+    lane: Mapping[str, Any],
+    *,
+    auth_error_detected: bool = False,
+) -> str:
+    provider = str(lane.get("provider") or "").strip()
+    if auth_error_detected and provider == "claude":
+        return (
+            "Run `claude auth status`, then run "
+            "`claude -p \"Reply with exactly: ok\" --output-format json`. "
+            "If status says logged in but the prompt returns 401, refresh Claude "
+            "Code OAuth by removing stale local Claude credentials and running "
+            "`claude` to log in again. For automation, prefer a provider/API-key "
+            "credential path over interactive Claude.ai OAuth."
+        )
+    if auth_error_detected:
+        return (
+            f"Run `{command} {' '.join(probe_args)}` manually, refresh provider "
+            "auth credentials or API keys, then rerun doctor --probe-runtime."
+        )
+    return (
+        f"Run `{command} {' '.join(probe_args)}` manually, fix CLI "
+        "installation or auth, then rerun doctor --probe-runtime."
+    )
 
 
 def _check_local_cli_probe(
@@ -1902,10 +1981,7 @@ def _check_local_cli_probe(
                 "timeout_seconds": timeout_seconds,
                 **env_detail,
             },
-            remediation=(
-                f"Run `{command} {' '.join(probe_args)}` manually, fix CLI "
-                "installation or auth, then rerun doctor --probe-runtime."
-            ),
+            remediation=_local_cli_probe_remediation(command, probe_args, lane),
         )
     output = (completed.stdout or completed.stderr or "").strip()
     provider_config = lane.get("provider_config", {})
@@ -1945,9 +2021,11 @@ def _check_local_cli_probe(
         remediation=(
             None
             if status == STATUS_PASS
-            else (
-                f"Run `{command} {' '.join(probe_args)}` manually, fix CLI "
-                "installation or auth, then rerun doctor --probe-runtime."
+            else _local_cli_probe_remediation(
+                command,
+                probe_args,
+                lane,
+                auth_error_detected=bool(json_detail.get("auth_error_detected")),
             )
         ),
     )
