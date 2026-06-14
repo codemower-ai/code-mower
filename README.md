@@ -239,7 +239,7 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 - [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
 - [Quickstart](docs/quickstart.md)
 - [First Run Transcript](docs/first-run-transcript.md)
-- [First-User Install Rehearsal](docs/first-user-install-rehearsal-alpha8.md)
+- [First-User Install Rehearsal](docs/first-user-install-rehearsal.md)
 - [PyPI Release Runbook](docs/pypi-release.md)
 - [Sample Doctor Output](docs/sample-doctor-output.md)
 - [Architecture](docs/architecture.md)

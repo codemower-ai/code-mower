@@ -94,7 +94,10 @@ bootstrap job. For auth-specific doctor failures, see
 
 ## 5. Rehearse The Package Install Path
 
-This proves Code Mower can be installed fresh and run the starter workflow.
+This proves Code Mower can be installed fresh and run the starter workflow in a
+toy repository. It now also leaves the first-user evidence artifacts behind: a
+starter calibration plan, reviewer metrics, lane policy, value report, cloud
+export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
@@ -106,6 +109,9 @@ code-mower migration package-install-rehearsal \
 Add `--repo-path /path/to/product-repo` only when the repository already has
 repo-local Code Mower wrapper files and you are comparing those wrappers
 against the installed package during a mirror-removal migration.
+
+See [First-User Install Rehearsal](first-user-install-rehearsal.md) for the
+release-gate version of this command and the expected output artifacts.
 
 ## 6. Generate A Local Value Report
 

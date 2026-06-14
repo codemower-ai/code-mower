@@ -180,8 +180,9 @@ def build_next_steps(
             ),
             "why": (
                 "Installs Code Mower into a clean venv, verifies the easy-mode "
-                "starter path in a fresh toy repo, and optionally compares an "
-                "existing product repo when --repo-path is provided."
+                "starter path in a fresh toy repo, writes the first value-report "
+                "and cloud dry-run artifacts, and optionally compares an existing "
+                "product repo when --repo-path is provided."
             ),
         },
         {

@@ -26,6 +26,7 @@ from code_mower import cloud_client
 from code_mower import doctor
 from code_mower import doctor_checks
 from code_mower import init as code_mower_init
+from code_mower import migration as code_mower_migration
 from code_mower import next_steps
 from code_mower import package as code_mower_package
 from code_mower import secrets as code_mower_secrets
@@ -1514,10 +1515,150 @@ def main():
     def test_cloud_export_examples_include_lane_policy(self) -> None:
         smoke_text = (ROOT / "scripts/smoke_easy_mode.py").read_text(encoding="utf-8")
         package_text = (ROOT / "src/code_mower/package.py").read_text(encoding="utf-8")
-        for text in (smoke_text, package_text):
+        migration_text = (ROOT / "src/code_mower/migration.py").read_text(
+            encoding="utf-8"
+        )
+        for text in (smoke_text, package_text, migration_text):
             with self.subTest():
                 self.assertIn("lane-policy=lane-policy.json", text)
                 self.assertIn("cloud-upload-dry-run.json", text)
+
+    def test_package_install_rehearsal_covers_first_user_artifacts(self) -> None:
+        migration_text = (ROOT / "src/code_mower/migration.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("first_user_artifacts", migration_text)
+        self.assertIn("calibration-plan.json", migration_text)
+        self.assertIn("calibration-evidence.json", migration_text)
+        self.assertIn("reviewer-metrics.json", migration_text)
+        self.assertIn("lane-policy.json", migration_text)
+        self.assertIn("reviewer-value-report.md", migration_text)
+        self.assertIn("cloud-export.json", migration_text)
+        self.assertIn("cloud-upload-dry-run.json", migration_text)
+        self.assertIn("cloud-dogfood-dry-run.json", migration_text)
+        self.assertIn("package-install-rehearsal", migration_text)
+        self.assertIn(".code-mower/cloud-dogfood-bundle", migration_text)
+        self.assertIn("example/toy-repo", migration_text)
+        self.assertIn("http://localhost:3000/api/ingest", migration_text)
+        self.assertIn("Value report:", migration_text)
+
+    def test_package_install_rehearsal_artifact_contract_is_structured(self) -> None:
+        toy_repo = Path("/tmp/code-mower-example-toy-repo")
+        artifacts = code_mower_migration._first_user_artifacts(toy_repo)
+
+        self.assertEqual(
+            artifacts,
+            {
+                "calibration_plan": (
+                    "/tmp/code-mower-example-toy-repo/.code-mower/calibration-plan.json"
+                ),
+                "calibration_evidence": (
+                    "/tmp/code-mower-example-toy-repo/calibration-evidence.json"
+                ),
+                "reviewer_metrics": (
+                    "/tmp/code-mower-example-toy-repo/reviewer-metrics.json"
+                ),
+                "lane_policy": "/tmp/code-mower-example-toy-repo/lane-policy.json",
+                "reviewer_value_report": (
+                    "/tmp/code-mower-example-toy-repo/reviewer-value-report.md"
+                ),
+                "cloud_export": "/tmp/code-mower-example-toy-repo/cloud-export.json",
+                "cloud_upload_dry_run": (
+                    "/tmp/code-mower-example-toy-repo/cloud-upload-dry-run.json"
+                ),
+                "cloud_dogfood_dry_run": (
+                    "/tmp/code-mower-example-toy-repo/cloud-dogfood-dry-run.json"
+                ),
+            },
+        )
+
+    def test_rehearsal_step_to_file_writes_stdout_and_creates_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "nested" / "stdout.json"
+            completed = subprocess.CompletedProcess(
+                ["code-mower", "example"],
+                0,
+                stdout='{"status":"pass"}\n',
+                stderr="",
+            )
+
+            with mock.patch.object(
+                code_mower_migration,
+                "_run_rehearsal_step",
+                return_value=completed,
+            ) as run_step:
+                result = code_mower_migration._run_rehearsal_step_to_file(
+                    ["code-mower", "example"],
+                    cwd=Path(tmp),
+                    env={"PATH": os.defpath},
+                    steps=[],
+                    timeout=12,
+                    stdout_path=output,
+                )
+
+            self.assertIs(result, completed)
+            self.assertEqual(output.read_text(encoding="utf-8"), '{"status":"pass"}\n')
+            run_step.assert_called_once_with(
+                ["code-mower", "example"],
+                cwd=Path(tmp),
+                env={"PATH": os.defpath},
+                steps=[],
+                timeout=12,
+            )
+
+    def test_package_install_rehearsal_resolves_local_package_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "code-mower-source"
+            package.mkdir()
+            (package / "pyproject.toml").write_text(
+                "[project]\nname = 'x'\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                code_mower_migration._resolve_install_package_spec(
+                    ".",
+                    base_dir=package,
+                ),
+                str(package.resolve()),
+            )
+            self.assertEqual(
+                code_mower_migration._resolve_install_package_spec(
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8",
+                    base_dir=package,
+                ),
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8",
+            )
+            self.assertEqual(
+                code_mower_migration._resolve_install_package_spec(
+                    "code-mower==0.5.0a8",
+                    base_dir=package,
+                ),
+                "code-mower==0.5.0a8",
+            )
+
+    def test_package_install_rehearsal_supports_index_aware_pip_install(self) -> None:
+        self.assertEqual(
+            code_mower_migration._pip_install_command(
+                Path("/tmp/venv/bin/python"),
+                "code-mower==0.5.0a8",
+                pip_index_url="https://test.pypi.org/simple/",
+                pip_extra_index_urls=["https://pypi.org/simple/"],
+            ),
+            [
+                "/tmp/venv/bin/python",
+                "-m",
+                "pip",
+                "install",
+                "--index-url",
+                "https://test.pypi.org/simple/",
+                "--extra-index-url",
+                "https://pypi.org/simple/",
+                "code-mower==0.5.0a8",
+            ],
+        )
 
     def test_easy_mode_smoke_covers_dogfood_dry_run(self) -> None:
         smoke_text = (ROOT / "scripts/smoke_easy_mode.py").read_text(encoding="utf-8")
