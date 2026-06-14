@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Code Mower discussions
+    url: https://github.com/codemower-ai/code-mower/discussions
+    about: Ask setup questions, share early-adopter feedback, or discuss provider/lane calibration.
