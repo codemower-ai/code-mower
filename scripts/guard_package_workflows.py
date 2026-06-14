@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MUTABLE_ACTION_RE = re.compile(r"uses:\s+actions/[^@\s]+@v\d")
+MUTABLE_ACTION_RE = re.compile(r"uses:\s+[^@\s]+@(?:v\d|release/)")
 HARDCODED_SSH_GITHUB_RE = re.compile(r"git@github\.com:[^{}\s]+")
 PRIVATE_SHADOW_TARGETS = (
     "templates/workflows/private-standalone-shadow.yml.j2",
@@ -17,6 +17,7 @@ PRIVATE_SHADOW_TARGETS = (
 )
 WORKFLOW_SOURCES = (
     ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
     "templates/workflows/blind-review-artifacts-dry-run.yml.j2",
     "templates/workflows/private-standalone-shadow.yml.j2",
     "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2",

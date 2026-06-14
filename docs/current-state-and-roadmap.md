@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public alpha baseline is `v0.5.0-alpha.3`. It is the first alpha
+The current public alpha baseline is `v0.5.0-alpha.4`. It is the first alpha
 intended to be installed from the `codemower-ai/code-mower` public repository
 after the org move. It has proved:
 
@@ -124,8 +124,9 @@ authoring-run capture remain post-v1.0 work.
    and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
    compatibility shims where they confuse contributors, and keep private
    product repos as consumers of pinned releases.
-3. Create a public GitHub Release for the current alpha and publish to PyPI
-   before widening beyond friendly early adopters.
+3. Create a public GitHub Release for the current alpha, verify the release
+   workflow builds source/wheel artifacts, and configure PyPI trusted
+   publishing before widening beyond friendly early adopters.
 4. Add a short terminal recording or screenshot showing `doctor --v05` and the
    first value-report path. A static transcript now exists in
    `docs/first-run-transcript.md`; replace or augment it with a recording

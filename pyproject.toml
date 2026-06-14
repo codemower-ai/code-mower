@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-mower"
-version = "0.5.0a3"
+version = "0.5.0a4"
 description = "Multi-reviewer AI code audit orchestration"
 requires-python = ">=3.11"
 readme = "README.md"
@@ -26,6 +26,13 @@ code_mower = [
     "templates/**/*.yaml",
     "templates/**/*.j2",
     "templates/product-support/*",
+]
+
+[tool.setuptools.exclude-package-data]
+code_mower = [
+    "**/__pycache__/*",
+    "**/*.pyc",
+    "**/*.pyo",
 ]
 
 [tool.ruff]

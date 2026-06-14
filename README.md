@@ -55,7 +55,7 @@ Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.3"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.4"
 code-mower --version
 ```
 
@@ -150,10 +150,11 @@ Provider details: [docs/provider-matrix.md](docs/provider-matrix.md).
 
 ## Installation Status
 
-The current public alpha is `v0.5.0-alpha.3` from
+The current public alpha is `v0.5.0-alpha.4` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower). PyPI
-publishing is on the release checklist; until then, use the tagged GitHub
-install command above.
+distribution builds now run from GitHub Releases. Publishing to PyPI remains
+off by default until trusted publishing is configured, so use the tagged GitHub
+install command above for this alpha.
 
 For source checkout development and release rehearsal, use:
 
@@ -167,7 +168,8 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 
 ## Known Limitations
 
-- PyPI publishing is not live yet; use the tagged GitHub install command.
+- PyPI distribution builds exist, but publishing is gated until trusted
+  publishing is configured; use the tagged GitHub install command.
 - GitHub is the primary supported forge. GitLab, Bitbucket, and ACP bridges are
   roadmap items.
 - Hosted/SaaS reviewers start informational or manual until calibration data
