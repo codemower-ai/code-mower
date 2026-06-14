@@ -4,7 +4,10 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
-## Unreleased
+## v0.5.0-alpha.5
+
+This alpha sharpens the first-user preflight path based on fresh-eyes feedback
+from the public repo and CodeMower.com onboarding flow.
 
 ### Added
 

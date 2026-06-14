@@ -31,8 +31,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_v05_alpha_4(self) -> None:
-        self.assertEqual(__version__, "0.5.0a4")
+    def test_version_is_v05_alpha_5(self) -> None:
+        self.assertEqual(__version__, "0.5.0a5")
 
     def test_doctor_preflight_applies_v05_first_run_defaults(self) -> None:
         args = Namespace(
