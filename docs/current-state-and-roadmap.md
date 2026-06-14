@@ -27,7 +27,7 @@ intended to be installed from the `codemower-ai/code-mower` public repository
 after the org move. It has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
-- `code-mower init --easy`, `doctor --easy`, `next-steps`, and starter
+- `code-mower init --easy`, `doctor --v05`, `next-steps`, and starter
   value-report generation;
 - pinned standalone consumption from the private reference/product repos;
 - mirror-removal pilots where product repos use package-backed wrappers instead
@@ -44,6 +44,8 @@ after the org move. It has proved:
   Dependabot config, security policy, and an explicit repo-hardening checklist.
 - first-impression adoption improvements: README sample output,
   `docs/sample-doctor-output.md`, and a clearer cloud value-exchange section.
+- first-run and trust docs: `CHANGELOG.md`, `docs/first-run-transcript.md`,
+  `docs/architecture.md`, and `docs/cloud-data-contract.md`.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
@@ -117,7 +119,9 @@ authoring-run capture remain post-v1.0 work.
 2. Create a public GitHub Release for the current alpha and publish to PyPI
    before widening beyond friendly early adopters.
 3. Add a short terminal recording or screenshot showing `doctor --v05` and the
-   first value-report path.
+   first value-report path. A static transcript now exists in
+   `docs/first-run-transcript.md`; replace or augment it with a recording
+   before a wider launch.
 4. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
    and Apple login end to end.
 5. Continue dogfooding metadata uploads from Code Mower and private product

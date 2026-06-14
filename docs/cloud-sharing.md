@@ -4,6 +4,9 @@ Code Mower is local-first. Cloud sharing is optional and exists to help users
 compare AI builders and reviewers across time, repositories, languages, and
 teams.
 
+The public upload boundary is defined in
+[Cloud Data Contract](cloud-data-contract.md).
+
 ## Why Share Metadata?
 
 Local reports answer "what happened in this repository?" CodeMower.com is meant

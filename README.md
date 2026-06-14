@@ -46,6 +46,8 @@ Next: fix token warnings, keep paid lanes manual, then generate a value report.
 The warnings are the point: Code Mower should make setup, cost, and trust
 boundaries visible before you promote any reviewer lane.
 
+See a fuller static transcript: [docs/first-run-transcript.md](docs/first-run-transcript.md).
+
 ## Try It In 10 Minutes
 
 Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
@@ -142,17 +144,31 @@ scripts/dev-python -m venv .venv
 
 The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 
+## Known Limitations
+
+- PyPI publishing is not live yet; use the tagged GitHub install command.
+- GitHub is the primary supported forge. GitLab, Bitbucket, and ACP bridges are
+  roadmap items.
+- Hosted/SaaS reviewers start informational or manual until calibration data
+  supports promotion.
+- CodeMower.com cohort benchmarks are early. Local reports are useful now;
+  aggregate comparison improves as more teams opt in.
+
 ## Docs Map
 
 - [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
 - [Quickstart](docs/quickstart.md)
+- [First Run Transcript](docs/first-run-transcript.md)
 - [Sample Doctor Output](docs/sample-doctor-output.md)
+- [Architecture](docs/architecture.md)
 - [Provider Matrix](docs/provider-matrix.md)
 - [GitHub Setup](docs/github-setup.md)
 - [Cloud Sharing](docs/cloud-sharing.md)
+- [Cloud Data Contract](docs/cloud-data-contract.md)
 - [Privacy And Threat Model](docs/privacy-threat-model.md)
 - [Current State And Roadmap](docs/current-state-and-roadmap.md)
 - [Public Release Checklist](docs/public-release-checklist.md)
+- [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## License
