@@ -10,7 +10,7 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.6"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.7"
 code-mower --version
 ```
 
@@ -98,7 +98,7 @@ This proves Code Mower can be installed fresh and run the starter workflow.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.6" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.7" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -182,6 +182,18 @@ Paste the dashboard token when prompted by stdin, then press Ctrl-D. Use
 `--force` only when intentionally replacing an existing token file.
 Operator-issued tokens remain a fallback for teams that cannot use the
 self-service dashboard yet.
+
+For routine dogfooding after the one-off bundle preview, prefer:
+
+```bash
+code-mower cloud dogfood --json
+code-mower cloud dogfood --yes --json
+```
+
+`cloud dogfood` auto-detects the current GitHub repo when possible, includes
+common shareable reports if they exist, adds a metadata-only `dogfood_upload`
+event, and is the easiest way to make the CodeMower.com dashboard useful over
+time.
 
 ## First Pilot Definition Of Done
 

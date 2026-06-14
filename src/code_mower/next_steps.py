@@ -281,6 +281,32 @@ def build_next_steps(
                 "transfer."
             ),
         },
+        {
+            "id": "cloud-dogfood-dry-run",
+            "title": "Preview the routine dogfood upload path",
+            "command": (
+                "source ~/.config/code-mower/tokens/YOUR_INSTALL_ID.env && "
+                "code-mower cloud dogfood --json"
+            ),
+            "why": (
+                "Uses the same token file and auto-detected repo metadata that "
+                "a regular team upload will use, while still avoiding network "
+                "transfer."
+            ),
+        },
+        {
+            "id": "cloud-dogfood-upload",
+            "title": "Send routine dogfood metadata after the preview is clean",
+            "command": (
+                "source ~/.config/code-mower/tokens/YOUR_INSTALL_ID.env && "
+                "code-mower cloud dogfood --yes --json"
+            ),
+            "why": (
+                "Uploads sanitized metadata and a dogfood event so CodeMower.com "
+                "can show repo, provider/lens, cost, latency, and recommendation "
+                "rows over time."
+            ),
+        },
     ]
 
     return {

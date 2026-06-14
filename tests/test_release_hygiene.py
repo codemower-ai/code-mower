@@ -35,8 +35,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_v05_alpha_6(self) -> None:
-        self.assertEqual(__version__, "0.5.0a6")
+    def test_version_is_v05_alpha_7(self) -> None:
+        self.assertEqual(__version__, "0.5.0a7")
 
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
@@ -1445,6 +1445,12 @@ def main():
                 self.assertIn("lane-policy=lane-policy.json", text)
                 self.assertIn("cloud-upload-dry-run.json", text)
 
+    def test_easy_mode_smoke_covers_dogfood_dry_run(self) -> None:
+        smoke_text = (ROOT / "scripts/smoke_easy_mode.py").read_text(encoding="utf-8")
+        self.assertIn('"dogfood"', smoke_text)
+        self.assertIn('"--json"', smoke_text)
+        self.assertIn("cloud-dogfood-dry-run.json", smoke_text)
+
     def test_next_steps_prefers_antigravity_for_new_google_cli_calibration(self) -> None:
         templates = next_steps.code_mower_package.load_provider_templates(
             ROOT / "src/code_mower/templates/providers.yml"
@@ -1487,6 +1493,19 @@ def main():
         dry_run = next(step for step in plan["steps"] if step["id"] == "cloud-upload-dry-run")
         self.assertIn("cloud upload", dry_run["command"])
         self.assertIn("--dry-run", dry_run["command"])
+        dogfood_dry_run = next(
+            step for step in plan["steps"] if step["id"] == "cloud-dogfood-dry-run"
+        )
+        dogfood_upload = next(
+            step for step in plan["steps"] if step["id"] == "cloud-dogfood-upload"
+        )
+        self.assertLess(ids.index("cloud-upload-dry-run"), ids.index("cloud-dogfood-dry-run"))
+        self.assertLess(ids.index("cloud-dogfood-dry-run"), ids.index("cloud-dogfood-upload"))
+        self.assertIn("cloud dogfood", dogfood_dry_run["command"])
+        self.assertNotIn("--dry-run", dogfood_dry_run["command"])
+        self.assertIn("source ~/.config/code-mower/tokens", dogfood_dry_run["command"])
+        self.assertIn("cloud dogfood", dogfood_upload["command"])
+        self.assertIn("--yes", dogfood_upload["command"])
 
     def test_calibration_arms_include_antigravity_lens_fanout(self) -> None:
         arms = {

@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public alpha baseline is `v0.5.0-alpha.6`. It is the first alpha
+The current public alpha baseline is `v0.5.0-alpha.7`. It is the first alpha
 intended to be installed from the `codemower-ai/code-mower` public repository
 after the org move. It has proved:
 
@@ -74,11 +74,12 @@ The cloud service currently supports:
 - per-team ingest tokens;
 - a protected dashboard for team/token management;
 - GitHub, Google, and Apple login UI through Supabase Auth; and
-- dogfood uploads from Code Mower and product development.
+- dogfood uploads from Code Mower and product development; and
+- self-service metadata export and deletion for signed-in team members/admins.
 
-It does not yet provide self-service data deletion/export, a published
-retention policy, or true cross-team cohort benchmark calculations. Those are
-preconditions for broad cloud-data collection beyond friendly pilots.
+It does not yet provide automated retention jobs or true cross-team cohort
+benchmark calculations. Those are preconditions for broad cloud-data collection
+beyond friendly pilots.
 
 OAuth, Supabase, Vercel, DNS, and hosted-secret setup are CodeMower.com
 operator responsibilities. OSS users should only need a dashboard-issued or
@@ -135,8 +136,9 @@ authoring-run capture remain post-v1.0 work.
    before a wider launch.
 5. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
    and Apple login end to end.
-6. Add CodeMower.com self-service data deletion/export and publish a retention
-   policy before broad cloud-data invitations.
+6. Turn the current team-controlled deletion/export basics into a published
+   retention policy with automated retention jobs before broad cloud-data
+   invitations.
 7. Continue dogfooding metadata uploads from Code Mower and private product
    work.
 8. Expand the calibration corpus with known-clean, known-blocked, and subtle

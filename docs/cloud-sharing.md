@@ -221,5 +221,6 @@ The v0.5 cloud service starts with:
 - optional report text when `--include-reports` is explicit.
 
 CodeMower.com now has a protected dashboard for team and token management.
-Deletion, retention controls, richer hosted reports, and aggregate cohort views
+Team metadata export and owner/admin deletion are live early-adopter controls.
+Automated retention jobs, richer hosted reports, and aggregate cohort views
 remain next-stage hosted-service work.
