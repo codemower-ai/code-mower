@@ -19,7 +19,7 @@ codebase, at what cost, and with which review policy.
 The public OSS repository is:
 
 ```text
-https://github.com/jeffhuber/code-mower
+https://github.com/codemower-ai/code-mower
 ```
 
 The current public alpha baseline is `v0.5.0-alpha.2`. It has proved:
