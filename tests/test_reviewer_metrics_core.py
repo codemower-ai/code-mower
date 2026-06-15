@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from code_mower import cloud as code_mower_cloud
 from code_mower import code_mower_telemetry, reviewer_metrics
 
 
@@ -222,8 +223,18 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write_artifact(root, repo="owner/first", pr_number=1)
-            self._write_artifact(root, repo="owner/second", pr_number=2)
-            self._write_artifact(root, repo="owner/second", pr_number=3)
+            self._write_artifact(
+                root,
+                repo="owner/second",
+                pr_number=2,
+                created_at="2026-06-15T10:00:00Z",
+            )
+            self._write_artifact(
+                root,
+                repo="owner/second",
+                pr_number=3,
+                created_at="2026-06-15T11:00:00Z",
+            )
 
             events = code_mower_telemetry.export_reviewer_run_events_from_verdicts(
                 root,
@@ -233,6 +244,7 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
 
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0]["repo_slug"], "owner/second")
+            self.assertEqual(events[0]["dimensions"]["pr_number"], 3)
 
     def test_telemetry_summary_understands_exported_reviewer_run_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,6 +293,80 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
                 os.environ.pop(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV, None)
             else:
                 os.environ[code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV] = old_value
+
+    def test_cloud_reviewer_runs_builds_dry_run_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            verdicts = root / "verdicts"
+            self._write_artifact(verdicts)
+            output_dir = root / "bundle"
+
+            result = code_mower_cloud._reviewer_runs_upload(
+                repo_path=root,
+                verdicts=verdicts,
+                output_dir=output_dir,
+                repo_slug="owner/repo",
+                team_id="team-test",
+                install_id="install-test",
+                limit=10,
+                endpoint="https://codemower.com/api/ingest",
+                token_env="MISSING_TOKEN_FOR_TEST",
+                yes=False,
+                timeout=1,
+                include_git_ref=False,
+            )
+
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["mode"], "cloud-reviewer-runs")
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(result["export"]["event_count"], 1)
+            self.assertEqual(result["upload"]["event_count"], 1)
+
+    def test_cloud_reviewer_runs_reports_no_events_without_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "bundle"
+
+            result = code_mower_cloud._reviewer_runs_upload(
+                repo_path=root,
+                verdicts=root / "missing-verdicts",
+                output_dir=output_dir,
+                repo_slug="owner/repo",
+                team_id="",
+                install_id="",
+                limit=10,
+                endpoint="https://codemower.com/api/ingest",
+                token_env="MISSING_TOKEN_FOR_TEST",
+                yes=False,
+                timeout=1,
+                include_git_ref=False,
+            )
+
+            self.assertEqual(result["status"], "no_events")
+            self.assertFalse(output_dir.exists())
+
+    def test_cloud_reviewer_runs_converts_invalid_artifacts_to_cloud_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            verdicts = root / "verdicts"
+            verdicts.mkdir()
+            (verdicts / "bad.json").write_text("[not-json", encoding="utf-8")
+
+            with self.assertRaises(code_mower_cloud.CloudBundleError):
+                code_mower_cloud._reviewer_runs_upload(
+                    repo_path=root,
+                    verdicts=verdicts,
+                    output_dir=root / "bundle",
+                    repo_slug="owner/repo",
+                    team_id="",
+                    install_id="",
+                    limit=10,
+                    endpoint="https://codemower.com/api/ingest",
+                    token_env="MISSING_TOKEN_FOR_TEST",
+                    yes=False,
+                    timeout=1,
+                    include_git_ref=False,
+                )
 
 
 if __name__ == "__main__":

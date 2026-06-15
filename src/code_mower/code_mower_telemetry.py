@@ -237,9 +237,11 @@ def export_reviewer_run_events_from_verdicts(
                 include_git_ref=include_git_ref,
             )
         )
-        if limit and len(events) >= limit:
-            break
-    return events
+    events.sort(
+        key=lambda event: (str(event.get("created_at") or ""), str(event.get("event_id") or "")),
+        reverse=True,
+    )
+    return events[:limit] if limit else events
 
 
 def load_jsonl_events(path: Path) -> list[dict[str, Any]]:
