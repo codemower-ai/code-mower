@@ -38,7 +38,7 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_v05_alpha_18(self) -> None:
+    def test_version_is_v05_alpha_19(self) -> None:
         self.assertEqual(__version__, "0.5.0a19")
 
     def test_release_workflow_verifies_downloaded_distributions_before_publish(self) -> None:
