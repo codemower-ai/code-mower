@@ -34,6 +34,7 @@ else:  # pragma: no cover - exercised after package extraction.
 
 
 DEFAULT_PROVIDER_TEMPLATES = "code-mower.provider-templates.yml"
+DEFAULT_PACKAGE_CONFIG = "code-mower.example.yml"
 
 PACKAGE_FILES = (
     ("tools/CODE_MOWER_APACHE_LICENSE.txt", "LICENSE", "package"),
@@ -1209,6 +1210,23 @@ def resolve_provider_templates_path(path_text: str) -> Path:
     return candidates[0]
 
 
+def resolve_package_config_path(path_text: str) -> Path:
+    path = Path(path_text)
+    if path_text != DEFAULT_PACKAGE_CONFIG or path.is_absolute():
+        return path
+
+    for root in _candidate_package_source_roots():
+        source_path = _resolve_package_source(
+            root,
+            DEFAULT_PACKAGE_CONFIG,
+            "src/code_mower/templates/code-mower.example.yml",
+        )
+        if source_path is not None:
+            return source_path
+
+    return Path.cwd() / DEFAULT_PACKAGE_CONFIG
+
+
 def _provider_template_rows(
     config: Mapping[str, Any],
     provider_templates: Mapping[str, Any],
@@ -1730,7 +1748,7 @@ def materialize_package_plan(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("config", nargs="?", default="code-mower.example.yml")
+    parser.add_argument("config", nargs="?", default=DEFAULT_PACKAGE_CONFIG)
     parser.add_argument(
         "--provider-templates",
         default=None,
@@ -1761,7 +1779,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         plan = render_package_plan(
-            load_config(Path(args.config)),
+            load_config(resolve_package_config_path(args.config)),
             load_provider_templates(
                 resolve_provider_templates_path(DEFAULT_PROVIDER_TEMPLATES)
                 if args.provider_templates is None

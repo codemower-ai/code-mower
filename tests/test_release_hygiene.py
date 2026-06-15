@@ -742,6 +742,24 @@ printf '%s\\n' "${lane}"
             self.assertIn("src/code_mower/cloud_client/dogfood.py", sources)
             self.assertIn("src/code_mower/templates/code-mower.example.yml", sources)
 
+    def test_package_materializer_resolves_default_config_from_extracted_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                code = code_mower_package.main(
+                    [
+                        "--output-dir",
+                        tmp,
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            output_dir = Path(tmp)
+            self.assertTrue(
+                (output_dir / "src/code_mower/templates/code-mower.example.yml").is_file()
+            )
+
     def test_standalone_shadow_holds_checkout_lock_through_delegation(self) -> None:
         text = (
             ROOT
