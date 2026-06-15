@@ -207,6 +207,19 @@ def build_next_steps(
             ),
         },
         {
+            "id": "calibration-auto-discover",
+            "title": "Bootstrap a project-specific draft corpus from recent PRs",
+            "command": (
+                f"code-mower calibration auto-discover --repo {repo} --last-n 20 "
+                "--output .code-mower/draft-calibration-corpus.json"
+            ),
+            "why": (
+                "Uses recent merged PR metadata and structured audit trailers to "
+                "create a reviewable starter corpus for your actual codebase. "
+                "Confirm every disposition before using it for lane promotion."
+            ),
+        },
+        {
             "id": "value-report",
             "title": "Generate the first reviewer value report",
             "command": (

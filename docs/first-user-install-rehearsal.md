@@ -94,6 +94,8 @@ Code Mower user.
 The JSON payload includes `first_user_artifacts` with paths to:
 
 - `.code-mower/calibration-plan.json`
+- `.code-mower/draft-calibration-corpus.json`
+- `.code-mower/draft-reviewer-value-report.md`
 - `calibration-evidence.json`
 - `reviewer-metrics.json`
 - `lane-policy.json`

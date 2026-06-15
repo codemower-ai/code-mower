@@ -138,8 +138,10 @@ Treat these as product gates before widening beyond friendly early adopters:
   provider bridges, labelers, migration internals, and operator commands belong
   behind `code-mower --help-all` or deeper docs.
 - **Time to value:** users should not have to hand-build a full calibration
-  corpus before seeing a useful report. A future auto-discovery command should
-  bootstrap a starter corpus from recent merged PRs and known review signals.
+  corpus before seeing a useful report. The current auto-discovery command
+  bootstraps a draft corpus from recent merged PRs and known review signals;
+  release rehearsals should prove that path and docs should keep emphasizing
+  human disposition review before lane promotion.
 - **Code confidence:** release hygiene tests prove broad behavior, but v1.0
   needs more focused unit coverage around doctor checks, cloud bundle privacy,
   calibration math, verdict parsing, and provider-runner seams.
@@ -225,8 +227,9 @@ leaving room for future orchestrator adapters.
     Mower as merge-gate infrastructure.
 14. Triage CLI help into a smaller first-user command set, with advanced
     operator/internal commands documented separately.
-15. Add calibration auto-discovery from recent PRs so first reports can be
-    bootstrapped from real project history with human review.
+15. Harden calibration auto-discovery with more real PR shapes, first-user
+    examples, and package-install rehearsal coverage so first reports can be
+    bootstrapped from project history with human review.
 16. Reduce first-read README friction: one-screen pitch, install, doctor sample,
     demo report, and links to deeper docs.
 17. Add builder-experiment capture only after the reviewer/value loop is
