@@ -338,6 +338,49 @@ def _local_llm_main(argv: list[str]) -> int:
 CommandHandler = Callable[[list[str]], int]
 
 
+COMMAND_DESCRIPTIONS: dict[str, str] = {
+    "antigravity-cli": "Run an Antigravity/Gemini CLI structured audit lane.",
+    "blind-review": "Coordinate hidden/blind review artifacts.",
+    "bootstrap": "Bootstrap generated support files and workflow fixtures.",
+    "builder-experiment": "Capture builder-side experiment metadata.",
+    "calibration": "Create corpora, dispositions, policy, and value reports.",
+    "claude-audit": "Run a Claude structured audit lane.",
+    "cloud": "Export or upload sanitized benchmark metadata.",
+    "config": "Validate or inspect a Code Mower config.",
+    "context-packs": "Build selective surrounding-file context packs.",
+    "coderabbit-cli": "Run a CodeRabbit CLI informational lane.",
+    "codex-audit": "Run a Codex structured audit lane.",
+    "codex-audit-env-preflight": "Probe Codex audit environment setup.",
+    "codex-audit-schema-smoke": "Smoke-test Codex audit schema parsing.",
+    "doctor": "Check runtime, GitHub, providers, privacy, and cloud setup.",
+    "gemini-cli": "Run a Gemini CLI structured audit lane.",
+    "hermes-cli": "Run a Hermes CLI structured audit lane.",
+    "init": "Render safe easy-mode setup output.",
+    "local-llm": "Probe and run local OpenAI-compatible model lanes.",
+    "migration": "Rehearse standalone package and wrapper migration paths.",
+    "merge-plan": "Inspect merge-readiness signals and lane labels.",
+    "next-steps": "Print the recommended next actions after setup.",
+    "package": "Build or inspect package extraction artifacts.",
+    "prompts": "Inspect prompt/lens customization artifacts.",
+    "providers": "List or inspect provider template definitions.",
+    "reviewer-metrics": "Compute reviewer metrics and value reports.",
+    "saas-reviewer-labeler": "Apply labels from hosted reviewer comments.",
+    "telemetry": "Inspect benchmark telemetry/event helpers.",
+    "trailer-comment-labeler": "Apply labels from structured audit trailers.",
+}
+
+
+FIRST_USER_COMMANDS = (
+    "init",
+    "doctor",
+    "next-steps",
+    "calibration",
+    "reviewer-metrics",
+    "cloud",
+    "config",
+)
+
+
 def _init_main(argv: list[str]) -> int:
     options_with_values = {"--profile", "--output-dir"}
     if (
@@ -367,6 +410,57 @@ def _package_main(argv: list[str]) -> int:
             },
         )
     )
+
+
+def _advanced_commands() -> tuple[str, ...]:
+    return tuple(command for command in COMMAND_HANDLERS if command not in FIRST_USER_COMMANDS)
+
+
+def _format_command_rows(commands: tuple[str, ...]) -> list[str]:
+    width = max(len(command) for command in commands)
+    return [
+        f"  {command:<{width}}  {COMMAND_DESCRIPTIONS.get(command, '')}"
+        for command in commands
+    ]
+
+
+def _top_level_help(show_all: bool) -> str:
+    first_user_rows = "\n".join(_format_command_rows(FIRST_USER_COMMANDS))
+    lines = [
+        "usage: code-mower [--version] <command> [args]",
+        "",
+        "Code Mower creates local-first AI peer-review and calibration loops.",
+        "",
+        "First-user commands:",
+        first_user_rows,
+    ]
+    if show_all:
+        advanced_rows = "\n".join(_format_command_rows(_advanced_commands()))
+        lines.extend(
+            [
+                "",
+                "Advanced/provider/operator commands:",
+                advanced_rows,
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "Run code-mower --help-all to show advanced provider/operator commands.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "Common first run:",
+            "  code-mower init --easy",
+            "  code-mower doctor --preflight",
+            "  code-mower next-steps --profile recommended",
+            "  code-mower migration package-install-rehearsal --package-spec code-mower --json",
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 COMMAND_HANDLERS: dict[str, CommandHandler] = {
@@ -402,12 +496,29 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="code-mower")
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if not raw_argv or raw_argv == ["-h"] or raw_argv == ["--help"]:
+        print(_top_level_help(show_all=False), end="")
+        return 0
+    if raw_argv == ["--help-all"]:
+        print(_top_level_help(show_all=True), end="")
+        return 0
+
+    parser = argparse.ArgumentParser(prog="code-mower", add_help=False)
+    parser.add_argument("-h", "--help", action="store_true")
+    parser.add_argument("--help-all", action="store_true")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in COMMAND_HANDLERS:
         subparsers.add_parser(command, add_help=False)
-    args, rest = parser.parse_known_args(argv)
+    args, rest = parser.parse_known_args(raw_argv)
+
+    if args.help:
+        print(_top_level_help(show_all=False), end="")
+        return 0
+    if args.help_all:
+        print(_top_level_help(show_all=True), end="")
+        return 0
 
     try:
         handler = COMMAND_HANDLERS[args.command]

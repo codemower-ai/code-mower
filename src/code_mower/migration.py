@@ -63,6 +63,8 @@ CALIBRATION_EVIDENCE_ADDITIVE_KEYS = frozenset(
 )
 FIRST_USER_ARTIFACTS = (
     ("calibration_plan", ".code-mower/calibration-plan.json"),
+    ("draft_calibration_corpus", ".code-mower/draft-calibration-corpus.json"),
+    ("draft_reviewer_value_report", ".code-mower/draft-reviewer-value-report.md"),
     ("calibration_evidence", "calibration-evidence.json"),
     ("reviewer_metrics", "reviewer-metrics.json"),
     ("lane_policy", "lane-policy.json"),
@@ -70,6 +72,16 @@ FIRST_USER_ARTIFACTS = (
     ("cloud_export", "cloud-export.json"),
     ("cloud_upload_dry_run", "cloud-upload-dry-run.json"),
     ("cloud_dogfood_dry_run", "cloud-dogfood-dry-run.json"),
+)
+PRIVACY_EXCLUDED_CONTENT = frozenset(
+    {
+        "source_code",
+        "raw_diffs",
+        "raw_model_transcripts",
+        "raw_stdout_stderr",
+        "auth_probe_output",
+        "secrets",
+    }
 )
 
 RUNNER_ALIASES = (
@@ -307,6 +319,258 @@ def _first_user_artifacts(toy_repo: Path) -> dict[str, str]:
     }
 
 
+def _read_json_file(path: Path) -> Any | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _readiness_check(
+    *,
+    check_id: str,
+    title: str,
+    status: str,
+    evidence: str,
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    check: dict[str, Any] = {
+        "id": check_id,
+        "title": title,
+        "status": status,
+        "evidence": evidence,
+    }
+    if detail:
+        check["detail"] = detail
+    return check
+
+
+def _artifact_exists_check(
+    *,
+    check_id: str,
+    title: str,
+    path: Path,
+    min_bytes: int = 1,
+) -> dict[str, Any]:
+    exists = path.is_file()
+    size = path.stat().st_size if exists else 0
+    return _readiness_check(
+        check_id=check_id,
+        title=title,
+        status="pass" if exists and size >= min_bytes else "fail",
+        evidence=str(path),
+        detail={"exists": exists, "bytes": size},
+    )
+
+
+def _step_succeeded(steps: Sequence[dict[str, Any]], *needles: str) -> bool:
+    for step in steps:
+        if step.get("returncode") != 0:
+            continue
+        command = " ".join(str(part) for part in step.get("command", ()))
+        if all(needle in command for needle in needles):
+            return True
+    return False
+
+
+def _cloud_dry_run_check(
+    *,
+    check_id: str,
+    title: str,
+    path: Path,
+    upload_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = upload_payload if upload_payload is not None else _read_json_file(path)
+    upload = payload.get("upload") if isinstance(payload, dict) else None
+    if not isinstance(upload, dict):
+        upload = payload if isinstance(payload, dict) else {}
+    excluded = set(upload.get("excluded_content") or ())
+    missing_exclusions = sorted(PRIVACY_EXCLUDED_CONTENT - excluded)
+    detail = {
+        "mode": upload.get("mode"),
+        "privacy_mode": upload.get("privacy_mode"),
+        "requires_yes": upload.get("requires_yes"),
+        "would_upload": upload.get("would_upload"),
+        "missing_exclusions": missing_exclusions,
+    }
+    passes = (
+        path.is_file()
+        and upload.get("mode") == "cloud-upload-dry-run"
+        and upload.get("privacy_mode") == "metadata_and_reports"
+        and upload.get("requires_yes") is True
+        and upload.get("would_upload") is False
+        and not missing_exclusions
+    )
+    return _readiness_check(
+        check_id=check_id,
+        title=title,
+        status="pass" if passes else "fail",
+        evidence=str(path),
+        detail=detail,
+    )
+
+
+def _first_user_readiness_scorecard(
+    *,
+    toy_repo: Path,
+    outputs: Path,
+    version: str,
+    steps: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    artifacts = _first_user_artifacts(toy_repo)
+    generated_dir = toy_repo / ".code-mower.generated"
+    cloud_upload_path = Path(artifacts["cloud_upload_dry_run"])
+    dogfood_path = Path(artifacts["cloud_dogfood_dry_run"])
+    cloud_export_payload = _read_json_file(Path(artifacts["cloud_export"]))
+    dogfood_payload = _read_json_file(dogfood_path)
+    dogfood_upload = (
+        dogfood_payload.get("upload") if isinstance(dogfood_payload, dict) else None
+    )
+
+    checks = [
+        _readiness_check(
+            check_id="package-installed",
+            title="Package installs and exposes the CLI",
+            status="pass" if version.startswith("code-mower ") else "fail",
+            evidence=version,
+        ),
+        _readiness_check(
+            check_id="easy-init-generated",
+            title="Easy-mode setup writes reviewable generated files",
+            status=(
+                "pass"
+                if (
+                    (generated_dir / "code-mower-init-plan.json").is_file()
+                    and (generated_dir / "smoke-tests.sh").is_file()
+                    and (generated_dir / "tools" / "code_mower").is_file()
+                )
+                else "fail"
+            ),
+            evidence=str(generated_dir),
+        ),
+        _readiness_check(
+            check_id="doctor-ran",
+            title="First-run doctor completes",
+            status="pass" if _step_succeeded(steps, "doctor", "--easy") else "fail",
+            evidence="code-mower doctor --easy --json",
+        ),
+        _artifact_exists_check(
+            check_id="draft-calibration-corpus",
+            title="Auto-discovery creates a reviewable draft corpus",
+            path=Path(artifacts["draft_calibration_corpus"]),
+        ),
+        _artifact_exists_check(
+            check_id="draft-value-report",
+            title="Draft corpus can produce a reviewer value report",
+            path=Path(artifacts["draft_reviewer_value_report"]),
+        ),
+        _artifact_exists_check(
+            check_id="starter-value-report",
+            title="Starter corpus can produce the first value report",
+            path=Path(artifacts["reviewer_value_report"]),
+        ),
+        _readiness_check(
+            check_id="cloud-export-metadata-bundle",
+            title="Cloud export creates a metadata/report bundle",
+            status=(
+                "pass"
+                if (
+                    isinstance(cloud_export_payload, dict)
+                    and cloud_export_payload.get("mode") == "cloud-export"
+                    and len(cloud_export_payload.get("included_reports") or ()) >= 3
+                    and cloud_export_payload.get("upload_ready") is False
+                )
+                else "fail"
+            ),
+            evidence=artifacts["cloud_export"],
+        ),
+        _cloud_dry_run_check(
+            check_id="cloud-upload-dry-run-privacy",
+            title="Cloud upload stays dry-run and excludes private content",
+            path=cloud_upload_path,
+        ),
+        _readiness_check(
+            check_id="cloud-dogfood-dry-run",
+            title="CodeMower.com dogfood path stays dry-run by default",
+            status=(
+                "pass"
+                if (
+                    isinstance(dogfood_payload, dict)
+                    and dogfood_payload.get("status") == "dry_run"
+                )
+                else "fail"
+            ),
+            evidence=str(dogfood_path),
+        ),
+        _cloud_dry_run_check(
+            check_id="cloud-dogfood-upload-privacy",
+            title="Dogfood upload preview excludes private content",
+            path=dogfood_path,
+            upload_payload=dogfood_upload,
+        ),
+    ]
+    passed = sum(1 for check in checks if check["status"] == "pass")
+    failed = sum(1 for check in checks if check["status"] == "fail")
+    warnings = sum(1 for check in checks if check["status"] == "warn")
+    scorecard = {
+        "mode": "code-mower-first-user-readiness",
+        "status": "pass" if failed == 0 else "fail",
+        "passed": passed,
+        "failed": failed,
+        "warnings": warnings,
+        "total": len(checks),
+        "checks": checks,
+        "artifact": str(outputs / "first-user-readiness.json"),
+    }
+    return scorecard
+
+
+def _write_rehearsal_auto_discovery_fixture(path: Path) -> None:
+    """Write a tiny GitHub PR-list fixture for offline auto-discovery rehearsal."""
+
+    fixed_head = "b" * 40
+    blocked_head = "a" * 40
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        path,
+        [
+            {
+                "number": 1,
+                "title": "Clean rehearsal docs update",
+                "headRefOid": "c" * 40,
+                "baseRefName": "main",
+                "changedFiles": 1,
+                "comments": [],
+                "reviews": [],
+            },
+            {
+                "number": 2,
+                "title": "Fix rehearsal blocker",
+                "headRefOid": fixed_head,
+                "baseRefName": "main",
+                "changedFiles": 4,
+                "comments": [
+                    {
+                        "body": (
+                            f"Head SHA: `{blocked_head}`\n"
+                            "Findings: P0=0, P1=0, P2=1, P3=0\n"
+                            "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->\n"
+                        )
+                    },
+                    {
+                        "body": (
+                            f"Head SHA: `{fixed_head}`\n"
+                            "Findings: P0=0, P1=0, P2=0, P3=0\n"
+                            "<!-- CODEX_AUDIT_STATE: codex-audit-done -->\n"
+                        )
+                    },
+                ],
+                "reviews": [],
+            },
+        ],
+    )
+
+
 def _resolve_install_package_spec(package_spec: str, *, base_dir: Path | None = None) -> str:
     candidate_text = package_spec.strip()
     if not candidate_text:
@@ -539,6 +803,42 @@ def run_package_install_rehearsal(
         timeout=timeout,
         stdout_path=toy_repo / ".code-mower" / "calibration-plan.json",
     )
+    auto_discovery_input = toy_repo / ".code-mower" / "auto-discovery-prs.json"
+    _write_rehearsal_auto_discovery_fixture(auto_discovery_input)
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "calibration",
+            "auto-discover",
+            "--repo",
+            "example/toy-repo",
+            "--input",
+            str(auto_discovery_input),
+            "--output",
+            ".code-mower/draft-calibration-corpus.json",
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=outputs / "auto-discover.json",
+    )
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "calibration",
+            "value-report",
+            ".code-mower/draft-calibration-corpus.json",
+            "--output",
+            ".code-mower/draft-reviewer-value-report.md",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=outputs / "draft-value-report.txt",
+    )
     _run_rehearsal_step_to_file(
         [
             str(code_mower_bin),
@@ -718,6 +1018,16 @@ def run_package_install_rehearsal(
         )
         product_mirror_payload = _json_payload(mirror_completed.stdout)
 
+    readiness = _first_user_readiness_scorecard(
+        toy_repo=toy_repo,
+        outputs=outputs,
+        version=version,
+        steps=steps,
+    )
+    _write_json(outputs / "first-user-readiness.json", readiness)
+    if readiness.get("status") != "pass":
+        raise RehearsalError("first-user readiness scorecard did not pass", steps)
+
     payload = {
         "mode": "code-mower-package-install-rehearsal",
         "status": "pass",
@@ -732,6 +1042,8 @@ def run_package_install_rehearsal(
         "version": version,
         "toy_repo": str(toy_repo),
         "first_user_artifacts": _first_user_artifacts(toy_repo),
+        "first_user_readiness": readiness,
+        "first_user_readiness_path": str(outputs / "first-user-readiness.json"),
         "repo_path": str(repo_path) if repo_path is not None else "",
         "step_count": len(steps),
         "steps": steps,
@@ -752,11 +1064,25 @@ def render_package_install_rehearsal_text(payload: dict[str, Any]) -> str:
         f"Toy repo: {payload['toy_repo']}",
         f"Steps: {payload['step_count']}",
     ]
+    readiness = payload.get("first_user_readiness") or {}
+    if readiness:
+        lines.extend(
+            [
+                (
+                    "First-user readiness: "
+                    f"{readiness.get('status', 'unknown')} "
+                    f"({readiness.get('passed', 0)}/{readiness.get('total', 0)} passed)"
+                ),
+                f"Readiness scorecard: {payload.get('first_user_readiness_path', '')}",
+            ]
+        )
     artifacts = payload.get("first_user_artifacts") or {}
     if artifacts:
         lines.extend(
             [
                 f"Value report: {artifacts.get('reviewer_value_report', '')}",
+                f"Draft corpus: {artifacts.get('draft_calibration_corpus', '')}",
+                f"Draft value report: {artifacts.get('draft_reviewer_value_report', '')}",
                 f"Cloud upload dry run: {artifacts.get('cloud_upload_dry_run', '')}",
                 f"Cloud dogfood dry run: {artifacts.get('cloud_dogfood_dry_run', '')}",
             ]

@@ -4,6 +4,104 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.13
+
+This alpha fixes the public repo's Dependabot Dependency Graph compatibility
+after the pytest 9.1.0 maintenance update exposed that the standalone repo used
+a nonstandard pip requirements filename.
+
+### Changed
+
+- The standalone repo now uses `requirements/requirements.txt` as its pip
+  tooling requirements file, matching Dependabot's supported manifest naming.
+- `code-mower bootstrap` defaults to `requirements/requirements.txt` instead
+  of the extraction-era `tools/code_mower_requirements.txt` path.
+- Package extraction metadata now renders the requirements file to
+  `requirements/requirements.txt`.
+- Public install docs now point to `v0.5.0-alpha.13`.
+
+## v0.5.0-alpha.12
+
+This alpha makes the first-user readiness scorecard more discoverable from the
+default CLI and `next-steps` guidance.
+
+### Changed
+
+- Top-level `code-mower --help` now includes the package-install rehearsal in
+  the common first-run path.
+- `code-mower next-steps --profile recommended` now points to the
+  `first_user_readiness` rehearsal result and lists the readiness scorecard
+  artifact path.
+- Public install docs now point to `v0.5.0-alpha.12`.
+
+## v0.5.0-alpha.11
+
+This alpha adds a first-user readiness scorecard to the package-install
+rehearsal. The rehearsal already proved install, easy-mode setup, doctor, first
+reports, and cloud dry-run behavior; the scorecard now turns that evidence into
+an explicit release-gate summary.
+
+### Added
+
+- `migration package-install-rehearsal` now includes `first_user_readiness` in
+  its JSON payload and writes `outputs/first-user-readiness.json`.
+- The readiness scorecard verifies package install, easy-mode generated output,
+  doctor completion, draft corpus/report generation, starter value report
+  generation, cloud export, cloud upload dry-run privacy, and dogfood dry-run
+  privacy.
+
+### Changed
+
+- Public install docs now point to `v0.5.0-alpha.11`.
+- First-user rehearsal docs now list `first_user_readiness.status == pass` as a
+  release-gate criterion.
+
+## v0.5.0-alpha.10
+
+This alpha fixes the first-user cloud dogfood preview path after alpha.9 exposed
+that a production dry run still failed without a token. Dry runs now remain
+network-safe and token-optional, while confirmed uploads still require an
+explicit token.
+
+### Changed
+
+- `code-mower cloud dogfood --json` no longer fails when targeting
+  `https://codemower.com/api/ingest` without `CODE_MOWER_CLOUD_TOKEN`, as long
+  as `--yes` is not supplied.
+- Cloud doctor can distinguish upload-readiness checks from dry-run previews, so
+  missing tokens are warnings for previews and failures for confirmed uploads.
+- Public install docs now point to `v0.5.0-alpha.10`.
+
+### Fixed
+
+- First-user dogfood dry runs now match the documented privacy posture: no token
+  is required to inspect the metadata-only bundle, and no network upload occurs
+  without `--yes`.
+
+## v0.5.0-alpha.9
+
+This alpha hardens the first-useful-report path. The package-install rehearsal
+now proves that a fresh install can bootstrap a draft project corpus from PR
+metadata and generate a draft reviewer value report before any paid or
+networked lane is enabled.
+
+### Added
+
+- `code-mower next-steps` now recommends `calibration auto-discover` between
+  first calibration runs and the first reviewer value report.
+- Package-install rehearsal now writes an offline PR-list fixture, runs
+  `calibration auto-discover`, and round-trips the generated draft corpus
+  through `calibration value-report`.
+- Alpha.9 first-user install rehearsal transcript covering the draft corpus and
+  draft value-report artifacts.
+
+### Changed
+
+- Public install docs now point to `v0.5.0-alpha.9`.
+- Public release docs now treat calibration auto-discovery as part of the
+  release gate, while still requiring human disposition review before lane
+  promotion.
+
 ## v0.5.0-alpha.8
 
 This alpha hardens the first-user trust path: clearer package-index release

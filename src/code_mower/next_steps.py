@@ -181,9 +181,14 @@ def build_next_steps(
             "why": (
                 "Installs Code Mower into a clean venv, verifies the easy-mode "
                 "starter path in a fresh toy repo, writes the first value-report "
-                "and cloud dry-run artifacts, and optionally compares an existing "
-                "product repo when --repo-path is provided."
+                "and cloud dry-run artifacts, emits `first_user_readiness`, and "
+                "optionally compares an existing product repo when --repo-path is "
+                "provided."
             ),
+            "artifacts": [
+                "outputs/package-install-rehearsal.json",
+                "outputs/first-user-readiness.json",
+            ],
         },
         {
             "id": "first-audit",
@@ -204,6 +209,19 @@ def build_next_steps(
                 "Persists raw reviewer results for quality, latency, and cost analysis. "
                 "Antigravity is the forward Google CLI lane; use gemini-cli only for "
                 "legacy/API-key compatibility or historical comparisons."
+            ),
+        },
+        {
+            "id": "calibration-auto-discover",
+            "title": "Bootstrap a project-specific draft corpus from recent PRs",
+            "command": (
+                f"code-mower calibration auto-discover --repo {repo} --last-n 20 "
+                "--output .code-mower/draft-calibration-corpus.json"
+            ),
+            "why": (
+                "Uses recent merged PR metadata and structured audit trailers to "
+                "create a reviewable starter corpus for your actual codebase. "
+                "Confirm every disposition before using it for lane promotion."
             ),
         },
         {

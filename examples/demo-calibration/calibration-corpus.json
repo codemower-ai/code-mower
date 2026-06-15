@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "name": "demo-two-pr-calibration",
+  "description": "Tiny synthetic corpus showing one known-clean control and one known-blocked control.",
+  "corpus": [
+    {
+      "repo": "example/widget-service",
+      "pr_number": 101,
+      "head_sha": "1111111111111111111111111111111111111111",
+      "base_ref": "main",
+      "difficulty": "easy",
+      "review_class": "docs-and-tests",
+      "source": "demo-known-clean",
+      "truth": {
+        "expectation": "known_clean",
+        "notes": "A merged control PR that only updates tests and docs."
+      },
+      "expected_findings": [],
+      "reviewer_runs": [
+        {
+          "reviewer": "codex-audit",
+          "status": "pass",
+          "finding_count": 0,
+          "known_clean": true,
+          "duration_seconds": 64,
+          "cost_usd": 0.22
+        },
+        {
+          "reviewer": "claude-audit",
+          "status": "pass",
+          "finding_count": 0,
+          "known_clean": true,
+          "duration_seconds": 91,
+          "cost_usd": 0.41
+        },
+        {
+          "reviewer": "experimental-lens",
+          "status": "blocked",
+          "finding_count": 2,
+          "known_clean": true,
+          "duration_seconds": 55,
+          "cost_usd": 0.08
+        }
+      ],
+      "notes": "Known-clean controls reveal false positives."
+    },
+    {
+      "repo": "example/widget-service",
+      "pr_number": 102,
+      "head_sha": "2222222222222222222222222222222222222222",
+      "base_ref": "main",
+      "difficulty": "medium",
+      "review_class": "auth-history",
+      "source": "demo-known-blocked",
+      "truth": {
+        "expectation": "known_blocked",
+        "expected_themes": [
+          "server-side quota enforcement",
+          "replay suppression scope"
+        ],
+        "notes": "A historical blocker where the client enforced quota but the server did not."
+      },
+      "expected_findings": [
+        {
+          "path": "src/history/quota.ts",
+          "summary": "Quota is enforced only in the client path; direct API writes can exceed the limit."
+        },
+        {
+          "path": "src/history/replay.ts",
+          "summary": "Replay suppression is global instead of scoped to the active request."
+        }
+      ],
+      "reviewer_runs": [
+        {
+          "reviewer": "codex-audit",
+          "status": "blocked",
+          "finding_count": 2,
+          "expected_blocker_caught": true,
+          "expected_finding_matches": 2,
+          "duration_seconds": 73,
+          "cost_usd": 0.29
+        },
+        {
+          "reviewer": "claude-audit",
+          "status": "blocked",
+          "finding_count": 1,
+          "expected_blocker_caught": true,
+          "expected_finding_matches": 1,
+          "duration_seconds": 108,
+          "cost_usd": 0.54
+        },
+        {
+          "reviewer": "experimental-lens",
+          "status": "pass",
+          "finding_count": 0,
+          "expected_blocker_caught": false,
+          "expected_finding_matches": 0,
+          "duration_seconds": 49,
+          "cost_usd": 0.07
+        }
+      ],
+      "notes": "Known-blocked controls reveal miss rate."
+    }
+  ]
+}
