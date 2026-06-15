@@ -729,6 +729,21 @@ printf '%s\\n' "${lane}"
             ).as_posix(),
         )
 
+    def test_package_materializer_prefers_explicit_repo_root_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_path = root / "src/code_mower/__init__.py"
+            init_path.parent.mkdir(parents=True)
+            init_path.write_text(
+                '"""Code Mower package."""\n\n__version__ = "9.9.9a1"\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                code_mower_package._running_code_mower_version(root),
+                "9.9.9a1",
+            )
+
     def test_package_materializer_can_run_from_extracted_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stdout = StringIO()

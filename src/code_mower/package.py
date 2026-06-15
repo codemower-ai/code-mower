@@ -850,11 +850,6 @@ if __name__ == \"__main__\":
 
 
 def _running_code_mower_version(repo_root: Path | None = None) -> str:
-    loaded_package = sys.modules.get("code_mower")
-    loaded_version = getattr(loaded_package, "__version__", "")
-    if isinstance(loaded_version, str) and loaded_version:
-        return loaded_version
-
     roots = [repo_root] if repo_root is not None else []
     roots.extend(_candidate_package_source_roots())
     version_re = re.compile(r'__version__\s*=\s*"([^"]+)"')
@@ -867,6 +862,11 @@ def _running_code_mower_version(repo_root: Path | None = None) -> str:
         match = version_re.search(init_path.read_text(encoding="utf-8"))
         if match:
             return match.group(1)
+
+    loaded_package = sys.modules.get("code_mower")
+    loaded_version = getattr(loaded_package, "__version__", "")
+    if isinstance(loaded_version, str) and loaded_version:
+        return loaded_version
 
     return "0.0.0"
 
