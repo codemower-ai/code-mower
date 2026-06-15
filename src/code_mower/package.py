@@ -1130,7 +1130,11 @@ CLI_COMMANDS = (
     "code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json",
     "code-mower migration mirror-removal-plan --repo-path /path/to/product-repo --shadow-cycles 1 --standalone-default-cycles 1 --json",
     "code-mower migration runner-aliases --json",
-    "code-mower migration package-install-rehearsal --package-spec code-mower --repo-path /path/to/product-repo --json",
+    (
+        "code-mower migration package-install-rehearsal "
+        "--package-spec git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.14 "
+        "--repo-path /path/to/product-repo --json"
+    ),
     "code-mower local-llm profiles --json",
     "code-mower local-llm probe --profile qwen3-coder-next-lmstudio --json",
     "code-mower local-llm probe --profile gemma4-ollama --json",

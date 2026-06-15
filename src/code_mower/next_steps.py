@@ -15,15 +15,18 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if __package__ in {None, "", "tools"}:
+    from code_mower import __version__ as CODE_MOWER_VERSION
     from tools import code_mower_package
     from tools.code_mower_config import ConfigError
 else:  # pragma: no cover - exercised after package extraction.
+    from . import __version__ as CODE_MOWER_VERSION
     from . import package as code_mower_package
     from .config import ConfigError
 
 
 DEFAULT_PROVIDER_TEMPLATES = code_mower_package.DEFAULT_PROVIDER_TEMPLATES
 DEFAULT_PROFILE = "recommended"
+PUBLIC_REPO_URL = "https://github.com/codemower-ai/code-mower"
 GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PR_NUMBER_RE = re.compile(r"^[1-9][0-9]*$")
 REQUEST_LABEL_RE = re.compile(r"^needs-[A-Za-z0-9][A-Za-z0-9_-]*-(audit|review)$")
@@ -106,6 +109,18 @@ def _validate_repo_and_pr(repo: str, pr: str) -> None:
         raise ConfigError("pr must be a positive numeric pull request number")
 
 
+def current_public_tag(version: str = CODE_MOWER_VERSION) -> str:
+    """Return the GitHub release tag for the current package version."""
+
+    return "v" + version.replace("a", "-alpha.")
+
+
+def current_alpha_package_spec(version: str = CODE_MOWER_VERSION) -> str:
+    """Return the documented installable package spec for alpha users."""
+
+    return f"git+{PUBLIC_REPO_URL}.git@{current_public_tag(version)}"
+
+
 def build_next_steps(
     templates: Mapping[str, Any],
     *,
@@ -120,6 +135,7 @@ def build_next_steps(
     audit_lanes = classes["merge_gating"] or lanes[:1]
     first_audit_lane = audit_lanes[0] if audit_lanes else "codex"
     first_audit_label = _request_label(first_audit_lane, catalog.get(first_audit_lane, {}))
+    alpha_package_spec = shlex.quote(current_alpha_package_spec())
     quoted_profile = shlex.quote(profile)
     if profile == DEFAULT_PROFILE:
         init_plan_command = "code-mower init --easy"
@@ -176,14 +192,15 @@ def build_next_steps(
             "title": "Prove the package-installed path in a fresh toy repo",
             "command": (
                 "code-mower migration package-install-rehearsal "
-                "--package-spec code-mower --json"
+                f"--package-spec {alpha_package_spec} --json"
             ),
             "why": (
                 "Installs Code Mower into a clean venv, verifies the easy-mode "
                 "starter path in a fresh toy repo, writes the first value-report "
                 "and cloud dry-run artifacts, emits `first_user_readiness`, and "
                 "optionally compares an existing product repo when --repo-path is "
-                "provided."
+                "provided. The alpha path uses the current GitHub tag until PyPI "
+                "publishing is promoted."
             ),
             "artifacts": [
                 "outputs/package-install-rehearsal.json",
