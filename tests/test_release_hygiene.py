@@ -1390,6 +1390,228 @@ def main():
             self.assertEqual(payload["events"][0]["provider"], "codex")
             self.assertEqual(payload["events"][0]["metrics"]["latency_ms"], 1234)
 
+    def test_cloud_upload_payload_allows_token_count_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+            code_mower_cloud.build_cloud_bundle(
+                reports=[(report, "value-report")],
+                events=[
+                    {
+                        "event_type": "reviewer_run",
+                        "provider": "codex",
+                        "metrics": {
+                            "input_tokens": 100,
+                            "output_tokens": 20,
+                            "total_tokens": 120,
+                        },
+                    }
+                ],
+                output_dir=root / "bundle",
+                repo_slug="owner/repo",
+            )
+
+            payload = code_mower_cloud.build_upload_payload(
+                bundle_dir=root / "bundle",
+                include_reports=False,
+            )
+
+            self.assertEqual(payload["events"][0]["metrics"]["total_tokens"], 120)
+
+    def test_cloud_export_rejects_unsafe_structured_event_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                code_mower_cloud.CloudBundleError,
+                "unsafe field",
+            ):
+                code_mower_cloud.build_cloud_bundle(
+                    reports=[(report, "value-report")],
+                    events=[
+                        {
+                            "event_type": "reviewer_run",
+                            "provider": "claude",
+                            "dimensions": {
+                                "auth_preview": '{"loggedIn": true, "email": "user@example.com"}',
+                            },
+                        }
+                    ],
+                    output_dir=root / "bundle",
+                    repo_slug="owner/repo",
+                )
+
+    def test_cloud_export_rejects_raw_output_structured_event_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                code_mower_cloud.CloudBundleError,
+                "unsafe field",
+            ):
+                code_mower_cloud.build_cloud_bundle(
+                    reports=[(report, "value-report")],
+                    events=[
+                        {
+                            "event_type": "reviewer_run",
+                            "provider": "codex",
+                            "metrics": {
+                                "raw_output": "full terminal output",
+                            },
+                        }
+                    ],
+                    output_dir=root / "bundle",
+                    repo_slug="owner/repo",
+                )
+
+    def test_cloud_metadata_validator_rejects_camel_case_unsafe_keys(self) -> None:
+        unsafe_keys = (
+            "authPreview",
+            "rawOutput",
+            "apiKey",
+            "privateKey",
+            "sourceCode",
+            "accessToken",
+            "auth preview",
+            "raw-output",
+        )
+        for key in unsafe_keys:
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(
+                    code_mower_cloud.CloudBundleError,
+                    "unsafe field",
+                ):
+                    code_mower_cloud.validate_metadata_payload({"metrics": {key: "value"}})
+
+    def test_cloud_export_rejects_malformed_metric_secret_before_scrub(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                code_mower_cloud.CloudBundleError,
+                "secret-like value",
+            ):
+                code_mower_cloud.build_cloud_bundle(
+                    reports=[(report, "value-report")],
+                    events=[
+                        {
+                            "event_type": "reviewer_run",
+                            "provider": "codex",
+                            "metrics": "Authorization: Bearer abcdefghijklmnop",
+                        }
+                    ],
+                    output_dir=root / "bundle",
+                    repo_slug="owner/repo",
+                )
+
+    def test_cloud_export_rejects_non_object_event_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                code_mower_cloud.CloudBundleError,
+                "metrics must be an object",
+            ):
+                code_mower_cloud.build_cloud_bundle(
+                    reports=[(report, "value-report")],
+                    events=[
+                        {
+                            "event_type": "reviewer_run",
+                            "provider": "codex",
+                            "metrics": "not an object",
+                        }
+                    ],
+                    output_dir=root / "bundle",
+                    repo_slug="owner/repo",
+                )
+
+    def test_cloud_upload_rejects_tampered_manifest_secret_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+            bundle = root / "bundle"
+            code_mower_cloud.build_cloud_bundle(
+                reports=[(report, "value-report")],
+                output_dir=bundle,
+                repo_slug="owner/repo",
+            )
+            manifest_path = bundle / code_mower_cloud.BUNDLE_MANIFEST_FILENAME
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["events"] = [
+                {
+                    "schema": code_mower_cloud.EVENT_SCHEMA,
+                    "event_type": "reviewer_run",
+                    "event_id": "evt-test",
+                    "created_at": "2026-06-15T00:00:00+00:00",
+                    "provider": "codex",
+                    "metrics": {
+                        "detail": "Authorization: Bearer abcdefghijklmnop",
+                    },
+                }
+            ]
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                code_mower_cloud.CloudBundleError,
+                "secret-like value",
+            ):
+                code_mower_cloud.build_upload_payload(
+                    bundle_dir=bundle,
+                    include_reports=False,
+                )
+
+    def test_cloud_upload_rejects_tampered_manifest_identity_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reviewer-value-report.md"
+            report.write_text("# Report\n", encoding="utf-8")
+            bundle = root / "bundle"
+            code_mower_cloud.build_cloud_bundle(
+                reports=[(report, "value-report")],
+                output_dir=bundle,
+                repo_slug="owner/repo",
+            )
+            manifest_path = bundle / code_mower_cloud.BUNDLE_MANIFEST_FILENAME
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["repo_slug"] = "cmw_live_secret_value_should_not_upload"
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                code_mower_cloud.CloudBundleError,
+                "secret-like value",
+            ):
+                code_mower_cloud.build_upload_payload(
+                    bundle_dir=bundle,
+                    include_reports=False,
+                )
+
+    def test_cloud_metadata_validator_rejects_deep_nesting_cleanly(self) -> None:
+        value: object = "safe"
+        for _ in range(40):
+            value = {"nested": value}
+
+        with self.assertRaisesRegex(
+            code_mower_cloud.CloudBundleError,
+            "too deeply nested",
+        ):
+            code_mower_cloud.validate_metadata_payload(value)
+
     def test_cloud_anonymous_bundle_strips_structured_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

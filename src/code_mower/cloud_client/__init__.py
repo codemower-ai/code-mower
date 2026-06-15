@@ -10,6 +10,7 @@ from .bundle import (
     SAFE_EVENT_TYPES,
     SAFE_REPORT_KINDS,
     is_bundle_manifest,
+    validate_metadata_payload,
 )
 from .endpoints import (
     DEFAULT_DASHBOARD_PATH,
@@ -61,5 +62,6 @@ __all__ = [
     "load_bundle_manifest",
     "post_upload_payload",
     "probe_cloud_service",
+    "validate_metadata_payload",
     "validate_upload_endpoint",
 ]

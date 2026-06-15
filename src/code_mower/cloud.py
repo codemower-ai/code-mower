@@ -40,6 +40,7 @@ if __package__ in {None, ""}:
         load_bundle_manifest as load_bundle_manifest,
         post_upload_payload,
         probe_cloud_service,
+        validate_metadata_payload,
         validate_upload_endpoint,
     )
 else:  # pragma: no cover - exercised after package extraction.
@@ -65,6 +66,7 @@ else:  # pragma: no cover - exercised after package extraction.
         load_bundle_manifest as load_bundle_manifest,
         post_upload_payload,
         probe_cloud_service,
+        validate_metadata_payload,
         validate_upload_endpoint,
     )
 
@@ -366,6 +368,7 @@ def _build_dogfood_event(
 
 
 def _normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
+    validate_metadata_payload(value)
     normalized = dict(value)
     normalized["schema"] = str(normalized.get("schema") or EVENT_SCHEMA)
     if normalized["schema"] != EVENT_SCHEMA:
@@ -380,11 +383,16 @@ def _normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
     for key in ("repo_slug", "team_id", "install_id", "source", "provider", "lens", "status"):
         normalized[key] = str(normalized.get(key) or "")
     metrics = normalized.get("metrics")
-    if not isinstance(metrics, dict):
+    if metrics is None:
         normalized["metrics"] = {}
+    elif not isinstance(metrics, dict):
+        raise CloudBundleError("structured event metrics must be an object")
     dimensions = normalized.get("dimensions")
-    if not isinstance(dimensions, dict):
+    if dimensions is None:
         normalized["dimensions"] = {}
+    elif not isinstance(dimensions, dict):
+        raise CloudBundleError("structured event dimensions must be an object")
+    validate_metadata_payload(normalized)
     return normalized
 
 

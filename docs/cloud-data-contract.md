@@ -65,6 +65,11 @@ counts, false-positive counts, repository slug, install id, and coarse runtime
 metadata. They must not include source code, raw diffs, raw transcripts,
 stdout/stderr, auth output, or secrets.
 
+The OSS client fails closed for structured events that contain unsafe field
+names such as raw output, transcripts, tokens, secrets, auth previews, or
+secret-like values. Fix the event producer instead of relying on cloud upload
+to silently scrub sensitive data.
+
 ## Token Model
 
 CodeMower.com uses team ingest tokens for upload authorization. Users create or
