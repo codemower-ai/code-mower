@@ -86,7 +86,7 @@ Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.17"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.18"
 code-mower --version
 ```
 
@@ -225,7 +225,7 @@ best?" to "which AI builder plus reviewer loop ships best on this product?" See
 
 ## Installation Status
 
-The current public alpha is `v0.5.0-alpha.17` from
+The current public alpha is `v0.5.0-alpha.18` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower). PyPI
 distribution builds now run from GitHub Releases. Publishing to PyPI remains
 off by default until trusted publishing is configured, so use the tagged GitHub
