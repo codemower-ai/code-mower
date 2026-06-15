@@ -36,8 +36,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_v05_alpha_9(self) -> None:
-        self.assertEqual(__version__, "0.5.0a9")
+    def test_version_is_v05_alpha_10(self) -> None:
+        self.assertEqual(__version__, "0.5.0a10")
 
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
@@ -1318,6 +1318,46 @@ def main():
             self.assertEqual(payload["upload"]["mode"], "cloud-upload-dry-run")
             self.assertFalse(payload["upload"]["would_upload"])
 
+    def test_cloud_dogfood_dry_run_does_not_require_production_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+            token_env = "CODE_MOWER_TEST_DOGFOOD_MISSING_TOKEN"
+            os.environ.pop(token_env, None)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = code_mower_cloud.main(
+                    [
+                        "dogfood",
+                        "--repo-path",
+                        str(root),
+                        "--output-dir",
+                        str(root / ".code-mower/cloud-benchmark-bundle"),
+                        "--repo-slug",
+                        "owner/repo",
+                        "--endpoint",
+                        "https://codemower.com/api/ingest",
+                        "--token-env",
+                        token_env,
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["status"], "dry_run")
+            token_check = next(
+                check for check in payload["doctor"]["checks"] if check["name"] == "token"
+            )
+            self.assertEqual(token_check["status"], "warn")
+            self.assertFalse(payload["upload"]["would_upload"])
+
     def test_cloud_setup_cli_dry_run_redacts_token(self) -> None:
         output = StringIO()
         token = "cmw_live_cli_secret_never_print"
@@ -1495,6 +1535,7 @@ def main():
                 check for check in payload["checks"] if check["name"] == "token"
             )
             self.assertEqual(token_check["status"], "warn")
+            self.assertIn("local configless ingest", token_check["message"])
 
     def test_cloud_doctor_reports_dashboard_and_next_steps_without_token_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1736,24 +1777,24 @@ def main():
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.9",
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.10",
                     base_dir=package,
                 ),
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.9",
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.10",
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "code-mower==0.5.0a9",
+                    "code-mower==0.5.0a10",
                     base_dir=package,
                 ),
-                "code-mower==0.5.0a9",
+                "code-mower==0.5.0a10",
             )
 
     def test_package_install_rehearsal_supports_index_aware_pip_install(self) -> None:
         self.assertEqual(
             code_mower_migration._pip_install_command(
                 Path("/tmp/venv/bin/python"),
-                "code-mower==0.5.0a9",
+                "code-mower==0.5.0a10",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
             ),
@@ -1766,7 +1807,7 @@ def main():
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
                 "https://pypi.org/simple/",
-                "code-mower==0.5.0a9",
+                "code-mower==0.5.0a10",
             ],
         )
 
