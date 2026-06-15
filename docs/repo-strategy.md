@@ -93,7 +93,7 @@ The expected migration order is:
 6. pinned standalone release becomes the default
 7. mirrored implementation files are removed from product repos
 
-As of `v0.1.0-alpha.21`, the private reference/product repos have proved the
+As of `v0.1.0-alpha.22`, the private reference/product repos have proved the
 standalone checkout path, the standalone-default wrapper path, and the
 mirror-removal path. Their product wrappers prefer the pinned standalone
 command, workflows call `tools/code_mower` entrypoints, and mirrored
@@ -126,7 +126,7 @@ reviewer lanes against the same checkout: each lane may fetch refs, so diff
 builders must use stable ref names or SHAs rather than assuming `FETCH_HEAD`
 still belongs to their own most recent fetch.
 
-`v0.1.0-alpha.21` keeps the standalone checkout lock held through delegated
+`v0.1.0-alpha.22` keeps the standalone checkout lock held through delegated
 execution. The package is installed editable from the managed checkout, so the
 checkout must not be mutated by a second invocation while the first invocation
 is importing package code. Ref-scoped default checkout paths still allow
@@ -135,7 +135,7 @@ serialize through their shared lock. The default checkout-lock timeout is long
 enough for normal audit runs to queue instead of failing after two minutes;
 dead locks are still cleared by the PID/staleness checks.
 
-`v0.5.0-alpha.21` keeps the smoke runner, package plan, docs, next-step cloud
+`v0.5.0-alpha.22` keeps the smoke runner, package plan, docs, next-step cloud
 export examples, draft auto-discovery rehearsal, and opt-in upload dry run
 aligned on reviewer metrics, lane policy, and value report bundles. The public
 package also includes the formerly private hardening work that made product
