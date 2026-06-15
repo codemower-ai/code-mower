@@ -40,6 +40,9 @@ jobs:
       - name: Guard package workflow templates
         run: python scripts/guard_package_workflows.py
 
+      - name: Release readiness
+        run: python -m code_mower.migration release-readiness --json
+
       - name: Easy-mode smoke
         run: python scripts/smoke_easy_mode.py --work-dir "$RUNNER_TEMP/code-mower-smoke" --json
 
