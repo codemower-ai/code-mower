@@ -202,7 +202,7 @@ leaving room for future orchestrator adapters.
    and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
    compatibility shims where they confuse contributors, and keep private
    product repos as consumers of pinned releases.
-4. Create a public GitHub Release for the current alpha, verify the release
+4. Create a public GitHub prerelease for the current alpha, verify the release
    workflow builds source/wheel artifacts, and configure PyPI trusted
    publishing before widening beyond friendly early adopters.
 5. Add a short terminal recording or screenshot showing `doctor --preflight`
