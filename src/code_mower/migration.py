@@ -63,6 +63,8 @@ CALIBRATION_EVIDENCE_ADDITIVE_KEYS = frozenset(
 )
 FIRST_USER_ARTIFACTS = (
     ("calibration_plan", ".code-mower/calibration-plan.json"),
+    ("draft_calibration_corpus", ".code-mower/draft-calibration-corpus.json"),
+    ("draft_reviewer_value_report", ".code-mower/draft-reviewer-value-report.md"),
     ("calibration_evidence", "calibration-evidence.json"),
     ("reviewer_metrics", "reviewer-metrics.json"),
     ("lane_policy", "lane-policy.json"),
@@ -307,6 +309,52 @@ def _first_user_artifacts(toy_repo: Path) -> dict[str, str]:
     }
 
 
+def _write_rehearsal_auto_discovery_fixture(path: Path) -> None:
+    """Write a tiny GitHub PR-list fixture for offline auto-discovery rehearsal."""
+
+    fixed_head = "b" * 40
+    blocked_head = "a" * 40
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        path,
+        [
+            {
+                "number": 1,
+                "title": "Clean rehearsal docs update",
+                "headRefOid": "c" * 40,
+                "baseRefName": "main",
+                "changedFiles": 1,
+                "comments": [],
+                "reviews": [],
+            },
+            {
+                "number": 2,
+                "title": "Fix rehearsal blocker",
+                "headRefOid": fixed_head,
+                "baseRefName": "main",
+                "changedFiles": 4,
+                "comments": [
+                    {
+                        "body": (
+                            f"Head SHA: `{blocked_head}`\n"
+                            "Findings: P0=0, P1=0, P2=1, P3=0\n"
+                            "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->\n"
+                        )
+                    },
+                    {
+                        "body": (
+                            f"Head SHA: `{fixed_head}`\n"
+                            "Findings: P0=0, P1=0, P2=0, P3=0\n"
+                            "<!-- CODEX_AUDIT_STATE: codex-audit-done -->\n"
+                        )
+                    },
+                ],
+                "reviews": [],
+            },
+        ],
+    )
+
+
 def _resolve_install_package_spec(package_spec: str, *, base_dir: Path | None = None) -> str:
     candidate_text = package_spec.strip()
     if not candidate_text:
@@ -539,6 +587,42 @@ def run_package_install_rehearsal(
         timeout=timeout,
         stdout_path=toy_repo / ".code-mower" / "calibration-plan.json",
     )
+    auto_discovery_input = toy_repo / ".code-mower" / "auto-discovery-prs.json"
+    _write_rehearsal_auto_discovery_fixture(auto_discovery_input)
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "calibration",
+            "auto-discover",
+            "--repo",
+            "example/toy-repo",
+            "--input",
+            str(auto_discovery_input),
+            "--output",
+            ".code-mower/draft-calibration-corpus.json",
+            "--json",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=outputs / "auto-discover.json",
+    )
+    _run_rehearsal_step_to_file(
+        [
+            str(code_mower_bin),
+            "calibration",
+            "value-report",
+            ".code-mower/draft-calibration-corpus.json",
+            "--output",
+            ".code-mower/draft-reviewer-value-report.md",
+        ],
+        cwd=toy_repo,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+        stdout_path=outputs / "draft-value-report.txt",
+    )
     _run_rehearsal_step_to_file(
         [
             str(code_mower_bin),
@@ -757,6 +841,8 @@ def render_package_install_rehearsal_text(payload: dict[str, Any]) -> str:
         lines.extend(
             [
                 f"Value report: {artifacts.get('reviewer_value_report', '')}",
+                f"Draft corpus: {artifacts.get('draft_calibration_corpus', '')}",
+                f"Draft value report: {artifacts.get('draft_reviewer_value_report', '')}",
                 f"Cloud upload dry run: {artifacts.get('cloud_upload_dry_run', '')}",
                 f"Cloud dogfood dry run: {artifacts.get('cloud_dogfood_dry_run', '')}",
             ]

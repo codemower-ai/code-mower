@@ -118,12 +118,11 @@ interpreter.
 - Run [docs/pypi-release.md](pypi-release.md) against TestPyPI before
   switching first-user docs from GitHub-tag install to `pipx install
   code-mower`.
-- Add a calibration auto-discovery path that can produce a starter corpus from
-  recent merged PRs and review signals, then clearly labels the output as a
-  draft that needs human disposition.
-- Exercise `code-mower calibration auto-discover --repo OWNER/REPO --last-n 20`
-  in at least one public toy/real repository and confirm the generated corpus
-  round-trips through `calibration value-report`.
+- Keep calibration auto-discovery in the release gate. The package-install
+  rehearsal should generate a draft corpus from offline PR metadata and
+  round-trip it through `calibration value-report`; before widening, also run
+  `code-mower calibration auto-discover --repo OWNER/REPO --last-n 20` in at
+  least one public toy/real repository.
 - Add a short terminal recording, screenshot, or transcript of the first
   `doctor --preflight` run to the README/website.
 - Expand [docs/troubleshooting.md](troubleshooting.md) as new setup traps are

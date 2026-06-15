@@ -1629,6 +1629,9 @@ def main():
 
         self.assertIn("first_user_artifacts", migration_text)
         self.assertIn("calibration-plan.json", migration_text)
+        self.assertIn("auto-discovery-prs.json", migration_text)
+        self.assertIn("draft-calibration-corpus.json", migration_text)
+        self.assertIn("draft-reviewer-value-report.md", migration_text)
         self.assertIn("calibration-evidence.json", migration_text)
         self.assertIn("reviewer-metrics.json", migration_text)
         self.assertIn("lane-policy.json", migration_text)
@@ -1637,10 +1640,12 @@ def main():
         self.assertIn("cloud-upload-dry-run.json", migration_text)
         self.assertIn("cloud-dogfood-dry-run.json", migration_text)
         self.assertIn("package-install-rehearsal", migration_text)
+        self.assertIn("auto-discover", migration_text)
         self.assertIn(".code-mower/cloud-dogfood-bundle", migration_text)
         self.assertIn("example/toy-repo", migration_text)
         self.assertIn("http://localhost:3000/api/ingest", migration_text)
         self.assertIn("Value report:", migration_text)
+        self.assertIn("Draft value report:", migration_text)
 
     def test_package_install_rehearsal_artifact_contract_is_structured(self) -> None:
         toy_repo = Path("/tmp/code-mower-example-toy-repo")
@@ -1651,6 +1656,12 @@ def main():
             {
                 "calibration_plan": (
                     "/tmp/code-mower-example-toy-repo/.code-mower/calibration-plan.json"
+                ),
+                "draft_calibration_corpus": (
+                    "/tmp/code-mower-example-toy-repo/.code-mower/draft-calibration-corpus.json"
+                ),
+                "draft_reviewer_value_report": (
+                    "/tmp/code-mower-example-toy-repo/.code-mower/draft-reviewer-value-report.md"
                 ),
                 "calibration_evidence": (
                     "/tmp/code-mower-example-toy-repo/calibration-evidence.json"
@@ -1785,6 +1796,13 @@ def main():
         self.assertIn("--lanes antigravity-cli", calibration["command"])
         self.assertNotIn("--lanes gemini-cli", calibration["command"])
         self.assertIn("legacy/API-key compatibility", calibration["why"])
+        auto_discover = next(
+            item for item in plan["steps"] if item["id"] == "calibration-auto-discover"
+        )
+        self.assertIn("calibration auto-discover", auto_discover["command"])
+        self.assertIn("--repo owner/repo", auto_discover["command"])
+        self.assertIn("draft-calibration-corpus.json", auto_discover["command"])
+        self.assertIn("Confirm every disposition", auto_discover["why"])
 
     def test_next_steps_includes_cloud_upload_dry_run_after_export(self) -> None:
         templates = next_steps.code_mower_package.load_provider_templates(
@@ -1793,6 +1811,9 @@ def main():
         plan = next_steps.build_next_steps(templates, profile="recommended")
         ids = [step["id"] for step in plan["steps"]]
 
+        self.assertIn("calibration-auto-discover", ids)
+        self.assertLess(ids.index("calibration-run"), ids.index("calibration-auto-discover"))
+        self.assertLess(ids.index("calibration-auto-discover"), ids.index("value-report"))
         self.assertIn("cloud-export", ids)
         self.assertIn("cloud-setup", ids)
         self.assertIn("cloud-upload-dry-run", ids)
