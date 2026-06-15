@@ -4,6 +4,23 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.17
+
+This alpha adds a static release-readiness gate for package-index promotion,
+so maintainers can verify the GitHub Release, TestPyPI, and PyPI plumbing
+before cutting wider early-adopter releases.
+
+### Changed
+
+- `code-mower migration release-readiness --json` now checks package version
+  consistency, release workflow gates, TestPyPI/PyPI publishing posture, and
+  package-index rehearsal docs.
+- The release-readiness gate verifies that the TestPyPI and PyPI jobs use the
+  official `pypa/gh-action-pypi-publish` action, not just matching job names.
+- Release hygiene tests now cover alpha, beta, release-candidate, and final
+  tag derivation.
+- Public install docs now point to `v0.5.0-alpha.17`.
+
 ## v0.5.0-alpha.16
 
 This alpha adds the first package-index rehearsal lane for TestPyPI while
