@@ -775,6 +775,24 @@ printf '%s\\n' "${lane}"
                 (output_dir / "src/code_mower/templates/code-mower.example.yml").is_file()
             )
 
+    def test_cli_package_resolves_default_config_from_extracted_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                code = code_mower_cli._package_main(
+                    [
+                        "--output-dir",
+                        tmp,
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            output_dir = Path(tmp)
+            self.assertTrue(
+                (output_dir / "src/code_mower/templates/code-mower.example.yml").is_file()
+            )
+
     def test_standalone_shadow_holds_checkout_lock_through_delegation(self) -> None:
         text = (
             ROOT

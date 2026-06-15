@@ -399,17 +399,7 @@ def _init_main(argv: list[str]) -> int:
 
 
 def _package_main(argv: list[str]) -> int:
-    return code_mower_package.main(
-        _default_config_args(
-            argv,
-            default_config="code-mower.example.yml",
-            options_with_values={
-                "--output-dir",
-                "--package-name",
-                "--provider-templates",
-            },
-        )
-    )
+    return code_mower_package.main(argv)
 
 
 def _advanced_commands() -> tuple[str, ...]:
