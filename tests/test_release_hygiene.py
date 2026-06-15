@@ -37,7 +37,7 @@ from scripts import privacy_scan
 
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_v05_alpha_11(self) -> None:
-        self.assertEqual(__version__, "0.5.0a12")
+        self.assertEqual(__version__, "0.5.0a13")
 
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
@@ -1788,7 +1788,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0a12",
+                version="code-mower 0.5.0a13",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -1867,7 +1867,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0a12",
+                version="code-mower 0.5.0a13",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -1929,7 +1929,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0a12",
+                version="code-mower 0.5.0a13",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -1995,24 +1995,24 @@ def main():
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.12",
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.13",
                     base_dir=package,
                 ),
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.12",
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.13",
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "code-mower==0.5.0a12",
+                    "code-mower==0.5.0a13",
                     base_dir=package,
                 ),
-                "code-mower==0.5.0a12",
+                "code-mower==0.5.0a13",
             )
 
     def test_package_install_rehearsal_supports_index_aware_pip_install(self) -> None:
         self.assertEqual(
             code_mower_migration._pip_install_command(
                 Path("/tmp/venv/bin/python"),
-                "code-mower==0.5.0a12",
+                "code-mower==0.5.0a13",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
             ),
@@ -2025,7 +2025,7 @@ def main():
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
                 "https://pypi.org/simple/",
-                "code-mower==0.5.0a12",
+                "code-mower==0.5.0a13",
             ],
         )
 

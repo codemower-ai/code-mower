@@ -4,6 +4,22 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.13
+
+This alpha fixes the public repo's Dependabot Dependency Graph compatibility
+after the pytest 9.1.0 maintenance update exposed that the standalone repo used
+a nonstandard pip requirements filename.
+
+### Changed
+
+- The standalone repo now uses `requirements/requirements.txt` as its pip
+  tooling requirements file, matching Dependabot's supported manifest naming.
+- `code-mower bootstrap` defaults to `requirements/requirements.txt` instead
+  of the extraction-era `tools/code_mower_requirements.txt` path.
+- Package extraction metadata now renders the requirements file to
+  `requirements/requirements.txt`.
+- Public install docs now point to `v0.5.0-alpha.13`.
+
 ## v0.5.0-alpha.12
 
 This alpha makes the first-user readiness scorecard more discoverable from the
