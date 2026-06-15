@@ -110,7 +110,8 @@ interpreter.
 ## Recommended Before v1.0
 
 - Publish a short "easy mode" walkthrough using a toy repo.
-- Publish a GitHub Release for the current public alpha tag.
+- Publish a GitHub Release for the current public alpha tag and mark alpha/beta
+  tags as prereleases in GitHub.
 - Confirm the release workflow builds source/wheel distributions for every
   public alpha.
 - Configure PyPI trusted publishing before widening beyond friendly alpha users,

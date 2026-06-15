@@ -122,6 +122,7 @@ Cut a v0.5 alpha or beta only after:
 - release workflow builds source/wheel distributions, and PyPI publishing is
   either configured or explicitly called out as the next friction-reduction
   milestone;
+- alpha/beta GitHub releases are marked as prereleases;
 - docs are sufficient for a new user;
 - cloud export and dry-run upload are tested;
 - codemower.com can receive an ingest payload;
