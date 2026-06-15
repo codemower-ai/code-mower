@@ -4,6 +4,21 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.14
+
+This alpha hardens the public release pipeline after the artifact-action
+maintenance updates.
+
+### Changed
+
+- The GitHub Release workflow now downloads the built distribution artifact and
+  runs `twine check dist/*` before optional PyPI publishing can start.
+- The release workflow's artifact download path is exercised even when PyPI
+  publishing is skipped.
+- The PyPI release runbook documents the artifact verification job as a release
+  gate.
+- Public install docs now point to `v0.5.0-alpha.14`.
+
 ## v0.5.0-alpha.13
 
 This alpha fixes the public repo's Dependabot Dependency Graph compatibility
