@@ -38,7 +38,7 @@ Use the current public tag or release candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.11" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.12" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -57,7 +57,7 @@ For a fixed output directory:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.11" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.12" \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-first-user-rehearsal \
   --json
@@ -67,7 +67,7 @@ For a TestPyPI candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0a11 \
+  --package-spec code-mower==0.5.0a12 \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \
@@ -81,7 +81,7 @@ files and you want to compare the installed package against those wrappers:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.11" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.12" \
   --repo-path /path/to/product-repo \
   --python "$(command -v python3.12)" \
   --json
