@@ -4,6 +4,19 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.18
+
+This alpha makes the package release-readiness check part of routine CI, so
+future release candidates cannot drift from the package-index promotion gate.
+
+### Changed
+
+- The main Code Mower CI job now runs
+  `python -m code_mower.migration release-readiness --json`.
+- Release hygiene tests assert that the CI workflow keeps the release-readiness
+  gate wired.
+- Public install docs now point to `v0.5.0-alpha.18`.
+
 ## v0.5.0-alpha.17
 
 This alpha adds a static release-readiness gate for package-index promotion,
