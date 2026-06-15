@@ -5,6 +5,11 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
+      publish_testpypi:
+        description: Publish the built distributions to TestPyPI.
+        required: false
+        default: false
+        type: boolean
       publish_pypi:
         description: Publish the built distributions to PyPI.
         required: false
@@ -59,6 +64,26 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install twine
           python -m twine check dist/*
+
+  publish-testpypi:
+    needs: verify-distributions
+    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_testpypi) || vars.CODE_MOWER_TESTPYPI_PUBLISH == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    environment: testpypi
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: code-mower-dist
+          path: dist
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+        with:
+          repository-url: https://test.pypi.org/legacy/
 
   publish-pypi:
     needs: verify-distributions
