@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public alpha baseline is `v0.5.0-alpha.10`. It is the first alpha
+The current public alpha baseline is `v0.5.0-alpha.11`. It is the first alpha
 intended to be installed from the `codemower-ai/code-mower` public repository
 after the org move. It has proved:
 
@@ -48,6 +48,9 @@ after the org move. It has proved:
 - first-run and trust docs: `CHANGELOG.md`, `docs/first-run-transcript.md`,
   `docs/architecture.md`, `docs/cloud-data-contract.md`, and
   `docs/code-structure-roadmap.md`.
+- `migration package-install-rehearsal` now emits a first-user readiness
+  scorecard, so release candidates can show install, doctor, first-report, and
+  cloud dry-run privacy gates in one compact JSON artifact.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.

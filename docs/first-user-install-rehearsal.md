@@ -27,6 +27,7 @@ The rehearsal verifies:
 - cloud export bundle creation;
 - cloud upload dry run; and
 - CodeMower.com dogfood dry run.
+- a first-user readiness scorecard summarizing the gates above.
 
 No source code, raw diffs, model transcripts, auth output, or secrets are
 uploaded. The cloud upload and dogfood checks are dry-run-only in this rehearsal.
@@ -37,7 +38,7 @@ Use the current public tag or release candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.10" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.11" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -56,7 +57,7 @@ For a fixed output directory:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.10" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.11" \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-first-user-rehearsal \
   --json
@@ -66,7 +67,7 @@ For a TestPyPI candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0a10 \
+  --package-spec code-mower==0.5.0a11 \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \
@@ -80,7 +81,7 @@ files and you want to compare the installed package against those wrappers:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.10" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.11" \
   --repo-path /path/to/product-repo \
   --python "$(command -v python3.12)" \
   --json
@@ -104,6 +105,17 @@ The JSON payload includes `first_user_artifacts` with paths to:
 - `cloud-upload-dry-run.json`
 - `cloud-dogfood-dry-run.json`
 
+The JSON payload also includes `first_user_readiness`, a compact scorecard with
+one row per first-user gate. It is written separately to:
+
+```text
+outputs/first-user-readiness.json
+```
+
+This is the easiest artifact to attach to release notes or CI logs because it
+answers "what did this release prove?" without requiring someone to read every
+command log.
+
 The full rehearsal payload is also written to:
 
 ```text
@@ -115,6 +127,7 @@ outputs/package-install-rehearsal.json
 Treat the rehearsal as passing only when:
 
 - `status` is `pass`;
+- `first_user_readiness.status` is `pass`;
 - every step has `returncode` 0;
 - the value report path exists;
 - cloud upload reports dry-run mode;

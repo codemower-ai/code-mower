@@ -16,7 +16,7 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.10"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.11"
 code-mower --version
 ```
 
@@ -67,7 +67,7 @@ install rehearsal instead:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.10" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.11" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -76,7 +76,8 @@ That rehearsal installs Code Mower into a clean virtual environment, creates a
 fresh toy repository, runs `init --easy`, runs doctor, generates a starter value
 report, and proves cloud upload/dogfood paths stay dry-run. See
 [First-User Install Rehearsal](first-user-install-rehearsal.md) for the
-release-gate checklist.
+release-gate checklist. The JSON includes `first_user_readiness`, a compact
+scorecard that shows which install, doctor, report, and privacy gates passed.
 
 For the manual report path in your pilot repository:
 

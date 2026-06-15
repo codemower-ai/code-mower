@@ -4,6 +4,28 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.11
+
+This alpha adds a first-user readiness scorecard to the package-install
+rehearsal. The rehearsal already proved install, easy-mode setup, doctor, first
+reports, and cloud dry-run behavior; the scorecard now turns that evidence into
+an explicit release-gate summary.
+
+### Added
+
+- `migration package-install-rehearsal` now includes `first_user_readiness` in
+  its JSON payload and writes `outputs/first-user-readiness.json`.
+- The readiness scorecard verifies package install, easy-mode generated output,
+  doctor completion, draft corpus/report generation, starter value report
+  generation, cloud export, cloud upload dry-run privacy, and dogfood dry-run
+  privacy.
+
+### Changed
+
+- Public install docs now point to `v0.5.0-alpha.11`.
+- First-user rehearsal docs now list `first_user_readiness.status == pass` as a
+  release-gate criterion.
+
 ## v0.5.0-alpha.10
 
 This alpha fixes the first-user cloud dogfood preview path after alpha.9 exposed
