@@ -683,26 +683,20 @@ printf '%s\\n' "${lane}"
 
     def test_package_materializer_includes_internal_package_seams(self) -> None:
         packaged_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}
-        for target in (
-            "src/code_mower/calibration/__init__.py",
-            "src/code_mower/calibration/auto_discovery.py",
-            "src/code_mower/calibration/corpus.py",
-            "src/code_mower/calibration/evidence.py",
-            "src/code_mower/calibration/identity.py",
-            "src/code_mower/calibration/metrics.py",
-            "src/code_mower/calibration/policy.py",
-            "src/code_mower/cloud_client/__init__.py",
-            "src/code_mower/cloud_client/bundle.py",
-            "src/code_mower/cloud_client/endpoints.py",
-            "src/code_mower/cloud_client/errors.py",
-            "src/code_mower/cloud_client/upload.py",
-            "src/code_mower/doctor_checks/__init__.py",
-            "src/code_mower/doctor_checks/models.py",
-            "src/code_mower/doctor_checks/registry.py",
-            "src/code_mower/provider_runners/__init__.py",
-            "src/code_mower/provider_runners/github_auth.py",
-            "src/code_mower/release_readiness.py",
-        ):
+        package_dirs = (
+            "src/code_mower/calibration",
+            "src/code_mower/cloud_client",
+            "src/code_mower/doctor_checks",
+            "src/code_mower/provider_runners",
+        )
+        expected_targets = {"src/code_mower/release_readiness.py"}
+        for package_dir in package_dirs:
+            expected_targets.update(
+                path.relative_to(ROOT).as_posix()
+                for path in (ROOT / package_dir).glob("*.py")
+            )
+
+        for target in sorted(expected_targets):
             with self.subTest(target=target):
                 self.assertIn(target, packaged_targets)
 

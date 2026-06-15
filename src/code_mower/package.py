@@ -53,6 +53,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_cloud.py", "src/code_mower/cloud.py", "core"),
     ("src/code_mower/cloud_client/__init__.py", "src/code_mower/cloud_client/__init__.py", "core"),
     ("src/code_mower/cloud_client/bundle.py", "src/code_mower/cloud_client/bundle.py", "core"),
+    ("src/code_mower/cloud_client/dogfood.py", "src/code_mower/cloud_client/dogfood.py", "core"),
     ("src/code_mower/cloud_client/endpoints.py", "src/code_mower/cloud_client/endpoints.py", "core"),
     ("src/code_mower/cloud_client/errors.py", "src/code_mower/cloud_client/errors.py", "core"),
     ("src/code_mower/cloud_client/upload.py", "src/code_mower/cloud_client/upload.py", "core"),
