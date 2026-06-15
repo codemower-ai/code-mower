@@ -34,6 +34,7 @@ else:  # pragma: no cover - exercised after package extraction.
 
 
 DEFAULT_PROVIDER_TEMPLATES = "code-mower.provider-templates.yml"
+DEFAULT_PACKAGE_CONFIG = "code-mower.example.yml"
 
 PACKAGE_FILES = (
     ("tools/CODE_MOWER_APACHE_LICENSE.txt", "LICENSE", "package"),
@@ -65,6 +66,7 @@ PACKAGE_FILES = (
     ("src/code_mower/doctor_checks/registry.py", "src/code_mower/doctor_checks/registry.py", "core"),
     ("tools/code_mower_init.py", "src/code_mower/init.py", "core"),
     ("tools/code_mower_merge.py", "src/code_mower/code_mower_merge.py", "core"),
+    ("src/code_mower/migration.py", "src/code_mower/migration.py", "core"),
     ("tools/code_mower_next_steps.py", "src/code_mower/next_steps.py", "core"),
     ("tools/code_mower_package.py", "src/code_mower/package.py", "core"),
     ("tools/code_mower_prompts.py", "src/code_mower/prompts.py", "core"),
@@ -1208,6 +1210,23 @@ def resolve_provider_templates_path(path_text: str) -> Path:
     return candidates[0]
 
 
+def resolve_package_config_path(path_text: str, *, explicit: bool = False) -> Path:
+    path = Path(path_text)
+    if explicit or path_text != DEFAULT_PACKAGE_CONFIG or path.is_absolute():
+        return path
+
+    for root in _candidate_package_source_roots():
+        source_path = _resolve_package_source(
+            root,
+            DEFAULT_PACKAGE_CONFIG,
+            "src/code_mower/templates/code-mower.example.yml",
+        )
+        if source_path is not None:
+            return source_path
+
+    return Path.cwd() / DEFAULT_PACKAGE_CONFIG
+
+
 def _provider_template_rows(
     config: Mapping[str, Any],
     provider_templates: Mapping[str, Any],
@@ -1403,12 +1422,49 @@ def _copy_file(source: Path, target: Path, *, force: bool) -> None:
     shutil.copyfile(source, target)
 
 
+def _resolve_package_source(repo_root: Path, source: str, target: str) -> Path | None:
+    source_path = repo_root / source
+    if source_path.is_file():
+        return source_path
+    target_path = repo_root / target
+    if target_path.is_file():
+        return target_path
+    return None
+
+
 def _missing_package_sources(repo_root: Path) -> list[str]:
     return sorted(
         source
-        for source, _, _ in PACKAGE_FILES
-        if not (repo_root / source).is_file()
+        for source, target, _ in PACKAGE_FILES
+        if _resolve_package_source(repo_root, source, target) is None
     )
+
+
+def _candidate_package_source_roots() -> list[Path]:
+    module_path = Path(__file__).resolve()
+    # Prefer the checkout that loaded this module. Fall back to cwd for
+    # installed-package runs that intentionally materialize a local checkout.
+    candidates = [
+        module_path.parents[2],
+        module_path.parents[1],
+        Path.cwd().resolve(),
+    ]
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        unique.append(candidate)
+    return unique
+
+
+def _default_package_source_root() -> Path:
+    candidates = _candidate_package_source_roots()
+    for candidate in candidates:
+        if not _missing_package_sources(candidate):
+            return candidate
+    return candidates[0]
 
 
 def _planned_materialized_targets(plan: RenderedPlan) -> list[str]:
@@ -1564,9 +1620,18 @@ def materialize_package_plan(
     written: list[dict[str, str]] = []
 
     for source, target, kind in PACKAGE_FILES:
+        source_path = _resolve_package_source(repo_root, source, target)
+        if source_path is None:  # pragma: no cover - guarded by preflight above.
+            raise ConfigError(f"package source file does not exist: {repo_root / source}")
         target_path = output_dir / target
-        _copy_file(repo_root / source, target_path, force=force)
-        written.append({"target": target, "source": source, "kind": kind})
+        _copy_file(source_path, target_path, force=force)
+        written.append(
+            {
+                "target": target,
+                "source": source_path.relative_to(repo_root).as_posix(),
+                "kind": kind,
+            }
+        )
 
     for target, content in STATIC_PACKAGE_FILES:
         if target == "scripts/smoke_easy_mode.py":
@@ -1683,7 +1748,7 @@ def materialize_package_plan(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("config", nargs="?", default="code-mower.example.yml")
+    parser.add_argument("config", nargs="?")
     parser.add_argument(
         "--provider-templates",
         default=None,
@@ -1713,8 +1778,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        config_path = resolve_package_config_path(
+            args.config or DEFAULT_PACKAGE_CONFIG,
+            explicit=args.config is not None,
+        )
         plan = render_package_plan(
-            load_config(Path(args.config)),
+            load_config(config_path),
             load_provider_templates(
                 resolve_provider_templates_path(DEFAULT_PROVIDER_TEMPLATES)
                 if args.provider_templates is None
@@ -1726,7 +1795,7 @@ def main(argv: list[str] | None = None) -> int:
             plan = materialize_package_plan(
                 plan,
                 output_dir=args.output_dir,
-                repo_root=Path(__file__).resolve().parents[1],
+                repo_root=_default_package_source_root(),
                 force=args.force,
             )
     except ConfigError as exc:
