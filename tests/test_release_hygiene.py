@@ -84,6 +84,18 @@ class ReleaseHygieneTests(unittest.TestCase):
             "        run: python -m code_mower.migration release-readiness --json\n",
             workflow,
         )
+        self.assertIn("      - name: Package-install first-user rehearsal\n", workflow)
+        self.assertIn(
+            "          python -m code_mower.migration package-install-rehearsal\n",
+            workflow,
+        )
+        self.assertIn('          --package-spec "$GITHUB_WORKSPACE"\n', workflow)
+        self.assertIn(
+            '          --work-dir "$RUNNER_TEMP/code-mower-package-install"\n',
+            workflow,
+        )
+        self.assertIn('          --python "$(command -v python)"\n', workflow)
+        self.assertIn("          --json\n", workflow)
 
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
@@ -2092,6 +2104,7 @@ def main():
         self.assertEqual(check_ids["testpypi-gate"]["status"], "pass")
         self.assertEqual(check_ids["pypi-gate"]["status"], "pass")
         self.assertEqual(check_ids["trusted-publishing-runbook"]["status"], "pass")
+        self.assertEqual(check_ids["ci-package-install-rehearsal"]["status"], "pass")
         self.assertEqual(check_ids["public-maintainer-docs"]["status"], "pass")
         self.assertEqual(check_ids["public-docs-linked-from-readme"]["status"], "pass")
         self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "pass")

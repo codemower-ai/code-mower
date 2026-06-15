@@ -50,6 +50,9 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
 - `migration package-install-rehearsal` now emits a first-user readiness
   scorecard, so release candidates can show install, doctor, first-report, and
   cloud dry-run privacy gates in one compact JSON artifact.
+- CI now runs the package-install first-user rehearsal from the current
+  checkout, turning the public installed-package path into a routine PR gate
+  instead of a purely manual pre-release check.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.

@@ -166,6 +166,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     repo_path = repo_path.expanduser().resolve()
     workflow_path = repo_path / ".github" / "workflows" / "release.yml"
     workflow = _read_text_if_exists(workflow_path)
+    ci_workflow_path = repo_path / ".github" / "workflows" / "ci.yml"
+    ci_workflow = _read_text_if_exists(ci_workflow_path)
     workflow_jobs = _workflow_jobs(workflow)
     testpypi_job = workflow_jobs.get("publish-testpypi")
     pypi_job = workflow_jobs.get("publish-pypi")
@@ -342,6 +344,22 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             ),
             evidence=package_index_spec or "missing version",
             detail={"docs": package_index_docs},
+        ),
+        _release_check(
+            check_id="ci-package-install-rehearsal",
+            title="CI proves the package-installed first-user path",
+            status=(
+                "pass"
+                if (
+                    "Package-install first-user rehearsal" in ci_workflow
+                    and "package-install-rehearsal" in ci_workflow
+                    and '--package-spec "$GITHUB_WORKSPACE"' in ci_workflow
+                    and '--work-dir "$RUNNER_TEMP/code-mower-package-install"' in ci_workflow
+                    and "--json" in ci_workflow
+                )
+                else "fail"
+            ),
+            evidence=str(ci_workflow_path),
         ),
         _release_check(
             check_id="trusted-publishing-runbook",
