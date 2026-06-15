@@ -457,7 +457,10 @@ def _top_level_help(show_all: bool) -> str:
             "  code-mower init --easy",
             "  code-mower doctor --preflight",
             "  code-mower next-steps --profile recommended",
-            "  code-mower migration package-install-rehearsal --package-spec code-mower --json",
+            (
+                "  code-mower migration package-install-rehearsal "
+                f"--package-spec {code_mower_next_steps.current_alpha_package_spec()} --json"
+            ),
         ]
     )
     return "\n".join(lines) + "\n"

@@ -99,7 +99,11 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("First-user commands:", help_text)
         self.assertIn("code-mower --help-all", help_text)
         self.assertIn(
-            "code-mower migration package-install-rehearsal --package-spec code-mower --json",
+            (
+                "code-mower migration package-install-rehearsal --package-spec "
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.14 "
+                "--json"
+            ),
             help_text,
         )
         self.assertIn("  init", help_text)
@@ -2093,6 +2097,11 @@ def main():
             step for step in plan["steps"] if step["id"] == "package-install-rehearsal"
         )
         self.assertIn("doctor --v05", doctor_step["command"])
+        self.assertIn(
+            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.14",
+            package_step["command"],
+        )
+        self.assertIn("current GitHub tag", package_step["why"])
         self.assertIn("first_user_readiness", package_step["why"])
         self.assertEqual(
             package_step["artifacts"],
