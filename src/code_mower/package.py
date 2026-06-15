@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -266,7 +267,7 @@ TEMPLATE_FILES = (
 )
 
 STATIC_PACKAGE_FILES = (
-    ("src/code_mower/__init__.py", '"""Code Mower package."""\n\n__version__ = "0.0.0"\n'),
+    ("src/code_mower/__init__.py", ""),
     (
         "README.md",
         "\n".join(
@@ -848,7 +849,33 @@ if __name__ == \"__main__\":
 )
 
 
-def _pyproject_text(package_name: str) -> str:
+def _running_code_mower_version(repo_root: Path | None = None) -> str:
+    roots = [repo_root] if repo_root is not None else []
+    roots.extend(_candidate_package_source_roots())
+    version_re = re.compile(r'__version__\s*=\s*"([^"]+)"')
+    for root in roots:
+        if root is None:
+            continue
+        init_path = root / "src/code_mower/__init__.py"
+        if not init_path.is_file():
+            continue
+        match = version_re.search(init_path.read_text(encoding="utf-8"))
+        if match:
+            return match.group(1)
+
+    loaded_package = sys.modules.get("code_mower")
+    loaded_version = getattr(loaded_package, "__version__", "")
+    if isinstance(loaded_version, str) and loaded_version:
+        return loaded_version
+
+    return "0.0.0"
+
+
+def _init_py_text(version: str) -> str:
+    return f'"""Code Mower package."""\n\n__version__ = "{version}"\n'
+
+
+def _pyproject_text(package_name: str, *, version: str) -> str:
     return (
         "\n".join(
             [
@@ -858,7 +885,7 @@ def _pyproject_text(package_name: str) -> str:
                 "",
                 "[project]",
                 f'name = "{package_name}"',
-                'version = "0.0.0"',
+                f'version = "{version}"',
                 'description = "Multi-reviewer AI code audit orchestration"',
                 'requires-python = ">=3.11"',
                 'readme = "README.md"',
@@ -1618,6 +1645,7 @@ def materialize_package_plan(
         _preflight_output_collisions(plan, output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[dict[str, str]] = []
+    package_version = _running_code_mower_version(repo_root)
 
     for source, target, kind in PACKAGE_FILES:
         source_path = _resolve_package_source(repo_root, source, target)
@@ -1634,7 +1662,9 @@ def materialize_package_plan(
         )
 
     for target, content in STATIC_PACKAGE_FILES:
-        if target == "scripts/smoke_easy_mode.py":
+        if target == "src/code_mower/__init__.py":
+            content = _init_py_text(package_version)
+        elif target == "scripts/smoke_easy_mode.py":
             content = content.replace(
                 "__CODE_MOWER_CONSOLE_SCRIPT__",
                 str(plan.data["package"]["name"]),
@@ -1643,7 +1673,7 @@ def materialize_package_plan(
         written.append({"target": target, "source": "generated", "kind": "package"})
     _write_text(
         output_dir / "pyproject.toml",
-        _pyproject_text(str(plan.data["package"]["name"])),
+        _pyproject_text(str(plan.data["package"]["name"]), version=package_version),
         force=force,
     )
     written.append(

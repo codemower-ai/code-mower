@@ -729,6 +729,21 @@ printf '%s\\n' "${lane}"
             ).as_posix(),
         )
 
+    def test_package_materializer_prefers_explicit_repo_root_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_path = root / "src/code_mower/__init__.py"
+            init_path.parent.mkdir(parents=True)
+            init_path.write_text(
+                '"""Code Mower package."""\n\n__version__ = "9.9.9a1"\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                code_mower_package._running_code_mower_version(root),
+                "9.9.9a1",
+            )
+
     def test_package_materializer_can_run_from_extracted_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stdout = StringIO()
@@ -747,6 +762,16 @@ printf '%s\\n' "${lane}"
             self.assertTrue((output_dir / "pyproject.toml").is_file())
             self.assertTrue(
                 (output_dir / "src/code_mower/cloud_client/dogfood.py").is_file()
+            )
+            self.assertIn(
+                'version = "0.5.0a23"',
+                (output_dir / "pyproject.toml").read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                '__version__ = "0.5.0a23"',
+                (output_dir / "src/code_mower/__init__.py").read_text(
+                    encoding="utf-8"
+                ),
             )
             manifest = json.loads(
                 (output_dir / "code-mower-package-manifest.json").read_text(
