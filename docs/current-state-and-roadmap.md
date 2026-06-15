@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public alpha baseline is `v0.5.0-alpha.9`. It is the first alpha
+The current public alpha baseline is `v0.5.0-alpha.10`. It is the first alpha
 intended to be installed from the `codemower-ai/code-mower` public repository
 after the org move. It has proved:
 

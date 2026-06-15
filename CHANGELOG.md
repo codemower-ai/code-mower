@@ -4,6 +4,28 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.10
+
+This alpha fixes the first-user cloud dogfood preview path after alpha.9 exposed
+that a production dry run still failed without a token. Dry runs now remain
+network-safe and token-optional, while confirmed uploads still require an
+explicit token.
+
+### Changed
+
+- `code-mower cloud dogfood --json` no longer fails when targeting
+  `https://codemower.com/api/ingest` without `CODE_MOWER_CLOUD_TOKEN`, as long
+  as `--yes` is not supplied.
+- Cloud doctor can distinguish upload-readiness checks from dry-run previews, so
+  missing tokens are warnings for previews and failures for confirmed uploads.
+- Public install docs now point to `v0.5.0-alpha.10`.
+
+### Fixed
+
+- First-user dogfood dry runs now match the documented privacy posture: no token
+  is required to inspect the metadata-only bundle, and no network upload occurs
+  without `--yes`.
+
 ## v0.5.0-alpha.9
 
 This alpha hardens the first-useful-report path. The package-install rehearsal
