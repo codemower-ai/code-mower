@@ -2219,6 +2219,10 @@ def main():
         self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0a24")
         check_ids = {check["id"]: check for check in payload["checks"]}
         self.assertEqual(check_ids["package-version-consistency"]["status"], "pass")
+        self.assertEqual(
+            check_ids["materialized-package-version-consistency"]["status"],
+            "pass",
+        )
         self.assertEqual(check_ids["testpypi-gate"]["status"], "pass")
         self.assertEqual(check_ids["pypi-gate"]["status"], "pass")
         self.assertEqual(check_ids["trusted-publishing-runbook"]["status"], "pass")
@@ -2247,6 +2251,22 @@ def main():
             urls["testpypi-install-rehearsal"],
             "https://test.pypi.org/project/code-mower/",
         )
+
+    def test_release_readiness_fails_on_materialized_package_version_drift(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            release_readiness.package_module,
+            "_init_py_text",
+            return_value='"""Code Mower package."""\n\n__version__ = "0.0.0"\n',
+        ):
+            payload = release_readiness.render_release_readiness(ROOT)
+
+        check_ids = {check["id"]: check for check in payload["checks"]}
+        check = check_ids["materialized-package-version-consistency"]
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(check["detail"]["source_version"], "0.5.0a24")
+        self.assertEqual(check["detail"]["generated_init_version"], "0.0.0")
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
