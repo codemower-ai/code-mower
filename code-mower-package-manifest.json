@@ -35,7 +35,7 @@
     {
       "kind": "tooling",
       "source": "tools/code_mower_requirements.txt",
-      "target": "requirements/code-mower.txt"
+      "target": "requirements/requirements.txt"
     },
     {
       "kind": "core",
