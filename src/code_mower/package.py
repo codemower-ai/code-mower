@@ -44,6 +44,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_requirements.txt", "requirements/code-mower.txt", "tooling"),
     ("tools/code_mower_calibration.py", "src/code_mower/code_mower_calibration.py", "core"),
     ("src/code_mower/calibration/__init__.py", "src/code_mower/calibration/__init__.py", "core"),
+    ("src/code_mower/calibration/auto_discovery.py", "src/code_mower/calibration/auto_discovery.py", "core"),
     ("src/code_mower/calibration/corpus.py", "src/code_mower/calibration/corpus.py", "core"),
     ("src/code_mower/calibration/evidence.py", "src/code_mower/calibration/evidence.py", "core"),
     ("src/code_mower/calibration/identity.py", "src/code_mower/calibration/identity.py", "core"),

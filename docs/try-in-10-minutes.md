@@ -89,8 +89,23 @@ code-mower calibration value-report .code-mower.generated/calibration-corpus.jso
   --output reviewer-value-report.md
 ```
 
-The starter corpus proves the command path. Replace it with your own known-clean
-and known-blocked PRs before promoting lanes to selective or merge-gating roles.
+The starter corpus proves the command path. To bootstrap a project-specific
+draft from recent merged PRs, run:
+
+```bash
+code-mower calibration auto-discover \
+  --repo OWNER/REPO \
+  --last-n 20 \
+  --output .code-mower/draft-calibration-corpus.json
+
+code-mower calibration value-report .code-mower/draft-calibration-corpus.json \
+  --output .code-mower/draft-reviewer-value-report.md
+```
+
+Auto-discovery is deliberately conservative: it uses merged PR metadata,
+structured audit trailers, and review-request signals to propose known-clean
+and known-blocked cases. Review every disposition before promoting lanes to
+selective or merge-gating roles.
 
 ## 6. Optional Cloud Dry Run
 
