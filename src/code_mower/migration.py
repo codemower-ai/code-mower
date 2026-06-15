@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -310,6 +311,24 @@ def _run_rehearsal_step_to_file(
 def _write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _load_release_readiness() -> Any:
+    """Load the release-readiness helper without breaking legacy tools imports."""
+
+    if __package__ in {None, ""}:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    module_names: list[str] = []
+    if __package__:
+        module_names.append(f"{__package__}.release_readiness")
+    module_names.extend(["code_mower.release_readiness", "release_readiness"])
+    last_error: ImportError | None = None
+    for module_name in module_names:
+        try:
+            return importlib.import_module(module_name)
+        except ImportError as exc:
+            last_error = exc
+    raise ImportError("unable to import release_readiness helper") from last_error
 
 
 def _first_user_artifacts(toy_repo: Path) -> dict[str, str]:
@@ -1570,6 +1589,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="optional legacy script path or basename to filter, e.g. run_codex_audit_pr.sh",
     )
     aliases.add_argument("--json", action="store_true")
+    release = subparsers.add_parser("release-readiness")
+    release.add_argument("--repo-path", type=Path, default=Path.cwd())
+    release.add_argument("--json", action="store_true")
     package_install = subparsers.add_parser("package-install-rehearsal")
     package_install.add_argument(
         "--package-spec",
@@ -1684,6 +1706,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(render_runner_aliases_text(payload), end="")
         return 0
+
+    if args.command == "release-readiness":
+        release_readiness = _load_release_readiness()
+        payload = release_readiness.render_release_readiness(repo_path=args.repo_path)
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(release_readiness.render_release_readiness_text(payload), end="")
+        return 0 if payload["status"] == "pass" else 1
 
     if args.command == "package-install-rehearsal":
         try:

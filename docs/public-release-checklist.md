@@ -119,6 +119,10 @@ interpreter.
 - Run [docs/pypi-release.md](pypi-release.md) against TestPyPI before
   switching first-user docs from GitHub-tag install to `pipx install
   code-mower`.
+- Run `code-mower migration release-readiness --json` before any TestPyPI or
+  production PyPI promotion. It should pass with zero failed checks for package
+  version consistency, release workflow gates, trusted publishing docs, and
+  package-index rehearsal commands.
 - Keep calibration auto-discovery in the release gate. The package-install
   rehearsal should generate a draft corpus from offline PR metadata and
   round-trip it through `calibration value-report`; before widening, also run

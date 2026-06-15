@@ -65,6 +65,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_next_steps.py", "src/code_mower/next_steps.py", "core"),
     ("tools/code_mower_package.py", "src/code_mower/package.py", "core"),
     ("tools/code_mower_prompts.py", "src/code_mower/prompts.py", "core"),
+    ("src/code_mower/release_readiness.py", "src/code_mower/release_readiness.py", "core"),
     ("tools/code_mower_secrets.py", "src/code_mower/secrets.py", "core"),
     ("tools/code_mower_telemetry.py", "src/code_mower/code_mower_telemetry.py", "core"),
     ("tools/reviewer_metrics.py", "src/code_mower/reviewer_metrics.py", "core"),
