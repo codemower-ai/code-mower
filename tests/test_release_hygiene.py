@@ -76,6 +76,15 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("    environment: pypi\n", production_job)
         self.assertNotIn("test.pypi.org", production_job)
 
+    def test_ci_workflow_runs_release_readiness_gate(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn("      - name: Release readiness\n", workflow)
+        self.assertIn(
+            "        run: python -m code_mower.migration release-readiness --json\n",
+            workflow,
+        )
+
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
             tuple(code_mower_cli.COMMAND_HANDLERS),
