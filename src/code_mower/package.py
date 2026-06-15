@@ -1210,9 +1210,9 @@ def resolve_provider_templates_path(path_text: str) -> Path:
     return candidates[0]
 
 
-def resolve_package_config_path(path_text: str) -> Path:
+def resolve_package_config_path(path_text: str, *, explicit: bool = False) -> Path:
     path = Path(path_text)
-    if path_text != DEFAULT_PACKAGE_CONFIG or path.is_absolute():
+    if explicit or path_text != DEFAULT_PACKAGE_CONFIG or path.is_absolute():
         return path
 
     for root in _candidate_package_source_roots():
@@ -1748,7 +1748,7 @@ def materialize_package_plan(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("config", nargs="?", default=DEFAULT_PACKAGE_CONFIG)
+    parser.add_argument("config", nargs="?")
     parser.add_argument(
         "--provider-templates",
         default=None,
@@ -1778,8 +1778,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        config_path = resolve_package_config_path(
+            args.config or DEFAULT_PACKAGE_CONFIG,
+            explicit=args.config is not None,
+        )
         plan = render_package_plan(
-            load_config(resolve_package_config_path(args.config)),
+            load_config(config_path),
             load_provider_templates(
                 resolve_provider_templates_path(DEFAULT_PROVIDER_TEMPLATES)
                 if args.provider_templates is None

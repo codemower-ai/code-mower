@@ -714,6 +714,21 @@ printf '%s\\n' "${lane}"
         self.assertEqual(roots[0], ROOT)
         self.assertEqual(roots[-1], Path(tmp).resolve())
 
+    def test_package_materializer_preserves_explicit_default_named_config(self) -> None:
+        self.assertEqual(
+            code_mower_package.resolve_package_config_path(
+                code_mower_package.DEFAULT_PACKAGE_CONFIG,
+                explicit=True,
+            ),
+            Path(code_mower_package.DEFAULT_PACKAGE_CONFIG),
+        )
+        self.assertIn(
+            "src/code_mower/templates/code-mower.example.yml",
+            code_mower_package.resolve_package_config_path(
+                code_mower_package.DEFAULT_PACKAGE_CONFIG
+            ).as_posix(),
+        )
+
     def test_package_materializer_can_run_from_extracted_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stdout = StringIO()
