@@ -283,6 +283,9 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 - [Public Release Checklist](docs/public-release-checklist.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
+- [Security Policy](SECURITY.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## License
 

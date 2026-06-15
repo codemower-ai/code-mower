@@ -2092,10 +2092,30 @@ def main():
         self.assertEqual(check_ids["testpypi-gate"]["status"], "pass")
         self.assertEqual(check_ids["pypi-gate"]["status"], "pass")
         self.assertEqual(check_ids["trusted-publishing-runbook"]["status"], "pass")
+        self.assertEqual(check_ids["public-maintainer-docs"]["status"], "pass")
+        self.assertEqual(check_ids["public-docs-linked-from-readme"]["status"], "pass")
+        self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "pass")
         commands = {action["id"]: action["command"] for action in payload["next_actions"]}
         self.assertIn("publish_testpypi=true", commands["publish-testpypi-candidate"])
         self.assertIn("publish_pypi=false", commands["publish-testpypi-candidate"])
         self.assertIn("--pip-index-url https://test.pypi.org/simple/", commands["testpypi-install-rehearsal"])
+
+    def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
+        manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        support = (ROOT / "SUPPORT.md").read_text(encoding="utf-8")
+        conduct = (ROOT / "CODE_OF_CONDUCT.md").read_text(encoding="utf-8")
+
+        self.assertIn("include CODE_OF_CONDUCT.md", manifest)
+        self.assertIn("include SUPPORT.md", manifest)
+        self.assertIn("[Support](SUPPORT.md)", readme)
+        self.assertIn("[Security Policy](SECURITY.md)", readme)
+        self.assertIn("[Code of Conduct](CODE_OF_CONDUCT.md)", readme)
+        for text in (support, conduct):
+            lowered = text.lower()
+            self.assertIn("private source", lowered)
+            self.assertIn("credentials", lowered)
+        self.assertIn("raw model transcripts", support.lower())
 
     def test_release_readiness_tag_derivation_supports_release_stages(self) -> None:
         self.assertEqual(

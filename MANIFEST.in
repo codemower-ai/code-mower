@@ -7,5 +7,7 @@ recursive-include templates *.j2 *.json *.md *.yml *.yaml
 include requirements/*.txt
 include LICENSE
 include NOTICE
+include CODE_OF_CONDUCT.md
+include SUPPORT.md
 global-exclude *.py[cod]
 global-exclude __pycache__
