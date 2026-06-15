@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public alpha baseline is `v0.5.0-alpha.24`. It is intended to be
+The current public alpha baseline is `v0.5.0-alpha.25`. It is intended to be
 installed from the `codemower-ai/code-mower` public repository and has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
@@ -33,9 +33,13 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
   of maintaining duplicate implementation files;
 - self-hosted package materialization from installed checkouts, with generated
   package metadata stamped from the source checkout version;
+- release-readiness checks that materialize the standalone package and fail if
+  generated package versions drift from source metadata;
 - generated product-support wrappers for compatibility shims and shell-safe
   GitHub comments;
-- optional sanitized cloud export/upload commands;
+- optional sanitized cloud export/upload commands with fail-closed structured
+  event metadata guards for raw output, auth previews, transcripts, and
+  secret-like values;
 - `code-mower doctor --preflight` as the friendly early-adopter preset for easy
   mode, runtime probes, GitHub/private-repo setup, Actions cost diagnostics,
   and optional cloud-token setup. `doctor --v05` remains the versioned alias for
