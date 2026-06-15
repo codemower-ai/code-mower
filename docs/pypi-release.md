@@ -13,8 +13,11 @@ pipx install code-mower
 - GitHub Release workflow builds distributions on every published release.
 - The release workflow downloads the uploaded distributions and runs
   `twine check` before any optional PyPI publish job can start.
-- PyPI publishing is gated behind the `pypi` GitHub environment and the
-  `CODE_MOWER_PYPI_PUBLISH` repository variable or manual
+- TestPyPI publishing is gated behind the `testpypi` GitHub environment and
+  the `CODE_MOWER_TESTPYPI_PUBLISH` repository variable or manual
+  `workflow_dispatch` input.
+- Production PyPI publishing is gated behind the `pypi` GitHub environment and
+  the `CODE_MOWER_PYPI_PUBLISH` repository variable or manual
   `workflow_dispatch` input.
 - Trusted publishing must be configured before using this for public users.
 - GitHub-tag install remains the documented alpha path until a TestPyPI install
@@ -32,8 +35,10 @@ pipx install code-mower
    - environment: `testpypi`
 3. Add a `testpypi` GitHub environment at
    [https://github.com/codemower-ai/code-mower/settings/environments](https://github.com/codemower-ai/code-mower/settings/environments).
-4. Add a dedicated TestPyPI publish job before enabling production PyPI. Keep
-   the production `pypi` environment separate.
+4. Keep the `CODE_MOWER_TESTPYPI_PUBLISH` repository variable unset or `false`
+   for normal releases. Use manual `workflow_dispatch` with
+   `publish_testpypi=true` when rehearsing a package-index release candidate.
+5. Keep the production `pypi` environment separate.
 
 ## One-Time Production PyPI Setup
 
@@ -45,6 +50,22 @@ pipx install code-mower
    - environment: `pypi`
 3. Keep the production `pypi` GitHub environment protected until at least one
    TestPyPI release has been installed in a fresh repo.
+4. Keep the `CODE_MOWER_PYPI_PUBLISH` repository variable unset or `false`
+   until production PyPI trusted publishing has passed a deliberate release
+   gate. Prefer manual `workflow_dispatch` with `publish_pypi=true` for the
+   first production publish.
+
+## Workflow Dispatch Matrix
+
+Use [https://github.com/codemower-ai/code-mower/actions/workflows/release.yml](https://github.com/codemower-ai/code-mower/actions/workflows/release.yml)
+for manual release rehearsals:
+
+| `publish_testpypi` | `publish_pypi` | Expected behavior |
+| --- | --- | --- |
+| `false` | `false` | Build, upload, download, and verify distributions only. |
+| `true` | `false` | Build, verify, then publish to TestPyPI using the `testpypi` environment. |
+| `false` | `true` | Build, verify, then publish to production PyPI using the `pypi` environment. Use only after TestPyPI passes. |
+| `true` | `true` | Avoid this for normal releases; publish to TestPyPI and PyPI as separate, auditable runs. |
 
 ## Release Verification
 
@@ -52,6 +73,10 @@ Every GitHub release run should leave `build-distributions` and
 `verify-distributions` green. The `verify-distributions` job exercises the
 same artifact download path used by the optional PyPI publish job, then runs
 `twine check dist/*` without publishing anything.
+
+Before publishing to TestPyPI, run the release workflow once with both publish
+inputs set to `false` and confirm `build-distributions` and
+`verify-distributions` are green.
 
 Before switching docs to package-index install:
 

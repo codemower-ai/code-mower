@@ -51,6 +51,29 @@ class ReleaseHygieneTests(unittest.TestCase):
         publish_job = workflow.split("  publish-pypi:\n", 1)[1]
         self.assertIn("    needs: verify-distributions\n", publish_job)
 
+    def test_release_workflow_has_separate_testpypi_publish_gate(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn("      publish_testpypi:\n", workflow)
+        self.assertIn("  publish-testpypi:\n", workflow)
+        testpypi_job = workflow.split("  publish-testpypi:\n", 1)[1].split(
+            "  publish-pypi:\n",
+            1,
+        )[0]
+        self.assertIn("    needs: verify-distributions\n", testpypi_job)
+        self.assertIn("inputs.publish_testpypi", testpypi_job)
+        self.assertIn("CODE_MOWER_TESTPYPI_PUBLISH", testpypi_job)
+        self.assertIn("    environment: testpypi\n", testpypi_job)
+        self.assertIn("repository-url: https://test.pypi.org/legacy/", testpypi_job)
+        self.assertIn(
+            "uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b",
+            testpypi_job,
+        )
+        production_job = workflow.split("  publish-pypi:\n", 1)[1]
+        self.assertIn("inputs.publish_pypi", production_job)
+        self.assertIn("CODE_MOWER_PYPI_PUBLISH", production_job)
+        self.assertIn("    environment: pypi\n", production_job)
+        self.assertNotIn("test.pypi.org", production_job)
+
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
             tuple(code_mower_cli.COMMAND_HANDLERS),
