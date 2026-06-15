@@ -4,13 +4,17 @@ This guide gets one developer from install to a first local Code Mower setup
 check. Code Mower is still alpha software; start on one repository and keep
 all reviewer lanes manual until the output is useful on your codebase.
 
+To see the value loop before you touch a product repository, open the
+[Demo Calibration Example](../examples/demo-calibration/README.md) and the
+[First-User Demo Transcript](first-user-demo-transcript.md).
+
 ## 1. Install
 
 Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.13"
 code-mower --version
 ```
 
@@ -101,7 +105,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.13" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -212,3 +216,6 @@ One repository is ready for broader Code Mower use when:
 - Cloud export output has been inspected before any upload.
 - If cloud upload is enabled, the team token was created intentionally and is
   stored outside source control.
+
+For a concise map of which commands are launch-safe versus advanced/operator
+surfaces, see [Launch Command Surface](launch-command-surface.md).

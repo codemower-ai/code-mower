@@ -1,0 +1,107 @@
+{
+  "caveat": "This is a policy recommendation from calibration evidence, not an automatic repository merge-rule change.",
+  "mode": "code-mower-lane-policy",
+  "policies": {
+    "claude-audit": {
+      "audit_input_insufficient_runs": 0,
+      "automatic_trigger": "manual_or_calibration_only",
+      "blocking_false_positive_runs": 0,
+      "classification": "informational",
+      "context_packs": [],
+      "infra_error_runs": 0,
+      "known_blocked_caught_runs": 1,
+      "known_blocked_missed_runs": 0,
+      "known_blocked_runs": 1,
+      "known_clean_pass_runs": 1,
+      "known_disposition_count": 1,
+      "observed_pr_count": 0,
+      "profile_id": "claude-audit",
+      "reasons": [
+        "needs at least 10 adjudicated findings",
+        "needs at least 2 known-clean zero-blocker runs"
+      ],
+      "recommended_role": "informational",
+      "review_classes": [
+        "auth-history",
+        "docs-and-tests"
+      ],
+      "suggested_trigger_classes": [],
+      "useful_context_packs": [],
+      "useful_findings": 1,
+      "useful_rate": 1.0,
+      "useful_review_classes": [
+        "auth-history"
+      ]
+    },
+    "codex-audit": {
+      "audit_input_insufficient_runs": 0,
+      "automatic_trigger": "manual_or_calibration_only",
+      "blocking_false_positive_runs": 0,
+      "classification": "informational",
+      "context_packs": [],
+      "infra_error_runs": 0,
+      "known_blocked_caught_runs": 1,
+      "known_blocked_missed_runs": 0,
+      "known_blocked_runs": 1,
+      "known_clean_pass_runs": 1,
+      "known_disposition_count": 1,
+      "observed_pr_count": 0,
+      "profile_id": "codex-audit",
+      "reasons": [
+        "needs at least 10 adjudicated findings",
+        "needs at least 2 known-clean zero-blocker runs"
+      ],
+      "recommended_role": "informational",
+      "review_classes": [
+        "auth-history",
+        "docs-and-tests"
+      ],
+      "suggested_trigger_classes": [],
+      "useful_context_packs": [],
+      "useful_findings": 1,
+      "useful_rate": 1.0,
+      "useful_review_classes": [
+        "auth-history"
+      ]
+    },
+    "experimental-lens": {
+      "audit_input_insufficient_runs": 0,
+      "automatic_trigger": "manual_or_calibration_only",
+      "blocking_false_positive_runs": 1,
+      "classification": "informational",
+      "context_packs": [],
+      "infra_error_runs": 0,
+      "known_blocked_caught_runs": 0,
+      "known_blocked_missed_runs": 1,
+      "known_blocked_runs": 1,
+      "known_clean_pass_runs": 0,
+      "known_disposition_count": 1,
+      "observed_pr_count": 0,
+      "profile_id": "experimental-lens",
+      "reasons": [
+        "needs at least 10 adjudicated findings",
+        "needs at least 2 known-clean zero-blocker runs",
+        "has known-clean blocking false positives",
+        "missed known-blocked calibration runs",
+        "useful-rate below selective-trigger threshold"
+      ],
+      "recommended_role": "informational",
+      "review_classes": [
+        "auth-history",
+        "docs-and-tests"
+      ],
+      "suggested_trigger_classes": [],
+      "useful_context_packs": [],
+      "useful_findings": 0,
+      "useful_rate": 0.0,
+      "useful_review_classes": []
+    }
+  },
+  "source_mode": "reviewer-metrics",
+  "thresholds": {
+    "merge_gate_min_clean_runs": 2,
+    "merge_gate_min_findings": 10,
+    "merge_gate_useful_rate": 0.6,
+    "selective_useful_rate": 0.5
+  }
+}

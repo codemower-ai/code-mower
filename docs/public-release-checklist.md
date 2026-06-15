@@ -11,13 +11,16 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha releases and reports its version with
   `code-mower --version`.
-- The v0.5 alpha entrypoint is `v0.5.0-alpha.8`, with `code-mower doctor
+- The v0.5 alpha entrypoint is `v0.5.0-alpha.13`, with `code-mower doctor
   --preflight` as the first-run setup diagnostic. `doctor --v05` remains the
   versioned equivalent for scripts.
 - The README now shows a shortened `doctor --preflight` example so fresh users can
   see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and
   changelog exist as public trust/readiness artifacts.
+- Top-level CLI help is first-user focused: `code-mower --help` shows the
+  launch-safe commands, while `code-mower --help-all` exposes provider,
+  migration, labeler, and operator commands.
 - `docs/first-user-install-rehearsal.md` records the executable release-gate
   path: package install, easy-mode smoke, first value report, cloud upload dry
   run, and dogfood dry run. Re-run it against the public tag before widening
@@ -42,6 +45,8 @@ not know the original reference repos.
 - Standalone CI passes from a clean clone.
 - `code-mower init --easy` and `code-mower doctor --preflight` work in a fresh toy
   repo.
+- `code-mower --help` makes the first-user path obvious without exposing all
+  advanced/operator commands by default.
 - `code-mower doctor --preflight` runs provider-declared smoke probes and optional
   cloud-token diagnostics without leaking raw auth/provider output or token
   values into shareable JSON.
@@ -113,6 +118,11 @@ interpreter.
 - Run [docs/pypi-release.md](pypi-release.md) against TestPyPI before
   switching first-user docs from GitHub-tag install to `pipx install
   code-mower`.
+- Keep calibration auto-discovery in the release gate. The package-install
+  rehearsal should generate a draft corpus from offline PR metadata and
+  round-trip it through `calibration value-report`; before widening, also run
+  `code-mower calibration auto-discover --repo OWNER/REPO --last-n 20` in at
+  least one public toy/real repository.
 - Add a short terminal recording, screenshot, or transcript of the first
   `doctor --preflight` run to the README/website.
 - Expand [docs/troubleshooting.md](troubleshooting.md) as new setup traps are
@@ -124,6 +134,8 @@ interpreter.
 - Decompose the largest extraction-era modules before v1.0 where it materially
   improves contributor onboarding: calibration, doctor, cloud, package, and
   provider runners.
+- Add focused unit tests around the large modules instead of relying mostly on
+  release-hygiene integration tests.
 - Make the public repository the clear source of truth for OSS users. Private
   product repos should consume pinned public releases, not appear to generate or
   overwrite the public package.

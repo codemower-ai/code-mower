@@ -795,6 +795,7 @@ def run_cloud_doctor(
     bundle_dir: Path,
     endpoint: str,
     token_env: str,
+    require_token: bool = True,
     probe_service: bool = False,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
@@ -848,6 +849,18 @@ def run_cloud_doctor(
                 "status": "warn",
                 "message": (
                     f"{token_env} is not set; local configless ingest may still work"
+                ),
+            }
+        )
+    elif not require_token:
+        checks.append(
+            {
+                "name": "token",
+                "status": "warn",
+                "message": f"{token_env} is not set; upload will remain disabled",
+                "remediation": (
+                    "Run `code-mower cloud setup --token-stdin` or export "
+                    f"{token_env} before using --yes."
                 ),
             }
         )
@@ -1064,6 +1077,7 @@ def _dogfood_upload(
         bundle_dir=output_dir,
         endpoint=endpoint,
         token_env=token_env,
+        require_token=yes,
     )
     if doctor_result["failures"]:
         return {

@@ -1,0 +1,144 @@
+{
+  "event_summary_count": 0,
+  "mode": "reviewer-metrics",
+  "profiles": {
+    "claude-audit": {
+      "audit_input_insufficient_runs": 0,
+      "blocking_false_positive_runs": 0,
+      "context_packs": [],
+      "cost_per_known_blocked_catch": null,
+      "cost_per_run": null,
+      "cost_per_useful_finding": null,
+      "cost_usd": 0.0,
+      "dispositions": {
+        "true_positive": 1
+      },
+      "duration_seconds_total": 199.0,
+      "event_log": {},
+      "infra_error_runs": 0,
+      "known_blocked_caught_runs": 1,
+      "known_blocked_missed_runs": 0,
+      "known_blocked_runs": 1,
+      "known_clean_pass_runs": 1,
+      "known_disposition_count": 1,
+      "model": "",
+      "negative_findings": 0,
+      "noise_rate": 0.0,
+      "precision": 1.0,
+      "profile_id": "claude-audit",
+      "review_classes": [
+        "auth-history",
+        "docs-and-tests"
+      ],
+      "run_statuses": {
+        "blocked": 1,
+        "pass": 1
+      },
+      "runs": 2,
+      "seconds_per_known_blocked_catch": 199.0,
+      "seconds_per_run": 99.5,
+      "seconds_per_useful_finding": 199.0,
+      "unknown_disposition_count": 0,
+      "useful_context_packs": [],
+      "useful_findings": 1,
+      "useful_findings_per_usd": null,
+      "useful_rate": 1.0,
+      "useful_review_classes": [
+        "auth-history"
+      ]
+    },
+    "codex-audit": {
+      "audit_input_insufficient_runs": 0,
+      "blocking_false_positive_runs": 0,
+      "context_packs": [],
+      "cost_per_known_blocked_catch": null,
+      "cost_per_run": null,
+      "cost_per_useful_finding": null,
+      "cost_usd": 0.0,
+      "dispositions": {
+        "true_positive": 1
+      },
+      "duration_seconds_total": 137.0,
+      "event_log": {},
+      "infra_error_runs": 0,
+      "known_blocked_caught_runs": 1,
+      "known_blocked_missed_runs": 0,
+      "known_blocked_runs": 1,
+      "known_clean_pass_runs": 1,
+      "known_disposition_count": 1,
+      "model": "",
+      "negative_findings": 0,
+      "noise_rate": 0.0,
+      "precision": 1.0,
+      "profile_id": "codex-audit",
+      "review_classes": [
+        "auth-history",
+        "docs-and-tests"
+      ],
+      "run_statuses": {
+        "blocked": 1,
+        "pass": 1
+      },
+      "runs": 2,
+      "seconds_per_known_blocked_catch": 137.0,
+      "seconds_per_run": 68.5,
+      "seconds_per_useful_finding": 137.0,
+      "unknown_disposition_count": 0,
+      "useful_context_packs": [],
+      "useful_findings": 1,
+      "useful_findings_per_usd": null,
+      "useful_rate": 1.0,
+      "useful_review_classes": [
+        "auth-history"
+      ]
+    },
+    "experimental-lens": {
+      "audit_input_insufficient_runs": 0,
+      "blocking_false_positive_runs": 1,
+      "context_packs": [],
+      "cost_per_known_blocked_catch": null,
+      "cost_per_run": null,
+      "cost_per_useful_finding": null,
+      "cost_usd": 0.0,
+      "dispositions": {
+        "false_positive": 1
+      },
+      "duration_seconds_total": 104.0,
+      "event_log": {},
+      "infra_error_runs": 0,
+      "known_blocked_caught_runs": 0,
+      "known_blocked_missed_runs": 1,
+      "known_blocked_runs": 1,
+      "known_clean_pass_runs": 0,
+      "known_disposition_count": 1,
+      "model": "",
+      "negative_findings": 1,
+      "noise_rate": 1.0,
+      "precision": 0.0,
+      "profile_id": "experimental-lens",
+      "review_classes": [
+        "auth-history",
+        "docs-and-tests"
+      ],
+      "run_statuses": {
+        "blocked": 1,
+        "pass": 1
+      },
+      "runs": 2,
+      "seconds_per_known_blocked_catch": null,
+      "seconds_per_run": 52.0,
+      "seconds_per_useful_finding": null,
+      "unknown_disposition_count": 0,
+      "useful_context_packs": [],
+      "useful_findings": 0,
+      "useful_findings_per_usd": null,
+      "useful_rate": 0.0,
+      "useful_review_classes": []
+    }
+  },
+  "recommendations": [
+    "experimental-lens: low useful-rate; keep informational until prompt or context improves.",
+    "experimental-lens: missed known-blocked calibration runs; keep informational until catch rate improves."
+  ],
+  "source_report_count": 1
+}

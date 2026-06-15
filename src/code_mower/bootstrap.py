@@ -25,7 +25,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 MIN_PYTHON = (3, 11)
 DEFAULT_VENV = ".code-mower-venv"
-DEFAULT_REQUIREMENTS = "tools/code_mower_requirements.txt"
+DEFAULT_REQUIREMENTS = "requirements/requirements.txt"
 PYTHON_ENV = "CODE_MOWER_PYTHON"
 DEFAULT_LOCK_TIMEOUT_SECONDS = 120.0
 DEFAULT_LOCK_POLL_SECONDS = 0.2

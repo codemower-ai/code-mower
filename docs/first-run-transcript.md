@@ -8,7 +8,7 @@ same provider warnings.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.13"
 code-mower --version
 ```
 
@@ -16,7 +16,7 @@ Expected shape:
 
 ```text
 Python 3.12.x
-code-mower 0.5.0a8
+code-mower 0.5.0a13
 ```
 
 ## Generate Local Setup
@@ -71,6 +71,14 @@ you add labels, GitHub workflows, provider CLIs, or cloud upload.
 ## Generate The Starter Value Report
 
 ```bash
+code-mower calibration auto-discover \
+  --repo OWNER/REPO \
+  --last-n 20 \
+  --output .code-mower/draft-calibration-corpus.json
+
+code-mower calibration value-report .code-mower/draft-calibration-corpus.json \
+  --output .code-mower/draft-reviewer-value-report.md
+
 code-mower calibration value-report .code-mower.generated/calibration-corpus.json \
   --output .code-mower/reviewer-value-report.md
 ```
@@ -79,11 +87,13 @@ Expected shape:
 
 ```text
 Wrote .code-mower/reviewer-value-report.md
+Wrote .code-mower/draft-reviewer-value-report.md
 ```
 
-The generated starter corpus proves the command path. Replace it with real
-known-clean and known-blocked PRs before using the report to promote reviewer
-lanes.
+The generated starter corpus proves the command path. The auto-discovered
+draft corpus uses recent PR metadata to reduce blank-page friction, but it is
+not an adjudicator. Confirm every disposition before using a report to promote
+reviewer lanes.
 
 ## Optional Cloud Dry Run
 

@@ -40,6 +40,11 @@ if __package__ in {None, ""}:
             parse_int as _int,
             safe_slug as _safe_slug,
         )
+        from code_mower.calibration.auto_discovery import (
+            build_auto_discovered_corpus,
+            fetch_merged_prs_for_auto_discovery,
+            load_auto_discovery_input,
+        )
     else:
         from tools import code_mower_context_packs, code_mower_telemetry, reviewer_metrics
         from tools.calibration import (
@@ -55,6 +60,11 @@ if __package__ in {None, ""}:
             load_json_object as _load_json,
             parse_int as _int,
             safe_slug as _safe_slug,
+        )
+        from tools.calibration.auto_discovery import (
+            build_auto_discovered_corpus,
+            fetch_merged_prs_for_auto_discovery,
+            load_auto_discovery_input,
         )
 elif __package__ == "tools":
     from tools import code_mower_context_packs, code_mower_telemetry, reviewer_metrics
@@ -72,6 +82,11 @@ elif __package__ == "tools":
         parse_int as _int,
         safe_slug as _safe_slug,
     )
+    from tools.calibration.auto_discovery import (
+        build_auto_discovered_corpus,
+        fetch_merged_prs_for_auto_discovery,
+        load_auto_discovery_input,
+    )
 else:  # pragma: no cover - exercised after package extraction.
     from . import code_mower_context_packs, code_mower_telemetry, reviewer_metrics
     from .calibration import (
@@ -87,6 +102,11 @@ else:  # pragma: no cover - exercised after package extraction.
         load_json_object as _load_json,
         parse_int as _int,
         safe_slug as _safe_slug,
+    )
+    from .calibration.auto_discovery import (
+        build_auto_discovered_corpus,
+        fetch_merged_prs_for_auto_discovery,
+        load_auto_discovery_input,
     )
 
 
@@ -2932,6 +2952,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     evidence_parser.add_argument("corpus", type=Path)
     evidence_parser.add_argument("--json", action="store_true")
 
+    auto_discover_parser = subparsers.add_parser("auto-discover")
+    auto_discover_parser.add_argument("--repo", required=True, help="GitHub owner/repo slug.")
+    auto_discover_parser.add_argument(
+        "--last-n",
+        type=int,
+        default=20,
+        help="Number of recent merged PRs to inspect when querying GitHub.",
+    )
+    auto_discover_parser.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help="Optional saved `gh pr list --json ...` payload to convert offline.",
+    )
+    auto_discover_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional path for the draft calibration corpus JSON.",
+    )
+    auto_discover_parser.add_argument("--json", action="store_true")
+
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("corpus", type=Path)
     run_parser.add_argument("--replicates", type=int, default=1)
@@ -3051,6 +3093,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
                 print(render_evidence_text(payload), end="")
+            return 0
+        if args.command == "auto-discover":
+            raw_prs = (
+                load_auto_discovery_input(args.input)
+                if args.input is not None
+                else fetch_merged_prs_for_auto_discovery(
+                    repo=args.repo,
+                    last_n=args.last_n,
+                )
+            )
+            payload = build_auto_discovered_corpus(
+                repo=args.repo,
+                pull_requests=raw_prs,
+                last_n=args.last_n,
+            )
+            if args.output is not None:
+                _write_json(args.output, payload)
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(
+                    "Code Mower auto-discovered draft corpus\n"
+                    f"repo: {payload['discovery']['repo']}\n"
+                    f"items: {len(payload.get('corpus', []) or [])}\n"
+                    f"caveat: {payload['discovery']['caveat']}\n",
+                    end="",
+                )
             return 0
         if args.command == "run":
             lanes = tuple(

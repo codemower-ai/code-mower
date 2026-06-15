@@ -135,20 +135,17 @@ serialize through their shared lock. The default checkout-lock timeout is long
 enough for normal audit runs to queue instead of failing after two minutes;
 dead locks are still cleared by the PID/staleness checks.
 
-`v0.5.0-alpha.8` keeps the smoke runner, package plan, docs, next-step cloud
-export examples, and opt-in upload dry run aligned on reviewer metrics, lane
-policy, and value report bundles. Alpha.24 added a packaged starter
-value-report fixture while
-keeping the public starter templates byte-identical to their packaged copies.
-Alpha.23 kept the private standalone shadow workflow running
-package-install rehearsal through the same authenticated path as checkout. It
-separates `CODE_MOWER_STANDALONE_REPO_URL` from
-`CODE_MOWER_STANDALONE_PACKAGE_REPO_URL`, prefers an explicit
-`CODE_MOWER_STANDALONE_REF` workflow override when present, and otherwise reads
-only the ref from the product pin file. That prevents the common failure where a
-workflow configures an SSH deploy-key URL, sources the whole pin file, silently
-replaces the URL with unauthenticated HTTPS, and fails on the next private
-checkout or package install.
+`v0.5.0-alpha.13` keeps the smoke runner, package plan, docs, next-step cloud
+export examples, draft auto-discovery rehearsal, and opt-in upload dry run
+aligned on reviewer metrics, lane policy, and value report bundles. The public
+package also includes the formerly private hardening work that made product
+support wrappers safe to consume from a pinned standalone release: packaged
+starter value-report fixtures, byte-identical starter templates, authenticated
+package-install rehearsals, separated source/package repository URLs, explicit
+workflow ref overrides, and ref-only product pin files. That prevents the common
+failure where a workflow configures an SSH deploy-key URL, sources the whole pin
+file, silently replaces the URL with unauthenticated HTTPS, and fails on the
+next private checkout or package install.
 
 That does not make mirror deletion automatic for every user repo. The migration
 contract remains one repo at a time:

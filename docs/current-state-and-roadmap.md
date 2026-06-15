@@ -22,9 +22,8 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public alpha baseline is `v0.5.0-alpha.8`. It is the first alpha
-intended to be installed from the `codemower-ai/code-mower` public repository
-after the org move. It has proved:
+The current public alpha baseline is `v0.5.0-alpha.13`. It is intended to be
+installed from the `codemower-ai/code-mower` public repository and has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
 - `code-mower init --easy`, `doctor --preflight`, `next-steps`, and starter
@@ -48,6 +47,9 @@ after the org move. It has proved:
 - first-run and trust docs: `CHANGELOG.md`, `docs/first-run-transcript.md`,
   `docs/architecture.md`, `docs/cloud-data-contract.md`, and
   `docs/code-structure-roadmap.md`.
+- `migration package-install-rehearsal` now emits a first-user readiness
+  scorecard, so release candidates can show install, doctor, first-report, and
+  cloud dry-run privacy gates in one compact JSON artifact.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
@@ -122,6 +124,32 @@ these questions in the first few minutes:
 The v0.5-to-v1.0 work should optimize for that trust test. More provider
 adapters are useful only after install, doctor, first report, privacy, and code
 structure feel boring and credible.
+
+## Fresh-Eyes Feedback Incorporated
+
+Recent external first-impression reviews converged on the same pattern: the
+thesis, privacy posture, and package layout are compelling, but the path from
+"I found this repo" to "I learned which AI reviewer is useful on my codebase"
+still has too much setup friction.
+
+Treat these as product gates before widening beyond friendly early adopters:
+
+- **Install friction:** GitHub-tag installs are acceptable for alpha users, but
+  public adoption needs a normal package-index path.
+- **CLI overwhelm:** default help should show the launch-safe commands first;
+  provider bridges, labelers, migration internals, and operator commands belong
+  behind `code-mower --help-all` or deeper docs.
+- **Time to value:** users should not have to hand-build a full calibration
+  corpus before seeing a useful report. The current auto-discovery command
+  bootstraps a draft corpus from recent merged PRs and known review signals;
+  release rehearsals prove that path and docs should keep emphasizing human
+  disposition review before lane promotion.
+- **Code confidence:** release hygiene tests prove broad behavior, but v1.0
+  needs more focused unit coverage around doctor checks, cloud bundle privacy,
+  calibration math, verdict parsing, and provider-runner seams.
+- **Cloud incentive:** CodeMower.com must show immediate insight after upload,
+  not just receipt rows. Cohort benchmarks, recommendation quality, and
+  public/dogfood examples are the reasons a careful team would opt in.
 
 ## v1.0 Direction
 
@@ -201,10 +229,15 @@ leaving room for future orchestrator adapters.
     Mower as merge-gate infrastructure.
 14. Triage CLI help into a smaller first-user command set, with advanced
     operator/internal commands documented separately.
-15. Add builder-experiment capture only after the reviewer/value loop is
+15. Harden calibration auto-discovery with more real PR shapes, first-user
+    examples, and package-install rehearsal coverage so first reports can be
+    bootstrapped from project history with human review.
+16. Reduce first-read README friction: one-screen pitch, install, doctor sample,
+    demo report, and links to deeper docs.
+17. Add builder-experiment capture only after the reviewer/value loop is
     producing durable evidence.
-16. Keep commercial implementation, hosted reporting, telemetry products, and
-   monetization plans in the private CodeMower.com repo.
+18. Keep commercial implementation, hosted reporting, telemetry products, and
+    monetization plans in the private CodeMower.com repo.
 
 ## Documentation Ownership
 

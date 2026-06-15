@@ -36,8 +36,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_v05_alpha_8(self) -> None:
-        self.assertEqual(__version__, "0.5.0a8")
+    def test_version_is_v05_alpha_11(self) -> None:
+        self.assertEqual(__version__, "0.5.0a13")
 
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
@@ -76,6 +76,43 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertTrue(
             all(callable(handler) for handler in code_mower_cli.COMMAND_HANDLERS.values())
         )
+
+    def test_cli_default_help_is_first_user_focused(self) -> None:
+        out = StringIO()
+        with redirect_stdout(out):
+            exit_code = code_mower_cli.main(["--help"])
+
+        self.assertEqual(exit_code, 0)
+        help_text = out.getvalue()
+        self.assertIn("First-user commands:", help_text)
+        self.assertIn("code-mower --help-all", help_text)
+        self.assertIn(
+            "code-mower migration package-install-rehearsal --package-spec code-mower --json",
+            help_text,
+        )
+        self.assertIn("  init", help_text)
+        self.assertIn("  doctor", help_text)
+        self.assertIn("  calibration", help_text)
+        self.assertIn("  cloud", help_text)
+        self.assertNotIn("trailer-comment-labeler", help_text)
+        self.assertNotIn("codex-audit-env-preflight", help_text)
+        self.assertNotIn("  providers", help_text)
+        self.assertNotIn("  migration", help_text)
+
+    def test_cli_help_all_shows_operator_commands(self) -> None:
+        out = StringIO()
+        with redirect_stdout(out):
+            exit_code = code_mower_cli.main(["--help-all"])
+
+        self.assertEqual(exit_code, 0)
+        help_text = out.getvalue()
+        self.assertIn("First-user commands:", help_text)
+        self.assertIn("Advanced/provider/operator commands:", help_text)
+        self.assertIn("trailer-comment-labeler", help_text)
+        self.assertIn("codex-audit-env-preflight", help_text)
+        self.assertIn("builder-experiment", help_text)
+        self.assertIn("providers", help_text)
+        self.assertIn("migration", help_text)
 
     def test_internal_package_seams_keep_cli_first_surface(self) -> None:
         self.assertIs(doctor.DoctorCheck, doctor_checks.DoctorCheck)
@@ -480,6 +517,71 @@ printf '%s\\n' "${lane}"
     def test_privacy_scan_is_clean(self) -> None:
         self.assertEqual(privacy_scan.scan(ROOT), [])
 
+    def test_public_demo_calibration_artifacts_are_parseable_and_sanitized(self) -> None:
+        demo_dir = ROOT / "examples/demo-calibration"
+        required = {
+            "README.md",
+            "calibration-corpus.json",
+            "lane-policy.json",
+            "reviewer-metrics.json",
+            "reviewer-value-report.md",
+        }
+        self.assertTrue(demo_dir.is_dir())
+        self.assertTrue(required.issubset({path.name for path in demo_dir.iterdir()}))
+
+        for rel_path in (
+            "calibration-corpus.json",
+            "lane-policy.json",
+            "reviewer-metrics.json",
+        ):
+            with self.subTest(rel_path=rel_path):
+                json.loads(demo_dir.joinpath(rel_path).read_text(encoding="utf-8"))
+        metrics = json.loads(
+            demo_dir.joinpath("reviewer-metrics.json").read_text(encoding="utf-8")
+        )
+        policy = json.loads(demo_dir.joinpath("lane-policy.json").read_text(encoding="utf-8"))
+        self.assertEqual(metrics["mode"], "reviewer-metrics")
+        self.assertIn("codex-audit", metrics["profiles"])
+        self.assertEqual(policy["mode"], "code-mower-lane-policy")
+        self.assertIn("codex-audit", policy["policies"])
+
+        public_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(demo_dir.iterdir())
+            if path.is_file()
+        )
+        self.assertIn("known-clean", public_text)
+        self.assertIn("known-blocked", public_text)
+        self.assertIn("metadata", public_text)
+        forbidden_fragments = (
+            "/" + "Users/",
+            "/private" + "/tmp",
+            "raw diffs included",
+            "raw transcripts included",
+        )
+        for fragment in forbidden_fragments:
+            with self.subTest(fragment=fragment):
+                self.assertNotIn(fragment, public_text)
+
+    def test_public_demo_calibration_generates_expected_value_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "reviewer-value-report.md"
+            code = code_mower_calibration.main(
+                [
+                    "value-report",
+                    str(ROOT / "examples/demo-calibration/calibration-corpus.json"),
+                    "--output",
+                    str(output),
+                ]
+            )
+            self.assertEqual(code, 0)
+            report = output.read_text(encoding="utf-8")
+
+        self.assertIn("Corpus: `demo-two-pr-calibration`", report)
+        self.assertIn("| `codex-audit` | 2 | 1 | 0 | 1.0 | 1 | 1/0", report)
+        self.assertIn("| `claude-audit` | 2 | 1 | 0 | 1.0 | 1 | 1/0", report)
+        self.assertIn("| `experimental-lens` | 2 | 0 | 1 | 0.0 | 0 | 0/1", report)
+
     def test_schema_ids_are_code_mower_branded(self) -> None:
         schema = json.loads(
             (ROOT / "src/code_mower/codex_audit_verdict.schema.json").read_text(
@@ -517,6 +619,7 @@ printf '%s\\n' "${lane}"
         packaged_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}
         for target in (
             "src/code_mower/calibration/__init__.py",
+            "src/code_mower/calibration/auto_discovery.py",
             "src/code_mower/calibration/corpus.py",
             "src/code_mower/calibration/evidence.py",
             "src/code_mower/calibration/identity.py",
@@ -1219,6 +1322,46 @@ def main():
             self.assertEqual(payload["upload"]["mode"], "cloud-upload-dry-run")
             self.assertFalse(payload["upload"]["would_upload"])
 
+    def test_cloud_dogfood_dry_run_does_not_require_production_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+            token_env = "CODE_MOWER_TEST_DOGFOOD_MISSING_TOKEN"
+            os.environ.pop(token_env, None)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = code_mower_cloud.main(
+                    [
+                        "dogfood",
+                        "--repo-path",
+                        str(root),
+                        "--output-dir",
+                        str(root / ".code-mower/cloud-benchmark-bundle"),
+                        "--repo-slug",
+                        "owner/repo",
+                        "--endpoint",
+                        "https://codemower.com/api/ingest",
+                        "--token-env",
+                        token_env,
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["status"], "dry_run")
+            token_check = next(
+                check for check in payload["doctor"]["checks"] if check["name"] == "token"
+            )
+            self.assertEqual(token_check["status"], "warn")
+            self.assertFalse(payload["upload"]["would_upload"])
+
     def test_cloud_setup_cli_dry_run_redacts_token(self) -> None:
         output = StringIO()
         token = "cmw_live_cli_secret_never_print"
@@ -1396,6 +1539,7 @@ def main():
                 check for check in payload["checks"] if check["name"] == "token"
             )
             self.assertEqual(token_check["status"], "warn")
+            self.assertIn("local configless ingest", token_check["message"])
 
     def test_cloud_doctor_reports_dashboard_and_next_steps_without_token_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1530,6 +1674,9 @@ def main():
 
         self.assertIn("first_user_artifacts", migration_text)
         self.assertIn("calibration-plan.json", migration_text)
+        self.assertIn("auto-discovery-prs.json", migration_text)
+        self.assertIn("draft-calibration-corpus.json", migration_text)
+        self.assertIn("draft-reviewer-value-report.md", migration_text)
         self.assertIn("calibration-evidence.json", migration_text)
         self.assertIn("reviewer-metrics.json", migration_text)
         self.assertIn("lane-policy.json", migration_text)
@@ -1538,10 +1685,16 @@ def main():
         self.assertIn("cloud-upload-dry-run.json", migration_text)
         self.assertIn("cloud-dogfood-dry-run.json", migration_text)
         self.assertIn("package-install-rehearsal", migration_text)
+        self.assertIn("auto-discover", migration_text)
         self.assertIn(".code-mower/cloud-dogfood-bundle", migration_text)
         self.assertIn("example/toy-repo", migration_text)
         self.assertIn("http://localhost:3000/api/ingest", migration_text)
         self.assertIn("Value report:", migration_text)
+        self.assertIn("Draft value report:", migration_text)
+        self.assertIn("first_user_readiness", migration_text)
+        self.assertIn("first-user-readiness.json", migration_text)
+        self.assertIn("First-user readiness:", migration_text)
+        self.assertIn("cloud-upload-dry-run-privacy", migration_text)
 
     def test_package_install_rehearsal_artifact_contract_is_structured(self) -> None:
         toy_repo = Path("/tmp/code-mower-example-toy-repo")
@@ -1552,6 +1705,12 @@ def main():
             {
                 "calibration_plan": (
                     "/tmp/code-mower-example-toy-repo/.code-mower/calibration-plan.json"
+                ),
+                "draft_calibration_corpus": (
+                    "/tmp/code-mower-example-toy-repo/.code-mower/draft-calibration-corpus.json"
+                ),
+                "draft_reviewer_value_report": (
+                    "/tmp/code-mower-example-toy-repo/.code-mower/draft-reviewer-value-report.md"
                 ),
                 "calibration_evidence": (
                     "/tmp/code-mower-example-toy-repo/calibration-evidence.json"
@@ -1572,6 +1731,216 @@ def main():
                 ),
             },
         )
+
+    def test_first_user_readiness_scorecard_passes_for_complete_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toy_repo = root / "toy-repo"
+            outputs = root / "outputs"
+            generated = toy_repo / ".code-mower.generated"
+            (generated / "tools").mkdir(parents=True)
+            outputs.mkdir()
+            for path in (
+                generated / "code-mower-init-plan.json",
+                generated / "smoke-tests.sh",
+                generated / "tools" / "code_mower",
+            ):
+                path.write_text("ok\n", encoding="utf-8")
+            artifacts = code_mower_migration._first_user_artifacts(toy_repo)
+            for key in (
+                "draft_calibration_corpus",
+                "draft_reviewer_value_report",
+                "reviewer_value_report",
+            ):
+                Path(artifacts[key]).parent.mkdir(parents=True, exist_ok=True)
+                Path(artifacts[key]).write_text("ok\n", encoding="utf-8")
+            excluded_content = sorted(code_mower_migration.PRIVACY_EXCLUDED_CONTENT)
+            Path(artifacts["cloud_export"]).write_text(
+                json.dumps(
+                    {
+                        "mode": "cloud-export",
+                        "included_reports": [
+                            {"kind": "reviewer-metrics"},
+                            {"kind": "lane-policy"},
+                            {"kind": "value-report"},
+                        ],
+                        "upload_ready": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            dry_run_upload = {
+                "mode": "cloud-upload-dry-run",
+                "privacy_mode": "metadata_and_reports",
+                "requires_yes": True,
+                "would_upload": False,
+                "excluded_content": excluded_content,
+            }
+            Path(artifacts["cloud_upload_dry_run"]).write_text(
+                json.dumps(dry_run_upload),
+                encoding="utf-8",
+            )
+            Path(artifacts["cloud_dogfood_dry_run"]).write_text(
+                json.dumps({"status": "dry_run", "upload": dry_run_upload}),
+                encoding="utf-8",
+            )
+
+            scorecard = code_mower_migration._first_user_readiness_scorecard(
+                toy_repo=toy_repo,
+                outputs=outputs,
+                version="code-mower 0.5.0a13",
+                steps=[
+                    {
+                        "command": ["code-mower", "doctor", "--easy", "--json"],
+                        "returncode": 0,
+                    }
+                ],
+            )
+
+        self.assertEqual(scorecard["status"], "pass")
+        self.assertEqual(scorecard["passed"], scorecard["total"])
+        self.assertEqual(scorecard["failed"], 0)
+        self.assertEqual(
+            {check["id"] for check in scorecard["checks"]},
+            {
+                "package-installed",
+                "easy-init-generated",
+                "doctor-ran",
+                "draft-calibration-corpus",
+                "draft-value-report",
+                "starter-value-report",
+                "cloud-export-metadata-bundle",
+                "cloud-upload-dry-run-privacy",
+                "cloud-dogfood-dry-run",
+                "cloud-dogfood-upload-privacy",
+            },
+        )
+
+    def test_first_user_readiness_scorecard_fails_open_on_privacy_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toy_repo = root / "toy-repo"
+            outputs = root / "outputs"
+            generated = toy_repo / ".code-mower.generated"
+            (generated / "tools").mkdir(parents=True)
+            outputs.mkdir()
+            for path in (
+                generated / "code-mower-init-plan.json",
+                generated / "smoke-tests.sh",
+                generated / "tools" / "code_mower",
+            ):
+                path.write_text("ok\n", encoding="utf-8")
+            artifacts = code_mower_migration._first_user_artifacts(toy_repo)
+            for key in (
+                "draft_calibration_corpus",
+                "draft_reviewer_value_report",
+                "reviewer_value_report",
+            ):
+                Path(artifacts[key]).parent.mkdir(parents=True, exist_ok=True)
+                Path(artifacts[key]).write_text("ok\n", encoding="utf-8")
+            Path(artifacts["cloud_export"]).write_text(
+                json.dumps(
+                    {
+                        "mode": "cloud-export",
+                        "included_reports": [{}, {}, {}],
+                        "upload_ready": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            unsafe_upload = {
+                "mode": "cloud-upload-dry-run",
+                "privacy_mode": "metadata_and_reports",
+                "requires_yes": True,
+                "would_upload": True,
+                "excluded_content": ["source_code"],
+            }
+            Path(artifacts["cloud_upload_dry_run"]).write_text(
+                json.dumps(unsafe_upload),
+                encoding="utf-8",
+            )
+            Path(artifacts["cloud_dogfood_dry_run"]).write_text(
+                json.dumps({"status": "dry_run", "upload": unsafe_upload}),
+                encoding="utf-8",
+            )
+
+            scorecard = code_mower_migration._first_user_readiness_scorecard(
+                toy_repo=toy_repo,
+                outputs=outputs,
+                version="code-mower 0.5.0a13",
+                steps=[
+                    {
+                        "command": ["code-mower", "doctor", "--easy", "--json"],
+                        "returncode": 0,
+                    }
+                ],
+            )
+
+        self.assertEqual(scorecard["status"], "fail")
+        failed = {check["id"]: check for check in scorecard["checks"] if check["status"] == "fail"}
+        self.assertIn("cloud-upload-dry-run-privacy", failed)
+        self.assertIn("cloud-dogfood-upload-privacy", failed)
+        self.assertIn("raw_diffs", failed["cloud-upload-dry-run-privacy"]["detail"]["missing_exclusions"])
+
+    def test_first_user_readiness_scorecard_fails_open_on_malformed_cloud_export(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toy_repo = root / "toy-repo"
+            outputs = root / "outputs"
+            generated = toy_repo / ".code-mower.generated"
+            (generated / "tools").mkdir(parents=True)
+            outputs.mkdir()
+            for path in (
+                generated / "code-mower-init-plan.json",
+                generated / "smoke-tests.sh",
+                generated / "tools" / "code_mower",
+            ):
+                path.write_text("ok\n", encoding="utf-8")
+            artifacts = code_mower_migration._first_user_artifacts(toy_repo)
+            for key in (
+                "draft_calibration_corpus",
+                "draft_reviewer_value_report",
+                "reviewer_value_report",
+            ):
+                Path(artifacts[key]).parent.mkdir(parents=True, exist_ok=True)
+                Path(artifacts[key]).write_text("ok\n", encoding="utf-8")
+            Path(artifacts["cloud_export"]).write_text(
+                json.dumps([{"mode": "cloud-export"}]),
+                encoding="utf-8",
+            )
+            dry_run_upload = {
+                "mode": "cloud-upload-dry-run",
+                "privacy_mode": "metadata_and_reports",
+                "requires_yes": True,
+                "would_upload": False,
+                "excluded_content": sorted(code_mower_migration.PRIVACY_EXCLUDED_CONTENT),
+            }
+            Path(artifacts["cloud_upload_dry_run"]).write_text(
+                json.dumps(dry_run_upload),
+                encoding="utf-8",
+            )
+            Path(artifacts["cloud_dogfood_dry_run"]).write_text(
+                json.dumps({"status": "dry_run", "upload": dry_run_upload}),
+                encoding="utf-8",
+            )
+
+            scorecard = code_mower_migration._first_user_readiness_scorecard(
+                toy_repo=toy_repo,
+                outputs=outputs,
+                version="code-mower 0.5.0a13",
+                steps=[
+                    {
+                        "command": ["code-mower", "doctor", "--easy", "--json"],
+                        "returncode": 0,
+                    }
+                ],
+            )
+
+        self.assertEqual(scorecard["status"], "fail")
+        failed = {check["id"] for check in scorecard["checks"] if check["status"] == "fail"}
+        self.assertEqual(failed, {"cloud-export-metadata-bundle"})
 
     def test_rehearsal_step_to_file_writes_stdout_and_creates_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1626,24 +1995,24 @@ def main():
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8",
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.13",
                     base_dir=package,
                 ),
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8",
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.13",
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "code-mower==0.5.0a8",
+                    "code-mower==0.5.0a13",
                     base_dir=package,
                 ),
-                "code-mower==0.5.0a8",
+                "code-mower==0.5.0a13",
             )
 
     def test_package_install_rehearsal_supports_index_aware_pip_install(self) -> None:
         self.assertEqual(
             code_mower_migration._pip_install_command(
                 Path("/tmp/venv/bin/python"),
-                "code-mower==0.5.0a8",
+                "code-mower==0.5.0a13",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
             ),
@@ -1656,7 +2025,7 @@ def main():
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
                 "https://pypi.org/simple/",
-                "code-mower==0.5.0a8",
+                "code-mower==0.5.0a13",
             ],
         )
 
@@ -1686,6 +2055,13 @@ def main():
         self.assertIn("--lanes antigravity-cli", calibration["command"])
         self.assertNotIn("--lanes gemini-cli", calibration["command"])
         self.assertIn("legacy/API-key compatibility", calibration["why"])
+        auto_discover = next(
+            item for item in plan["steps"] if item["id"] == "calibration-auto-discover"
+        )
+        self.assertIn("calibration auto-discover", auto_discover["command"])
+        self.assertIn("--repo owner/repo", auto_discover["command"])
+        self.assertIn("draft-calibration-corpus.json", auto_discover["command"])
+        self.assertIn("Confirm every disposition", auto_discover["why"])
 
     def test_next_steps_includes_cloud_upload_dry_run_after_export(self) -> None:
         templates = next_steps.code_mower_package.load_provider_templates(
@@ -1694,11 +2070,25 @@ def main():
         plan = next_steps.build_next_steps(templates, profile="recommended")
         ids = [step["id"] for step in plan["steps"]]
 
+        self.assertIn("calibration-auto-discover", ids)
+        self.assertLess(ids.index("calibration-run"), ids.index("calibration-auto-discover"))
+        self.assertLess(ids.index("calibration-auto-discover"), ids.index("value-report"))
         self.assertIn("cloud-export", ids)
         self.assertIn("cloud-setup", ids)
         self.assertIn("cloud-upload-dry-run", ids)
         doctor_step = next(step for step in plan["steps"] if step["id"] == "doctor-easy")
+        package_step = next(
+            step for step in plan["steps"] if step["id"] == "package-install-rehearsal"
+        )
         self.assertIn("doctor --v05", doctor_step["command"])
+        self.assertIn("first_user_readiness", package_step["why"])
+        self.assertEqual(
+            package_step["artifacts"],
+            [
+                "outputs/package-install-rehearsal.json",
+                "outputs/first-user-readiness.json",
+            ],
+        )
         self.assertLess(ids.index("cloud-export"), ids.index("cloud-setup"))
         self.assertLess(ids.index("cloud-setup"), ids.index("cloud-upload-dry-run"))
         self.assertLess(ids.index("cloud-export"), ids.index("cloud-upload-dry-run"))

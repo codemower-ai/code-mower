@@ -21,9 +21,13 @@ Before calling Code Mower 1.0, assume an experienced engineer with no project
 history opens the repository. They should be able to confirm:
 
 - the README explains the product in one screen and shows the golden path;
+- `code-mower --help` shows only the first-user command surface, with
+  `code-mower --help-all` for advanced/provider/operator commands;
 - `init --easy` and `doctor --preflight` are safe to run before any workflow
   mutation;
 - local value reports work without CodeMower.com;
+- a new user can bootstrap a draft calibration corpus from recent repository
+  history instead of hand-authoring every case before seeing value;
 - optional cloud sharing is inspectable, dry-run-first, and metadata-only by
   default;
 - provider lanes start manual or informational unless calibrated;
@@ -36,7 +40,7 @@ history opens the repository. They should be able to confirm:
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.5.0-alpha.8` of the standalone
+The current public-release baseline is `v0.5.0-alpha.13` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -101,6 +105,7 @@ package. It has proved:
 It has not yet proved:
 
 - public package installation from PyPI or another package index;
+- calibration auto-discovery from recent PRs with human disposition review;
 - broad private-repo standalone checkout across arbitrary organizations and
   token policies;
 - mirror deletion across arbitrary user repositories;
@@ -115,6 +120,8 @@ pipx install code-mower
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --v05
+code-mower --help
+code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal --package-spec code-mower --json
@@ -131,6 +138,12 @@ be confused with Code Mower's richer reference corpus or a user's
 product-specific benchmark corpus.
 `reviewer-value-report.example.md` is the expected report for that starter
 corpus before users add real reviewer runs and human dispositions.
+
+The v1 target should add a draft auto-discovery path, for example
+`code-mower calibration auto-discover --repo owner/repo --last-n 20`, that scans
+recent PR history and proposes known-clean, known-blocked, and review-signal
+cases. That output must be explicitly reviewable and never silently promoted to
+merge-gating evidence.
 
 `init --easy` is a safe alias for the recommended profile. It should render a
 dry-run by default. `--apply` writes generated output to a reviewable directory
@@ -149,12 +162,15 @@ v1.0 should ship in six ordered slices:
 3. **First audit and value report.** Run the default reviewer set on one PR,
    persist local results, and generate a reviewer value report from a starter
    corpus.
-4. **Cloud-ready export.** Produce a sanitized local benchmark bundle that can
+4. **Calibration bootstrap.** Build a draft corpus from recent PR history so a
+   first-time user can see a project-specific report before investing hours in
+   manual corpus curation.
+5. **Cloud-ready export.** Produce a sanitized local benchmark bundle that can
    later feed an opt-in cloud service, without uploading in v1.0.
-5. **Measured lane promotion.** Generate a value report from known-clean and
+6. **Measured lane promotion.** Generate a value report from known-clean and
    known-blocked PRs, then classify lanes as informational, selective, or
    merge-gating eligible.
-6. **First builder-experiment scaffold.** Keep this harness-only for v1.0:
+7. **First builder-experiment scaffold.** Keep this harness-only for v1.0:
    record authoring run metadata and reports, but do not require autonomous
    orchestration or hosted source access.
 
