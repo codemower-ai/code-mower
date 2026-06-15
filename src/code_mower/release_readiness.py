@@ -182,7 +182,10 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     alpha_tag = _release_tag_for_version(version) if version else ""
     package_index_spec = f"code-mower=={version}" if version else ""
     doc_blob = "\n".join(docs.values())
-    public_hygiene_blob = "\n".join(public_hygiene_docs.values()).lower()
+    public_hygiene_blobs = {
+        relative_path: text.lower()
+        for relative_path, text in public_hygiene_docs.items()
+    }
 
     version_docs = [
         relative_path
@@ -204,6 +207,28 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         for relative_path, text in public_hygiene_docs.items()
         if not text
     ]
+    redaction_terms = (
+        "tokens",
+        "private source",
+        "raw diffs",
+        "raw model transcripts",
+        "auth output",
+        "security.md",
+    )
+    public_redaction_docs = ("SUPPORT.md", "CODE_OF_CONDUCT.md")
+    missing_redaction_terms = {
+        relative_path: [
+            term
+            for term in redaction_terms
+            if term not in public_hygiene_blobs.get(relative_path, "")
+        ]
+        for relative_path in public_redaction_docs
+    }
+    missing_redaction_terms = {
+        relative_path: terms
+        for relative_path, terms in missing_redaction_terms.items()
+        if terms
+    }
 
     checks = [
         _release_check(
@@ -357,19 +382,9 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         _release_check(
             check_id="public-support-redaction-guidance",
             title="Public support docs warn against sharing sensitive artifacts",
-            status=(
-                "pass"
-                if (
-                    "tokens" in public_hygiene_blob
-                    and "private source" in public_hygiene_blob
-                    and "raw diffs" in public_hygiene_blob
-                    and "raw model transcripts" in public_hygiene_blob
-                    and "auth output" in public_hygiene_blob
-                    and "security.md" in public_hygiene_blob
-                )
-                else "fail"
-            ),
+            status="pass" if not missing_redaction_terms else "fail",
             evidence="SUPPORT.md, CODE_OF_CONDUCT.md, SECURITY.md",
+            detail={"missing_terms_by_doc": missing_redaction_terms},
         ),
     ]
     failed = sum(1 for check in checks if check["status"] == "fail")

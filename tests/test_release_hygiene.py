@@ -2116,6 +2116,64 @@ def main():
             self.assertIn("private source", lowered)
             self.assertIn("credentials", lowered)
         self.assertIn("raw model transcripts", support.lower())
+        self.assertIn("raw model transcripts", conduct.lower())
+
+    def test_public_hygiene_checks_fail_when_docs_or_links_are_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "README.md").write_text("No public support links yet.\n", encoding="utf-8")
+
+            payload = release_readiness.render_release_readiness(repo)
+
+        check_ids = {check["id"]: check for check in payload["checks"]}
+        self.assertEqual(check_ids["public-maintainer-docs"]["status"], "fail")
+        self.assertIn(
+            "SUPPORT.md",
+            check_ids["public-maintainer-docs"]["detail"]["missing_docs"],
+        )
+        self.assertEqual(check_ids["public-docs-linked-from-readme"]["status"], "fail")
+        self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "fail")
+
+    def test_public_redaction_guidance_requires_support_and_conduct(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "README.md").write_text(
+                "\n".join(
+                    [
+                        "[Support](SUPPORT.md)",
+                        "[Security Policy](SECURITY.md)",
+                        "[Code of Conduct](CODE_OF_CONDUCT.md)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            for relative_path in release_readiness.PUBLIC_HYGIENE_DOC_PATHS:
+                path = repo / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    "placeholder tokens private source raw diffs "
+                    "raw model transcripts auth output security.md\n",
+                    encoding="utf-8",
+                )
+            (repo / "CODE_OF_CONDUCT.md").write_text(
+                "Redact private source, credentials, and auth output. "
+                "Use SECURITY.md for private reports.\n",
+                encoding="utf-8",
+            )
+
+            payload = release_readiness.render_release_readiness(repo)
+
+        check_ids = {check["id"]: check for check in payload["checks"]}
+        self.assertEqual(check_ids["public-maintainer-docs"]["status"], "pass")
+        self.assertEqual(check_ids["public-docs-linked-from-readme"]["status"], "pass")
+        redaction_check = check_ids["public-support-redaction-guidance"]
+        self.assertEqual(redaction_check["status"], "fail")
+        conduct_missing = redaction_check["detail"]["missing_terms_by_doc"][
+            "CODE_OF_CONDUCT.md"
+        ]
+        self.assertIn("tokens", conduct_missing)
+        self.assertIn("raw diffs", conduct_missing)
+        self.assertIn("raw model transcripts", conduct_missing)
 
     def test_release_readiness_tag_derivation_supports_release_stages(self) -> None:
         self.assertEqual(

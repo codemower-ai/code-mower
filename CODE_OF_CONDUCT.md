@@ -10,8 +10,9 @@ workspace hostile.
 - Assume good intent, but correct unsafe behavior quickly.
 - Keep discussions focused on evidence, reproducible commands, repository
   context, and user impact.
-- Redact private source, raw diffs, transcripts, credentials, auth output, and
-  customer data before posting public examples.
+- Redact API tokens, private source, raw diffs, raw model transcripts,
+  credentials, auth output, and customer data before posting public examples;
+  use [SECURITY.md](SECURITY.md) for private reports.
 - Accept that maintainer decisions may prioritize safety, privacy, cost control,
   or first-user reliability over a clever integration.
 
