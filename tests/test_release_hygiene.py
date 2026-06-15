@@ -39,6 +39,18 @@ class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_v05_alpha_11(self) -> None:
         self.assertEqual(__version__, "0.5.0a13")
 
+    def test_release_workflow_verifies_downloaded_distributions_before_publish(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn("  verify-distributions:\n", workflow)
+        self.assertIn("    needs: build-distributions\n", workflow)
+        self.assertIn(
+            "        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c\n",
+            workflow,
+        )
+        self.assertIn("          python -m twine check dist/*\n", workflow)
+        publish_job = workflow.split("  publish-pypi:\n", 1)[1]
+        self.assertIn("    needs: verify-distributions\n", publish_job)
+
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
             tuple(code_mower_cli.COMMAND_HANDLERS),
