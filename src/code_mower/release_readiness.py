@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from . import package as package_module
 
 
 RELEASE_DOC_PATHS = (
@@ -93,6 +96,37 @@ def _pyproject_version(repo_path: Path) -> str:
     pyproject_text = _read_text_if_exists(repo_path / "pyproject.toml")
     match = re.search(r"^version\s*=\s*[\"']([^\"']+)[\"']", pyproject_text, re.MULTILINE)
     return match.group(1) if match else ""
+
+
+def _materialized_package_versions(repo_path: Path) -> dict[str, Any]:
+    try:
+        plan = package_module.render_package_plan(
+            package_module.load_config(
+                repo_path / "src" / "code_mower" / "templates" / "code-mower.example.yml"
+            ),
+            package_module.load_provider_templates(
+                repo_path / "src" / "code_mower" / "templates" / "providers.yml"
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            package_module.materialize_package_plan(
+                plan,
+                output_dir=output_dir,
+                repo_root=repo_path,
+                force=True,
+            )
+            return {
+                "error": "",
+                "init_version": _python_package_version(output_dir),
+                "pyproject_version": _pyproject_version(output_dir),
+            }
+    except Exception as exc:  # pragma: no cover - exercised through status output.
+        return {
+            "error": str(exc),
+            "init_version": "",
+            "pyproject_version": "",
+        }
 
 
 def _release_tag_for_version(version: str) -> str:
@@ -197,6 +231,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     init_version = _python_package_version(repo_path)
     pyproject_version = _pyproject_version(repo_path)
     version = init_version or pyproject_version
+    materialized_versions = _materialized_package_versions(repo_path)
     alpha_tag = _release_tag_for_version(version) if version else ""
     package_index_spec = f"code-mower=={version}" if version else ""
     doc_blob = "\n".join(docs.values())
@@ -262,6 +297,34 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 f"pyproject.toml={pyproject_version or 'missing'}"
             ),
             detail={"init_version": init_version, "pyproject_version": pyproject_version},
+        ),
+        _release_check(
+            check_id="materialized-package-version-consistency",
+            title="Materialized package versions agree with source",
+            status=(
+                "pass"
+                if (
+                    version
+                    and not materialized_versions["error"]
+                    and materialized_versions["init_version"] == version
+                    and materialized_versions["pyproject_version"] == version
+                )
+                else "fail"
+            ),
+            evidence=(
+                f"generated src/code_mower/__init__.py="
+                f"{materialized_versions['init_version'] or 'missing'}, "
+                f"generated pyproject.toml="
+                f"{materialized_versions['pyproject_version'] or 'missing'}"
+            ),
+            detail={
+                "source_version": version,
+                "generated_init_version": materialized_versions["init_version"],
+                "generated_pyproject_version": materialized_versions[
+                    "pyproject_version"
+                ],
+                "error": materialized_versions["error"],
+            },
         ),
         _release_check(
             check_id="release-workflow-present",
