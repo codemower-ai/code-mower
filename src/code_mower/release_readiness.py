@@ -39,6 +39,22 @@ STAGE_TAG_NAMES = {
     "b": "beta",
     "rc": "rc",
 }
+PACKAGE_INDEX_SETUP_URLS = {
+    "github_environments": (
+        "https://github.com/codemower-ai/code-mower/settings/environments"
+    ),
+    "release_workflow": (
+        "https://github.com/codemower-ai/code-mower/actions/workflows/release.yml"
+    ),
+    "testpypi_project": "https://test.pypi.org/project/code-mower/",
+    "testpypi_trusted_publishers": (
+        "https://test.pypi.org/manage/project/code-mower/settings/publishing/"
+    ),
+    "pypi_project": "https://pypi.org/project/code-mower/",
+    "pypi_trusted_publishers": (
+        "https://pypi.org/manage/project/code-mower/settings/publishing/"
+    ),
+}
 
 
 def _release_check(
@@ -417,6 +433,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 "gh workflow run release.yml --repo codemower-ai/code-mower "
                 "--ref main -f publish_testpypi=false -f publish_pypi=false"
             ),
+            "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
         {
             "id": "publish-testpypi-candidate",
@@ -425,6 +442,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 "gh workflow run release.yml --repo codemower-ai/code-mower "
                 "--ref main -f publish_testpypi=true -f publish_pypi=false"
             ),
+            "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
         {
             "id": "testpypi-install-rehearsal",
@@ -436,6 +454,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 "--pip-extra-index-url https://pypi.org/simple/ "
                 "--json"
             ),
+            "url": PACKAGE_INDEX_SETUP_URLS["testpypi_project"],
         },
     ]
     return {
@@ -451,6 +470,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         "total": len(checks),
         "checks": checks,
         "next_actions": next_actions,
+        "setup_urls": PACKAGE_INDEX_SETUP_URLS,
     }
 
 
@@ -468,8 +488,13 @@ def render_release_readiness_text(payload: dict[str, Any]) -> str:
     for check in payload["checks"]:
         lines.append(f"- {check['status'].upper()} {check['id']}: {check['title']}")
         lines.append(f"  evidence: {check['evidence']}")
+    lines.extend(["", "Setup URLs:"])
+    for label, url in payload.get("setup_urls", {}).items():
+        lines.append(f"- {label}: {url}")
     lines.extend(["", "Next actions:"])
     for action in payload["next_actions"]:
         lines.append(f"- {action['title']}")
         lines.append(f"  {action['command']}")
+        if action.get("url"):
+            lines.append(f"  {action['url']}")
     return "\n".join(lines) + "\n"
