@@ -4,6 +4,22 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.20
+
+This alpha makes the full package-installed first-user rehearsal part of routine
+public CI.
+
+### Changed
+
+- The main Code Mower CI job now runs
+  `python -m code_mower.migration package-install-rehearsal` from the current
+  checkout, proving the installed-package path in a fresh toy repository.
+- `code-mower migration release-readiness --json` now fails if the CI
+  package-install rehearsal gate is removed or weakened.
+- Public release/readiness docs now treat the installed-package rehearsal as a
+  routine PR gate, not only a manual pre-release habit.
+- Public install docs now point to `v0.5.0-alpha.20`.
+
 ## v0.5.0-alpha.19
 
 This alpha adds public maintainer hygiene for early adopters and makes release
