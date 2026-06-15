@@ -2109,9 +2109,26 @@ def main():
         self.assertEqual(check_ids["public-docs-linked-from-readme"]["status"], "pass")
         self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "pass")
         commands = {action["id"]: action["command"] for action in payload["next_actions"]}
+        urls = {action["id"]: action.get("url", "") for action in payload["next_actions"]}
         self.assertIn("publish_testpypi=true", commands["publish-testpypi-candidate"])
         self.assertIn("publish_pypi=false", commands["publish-testpypi-candidate"])
         self.assertIn("--pip-index-url https://test.pypi.org/simple/", commands["testpypi-install-rehearsal"])
+        self.assertEqual(
+            payload["setup_urls"]["github_environments"],
+            "https://github.com/codemower-ai/code-mower/settings/environments",
+        )
+        self.assertEqual(
+            payload["setup_urls"]["testpypi_trusted_publishers"],
+            "https://test.pypi.org/manage/project/code-mower/settings/publishing/",
+        )
+        self.assertEqual(
+            urls["dry-run-release-workflow"],
+            "https://github.com/codemower-ai/code-mower/actions/workflows/release.yml",
+        )
+        self.assertEqual(
+            urls["testpypi-install-rehearsal"],
+            "https://test.pypi.org/project/code-mower/",
+        )
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
@@ -2283,6 +2300,16 @@ def main():
         self.assertEqual(payload["mode"], "code-mower-release-readiness")
         self.assertEqual(payload["status"], "pass")
         self.assertEqual(payload["failed"], 0)
+        self.assertIn("setup_urls", payload)
+
+    def test_release_readiness_text_includes_package_index_setup_urls(self) -> None:
+        payload = release_readiness.render_release_readiness(ROOT)
+        text = release_readiness.render_release_readiness_text(payload)
+
+        self.assertIn("Setup URLs:", text)
+        self.assertIn("https://github.com/codemower-ai/code-mower/settings/environments", text)
+        self.assertIn("https://test.pypi.org/manage/project/code-mower/settings/publishing/", text)
+        self.assertIn("https://github.com/codemower-ai/code-mower/actions/workflows/release.yml", text)
 
     def test_easy_mode_smoke_covers_dogfood_dry_run(self) -> None:
         smoke_text = (ROOT / "scripts/smoke_easy_mode.py").read_text(encoding="utf-8")

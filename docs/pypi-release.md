@@ -83,7 +83,14 @@ code-mower migration release-readiness --json
 
 It verifies the package version, current alpha tag references, release workflow
 shape, TestPyPI/PyPI gates, trusted-publishing permissions, and the package-index
-install rehearsal docs. Treat a failure as a release blocker.
+install rehearsal docs. Treat a failure as a release blocker. The JSON also
+includes `setup_urls` for the GitHub environments, release workflow, PyPI
+project pages, and trusted-publishing setup pages:
+
+- [GitHub environments](https://github.com/codemower-ai/code-mower/settings/environments)
+- [Release workflow](https://github.com/codemower-ai/code-mower/actions/workflows/release.yml)
+- [TestPyPI trusted publishers](https://test.pypi.org/manage/project/code-mower/settings/publishing/)
+- [PyPI trusted publishers](https://pypi.org/manage/project/code-mower/settings/publishing/)
 
 Before publishing to TestPyPI, run the release workflow once with both publish
 inputs set to `false` and confirm `build-distributions` and
