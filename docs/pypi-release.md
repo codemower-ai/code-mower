@@ -74,6 +74,17 @@ Every GitHub release run should leave `build-distributions` and
 same artifact download path used by the optional PyPI publish job, then runs
 `twine check dist/*` without publishing anything.
 
+Before any package-index promotion, run the static release-readiness check from
+the repository root:
+
+```bash
+code-mower migration release-readiness --json
+```
+
+It verifies the package version, current alpha tag references, release workflow
+shape, TestPyPI/PyPI gates, trusted-publishing permissions, and the package-index
+install rehearsal docs. Treat a failure as a release blocker.
+
 Before publishing to TestPyPI, run the release workflow once with both publish
 inputs set to `false` and confirm `build-distributions` and
 `verify-distributions` are green.

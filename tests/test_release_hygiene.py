@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from code_mower import init as code_mower_init
 from code_mower import migration as code_mower_migration
 from code_mower import next_steps
 from code_mower import package as code_mower_package
+from code_mower import release_readiness
 from code_mower import secrets as code_mower_secrets
 from code_mower import config as code_mower_config
 from code_mower import provider_runners
@@ -672,6 +674,7 @@ printf '%s\\n' "${lane}"
             "src/code_mower/doctor_checks/registry.py",
             "src/code_mower/provider_runners/__init__.py",
             "src/code_mower/provider_runners/github_auth.py",
+            "src/code_mower/release_readiness.py",
         ):
             with self.subTest(target=target):
                 self.assertIn(target, packaged_targets)
@@ -2067,6 +2070,119 @@ def main():
                 "code-mower==0.5.0a16",
             ],
         )
+
+    def test_release_readiness_reports_package_index_promotion_gate(self) -> None:
+        payload = release_readiness.render_release_readiness(ROOT)
+
+        self.assertEqual(payload["status"], "pass")
+        self.assertEqual(payload["version"], "0.5.0a16")
+        self.assertEqual(payload["alpha_tag"], "v0.5.0-alpha.16")
+        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0a16")
+        check_ids = {check["id"]: check for check in payload["checks"]}
+        self.assertEqual(check_ids["package-version-consistency"]["status"], "pass")
+        self.assertEqual(check_ids["testpypi-gate"]["status"], "pass")
+        self.assertEqual(check_ids["pypi-gate"]["status"], "pass")
+        self.assertEqual(check_ids["trusted-publishing-runbook"]["status"], "pass")
+        commands = {action["id"]: action["command"] for action in payload["next_actions"]}
+        self.assertIn("publish_testpypi=true", commands["publish-testpypi-candidate"])
+        self.assertIn("publish_pypi=false", commands["publish-testpypi-candidate"])
+        self.assertIn("--pip-index-url https://test.pypi.org/simple/", commands["testpypi-install-rehearsal"])
+
+    def test_release_readiness_tag_derivation_supports_release_stages(self) -> None:
+        self.assertEqual(
+            release_readiness._release_tag_for_version("0.5.0a16"),
+            "v0.5.0-alpha.16",
+        )
+        self.assertEqual(
+            release_readiness._release_tag_for_version("0.5.0b2"),
+            "v0.5.0-beta.2",
+        )
+        self.assertEqual(
+            release_readiness._release_tag_for_version("1.0.0rc1"),
+            "v1.0.0-rc.1",
+        )
+        self.assertEqual(
+            release_readiness._release_tag_for_version("1.0.0"),
+            "v1.0.0",
+        )
+
+    def test_release_readiness_workflow_parsing_is_job_order_independent(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        before, testpypi_and_after = workflow.split("  publish-testpypi:\n", 1)
+        testpypi_body, pypi_and_after = testpypi_and_after.split("  publish-pypi:\n", 1)
+        reordered = f"{before}  publish-pypi:\n{pypi_and_after}  publish-testpypi:\n{testpypi_body}"
+        jobs = release_readiness._workflow_jobs(reordered)
+        testpypi_text = release_readiness._job_text(jobs["publish-testpypi"])
+        pypi_text = release_readiness._job_text(jobs["publish-pypi"])
+
+        self.assertIn("https://test.pypi.org/legacy/", testpypi_text)
+        self.assertNotIn("https://test.pypi.org/legacy/", pypi_text)
+        self.assertTrue(release_readiness._needs_job(jobs["publish-testpypi"], "verify-distributions"))
+        self.assertTrue(release_readiness._needs_job(jobs["publish-pypi"], "verify-distributions"))
+        self.assertTrue(
+            release_readiness._job_uses_action(
+                jobs["publish-testpypi"],
+                "pypa/gh-action-pypi-publish@",
+            )
+        )
+        self.assertTrue(
+            release_readiness._job_uses_action(
+                jobs["publish-pypi"],
+                "pypa/gh-action-pypi-publish@",
+            )
+        )
+
+    def test_release_readiness_detects_missing_production_publish_step(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        workflow_without_publish = workflow.replace(
+            "      - name: Publish to PyPI\n"
+            "        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b\n",
+            "      - name: Publish to PyPI\n"
+            "        run: echo skipped\n",
+        )
+        jobs = release_readiness._workflow_jobs(workflow_without_publish)
+
+        self.assertFalse(
+            release_readiness._job_uses_action(
+                jobs["publish-pypi"],
+                "pypa/gh-action-pypi-publish@",
+            )
+        )
+
+    def test_migration_import_does_not_require_tools_release_readiness(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "tools.migration",
+            ROOT / "src/code_mower/migration.py",
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        previous_tools = sys.modules.pop("tools", None)
+        previous_tools_release_readiness = sys.modules.pop("tools.release_readiness", None)
+        try:
+            sys.modules["tools.migration"] = module
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop("tools.migration", None)
+            if previous_tools is not None:
+                sys.modules["tools"] = previous_tools
+            if previous_tools_release_readiness is not None:
+                sys.modules["tools.release_readiness"] = previous_tools_release_readiness
+
+        self.assertTrue(hasattr(module, "main"))
+
+    def test_release_readiness_cli_outputs_json(self) -> None:
+        out = StringIO()
+        with redirect_stdout(out):
+            exit_code = code_mower_migration.main(
+                ["release-readiness", "--repo-path", str(ROOT), "--json"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["mode"], "code-mower-release-readiness")
+        self.assertEqual(payload["status"], "pass")
+        self.assertEqual(payload["failed"], 0)
 
     def test_easy_mode_smoke_covers_dogfood_dry_run(self) -> None:
         smoke_text = (ROOT / "scripts/smoke_easy_mode.py").read_text(encoding="utf-8")
