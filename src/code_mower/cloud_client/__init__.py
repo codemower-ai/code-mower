@@ -27,6 +27,13 @@ from .dogfood import (
     build_dogfood_plan,
     default_dogfood_reports,
 )
+from .errors import CloudBundleError
+from .upload import (
+    UPLOAD_SCHEMA,
+    build_upload_payload,
+    load_bundle_manifest,
+    post_upload_payload,
+)
 
 __all__ = [
     "BUNDLE_MANIFEST_FILENAME",
@@ -40,14 +47,19 @@ __all__ = [
     "MAX_REPORT_UPLOAD_BYTES",
     "SAFE_EVENT_TYPES",
     "SAFE_REPORT_KINDS",
+    "UPLOAD_SCHEMA",
+    "CloudBundleError",
     "DogfoodPlan",
     "build_dogfood_dry_run_preview",
     "build_dogfood_plan",
+    "build_upload_payload",
     "dashboard_url_for_endpoint",
     "default_dogfood_reports",
     "health_url_for_endpoint",
     "is_local_http_endpoint",
     "is_bundle_manifest",
+    "load_bundle_manifest",
+    "post_upload_payload",
     "probe_cloud_service",
     "validate_upload_endpoint",
 ]

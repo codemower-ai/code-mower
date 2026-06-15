@@ -196,6 +196,10 @@ class ReleaseHygieneTests(unittest.TestCase):
             cloud_client.default_dogfood_reports(ROOT)[0][1],
             "value-report",
         )
+        self.assertIs(code_mower_cloud.CloudBundleError, cloud_client.CloudBundleError)
+        self.assertIs(code_mower_cloud.build_upload_payload, cloud_client.build_upload_payload)
+        self.assertIs(code_mower_cloud.post_upload_payload, cloud_client.post_upload_payload)
+        self.assertEqual(code_mower_cloud.UPLOAD_SCHEMA, cloud_client.UPLOAD_SCHEMA)
         preview = cloud_client.build_dogfood_dry_run_preview(
             endpoint="https://codemower.com/api/ingest",
             payload={
@@ -690,6 +694,8 @@ printf '%s\\n' "${lane}"
             "src/code_mower/cloud_client/__init__.py",
             "src/code_mower/cloud_client/bundle.py",
             "src/code_mower/cloud_client/endpoints.py",
+            "src/code_mower/cloud_client/errors.py",
+            "src/code_mower/cloud_client/upload.py",
             "src/code_mower/doctor_checks/__init__.py",
             "src/code_mower/doctor_checks/models.py",
             "src/code_mower/doctor_checks/registry.py",
