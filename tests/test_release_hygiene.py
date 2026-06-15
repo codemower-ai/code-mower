@@ -683,13 +683,17 @@ printf '%s\\n' "${lane}"
 
     def test_package_materializer_includes_internal_package_seams(self) -> None:
         packaged_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}
+        expected_targets = {
+            path.relative_to(ROOT).as_posix()
+            for path in (ROOT / "src/code_mower").glob("*.py")
+            if path.name != "__init__.py"
+        }
         package_dirs = (
             "src/code_mower/calibration",
             "src/code_mower/cloud_client",
             "src/code_mower/doctor_checks",
             "src/code_mower/provider_runners",
         )
-        expected_targets = {"src/code_mower/release_readiness.py"}
         for package_dir in package_dirs:
             expected_targets.update(
                 path.relative_to(ROOT).as_posix()
@@ -699,6 +703,34 @@ printf '%s\\n' "${lane}"
         for target in sorted(expected_targets):
             with self.subTest(target=target):
                 self.assertIn(target, packaged_targets)
+
+    def test_package_materializer_can_run_from_extracted_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                code = code_mower_package.main(
+                    [
+                        str(ROOT / "src/code_mower/templates/code-mower.example.yml"),
+                        "--output-dir",
+                        tmp,
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            output_dir = Path(tmp)
+            self.assertTrue((output_dir / "pyproject.toml").is_file())
+            self.assertTrue(
+                (output_dir / "src/code_mower/cloud_client/dogfood.py").is_file()
+            )
+            manifest = json.loads(
+                (output_dir / "code-mower-package-manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            sources = {entry["source"] for entry in manifest["files_written"]}
+            self.assertIn("src/code_mower/cloud_client/dogfood.py", sources)
+            self.assertIn("src/code_mower/templates/code-mower.example.yml", sources)
 
     def test_standalone_shadow_holds_checkout_lock_through_delegation(self) -> None:
         text = (
