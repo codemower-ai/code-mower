@@ -83,6 +83,10 @@ Cloud bundles may include metadata-only benchmark events. Events use schema
 `code_mower.benchmarkEvent.v1` and must not contain source code, raw diffs, raw
 model transcripts, raw stdout/stderr, auth output, or secrets.
 
+Unsafe event fields are rejected before export or upload. If an event contains
+raw output, transcripts, tokens, secrets, auth previews, or secret-like values,
+fix the event producer and rerun export.
+
 Supported event types are:
 
 - `dogfood_upload`

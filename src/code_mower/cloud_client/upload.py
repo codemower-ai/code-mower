@@ -12,6 +12,7 @@ from .bundle import (
     BUNDLE_MANIFEST_FILENAME,
     MAX_REPORT_UPLOAD_BYTES,
     is_bundle_manifest,
+    validate_metadata_payload,
 )
 from .endpoints import validate_upload_endpoint
 from .errors import CloudBundleError
@@ -100,6 +101,8 @@ def build_upload_payload(
     if not bundle_dir.is_dir():
         raise CloudBundleError(f"bundle directory does not exist: {bundle_dir}")
     manifest = load_bundle_manifest(bundle_dir)
+    validate_metadata_payload(manifest)
+    events = manifest.get("events", [])
     return {
         "schema": UPLOAD_SCHEMA,
         "bundle_schema": manifest.get("schema"),
@@ -114,7 +117,7 @@ def build_upload_payload(
             bundle_dir,
             include_reports=include_reports,
         ),
-        "events": manifest.get("events", []),
+        "events": events,
         "notes": [
             "This upload payload is built from an explicit local bundle.",
             "Report contents are included only when --include-reports is set.",
