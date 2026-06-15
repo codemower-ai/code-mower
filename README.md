@@ -105,8 +105,19 @@ code-mower calibration value-report .code-mower.generated/calibration-corpus.jso
   --output .code-mower/reviewer-value-report.md
 ```
 
-The generated starter corpus proves the command path. Replace it with your own
-known-clean and known-blocked PRs before using any lane as a merge gate.
+The generated starter corpus proves the command path. To bootstrap a draft from
+your repository history:
+
+```bash
+code-mower calibration auto-discover \
+  --repo OWNER/REPO \
+  --last-n 20 \
+  --output .code-mower/draft-calibration-corpus.json
+```
+
+Auto-discovery uses recent merged PR metadata, structured audit trailers, and
+review-request signals to propose known-clean and known-blocked cases. Review
+every disposition before using it for lane promotion or merge policy.
 
 Full walkthrough: [docs/try-in-10-minutes.md](docs/try-in-10-minutes.md).
 First-time command map: [docs/launch-command-surface.md](docs/launch-command-surface.md).
@@ -240,14 +251,16 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
   roadmap items.
 - Hosted/SaaS reviewers start informational or manual until calibration data
   supports promotion.
+- `calibration auto-discover` is a bootstrap tool, not an adjudicator. It
+  proposes a draft corpus from PR history; humans still confirm the ground truth.
 - CodeMower.com currently provides private team dashboards; cohort benchmarks
   are roadmap work and should not be treated as live product value yet.
 - Self-service cloud data deletion/export basics are live. Retention remains
   conservative and team-controlled while automated retention jobs are roadmap
   work.
-- The CLI still exposes some advanced/operator commands. The early-adopter path
-  should stay focused on `init`, `doctor`, local audits, value reports, and
-  optional cloud export/upload.
+- Advanced/provider/operator commands remain available behind
+  `code-mower --help-all`. The default help path stays focused on `init`,
+  `doctor`, calibration, value reports, and optional cloud export/upload.
 
 ## Docs Map
 

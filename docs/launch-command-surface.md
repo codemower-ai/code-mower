@@ -17,6 +17,7 @@ session.
 | `code-mower doctor --preflight --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
 | `code-mower next-steps --profile recommended --repo OWNER/REPO` | Print the next recommended setup actions. | no | no |
 | `code-mower migration package-install-rehearsal ...` | Prove install, toy repo, starter report, and cloud dry-run path. | yes, scratch workspace | no uploads |
+| `code-mower calibration auto-discover --repo OWNER/REPO --last-n 20 --output .code-mower/draft-calibration-corpus.json` | Bootstrap a draft corpus from recent merged PRs and review signals. | yes, local output file | GitHub |
 | `code-mower calibration value-report ...` | Generate a local reviewer value report. | yes, local output file | no |
 | `code-mower cloud export ...` | Build an inspectable metadata bundle. | yes, local output dir | no |
 | `code-mower cloud upload ... --dry-run` | Preview upload payload without sending it. | no | no upload |

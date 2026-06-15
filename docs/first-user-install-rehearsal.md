@@ -15,12 +15,15 @@ The rehearsal verifies:
 
 - package installation into a clean virtual environment;
 - `code-mower --version`;
+- first-user-focused `code-mower --help` output;
 - `code-mower init --easy --apply`;
 - generated smoke tests;
 - `code-mower doctor --easy`;
 - recommended next-step output;
 - standalone wrapper behavior;
 - starter calibration plan, evidence, metrics, lane policy, and value report;
+- draft calibration auto-discovery can turn recent PR metadata into a reviewable
+  corpus without promoting it to ground truth;
 - cloud export bundle creation;
 - cloud upload dry run; and
 - CodeMower.com dogfood dry run.
