@@ -185,6 +185,18 @@ The first command previews the metadata locally. The second sends only sanitized
 metadata and a `dogfood_upload` event so the dashboard can start showing repo,
 provider/lens, cost, latency, and recommendation rows.
 
+To backfill recent GitHub Actions history after enabling cloud sharing, use the
+catch-up path. It reads workflow run metadata through the GitHub CLI, creates
+`workflow_run` events, and stays dry-run until `--yes` is explicit:
+
+```bash
+code-mower cloud catch-up --repo-slug OWNER/REPO --limit 50 --json
+code-mower cloud catch-up --repo-slug OWNER/REPO --limit 50 --yes --json
+```
+
+Branch names and SHAs are excluded by default; add `--include-git-ref` only when
+your team is comfortable sharing that metadata.
+
 Cloud sharing details: [docs/cloud-sharing.md](docs/cloud-sharing.md).
 
 ## Provider Posture

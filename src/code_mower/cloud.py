@@ -73,11 +73,24 @@ else:  # pragma: no cover - exercised after package extraction.
 
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
+DEFAULT_CATCH_UP_OUTPUT_DIR = ".code-mower/cloud-catch-up-bundle"
 DEFAULT_UPLOAD_ENDPOINT = "https://codemower.com/api/ingest"
 DEFAULT_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
 DEFAULT_TEAM_ID_ENV = "CODE_MOWER_CLOUD_TEAM_ID"
 DEFAULT_INSTALL_ID_ENV = "CODE_MOWER_INSTALL_ID"
 DEFAULT_SETUP_INSTALL_ID = "code-mower-local"
+GITHUB_RUN_LIST_FIELDS = (
+    "databaseId",
+    "name",
+    "status",
+    "conclusion",
+    "event",
+    "headBranch",
+    "headSha",
+    "createdAt",
+    "updatedAt",
+    "url",
+)
 
 
 def _is_local_http_endpoint(endpoint: str) -> bool:
@@ -365,6 +378,103 @@ def _build_dogfood_event(
             "command": "code-mower cloud dogfood",
         },
     }
+
+
+def _event_id_from_github_run(repo_slug: str, run: dict[str, Any]) -> str:
+    database_id = str(run.get("databaseId") or "").strip()
+    if database_id:
+        run_url = f"https://github.com/{repo_slug}/actions/runs/{database_id}"
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, run_url))
+    run_url = str(run.get("url") or "").strip()
+    if run_url:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, run_url))
+    return str(uuid.uuid4())
+
+
+def _run_gh_run_list(
+    *,
+    repo_slug: str,
+    limit: int,
+    repo_path: Path,
+) -> list[dict[str, Any]]:
+    command = [
+        "gh",
+        "run",
+        "list",
+        "--repo",
+        repo_slug,
+        "--limit",
+        str(limit),
+        "--json",
+        ",".join(GITHUB_RUN_LIST_FIELDS),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo_path,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise CloudBundleError("GitHub Actions catch-up requires the `gh` CLI") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise CloudBundleError(
+            "unable to read GitHub Actions runs with `gh run list`"
+            + (f": {detail}" if detail else "")
+        )
+    try:
+        parsed = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise CloudBundleError("`gh run list --json` returned invalid JSON") from exc
+    if not isinstance(parsed, list):
+        raise CloudBundleError("`gh run list --json` must return a JSON array")
+    runs: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise CloudBundleError("`gh run list --json` returned a non-object run")
+        runs.append(item)
+    return runs
+
+
+def _build_workflow_run_event(
+    *,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+    run: dict[str, Any],
+    include_git_ref: bool,
+) -> dict[str, Any]:
+    status = str(run.get("conclusion") or run.get("status") or "observed")
+    dimensions: dict[str, Any] = {
+        "workflow_name": str(run.get("name") or ""),
+        "trigger": str(run.get("event") or ""),
+        "run_status": str(run.get("status") or ""),
+        "run_conclusion": str(run.get("conclusion") or ""),
+        "run_url": str(run.get("url") or ""),
+        "updated_at": str(run.get("updatedAt") or ""),
+    }
+    if include_git_ref:
+        dimensions["head_branch"] = str(run.get("headBranch") or "")
+        dimensions["head_sha"] = str(run.get("headSha") or "")
+    event = {
+        "schema": EVENT_SCHEMA,
+        "event_id": _event_id_from_github_run(repo_slug, run),
+        "event_type": "workflow_run",
+        "created_at": str(run.get("createdAt") or _utc_now()),
+        "repo_slug": repo_slug,
+        "team_id": team_id,
+        "install_id": install_id,
+        "source": source,
+        "provider": "",
+        "lens": "base",
+        "status": status,
+        "metrics": {},
+        "dimensions": dimensions,
+    }
+    return _normalize_event(event, "workflow_run")
 
 
 def _normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
@@ -991,6 +1101,103 @@ def _dogfood_upload(
     }
 
 
+def _catch_up_upload(
+    *,
+    repo_path: Path,
+    output_dir: Path,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+    limit: int,
+    endpoint: str,
+    token_env: str,
+    yes: bool,
+    timeout: float,
+    include_git_ref: bool,
+) -> dict[str, Any]:
+    if limit < 1 or limit > MAX_EVENT_COUNT:
+        raise CloudBundleError(f"--limit must be between 1 and {MAX_EVENT_COUNT}")
+    repo_path = repo_path.expanduser().resolve()
+    detected_repo_slug = repo_slug or _detect_repo_slug(repo_path)
+    if not detected_repo_slug:
+        raise CloudBundleError(
+            "unable to detect repo slug; pass --repo-slug OWNER/REPO"
+        )
+    resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
+    resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
+    runs = _run_gh_run_list(
+        repo_slug=detected_repo_slug,
+        limit=limit,
+        repo_path=repo_path,
+    )
+    events = [
+        _build_workflow_run_event(
+            repo_slug=detected_repo_slug,
+            team_id=resolved_team_id,
+            install_id=resolved_install_id,
+            source=source,
+            run=run,
+            include_git_ref=include_git_ref,
+        )
+        for run in runs
+    ]
+    export_result = build_cloud_bundle(
+        reports=[],
+        events=events,
+        output_dir=output_dir,
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        anonymous=False,
+    )
+    doctor_result = run_cloud_doctor(
+        bundle_dir=output_dir,
+        endpoint=endpoint,
+        token_env=token_env,
+        require_token=yes,
+    )
+    if doctor_result["failures"]:
+        return {
+            "mode": "cloud-catch-up",
+            "status": "doctor_failed",
+            "repo_slug": detected_repo_slug,
+            "run_count": len(runs),
+            "export": export_result,
+            "doctor": doctor_result,
+        }
+    payload = build_upload_payload(bundle_dir=output_dir, include_reports=False)
+    if not yes:
+        return {
+            "mode": "cloud-catch-up",
+            "status": "dry_run",
+            "repo_slug": detected_repo_slug,
+            "run_count": len(runs),
+            "export": export_result,
+            "doctor": doctor_result,
+            "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
+        }
+    token = os.environ.get(token_env, "")
+    if not token and not _is_local_http_endpoint(endpoint):
+        raise CloudBundleError(
+            f"{token_env} is not set; refusing non-local upload without a token"
+        )
+    return {
+        "mode": "cloud-catch-up",
+        "status": "uploaded",
+        "repo_slug": detected_repo_slug,
+        "run_count": len(runs),
+        "export": export_result,
+        "doctor": doctor_result,
+        "upload": post_upload_payload(
+            payload=payload,
+            endpoint=endpoint,
+            token=token,
+            timeout=timeout,
+        ),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower cloud")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1133,6 +1340,40 @@ def main(argv: list[str] | None = None) -> int:
     )
     dogfood.add_argument("--timeout", type=float, default=20.0)
     dogfood.add_argument("--json", action="store_true")
+    catch_up = subparsers.add_parser("catch-up")
+    catch_up.add_argument("--repo-path", type=Path, default=Path.cwd())
+    catch_up.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(DEFAULT_CATCH_UP_OUTPUT_DIR),
+    )
+    catch_up.add_argument("--repo-slug", default="")
+    catch_up.add_argument("--team-id", default="")
+    catch_up.add_argument("--install-id", default="")
+    catch_up.add_argument("--source", default="github-actions-catch-up")
+    catch_up.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help=f"number of recent GitHub Actions runs to include; max {MAX_EVENT_COUNT}",
+    )
+    catch_up.add_argument(
+        "--include-git-ref",
+        action="store_true",
+        help="include workflow head branch and SHA in metadata",
+    )
+    catch_up.add_argument(
+        "--endpoint",
+        default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
+    )
+    catch_up.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    catch_up.add_argument(
+        "--yes",
+        action="store_true",
+        help="perform the network upload; without this, catch-up is a dry run",
+    )
+    catch_up.add_argument("--timeout", type=float, default=20.0)
+    catch_up.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -1263,6 +1504,35 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Status: {result['status']}")
                 print(f"Bundle: {result['export']['output_dir']}")
                 print(f"Reports: {len(result['export']['included_reports'])}")
+                print(f"Events: {result['export']['event_count']}")
+                if result["status"] == "uploaded":
+                    print(f"Upload status: {result['upload']['status']}")
+                elif result["status"] == "dry_run":
+                    print("Network: skipped (pass --yes to upload)")
+            return 1 if result["status"] == "doctor_failed" else 0
+        if args.command == "catch-up":
+            result = _catch_up_upload(
+                repo_path=args.repo_path,
+                output_dir=args.output_dir,
+                repo_slug=args.repo_slug,
+                team_id=args.team_id,
+                install_id=args.install_id,
+                source=args.source,
+                limit=args.limit,
+                endpoint=args.endpoint,
+                token_env=args.token_env,
+                yes=args.yes,
+                timeout=args.timeout,
+                include_git_ref=args.include_git_ref,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("Code Mower cloud catch-up")
+                print(f"Status: {result['status']}")
+                print(f"Repository: {result['repo_slug']}")
+                print(f"Runs: {result['run_count']}")
+                print(f"Bundle: {result['export']['output_dir']}")
                 print(f"Events: {result['export']['event_count']}")
                 if result["status"] == "uploaded":
                     print(f"Upload status: {result['upload']['status']}")

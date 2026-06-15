@@ -310,6 +310,109 @@ class ReleaseHygieneTests(unittest.TestCase):
             self.assertFalse(payload["would_upload"])
             self.assertEqual(payload["report_count"], 1)
 
+    def test_cloud_catch_up_dry_run_builds_workflow_events_without_git_refs(self) -> None:
+        fake_runs = [
+            {
+                "databaseId": 123,
+                "name": "CI",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "push",
+                "headBranch": "secret-feature-name",
+                "headSha": "abc123",
+                "createdAt": "2026-06-15T00:00:00Z",
+                "updatedAt": "2026-06-15T00:01:00Z",
+                "url": "https://github.com/owner/repo/actions/runs/123",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "bundle"
+            out = StringIO()
+            completed = subprocess.CompletedProcess(
+                ["gh", "run", "list"],
+                0,
+                stdout=json.dumps(fake_runs),
+                stderr="",
+            )
+            with mock.patch.object(subprocess, "run", return_value=completed):
+                with mock.patch.dict(os.environ, {"CODE_MOWER_CLOUD_TOKEN": ""}, clear=False):
+                    with redirect_stdout(out):
+                        code = code_mower_cloud.main(
+                            [
+                                "catch-up",
+                                "--repo-slug",
+                                "owner/repo",
+                                "--output-dir",
+                                str(bundle),
+                                "--json",
+                            ]
+                        )
+            manifest = json.loads(
+                (bundle / "code-mower-cloud-bundle.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(code, 0)
+        result = json.loads(out.getvalue())
+        self.assertEqual(result["mode"], "cloud-catch-up")
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["run_count"], 1)
+        self.assertEqual(result["export"]["event_count"], 1)
+        self.assertFalse(result["upload"]["would_upload"])
+        event = manifest["events"][0]
+        self.assertEqual(event["event_type"], "workflow_run")
+        self.assertEqual(event["repo_slug"], "owner/repo")
+        self.assertEqual(event["source"], "github-actions-catch-up")
+        self.assertEqual(event["status"], "success")
+        self.assertNotIn("head_branch", event["dimensions"])
+        self.assertNotIn("head_sha", event["dimensions"])
+
+    def test_cloud_catch_up_can_include_git_refs_explicitly(self) -> None:
+        fake_runs = [
+            {
+                "databaseId": 456,
+                "name": "Dogfood",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "push",
+                "headBranch": "main",
+                "headSha": "def456",
+                "createdAt": "2026-06-15T00:00:00Z",
+                "updatedAt": "2026-06-15T00:01:00Z",
+                "url": "https://github.com/owner/repo/actions/runs/456",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "bundle"
+            completed = subprocess.CompletedProcess(
+                ["gh", "run", "list"],
+                0,
+                stdout=json.dumps(fake_runs),
+                stderr="",
+            )
+            with mock.patch.object(subprocess, "run", return_value=completed):
+                with redirect_stdout(StringIO()):
+                    code = code_mower_cloud.main(
+                        [
+                            "catch-up",
+                            "--repo-slug",
+                            "owner/repo",
+                            "--output-dir",
+                            str(bundle),
+                            "--include-git-ref",
+                            "--json",
+                        ]
+                    )
+            manifest = json.loads(
+                (bundle / "code-mower-cloud-bundle.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(code, 0)
+        event = manifest["events"][0]
+        self.assertEqual(event["dimensions"]["head_branch"], "main")
+        self.assertEqual(event["dimensions"]["head_sha"], "def456")
+
     def test_dev_python_wrapper_is_executable(self) -> None:
         wrapper = ROOT / "scripts/dev-python"
         self.assertTrue(wrapper.exists())

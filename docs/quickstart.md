@@ -205,6 +205,17 @@ common shareable reports if they exist, adds a metadata-only `dogfood_upload`
 event, and is the easiest way to make the CodeMower.com dashboard useful over
 time.
 
+To catch up recent GitHub Actions history after the token is configured:
+
+```bash
+code-mower cloud catch-up --repo-slug OWNER/REPO --limit 50 --json
+code-mower cloud catch-up --repo-slug OWNER/REPO --limit 50 --yes --json
+```
+
+`cloud catch-up` stores only sanitized workflow metadata and `workflow_run`
+events. It omits branch names and commit SHAs by default; add
+`--include-git-ref` only after reviewing that privacy tradeoff.
+
 ## First Pilot Definition Of Done
 
 One repository is ready for broader Code Mower use when:
