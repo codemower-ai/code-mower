@@ -11,6 +11,8 @@ pipx install code-mower
 ## Current Status
 
 - GitHub Release workflow builds distributions on every published release.
+- The release workflow downloads the uploaded distributions and runs
+  `twine check` before any optional PyPI publish job can start.
 - PyPI publishing is gated behind the `pypi` GitHub environment and the
   `CODE_MOWER_PYPI_PUBLISH` repository variable or manual
   `workflow_dispatch` input.
@@ -45,6 +47,11 @@ pipx install code-mower
    TestPyPI release has been installed in a fresh repo.
 
 ## Release Verification
+
+Every GitHub release run should leave `build-distributions` and
+`verify-distributions` green. The `verify-distributions` job exercises the
+same artifact download path used by the optional PyPI publish job, then runs
+`twine check dist/*` without publishing anything.
 
 Before switching docs to package-index install:
 
