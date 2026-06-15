@@ -748,6 +748,16 @@ printf '%s\\n' "${lane}"
             self.assertTrue(
                 (output_dir / "src/code_mower/cloud_client/dogfood.py").is_file()
             )
+            self.assertIn(
+                'version = "0.5.0a23"',
+                (output_dir / "pyproject.toml").read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                '__version__ = "0.5.0a23"',
+                (output_dir / "src/code_mower/__init__.py").read_text(
+                    encoding="utf-8"
+                ),
+            )
             manifest = json.loads(
                 (output_dir / "code-mower-package-manifest.json").read_text(
                     encoding="utf-8"
