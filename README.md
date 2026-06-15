@@ -197,6 +197,20 @@ code-mower cloud catch-up --repo-slug OWNER/REPO --limit 50 --yes --json
 Branch names and SHAs are excluded by default; add `--include-git-ref` only when
 your team is comfortable sharing that metadata.
 
+To backfill historical reviewer verdicts from this machine without uploading raw
+audit text:
+
+```bash
+code-mower telemetry export-verdict-events ~/.cache/code-mower-audits/verdicts \
+  --repo OWNER/REPO \
+  --output reviewer-run-events.jsonl
+code-mower cloud export \
+  --event reviewer_run=reviewer-run-events.jsonl \
+  --output-dir .code-mower/reviewer-run-bundle \
+  --json
+code-mower cloud upload .code-mower/reviewer-run-bundle --dry-run --json
+```
+
 Cloud sharing details: [docs/cloud-sharing.md](docs/cloud-sharing.md).
 
 ## Provider Posture

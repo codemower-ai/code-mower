@@ -105,6 +105,24 @@ code-mower cloud export \
   --json
 ```
 
+To convert saved Code Mower verdict artifacts into metadata-only reviewer run
+events:
+
+```bash
+code-mower telemetry export-verdict-events \
+  ~/.cache/code-mower-audits/verdicts \
+  --repo owner/repo \
+  --output reviewer-run-events.jsonl
+```
+
+This exports verdict, provider, lane, PR number, and severity counts. It does
+not include the raw review comment body, raw model output, source code, diffs,
+or head SHAs by default. Use `--include-git-ref` only after deciding that head
+SHA metadata is acceptable for your team.
+
+If you omit the verdict path, Code Mower reads `CODE_MOWER_VERDICT_ARTIFACT_DIR`
+when set, otherwise `~/.cache/code-mower-audits/verdicts`.
+
 ## Upload Dry Run
 
 Preview the upload without network transfer:
@@ -236,6 +254,36 @@ reviewed and accepted that metadata tradeoff.
 
 Use catch-up once or occasionally after onboarding a repository. Use
 `cloud dogfood` for ongoing current-state uploads.
+
+## Historical Reviewer Runs
+
+If you already have local Code Mower audit verdict artifacts, export and upload
+them separately from GitHub Actions catch-up. This is the path that makes
+CodeMower.com show reviewer/lens signal instead of only workflow history:
+
+```bash
+code-mower telemetry export-verdict-events \
+  ~/.cache/code-mower-audits/verdicts \
+  --repo owner/repo \
+  --output reviewer-run-events.jsonl
+
+code-mower cloud export \
+  --event reviewer_run=reviewer-run-events.jsonl \
+  --output-dir .code-mower/reviewer-run-bundle \
+  --json
+
+code-mower cloud upload .code-mower/reviewer-run-bundle --dry-run --json
+```
+
+After inspecting the dry run:
+
+```bash
+source ~/.config/code-mower/tokens/your-install-id.env
+code-mower cloud upload .code-mower/reviewer-run-bundle --yes --json
+```
+
+Use historical reviewer export once when onboarding a machine or repo, then rely
+on normal dogfood/current-run uploads for ongoing data.
 
 ## What codemower.com Stores First
 
