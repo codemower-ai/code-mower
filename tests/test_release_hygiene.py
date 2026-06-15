@@ -37,7 +37,7 @@ from scripts import privacy_scan
 
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_v05_alpha_11(self) -> None:
-        self.assertEqual(__version__, "0.5.0a11")
+        self.assertEqual(__version__, "0.5.0a12")
 
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
@@ -86,6 +86,10 @@ class ReleaseHygieneTests(unittest.TestCase):
         help_text = out.getvalue()
         self.assertIn("First-user commands:", help_text)
         self.assertIn("code-mower --help-all", help_text)
+        self.assertIn(
+            "code-mower migration package-install-rehearsal --package-spec code-mower --json",
+            help_text,
+        )
         self.assertIn("  init", help_text)
         self.assertIn("  doctor", help_text)
         self.assertIn("  calibration", help_text)
@@ -1784,7 +1788,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0a11",
+                version="code-mower 0.5.0a12",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -1863,7 +1867,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0a11",
+                version="code-mower 0.5.0a12",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -1925,7 +1929,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0a11",
+                version="code-mower 0.5.0a12",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -1991,24 +1995,24 @@ def main():
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.11",
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.12",
                     base_dir=package,
                 ),
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.11",
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.12",
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "code-mower==0.5.0a11",
+                    "code-mower==0.5.0a12",
                     base_dir=package,
                 ),
-                "code-mower==0.5.0a11",
+                "code-mower==0.5.0a12",
             )
 
     def test_package_install_rehearsal_supports_index_aware_pip_install(self) -> None:
         self.assertEqual(
             code_mower_migration._pip_install_command(
                 Path("/tmp/venv/bin/python"),
-                "code-mower==0.5.0a11",
+                "code-mower==0.5.0a12",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
             ),
@@ -2021,7 +2025,7 @@ def main():
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
                 "https://pypi.org/simple/",
-                "code-mower==0.5.0a11",
+                "code-mower==0.5.0a12",
             ],
         )
 
@@ -2073,7 +2077,18 @@ def main():
         self.assertIn("cloud-setup", ids)
         self.assertIn("cloud-upload-dry-run", ids)
         doctor_step = next(step for step in plan["steps"] if step["id"] == "doctor-easy")
+        package_step = next(
+            step for step in plan["steps"] if step["id"] == "package-install-rehearsal"
+        )
         self.assertIn("doctor --v05", doctor_step["command"])
+        self.assertIn("first_user_readiness", package_step["why"])
+        self.assertEqual(
+            package_step["artifacts"],
+            [
+                "outputs/package-install-rehearsal.json",
+                "outputs/first-user-readiness.json",
+            ],
+        )
         self.assertLess(ids.index("cloud-export"), ids.index("cloud-setup"))
         self.assertLess(ids.index("cloud-setup"), ids.index("cloud-upload-dry-run"))
         self.assertLess(ids.index("cloud-export"), ids.index("cloud-upload-dry-run"))

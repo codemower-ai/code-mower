@@ -4,6 +4,20 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.12
+
+This alpha makes the first-user readiness scorecard more discoverable from the
+default CLI and `next-steps` guidance.
+
+### Changed
+
+- Top-level `code-mower --help` now includes the package-install rehearsal in
+  the common first-run path.
+- `code-mower next-steps --profile recommended` now points to the
+  `first_user_readiness` rehearsal result and lists the readiness scorecard
+  artifact path.
+- Public install docs now point to `v0.5.0-alpha.12`.
+
 ## v0.5.0-alpha.11
 
 This alpha adds a first-user readiness scorecard to the package-install

@@ -181,9 +181,14 @@ def build_next_steps(
             "why": (
                 "Installs Code Mower into a clean venv, verifies the easy-mode "
                 "starter path in a fresh toy repo, writes the first value-report "
-                "and cloud dry-run artifacts, and optionally compares an existing "
-                "product repo when --repo-path is provided."
+                "and cloud dry-run artifacts, emits `first_user_readiness`, and "
+                "optionally compares an existing product repo when --repo-path is "
+                "provided."
             ),
+            "artifacts": [
+                "outputs/package-install-rehearsal.json",
+                "outputs/first-user-readiness.json",
+            ],
         },
         {
             "id": "first-audit",
