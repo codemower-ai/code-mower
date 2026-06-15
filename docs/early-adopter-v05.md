@@ -134,7 +134,7 @@ Cut a v0.5 alpha or beta only after:
 
 ## Current Alpha
 
-`v0.5.0-alpha.24` is the current friendly-user alpha. It keeps the
+`v0.5.0-alpha.25` is the current friendly-user alpha. It keeps the
 local-first package path from alpha.1, the cloud doctor service-readiness check
 from alpha.5, the hardened provider-auth doctor diagnostics needed for
 early-adopter troubleshooting, the dogfood dry-run path that feeds the
@@ -143,7 +143,7 @@ users reach a reviewable value report without hand-building every corpus item.
 It also adds a first-user readiness scorecard to the package-install rehearsal
 so install, doctor, report, and cloud dry-run privacy gates can be checked at a
 glance, and it uses a conventional `requirements/requirements.txt` manifest so
-Dependabot's Dependency Graph path stays green. Alpha.24 also makes the package
-materializer self-hosting from installed checkouts and stamps generated
-standalone packages with the source checkout version instead of falling back to
-`0.0.0` or an already-installed CLI version.
+Dependabot's Dependency Graph path stays green. Alpha.25 also keeps the package
+materializer self-hosting from installed checkouts, gates release readiness on
+generated standalone package versions, and rejects unsafe structured cloud
+metadata before export or upload instead of relying on hosted-side cleanup.
