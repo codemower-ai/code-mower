@@ -17,7 +17,7 @@ large for comfortable contributor onboarding:
 | `doctor.py` | 2,550 | runtime checks, provider probes, GitHub diagnostics, cloud checks |
 | `codex_audit_pr.py` | 1,920 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
 | `package.py` | 1,710 | extraction package generation, template copying, manifest validation |
-| `cloud.py` | 1,500 | cloud export, upload, setup, token handling, API payloads |
+| `cloud.py` | 1,270 | cloud export, setup, token handling, doctor, CLI orchestration |
 | `migration.py` | 1,160 | wrapper migration, rehearsal, mirror-removal planning |
 | `claude_audit_pr.py` | 1,130 | Claude audit wrapper, budget handling, verdict posting |
 
@@ -80,9 +80,9 @@ tested internal seams:
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
   stdin-safe audit wrappers and local CLI lanes.
 - `code_mower.cloud_client` now owns cloud endpoint probing plus bundle schema
-  and privacy metadata. It also owns dogfood report discovery and dry-run
-  preview shape. `cloud.py` remains the CLI adapter for export, doctor, setup,
-  dogfood, and upload.
+  and privacy metadata. It also owns dogfood report discovery, dry-run preview
+  shape, upload payload construction, and network posting. `cloud.py` remains
+  the CLI adapter for export, doctor, setup, dogfood, and upload.
 - `builder-experiment` and authoring-intelligence docs establish the future
   `run_role`/`purpose` event shape without requiring a full orchestrator runtime
   before v1.0.
