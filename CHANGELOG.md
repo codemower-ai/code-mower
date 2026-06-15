@@ -4,6 +4,20 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.21
+
+This alpha makes package-index promotion setup more self-service.
+
+### Changed
+
+- `code-mower migration release-readiness` now reports setup URLs for the
+  GitHub environments, release workflow, TestPyPI project, PyPI project, and
+  trusted-publishing configuration pages.
+- Release-readiness next actions now include relevant URLs in both JSON and text
+  output.
+- The PyPI release runbook documents those setup URLs directly.
+- Public install docs now point to `v0.5.0-alpha.21`.
+
 ## v0.5.0-alpha.20
 
 This alpha makes the full package-installed first-user rehearsal part of routine
