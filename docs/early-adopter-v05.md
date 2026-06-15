@@ -133,7 +133,7 @@ Cut a v0.5 alpha or beta only after:
 
 ## Current Alpha
 
-`v0.5.0-alpha.12` is the current friendly-user alpha. It keeps the
+`v0.5.0-alpha.13` is the current friendly-user alpha. It keeps the
 local-first package path from alpha.1, the cloud doctor service-readiness check
 from alpha.5, the hardened provider-auth doctor diagnostics needed for
 early-adopter troubleshooting, the dogfood dry-run path that feeds the
@@ -141,4 +141,5 @@ CodeMower.com dashboard, and the draft auto-discovery path that helps first
 users reach a reviewable value report without hand-building every corpus item.
 It also adds a first-user readiness scorecard to the package-install rehearsal
 so install, doctor, report, and cloud dry-run privacy gates can be checked at a
-glance.
+glance, and it uses a conventional `requirements/requirements.txt` manifest so
+Dependabot's Dependency Graph path stays green.
