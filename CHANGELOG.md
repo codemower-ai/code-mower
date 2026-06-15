@@ -4,6 +4,23 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.16
+
+This alpha adds the first package-index rehearsal lane for TestPyPI while
+keeping production PyPI disabled by default.
+
+### Changed
+
+- The release workflow now has a dedicated `publish_testpypi` dispatch input
+  and `publish-testpypi` job.
+- TestPyPI publishing is gated by the separate `testpypi` GitHub environment
+  and `CODE_MOWER_TESTPYPI_PUBLISH` repository variable.
+- Production PyPI publishing remains gated by the separate `pypi` environment
+  and `CODE_MOWER_PYPI_PUBLISH` variable.
+- The PyPI release runbook now includes a workflow dispatch matrix for
+  build-only, TestPyPI, and production PyPI release rehearsals.
+- Public install docs now point to `v0.5.0-alpha.16`.
+
 ## v0.5.0-alpha.15
 
 This alpha fixes the first-run package rehearsal command surfaces for current
