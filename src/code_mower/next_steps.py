@@ -129,6 +129,7 @@ def build_next_steps(
     pr: str = "123",
 ) -> Mapping[str, Any]:
     _validate_repo_and_pr(repo, pr)
+    quoted_repo = shlex.quote(repo)
     lanes = _profile_lanes(templates, profile)
     catalog = _lane_catalog(templates)
     classes = _lane_classes(lanes, catalog)
@@ -341,6 +342,32 @@ def build_next_steps(
                 "Uploads sanitized metadata and a dogfood event so CodeMower.com "
                 "can show repo, provider/lens, cost, latency, and recommendation "
                 "rows over time."
+            ),
+        },
+        {
+            "id": "cloud-catch-up-dry-run",
+            "title": "Preview recent GitHub Actions catch-up metadata",
+            "command": (
+                "source ~/.config/code-mower/tokens/YOUR_INSTALL_ID.env && "
+                f"code-mower cloud catch-up --repo-slug {quoted_repo} --limit 50 --json"
+            ),
+            "why": (
+                "Backfills recent workflow_run events from GitHub Actions while "
+                "remaining dry-run by default. Branch names and commit SHAs stay "
+                "excluded unless --include-git-ref is explicit."
+            ),
+        },
+        {
+            "id": "cloud-catch-up-upload",
+            "title": "Upload catch-up metadata after reviewing the dry run",
+            "command": (
+                "source ~/.config/code-mower/tokens/YOUR_INSTALL_ID.env && "
+                f"code-mower cloud catch-up --repo-slug {quoted_repo} --limit 50 --yes --json"
+            ),
+            "why": (
+                "Helps a new dashboard become useful quickly by adding sanitized "
+                "historical workflow metadata without uploading source, diffs, "
+                "transcripts, branch names, or commit SHAs by default."
             ),
         },
     ]

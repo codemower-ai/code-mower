@@ -2812,7 +2812,12 @@ def main():
         templates = next_steps.code_mower_package.load_provider_templates(
             ROOT / "src/code_mower/templates/providers.yml"
         )
-        plan = next_steps.build_next_steps(templates, profile="recommended")
+        plan = next_steps.build_next_steps(
+            templates,
+            profile="recommended",
+            repo="codemower-ai/code-mower",
+            pr="61",
+        )
         ids = [step["id"] for step in plan["steps"]]
 
         self.assertIn("calibration-auto-discover", ids)
@@ -2854,13 +2859,33 @@ def main():
         dogfood_upload = next(
             step for step in plan["steps"] if step["id"] == "cloud-dogfood-upload"
         )
+        catch_up_dry_run = next(
+            step for step in plan["steps"] if step["id"] == "cloud-catch-up-dry-run"
+        )
+        catch_up_upload = next(
+            step for step in plan["steps"] if step["id"] == "cloud-catch-up-upload"
+        )
         self.assertLess(ids.index("cloud-upload-dry-run"), ids.index("cloud-dogfood-dry-run"))
         self.assertLess(ids.index("cloud-dogfood-dry-run"), ids.index("cloud-dogfood-upload"))
+        self.assertLess(ids.index("cloud-dogfood-upload"), ids.index("cloud-catch-up-dry-run"))
+        self.assertLess(ids.index("cloud-catch-up-dry-run"), ids.index("cloud-catch-up-upload"))
         self.assertIn("cloud dogfood", dogfood_dry_run["command"])
         self.assertNotIn("--dry-run", dogfood_dry_run["command"])
         self.assertIn("source ~/.config/code-mower/tokens", dogfood_dry_run["command"])
         self.assertIn("cloud dogfood", dogfood_upload["command"])
         self.assertIn("--yes", dogfood_upload["command"])
+        self.assertIn("cloud catch-up", catch_up_dry_run["command"])
+        self.assertIn("--repo-slug codemower-ai/code-mower", catch_up_dry_run["command"])
+        self.assertNotIn("OWNER/REPO", catch_up_dry_run["command"])
+        self.assertNotIn("--yes", catch_up_dry_run["command"])
+        self.assertNotIn("--include-git-ref", catch_up_dry_run["command"])
+        self.assertIn("cloud catch-up", catch_up_upload["command"])
+        self.assertIn("--repo-slug codemower-ai/code-mower", catch_up_upload["command"])
+        self.assertNotIn("OWNER/REPO", catch_up_upload["command"])
+        self.assertIn("--yes", catch_up_upload["command"])
+        self.assertNotIn("--include-git-ref", catch_up_upload["command"])
+        self.assertIn("workflow_run", catch_up_dry_run["why"])
+        self.assertIn("commit SHAs", catch_up_upload["why"])
 
     def test_calibration_arms_include_antigravity_lens_fanout(self) -> None:
         arms = {
