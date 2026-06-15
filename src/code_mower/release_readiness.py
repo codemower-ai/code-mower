@@ -24,6 +24,16 @@ REQUIRED_ALPHA_TAG_DOC_PATHS = (
     "docs/first-user-install-rehearsal.md",
     "docs/public-release-checklist.md",
 )
+PUBLIC_HYGIENE_DOC_PATHS = (
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/dependabot.yml",
+)
 STAGE_TAG_NAMES = {
     "a": "alpha",
     "b": "beta",
@@ -162,12 +172,20 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     testpypi_job_text = _job_text(testpypi_job)
     pypi_job_text = _job_text(pypi_job)
     docs = _release_docs(repo_path)
+    public_hygiene_docs = {
+        relative_path: _read_text_if_exists(repo_path / relative_path)
+        for relative_path in PUBLIC_HYGIENE_DOC_PATHS
+    }
     init_version = _python_package_version(repo_path)
     pyproject_version = _pyproject_version(repo_path)
     version = init_version or pyproject_version
     alpha_tag = _release_tag_for_version(version) if version else ""
     package_index_spec = f"code-mower=={version}" if version else ""
     doc_blob = "\n".join(docs.values())
+    public_hygiene_blobs = {
+        relative_path: text.lower()
+        for relative_path, text in public_hygiene_docs.items()
+    }
 
     version_docs = [
         relative_path
@@ -184,6 +202,33 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         for relative_path, text in docs.items()
         if package_index_spec and package_index_spec in text
     ]
+    missing_public_hygiene_docs = [
+        relative_path
+        for relative_path, text in public_hygiene_docs.items()
+        if not text
+    ]
+    redaction_terms = (
+        "tokens",
+        "private source",
+        "raw diffs",
+        "raw model transcripts",
+        "auth output",
+        "security.md",
+    )
+    public_redaction_docs = ("SUPPORT.md", "CODE_OF_CONDUCT.md")
+    missing_redaction_terms = {
+        relative_path: [
+            term
+            for term in redaction_terms
+            if term not in public_hygiene_blobs.get(relative_path, "")
+        ]
+        for relative_path in public_redaction_docs
+    }
+    missing_redaction_terms = {
+        relative_path: terms
+        for relative_path, terms in missing_redaction_terms.items()
+        if terms
+    }
 
     checks = [
         _release_check(
@@ -312,6 +357,34 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 else "fail"
             ),
             evidence="docs/pypi-release.md",
+        ),
+        _release_check(
+            check_id="public-maintainer-docs",
+            title="Public maintainer and community files are present",
+            status="pass" if not missing_public_hygiene_docs else "fail",
+            evidence=", ".join(PUBLIC_HYGIENE_DOC_PATHS),
+            detail={"missing_docs": missing_public_hygiene_docs},
+        ),
+        _release_check(
+            check_id="public-docs-linked-from-readme",
+            title="Public support, security, and conduct docs are linked from README",
+            status=(
+                "pass"
+                if (
+                    "[Support](SUPPORT.md)" in docs.get("README.md", "")
+                    and "[Security Policy](SECURITY.md)" in docs.get("README.md", "")
+                    and "[Code of Conduct](CODE_OF_CONDUCT.md)" in docs.get("README.md", "")
+                )
+                else "fail"
+            ),
+            evidence="README.md",
+        ),
+        _release_check(
+            check_id="public-support-redaction-guidance",
+            title="Public support docs warn against sharing sensitive artifacts",
+            status="pass" if not missing_redaction_terms else "fail",
+            evidence="SUPPORT.md, CODE_OF_CONDUCT.md, SECURITY.md",
+            detail={"missing_terms_by_doc": missing_redaction_terms},
         ),
     ]
     failed = sum(1 for check in checks if check["status"] == "fail")
