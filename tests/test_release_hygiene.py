@@ -38,8 +38,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_v05_alpha_19(self) -> None:
-        self.assertEqual(__version__, "0.5.0a19")
+    def test_version_is_v05_alpha_20(self) -> None:
+        self.assertEqual(__version__, "0.5.0a20")
 
     def test_release_workflow_verifies_downloaded_distributions_before_publish(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
@@ -147,7 +147,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn(
             (
                 "code-mower migration package-install-rehearsal --package-spec "
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.19 "
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.20 "
                 "--json"
             ),
             help_text,
@@ -1851,7 +1851,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0a19",
+                version="code-mower 0.5.0a20",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -1930,7 +1930,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0a19",
+                version="code-mower 0.5.0a20",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -1992,7 +1992,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0a19",
+                version="code-mower 0.5.0a20",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -2058,24 +2058,24 @@ def main():
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.19",
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.20",
                     base_dir=package,
                 ),
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.19",
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.20",
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "code-mower==0.5.0a19",
+                    "code-mower==0.5.0a20",
                     base_dir=package,
                 ),
-                "code-mower==0.5.0a19",
+                "code-mower==0.5.0a20",
             )
 
     def test_package_install_rehearsal_supports_index_aware_pip_install(self) -> None:
         self.assertEqual(
             code_mower_migration._pip_install_command(
                 Path("/tmp/venv/bin/python"),
-                "code-mower==0.5.0a19",
+                "code-mower==0.5.0a20",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
             ),
@@ -2088,7 +2088,7 @@ def main():
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
                 "https://pypi.org/simple/",
-                "code-mower==0.5.0a19",
+                "code-mower==0.5.0a20",
             ],
         )
 
@@ -2096,9 +2096,9 @@ def main():
         payload = release_readiness.render_release_readiness(ROOT)
 
         self.assertEqual(payload["status"], "pass")
-        self.assertEqual(payload["version"], "0.5.0a19")
-        self.assertEqual(payload["alpha_tag"], "v0.5.0-alpha.19")
-        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0a19")
+        self.assertEqual(payload["version"], "0.5.0a20")
+        self.assertEqual(payload["alpha_tag"], "v0.5.0-alpha.20")
+        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0a20")
         check_ids = {check["id"]: check for check in payload["checks"]}
         self.assertEqual(check_ids["package-version-consistency"]["status"], "pass")
         self.assertEqual(check_ids["testpypi-gate"]["status"], "pass")
@@ -2190,8 +2190,8 @@ def main():
 
     def test_release_readiness_tag_derivation_supports_release_stages(self) -> None:
         self.assertEqual(
-            release_readiness._release_tag_for_version("0.5.0a19"),
-            "v0.5.0-alpha.19",
+            release_readiness._release_tag_for_version("0.5.0a20"),
+            "v0.5.0-alpha.20",
         )
         self.assertEqual(
             release_readiness._release_tag_for_version("0.5.0b2"),
@@ -2337,7 +2337,7 @@ def main():
         )
         self.assertIn("doctor --v05", doctor_step["command"])
         self.assertIn(
-            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.19",
+            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.20",
             package_step["command"],
         )
         self.assertIn("current GitHub tag", package_step["why"])
