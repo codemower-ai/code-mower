@@ -40,7 +40,7 @@ history opens the repository. They should be able to confirm:
 
 ## Current Alpha Baseline
 
-The current public-release baseline is `v0.5.0-alpha.18` of the standalone
+The current public-release baseline is `v0.5.0-alpha.19` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -125,7 +125,7 @@ code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.18" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.19" \
   --json
 code-mower audit pr 123
 code-mower calibration value-report templates/calibration-corpus.json

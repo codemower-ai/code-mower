@@ -4,6 +4,24 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.19
+
+This alpha adds public maintainer hygiene for early adopters and makes release
+readiness enforce the public support, security, and community-safety surface.
+
+### Changed
+
+- Added `SUPPORT.md` and `CODE_OF_CONDUCT.md`, with explicit guidance to avoid
+  sharing tokens, private source, raw diffs, raw model transcripts, auth output,
+  credentials, and customer data in public support channels.
+- The README docs map now links support, security policy, and conduct docs.
+- The source distribution now includes the support and conduct docs.
+- `code-mower migration release-readiness --json` now verifies public
+  maintainer docs are present, linked, and privacy-forward.
+- Release hygiene tests now cover missing-doc, missing-link, and incomplete
+  redaction-guidance failure paths.
+- Public install docs now point to `v0.5.0-alpha.19`.
+
 ## v0.5.0-alpha.18
 
 This alpha makes the package release-readiness check part of routine CI, so
