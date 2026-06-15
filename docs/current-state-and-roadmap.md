@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public alpha baseline is `v0.5.0-alpha.8`. It is the first alpha
+The current public alpha baseline is `v0.5.0-alpha.9`. It is the first alpha
 intended to be installed from the `codemower-ai/code-mower` public repository
 after the org move. It has proved:
 
@@ -140,8 +140,8 @@ Treat these as product gates before widening beyond friendly early adopters:
 - **Time to value:** users should not have to hand-build a full calibration
   corpus before seeing a useful report. The current auto-discovery command
   bootstraps a draft corpus from recent merged PRs and known review signals;
-  release rehearsals should prove that path and docs should keep emphasizing
-  human disposition review before lane promotion.
+  release rehearsals prove that path and docs should keep emphasizing human
+  disposition review before lane promotion.
 - **Code confidence:** release hygiene tests prove broad behavior, but v1.0
   needs more focused unit coverage around doctor checks, cloud bundle privacy,
   calibration math, verdict parsing, and provider-runner seams.

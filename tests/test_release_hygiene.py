@@ -36,8 +36,8 @@ from scripts import privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
-    def test_version_is_v05_alpha_8(self) -> None:
-        self.assertEqual(__version__, "0.5.0a8")
+    def test_version_is_v05_alpha_9(self) -> None:
+        self.assertEqual(__version__, "0.5.0a9")
 
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
@@ -1736,24 +1736,24 @@ def main():
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8",
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.9",
                     base_dir=package,
                 ),
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8",
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.9",
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "code-mower==0.5.0a8",
+                    "code-mower==0.5.0a9",
                     base_dir=package,
                 ),
-                "code-mower==0.5.0a8",
+                "code-mower==0.5.0a9",
             )
 
     def test_package_install_rehearsal_supports_index_aware_pip_install(self) -> None:
         self.assertEqual(
             code_mower_migration._pip_install_command(
                 Path("/tmp/venv/bin/python"),
-                "code-mower==0.5.0a8",
+                "code-mower==0.5.0a9",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
             ),
@@ -1766,7 +1766,7 @@ def main():
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
                 "https://pypi.org/simple/",
-                "code-mower==0.5.0a8",
+                "code-mower==0.5.0a9",
             ],
         )
 

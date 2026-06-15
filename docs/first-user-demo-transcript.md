@@ -12,9 +12,9 @@ The transcript uses `$WORK_DIR` instead of a real local path.
 python3.12 -m venv "$WORK_DIR/venv"
 "$WORK_DIR/venv/bin/python" -m pip install --upgrade pip
 "$WORK_DIR/venv/bin/python" -m pip install \
-  "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8"
+  "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.9"
 "$WORK_DIR/venv/bin/code-mower" migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.9" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -25,12 +25,14 @@ python3.12 -m venv "$WORK_DIR/venv"
 {
   "mode": "package-install-rehearsal",
   "status": "pass",
-  "steps": 25,
-  "package_spec": "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.8",
+  "steps": 27,
+  "package_spec": "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.9",
   "toy_repo": "$WORK_DIR/toy-repo",
   "doctor_status": "warn",
   "generated_artifacts": {
     "calibration_plan": true,
+    "draft_calibration_corpus": true,
+    "draft_reviewer_value_report": true,
     "calibration_evidence": true,
     "reviewer_metrics": true,
     "lane_policy": true,
@@ -59,6 +61,8 @@ blocker.
 - `doctor --preflight` completed without failed checks.
 - Calibration plan, evidence, metrics, lane policy, and value report artifacts
   were generated.
+- Draft auto-discovery corpus and draft reviewer value report artifacts were
+  generated from offline PR metadata.
 - Cloud export produced an inspectable metadata bundle.
 - Cloud upload and dogfood stayed dry-run without `--yes`.
 

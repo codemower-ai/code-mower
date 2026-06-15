@@ -4,6 +4,30 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.9
+
+This alpha hardens the first-useful-report path. The package-install rehearsal
+now proves that a fresh install can bootstrap a draft project corpus from PR
+metadata and generate a draft reviewer value report before any paid or
+networked lane is enabled.
+
+### Added
+
+- `code-mower next-steps` now recommends `calibration auto-discover` between
+  first calibration runs and the first reviewer value report.
+- Package-install rehearsal now writes an offline PR-list fixture, runs
+  `calibration auto-discover`, and round-trips the generated draft corpus
+  through `calibration value-report`.
+- Alpha.9 first-user install rehearsal transcript covering the draft corpus and
+  draft value-report artifacts.
+
+### Changed
+
+- Public install docs now point to `v0.5.0-alpha.9`.
+- Public release docs now treat calibration auto-discovery as part of the
+  release gate, while still requiring human disposition review before lane
+  promotion.
+
 ## v0.5.0-alpha.8
 
 This alpha hardens the first-user trust path: clearer package-index release
