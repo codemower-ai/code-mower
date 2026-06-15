@@ -615,6 +615,7 @@ printf '%s\\n' "${lane}"
         packaged_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}
         for target in (
             "src/code_mower/calibration/__init__.py",
+            "src/code_mower/calibration/auto_discovery.py",
             "src/code_mower/calibration/corpus.py",
             "src/code_mower/calibration/evidence.py",
             "src/code_mower/calibration/identity.py",
