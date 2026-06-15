@@ -257,7 +257,7 @@ def build_auto_discovered_corpus(
 
         blocked_runs_by_head: dict[str, list[dict[str, Any]]] = {}
         for run in blocked_runs:
-            head_sha = str(run.get("head_sha") or final_head_sha)
+            head_sha = str(run.get("head_sha") or "")
             blocked_runs_by_head.setdefault(head_sha, []).append(run)
 
         for head_sha, runs in sorted(blocked_runs_by_head.items()):
@@ -281,9 +281,12 @@ def build_auto_discovered_corpus(
             for run in pass_runs
             if not run.get("head_sha") or run.get("head_sha") == final_head_sha
         ]
+        explicit_blocked_heads = {
+            str(run.get("head_sha")) for run in blocked_runs if run.get("head_sha")
+        }
         if (
             final_head_sha
-            and final_head_sha not in blocked_runs_by_head
+            and final_head_sha not in explicit_blocked_heads
             and (not blocked_runs or final_pass_runs)
         ):
             signal_summary = {

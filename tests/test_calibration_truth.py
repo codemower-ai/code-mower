@@ -310,6 +310,113 @@ class CalibrationTruthTests(unittest.TestCase):
         self.assertEqual(stats["known_blocked_caught_runs"], 1)
         self.assertEqual(stats["useful_findings"], 1)
 
+    def test_auto_discover_splits_blocked_head_from_clean_final_head(self) -> None:
+        final_head = "b" * 40
+        blocked_head = "1" * 40
+        payload = code_mower_calibration.build_auto_discovered_corpus(
+            repo="owner/repo",
+            last_n=1,
+            pull_requests=[
+                {
+                    "number": 13,
+                    "title": "Fix after audit blocker",
+                    "headRefOid": final_head,
+                    "baseRefName": "main",
+                    "changedFiles": 8,
+                    "comments": [
+                        {
+                            "body": (
+                                f"Head SHA: `{blocked_head}`\n"
+                                "Findings: P0=0, P1=0, P2=1, P3=0\n"
+                                "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->\n"
+                            )
+                        },
+                        {
+                            "body": (
+                                f"Head SHA: `{final_head}`\n"
+                                "Findings: P0=0, P1=0, P2=0, P3=0\n"
+                                "<!-- CODEX_AUDIT_STATE: codex-audit-done -->\n"
+                            )
+                        },
+                    ],
+                    "reviews": [],
+                },
+            ],
+        )
+
+        self.assertEqual(len(payload["corpus"]), 2)
+        blocked, clean = payload["corpus"]
+        self.assertEqual(blocked["source"], "auto-discovered-structured-blocker")
+        self.assertEqual(blocked["head_sha"], blocked_head)
+        self.assertEqual(blocked["truth"]["expectation"], "known_blocked")
+        self.assertEqual(clean["source"], "auto-discovered-merged-clean-after-fix")
+        self.assertEqual(clean["head_sha"], final_head)
+        self.assertEqual(clean["truth"]["expectation"], "known_clean")
+        self.assertEqual(clean["reviewer_runs"][0]["status"], "pass")
+
+    def test_auto_discover_headless_blocker_does_not_poison_clean_final_head(self) -> None:
+        final_head = "c" * 40
+        payload = code_mower_calibration.build_auto_discovered_corpus(
+            repo="owner/repo",
+            last_n=1,
+            pull_requests=[
+                {
+                    "number": 14,
+                    "title": "Fix after headless audit blocker",
+                    "headRefOid": final_head,
+                    "baseRefName": "main",
+                    "changedFiles": 8,
+                    "comments": [
+                        {
+                            "body": (
+                                "Findings: P0=0, P1=0, P2=1, P3=0\n"
+                                "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->\n"
+                            )
+                        },
+                        {
+                            "body": (
+                                f"Head SHA: `{final_head}`\n"
+                                "Findings: P0=0, P1=0, P2=0, P3=0\n"
+                                "<!-- CODEX_AUDIT_STATE: codex-audit-done -->\n"
+                            )
+                        },
+                    ],
+                    "reviews": [],
+                },
+            ],
+        )
+
+        self.assertEqual(len(payload["corpus"]), 2)
+        blocked, clean = payload["corpus"]
+        self.assertEqual(blocked["source"], "auto-discovered-structured-blocker")
+        self.assertEqual(blocked["head_sha"], "")
+        self.assertEqual(blocked["truth"]["expectation"], "known_blocked")
+        self.assertEqual(clean["source"], "auto-discovered-merged-clean-after-fix")
+        self.assertEqual(clean["head_sha"], final_head)
+        self.assertEqual(clean["truth"]["expectation"], "known_clean")
+
+    def test_auto_discover_review_signal_only_keeps_unknown_disposition(self) -> None:
+        payload = code_mower_calibration.build_auto_discovered_corpus(
+            repo="owner/repo",
+            last_n=1,
+            pull_requests=[
+                {
+                    "number": 15,
+                    "title": "Merged after requested changes",
+                    "headRefOid": "d" * 40,
+                    "baseRefName": "main",
+                    "changedFiles": 4,
+                    "comments": [{"body": "Changes requested before merge."}],
+                    "reviews": [{"state": "CHANGES_REQUESTED"}],
+                },
+            ],
+        )
+
+        self.assertEqual(len(payload["corpus"]), 1)
+        self.assertEqual(payload["corpus"][0]["source"], "auto-discovered-merged-clean")
+        self.assertEqual(payload["corpus"][0]["truth"]["expectation"], "unknown")
+        self.assertEqual(payload["corpus"][0]["auto_discovery"]["review_signal_count"], 2)
+
     def test_auto_discover_command_accepts_saved_gh_array_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
