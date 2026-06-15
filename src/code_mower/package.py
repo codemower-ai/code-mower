@@ -1424,10 +1424,12 @@ def _missing_package_sources(repo_root: Path) -> list[str]:
 
 def _candidate_package_source_roots() -> list[Path]:
     module_path = Path(__file__).resolve()
+    # Prefer the checkout that loaded this module. Fall back to cwd for
+    # installed-package runs that intentionally materialize a local checkout.
     candidates = [
-        Path.cwd().resolve(),
         module_path.parents[2],
         module_path.parents[1],
+        Path.cwd().resolve(),
     ]
     unique: list[Path] = []
     seen: set[Path] = set()

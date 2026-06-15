@@ -704,6 +704,16 @@ printf '%s\\n' "${lane}"
             with self.subTest(target=target):
                 self.assertIn(target, packaged_targets)
 
+    def test_package_materializer_prefers_loaded_checkout_before_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                code_mower_package.Path, "cwd", return_value=Path(tmp)
+            ):
+                roots = code_mower_package._candidate_package_source_roots()
+
+        self.assertEqual(roots[0], ROOT)
+        self.assertEqual(roots[-1], Path(tmp).resolve())
+
     def test_package_materializer_can_run_from_extracted_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stdout = StringIO()
