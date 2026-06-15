@@ -209,6 +209,34 @@ For GitHub Actions, keep the workflow low-cost and optional: run it on `main`
 pushes, use `secrets.CODE_MOWER_CLOUD_TOKEN`, and skip the upload when the
 secret is absent.
 
+## Historical Catch-Up
+
+If you enabled cloud sharing after already running Code Mower, you can catch up
+recent GitHub Actions metadata without uploading source, diffs, transcripts, or
+workflow logs:
+
+```bash
+code-mower cloud catch-up --repo-slug owner/repo --limit 50 --json
+```
+
+This command calls `gh run list`, builds a local
+`.code-mower/cloud-catch-up-bundle`, runs cloud doctor, and prints a dry-run
+upload preview. Nothing is sent without `--yes`:
+
+```bash
+source ~/.config/code-mower/tokens/your-install-id.env
+code-mower cloud catch-up --repo-slug owner/repo --limit 50 --yes --json
+```
+
+The catch-up payload contains `workflow_run` events with workflow name,
+trigger, run status, conclusion, URL, and timestamps. Branch names and commit
+SHAs are intentionally excluded by default because branch naming can reveal
+product or customer details. Use `--include-git-ref` only when your team has
+reviewed and accepted that metadata tradeoff.
+
+Use catch-up once or occasionally after onboarding a repository. Use
+`cloud dogfood` for ongoing current-state uploads.
+
 ## What codemower.com Stores First
 
 The v0.5 cloud service starts with:
