@@ -43,6 +43,7 @@ if __package__ in {None, ""}:
         validate_metadata_payload,
         validate_upload_endpoint,
     )
+    from code_mower import code_mower_telemetry
 else:  # pragma: no cover - exercised after package extraction.
     from .cloud_client import (
         BUNDLE_MANIFEST_FILENAME,
@@ -69,11 +70,13 @@ else:  # pragma: no cover - exercised after package extraction.
         validate_metadata_payload,
         validate_upload_endpoint,
     )
+    from . import code_mower_telemetry
 
 
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
 DEFAULT_CATCH_UP_OUTPUT_DIR = ".code-mower/cloud-catch-up-bundle"
+DEFAULT_REVIEWER_RUNS_OUTPUT_DIR = ".code-mower/reviewer-run-bundle"
 DEFAULT_UPLOAD_ENDPOINT = "https://codemower.com/api/ingest"
 DEFAULT_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
 DEFAULT_TEAM_ID_ENV = "CODE_MOWER_CLOUD_TEAM_ID"
@@ -1198,6 +1201,105 @@ def _catch_up_upload(
     }
 
 
+def _reviewer_runs_upload(
+    *,
+    repo_path: Path,
+    verdicts: Path,
+    output_dir: Path,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    limit: int,
+    endpoint: str,
+    token_env: str,
+    yes: bool,
+    timeout: float,
+    include_git_ref: bool,
+) -> dict[str, Any]:
+    if limit < 1 or limit > MAX_EVENT_COUNT:
+        raise CloudBundleError(f"--limit must be between 1 and {MAX_EVENT_COUNT}")
+    repo_path = repo_path.expanduser().resolve()
+    detected_repo_slug = repo_slug or _detect_repo_slug(repo_path)
+    if not detected_repo_slug:
+        raise CloudBundleError(
+            "unable to detect repo slug; pass --repo-slug OWNER/REPO"
+        )
+    resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
+    resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
+    try:
+        events = code_mower_telemetry.export_reviewer_run_events_from_verdicts(
+            verdicts,
+            repo=detected_repo_slug,
+            limit=limit,
+            include_git_ref=include_git_ref,
+        )
+    except ValueError as exc:
+        raise CloudBundleError(str(exc)) from exc
+    if not events:
+        return {
+            "mode": "cloud-reviewer-runs",
+            "status": "no_events",
+            "repo_slug": detected_repo_slug,
+            "event_count": 0,
+            "verdicts": str(verdicts.expanduser()),
+            "git_ref_included": include_git_ref,
+        }
+    export_result = build_cloud_bundle(
+        reports=[],
+        events=events,
+        output_dir=output_dir,
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        anonymous=False,
+    )
+    doctor_result = run_cloud_doctor(
+        bundle_dir=output_dir,
+        endpoint=endpoint,
+        token_env=token_env,
+        require_token=yes,
+    )
+    if doctor_result["failures"]:
+        return {
+            "mode": "cloud-reviewer-runs",
+            "status": "doctor_failed",
+            "repo_slug": detected_repo_slug,
+            "event_count": len(events),
+            "export": export_result,
+            "doctor": doctor_result,
+        }
+    payload = build_upload_payload(bundle_dir=output_dir, include_reports=False)
+    if not yes:
+        return {
+            "mode": "cloud-reviewer-runs",
+            "status": "dry_run",
+            "repo_slug": detected_repo_slug,
+            "event_count": len(events),
+            "export": export_result,
+            "doctor": doctor_result,
+            "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
+        }
+    token = os.environ.get(token_env, "")
+    if not token and not _is_local_http_endpoint(endpoint):
+        raise CloudBundleError(
+            f"{token_env} is not set; refusing non-local upload without a token"
+        )
+    return {
+        "mode": "cloud-reviewer-runs",
+        "status": "uploaded",
+        "repo_slug": detected_repo_slug,
+        "event_count": len(events),
+        "export": export_result,
+        "doctor": doctor_result,
+        "upload": post_upload_payload(
+            payload=payload,
+            endpoint=endpoint,
+            token=token,
+            timeout=timeout,
+        ),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower cloud")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1374,6 +1476,45 @@ def main(argv: list[str] | None = None) -> int:
     )
     catch_up.add_argument("--timeout", type=float, default=20.0)
     catch_up.add_argument("--json", action="store_true")
+    reviewer_runs = subparsers.add_parser("reviewer-runs")
+    reviewer_runs.add_argument("--repo-path", type=Path, default=Path.cwd())
+    reviewer_runs.add_argument(
+        "--verdicts",
+        type=Path,
+        default=code_mower_telemetry.default_verdict_artifact_dir(),
+        help="verdict artifact file or directory",
+    )
+    reviewer_runs.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(DEFAULT_REVIEWER_RUNS_OUTPUT_DIR),
+    )
+    reviewer_runs.add_argument("--repo-slug", default="")
+    reviewer_runs.add_argument("--team-id", default="")
+    reviewer_runs.add_argument("--install-id", default="")
+    reviewer_runs.add_argument(
+        "--limit",
+        type=int,
+        default=MAX_EVENT_COUNT,
+        help=f"number of verdict artifacts to include; max {MAX_EVENT_COUNT}",
+    )
+    reviewer_runs.add_argument(
+        "--include-git-ref",
+        action="store_true",
+        help="include verdict head SHA metadata",
+    )
+    reviewer_runs.add_argument(
+        "--endpoint",
+        default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
+    )
+    reviewer_runs.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    reviewer_runs.add_argument(
+        "--yes",
+        action="store_true",
+        help="perform the network upload; without this, reviewer-runs is a dry run",
+    )
+    reviewer_runs.add_argument("--timeout", type=float, default=20.0)
+    reviewer_runs.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -1534,6 +1675,37 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Runs: {result['run_count']}")
                 print(f"Bundle: {result['export']['output_dir']}")
                 print(f"Events: {result['export']['event_count']}")
+                if result["status"] == "uploaded":
+                    print(f"Upload status: {result['upload']['status']}")
+                elif result["status"] == "dry_run":
+                    print("Network: skipped (pass --yes to upload)")
+            return 1 if result["status"] == "doctor_failed" else 0
+        if args.command == "reviewer-runs":
+            result = _reviewer_runs_upload(
+                repo_path=args.repo_path,
+                verdicts=args.verdicts,
+                output_dir=args.output_dir,
+                repo_slug=args.repo_slug,
+                team_id=args.team_id,
+                install_id=args.install_id,
+                limit=args.limit,
+                endpoint=args.endpoint,
+                token_env=args.token_env,
+                yes=args.yes,
+                timeout=args.timeout,
+                include_git_ref=args.include_git_ref,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("Code Mower cloud reviewer runs")
+                print(f"Status: {result['status']}")
+                print(f"Repository: {result['repo_slug']}")
+                print(f"Events: {result['event_count']}")
+                if result["status"] == "no_events":
+                    print(f"Verdicts: {result['verdicts']}")
+                else:
+                    print(f"Bundle: {result['export']['output_dir']}")
                 if result["status"] == "uploaded":
                     print(f"Upload status: {result['upload']['status']}")
                 elif result["status"] == "dry_run":

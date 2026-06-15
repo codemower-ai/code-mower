@@ -201,14 +201,8 @@ To backfill historical reviewer verdicts from this machine without uploading raw
 audit text:
 
 ```bash
-code-mower telemetry export-verdict-events ~/.cache/code-mower-audits/verdicts \
-  --repo OWNER/REPO \
-  --output reviewer-run-events.jsonl
-code-mower cloud export \
-  --event reviewer_run=reviewer-run-events.jsonl \
-  --output-dir .code-mower/reviewer-run-bundle \
-  --json
-code-mower cloud upload .code-mower/reviewer-run-bundle --dry-run --json
+code-mower cloud reviewer-runs --repo-slug OWNER/REPO --json
+code-mower cloud reviewer-runs --repo-slug OWNER/REPO --yes --json
 ```
 
 Cloud sharing details: [docs/cloud-sharing.md](docs/cloud-sharing.md).

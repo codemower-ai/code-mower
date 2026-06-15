@@ -257,9 +257,28 @@ Use catch-up once or occasionally after onboarding a repository. Use
 
 ## Historical Reviewer Runs
 
-If you already have local Code Mower audit verdict artifacts, export and upload
-them separately from GitHub Actions catch-up. This is the path that makes
-CodeMower.com show reviewer/lens signal instead of only workflow history:
+If you already have local Code Mower audit verdict artifacts, upload them
+separately from GitHub Actions catch-up. This is the path that makes
+CodeMower.com show reviewer/lens signal instead of only workflow history.
+The command stays dry-run unless `--yes` is explicit:
+
+```bash
+code-mower cloud reviewer-runs --repo-slug owner/repo --json
+```
+
+After inspecting the dry run:
+
+```bash
+source ~/.config/code-mower/tokens/your-install-id.env
+code-mower cloud reviewer-runs --repo-slug owner/repo --yes --json
+```
+
+Use `--verdicts` to point at a non-default artifact directory and
+`--include-git-ref` only after deciding that head SHA metadata is acceptable for
+your team.
+
+The lower-level export path remains available when you want to inspect or edit
+the JSONL before bundling:
 
 ```bash
 code-mower telemetry export-verdict-events \
@@ -273,13 +292,6 @@ code-mower cloud export \
   --json
 
 code-mower cloud upload .code-mower/reviewer-run-bundle --dry-run --json
-```
-
-After inspecting the dry run:
-
-```bash
-source ~/.config/code-mower/tokens/your-install-id.env
-code-mower cloud upload .code-mower/reviewer-run-bundle --yes --json
 ```
 
 Use historical reviewer export once when onboarding a machine or repo, then rely
