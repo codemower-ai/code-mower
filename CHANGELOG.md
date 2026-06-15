@@ -4,6 +4,21 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.15
+
+This alpha fixes the first-run package rehearsal command surfaces for current
+GitHub-tag alpha installs.
+
+### Changed
+
+- `code-mower --help` now recommends the current GitHub alpha tag for
+  `migration package-install-rehearsal`.
+- `code-mower next-steps --profile recommended` derives the current GitHub
+  alpha package spec from the installed package version.
+- Alpha-facing docs and generated command catalogs no longer recommend the
+  unavailable PyPI package placeholder before PyPI publishing is promoted.
+- Public install docs now point to `v0.5.0-alpha.15`.
+
 ## v0.5.0-alpha.14
 
 This alpha hardens the public release pipeline after the artifact-action
