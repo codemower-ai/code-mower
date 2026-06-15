@@ -26,6 +26,9 @@ not know the original reference repos.
   run, and dogfood dry run. Re-run it against the public tag before widening
   beyond friendly alpha users. Alpha-specific rehearsal notes remain as
   historical transcripts.
+- Public CI now runs the package-install first-user rehearsal from the current
+  checkout, so every PR proves the same installed-package path that early
+  adopters exercise from a public tag.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
 - Hosted/commercial service implementation remains outside the public OSS repo.
@@ -52,6 +55,8 @@ not know the original reference repos.
   values into shareable JSON.
 - `scripts/smoke_easy_mode.py --json` passes in a fresh virtual environment.
 - `scripts/fresh_clone_rehearsal.py --json` passes against the release commit.
+- `code-mower migration package-install-rehearsal --package-spec ... --json`
+  passes in CI and produces a passing `first_user_readiness` scorecard.
 - Secret scans are clean.
 - Privacy scans are clean: no personal paths, private repo slugs, raw auth
   output, or likely secrets.
@@ -96,6 +101,7 @@ scripts/dev-python -m venv .venv
 .venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json
 .venv/bin/code-mower doctor --preflight --json
 .venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python .venv/bin/python --json
+.venv/bin/code-mower migration package-install-rehearsal --package-spec . --python .venv/bin/python --json
 ```
 
 For alpha releases, keep running this from a fresh clone before tagging. Do not

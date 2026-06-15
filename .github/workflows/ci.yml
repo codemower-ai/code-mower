@@ -53,3 +53,12 @@ jobs:
           --ref "$GITHUB_SHA"
           --work-dir "$RUNNER_TEMP/code-mower-fresh-clone"
           --json
+
+      - name: Package-install first-user rehearsal
+        run: >-
+          python -m code_mower.migration package-install-rehearsal
+          --package-spec "$GITHUB_WORKSPACE"
+          --work-dir "$RUNNER_TEMP/code-mower-package-install"
+          --python "$(command -v python)"
+          --timeout 240
+          --json

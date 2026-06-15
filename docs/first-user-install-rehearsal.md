@@ -26,11 +26,14 @@ The rehearsal verifies:
   corpus without promoting it to ground truth;
 - cloud export bundle creation;
 - cloud upload dry run; and
-- CodeMower.com dogfood dry run.
+- CodeMower.com dogfood dry run; and
 - a first-user readiness scorecard summarizing the gates above.
 
 No source code, raw diffs, model transcripts, auth output, or secrets are
 uploaded. The cloud upload and dogfood checks are dry-run-only in this rehearsal.
+Public CI runs this rehearsal from the current checkout, and release candidates
+should also run it against the exact public tag or package-index candidate before
+being widened.
 
 ## Canonical Command
 
