@@ -15,6 +15,7 @@ from .evidence import (
 from .arms import DEFAULT_CLI_LANES, DEFAULT_LOCAL_LLM_PROFILES, default_arms
 from .identity import head_slug, safe_slug
 from .metrics import float_or_zero
+from .overlap import build_overlap_report, finding_key, render_overlap_text
 from .policy import (
     MERGE_GATE_MIN_CLEAN_RUNS,
     MERGE_GATE_MIN_FINDINGS,
@@ -96,6 +97,7 @@ __all__ = [
     "csv_values",
     "default_arms",
     "expected_finding_matches",
+    "finding_key",
     "float_or_zero",
     "head_slug",
     "infra_run_record",
@@ -108,6 +110,8 @@ __all__ = [
     "normalize_truth",
     "normalize_truth_expectation",
     "parse_int",
+    "build_overlap_report",
+    "render_overlap_text",
     "run_records_from_summary",
     "run_matches_disposition_rule",
     "safe_slug",
