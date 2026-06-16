@@ -14,6 +14,19 @@ from .evidence import (
 )
 from .evidence_report import build_reviewer_evidence_report, render_evidence_text
 from .arms import DEFAULT_CLI_LANES, DEFAULT_LOCAL_LLM_PROFILES, default_arms
+from .commands import (
+    command_lane_id,
+    command_metadata_for_run,
+    local_llm_profiles_from_command,
+    materialize_command,
+    option_value,
+    parse_repo_path_map,
+    repo_path_for_item,
+    resolve_path_for_cwd,
+    reviewer_id_from_command,
+    summary_path_for_command,
+    text_from_timeout_stream,
+)
 from .identity import head_slug, safe_slug
 from .metrics import float_or_zero
 from .overlap import build_overlap_report, finding_key, render_overlap_text
@@ -94,6 +107,8 @@ __all__ = [
     "build_reviewer_evidence_report",
     "build_value_report",
     "build_pilot_plan",
+    "command_lane_id",
+    "command_metadata_for_run",
     "count_normalized_findings",
     "audit_input_insufficient_result",
     "coderabbit_blocking_findings",
@@ -110,11 +125,15 @@ __all__ = [
     "load_json_object",
     "load_run_results",
     "local_llm_findings",
+    "local_llm_profiles_from_command",
+    "materialize_command",
     "normalize_disposition",
     "normalize_run_status_category",
     "normalize_truth",
     "normalize_truth_expectation",
+    "option_value",
     "parse_int",
+    "parse_repo_path_map",
     "build_overlap_report",
     "render_overlap_text",
     "render_evidence_text",
@@ -123,7 +142,12 @@ __all__ = [
     "render_value_report_text",
     "run_records_from_summary",
     "run_matches_disposition_rule",
+    "repo_path_for_item",
+    "resolve_path_for_cwd",
+    "reviewer_id_from_command",
     "safe_slug",
     "status_from_verdict",
+    "summary_path_for_command",
+    "text_from_timeout_stream",
     "truth_for_item",
 ]
