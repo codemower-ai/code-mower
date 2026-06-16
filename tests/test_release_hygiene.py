@@ -274,6 +274,18 @@ class ReleaseHygieneTests(unittest.TestCase):
             code_mower_calibration._infra_run_record,
             calibration_pkg.infra_run_record,
         )
+        self.assertIs(
+            code_mower_calibration._load_run_results,
+            calibration_pkg.load_run_results,
+        )
+        self.assertIs(
+            code_mower_calibration.corpus_with_run_results,
+            calibration_pkg.corpus_with_run_results,
+        )
+        self.assertIs(
+            code_mower_calibration._normalize_disposition,
+            calibration_pkg.normalize_disposition,
+        )
         self.assertTrue(
             calibration_pkg.audit_input_insufficient_result(
                 [
@@ -298,6 +310,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("src/code_mower/calibration/arms.py", package_targets)
         self.assertIn("src/code_mower/calibration/planning.py", package_targets)
         self.assertIn("src/code_mower/calibration/results.py", package_targets)
+        self.assertIn("src/code_mower/calibration/run_results.py", package_targets)
         self.assertIn("src/code_mower/calibration/run_status.py", package_targets)
         self.assertIn("src/code_mower/calibration/truth.py", package_targets)
 
