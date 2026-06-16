@@ -37,6 +37,8 @@ if __package__ in {None, ""}:
             CALIBRATION_RUN_RESULTS_MODE,
             CALIBRATION_RUN_RESULTS_SCHEMA,
             build_pilot_plan,
+            command_lane_id as _command_lane_id,
+            command_metadata_for_run as _command_metadata_for_run,
             default_arms,
             build_overlap_report,
             build_lane_policy_report,
@@ -50,12 +52,18 @@ if __package__ in {None, ""}:
             load_corpus,
             load_json_object as _load_json,
             load_run_results as _load_run_results,
+            local_llm_profiles_from_command as _local_llm_profiles_from_command,
             local_llm_findings as _local_llm_findings,
+            materialize_command as _materialize_command,
             normalize_disposition as _normalize_disposition,
             normalize_run_status_category as _normalize_run_status_category,
             normalize_truth as _normalize_truth,
             normalize_truth_expectation as _normalize_truth_expectation,
             parse_int as _int,
+            parse_repo_path_map,
+            repo_path_for_item as _repo_path_for_item,
+            resolve_path_for_cwd as _resolve_path_for_cwd,
+            reviewer_id_from_command as _reviewer_id_from_command,
             run_records_from_summary as _run_records_from_summary,
             render_evidence_text,
             render_overlap_text,
@@ -63,6 +71,8 @@ if __package__ in {None, ""}:
             render_policy_text,
             render_value_report_text,
             safe_slug as _safe_slug,
+            summary_path_for_command as _summary_path_for_command,
+            text_from_timeout_stream as _text_from_timeout_stream,
             truth_for_item as _truth_for_item,
         )
         from code_mower.calibration.auto_discovery import (
@@ -87,6 +97,8 @@ if __package__ in {None, ""}:
             CALIBRATION_RUN_RESULTS_MODE,
             CALIBRATION_RUN_RESULTS_SCHEMA,
             build_pilot_plan,
+            command_lane_id as _command_lane_id,
+            command_metadata_for_run as _command_metadata_for_run,
             default_arms,
             build_overlap_report,
             build_lane_policy_report,
@@ -100,12 +112,18 @@ if __package__ in {None, ""}:
             load_corpus,
             load_json_object as _load_json,
             load_run_results as _load_run_results,
+            local_llm_profiles_from_command as _local_llm_profiles_from_command,
             local_llm_findings as _local_llm_findings,
+            materialize_command as _materialize_command,
             normalize_disposition as _normalize_disposition,
             normalize_run_status_category as _normalize_run_status_category,
             normalize_truth as _normalize_truth,
             normalize_truth_expectation as _normalize_truth_expectation,
             parse_int as _int,
+            parse_repo_path_map,
+            repo_path_for_item as _repo_path_for_item,
+            resolve_path_for_cwd as _resolve_path_for_cwd,
+            reviewer_id_from_command as _reviewer_id_from_command,
             run_records_from_summary as _run_records_from_summary,
             render_evidence_text,
             render_overlap_text,
@@ -113,6 +131,8 @@ if __package__ in {None, ""}:
             render_policy_text,
             render_value_report_text,
             safe_slug as _safe_slug,
+            summary_path_for_command as _summary_path_for_command,
+            text_from_timeout_stream as _text_from_timeout_stream,
             truth_for_item as _truth_for_item,
         )
         from tools.calibration.auto_discovery import (
@@ -137,6 +157,8 @@ elif __package__ == "tools":
         CALIBRATION_RUN_RESULTS_MODE,
         CALIBRATION_RUN_RESULTS_SCHEMA,
         build_pilot_plan,
+        command_lane_id as _command_lane_id,
+        command_metadata_for_run as _command_metadata_for_run,
         default_arms,
         build_overlap_report,
         build_lane_policy_report,
@@ -150,12 +172,18 @@ elif __package__ == "tools":
         load_corpus,
         load_json_object as _load_json,
         load_run_results as _load_run_results,
+        local_llm_profiles_from_command as _local_llm_profiles_from_command,
         local_llm_findings as _local_llm_findings,
+        materialize_command as _materialize_command,
         normalize_disposition as _normalize_disposition,
         normalize_run_status_category as _normalize_run_status_category,
         normalize_truth as _normalize_truth,
         normalize_truth_expectation as _normalize_truth_expectation,
         parse_int as _int,
+        parse_repo_path_map,
+        repo_path_for_item as _repo_path_for_item,
+        resolve_path_for_cwd as _resolve_path_for_cwd,
+        reviewer_id_from_command as _reviewer_id_from_command,
         run_records_from_summary as _run_records_from_summary,
         render_evidence_text,
         render_overlap_text,
@@ -163,6 +191,8 @@ elif __package__ == "tools":
         render_policy_text,
         render_value_report_text,
         safe_slug as _safe_slug,
+        summary_path_for_command as _summary_path_for_command,
+        text_from_timeout_stream as _text_from_timeout_stream,
         truth_for_item as _truth_for_item,
     )
     from tools.calibration.auto_discovery import (
@@ -187,6 +217,8 @@ else:  # pragma: no cover - exercised after package extraction.
         CALIBRATION_RUN_RESULTS_MODE,
         CALIBRATION_RUN_RESULTS_SCHEMA,
         build_pilot_plan,
+        command_lane_id as _command_lane_id,
+        command_metadata_for_run as _command_metadata_for_run,
         default_arms,
         build_overlap_report,
         build_lane_policy_report,
@@ -200,12 +232,18 @@ else:  # pragma: no cover - exercised after package extraction.
         load_corpus,
         load_json_object as _load_json,
         load_run_results as _load_run_results,
+        local_llm_profiles_from_command as _local_llm_profiles_from_command,
         local_llm_findings as _local_llm_findings,
+        materialize_command as _materialize_command,
         normalize_disposition as _normalize_disposition,
         normalize_run_status_category as _normalize_run_status_category,
         normalize_truth as _normalize_truth,
         normalize_truth_expectation as _normalize_truth_expectation,
         parse_int as _int,
+        parse_repo_path_map,
+        repo_path_for_item as _repo_path_for_item,
+        resolve_path_for_cwd as _resolve_path_for_cwd,
+        reviewer_id_from_command as _reviewer_id_from_command,
         run_records_from_summary as _run_records_from_summary,
         render_evidence_text,
         render_overlap_text,
@@ -213,6 +251,8 @@ else:  # pragma: no cover - exercised after package extraction.
         render_policy_text,
         render_value_report_text,
         safe_slug as _safe_slug,
+        summary_path_for_command as _summary_path_for_command,
+        text_from_timeout_stream as _text_from_timeout_stream,
         truth_for_item as _truth_for_item,
     )
     from .calibration.auto_discovery import (
@@ -275,192 +315,10 @@ def _default_code_mower_command() -> list[str]:
     return ["code-mower"]
 
 
-def parse_repo_path_map(entries: Sequence[str]) -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    for entry in entries:
-        if "=" not in entry:
-            raise ValueError(
-                "repo path map entries must be OWNER/REPO=PATH, "
-                f"OWNER/REPO#PR=PATH, or OWNER/REPO@HEAD=PATH: {entry}"
-            )
-        selector, path = entry.split("=", 1)
-        selector = selector.strip()
-        path = path.strip()
-        repo = re.split(r"[#@]", selector, maxsplit=1)[0]
-        if "/" not in repo or not path:
-            raise ValueError(
-                "repo path map entries must be OWNER/REPO=PATH, "
-                f"OWNER/REPO#PR=PATH, or OWNER/REPO@HEAD=PATH: {entry}"
-            )
-        mapping[selector] = path
-    return mapping
-
-
-def _repo_path_for_item(item: Mapping[str, Any], repo_path_map: Mapping[str, str]) -> str:
-    repo = str(item.get("repo") or "")
-    pr_number = str(item.get("pr_number") or "")
-    head_sha = str(item.get("head_sha") or "")
-    selectors = [
-        f"{repo}#{pr_number}@{head_sha}" if repo and pr_number and head_sha else "",
-        f"{repo}#{pr_number}" if repo and pr_number else "",
-        f"{repo}@{head_sha}" if repo and head_sha else "",
-        repo,
-    ]
-    for selector in selectors:
-        if selector and selector in repo_path_map:
-            return repo_path_map[selector]
-    return ""
-
-
-def _command_lane_id(command: Sequence[Any]) -> str:
-    parts = [str(part) for part in command]
-    if len(parts) >= 2 and parts[0] == "code-mower":
-        if parts[1] == "local-llm" and len(parts) >= 3 and parts[2] == "bakeoff":
-            return "local-llm"
-        return parts[1].replace("_", "-")
-    return _safe_slug(parts[0] if parts else "command", "command")
-
-
-def _option_value(command: Sequence[str], option: str) -> str:
-    for index, part in enumerate(command):
-        if part == option and index + 1 < len(command):
-            return command[index + 1]
-        if part.startswith(f"{option}="):
-            return part.split("=", 1)[1]
-    return ""
-
-
-def _reviewer_id_from_command(command: Sequence[Any]) -> str:
-    lane_id = _command_lane_id(command)
-    output_dir = _option_value([str(part) for part in command], "--output-dir")
-    output_leaf = _safe_slug(Path(output_dir).name if output_dir else "", "")
-    default_leaf = {
-        "antigravity-cli": "antigravity-cli",
-        "gemini-cli": "gemini-cli",
-        "hermes-cli": "hermes-cli",
-        "coderabbit-cli": "coderabbit-cli",
-        "local-llm": "local-llm",
-    }.get(lane_id, lane_id)
-    if output_leaf and output_leaf != default_leaf:
-        return output_leaf
-    return lane_id
-
-
-def _command_metadata_for_run(run: Mapping[str, Any], command_index: int) -> dict[str, Any]:
-    command_metadata = run.get("command_metadata", [])
-    if (
-        isinstance(command_metadata, list)
-        and 0 <= command_index < len(command_metadata)
-        and isinstance(command_metadata[command_index], Mapping)
-    ):
-        return dict(command_metadata[command_index])
-    return {}
-
-
-def _local_llm_profiles_from_command(command: Sequence[Any]) -> list[str]:
-    profiles = _option_value([str(part) for part in command], "--profiles")
-    return [profile.strip() for profile in profiles.split(",") if profile.strip()]
-
-
-def _set_option_value(command: list[str], option: str, value: str) -> None:
-    for index, part in enumerate(command):
-        if part == option and index + 1 < len(command):
-            command[index + 1] = value
-            return
-        if part.startswith(f"{option}="):
-            command[index] = f"{option}={value}"
-            return
-    command.extend([option, value])
-
-
-def _has_flag(command: Sequence[str], flag: str) -> bool:
-    return any(part == flag for part in command)
-
-
-def _rewrite_code_mower_command(
-    command: Sequence[Any],
-    *,
-    code_mower_command: Sequence[str],
-) -> list[str]:
-    parts = [str(part) for part in command]
-    if parts and parts[0] == "code-mower":
-        return [*code_mower_command, *parts[1:]]
-    return parts
-
-
-def _materialize_command(
-    command: Sequence[Any],
-    *,
-    item: Mapping[str, Any],
-    code_mower_command: Sequence[str],
-    repo_path_map: Mapping[str, str],
-    allow_historical_head: bool,
-) -> list[str]:
-    materialized = _rewrite_code_mower_command(
-        command,
-        code_mower_command=code_mower_command,
-    )
-    lane_id = _command_lane_id(command)
-    repo = str(item.get("repo") or "")
-    repo_path = _repo_path_for_item(item, repo_path_map)
-    historical_local_cli_lanes = {"antigravity-cli", "gemini-cli", "hermes-cli"}
-    if lane_id in {"coderabbit-cli", "local-llm", *historical_local_cli_lanes}:
-        existing_repo_path = _option_value(materialized, "--repo-path")
-        if repo_path:
-            _set_option_value(materialized, "--repo-path", repo_path)
-            if lane_id in {"coderabbit-cli", "local-llm", *historical_local_cli_lanes} and allow_historical_head:
-                if not _has_flag(materialized, "--allow-historical-head"):
-                    materialized.append("--allow-historical-head")
-                if lane_id in historical_local_cli_lanes and not _has_flag(
-                    materialized, "--historical-calibration"
-                ):
-                    materialized.append("--historical-calibration")
-        elif existing_repo_path == "/path/to/pr-worktree":
-            raise ValueError(
-                f"{lane_id} for {repo} needs --repo-path-map {repo}=/path/to/pr-worktree"
-            )
-    return materialized
-
-
-def _summary_path_for_command(command: Sequence[Any]) -> Path | None:
-    lane_id = _command_lane_id(command)
-    output_dir = _option_value([str(part) for part in command], "--output-dir")
-    if not output_dir:
-        return None
-    root = Path(output_dir)
-    if lane_id == "local-llm":
-        return root / "summary.json"
-    if lane_id == "antigravity-cli":
-        return root / "antigravity-cli.summary.json"
-    if lane_id == "gemini-cli":
-        return root / "gemini-cli.summary.json"
-    if lane_id == "hermes-cli":
-        return root / "hermes-cli.summary.json"
-    if lane_id == "coderabbit-cli":
-        return root / "coderabbit-cli.summary.json"
-    return None
-
-
 def _load_summary(path: Path | None) -> Mapping[str, Any] | None:
     if path is None or not path.is_file():
         return None
     return _load_json(path)
-
-
-def _resolve_path_for_cwd(path: Path | None, cwd: Path | None) -> Path | None:
-    if path is None:
-        return None
-    if path.is_absolute():
-        return path
-    return (cwd or Path.cwd()) / path
-
-
-def _text_from_timeout_stream(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return str(value)
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
