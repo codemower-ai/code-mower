@@ -22,6 +22,17 @@ from .policy import (
     SELECTIVE_USEFUL_RATE,
     build_lane_policy_report,
 )
+from .run_status import (
+    RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
+    RUN_STATUS_BLOCKED,
+    RUN_STATUS_CATEGORY_ALIASES,
+    RUN_STATUS_INFRA_ERROR,
+    RUN_STATUS_PASS,
+    RUN_STATUS_UNKNOWN,
+    count_normalized_findings,
+    normalize_run_status_category,
+    status_from_verdict,
+)
 
 __all__ = [
     "KNOWN_EVIDENCE_DISPOSITIONS",
@@ -31,13 +42,22 @@ __all__ = [
     "MERGE_GATE_MIN_FINDINGS",
     "MERGE_GATE_USEFUL_RATE",
     "NON_BLOCKING_CODERABBIT_SEVERITIES",
+    "RUN_STATUS_AUDIT_INPUT_INSUFFICIENT",
+    "RUN_STATUS_BLOCKED",
+    "RUN_STATUS_CATEGORY_ALIASES",
+    "RUN_STATUS_INFRA_ERROR",
+    "RUN_STATUS_PASS",
+    "RUN_STATUS_UNKNOWN",
     "SELECTIVE_USEFUL_RATE",
     "USEFUL_EVIDENCE_DISPOSITIONS",
     "build_lane_policy_report",
+    "count_normalized_findings",
     "default_arms",
     "float_or_zero",
     "head_slug",
     "load_json_object",
+    "normalize_run_status_category",
     "parse_int",
     "safe_slug",
+    "status_from_verdict",
 ]

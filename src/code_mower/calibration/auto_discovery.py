@@ -11,14 +11,12 @@ from typing import Any, Mapping, Sequence
 
 from .corpus import parse_int
 from .identity import safe_slug
+from .run_status import RUN_STATUS_BLOCKED, RUN_STATUS_PASS, RUN_STATUS_UNKNOWN
 
 AUTO_DISCOVERY_SCHEMA = "code_mower.calibrationAutoDiscover.v1"
 TRUTH_EXPECTATION_UNKNOWN = "unknown"
 TRUTH_EXPECTATION_KNOWN_CLEAN = "known_clean"
 TRUTH_EXPECTATION_KNOWN_BLOCKED = "known_blocked"
-RUN_STATUS_PASS = "pass"
-RUN_STATUS_BLOCKED = "blocked"
-RUN_STATUS_UNKNOWN = "unknown"
 
 AUDIT_STATE_RE = re.compile(
     r"<!--\s*(?P<provider>[A-Z0-9_]+)_AUDIT_STATE:\s*"

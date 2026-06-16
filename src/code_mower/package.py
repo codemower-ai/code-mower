@@ -53,6 +53,7 @@ PACKAGE_FILES = (
     ("src/code_mower/calibration/identity.py", "src/code_mower/calibration/identity.py", "core"),
     ("src/code_mower/calibration/metrics.py", "src/code_mower/calibration/metrics.py", "core"),
     ("src/code_mower/calibration/policy.py", "src/code_mower/calibration/policy.py", "core"),
+    ("src/code_mower/calibration/run_status.py", "src/code_mower/calibration/run_status.py", "core"),
     ("tools/code_mower_cloud.py", "src/code_mower/cloud.py", "core"),
     ("src/code_mower/cloud_client/__init__.py", "src/code_mower/cloud_client/__init__.py", "core"),
     ("src/code_mower/cloud_client/bundle.py", "src/code_mower/cloud_client/bundle.py", "core"),

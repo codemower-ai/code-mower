@@ -29,13 +29,22 @@ if __package__ in {None, ""}:
         from code_mower.calibration import (
             KNOWN_EVIDENCE_DISPOSITIONS,
             NON_BLOCKING_CODERABBIT_SEVERITIES,
+            RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
+            RUN_STATUS_BLOCKED,
+            RUN_STATUS_CATEGORY_ALIASES,
+            RUN_STATUS_INFRA_ERROR,
+            RUN_STATUS_PASS,
+            RUN_STATUS_UNKNOWN,
             USEFUL_EVIDENCE_DISPOSITIONS,
             default_arms,
             build_lane_policy_report,
+            count_normalized_findings as _count_normalized_findings,
             head_slug as _head_slug,
             load_json_object as _load_json,
+            normalize_run_status_category as _normalize_run_status_category,
             parse_int as _int,
             safe_slug as _safe_slug,
+            status_from_verdict as _status_from_verdict,
         )
         from code_mower.calibration.auto_discovery import (
             build_auto_discovered_corpus,
@@ -47,13 +56,22 @@ if __package__ in {None, ""}:
         from tools.calibration import (
             KNOWN_EVIDENCE_DISPOSITIONS,
             NON_BLOCKING_CODERABBIT_SEVERITIES,
+            RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
+            RUN_STATUS_BLOCKED,
+            RUN_STATUS_CATEGORY_ALIASES,
+            RUN_STATUS_INFRA_ERROR,
+            RUN_STATUS_PASS,
+            RUN_STATUS_UNKNOWN,
             USEFUL_EVIDENCE_DISPOSITIONS,
             default_arms,
             build_lane_policy_report,
+            count_normalized_findings as _count_normalized_findings,
             head_slug as _head_slug,
             load_json_object as _load_json,
+            normalize_run_status_category as _normalize_run_status_category,
             parse_int as _int,
             safe_slug as _safe_slug,
+            status_from_verdict as _status_from_verdict,
         )
         from tools.calibration.auto_discovery import (
             build_auto_discovered_corpus,
@@ -65,13 +83,22 @@ elif __package__ == "tools":
     from tools.calibration import (
         KNOWN_EVIDENCE_DISPOSITIONS,
         NON_BLOCKING_CODERABBIT_SEVERITIES,
+        RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
+        RUN_STATUS_BLOCKED,
+        RUN_STATUS_CATEGORY_ALIASES,
+        RUN_STATUS_INFRA_ERROR,
+        RUN_STATUS_PASS,
+        RUN_STATUS_UNKNOWN,
         USEFUL_EVIDENCE_DISPOSITIONS,
         default_arms,
         build_lane_policy_report,
+        count_normalized_findings as _count_normalized_findings,
         head_slug as _head_slug,
         load_json_object as _load_json,
+        normalize_run_status_category as _normalize_run_status_category,
         parse_int as _int,
         safe_slug as _safe_slug,
+        status_from_verdict as _status_from_verdict,
     )
     from tools.calibration.auto_discovery import (
         build_auto_discovered_corpus,
@@ -83,13 +110,22 @@ else:  # pragma: no cover - exercised after package extraction.
     from .calibration import (
         KNOWN_EVIDENCE_DISPOSITIONS,
         NON_BLOCKING_CODERABBIT_SEVERITIES,
+        RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
+        RUN_STATUS_BLOCKED,
+        RUN_STATUS_CATEGORY_ALIASES,
+        RUN_STATUS_INFRA_ERROR,
+        RUN_STATUS_PASS,
+        RUN_STATUS_UNKNOWN,
         USEFUL_EVIDENCE_DISPOSITIONS,
         default_arms,
         build_lane_policy_report,
+        count_normalized_findings as _count_normalized_findings,
         head_slug as _head_slug,
         load_json_object as _load_json,
+        normalize_run_status_category as _normalize_run_status_category,
         parse_int as _int,
         safe_slug as _safe_slug,
+        status_from_verdict as _status_from_verdict,
     )
     from .calibration.auto_discovery import (
         build_auto_discovered_corpus,
@@ -135,42 +171,16 @@ TRUTH_EXPECTATION_ALIASES = {
     "pass": TRUTH_EXPECTATION_KNOWN_CLEAN,
     "unknown": TRUTH_EXPECTATION_UNKNOWN,
 }
-RUN_STATUS_PASS = "pass"
-RUN_STATUS_BLOCKED = "blocked"
-RUN_STATUS_AUDIT_INPUT_INSUFFICIENT = "audit_input_insufficient"
-RUN_STATUS_INFRA_ERROR = "infra_error"
-RUN_STATUS_UNKNOWN = "unknown"
-RUN_STATUS_CATEGORY_ALIASES = {
-    "pass": RUN_STATUS_PASS,
-    "passed": RUN_STATUS_PASS,
-    "complete": RUN_STATUS_PASS,
-    "completed": RUN_STATUS_PASS,
-    "done": RUN_STATUS_PASS,
-    "success": RUN_STATUS_PASS,
-    "succeeded": RUN_STATUS_PASS,
-    "block": RUN_STATUS_BLOCKED,
-    "blocked": RUN_STATUS_BLOCKED,
-    "audit_input_insufficient": RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
-    "context_insufficient": RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
-    "fail": RUN_STATUS_BLOCKED,
-    "error": RUN_STATUS_INFRA_ERROR,
-    "failed": RUN_STATUS_INFRA_ERROR,
-    "failure": RUN_STATUS_INFRA_ERROR,
-    "infra_error": RUN_STATUS_INFRA_ERROR,
-    "input_insufficient": RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
-    "insufficient_context": RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
-    "invalid_summary": RUN_STATUS_INFRA_ERROR,
-    "launch_failed": RUN_STATUS_INFRA_ERROR,
-    "missing_summary": RUN_STATUS_INFRA_ERROR,
-    "rate_limit": RUN_STATUS_INFRA_ERROR,
-    "rate_limited": RUN_STATUS_INFRA_ERROR,
-    "setup_error": RUN_STATUS_INFRA_ERROR,
-    "stale": RUN_STATUS_INFRA_ERROR,
-    "timeout": RUN_STATUS_INFRA_ERROR,
-    "timed_out": RUN_STATUS_INFRA_ERROR,
-}
 CALIBRATION_RUN_RESULTS_MODE = "code-mower-calibration-run-results"
 CALIBRATION_RUN_RESULTS_SCHEMA = "code_mower.calibrationRunResults.v1"
+_LEGACY_RUN_STATUS_EXPORTS = (
+    RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
+    RUN_STATUS_BLOCKED,
+    RUN_STATUS_CATEGORY_ALIASES,
+    RUN_STATUS_INFRA_ERROR,
+    RUN_STATUS_PASS,
+    RUN_STATUS_UNKNOWN,
+)
 
 
 def load_corpus(path: Path) -> dict[str, Any]:
@@ -785,21 +795,6 @@ def _summary_path_for_command(command: Sequence[Any]) -> Path | None:
     if lane_id == "coderabbit-cli":
         return root / "coderabbit-cli.summary.json"
     return None
-
-
-def _status_from_verdict(value: Any, *, returncode: int | None = None) -> str:
-    category = _normalize_run_status_category(value)
-    if category != RUN_STATUS_UNKNOWN:
-        return category
-    if returncode is not None and returncode != 0:
-        return RUN_STATUS_INFRA_ERROR
-    return RUN_STATUS_UNKNOWN
-
-
-def _count_normalized_findings(findings: Any) -> int:
-    if not isinstance(findings, list):
-        return 0
-    return sum(1 for finding in findings if isinstance(finding, Mapping))
 
 
 AUDIT_INPUT_INSUFFICIENT_PATTERNS = (
@@ -1874,13 +1869,6 @@ def _normalize_disposition(value: Any) -> str:
     if disposition not in KNOWN_EVIDENCE_DISPOSITIONS:
         return "unknown"
     return disposition
-
-
-def _normalize_run_status_category(value: Any) -> str:
-    """Return the semantic category used for reviewer-run policy decisions."""
-
-    status = str(value or "").strip().lower().replace("-", "_")
-    return RUN_STATUS_CATEGORY_ALIASES.get(status, RUN_STATUS_UNKNOWN)
 
 
 def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
