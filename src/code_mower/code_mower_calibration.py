@@ -47,6 +47,7 @@ if __package__ in {None, ""}:
             coderabbit_blocking_findings as _coderabbit_blocking_findings,
             expected_finding_matches as _expected_finding_matches,
             infra_run_record as _infra_run_record,
+            load_corpus,
             load_json_object as _load_json,
             local_llm_findings as _local_llm_findings,
             normalize_run_status_category as _normalize_run_status_category,
@@ -85,6 +86,7 @@ if __package__ in {None, ""}:
             coderabbit_blocking_findings as _coderabbit_blocking_findings,
             expected_finding_matches as _expected_finding_matches,
             infra_run_record as _infra_run_record,
+            load_corpus,
             load_json_object as _load_json,
             local_llm_findings as _local_llm_findings,
             normalize_run_status_category as _normalize_run_status_category,
@@ -123,6 +125,7 @@ elif __package__ == "tools":
         coderabbit_blocking_findings as _coderabbit_blocking_findings,
         expected_finding_matches as _expected_finding_matches,
         infra_run_record as _infra_run_record,
+        load_corpus,
         load_json_object as _load_json,
         local_llm_findings as _local_llm_findings,
         normalize_run_status_category as _normalize_run_status_category,
@@ -161,6 +164,7 @@ else:  # pragma: no cover - exercised after package extraction.
         coderabbit_blocking_findings as _coderabbit_blocking_findings,
         expected_finding_matches as _expected_finding_matches,
         infra_run_record as _infra_run_record,
+        load_corpus,
         load_json_object as _load_json,
         local_llm_findings as _local_llm_findings,
         normalize_run_status_category as _normalize_run_status_category,
@@ -181,6 +185,7 @@ else:  # pragma: no cover - exercised after package extraction.
 CONTEXT_PACK_CLI_LANES = {"antigravity-cli", "gemini-cli", "hermes-cli"}
 CALIBRATION_RUN_RESULTS_MODE = "code-mower-calibration-run-results"
 CALIBRATION_RUN_RESULTS_SCHEMA = "code_mower.calibrationRunResults.v1"
+_LEGACY_CORPUS_EXPORTS = (load_corpus, _int)
 _LEGACY_RUN_STATUS_EXPORTS = (
     RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
     RUN_STATUS_BLOCKED,
@@ -208,63 +213,6 @@ _LEGACY_RESULT_EXPORTS = (
     _local_llm_findings,
     _run_records_from_summary,
 )
-
-
-def load_corpus(path: Path) -> dict[str, Any]:
-    payload = dict(_load_json(path))
-    if payload.get("version", 1) not in {1, "1"}:
-        raise ValueError("calibration corpus version must be 1")
-    raw_items = payload.get("corpus", payload.get("pull_requests"))
-    if not isinstance(raw_items, list) or not raw_items:
-        raise ValueError("calibration corpus must include a non-empty corpus list")
-
-    items: list[dict[str, Any]] = []
-    seen: set[tuple[str, int, str]] = set()
-    for index, item in enumerate(raw_items):
-        if not isinstance(item, Mapping):
-            raise ValueError(f"corpus[{index}] must be a JSON object")
-        repo = str(item.get("repo") or "").strip()
-        if "/" not in repo:
-            raise ValueError(f"corpus[{index}].repo must be an owner/repo slug")
-        pr_number = _int(item.get("pr_number", item.get("pr")), field=f"corpus[{index}].pr_number")
-        head_sha = str(item.get("head_sha") or item.get("head") or "").strip()
-        key = (repo, pr_number, head_sha)
-        if key in seen:
-            raise ValueError(f"duplicate corpus PR entry: {repo}#{pr_number} {head_sha or '(head unspecified)'}")
-        seen.add(key)
-        source = str(item.get("source") or "known-pr")
-        expected_findings = list(item.get("expected_findings", []))
-        truth = _normalize_truth(item, source=source)
-        expected_findings = list(truth.get("expected_findings") or expected_findings)
-        items.append(
-            {
-                "repo": repo,
-                "pr_number": pr_number,
-                "head_sha": head_sha,
-                "base_ref": str(item.get("base_ref") or ""),
-                "difficulty": str(item.get("difficulty") or "unknown"),
-                "review_class": str(item.get("review_class") or "general"),
-                "source": source,
-                "truth": truth,
-                "known_clean": truth["known_clean"],
-                "known_blocked": truth["known_blocked"],
-                "expected_findings": expected_findings,
-                "context_packs": list(item.get("context_packs", [])),
-                "reviewer_evidence": list(item.get("reviewer_evidence", [])),
-                "reviewer_runs": list(item.get("reviewer_runs", [])),
-                "reviewer_run_dispositions": list(
-                    item.get("reviewer_run_dispositions", [])
-                ),
-                "notes": str(item.get("notes") or ""),
-            }
-        )
-
-    return {
-        "version": 1,
-        "name": str(payload.get("name") or path.stem),
-        "description": str(payload.get("description") or ""),
-        "corpus": items,
-    }
 
 
 def _utc_now_iso() -> str:
