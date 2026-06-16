@@ -224,6 +224,26 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIs(code_mower_calibration.default_arms, calibration_pkg.default_arms)
         self.assertIs(calibration_pkg.default_arms, calibration_arms.default_arms)
         self.assertEqual(calibration_pkg.float_or_zero("0.75"), 0.75)
+        self.assertIs(
+            code_mower_calibration._normalize_run_status_category,
+            calibration_pkg.normalize_run_status_category,
+        )
+        self.assertEqual(
+            calibration_pkg.normalize_run_status_category("context-insufficient"),
+            calibration_pkg.RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
+        )
+        self.assertEqual(
+            calibration_pkg.status_from_verdict("unknown", returncode=1),
+            calibration_pkg.RUN_STATUS_INFRA_ERROR,
+        )
+        self.assertEqual(
+            code_mower_calibration.RUN_STATUS_UNKNOWN,
+            calibration_pkg.RUN_STATUS_UNKNOWN,
+        )
+        self.assertIs(
+            code_mower_calibration.RUN_STATUS_CATEGORY_ALIASES,
+            calibration_pkg.RUN_STATUS_CATEGORY_ALIASES,
+        )
 
     def test_calibration_arm_catalog_is_packaged_and_explicit_lens_aware(self) -> None:
         arm_ids = {arm["arm_id"] for arm in calibration_pkg.default_arms()}
@@ -236,6 +256,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         )
         package_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}
         self.assertIn("src/code_mower/calibration/arms.py", package_targets)
+        self.assertIn("src/code_mower/calibration/run_status.py", package_targets)
 
     def test_provider_runner_github_token_helper_reads_stdin_and_clears_env(self) -> None:
         with mock.patch.dict(

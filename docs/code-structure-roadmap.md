@@ -73,9 +73,10 @@ tested internal seams:
 
 - `code_mower.calibration` now owns corpus parsing helpers, artifact identity,
   evidence disposition constants, metric normalization, the built-in
-  calibration arm catalog, lane-promotion thresholds, and lane-policy report
-  construction. `code_mower_calibration.py` remains the backwards-compatible
-  command adapter.
+  calibration arm catalog, reviewer run-status normalization,
+  lane-promotion thresholds, and lane-policy report construction.
+  `code_mower_calibration.py` remains the backwards-compatible command
+  adapter.
 - `code_mower.doctor_checks` now owns doctor result models and the named check
   groups: runtime, GitHub, providers, cloud, and output.
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
@@ -99,7 +100,8 @@ existing commands.
      and related modules.
    - Move evidence/metrics math to separate modules; lane-policy math now lives
      in `code_mower.calibration.policy`, and the built-in experiment arm
-     catalog now lives in `code_mower.calibration.arms`.
+     catalog now lives in `code_mower.calibration.arms`. Reviewer run-status
+     categorization now lives in `code_mower.calibration.run_status`.
    - Move command materialization and run-result normalization into calibration
      submodules next; those are now the largest chunks left in the legacy
      adapter.
