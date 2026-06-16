@@ -35,6 +35,7 @@ from code_mower import release_readiness
 from code_mower import secrets as code_mower_secrets
 from code_mower import config as code_mower_config
 from code_mower import provider_runners
+from code_mower.calibration import arms as calibration_arms
 from code_mower.calibration import policy as calibration_policy
 from scripts import privacy_scan
 
@@ -220,7 +221,21 @@ class ReleaseHygieneTests(unittest.TestCase):
             "owner-repo-with-spaces",
         )
         self.assertEqual(code_mower_calibration._int("42", field="pr"), 42)
+        self.assertIs(code_mower_calibration.default_arms, calibration_pkg.default_arms)
+        self.assertIs(calibration_pkg.default_arms, calibration_arms.default_arms)
         self.assertEqual(calibration_pkg.float_or_zero("0.75"), 0.75)
+
+    def test_calibration_arm_catalog_is_packaged_and_explicit_lens_aware(self) -> None:
+        arm_ids = {arm["arm_id"] for arm in calibration_pkg.default_arms()}
+
+        self.assertIn("topology-baseline", arm_ids)
+        self.assertIn("antigravity-doctrine-lens-fanout", arm_ids)
+        self.assertEqual(
+            calibration_pkg.DEFAULT_CLI_LANES,
+            ("gemini_cli", "antigravity_cli", "hermes_cli", "coderabbit_cli"),
+        )
+        package_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}
+        self.assertIn("src/code_mower/calibration/arms.py", package_targets)
 
     def test_provider_runner_github_token_helper_reads_stdin_and_clears_env(self) -> None:
         with mock.patch.dict(
