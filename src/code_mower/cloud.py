@@ -77,6 +77,7 @@ EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
 DEFAULT_CATCH_UP_OUTPUT_DIR = ".code-mower/cloud-catch-up-bundle"
 DEFAULT_REVIEWER_RUNS_OUTPUT_DIR = ".code-mower/reviewer-run-bundle"
+DEFAULT_REPO_SYNC_OUTPUT_DIR = ".code-mower/cloud-repo-sync"
 DEFAULT_UPLOAD_ENDPOINT = "https://codemower.com/api/ingest"
 DEFAULT_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
 DEFAULT_TEAM_ID_ENV = "CODE_MOWER_CLOUD_TEAM_ID"
@@ -1300,6 +1301,142 @@ def _reviewer_runs_upload(
     }
 
 
+def _parse_repo_sync_spec(spec: str) -> tuple[str, Path]:
+    if "=" not in spec:
+        return "", Path(spec)
+    repo_slug, repo_path = spec.split("=", 1)
+    repo_slug = repo_slug.strip()
+    repo_path = repo_path.strip()
+    if not repo_slug or not repo_path:
+        raise CloudBundleError(
+            "--repo entries must be PATH or OWNER/REPO=PATH for repo-sync"
+        )
+    return repo_slug, Path(repo_path)
+
+
+def _repo_sync_output_name(repo_slug: str, repo_path: Path, index: int) -> str:
+    raw = repo_slug.replace("/", "__") if repo_slug else repo_path.name
+    cleaned = "".join(
+        ch.lower() if ch.isalnum() else "-" for ch in raw.strip()
+    ).strip("-")
+    return f"{cleaned or 'repo'}-{index + 1}"
+
+
+def _repo_sync_upload(
+    *,
+    repo_specs: list[str],
+    output_dir: Path,
+    modes: list[str],
+    team_id: str,
+    install_id: str,
+    source_prefix: str,
+    limit: int,
+    endpoint: str,
+    token_env: str,
+    include_reports: bool,
+    include_git_ref: bool,
+    yes: bool,
+    timeout: float,
+) -> dict[str, Any]:
+    selected_modes = modes or ["dogfood", "reviewer-runs"]
+    repos: list[dict[str, Any]] = []
+    error_count = 0
+    step_statuses: list[str] = []
+
+    for index, spec in enumerate(repo_specs):
+        repo_slug, repo_path = _parse_repo_sync_spec(spec)
+        repo_path = repo_path.expanduser().resolve()
+        repo_output_dir = output_dir / _repo_sync_output_name(repo_slug, repo_path, index)
+        repo_result: dict[str, Any] = {
+            "repo_spec": spec,
+            "repo_slug": repo_slug,
+            "repo_path": str(repo_path),
+            "steps": [],
+        }
+
+        for mode in selected_modes:
+            try:
+                if mode == "dogfood":
+                    step_result = _dogfood_upload(
+                        repo_path=repo_path,
+                        output_dir=repo_output_dir / "dogfood",
+                        reports=[],
+                        events=[],
+                        repo_slug=repo_slug,
+                        team_id=team_id,
+                        install_id=install_id,
+                        source=f"{source_prefix}-dogfood",
+                        endpoint=endpoint,
+                        token_env=token_env,
+                        include_reports=include_reports,
+                        yes=yes,
+                        timeout=timeout,
+                    )
+                elif mode == "catch-up":
+                    step_result = _catch_up_upload(
+                        repo_path=repo_path,
+                        output_dir=repo_output_dir / "catch-up",
+                        repo_slug=repo_slug,
+                        team_id=team_id,
+                        install_id=install_id,
+                        source=f"{source_prefix}-catch-up",
+                        limit=limit,
+                        endpoint=endpoint,
+                        token_env=token_env,
+                        yes=yes,
+                        timeout=timeout,
+                        include_git_ref=include_git_ref,
+                    )
+                elif mode == "reviewer-runs":
+                    step_result = _reviewer_runs_upload(
+                        repo_path=repo_path,
+                        verdicts=code_mower_telemetry.default_verdict_artifact_dir(),
+                        output_dir=repo_output_dir / "reviewer-runs",
+                        repo_slug=repo_slug,
+                        team_id=team_id,
+                        install_id=install_id,
+                        limit=limit,
+                        endpoint=endpoint,
+                        token_env=token_env,
+                        yes=yes,
+                        timeout=timeout,
+                        include_git_ref=include_git_ref,
+                    )
+                else:  # pragma: no cover - argparse constrains modes.
+                    raise CloudBundleError(f"unsupported repo-sync mode: {mode}")
+            except CloudBundleError as exc:
+                step_result = {
+                    "mode": f"cloud-{mode}",
+                    "status": "error",
+                    "error": str(exc),
+                }
+            repo_result["repo_slug"] = repo_result["repo_slug"] or str(
+                step_result.get("repo_slug") or ""
+            )
+            repo_result["steps"].append(step_result)
+            step_status = str(step_result.get("status") or "")
+            step_statuses.append(step_status)
+            if step_result.get("status") in {"error", "doctor_failed"}:
+                error_count += 1
+
+        repos.append(repo_result)
+
+    status = "dry_run" if not yes else "uploaded"
+    if error_count:
+        status = "partial"
+    elif yes and not any(step_status == "uploaded" for step_status in step_statuses):
+        status = "no_events" if step_statuses else "no_events"
+    return {
+        "mode": "cloud-repo-sync",
+        "status": status,
+        "repo_count": len(repos),
+        "step_count": sum(len(repo["steps"]) for repo in repos),
+        "error_count": error_count,
+        "modes": selected_modes,
+        "repos": repos,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower cloud")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1515,6 +1652,54 @@ def main(argv: list[str] | None = None) -> int:
     )
     reviewer_runs.add_argument("--timeout", type=float, default=20.0)
     reviewer_runs.add_argument("--json", action="store_true")
+    repo_sync = subparsers.add_parser("repo-sync")
+    repo_sync.add_argument(
+        "--repo",
+        action="append",
+        required=True,
+        default=[],
+        metavar="[OWNER/REPO=]PATH",
+        help="repository path to sync; optionally prefix with OWNER/REPO=",
+    )
+    repo_sync.add_argument(
+        "--mode",
+        action="append",
+        choices=("dogfood", "catch-up", "reviewer-runs"),
+        default=[],
+        help="sync mode to run; repeatable, defaults to dogfood and reviewer-runs",
+    )
+    repo_sync.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(DEFAULT_REPO_SYNC_OUTPUT_DIR),
+    )
+    repo_sync.add_argument("--team-id", default="")
+    repo_sync.add_argument("--install-id", default="")
+    repo_sync.add_argument("--source-prefix", default="local-repo-sync")
+    repo_sync.add_argument(
+        "--limit",
+        type=int,
+        default=MAX_EVENT_COUNT,
+        help=f"number of catch-up/reviewer-run events per repo; max {MAX_EVENT_COUNT}",
+    )
+    repo_sync.add_argument(
+        "--include-git-ref",
+        action="store_true",
+        help="include workflow branches/head SHAs and verdict head SHAs",
+    )
+    repo_sync.add_argument(
+        "--endpoint",
+        default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
+    )
+    repo_sync.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    repo_sync.add_argument("--include-reports", action="store_true")
+    repo_sync.add_argument(
+        "--yes",
+        action="store_true",
+        help="perform network uploads; without this, repo-sync is a dry run",
+    )
+    repo_sync.add_argument("--timeout", type=float, default=20.0)
+    repo_sync.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -1711,6 +1896,31 @@ def main(argv: list[str] | None = None) -> int:
                 elif result["status"] == "dry_run":
                     print("Network: skipped (pass --yes to upload)")
             return 1 if result["status"] == "doctor_failed" else 0
+        if args.command == "repo-sync":
+            result = _repo_sync_upload(
+                repo_specs=args.repo,
+                output_dir=args.output_dir,
+                modes=args.mode,
+                team_id=args.team_id,
+                install_id=args.install_id,
+                source_prefix=args.source_prefix,
+                limit=args.limit,
+                endpoint=args.endpoint,
+                token_env=args.token_env,
+                include_reports=args.include_reports,
+                include_git_ref=args.include_git_ref,
+                yes=args.yes,
+                timeout=args.timeout,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("Code Mower cloud repo sync")
+                print(f"Status: {result['status']}")
+                print(f"Repositories: {result['repo_count']}")
+                print(f"Steps: {result['step_count']}")
+                print(f"Errors: {result['error_count']}")
+            return 0 if result["error_count"] == 0 else 1
     except CloudBundleError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

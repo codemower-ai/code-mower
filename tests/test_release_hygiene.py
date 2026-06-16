@@ -1828,6 +1828,115 @@ def main():
             self.assertEqual(payload["upload"]["mode"], "cloud-upload-dry-run")
             self.assertFalse(payload["upload"]["would_upload"])
 
+    def test_cloud_repo_sync_cli_dry_runs_default_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.com"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test"],
+                cwd=root,
+                check=True,
+            )
+            (root / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "fixture"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = code_mower_cloud.main(
+                    [
+                        "repo-sync",
+                        "--repo",
+                        f"owner/repo={root}",
+                        "--output-dir",
+                        str(root / ".code-mower/cloud-repo-sync"),
+                        "--endpoint",
+                        "http://localhost:3000/api/ingest",
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["status"], "dry_run")
+            self.assertEqual(payload["repo_count"], 1)
+            self.assertEqual(payload["step_count"], 2)
+            self.assertEqual(payload["error_count"], 0)
+            self.assertEqual(payload["modes"], ["dogfood", "reviewer-runs"])
+            steps = payload["repos"][0]["steps"]
+            self.assertEqual(steps[0]["status"], "dry_run")
+            self.assertEqual(steps[0]["upload"]["event_count"], 1)
+            self.assertEqual(steps[1]["status"], "no_events")
+
+    def test_cloud_repo_sync_reviewer_only_no_events_is_not_uploaded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.com"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test"],
+                cwd=root,
+                check=True,
+            )
+            (root / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "fixture"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = code_mower_cloud.main(
+                    [
+                        "repo-sync",
+                        "--repo",
+                        f"owner/repo={root}",
+                        "--mode",
+                        "reviewer-runs",
+                        "--output-dir",
+                        str(root / ".code-mower/cloud-repo-sync"),
+                        "--endpoint",
+                        "http://localhost:3000/api/ingest",
+                        "--yes",
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["status"], "no_events")
+            self.assertEqual(payload["step_count"], 1)
+            self.assertEqual(payload["repos"][0]["steps"][0]["status"], "no_events")
+
+    def test_cloud_repo_sync_output_names_are_unique_by_index(self) -> None:
+        first = code_mower_cloud._repo_sync_output_name(
+            "owner/repo", Path("/tmp/a/repo"), 0
+        )
+        second = code_mower_cloud._repo_sync_output_name(
+            "owner/repo", Path("/tmp/b/repo"), 1
+        )
+
+        self.assertEqual(first, "owner--repo-1")
+        self.assertEqual(second, "owner--repo-2")
+        self.assertNotEqual(first, second)
+
     def test_cloud_dogfood_dry_run_does_not_require_production_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -297,6 +297,48 @@ code-mower cloud upload .code-mower/reviewer-run-bundle --dry-run --json
 Use historical reviewer export once when onboarding a machine or repo, then rely
 on normal dogfood/current-run uploads for ongoing data.
 
+## Multi-Repo Operator Sync
+
+If one machine regularly drives several repos, use `repo-sync` to preview the
+same dogfood/reviewer-run upload loop across each checkout. This keeps
+repo-specific paths local to the operator and out of public configuration:
+
+```bash
+code-mower cloud repo-sync \
+  --repo owner/repo=/path/to/repo \
+  --repo owner/other-repo=/path/to/other-repo \
+  --json
+```
+
+By default, `repo-sync` runs `dogfood` plus `reviewer-runs` for each repo and
+stays dry-run. After inspecting the preview:
+
+```bash
+source ~/.config/code-mower/tokens/your-install-id.env
+code-mower cloud repo-sync \
+  --repo owner/repo=/path/to/repo \
+  --repo owner/other-repo=/path/to/other-repo \
+  --yes \
+  --json
+```
+
+Use `--mode` to choose exact modes:
+
+```bash
+code-mower cloud repo-sync \
+  --repo owner/repo=/path/to/repo \
+  --mode dogfood \
+  --mode reviewer-runs \
+  --mode catch-up \
+  --limit 50 \
+  --json
+```
+
+`catch-up` uses the GitHub CLI and uploads sanitized workflow metadata only.
+Branch names and SHAs remain excluded unless `--include-git-ref` is explicit.
+This command is intended for trusted local/operator environments, not as a
+requirement for every OSS user.
+
 ## What codemower.com Stores First
 
 The v0.5 cloud service starts with:
