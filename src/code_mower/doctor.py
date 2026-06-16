@@ -40,8 +40,12 @@ if __package__ in {None, ""}:
             local_cli_probe_remediation as _local_cli_probe_remediation,
             provider_template_coverage as _provider_template_coverage,
             render_doctor_text,
+            resolve_doctor_config_path,
+            resolve_doctor_config_path_for_script,
+            resolve_doctor_provider_templates_path,
             selected_lanes as _selected_lanes,
             token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
+            apply_first_run_defaults as _apply_first_run_defaults,
         )
     else:
         from tools import code_mower_config, code_mower_package
@@ -70,8 +74,12 @@ if __package__ in {None, ""}:
             local_cli_probe_remediation as _local_cli_probe_remediation,
             provider_template_coverage as _provider_template_coverage,
             render_doctor_text,
+            resolve_doctor_config_path,
+            resolve_doctor_config_path_for_script,
+            resolve_doctor_provider_templates_path,
             selected_lanes as _selected_lanes,
             token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
+            apply_first_run_defaults as _apply_first_run_defaults,
         )
 elif __package__ == "tools":
     from tools import code_mower_config, code_mower_package
@@ -100,8 +108,12 @@ elif __package__ == "tools":
         local_cli_probe_remediation as _local_cli_probe_remediation,
         provider_template_coverage as _provider_template_coverage,
         render_doctor_text,
+        resolve_doctor_config_path,
+        resolve_doctor_config_path_for_script,
+        resolve_doctor_provider_templates_path,
         selected_lanes as _selected_lanes,
         token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
+        apply_first_run_defaults as _apply_first_run_defaults,
     )
 else:  # pragma: no cover - exercised after package extraction.
     from . import config as code_mower_config
@@ -131,8 +143,12 @@ else:  # pragma: no cover - exercised after package extraction.
         local_cli_probe_remediation as _local_cli_probe_remediation,
         provider_template_coverage as _provider_template_coverage,
         render_doctor_text,
+        resolve_doctor_config_path,
+        resolve_doctor_config_path_for_script,
+        resolve_doctor_provider_templates_path,
         selected_lanes as _selected_lanes,
         token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
+        apply_first_run_defaults as _apply_first_run_defaults,
     )
 
 
@@ -143,39 +159,12 @@ _DOCTOR_COMPAT_EXPORTS = (
     STATUS_WARN,
     _auth_probe_output_detail,
     _evaluate_json_probe,
+    _apply_first_run_defaults,
     _local_cli_probe_remediation,
+    resolve_doctor_config_path_for_script,
+    resolve_doctor_provider_templates_path,
     _token_file_mentions_cloud_token,
 )
-
-
-def resolve_doctor_config_path_for_script(
-    config_arg: str,
-    *,
-    easy: bool = False,
-    script_path: Path,
-) -> Path:
-    path = Path(config_arg)
-    if path.is_file() or config_arg != "code-mower.yml" or not easy:
-        return path
-
-    script_path = script_path.resolve()
-    candidates = [
-        script_path.parent / "templates" / "code-mower.example.yml",
-        script_path.parents[1] / "code-mower.example.yml",
-    ]
-
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return path
-
-
-def resolve_doctor_config_path(config_arg: str, *, easy: bool = False) -> Path:
-    return resolve_doctor_config_path_for_script(
-        config_arg,
-        easy=easy,
-        script_path=Path(__file__),
-    )
 
 
 def _global_runtime_checks(
@@ -309,26 +298,6 @@ def run_doctor(
         profile=profile,
         checks=tuple(checks),
     )
-
-
-def resolve_doctor_provider_templates_path(path_text: str) -> Path:
-    path = Path(path_text)
-    if path_text == code_mower_package.DEFAULT_PROVIDER_TEMPLATES and not path.is_absolute():
-        project_catalog = Path.cwd() / code_mower_package.DEFAULT_PROVIDER_TEMPLATES
-        if project_catalog.exists():
-            return project_catalog
-    return code_mower_package.resolve_provider_templates_path(path_text)
-
-
-def _apply_first_run_defaults(args: argparse.Namespace) -> None:
-    if not (getattr(args, "v05", False) or getattr(args, "preflight", False)):
-        return
-    args.easy = True
-    if args.profile is None:
-        args.profile = "recommended"
-    args.probe_runtime = True
-    args.github = True
-    args.cloud = True
 
 
 def main(argv: Sequence[str] | None = None) -> int:

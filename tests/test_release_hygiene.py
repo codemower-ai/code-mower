@@ -183,6 +183,18 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIs(doctor.DoctorCheck, doctor_checks.DoctorCheck)
         self.assertIs(doctor.DoctorReport, doctor_checks.DoctorReport)
         self.assertIs(doctor.render_doctor_text, doctor_checks.render_doctor_text)
+        self.assertIs(
+            doctor.resolve_doctor_config_path_for_script,
+            doctor_checks.resolve_doctor_config_path_for_script,
+        )
+        self.assertIs(
+            doctor.resolve_doctor_provider_templates_path,
+            doctor_checks.resolve_doctor_provider_templates_path,
+        )
+        self.assertIs(
+            doctor._apply_first_run_defaults,
+            doctor_checks.apply_first_run_defaults,
+        )
         rendered_doctor = doctor_checks.render_doctor_text(
             doctor_checks.DoctorReport(
                 config_path="code-mower.yml",
@@ -205,6 +217,9 @@ class ReleaseHygieneTests(unittest.TestCase):
             rendered_doctor,
         )
         self.assertIn("remediation: run `claude -p ok` and retry doctor", rendered_doctor)
+        easy_config = doctor_checks.resolve_doctor_config_path("code-mower.yml", easy=True)
+        self.assertEqual(easy_config.name, "code-mower.example.yml")
+        self.assertTrue(easy_config.exists())
         self.assertEqual(
             doctor_checks.default_check_group_ids(),
             ("runtime", "github", "providers", "cloud", "output"),
