@@ -5,9 +5,12 @@ import tempfile
 from pathlib import Path
 
 from code_mower.cloud_client import (
+    BUNDLE_MANIFEST_FILENAME,
     CloudBundleError,
     DEFAULT_SETUP_INSTALL_ID,
     EVENT_SCHEMA,
+    build_cloud_bundle,
+    build_upload_payload,
     default_setup_path,
     normalize_event,
     parse_event_args,
@@ -101,3 +104,33 @@ def test_cloud_repo_slug_from_remote_supports_common_github_forms() -> None:
     assert repo_slug_from_remote("git@github.com:codemower-ai/code-mower.git") == "codemower-ai/code-mower"
     assert repo_slug_from_remote("https://github.com/codemower-ai/code-mower.git") == "codemower-ai/code-mower"
     assert repo_slug_from_remote("ssh://example.com/nope") == ""
+
+
+def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        report = root / "reviewer-value-report.md"
+        report.write_text("# Value report\n", encoding="utf-8")
+
+        result = build_cloud_bundle(
+            reports=[(report, "value-report")],
+            events=[
+                {
+                    "event_type": "reviewer_run",
+                    "repo_slug": "codemower-ai/code-mower",
+                    "provider": "codex",
+                    "lens": "base",
+                    "status": "pass",
+                    "metrics": {"latency_ms": 42},
+                }
+            ],
+            output_dir=root / "bundle",
+            repo_slug="codemower-ai/code-mower",
+        )
+
+        assert result["mode"] == "cloud-export"
+        assert (root / "bundle" / BUNDLE_MANIFEST_FILENAME).is_file()
+        upload = build_upload_payload(bundle_dir=root / "bundle")
+        assert upload["upload_mode"] == "metadata_only"
+        assert upload["repo_slug"] == "codemower-ai/code-mower"
+        assert upload["events"][0]["provider"] == "codex"
