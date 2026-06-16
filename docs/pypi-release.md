@@ -101,7 +101,7 @@ Before switching docs to package-index install:
 ```bash
 python3.12 -m venv /tmp/code-mower-pypi-smoke
 /tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
-/tmp/code-mower-pypi-smoke/bin/python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ code-mower==0.5.0a34
+/tmp/code-mower-pypi-smoke/bin/python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ code-mower==0.5.0a35
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
@@ -111,7 +111,7 @@ URL:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0a34 \
+  --package-spec code-mower==0.5.0a35 \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \
