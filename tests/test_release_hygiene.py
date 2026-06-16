@@ -182,6 +182,7 @@ class ReleaseHygieneTests(unittest.TestCase):
     def test_internal_package_seams_keep_cli_first_surface(self) -> None:
         self.assertIs(doctor.DoctorCheck, doctor_checks.DoctorCheck)
         self.assertIs(doctor.DoctorReport, doctor_checks.DoctorReport)
+        self.assertIs(doctor.run_doctor, doctor_checks.run_doctor)
         self.assertIs(doctor.render_doctor_text, doctor_checks.render_doctor_text)
         self.assertIs(
             doctor.resolve_doctor_config_path_for_script,
