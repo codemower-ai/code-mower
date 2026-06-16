@@ -38,6 +38,10 @@ from .dogfood import (
     build_dogfood_plan,
     default_dogfood_reports,
 )
+from .doctor import (
+    render_cloud_doctor_text,
+    run_cloud_doctor,
+)
 from .events import (
     EVENT_SCHEMA,
     GITHUB_RUN_LIST_FIELDS,
@@ -54,6 +58,14 @@ from .events import (
     safe_event_type,
     safe_kind,
     utc_now,
+)
+from .operations import (
+    catch_up_upload,
+    dogfood_upload,
+    parse_repo_sync_spec,
+    repo_sync_output_name,
+    repo_sync_upload,
+    reviewer_runs_upload,
 )
 from .errors import CloudBundleError
 from .setup import (
@@ -106,10 +118,12 @@ __all__ = [
     "build_workflow_run_event",
     "build_cloud_bundle",
     "build_upload_payload",
+    "catch_up_upload",
     "dashboard_url_for_endpoint",
     "default_setup_path",
     "detect_repo_slug",
     "default_dogfood_reports",
+    "dogfood_upload",
     "event_id_from_github_run",
     "existing_bundle_manifest",
     "health_url_for_endpoint",
@@ -119,14 +133,20 @@ __all__ = [
     "load_event_file",
     "normalize_event",
     "plan_report",
+    "parse_repo_sync_spec",
     "parse_event_args",
     "post_upload_payload",
     "probe_cloud_service",
     "read_token_file",
     "render_bundle_readme",
+    "render_cloud_doctor_text",
     "render_setup_env",
     "repo_slug_from_remote",
+    "repo_sync_output_name",
+    "repo_sync_upload",
     "resolve_setup_token",
+    "reviewer_runs_upload",
+    "run_cloud_doctor",
     "run_cloud_setup",
     "run_gh_run_list",
     "run_git",

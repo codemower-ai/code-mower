@@ -4,6 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
+import code_mower.cloud_client.operations as cloud_operations
 from code_mower.cloud_client import (
     BUNDLE_MANIFEST_FILENAME,
     CloudBundleError,
@@ -12,13 +13,19 @@ from code_mower.cloud_client import (
     build_cloud_bundle,
     build_upload_payload,
     default_setup_path,
+    dogfood_upload,
     normalize_event,
     parse_event_args,
+    parse_repo_sync_spec,
     repo_slug_from_remote,
+    repo_sync_output_name,
+    render_cloud_doctor_text,
+    run_cloud_doctor,
     run_cloud_setup,
     safe_config_stem,
     token_prefix,
 )
+from code_mower import cloud as cloud_cli
 
 
 def test_cloud_setup_round_trip_writes_private_file() -> None:
@@ -134,3 +141,61 @@ def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
         assert upload["upload_mode"] == "metadata_only"
         assert upload["repo_slug"] == "codemower-ai/code-mower"
         assert upload["events"][0]["provider"] == "codex"
+
+
+def test_cloud_doctor_runs_from_client_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        report = run_cloud_doctor(
+            bundle_dir=Path(tmp) / "missing-bundle",
+            endpoint="http://localhost:3000/api/ingest",
+            token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+            require_token=False,
+        )
+
+        assert report["mode"] == "cloud-doctor"
+        assert report["status"] == "pass"
+        assert report["warnings"] == 2
+        rendered = render_cloud_doctor_text(report)
+        assert "Code Mower cloud doctor" in rendered
+        assert "http://localhost:3000" in rendered
+
+
+def test_cloud_repo_sync_helpers_live_in_client_module() -> None:
+    assert parse_repo_sync_spec("/tmp/repo") == ("", Path("/tmp/repo"))
+    assert parse_repo_sync_spec("owner/repo=/tmp/repo") == ("owner/repo", Path("/tmp/repo"))
+    assert repo_sync_output_name("Owner/Repo", Path("/tmp/repo"), 2) == "owner--repo-3"
+
+
+def test_cloud_py_keeps_legacy_operation_aliases() -> None:
+    assert cloud_cli._dogfood_upload is dogfood_upload
+    assert cloud_cli._repo_sync_output_name("owner/repo", Path("/tmp/repo"), 0) == "owner--repo-1"
+
+
+def test_cloud_repo_sync_yes_reports_no_events_when_no_steps_upload(monkeypatch, tmp_path) -> None:
+    def no_events_step(**kwargs):
+        return {
+            "mode": "cloud-reviewer-runs",
+            "status": "no_events",
+            "repo_slug": kwargs["repo_slug"],
+        }
+
+    monkeypatch.setattr(cloud_operations, "reviewer_runs_upload", no_events_step)
+
+    result = cloud_operations.repo_sync_upload(
+        repo_specs=["owner/repo=/tmp/repo"],
+        output_dir=tmp_path / "repo-sync",
+        modes=["reviewer-runs"],
+        team_id="team",
+        install_id="install",
+        source_prefix="test",
+        limit=1,
+        endpoint="http://localhost:3000/api/ingest",
+        token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+        include_reports=False,
+        include_git_ref=False,
+        yes=True,
+        timeout=1.0,
+    )
+
+    assert result["status"] == "no_events"
+    assert result["repos"][0]["steps"][0]["status"] == "no_events"
