@@ -59,6 +59,10 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
 - CI now runs the package-install first-user rehearsal from the current
   checkout, turning the public installed-package path into a routine PR gate
   instead of a purely manual pre-release check.
+- `code_mower_calibration.py` has been reduced to a backwards-compatible CLI
+  adapter; calibration corpus, evidence, policy, value-report, context-pack,
+  command-materialization, run-result, and runner logic now live under
+  `code_mower.calibration`.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
