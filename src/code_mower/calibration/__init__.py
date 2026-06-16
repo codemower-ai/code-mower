@@ -12,6 +12,7 @@ from .evidence import (
     NON_BLOCKING_CODERABBIT_SEVERITIES,
     USEFUL_EVIDENCE_DISPOSITIONS,
 )
+from .evidence_report import build_reviewer_evidence_report, render_evidence_text
 from .arms import DEFAULT_CLI_LANES, DEFAULT_LOCAL_LLM_PROFILES, default_arms
 from .identity import head_slug, safe_slug
 from .metrics import float_or_zero
@@ -88,6 +89,7 @@ __all__ = [
     "TRUTH_EXPECTATION_UNKNOWN",
     "USEFUL_EVIDENCE_DISPOSITIONS",
     "build_lane_policy_report",
+    "build_reviewer_evidence_report",
     "build_pilot_plan",
     "count_normalized_findings",
     "audit_input_insufficient_result",
@@ -112,6 +114,7 @@ __all__ = [
     "parse_int",
     "build_overlap_report",
     "render_overlap_text",
+    "render_evidence_text",
     "run_records_from_summary",
     "run_matches_disposition_rule",
     "safe_slug",
