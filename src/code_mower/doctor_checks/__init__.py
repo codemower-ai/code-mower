@@ -15,6 +15,13 @@ from .models import (
     DoctorReport,
 )
 from .registry import DEFAULT_CHECK_GROUPS, DoctorCheckGroup, default_check_group_ids
+from .runtime import (
+    auth_probe_output_detail,
+    check_github_auth_surface,
+    check_pytest,
+    check_python_runtime,
+    check_ripgrep,
+)
 
 __all__ = [
     "DEFAULT_CHECK_GROUPS",
@@ -25,5 +32,10 @@ __all__ = [
     "STATUS_PASS",
     "STATUS_SKIP",
     "STATUS_WARN",
+    "auth_probe_output_detail",
+    "check_github_auth_surface",
+    "check_pytest",
+    "check_python_runtime",
+    "check_ripgrep",
     "default_check_group_ids",
 ]
