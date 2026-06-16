@@ -9,15 +9,16 @@ This document tracks the structure hardening path.
 ## Current Shape
 
 The package is usable and has public release gates. The first calibration split
-is now largely complete, but several other modules are still too large for
+is largely complete, and the doctor check registry now contains the first real
+runtime/cloud check implementations. Several modules are still too large for
 comfortable contributor onboarding:
 
 | Module | Approximate Lines | Current Responsibility |
 | --- | ---: | --- |
-| `doctor.py` | 2,615 | runtime checks, provider probes, GitHub diagnostics, cloud checks |
+| `doctor.py` | 2,316 | command adapter, provider probes, GitHub diagnostics, Actions checks |
 | `cloud.py` | 1,931 | cloud export, setup, token handling, doctor, CLI orchestration |
 | `codex_audit_pr.py` | 1,917 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
-| `package.py` | 1,859 | extraction package generation, template copying, manifest validation |
+| `package.py` | 1,861 | extraction package generation, template copying, manifest validation |
 | `migration.py` | 1,757 | wrapper migration, rehearsal, mirror-removal planning |
 | `local_llm_audit_pr.py` | 1,351 | local model audit wrapper, prompt setup, subprocess isolation |
 | `claude_audit_pr.py` | 1,130 | Claude audit wrapper, budget handling, verdict posting |
@@ -84,8 +85,11 @@ tested internal seams:
   run-result normalization, and calibration command execution.
   `code_mower_calibration.py` remains the backwards-compatible command
   adapter.
-- `code_mower.doctor_checks` now owns doctor result models and the named check
-  groups: runtime, GitHub, providers, cloud, and output.
+- `code_mower.doctor_checks` now owns doctor result models, named check groups,
+  runtime/toolchain checks, and optional cloud-token checks. `doctor.py`
+  remains the backwards-compatible CLI adapter and still owns GitHub,
+  provider, Actions, and output checks until those move behind the same
+  registry seam.
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
   stdin-safe audit wrappers and local CLI lanes.
 - `code_mower.cloud_client` now owns cloud endpoint probing plus bundle schema
@@ -115,8 +119,10 @@ existing commands.
      breaking direct-script users.
 
 2. **Doctor check registry**
-   - Split checks into registry-backed modules for runtime, GitHub, providers,
-     cloud, and output.
+   - Completed: result models, group registry, runtime/toolchain checks, and
+     optional cloud-token checks now live under `code_mower.doctor_checks`.
+   - Next: move GitHub repository diagnostics, provider probes, Actions cost
+     checks, and output/privacy checks behind the same registry seam.
    - Keep `doctor --preflight` behavior unchanged.
    - Add tests at the check-result level, not only command-output level.
 

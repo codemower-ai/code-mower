@@ -63,6 +63,10 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
   adapter; calibration corpus, evidence, policy, value-report, context-pack,
   command-materialization, run-result, and runner logic now live under
   `code_mower.calibration`.
+- `doctor.py` is being reduced into a backwards-compatible CLI adapter:
+  runtime/toolchain checks and optional cloud-token checks now live under
+  `code_mower.doctor_checks`, with GitHub, provider, Actions, and output
+  checks next in the structure plan.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
