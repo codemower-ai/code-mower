@@ -59,6 +59,8 @@ if __package__ in {None, ""}:
             run_records_from_summary as _run_records_from_summary,
             render_evidence_text,
             render_overlap_text,
+            render_plan_text,
+            render_policy_text,
             render_value_report_text,
             safe_slug as _safe_slug,
             truth_for_item as _truth_for_item,
@@ -107,6 +109,8 @@ if __package__ in {None, ""}:
             run_records_from_summary as _run_records_from_summary,
             render_evidence_text,
             render_overlap_text,
+            render_plan_text,
+            render_policy_text,
             render_value_report_text,
             safe_slug as _safe_slug,
             truth_for_item as _truth_for_item,
@@ -155,6 +159,8 @@ elif __package__ == "tools":
         run_records_from_summary as _run_records_from_summary,
         render_evidence_text,
         render_overlap_text,
+        render_plan_text,
+        render_policy_text,
         render_value_report_text,
         safe_slug as _safe_slug,
         truth_for_item as _truth_for_item,
@@ -203,6 +209,8 @@ else:  # pragma: no cover - exercised after package extraction.
         run_records_from_summary as _run_records_from_summary,
         render_evidence_text,
         render_overlap_text,
+        render_plan_text,
+        render_policy_text,
         render_value_report_text,
         safe_slug as _safe_slug,
         truth_for_item as _truth_for_item,
@@ -937,59 +945,6 @@ def run_calibration_commands(
     }
     _write_json(results_dir / "calibration-run-results.json", payload)
     return payload
-
-
-def render_plan_text(plan: Mapping[str, Any]) -> str:
-    lines = [
-        "Code Mower calibration pilot plan",
-        f"Corpus: {plan.get('corpus_name', '')}",
-        f"Runs: {plan.get('run_count', 0)}",
-        "",
-        "Arms:",
-    ]
-    for arm in plan.get("arms", []) or []:
-        if isinstance(arm, Mapping):
-            lines.append(f"- {arm.get('arm_id')}: {arm.get('kind')} - {arm.get('purpose')}")
-    lines.extend(["", "First commands:"])
-    shown = 0
-    for run in plan.get("runs", []) or []:
-        if not isinstance(run, Mapping):
-            continue
-        if run.get("requires_explicit_arm"):
-            continue
-        for command in run.get("commands", []) or []:
-            if shown >= 3:
-                break
-            lines.append("- " + " ".join(str(part) for part in command))
-            shown += 1
-        if shown >= 3:
-            break
-    if shown == 0:
-        lines.append("- none; this corpus currently needs manual structured audit invocations")
-    return "\n".join(lines) + "\n"
-
-
-def render_policy_text(report: Mapping[str, Any]) -> str:
-    lines = ["Code Mower lane policy", "", "Policies:"]
-    policies = report.get("policies", {})
-    if isinstance(policies, Mapping) and policies:
-        for profile_id, policy in policies.items():
-            if not isinstance(policy, Mapping):
-                continue
-            lines.append(
-                f"- {profile_id}: {policy.get('classification')} "
-                f"role={policy.get('recommended_role')} "
-                f"trigger={policy.get('automatic_trigger')} "
-                f"useful_rate={policy.get('useful_rate')} "
-                f"clean_passes={policy.get('known_clean_pass_runs', 0)}"
-            )
-            reasons = policy.get("reasons", [])
-            if isinstance(reasons, list) and reasons:
-                lines.append(f"  reasons: {'; '.join(str(reason) for reason in reasons)}")
-    else:
-        lines.append("- none")
-    lines.extend(["", f"Caveat: {report.get('caveat', '')}"])
-    return "\n".join(lines) + "\n"
 
 
 def main(argv: Sequence[str] | None = None) -> int:

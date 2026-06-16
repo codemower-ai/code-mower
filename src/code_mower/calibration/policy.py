@@ -182,3 +182,26 @@ def build_lane_policy_report(metrics: Mapping[str, Any]) -> dict[str, Any]:
             "automatic repository merge-rule change."
         ),
     }
+
+
+def render_policy_text(report: Mapping[str, Any]) -> str:
+    lines = ["Code Mower lane policy", "", "Policies:"]
+    policies = report.get("policies", {})
+    if isinstance(policies, Mapping) and policies:
+        for profile_id, policy in policies.items():
+            if not isinstance(policy, Mapping):
+                continue
+            lines.append(
+                f"- {profile_id}: {policy.get('classification')} "
+                f"role={policy.get('recommended_role')} "
+                f"trigger={policy.get('automatic_trigger')} "
+                f"useful_rate={policy.get('useful_rate')} "
+                f"clean_passes={policy.get('known_clean_pass_runs', 0)}"
+            )
+            reasons = policy.get("reasons", [])
+            if isinstance(reasons, list) and reasons:
+                lines.append(f"  reasons: {'; '.join(str(reason) for reason in reasons)}")
+    else:
+        lines.append("- none")
+    lines.extend(["", f"Caveat: {report.get('caveat', '')}"])
+    return "\n".join(lines) + "\n"
