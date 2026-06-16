@@ -1170,8 +1170,13 @@ printf '%s\\n' "${lane}"
                 self.assertIn(".code-mower/package-install-rehearsal.json", text)
                 self.assertNotIn("source tools/code_mower_standalone_pin.env", text)
 
-        fallback_text = (ROOT / "src/code_mower/package.py").read_text(
-            encoding="utf-8"
+        fallback_text = "\n".join(
+            [
+                (ROOT / "src/code_mower/package.py").read_text(encoding="utf-8"),
+                (ROOT / "src/code_mower/package_content.py").read_text(
+                    encoding="utf-8"
+                ),
+            ]
         )
         self.assertIn("CODE_MOWER_STANDALONE_PACKAGE_REPO_URL", fallback_text)
         self.assertIn('code_mower_ref="${CODE_MOWER_STANDALONE_REF:-}"', fallback_text)
