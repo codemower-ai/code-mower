@@ -45,15 +45,7 @@ else:  # pragma: no cover - exercised after package extraction.
         resolve_provider_templates_path,
     )
 
-if __package__ in {None, ""}:
-    from code_mower.package_content import (
-        CLI_COMMANDS,
-        _config_template_text,
-        _init_py_text,
-        _pyproject_text,
-        _workflow_template_text,
-    )
-elif __package__ == "tools":  # pragma: no cover - legacy product-local layout.
+if __package__ in {None, "", "tools"}:  # pragma: no cover - legacy product-local layout.
     try:
         from tools.code_mower_package_content import (
             CLI_COMMANDS,
@@ -86,13 +78,21 @@ if __package__ in {None, ""}:
         PACKAGE_FILES,
         TEMPLATE_FILES,
     )
-elif __package__ == "tools":  # pragma: no cover - legacy product-local layout.
-    from tools.code_mower_package_manifest import (
-        DEFAULT_PACKAGE_CONFIG,
-        DEFERRED_PACKAGE_FILES,
-        PACKAGE_FILES,
-        TEMPLATE_FILES,
-    )
+if __package__ in {None, "", "tools"}:  # pragma: no cover - legacy product-local layout.
+    try:
+        from tools.code_mower_package_manifest import (
+            DEFAULT_PACKAGE_CONFIG,
+            DEFERRED_PACKAGE_FILES,
+            PACKAGE_FILES,
+            TEMPLATE_FILES,
+        )
+    except ModuleNotFoundError:
+        from code_mower.package_manifest import (
+            DEFAULT_PACKAGE_CONFIG,
+            DEFERRED_PACKAGE_FILES,
+            PACKAGE_FILES,
+            TEMPLATE_FILES,
+        )
 else:  # pragma: no cover - exercised after package extraction.
     from .package_manifest import (
         DEFAULT_PACKAGE_CONFIG,
@@ -101,10 +101,11 @@ else:  # pragma: no cover - exercised after package extraction.
         TEMPLATE_FILES,
     )
 
-if __package__ in {None, ""}:
-    from code_mower.package_static import STATIC_PACKAGE_FILES
-elif __package__ == "tools":  # pragma: no cover - legacy product-local layout.
-    from tools.code_mower_package_static import STATIC_PACKAGE_FILES
+if __package__ in {None, "", "tools"}:  # pragma: no cover - legacy product-local layout.
+    try:
+        from tools.code_mower_package_static import STATIC_PACKAGE_FILES
+    except ModuleNotFoundError:
+        from code_mower.package_static import STATIC_PACKAGE_FILES
 else:  # pragma: no cover - exercised after package extraction.
     from .package_static import STATIC_PACKAGE_FILES
 
