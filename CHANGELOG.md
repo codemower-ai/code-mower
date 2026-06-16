@@ -4,6 +4,24 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.44
+
+This alpha consolidates the recent structural cleanup into a cleaner public
+package baseline for first-user rehearsals.
+
+### Changed
+
+- `code_mower.cloud` is now backed by `code_mower.cloud_client.operations` for
+  dogfood upload, repo-sync, and reviewer-run orchestration.
+- `code_mower.doctor` is now a smaller CLI adapter backed by split doctor
+  modules for output rendering, first-run presets, package-aware template
+  paths, and report orchestration.
+- Package template/config path helpers moved into `code_mower.package_paths`,
+  reducing package-materialization coupling while preserving the public command
+  surface.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.44`.
+
 ## v0.5.0-alpha.21
 
 This alpha makes package-index promotion setup more self-service.

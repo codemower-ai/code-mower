@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public alpha baseline is `v0.5.0-alpha.43`. It is intended to be
+The current public alpha baseline is `v0.5.0-alpha.44`. It is intended to be
 installed from the `codemower-ai/code-mower` public repository and has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
@@ -75,6 +75,10 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
   reviewer-run/repo-sync orchestration now live under `code_mower.cloud_client`,
   reducing the CLI adapter significantly while preserving the public command
   surface.
+- Package materialization has started the same intentional split:
+  package-aware config/template path helpers now live under
+  `code_mower.package_paths`, while `package.py` remains the backwards-compatible
+  CLI and manifest-generation surface.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
