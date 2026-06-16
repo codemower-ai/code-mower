@@ -67,10 +67,10 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
   Runtime/toolchain, cloud-token, GitHub, provider, and Actions diagnostics
   live under `code_mower.doctor_checks`; output/privacy checks are the main
   remaining doctor split still worth extracting before 1.0.
-- `cloud.py` has started the same transition: local cloud setup/token handling
-  and structured event/repo helpers now live under `code_mower.cloud_client`,
-  reducing the CLI adapter significantly while preserving the public command
-  surface.
+- `cloud.py` has started the same transition: local cloud setup/token handling,
+  local bundle materialization, and structured event/repo helpers now live under
+  `code_mower.cloud_client`, reducing the CLI adapter significantly while
+  preserving the public command surface.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.

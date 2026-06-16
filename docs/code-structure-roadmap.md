@@ -15,7 +15,7 @@ comfortable contributor onboarding:
 
 | Module | Approximate Lines | Current Responsibility |
 | --- | ---: | --- |
-| `cloud.py` | 1,531 | cloud export, doctor, upload, repo sync, CLI orchestration |
+| `cloud.py` | 1,292 | cloud doctor, upload, repo sync, CLI orchestration |
 | `codex_audit_pr.py` | 1,917 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
 | `package.py` | 1,861 | extraction package generation, template copying, manifest validation |
 | `migration.py` | 1,757 | wrapper migration, rehearsal, mirror-removal planning |
@@ -94,10 +94,11 @@ tested internal seams:
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
   stdin-safe audit wrappers and local CLI lanes.
 - `code_mower.cloud_client` now owns cloud endpoint probing plus bundle schema
-  and privacy metadata. It also owns dogfood report discovery, dry-run preview
-  shape, upload payload construction, network posting, local cloud setup/token
-  handling, and structured event/repo helper logic. `cloud.py` remains the CLI
-  adapter for export, doctor, setup, dogfood, and upload.
+  and privacy metadata. It also owns bundle materialization, dogfood report
+  discovery, dry-run preview shape, upload payload construction, network
+  posting, local cloud setup/token handling, and structured event/repo helper
+  logic. `cloud.py` remains the CLI adapter for export, doctor, setup,
+  dogfood, repo-sync, and upload.
 - `builder-experiment` and authoring-intelligence docs establish the future
   `run_role`/`purpose` event shape without requiring a full orchestrator runtime
   before v1.0.
@@ -139,14 +140,15 @@ existing commands.
      output parsing.
 
 4. **Cloud client package**
-   - Completed: metadata bundle creation is separate from network upload, and
-     cloud setup/token handling plus structured event/repo helpers now live
-     under `code_mower.cloud_client`.
+   - Completed: metadata bundle materialization is separate from network
+     upload. Cloud setup/token handling plus structured event/repo helpers now
+     live under `code_mower.cloud_client`.
    - Keep source/diff/transcript exclusion rules near the bundle schema.
-   - Expose a small `create_bundle(...)` primitive for tests and future UI
-     integrations.
-   - Next: split repo-sync/upload orchestration further so `cloud.py` becomes a
-     true thin adapter instead of a mixed command-and-domain module.
+   - `build_cloud_bundle(...)` is the current small bundle primitive for tests
+     and future UI integrations.
+   - Next: split dogfood, catch-up, reviewer-run, repo-sync, and upload
+     orchestration further so `cloud.py` becomes a true thin adapter instead of
+     a mixed command-and-domain module.
 
 5. **Builder experiment primitives**
    - Normalize `run_role`/`purpose`, task contract identity, provider/lens,
