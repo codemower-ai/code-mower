@@ -205,6 +205,28 @@ code-mower cloud reviewer-runs --repo-slug OWNER/REPO --json
 code-mower cloud reviewer-runs --repo-slug OWNER/REPO --yes --json
 ```
 
+For operator machines that work across several repositories, preview a
+multi-repo dogfood/reviewer-run sync:
+
+```bash
+code-mower cloud repo-sync \
+  --repo OWNER/REPO=/path/to/repo \
+  --repo OTHER/REPO=/path/to/other-repo \
+  --json
+```
+
+Add `--yes` only after inspecting the dry run. `--mode` is exact selection, so
+include every desired mode when you also want recent GitHub Actions history:
+
+```bash
+code-mower cloud repo-sync \
+  --repo OWNER/REPO=/path/to/repo \
+  --mode dogfood \
+  --mode reviewer-runs \
+  --mode catch-up \
+  --json
+```
+
 Cloud sharing details: [docs/cloud-sharing.md](docs/cloud-sharing.md).
 
 ## Provider Posture

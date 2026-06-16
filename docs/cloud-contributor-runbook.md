@@ -91,6 +91,34 @@ code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 ```
 
+For a local operator session that has several active checkouts, use `repo-sync`
+to preview dogfood plus reviewer-run metadata for each repo in one pass:
+
+```bash
+source ~/.config/code-mower/tokens/codex-code-mower.env
+
+code-mower cloud repo-sync \
+  --repo OWNER/CODE_MOWER_REPO=/path/to/code-mower \
+  --repo OWNER/CLOUD_REPO=/path/to/codemower.com \
+  --repo OWNER/PRODUCT_REPO=/path/to/product-repo \
+  --json
+```
+
+Rerun with `--yes` only after the dry run is clean. `--mode` is exact
+selection, so include every desired mode when you intentionally want recent
+GitHub Actions history as sanitized backfill:
+
+```bash
+code-mower cloud repo-sync \
+  --repo OWNER/CODE_MOWER_REPO=/path/to/code-mower \
+  --repo OWNER/CLOUD_REPO=/path/to/codemower.com \
+  --repo OWNER/PRODUCT_REPO=/path/to/product-repo \
+  --mode dogfood \
+  --mode reviewer-runs \
+  --mode catch-up \
+  --json
+```
+
 ## Codex: Product Repository Work
 
 Use a product-specific Codex token and the product repo slug:
