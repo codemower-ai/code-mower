@@ -244,6 +244,10 @@ class ReleaseHygieneTests(unittest.TestCase):
             code_mower_calibration.RUN_STATUS_CATEGORY_ALIASES,
             calibration_pkg.RUN_STATUS_CATEGORY_ALIASES,
         )
+        self.assertIs(
+            code_mower_calibration.build_pilot_plan,
+            calibration_pkg.build_pilot_plan,
+        )
 
     def test_calibration_arm_catalog_is_packaged_and_explicit_lens_aware(self) -> None:
         arm_ids = {arm["arm_id"] for arm in calibration_pkg.default_arms()}
@@ -256,6 +260,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         )
         package_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}
         self.assertIn("src/code_mower/calibration/arms.py", package_targets)
+        self.assertIn("src/code_mower/calibration/planning.py", package_targets)
         self.assertIn("src/code_mower/calibration/run_status.py", package_targets)
 
     def test_provider_runner_github_token_helper_reads_stdin_and_clears_env(self) -> None:

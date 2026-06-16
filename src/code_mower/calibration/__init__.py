@@ -2,8 +2,8 @@
 
 The stable user surface is still the ``code-mower calibration`` CLI. These
 modules are intentionally small seams for corpus parsing, evidence handling,
-metrics, and policy/reporting code as the runner is split out of the legacy
-command adapter.
+metrics, pilot planning, and policy/reporting code as the runner is split out
+of the legacy command adapter.
 """
 
 from .corpus import load_json_object, parse_int
@@ -22,6 +22,7 @@ from .policy import (
     SELECTIVE_USEFUL_RATE,
     build_lane_policy_report,
 )
+from .planning import build_pilot_plan
 from .run_status import (
     RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
     RUN_STATUS_BLOCKED,
@@ -51,6 +52,7 @@ __all__ = [
     "SELECTIVE_USEFUL_RATE",
     "USEFUL_EVIDENCE_DISPOSITIONS",
     "build_lane_policy_report",
+    "build_pilot_plan",
     "count_normalized_findings",
     "default_arms",
     "float_or_zero",
