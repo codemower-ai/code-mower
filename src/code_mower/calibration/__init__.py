@@ -2,8 +2,8 @@
 
 The stable user surface is still the ``code-mower calibration`` CLI. These
 modules are intentionally small seams for corpus parsing, evidence handling,
-metrics, pilot planning, truth matching, and policy/reporting code as the
-runner is split out of the legacy command adapter.
+metrics, pilot planning, result normalization, truth matching, and
+policy/reporting code as the runner is split out of the legacy command adapter.
 """
 
 from .corpus import load_json_object, parse_int
@@ -23,6 +23,14 @@ from .policy import (
     build_lane_policy_report,
 )
 from .planning import build_pilot_plan
+from .results import (
+    AUDIT_INPUT_INSUFFICIENT_PATTERNS,
+    audit_input_insufficient_result,
+    coderabbit_blocking_findings,
+    infra_run_record,
+    local_llm_findings,
+    run_records_from_summary,
+)
 from .run_status import (
     RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
     RUN_STATUS_BLOCKED,
@@ -47,6 +55,7 @@ from .truth import (
 
 __all__ = [
     "KNOWN_EVIDENCE_DISPOSITIONS",
+    "AUDIT_INPUT_INSUFFICIENT_PATTERNS",
     "DEFAULT_CLI_LANES",
     "DEFAULT_LOCAL_LLM_PROFILES",
     "MERGE_GATE_MIN_CLEAN_RUNS",
@@ -68,15 +77,20 @@ __all__ = [
     "build_lane_policy_report",
     "build_pilot_plan",
     "count_normalized_findings",
+    "audit_input_insufficient_result",
+    "coderabbit_blocking_findings",
     "default_arms",
     "expected_finding_matches",
     "float_or_zero",
     "head_slug",
+    "infra_run_record",
     "load_json_object",
+    "local_llm_findings",
     "normalize_run_status_category",
     "normalize_truth",
     "normalize_truth_expectation",
     "parse_int",
+    "run_records_from_summary",
     "safe_slug",
     "status_from_verdict",
     "truth_for_item",

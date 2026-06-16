@@ -262,6 +262,24 @@ class ReleaseHygieneTests(unittest.TestCase):
             ],
             calibration_pkg.TRUTH_EXPECTATION_KNOWN_CLEAN,
         )
+        self.assertIs(
+            code_mower_calibration._run_records_from_summary,
+            calibration_pkg.run_records_from_summary,
+        )
+        self.assertIs(
+            code_mower_calibration._infra_run_record,
+            calibration_pkg.infra_run_record,
+        )
+        self.assertTrue(
+            calibration_pkg.audit_input_insufficient_result(
+                [
+                    {
+                        "severity": "P2",
+                        "summary": "Diff was truncated before the relevant file.",
+                    }
+                ]
+            )
+        )
 
     def test_calibration_arm_catalog_is_packaged_and_explicit_lens_aware(self) -> None:
         arm_ids = {arm["arm_id"] for arm in calibration_pkg.default_arms()}
@@ -275,6 +293,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         package_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}
         self.assertIn("src/code_mower/calibration/arms.py", package_targets)
         self.assertIn("src/code_mower/calibration/planning.py", package_targets)
+        self.assertIn("src/code_mower/calibration/results.py", package_targets)
         self.assertIn("src/code_mower/calibration/run_status.py", package_targets)
         self.assertIn("src/code_mower/calibration/truth.py", package_targets)
 
