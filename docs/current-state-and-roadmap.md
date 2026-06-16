@@ -66,7 +66,9 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
 - `doctor.py` is now a much thinner backwards-compatible CLI adapter.
   Runtime/toolchain, cloud-token, GitHub, provider, and Actions diagnostics
   plus human-readable output rendering, first-run presets, and package-aware
-  config/template path resolution live under `code_mower.doctor_checks`.
+  config/template path resolution live under `code_mower.doctor_checks`. Doctor
+  report orchestration also now lives under `code_mower.doctor_checks.runner`,
+  leaving `doctor.py` as a small CLI adapter.
 - `cloud.py` has completed its first major transition into a thin compatibility
   adapter: local cloud setup/token handling, cloud doctor diagnostics, local
   bundle materialization, structured event/repo helpers, and dogfood/catch-up/

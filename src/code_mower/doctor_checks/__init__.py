@@ -49,6 +49,7 @@ from .runtime import (
     check_python_runtime,
     check_ripgrep,
 )
+from .runner import run_doctor
 
 __all__ = [
     "DEFAULT_CHECK_GROUPS",
@@ -82,6 +83,7 @@ __all__ = [
     "resolve_doctor_config_path",
     "resolve_doctor_config_path_for_script",
     "resolve_doctor_provider_templates_path",
+    "run_doctor",
     "selected_lanes",
     "token_file_mentions_cloud_token",
 ]
