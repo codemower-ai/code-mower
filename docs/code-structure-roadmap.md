@@ -8,18 +8,23 @@ This document tracks the structure hardening path.
 
 ## Current Shape
 
-The package is usable and has public release gates, but several modules are too
-large for comfortable contributor onboarding:
+The package is usable and has public release gates. The first calibration split
+is now largely complete, but several other modules are still too large for
+comfortable contributor onboarding:
 
 | Module | Approximate Lines | Current Responsibility |
 | --- | ---: | --- |
-| `code_mower_calibration.py` | 3,150 | corpus parsing, evidence, metrics glue, policy, value reports |
-| `doctor.py` | 2,550 | runtime checks, provider probes, GitHub diagnostics, cloud checks |
-| `codex_audit_pr.py` | 1,920 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
-| `package.py` | 1,710 | extraction package generation, template copying, manifest validation |
-| `cloud.py` | 1,270 | cloud export, setup, token handling, doctor, CLI orchestration |
-| `migration.py` | 1,160 | wrapper migration, rehearsal, mirror-removal planning |
+| `doctor.py` | 2,615 | runtime checks, provider probes, GitHub diagnostics, cloud checks |
+| `cloud.py` | 1,931 | cloud export, setup, token handling, doctor, CLI orchestration |
+| `codex_audit_pr.py` | 1,917 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
+| `package.py` | 1,859 | extraction package generation, template copying, manifest validation |
+| `migration.py` | 1,757 | wrapper migration, rehearsal, mirror-removal planning |
+| `local_llm_audit_pr.py` | 1,351 | local model audit wrapper, prompt setup, subprocess isolation |
 | `claude_audit_pr.py` | 1,130 | Claude audit wrapper, budget handling, verdict posting |
+
+The calibration adapter is no longer on this list: `code_mower_calibration.py`
+is now roughly 600 lines and delegates most domain behavior to
+`code_mower.calibration`.
 
 These are not urgent correctness problems. They are readability and evolution
 risks: new contributors cannot quickly tell which functions are stable API,
@@ -74,7 +79,9 @@ tested internal seams:
 - `code_mower.calibration` now owns corpus parsing helpers, artifact identity,
   evidence disposition constants, metric normalization, the built-in
   calibration arm catalog, reviewer run-status normalization,
-  lane-promotion thresholds, and lane-policy report construction.
+  lane-promotion thresholds, lane-policy report construction, value-report
+  rendering, command materialization, context-pack input materialization,
+  run-result normalization, and calibration command execution.
   `code_mower_calibration.py` remains the backwards-compatible command
   adapter.
 - `code_mower.doctor_checks` now owns doctor result models and the named check
@@ -96,19 +103,16 @@ existing commands.
 ## Recommended Refactor Order
 
 1. **Calibration package split**
-   - Move corpus parsing and truth models to `code_mower/calibration/corpus.py`
-     and related modules.
-   - Move evidence/metrics math to separate modules; lane-policy math now lives
-     in `code_mower.calibration.policy`, and the built-in experiment arm
-     catalog now lives in `code_mower.calibration.arms`. Reviewer run-status
-     categorization now lives in `code_mower.calibration.run_status`.
-   - Move command materialization and run-result normalization into calibration
-     submodules next; those are now the largest chunks left in the legacy
-     adapter.
-   - Keep pulling value-report rendering into a smaller reporting module once
-     the current metrics path has more tests.
-   - Keep `code_mower_calibration.py` as a thin backwards-compatible command
-     adapter until v1.0.
+   - Completed: corpus parsing, truth models, evidence constants,
+     metric helpers, lane-policy math, experiment arms, run-status
+     categorization, command materialization, context-pack inputs,
+     run-result normalization, report rendering, and runner orchestration now
+     live under `code_mower.calibration`.
+   - Keep `code_mower_calibration.py` as the backwards-compatible CLI adapter
+     until v1.0.
+   - Next calibration cleanup should be small: reduce repeated import
+     compatibility plumbing only if it clarifies contributor onboarding without
+     breaking direct-script users.
 
 2. **Doctor check registry**
    - Split checks into registry-backed modules for runtime, GitHub, providers,
