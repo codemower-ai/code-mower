@@ -24,7 +24,7 @@ comfortable contributor onboarding:
 The calibration adapter is no longer on this list: `code_mower_calibration.py`
 is now roughly 600 lines and delegates most domain behavior to
 `code_mower.calibration`.
-`doctor.py` is no longer on this list either: it is now roughly 400 lines and
+`doctor.py` is no longer on this list either: it is now roughly 350 lines and
 acts as a backwards-compatible CLI adapter around `code_mower.doctor_checks`.
 `cloud.py` has also dropped off this list: it is now roughly 680 lines and acts
 as a backwards-compatible CLI adapter around `code_mower.cloud_client`.
@@ -89,9 +89,9 @@ tested internal seams:
   adapter.
 - `code_mower.doctor_checks` now owns doctor result models, named check groups,
   runtime/toolchain checks, optional cloud-token checks, GitHub/provider/Actions
-  diagnostics, and human-readable output rendering. `doctor.py` remains the
-  backwards-compatible CLI adapter and still owns first-run presets and config
-  path resolution until those move behind the same registry seam.
+  diagnostics, human-readable output rendering, first-run presets, and
+  package-aware config/template path resolution. `doctor.py` remains the
+  backwards-compatible CLI adapter.
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
   stdin-safe audit wrappers and local CLI lanes.
 - `code_mower.cloud_client` now owns cloud endpoint probing, cloud doctor

@@ -27,6 +27,12 @@ from .models import (
     DoctorReport,
 )
 from .output import render_doctor_text
+from .presets import (
+    apply_first_run_defaults,
+    resolve_doctor_config_path,
+    resolve_doctor_config_path_for_script,
+    resolve_doctor_provider_templates_path,
+)
 from .providers import (
     check_lane_runtime,
     effective_lane,
@@ -57,6 +63,7 @@ __all__ = [
     "STATUS_PASS",
     "STATUS_SKIP",
     "STATUS_WARN",
+    "apply_first_run_defaults",
     "auth_probe_output_detail",
     "check_cloud_token_surface",
     "check_github_auth_surface",
@@ -72,6 +79,9 @@ __all__ = [
     "local_cli_probe_remediation",
     "provider_template_coverage",
     "render_doctor_text",
+    "resolve_doctor_config_path",
+    "resolve_doctor_config_path_for_script",
+    "resolve_doctor_provider_templates_path",
     "selected_lanes",
     "token_file_mentions_cloud_token",
 ]
