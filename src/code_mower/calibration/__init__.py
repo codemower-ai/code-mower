@@ -27,6 +27,14 @@ from .commands import (
     summary_path_for_command,
     text_from_timeout_stream,
 )
+from .context_inputs import (
+    CONTEXT_PACK_CLI_LANES,
+    changed_files_from_checkout,
+    context_pack_file_for_command,
+    render_materialized_context_pack_prompt_text,
+    repo_roots_from_path_map,
+    selected_context_pack_manifest,
+)
 from .identity import head_slug, safe_slug
 from .metrics import float_or_zero
 from .overlap import build_overlap_report, finding_key, render_overlap_text
@@ -85,6 +93,7 @@ __all__ = [
     "AUDIT_INPUT_INSUFFICIENT_PATTERNS",
     "CALIBRATION_RUN_RESULTS_MODE",
     "CALIBRATION_RUN_RESULTS_SCHEMA",
+    "CONTEXT_PACK_CLI_LANES",
     "DEFAULT_CLI_LANES",
     "DEFAULT_LOCAL_LLM_PROFILES",
     "MERGE_GATE_MIN_CLEAN_RUNS",
@@ -109,7 +118,9 @@ __all__ = [
     "build_pilot_plan",
     "command_lane_id",
     "command_metadata_for_run",
+    "context_pack_file_for_command",
     "count_normalized_findings",
+    "changed_files_from_checkout",
     "audit_input_insufficient_result",
     "coderabbit_blocking_findings",
     "apply_run_disposition_rules",
@@ -137,15 +148,18 @@ __all__ = [
     "build_overlap_report",
     "render_overlap_text",
     "render_evidence_text",
+    "render_materialized_context_pack_prompt_text",
     "render_plan_text",
     "render_policy_text",
     "render_value_report_text",
     "run_records_from_summary",
     "run_matches_disposition_rule",
     "repo_path_for_item",
+    "repo_roots_from_path_map",
     "resolve_path_for_cwd",
     "reviewer_id_from_command",
     "safe_slug",
+    "selected_context_pack_manifest",
     "status_from_verdict",
     "summary_path_for_command",
     "text_from_timeout_stream",
