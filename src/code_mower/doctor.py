@@ -39,6 +39,7 @@ if __package__ in {None, ""}:
             load_inputs as _load_inputs,
             local_cli_probe_remediation as _local_cli_probe_remediation,
             provider_template_coverage as _provider_template_coverage,
+            render_doctor_text,
             selected_lanes as _selected_lanes,
             token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
         )
@@ -68,6 +69,7 @@ if __package__ in {None, ""}:
             load_inputs as _load_inputs,
             local_cli_probe_remediation as _local_cli_probe_remediation,
             provider_template_coverage as _provider_template_coverage,
+            render_doctor_text,
             selected_lanes as _selected_lanes,
             token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
         )
@@ -97,6 +99,7 @@ elif __package__ == "tools":
         load_inputs as _load_inputs,
         local_cli_probe_remediation as _local_cli_probe_remediation,
         provider_template_coverage as _provider_template_coverage,
+        render_doctor_text,
         selected_lanes as _selected_lanes,
         token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
     )
@@ -127,6 +130,7 @@ else:  # pragma: no cover - exercised after package extraction.
         load_inputs as _load_inputs,
         local_cli_probe_remediation as _local_cli_probe_remediation,
         provider_template_coverage as _provider_template_coverage,
+        render_doctor_text,
         selected_lanes as _selected_lanes,
         token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
     )
@@ -305,29 +309,6 @@ def run_doctor(
         profile=profile,
         checks=tuple(checks),
     )
-
-
-def render_doctor_text(report: DoctorReport) -> str:
-    lines = [
-        "Code Mower doctor",
-        f"Status: {report.status}",
-        f"Config: {report.config_path}",
-        f"Provider templates: {report.provider_templates_path}",
-    ]
-    if report.profile:
-        lines.append(f"Profile: {report.profile}")
-    lines.extend(
-        [
-            f"Checks: {len(report.checks)} ({report.failures} failed, {report.warnings} warnings)",
-            "",
-        ]
-    )
-    for check in report.checks:
-        lane = f" [{check.lane}]" if check.lane else ""
-        lines.append(f"- {check.status.upper()} {check.name}{lane}: {check.message}")
-        if check.remediation:
-            lines.append(f"  remediation: {check.remediation}")
-    return "\n".join(lines) + "\n"
 
 
 def resolve_doctor_provider_templates_path(path_text: str) -> Path:

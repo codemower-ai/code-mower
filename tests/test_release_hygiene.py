@@ -182,6 +182,29 @@ class ReleaseHygieneTests(unittest.TestCase):
     def test_internal_package_seams_keep_cli_first_surface(self) -> None:
         self.assertIs(doctor.DoctorCheck, doctor_checks.DoctorCheck)
         self.assertIs(doctor.DoctorReport, doctor_checks.DoctorReport)
+        self.assertIs(doctor.render_doctor_text, doctor_checks.render_doctor_text)
+        rendered_doctor = doctor_checks.render_doctor_text(
+            doctor_checks.DoctorReport(
+                config_path="code-mower.yml",
+                provider_templates_path="code-mower.provider-templates.yml",
+                profile="recommended",
+                checks=(
+                    doctor_checks.DoctorCheck(
+                        name="provider.claude.auth",
+                        status=doctor_checks.STATUS_WARN,
+                        lane="claude-audit",
+                        message="runtime probe needs attention",
+                        remediation="run `claude -p ok` and retry doctor",
+                    ),
+                ),
+            )
+        )
+        self.assertIn("Profile: recommended", rendered_doctor)
+        self.assertIn(
+            "- WARN provider.claude.auth [claude-audit]: runtime probe needs attention",
+            rendered_doctor,
+        )
+        self.assertIn("remediation: run `claude -p ok` and retry doctor", rendered_doctor)
         self.assertEqual(
             doctor_checks.default_check_group_ids(),
             ("runtime", "github", "providers", "cloud", "output"),
