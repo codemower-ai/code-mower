@@ -64,6 +64,7 @@ PACKAGE_FILES = (
     ("src/code_mower/calibration/planning.py", "src/code_mower/calibration/planning.py", "core"),
     ("src/code_mower/calibration/results.py", "src/code_mower/calibration/results.py", "core"),
     ("src/code_mower/calibration/run_results.py", "src/code_mower/calibration/run_results.py", "core"),
+    ("src/code_mower/calibration/runner.py", "src/code_mower/calibration/runner.py", "core"),
     ("src/code_mower/calibration/run_status.py", "src/code_mower/calibration/run_status.py", "core"),
     ("src/code_mower/calibration/truth.py", "src/code_mower/calibration/truth.py", "core"),
     ("src/code_mower/calibration/value_report.py", "src/code_mower/calibration/value_report.py", "core"),
