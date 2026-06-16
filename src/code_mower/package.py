@@ -50,6 +50,11 @@ PACKAGE_FILES = (
     ("src/code_mower/calibration/arms.py", "src/code_mower/calibration/arms.py", "core"),
     ("src/code_mower/calibration/corpus.py", "src/code_mower/calibration/corpus.py", "core"),
     ("src/code_mower/calibration/evidence.py", "src/code_mower/calibration/evidence.py", "core"),
+    (
+        "src/code_mower/calibration/evidence_report.py",
+        "src/code_mower/calibration/evidence_report.py",
+        "core",
+    ),
     ("src/code_mower/calibration/identity.py", "src/code_mower/calibration/identity.py", "core"),
     ("src/code_mower/calibration/metrics.py", "src/code_mower/calibration/metrics.py", "core"),
     ("src/code_mower/calibration/overlap.py", "src/code_mower/calibration/overlap.py", "core"),
