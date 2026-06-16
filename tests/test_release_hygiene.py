@@ -2475,7 +2475,14 @@ def main():
 
     def test_cloud_export_examples_include_lane_policy(self) -> None:
         smoke_text = (ROOT / "scripts/smoke_easy_mode.py").read_text(encoding="utf-8")
-        package_text = (ROOT / "src/code_mower/package.py").read_text(encoding="utf-8")
+        package_text = "\n".join(
+            [
+                (ROOT / "src/code_mower/package.py").read_text(encoding="utf-8"),
+                (ROOT / "src/code_mower/package_static.py").read_text(
+                    encoding="utf-8"
+                ),
+            ]
+        )
         migration_text = (ROOT / "src/code_mower/migration.py").read_text(
             encoding="utf-8"
         )
