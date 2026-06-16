@@ -11,8 +11,11 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha releases and reports its version with
   `code-mower --version`.
-- The v0.5 alpha entrypoint is `v0.5.0-alpha.3`, with `code-mower doctor
+- The v0.5 alpha entrypoint is `v0.5.0-alpha.4`, with `code-mower doctor
   --v05` as the first-run setup diagnostic.
+- Doctor internals are modular enough that runtime checks, GitHub diagnostics,
+  provider probes, Actions cost checks, and privacy/output checks can evolve
+  without keeping the full setup surface in one monolithic file.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
 - Hosted/commercial service implementation remains outside the public OSS repo.

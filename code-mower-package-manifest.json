@@ -64,6 +64,36 @@
     },
     {
       "kind": "core",
+      "source": "tools/doctor_checks/__init__.py",
+      "target": "src/code_mower/doctor_checks/__init__.py"
+    },
+    {
+      "kind": "core",
+      "source": "tools/doctor_checks/common.py",
+      "target": "src/code_mower/doctor_checks/common.py"
+    },
+    {
+      "kind": "core",
+      "source": "tools/doctor_checks/github.py",
+      "target": "src/code_mower/doctor_checks/github.py"
+    },
+    {
+      "kind": "core",
+      "source": "tools/doctor_checks/privacy.py",
+      "target": "src/code_mower/doctor_checks/privacy.py"
+    },
+    {
+      "kind": "core",
+      "source": "tools/doctor_checks/providers.py",
+      "target": "src/code_mower/doctor_checks/providers.py"
+    },
+    {
+      "kind": "core",
+      "source": "tools/doctor_checks/runtime.py",
+      "target": "src/code_mower/doctor_checks/runtime.py"
+    },
+    {
+      "kind": "core",
       "source": "tools/code_mower_init.py",
       "target": "src/code_mower/init.py"
     },
@@ -131,6 +161,31 @@
       "kind": "core",
       "source": "tools/audit_progress.py",
       "target": "src/code_mower/audit_progress.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "tools/codex_audit_pr.py",
+      "target": "src/code_mower/codex_audit_pr.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "tools/codex_audit_env_preflight.py",
+      "target": "src/code_mower/codex_audit_env_preflight.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "tools/codex_audit_schema_smoke.py",
+      "target": "src/code_mower/codex_audit_schema_smoke.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "tools/codex_audit_verdict.schema.json",
+      "target": "src/code_mower/codex_audit_verdict.schema.json"
+    },
+    {
+      "kind": "reviewer",
+      "source": "tools/claude_audit_pr.py",
+      "target": "src/code_mower/claude_audit_pr.py"
     },
     {
       "kind": "labeler",
@@ -299,6 +354,11 @@
     },
     {
       "kind": "config",
+      "source": "tools/reviewer_value_report.example.md",
+      "target": "templates/reviewer-value-report.example.md"
+    },
+    {
+      "kind": "config",
       "source": ".cursor/BUGBOT.md",
       "target": "templates/cursor/BUGBOT.md"
     },
@@ -326,6 +386,41 @@
       "kind": "config",
       "source": "tools/reviewer_spend.example.json",
       "target": "src/code_mower/templates/reviewer-spend.example.json"
+    },
+    {
+      "kind": "config",
+      "source": "tools/reviewer_value_report.example.md",
+      "target": "src/code_mower/templates/reviewer-value-report.example.md"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/product-support/code_mower",
+      "target": "src/code_mower/templates/product-support/code_mower"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/product-support/code_mower_standalone_pin.env",
+      "target": "src/code_mower/templates/product-support/code_mower_standalone_pin.env"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/product-support/code_mower_standalone_shadow.sh",
+      "target": "src/code_mower/templates/product-support/code_mower_standalone_shadow.sh"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
+      "target": "src/code_mower/templates/product-support/run_claude_audit_pr.sh"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
+      "target": "src/code_mower/templates/product-support/run_codex_audit_pr.sh"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/product-support/safe_gh_comment.py",
+      "target": "src/code_mower/templates/product-support/safe_gh_comment.py"
     },
     {
       "kind": "doc",

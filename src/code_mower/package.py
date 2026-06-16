@@ -11,17 +11,28 @@ from pathlib import Path
 from typing import Any, Mapping
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    module_dir = Path(__file__).resolve().parent
+    sys.path.insert(0, str(module_dir.parent))
 
 if __package__ in {None, "", "tools"}:
-    from tools.code_mower_config import (
-        ConfigError,
-        RenderedPlan,
-        SAFE_IDENTIFIER_RE,
-        _format_issues,
-        load_config,
-        validate_config,
-    )
+    if __package__ in {None, ""} and module_dir.name == "code_mower":
+        from code_mower.config import (
+            ConfigError,
+            RenderedPlan,
+            SAFE_IDENTIFIER_RE,
+            _format_issues,
+            load_config,
+            validate_config,
+        )
+    else:
+        from tools.code_mower_config import (
+            ConfigError,
+            RenderedPlan,
+            SAFE_IDENTIFIER_RE,
+            _format_issues,
+            load_config,
+            validate_config,
+        )
 else:  # pragma: no cover - exercised after package extraction.
     from .config import (
         ConfigError,
@@ -47,6 +58,12 @@ PACKAGE_FILES = (
     ("tools/code_mower_config.py", "src/code_mower/config.py", "core"),
     ("tools/code_mower_context_packs.py", "src/code_mower/code_mower_context_packs.py", "core"),
     ("tools/code_mower_doctor.py", "src/code_mower/doctor.py", "core"),
+    ("tools/doctor_checks/__init__.py", "src/code_mower/doctor_checks/__init__.py", "core"),
+    ("tools/doctor_checks/common.py", "src/code_mower/doctor_checks/common.py", "core"),
+    ("tools/doctor_checks/github.py", "src/code_mower/doctor_checks/github.py", "core"),
+    ("tools/doctor_checks/privacy.py", "src/code_mower/doctor_checks/privacy.py", "core"),
+    ("tools/doctor_checks/providers.py", "src/code_mower/doctor_checks/providers.py", "core"),
+    ("tools/doctor_checks/runtime.py", "src/code_mower/doctor_checks/runtime.py", "core"),
     ("tools/code_mower_init.py", "src/code_mower/init.py", "core"),
     ("tools/code_mower_merge.py", "src/code_mower/code_mower_merge.py", "core"),
     ("tools/code_mower_next_steps.py", "src/code_mower/next_steps.py", "core"),
@@ -205,6 +222,31 @@ PACKAGE_FILES = (
     ("tools/adapters/greptile.py", "src/code_mower/adapters/greptile.py", "adapter"),
     ("tools/adapters/qodo.py", "src/code_mower/adapters/qodo.py", "adapter"),
 )
+
+
+def _default_materialization_repo_root(module_file: Path | None = None) -> Path:
+    """Resolve the source checkout root used by package materialization.
+
+    When this module runs from a source checkout, we want the repository root
+    (the directory containing ``tools/`` and ``src/code_mower/templates``).
+    When it runs from another context, prefer an obvious checkout-like cwd if
+    present so local rehearsals still work.
+    """
+
+    file_path = (module_file or Path(__file__)).resolve()
+    candidates = [
+        file_path.parents[2],
+        file_path.parents[1],
+        Path.cwd(),
+    ]
+    required_paths = (
+        "tools/code_mower_cli.py",
+        "src/code_mower/templates/code-mower.example.yml",
+    )
+    for candidate in candidates:
+        if all((candidate / relative_path).exists() for relative_path in required_paths):
+            return candidate
+    return file_path.parents[2]
 
 DEFERRED_PACKAGE_FILES = (
     (
@@ -1370,11 +1412,30 @@ def _copy_file(source: Path, target: Path, *, force: bool) -> None:
     shutil.copyfile(source, target)
 
 
+def _resolve_package_source_path(repo_root: Path, source: str, target: str) -> Path | None:
+    """Find the best available on-disk source for a packaged file.
+
+    During extraction we preserved the historical ``source`` labels for
+    manifest provenance, but the public OSS repo now stores many of those files
+    directly at their packaged ``target`` paths. Materialization should work
+    from either layout.
+    """
+
+    candidates = [
+        repo_root / source,
+        repo_root / target,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _missing_package_sources(repo_root: Path) -> list[str]:
     return sorted(
         source
-        for source, _, _ in PACKAGE_FILES
-        if not (repo_root / source).is_file()
+        for source, target, _ in PACKAGE_FILES
+        if _resolve_package_source_path(repo_root, source, target) is None
     )
 
 
@@ -1532,7 +1593,10 @@ def materialize_package_plan(
 
     for source, target, kind in PACKAGE_FILES:
         target_path = output_dir / target
-        _copy_file(repo_root / source, target_path, force=force)
+        resolved_source = _resolve_package_source_path(repo_root, source, target)
+        if resolved_source is None:  # pragma: no cover - guarded by preflight
+            raise ConfigError(f"package source file does not exist: {source}")
+        _copy_file(resolved_source, target_path, force=force)
         written.append({"target": target, "source": source, "kind": kind})
 
     for target, content in STATIC_PACKAGE_FILES:
@@ -1693,7 +1757,7 @@ def main(argv: list[str] | None = None) -> int:
             plan = materialize_package_plan(
                 plan,
                 output_dir=args.output_dir,
-                repo_root=Path(__file__).resolve().parents[1],
+                repo_root=_default_materialization_repo_root(),
                 force=args.force,
             )
     except ConfigError as exc:

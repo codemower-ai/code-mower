@@ -118,7 +118,8 @@ Cut a v0.5 alpha or beta only after:
 
 ## Current Alpha
 
-`v0.5.0-alpha.3` is the first alpha intended for the first friendly-user
-rehearsal. It keeps the local-first package path from alpha.1 and adds the
-cloud doctor service-readiness check so users can confirm CodeMower.com health
-before attempting an upload.
+`v0.5.0-alpha.4` is the next friendly-user rehearsal alpha. It keeps the
+local-first package path from alpha.1, preserves the cloud doctor
+service-readiness check so users can confirm CodeMower.com health before
+attempting an upload, and lands the first meaningful doctor internal split so
+the setup surface feels more intentionally designed.

@@ -29,7 +29,7 @@ from scripts import privacy_scan
 
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_v05_alpha_3(self) -> None:
-        self.assertEqual(__version__, "0.5.0a3")
+        self.assertEqual(__version__, "0.5.0a4")
 
     def test_dev_python_wrapper_is_executable(self) -> None:
         wrapper = ROOT / "scripts/dev-python"
@@ -325,6 +325,48 @@ printf '%s\\n' "${lane}"
         )
         self.assertEqual(manifest["output_dir"], "<generated-output-dir>")
 
+    def test_package_materializer_module_mode_uses_source_checkout_root(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "materialized"
+            env = dict(os.environ)
+            pythonpath_entries = [str(ROOT / "src"), str(ROOT)]
+            if env.get("PYTHONPATH"):
+                pythonpath_entries.append(env["PYTHONPATH"])
+            env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+            completed = subprocess.run(
+                [
+                    str(ROOT / "scripts/dev-python"),
+                    "-m",
+                    "code_mower.package",
+                    str(config_path),
+                    "--output-dir",
+                    str(output_dir),
+                    "--force",
+                    "--json",
+                ],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            manifest = json.loads(
+                (output_dir / "code-mower-package-manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            doctor_targets = {
+                entry["target"]
+                for entry in manifest["files_written"]
+                if "doctor_checks" in entry.get("target", "")
+            }
+            self.assertIn(
+                "src/code_mower/doctor_checks/runtime.py",
+                doctor_targets,
+            )
+
     def test_package_materializer_includes_product_support_templates(self) -> None:
         packaged_sources = {source for _, source, _ in code_mower_package.PACKAGE_FILES}
         for source in (
@@ -334,6 +376,18 @@ printf '%s\\n' "${lane}"
             "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
             "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
             "src/code_mower/templates/product-support/safe_gh_comment.py",
+        ):
+            self.assertIn(source, packaged_sources)
+
+    def test_package_materializer_includes_doctor_check_modules(self) -> None:
+        packaged_sources = {source for _, source, _ in code_mower_package.PACKAGE_FILES}
+        for source in (
+            "src/code_mower/doctor_checks/__init__.py",
+            "src/code_mower/doctor_checks/common.py",
+            "src/code_mower/doctor_checks/github.py",
+            "src/code_mower/doctor_checks/privacy.py",
+            "src/code_mower/doctor_checks/providers.py",
+            "src/code_mower/doctor_checks/runtime.py",
         ):
             self.assertIn(source, packaged_sources)
 

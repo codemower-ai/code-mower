@@ -22,9 +22,10 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public alpha baseline is `v0.5.0-alpha.3`. It is the first alpha
-intended to be installed from the `codemower-ai/code-mower` public repository
-after the org move. It has proved:
+The current public alpha baseline is `v0.5.0-alpha.4`. It is the next
+org-repo alpha after the initial public move, and it tightens the internal
+shape of the OSS core while preserving the public CLI/install path. It has
+proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
 - `code-mower init --easy`, `doctor --easy`, `next-steps`, and starter
@@ -38,8 +39,13 @@ after the org move. It has proved:
 - `code-mower doctor --v05` as a single early-adopter preset for easy mode,
   runtime probes, GitHub/private-repo setup, Actions cost diagnostics, and
   optional cloud-token setup;
+- a modular `code_mower.doctor_checks` architecture, so doctor runtime, GitHub,
+  provider, and privacy checks can evolve without keeping all setup logic in
+  one file;
+- direct source-checkout packaging commands still work after the doctor split,
+  alongside package-installed CLI usage;
 - Code Mower Cloud dogfood events from the OSS repo and product work; and
-- GitHub-first setup checks, including private-repo Actions cost visibility.
+- GitHub-first setup checks, including private-repo Actions cost visibility;
 - public repo hygiene artifacts: issue templates, pull request template,
   Dependabot config, security policy, and an explicit repo-hardening checklist.
 

@@ -12,7 +12,7 @@ Code Mower is extracted from a production multi-repo development workflow and pa
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.3"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.4"
 code-mower --version
 code-mower init --easy
 code-mower doctor --v05 --json
