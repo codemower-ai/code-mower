@@ -6,7 +6,7 @@ metrics, pilot planning, result normalization, truth matching, and
 policy/reporting code as the runner is split out of the legacy command adapter.
 """
 
-from .corpus import load_json_object, parse_int
+from .corpus import load_corpus, load_json_object, parse_int
 from .evidence import (
     KNOWN_EVIDENCE_DISPOSITIONS,
     NON_BLOCKING_CODERABBIT_SEVERITIES,
@@ -84,6 +84,7 @@ __all__ = [
     "float_or_zero",
     "head_slug",
     "infra_run_record",
+    "load_corpus",
     "load_json_object",
     "local_llm_findings",
     "normalize_run_status_category",

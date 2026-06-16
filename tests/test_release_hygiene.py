@@ -249,6 +249,10 @@ class ReleaseHygieneTests(unittest.TestCase):
             calibration_pkg.build_pilot_plan,
         )
         self.assertIs(
+            code_mower_calibration.load_corpus,
+            calibration_pkg.load_corpus,
+        )
+        self.assertIs(
             code_mower_calibration._normalize_truth,
             calibration_pkg.normalize_truth,
         )
