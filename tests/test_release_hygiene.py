@@ -248,6 +248,20 @@ class ReleaseHygieneTests(unittest.TestCase):
             code_mower_calibration.build_pilot_plan,
             calibration_pkg.build_pilot_plan,
         )
+        self.assertIs(
+            code_mower_calibration._normalize_truth,
+            calibration_pkg.normalize_truth,
+        )
+        self.assertIs(
+            code_mower_calibration._expected_finding_matches,
+            calibration_pkg.expected_finding_matches,
+        )
+        self.assertEqual(
+            calibration_pkg.normalize_truth({"source": "known-clean-control"})[
+                "expectation"
+            ],
+            calibration_pkg.TRUTH_EXPECTATION_KNOWN_CLEAN,
+        )
 
     def test_calibration_arm_catalog_is_packaged_and_explicit_lens_aware(self) -> None:
         arm_ids = {arm["arm_id"] for arm in calibration_pkg.default_arms()}
@@ -262,6 +276,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("src/code_mower/calibration/arms.py", package_targets)
         self.assertIn("src/code_mower/calibration/planning.py", package_targets)
         self.assertIn("src/code_mower/calibration/run_status.py", package_targets)
+        self.assertIn("src/code_mower/calibration/truth.py", package_targets)
 
     def test_provider_runner_github_token_helper_reads_stdin_and_clears_env(self) -> None:
         with mock.patch.dict(
