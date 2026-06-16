@@ -12,6 +12,7 @@ from .evidence import (
     NON_BLOCKING_CODERABBIT_SEVERITIES,
     USEFUL_EVIDENCE_DISPOSITIONS,
 )
+from .arms import DEFAULT_CLI_LANES, DEFAULT_LOCAL_LLM_PROFILES, default_arms
 from .identity import head_slug, safe_slug
 from .metrics import float_or_zero
 from .policy import (
@@ -24,6 +25,8 @@ from .policy import (
 
 __all__ = [
     "KNOWN_EVIDENCE_DISPOSITIONS",
+    "DEFAULT_CLI_LANES",
+    "DEFAULT_LOCAL_LLM_PROFILES",
     "MERGE_GATE_MIN_CLEAN_RUNS",
     "MERGE_GATE_MIN_FINDINGS",
     "MERGE_GATE_USEFUL_RATE",
@@ -31,6 +34,7 @@ __all__ = [
     "SELECTIVE_USEFUL_RATE",
     "USEFUL_EVIDENCE_DISPOSITIONS",
     "build_lane_policy_report",
+    "default_arms",
     "float_or_zero",
     "head_slug",
     "load_json_object",
