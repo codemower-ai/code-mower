@@ -1009,6 +1009,15 @@ printf '%s\\n' "${lane}"
             with self.subTest(target=target):
                 self.assertIn(target, packaged_targets)
 
+    def test_package_content_split_preserves_legacy_tools_source(self) -> None:
+        packaged_sources_by_target = {
+            target: source for source, target, _ in code_mower_package.PACKAGE_FILES
+        }
+        self.assertEqual(
+            packaged_sources_by_target["src/code_mower/package_content.py"],
+            "tools/code_mower_package_content.py",
+        )
+
     def test_package_materializer_prefers_loaded_checkout_before_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(
