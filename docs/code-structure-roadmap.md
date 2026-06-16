@@ -15,7 +15,6 @@ comfortable contributor onboarding:
 
 | Module | Approximate Lines | Current Responsibility |
 | --- | ---: | --- |
-| `cloud.py` | 1,292 | cloud doctor, upload, repo sync, CLI orchestration |
 | `codex_audit_pr.py` | 1,917 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
 | `package.py` | 1,861 | extraction package generation, template copying, manifest validation |
 | `migration.py` | 1,757 | wrapper migration, rehearsal, mirror-removal planning |
@@ -27,6 +26,8 @@ is now roughly 600 lines and delegates most domain behavior to
 `code_mower.calibration`.
 `doctor.py` is no longer on this list either: it is now roughly 440 lines and
 acts as a backwards-compatible CLI adapter around `code_mower.doctor_checks`.
+`cloud.py` has also dropped off this list: it is now roughly 680 lines and acts
+as a backwards-compatible CLI adapter around `code_mower.cloud_client`.
 
 These are not urgent correctness problems. They are readability and evolution
 risks: new contributors cannot quickly tell which functions are stable API,
@@ -93,12 +94,13 @@ tested internal seams:
   registry seam.
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
   stdin-safe audit wrappers and local CLI lanes.
-- `code_mower.cloud_client` now owns cloud endpoint probing plus bundle schema
-  and privacy metadata. It also owns bundle materialization, dogfood report
-  discovery, dry-run preview shape, upload payload construction, network
-  posting, local cloud setup/token handling, and structured event/repo helper
-  logic. `cloud.py` remains the CLI adapter for export, doctor, setup,
-  dogfood, repo-sync, and upload.
+- `code_mower.cloud_client` now owns cloud endpoint probing, cloud doctor
+  diagnostics, bundle schema and privacy metadata, bundle materialization,
+  dogfood report discovery, dry-run preview shape, upload payload construction,
+  network posting, local cloud setup/token handling, structured event/repo
+  helper logic, and dogfood/catch-up/reviewer-run/repo-sync orchestration.
+  `cloud.py` remains the CLI adapter for export, doctor, setup, dogfood,
+  repo-sync, and upload.
 - `builder-experiment` and authoring-intelligence docs establish the future
   `run_role`/`purpose` event shape without requiring a full orchestrator runtime
   before v1.0.
@@ -141,14 +143,15 @@ existing commands.
 
 4. **Cloud client package**
    - Completed: metadata bundle materialization is separate from network
-     upload. Cloud setup/token handling plus structured event/repo helpers now
-     live under `code_mower.cloud_client`.
+     upload. Cloud setup/token handling, structured event/repo helpers, cloud
+     doctor diagnostics, and dogfood/catch-up/reviewer-run/repo-sync
+     orchestration now live under `code_mower.cloud_client`.
    - Keep source/diff/transcript exclusion rules near the bundle schema.
    - `build_cloud_bundle(...)` is the current small bundle primitive for tests
      and future UI integrations.
-   - Next: split dogfood, catch-up, reviewer-run, repo-sync, and upload
-     orchestration further so `cloud.py` becomes a true thin adapter instead of
-     a mixed command-and-domain module.
+   - Next: reduce remaining import-compatibility plumbing only where it makes
+     first-read comprehension better; the main cloud domain logic now has a
+     tested package seam.
 
 5. **Builder experiment primitives**
    - Normalize `run_role`/`purpose`, task contract identity, provider/lens,

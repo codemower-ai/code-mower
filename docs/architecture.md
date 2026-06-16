@@ -39,7 +39,7 @@ src/code_mower/
   prompts.py                     lane prompt loading
   reviewer_metrics.py            reviewer value/report calculations
   cloud.py                       thin cloud CLI adapter
-  cloud_client/                  bundle export, upload, setup, and event helpers
+  cloud_client/                  export, upload, setup, doctor, events, operations
   migration.py                   package install and mirror-removal rehearsals
   *_audit_pr.py                  provider-specific audit runners
   adapters/                      hosted/SaaS adapter helpers

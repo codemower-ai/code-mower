@@ -6,10 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import sys
 from pathlib import Path
-from typing import Any
 
 if __package__ in {None, ""}:
     module_dir = Path(__file__).resolve().parent
@@ -29,30 +27,29 @@ if __package__ in {None, ""}:
         DEFAULT_TOKEN_ENV,
         DEFAULT_UPLOAD_ENDPOINT,
         build_cloud_bundle,
-        build_dogfood_event as _build_dogfood_event,
-        build_workflow_run_event as _build_workflow_run_event,
+        catch_up_upload as _catch_up_upload,
         default_setup_path as _default_setup_path,
-        detect_repo_slug as _detect_repo_slug,
-        dashboard_url_for_endpoint,
         build_upload_payload,
-        build_dogfood_dry_run_preview,
-        build_dogfood_plan,
-        default_dogfood_reports,
+        default_dogfood_reports as _default_dogfood_reports,
+        dogfood_upload as _dogfood_upload,
         event_id_from_github_run as _event_id_from_github_run,
-        health_url_for_endpoint,
         is_local_http_endpoint,
         load_bundle_manifest as load_bundle_manifest,
         load_event_file as _load_event_file,
+        parse_repo_sync_spec as _parse_repo_sync_spec,
         parse_event_args as _parse_event_args,
         post_upload_payload,
-        probe_cloud_service,
         read_token_file as _read_token_file,
         render_bundle_readme,
+        render_cloud_doctor_text,
         render_setup_env,
         repo_slug_from_remote as _repo_slug_from_remote,
+        repo_sync_output_name as _repo_sync_output_name,
+        repo_sync_upload as _repo_sync_upload,
         resolve_setup_token as _resolve_setup_token,
+        reviewer_runs_upload as _reviewer_runs_upload,
+        run_cloud_doctor,
         run_cloud_setup,
-        run_gh_run_list as _run_gh_run_list,
         run_git as _run_git,
         safe_config_stem as _safe_config_stem,
         safe_event_type as _safe_event_type,
@@ -60,7 +57,6 @@ if __package__ in {None, ""}:
         token_prefix as _token_prefix,
         utc_now as _utc_now,
         validate_metadata_payload,
-        validate_upload_endpoint,
         write_setup_env_file,
     )
     from code_mower import code_mower_telemetry
@@ -80,30 +76,29 @@ else:  # pragma: no cover - exercised after package extraction.
         DEFAULT_TOKEN_ENV,
         DEFAULT_UPLOAD_ENDPOINT,
         build_cloud_bundle,
-        build_dogfood_event as _build_dogfood_event,
-        build_workflow_run_event as _build_workflow_run_event,
+        catch_up_upload as _catch_up_upload,
         default_setup_path as _default_setup_path,
-        detect_repo_slug as _detect_repo_slug,
-        dashboard_url_for_endpoint,
         build_upload_payload,
-        build_dogfood_dry_run_preview,
-        build_dogfood_plan,
-        default_dogfood_reports,
+        default_dogfood_reports as _default_dogfood_reports,
+        dogfood_upload as _dogfood_upload,
         event_id_from_github_run as _event_id_from_github_run,
-        health_url_for_endpoint,
         is_local_http_endpoint,
         load_bundle_manifest as load_bundle_manifest,
         load_event_file as _load_event_file,
+        parse_repo_sync_spec as _parse_repo_sync_spec,
         parse_event_args as _parse_event_args,
         post_upload_payload,
-        probe_cloud_service,
         read_token_file as _read_token_file,
         render_bundle_readme,
+        render_cloud_doctor_text,
         render_setup_env,
         repo_slug_from_remote as _repo_slug_from_remote,
+        repo_sync_output_name as _repo_sync_output_name,
+        repo_sync_upload as _repo_sync_upload,
         resolve_setup_token as _resolve_setup_token,
+        reviewer_runs_upload as _reviewer_runs_upload,
+        run_cloud_doctor,
         run_cloud_setup,
-        run_gh_run_list as _run_gh_run_list,
         run_git as _run_git,
         safe_config_stem as _safe_config_stem,
         safe_event_type as _safe_event_type,
@@ -111,7 +106,6 @@ else:  # pragma: no cover - exercised after package extraction.
         token_prefix as _token_prefix,
         utc_now as _utc_now,
         validate_metadata_payload,
-        validate_upload_endpoint,
         write_setup_env_file,
     )
     from . import code_mower_telemetry
@@ -127,6 +121,7 @@ DEFAULT_REPO_SYNC_OUTPUT_DIR = ".code-mower/cloud-repo-sync"
 __all__ = [
     "EVENT_SCHEMA",
     "GITHUB_RUN_LIST_FIELDS",
+    "BUNDLE_MANIFEST_FILENAME",
     "CloudBundleError",
     "DEFAULT_INSTALL_ID_ENV",
     "DEFAULT_SETUP_INSTALL_ID",
@@ -147,13 +142,20 @@ __all__ = [
     "validate_metadata_payload",
     "write_setup_env_file",
     "main",
+    "_catch_up_upload",
+    "_default_dogfood_reports",
     "_default_setup_path",
+    "_dogfood_upload",
     "_event_id_from_github_run",
     "_load_event_file",
     "_parse_event_args",
+    "_parse_repo_sync_spec",
     "_read_token_file",
     "_repo_slug_from_remote",
+    "_repo_sync_output_name",
+    "_repo_sync_upload",
     "_resolve_setup_token",
+    "_reviewer_runs_upload",
     "_run_git",
     "_safe_config_stem",
     "_safe_event_type",
@@ -166,197 +168,6 @@ def _is_local_http_endpoint(endpoint: str) -> bool:
     return is_local_http_endpoint(endpoint)
 
 
-def _validate_upload_endpoint(endpoint: str) -> None:
-    try:
-        validate_upload_endpoint(endpoint)
-    except ValueError as exc:
-        raise CloudBundleError(str(exc)) from exc
-
-
-def _probe_cloud_service(endpoint: str, *, timeout: float) -> dict[str, Any]:
-    return probe_cloud_service(endpoint, timeout=timeout)
-
-
-def run_cloud_doctor(
-    *,
-    bundle_dir: Path,
-    endpoint: str,
-    token_env: str,
-    require_token: bool = True,
-    probe_service: bool = False,
-    timeout: float = 5.0,
-) -> dict[str, Any]:
-    checks: list[dict[str, Any]] = []
-    endpoint_is_valid = False
-
-    try:
-        _validate_upload_endpoint(endpoint)
-        endpoint_is_valid = True
-        checks.append(
-            {
-                "name": "endpoint",
-                "status": "pass",
-                "message": f"upload endpoint is allowed: {endpoint}",
-            }
-        )
-    except CloudBundleError as exc:
-        checks.append(
-            {
-                "name": "endpoint",
-                "status": "fail",
-                "message": str(exc),
-            }
-        )
-
-    if probe_service and endpoint_is_valid:
-        checks.append(_probe_cloud_service(endpoint, timeout=timeout))
-    elif endpoint_is_valid:
-        checks.append(
-            {
-                "name": "service",
-                "status": "skip",
-                "message": "service health probe skipped; pass --probe-service to check it",
-                "detail": {"health_url": health_url_for_endpoint(endpoint)},
-            }
-        )
-
-    token_present = bool(os.environ.get(token_env, ""))
-    if token_present:
-        checks.append(
-            {
-                "name": "token",
-                "status": "pass",
-                "message": f"{token_env} is set",
-            }
-        )
-    elif _is_local_http_endpoint(endpoint):
-        checks.append(
-            {
-                "name": "token",
-                "status": "warn",
-                "message": (
-                    f"{token_env} is not set; local configless ingest may still work"
-                ),
-            }
-        )
-    elif not require_token:
-        checks.append(
-            {
-                "name": "token",
-                "status": "warn",
-                "message": f"{token_env} is not set; upload will remain disabled",
-                "remediation": (
-                    "Run `code-mower cloud setup --token-stdin` or export "
-                    f"{token_env} before using --yes."
-                ),
-            }
-        )
-    else:
-        checks.append(
-            {
-                "name": "token",
-                "status": "fail",
-                "message": f"{token_env} is not set",
-                "remediation": (
-                    "Set CODE_MOWER_CLOUD_TOKEN to a team ingest token before "
-                    "running cloud upload --yes."
-                ),
-            }
-        )
-
-    manifest_path = bundle_dir / BUNDLE_MANIFEST_FILENAME
-    if manifest_path.is_file():
-        try:
-            payload = build_upload_payload(bundle_dir=bundle_dir, include_reports=False)
-            checks.append(
-                {
-                    "name": "bundle",
-                    "status": "pass",
-                    "message": (
-                        f"bundle is readable with {len(payload['reports'])} report summaries "
-                        f"and {len(payload['events'])} structured events"
-                    ),
-                }
-            )
-        except CloudBundleError as exc:
-            checks.append(
-                {
-                    "name": "bundle",
-                    "status": "fail",
-                    "message": str(exc),
-                }
-            )
-    else:
-        checks.append(
-            {
-                "name": "bundle",
-                "status": "warn",
-                "message": (
-                    f"bundle manifest not found at {manifest_path}; run cloud export first"
-                ),
-            }
-        )
-
-    failures = sum(1 for check in checks if check["status"] == "fail")
-    warnings = sum(1 for check in checks if check["status"] == "warn")
-    return {
-        "mode": "cloud-doctor",
-        "status": "fail" if failures else "pass",
-        "endpoint": endpoint,
-        "dashboard_url": dashboard_url_for_endpoint(endpoint),
-        "health_url": health_url_for_endpoint(endpoint),
-        "token_env": token_env,
-        "bundle_dir": str(bundle_dir),
-        "checks": checks,
-        "failures": failures,
-        "warnings": warnings,
-        "next_steps": [
-            {
-                "id": "open-dashboard",
-                "label": "Open the Code Mower Cloud dashboard",
-                "url": dashboard_url_for_endpoint(endpoint),
-            },
-            {
-                "id": "setup-token",
-                "label": "Store a dashboard-issued token locally",
-                "command": (
-                    "code-mower cloud setup --token-stdin "
-                    "--team-id YOUR_TEAM_SLUG --install-id YOUR_INSTALL_ID"
-                ),
-            },
-            {
-                "id": "dry-run-upload",
-                "label": "Preview the metadata upload without network transfer",
-                "command": f"code-mower cloud upload {shlex.quote(str(bundle_dir))} --dry-run --json",
-            },
-            {
-                "id": "upload",
-                "label": "Upload metadata after inspecting the dry run",
-                "command": f"code-mower cloud upload {shlex.quote(str(bundle_dir))} --yes --json",
-            },
-        ],
-    }
-
-
-def render_cloud_doctor_text(report: dict[str, Any]) -> str:
-    lines = [
-        "Code Mower cloud doctor",
-        f"Status: {report['status']}",
-        f"Endpoint: {report['endpoint']}",
-        f"Dashboard: {report.get('dashboard_url', '')}",
-        f"Token env: {report['token_env']}",
-        f"Bundle: {report['bundle_dir']}",
-        "",
-    ]
-    for check in report["checks"]:
-        lines.append(
-            f"- {check['status'].upper()} {check['name']}: {check['message']}"
-        )
-        if check.get("remediation"):
-            lines.append(f"  remediation: {check['remediation']}")
-    return "\n".join(lines) + "\n"
-
-
 def _parse_report_args(values: list[str]) -> list[tuple[Path, str]]:
     reports: list[tuple[Path, str]] = []
     for raw in values:
@@ -367,435 +178,6 @@ def _parse_report_args(values: list[str]) -> list[tuple[Path, str]]:
         kind, path_text = raw.split("=", 1)
         reports.append((Path(path_text), _safe_kind(kind)))
     return reports
-
-
-def _default_dogfood_reports(repo_path: Path) -> list[tuple[Path, str]]:
-    return default_dogfood_reports(repo_path)
-
-
-def _dogfood_upload(
-    *,
-    repo_path: Path,
-    output_dir: Path,
-    reports: list[tuple[Path, str]],
-    events: list[dict[str, Any]],
-    repo_slug: str,
-    team_id: str,
-    install_id: str,
-    source: str,
-    endpoint: str,
-    token_env: str,
-    include_reports: bool,
-    yes: bool,
-    timeout: float,
-) -> dict[str, Any]:
-    repo_path = repo_path.expanduser().resolve()
-    detected_repo_slug = repo_slug or _detect_repo_slug(repo_path)
-    if not detected_repo_slug:
-        raise CloudBundleError(
-            "unable to detect repo slug; pass --repo-slug OWNER/REPO"
-        )
-    resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
-    resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
-    resolved_reports = reports or _default_dogfood_reports(repo_path)
-    dogfood_plan = build_dogfood_plan(
-        repo_slug=detected_repo_slug,
-        team_id=resolved_team_id,
-        install_id=resolved_install_id,
-        source=source,
-        reports=resolved_reports,
-        events=events,
-    )
-    all_events = [
-        _build_dogfood_event(
-            repo_path=repo_path,
-            plan=dogfood_plan,
-        ),
-        *events,
-    ]
-    export_result = build_cloud_bundle(
-        reports=resolved_reports,
-        events=all_events,
-        output_dir=output_dir,
-        repo_slug=detected_repo_slug,
-        team_id=resolved_team_id,
-        install_id=resolved_install_id,
-        anonymous=False,
-    )
-    doctor_result = run_cloud_doctor(
-        bundle_dir=output_dir,
-        endpoint=endpoint,
-        token_env=token_env,
-        require_token=yes,
-    )
-    if doctor_result["failures"]:
-        return {
-            "mode": "cloud-dogfood",
-            "status": "doctor_failed",
-            "export": export_result,
-            "doctor": doctor_result,
-        }
-    payload = build_upload_payload(
-        bundle_dir=output_dir,
-        include_reports=include_reports,
-    )
-    if not yes:
-        return {
-            "mode": "cloud-dogfood",
-            "status": "dry_run",
-            "export": export_result,
-            "doctor": doctor_result,
-            "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
-        }
-    token = os.environ.get(token_env, "")
-    if not token and not _is_local_http_endpoint(endpoint):
-        raise CloudBundleError(
-            f"{token_env} is not set; refusing non-local upload without a token"
-        )
-    return {
-        "mode": "cloud-dogfood",
-        "status": "uploaded",
-        "export": export_result,
-        "doctor": doctor_result,
-        "upload": post_upload_payload(
-            payload=payload,
-            endpoint=endpoint,
-            token=token,
-            timeout=timeout,
-        ),
-    }
-
-
-def _catch_up_upload(
-    *,
-    repo_path: Path,
-    output_dir: Path,
-    repo_slug: str,
-    team_id: str,
-    install_id: str,
-    source: str,
-    limit: int,
-    endpoint: str,
-    token_env: str,
-    yes: bool,
-    timeout: float,
-    include_git_ref: bool,
-) -> dict[str, Any]:
-    if limit < 1 or limit > MAX_EVENT_COUNT:
-        raise CloudBundleError(f"--limit must be between 1 and {MAX_EVENT_COUNT}")
-    repo_path = repo_path.expanduser().resolve()
-    detected_repo_slug = repo_slug or _detect_repo_slug(repo_path)
-    if not detected_repo_slug:
-        raise CloudBundleError(
-            "unable to detect repo slug; pass --repo-slug OWNER/REPO"
-        )
-    resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
-    resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
-    runs = _run_gh_run_list(
-        repo_slug=detected_repo_slug,
-        limit=limit,
-        repo_path=repo_path,
-    )
-    events = [
-        _build_workflow_run_event(
-            repo_slug=detected_repo_slug,
-            team_id=resolved_team_id,
-            install_id=resolved_install_id,
-            source=source,
-            run=run,
-            include_git_ref=include_git_ref,
-        )
-        for run in runs
-    ]
-    export_result = build_cloud_bundle(
-        reports=[],
-        events=events,
-        output_dir=output_dir,
-        repo_slug=detected_repo_slug,
-        team_id=resolved_team_id,
-        install_id=resolved_install_id,
-        anonymous=False,
-    )
-    doctor_result = run_cloud_doctor(
-        bundle_dir=output_dir,
-        endpoint=endpoint,
-        token_env=token_env,
-        require_token=yes,
-    )
-    if doctor_result["failures"]:
-        return {
-            "mode": "cloud-catch-up",
-            "status": "doctor_failed",
-            "repo_slug": detected_repo_slug,
-            "run_count": len(runs),
-            "export": export_result,
-            "doctor": doctor_result,
-        }
-    payload = build_upload_payload(bundle_dir=output_dir, include_reports=False)
-    if not yes:
-        return {
-            "mode": "cloud-catch-up",
-            "status": "dry_run",
-            "repo_slug": detected_repo_slug,
-            "run_count": len(runs),
-            "export": export_result,
-            "doctor": doctor_result,
-            "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
-        }
-    token = os.environ.get(token_env, "")
-    if not token and not _is_local_http_endpoint(endpoint):
-        raise CloudBundleError(
-            f"{token_env} is not set; refusing non-local upload without a token"
-        )
-    return {
-        "mode": "cloud-catch-up",
-        "status": "uploaded",
-        "repo_slug": detected_repo_slug,
-        "run_count": len(runs),
-        "export": export_result,
-        "doctor": doctor_result,
-        "upload": post_upload_payload(
-            payload=payload,
-            endpoint=endpoint,
-            token=token,
-            timeout=timeout,
-        ),
-    }
-
-
-def _reviewer_runs_upload(
-    *,
-    repo_path: Path,
-    verdicts: Path,
-    output_dir: Path,
-    repo_slug: str,
-    team_id: str,
-    install_id: str,
-    limit: int,
-    endpoint: str,
-    token_env: str,
-    yes: bool,
-    timeout: float,
-    include_git_ref: bool,
-) -> dict[str, Any]:
-    if limit < 1 or limit > MAX_EVENT_COUNT:
-        raise CloudBundleError(f"--limit must be between 1 and {MAX_EVENT_COUNT}")
-    repo_path = repo_path.expanduser().resolve()
-    detected_repo_slug = repo_slug or _detect_repo_slug(repo_path)
-    if not detected_repo_slug:
-        raise CloudBundleError(
-            "unable to detect repo slug; pass --repo-slug OWNER/REPO"
-        )
-    resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
-    resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
-    try:
-        events = code_mower_telemetry.export_reviewer_run_events_from_verdicts(
-            verdicts,
-            repo=detected_repo_slug,
-            limit=limit,
-            include_git_ref=include_git_ref,
-        )
-    except ValueError as exc:
-        raise CloudBundleError(str(exc)) from exc
-    if not events:
-        return {
-            "mode": "cloud-reviewer-runs",
-            "status": "no_events",
-            "repo_slug": detected_repo_slug,
-            "event_count": 0,
-            "verdicts": str(verdicts.expanduser()),
-            "git_ref_included": include_git_ref,
-        }
-    export_result = build_cloud_bundle(
-        reports=[],
-        events=events,
-        output_dir=output_dir,
-        repo_slug=detected_repo_slug,
-        team_id=resolved_team_id,
-        install_id=resolved_install_id,
-        anonymous=False,
-    )
-    doctor_result = run_cloud_doctor(
-        bundle_dir=output_dir,
-        endpoint=endpoint,
-        token_env=token_env,
-        require_token=yes,
-    )
-    if doctor_result["failures"]:
-        return {
-            "mode": "cloud-reviewer-runs",
-            "status": "doctor_failed",
-            "repo_slug": detected_repo_slug,
-            "event_count": len(events),
-            "export": export_result,
-            "doctor": doctor_result,
-        }
-    payload = build_upload_payload(bundle_dir=output_dir, include_reports=False)
-    if not yes:
-        return {
-            "mode": "cloud-reviewer-runs",
-            "status": "dry_run",
-            "repo_slug": detected_repo_slug,
-            "event_count": len(events),
-            "export": export_result,
-            "doctor": doctor_result,
-            "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
-        }
-    token = os.environ.get(token_env, "")
-    if not token and not _is_local_http_endpoint(endpoint):
-        raise CloudBundleError(
-            f"{token_env} is not set; refusing non-local upload without a token"
-        )
-    return {
-        "mode": "cloud-reviewer-runs",
-        "status": "uploaded",
-        "repo_slug": detected_repo_slug,
-        "event_count": len(events),
-        "export": export_result,
-        "doctor": doctor_result,
-        "upload": post_upload_payload(
-            payload=payload,
-            endpoint=endpoint,
-            token=token,
-            timeout=timeout,
-        ),
-    }
-
-
-def _parse_repo_sync_spec(spec: str) -> tuple[str, Path]:
-    if "=" not in spec:
-        return "", Path(spec)
-    repo_slug, repo_path = spec.split("=", 1)
-    repo_slug = repo_slug.strip()
-    repo_path = repo_path.strip()
-    if not repo_slug or not repo_path:
-        raise CloudBundleError(
-            "--repo entries must be PATH or OWNER/REPO=PATH for repo-sync"
-        )
-    return repo_slug, Path(repo_path)
-
-
-def _repo_sync_output_name(repo_slug: str, repo_path: Path, index: int) -> str:
-    raw = repo_slug.replace("/", "__") if repo_slug else repo_path.name
-    cleaned = "".join(
-        ch.lower() if ch.isalnum() else "-" for ch in raw.strip()
-    ).strip("-")
-    return f"{cleaned or 'repo'}-{index + 1}"
-
-
-def _repo_sync_upload(
-    *,
-    repo_specs: list[str],
-    output_dir: Path,
-    modes: list[str],
-    team_id: str,
-    install_id: str,
-    source_prefix: str,
-    limit: int,
-    endpoint: str,
-    token_env: str,
-    include_reports: bool,
-    include_git_ref: bool,
-    yes: bool,
-    timeout: float,
-) -> dict[str, Any]:
-    selected_modes = modes or ["dogfood", "reviewer-runs"]
-    repos: list[dict[str, Any]] = []
-    error_count = 0
-    step_statuses: list[str] = []
-
-    for index, spec in enumerate(repo_specs):
-        repo_slug, repo_path = _parse_repo_sync_spec(spec)
-        repo_path = repo_path.expanduser().resolve()
-        repo_output_dir = output_dir / _repo_sync_output_name(repo_slug, repo_path, index)
-        repo_result: dict[str, Any] = {
-            "repo_spec": spec,
-            "repo_slug": repo_slug,
-            "repo_path": str(repo_path),
-            "steps": [],
-        }
-
-        for mode in selected_modes:
-            try:
-                if mode == "dogfood":
-                    step_result = _dogfood_upload(
-                        repo_path=repo_path,
-                        output_dir=repo_output_dir / "dogfood",
-                        reports=[],
-                        events=[],
-                        repo_slug=repo_slug,
-                        team_id=team_id,
-                        install_id=install_id,
-                        source=f"{source_prefix}-dogfood",
-                        endpoint=endpoint,
-                        token_env=token_env,
-                        include_reports=include_reports,
-                        yes=yes,
-                        timeout=timeout,
-                    )
-                elif mode == "catch-up":
-                    step_result = _catch_up_upload(
-                        repo_path=repo_path,
-                        output_dir=repo_output_dir / "catch-up",
-                        repo_slug=repo_slug,
-                        team_id=team_id,
-                        install_id=install_id,
-                        source=f"{source_prefix}-catch-up",
-                        limit=limit,
-                        endpoint=endpoint,
-                        token_env=token_env,
-                        yes=yes,
-                        timeout=timeout,
-                        include_git_ref=include_git_ref,
-                    )
-                elif mode == "reviewer-runs":
-                    step_result = _reviewer_runs_upload(
-                        repo_path=repo_path,
-                        verdicts=code_mower_telemetry.default_verdict_artifact_dir(),
-                        output_dir=repo_output_dir / "reviewer-runs",
-                        repo_slug=repo_slug,
-                        team_id=team_id,
-                        install_id=install_id,
-                        limit=limit,
-                        endpoint=endpoint,
-                        token_env=token_env,
-                        yes=yes,
-                        timeout=timeout,
-                        include_git_ref=include_git_ref,
-                    )
-                else:  # pragma: no cover - argparse constrains modes.
-                    raise CloudBundleError(f"unsupported repo-sync mode: {mode}")
-            except CloudBundleError as exc:
-                step_result = {
-                    "mode": f"cloud-{mode}",
-                    "status": "error",
-                    "error": str(exc),
-                }
-            repo_result["repo_slug"] = repo_result["repo_slug"] or str(
-                step_result.get("repo_slug") or ""
-            )
-            repo_result["steps"].append(step_result)
-            step_status = str(step_result.get("status") or "")
-            step_statuses.append(step_status)
-            if step_result.get("status") in {"error", "doctor_failed"}:
-                error_count += 1
-
-        repos.append(repo_result)
-
-    status = "dry_run" if not yes else "uploaded"
-    if error_count:
-        status = "partial"
-    elif yes and not any(step_status == "uploaded" for step_status in step_statuses):
-        status = "no_events" if step_statuses else "no_events"
-    return {
-        "mode": "cloud-repo-sync",
-        "status": status,
-        "repo_count": len(repos),
-        "step_count": sum(len(repo["steps"]) for repo in repos),
-        "error_count": error_count,
-        "modes": selected_modes,
-        "repos": repos,
-    }
 
 
 def main(argv: list[str] | None = None) -> int:
