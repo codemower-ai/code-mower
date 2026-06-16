@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from code_mower import __version__
 from code_mower import audit_progress
+from code_mower import calibration as calibration_pkg
 from code_mower import cloud as code_mower_cloud
 from code_mower import code_mower_calibration
 from code_mower import cli as code_mower_cli
@@ -34,6 +35,7 @@ from code_mower import release_readiness
 from code_mower import secrets as code_mower_secrets
 from code_mower import config as code_mower_config
 from code_mower import provider_runners
+from code_mower.calibration import policy as calibration_policy
 from scripts import privacy_scan
 
 
@@ -218,7 +220,7 @@ class ReleaseHygieneTests(unittest.TestCase):
             "owner-repo-with-spaces",
         )
         self.assertEqual(code_mower_calibration._int("42", field="pr"), 42)
-        self.assertEqual(code_mower_calibration._float("0.75"), 0.75)
+        self.assertEqual(calibration_pkg.float_or_zero("0.75"), 0.75)
 
     def test_provider_runner_github_token_helper_reads_stdin_and_clears_env(self) -> None:
         with mock.patch.dict(
@@ -750,6 +752,57 @@ printf '%s\\n' "${lane}"
         self.assertIn("| `codex-audit` | 2 | 1 | 0 | 1.0 | 1 | 1/0", report)
         self.assertIn("| `claude-audit` | 2 | 1 | 0 | 1.0 | 1 | 1/0", report)
         self.assertIn("| `experimental-lens` | 2 | 0 | 1 | 0.0 | 0 | 0/1", report)
+
+    def test_calibration_policy_seam_classifies_lane_roles(self) -> None:
+        report = calibration_policy.build_lane_policy_report(
+            {
+                "mode": "reviewer-metrics",
+                "profiles": {
+                    "codex": {
+                        "useful_rate": 0.75,
+                        "useful_findings": 12,
+                        "known_disposition_count": 12,
+                        "known_clean_pass_runs": 3,
+                        "known_blocked_runs": 2,
+                        "known_blocked_caught_runs": 2,
+                    },
+                    "operability": {
+                        "useful_rate": 0.5,
+                        "useful_findings": 2,
+                        "known_disposition_count": 4,
+                        "known_clean_pass_runs": 2,
+                        "review_classes": ["general", "ops"],
+                        "useful_review_classes": ["ops"],
+                    },
+                    "noisy": {
+                        "useful_rate": 0.2,
+                        "useful_findings": 1,
+                        "known_disposition_count": 5,
+                        "known_clean_pass_runs": 0,
+                        "blocking_false_positive_runs": 1,
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(report["mode"], "code-mower-lane-policy")
+        policies = report["policies"]
+        self.assertEqual(policies["codex"]["classification"], "merge_gate_candidate")
+        self.assertEqual(policies["codex"]["recommended_role"], "merge_gate_eligible")
+        self.assertEqual(
+            policies["operability"]["classification"],
+            "selective_trigger_candidate",
+        )
+        self.assertEqual(
+            policies["operability"]["automatic_trigger"],
+            "matching_review_class_only",
+        )
+        self.assertEqual(policies["operability"]["suggested_trigger_classes"], ["ops"])
+        self.assertEqual(policies["noisy"]["classification"], "informational")
+        self.assertIn(
+            "has known-clean blocking false positives",
+            policies["noisy"]["reasons"],
+        )
 
     def test_schema_ids_are_code_mower_branded(self) -> None:
         schema = json.loads(

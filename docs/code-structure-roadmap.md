@@ -72,9 +72,9 @@ The first hardening slice keeps the public API CLI-first while introducing
 tested internal seams:
 
 - `code_mower.calibration` now owns corpus parsing helpers, artifact identity,
-  evidence disposition constants, metric normalization, and lane-promotion
-  thresholds. `code_mower_calibration.py` remains the backwards-compatible
-  command adapter.
+  evidence disposition constants, metric normalization, lane-promotion
+  thresholds, and lane-policy report construction. `code_mower_calibration.py`
+  remains the backwards-compatible command adapter.
 - `code_mower.doctor_checks` now owns doctor result models and the named check
   groups: runtime, GitHub, providers, cloud, and output.
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
@@ -96,7 +96,8 @@ existing commands.
 1. **Calibration package split**
    - Move corpus parsing and truth models to `code_mower/calibration/corpus.py`
      and related modules.
-   - Move evidence/metrics/policy math to separate modules.
+   - Move evidence/metrics math to separate modules; lane-policy math now lives
+     in `code_mower.calibration.policy`.
    - Keep pulling value-report rendering into a smaller reporting module once
      the current metrics path has more tests.
    - Keep `code_mower_calibration.py` as a thin backwards-compatible command
