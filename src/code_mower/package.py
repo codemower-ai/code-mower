@@ -49,6 +49,7 @@ PACKAGE_FILES = (
     ("src/code_mower/calibration/auto_discovery.py", "src/code_mower/calibration/auto_discovery.py", "core"),
     ("src/code_mower/calibration/arms.py", "src/code_mower/calibration/arms.py", "core"),
     ("src/code_mower/calibration/commands.py", "src/code_mower/calibration/commands.py", "core"),
+    ("src/code_mower/calibration/context_inputs.py", "src/code_mower/calibration/context_inputs.py", "core"),
     ("src/code_mower/calibration/corpus.py", "src/code_mower/calibration/corpus.py", "core"),
     ("src/code_mower/calibration/evidence.py", "src/code_mower/calibration/evidence.py", "core"),
     (
