@@ -76,9 +76,10 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
   reducing the CLI adapter significantly while preserving the public command
   surface.
 - Package materialization has started the same intentional split:
+  package file manifests now live under `code_mower.package_manifest`, and
   package-aware config/template path helpers now live under
-  `code_mower.package_paths`, while `package.py` remains the backwards-compatible
-  CLI and manifest-generation surface.
+  `code_mower.package_paths`, while `package.py` remains the
+  backwards-compatible CLI and manifest-generation surface.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
