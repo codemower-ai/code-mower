@@ -4,14 +4,11 @@
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import json
 import os
 import shlex
 import shutil
-import subprocess
 import sys
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -23,25 +20,52 @@ if __package__ in {None, ""}:
         BUNDLE_SCHEMA,
         EXCLUDED_CONTENT,
         EXPECTED_BUNDLE_ENTRIES,
+        EVENT_SCHEMA,
+        GITHUB_RUN_LIST_FIELDS,
         MAX_EVENT_COUNT,
         SAFE_EVENT_TYPES,
         SAFE_REPORT_KINDS,
         UPLOAD_SCHEMA as UPLOAD_SCHEMA,
         CloudBundleError,
+        DEFAULT_INSTALL_ID_ENV,
+        DEFAULT_SETUP_INSTALL_ID,
+        DEFAULT_TEAM_ID_ENV,
+        DEFAULT_TOKEN_ENV,
+        DEFAULT_UPLOAD_ENDPOINT,
+        build_dogfood_event as _build_dogfood_event,
+        build_workflow_run_event as _build_workflow_run_event,
+        default_setup_path as _default_setup_path,
+        detect_repo_slug as _detect_repo_slug,
         dashboard_url_for_endpoint,
         build_upload_payload,
         build_dogfood_dry_run_preview,
         build_dogfood_plan,
         default_dogfood_reports,
-        DogfoodPlan,
+        event_id_from_github_run as _event_id_from_github_run,
         health_url_for_endpoint,
         is_local_http_endpoint,
         is_bundle_manifest,
         load_bundle_manifest as load_bundle_manifest,
+        load_event_file as _load_event_file,
+        normalize_event as _normalize_event,
+        parse_event_args as _parse_event_args,
         post_upload_payload,
         probe_cloud_service,
+        read_token_file as _read_token_file,
+        render_setup_env,
+        repo_slug_from_remote as _repo_slug_from_remote,
+        resolve_setup_token as _resolve_setup_token,
+        run_cloud_setup,
+        run_gh_run_list as _run_gh_run_list,
+        run_git as _run_git,
+        safe_config_stem as _safe_config_stem,
+        safe_event_type as _safe_event_type,
+        safe_kind as _safe_kind,
+        token_prefix as _token_prefix,
+        utc_now as _utc_now,
         validate_metadata_payload,
         validate_upload_endpoint,
+        write_setup_env_file,
     )
     from code_mower import code_mower_telemetry
 else:  # pragma: no cover - exercised after package extraction.
@@ -50,51 +74,99 @@ else:  # pragma: no cover - exercised after package extraction.
         BUNDLE_SCHEMA,
         EXCLUDED_CONTENT,
         EXPECTED_BUNDLE_ENTRIES,
+        EVENT_SCHEMA,
+        GITHUB_RUN_LIST_FIELDS,
         MAX_EVENT_COUNT,
         SAFE_EVENT_TYPES,
         SAFE_REPORT_KINDS,
         UPLOAD_SCHEMA as UPLOAD_SCHEMA,
         CloudBundleError,
+        DEFAULT_INSTALL_ID_ENV,
+        DEFAULT_SETUP_INSTALL_ID,
+        DEFAULT_TEAM_ID_ENV,
+        DEFAULT_TOKEN_ENV,
+        DEFAULT_UPLOAD_ENDPOINT,
+        build_dogfood_event as _build_dogfood_event,
+        build_workflow_run_event as _build_workflow_run_event,
+        default_setup_path as _default_setup_path,
+        detect_repo_slug as _detect_repo_slug,
         dashboard_url_for_endpoint,
         build_upload_payload,
         build_dogfood_dry_run_preview,
         build_dogfood_plan,
         default_dogfood_reports,
-        DogfoodPlan,
+        event_id_from_github_run as _event_id_from_github_run,
         health_url_for_endpoint,
         is_local_http_endpoint,
         is_bundle_manifest,
         load_bundle_manifest as load_bundle_manifest,
+        load_event_file as _load_event_file,
+        normalize_event as _normalize_event,
+        parse_event_args as _parse_event_args,
         post_upload_payload,
         probe_cloud_service,
+        read_token_file as _read_token_file,
+        render_setup_env,
+        repo_slug_from_remote as _repo_slug_from_remote,
+        resolve_setup_token as _resolve_setup_token,
+        run_cloud_setup,
+        run_gh_run_list as _run_gh_run_list,
+        run_git as _run_git,
+        safe_config_stem as _safe_config_stem,
+        safe_event_type as _safe_event_type,
+        safe_kind as _safe_kind,
+        token_prefix as _token_prefix,
+        utc_now as _utc_now,
         validate_metadata_payload,
         validate_upload_endpoint,
+        write_setup_env_file,
     )
     from . import code_mower_telemetry
 
 
-EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
 DEFAULT_CATCH_UP_OUTPUT_DIR = ".code-mower/cloud-catch-up-bundle"
 DEFAULT_REVIEWER_RUNS_OUTPUT_DIR = ".code-mower/reviewer-run-bundle"
 DEFAULT_REPO_SYNC_OUTPUT_DIR = ".code-mower/cloud-repo-sync"
-DEFAULT_UPLOAD_ENDPOINT = "https://codemower.com/api/ingest"
-DEFAULT_TOKEN_ENV = "CODE_MOWER_CLOUD_TOKEN"
-DEFAULT_TEAM_ID_ENV = "CODE_MOWER_CLOUD_TEAM_ID"
-DEFAULT_INSTALL_ID_ENV = "CODE_MOWER_INSTALL_ID"
-DEFAULT_SETUP_INSTALL_ID = "code-mower-local"
-GITHUB_RUN_LIST_FIELDS = (
-    "databaseId",
-    "name",
-    "status",
-    "conclusion",
-    "event",
-    "headBranch",
-    "headSha",
-    "createdAt",
-    "updatedAt",
-    "url",
-)
+
+# Keep the legacy cloud.py import surface intentional while implementation
+# moves into code_mower.cloud_client modules.
+__all__ = [
+    "EVENT_SCHEMA",
+    "GITHUB_RUN_LIST_FIELDS",
+    "CloudBundleError",
+    "DEFAULT_INSTALL_ID_ENV",
+    "DEFAULT_SETUP_INSTALL_ID",
+    "DEFAULT_TEAM_ID_ENV",
+    "DEFAULT_TOKEN_ENV",
+    "DEFAULT_UPLOAD_ENDPOINT",
+    "DEFAULT_OUTPUT_DIR",
+    "DEFAULT_CATCH_UP_OUTPUT_DIR",
+    "DEFAULT_REVIEWER_RUNS_OUTPUT_DIR",
+    "DEFAULT_REPO_SYNC_OUTPUT_DIR",
+    "build_cloud_bundle",
+    "build_upload_payload",
+    "post_upload_payload",
+    "render_bundle_readme",
+    "render_setup_env",
+    "run_cloud_doctor",
+    "run_cloud_setup",
+    "validate_metadata_payload",
+    "write_setup_env_file",
+    "main",
+    "_default_setup_path",
+    "_event_id_from_github_run",
+    "_load_event_file",
+    "_parse_event_args",
+    "_read_token_file",
+    "_repo_slug_from_remote",
+    "_resolve_setup_token",
+    "_run_git",
+    "_safe_config_stem",
+    "_safe_event_type",
+    "_token_prefix",
+    "_utc_now",
+]
 
 
 def _is_local_http_endpoint(endpoint: str) -> bool:
@@ -110,459 +182,6 @@ def _validate_upload_endpoint(endpoint: str) -> None:
 
 def _probe_cloud_service(endpoint: str, *, timeout: float) -> dict[str, Any]:
     return probe_cloud_service(endpoint, timeout=timeout)
-
-
-def _token_prefix(token: str) -> str:
-    token = token.strip()
-    if not token:
-        return ""
-    visible = min(12, max(4, len(token) // 2), max(0, len(token) - 4))
-    if visible <= 0:
-        return "<redacted>"
-    return token[:visible] + "..."
-
-
-def _safe_config_stem(value: str) -> str:
-    stem = "".join(
-        char if char.isalnum() or char in {"-", "_", "."} else "-"
-        for char in value.strip()
-    )
-    return stem.strip("-_.") or DEFAULT_SETUP_INSTALL_ID
-
-
-def _default_setup_path(install_id: str) -> Path:
-    return (
-        Path.home()
-        / ".config"
-        / "code-mower"
-        / "tokens"
-        / f"{_safe_config_stem(install_id)}.env"
-    )
-
-
-def _read_token_file(path: Path) -> str:
-    source = path.expanduser()
-    if not source.is_file():
-        raise CloudBundleError(f"token file does not exist or is not a file: {source}")
-    try:
-        text = source.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise CloudBundleError(f"token file is not UTF-8 text: {source}") from exc
-    except OSError as exc:
-        raise CloudBundleError(f"unable to read token file {source}: {exc}") from exc
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if stripped.startswith("export "):
-            stripped = stripped.removeprefix("export ").strip()
-        if stripped.startswith(f"{DEFAULT_TOKEN_ENV}="):
-            return stripped.split("=", 1)[1].strip().strip("'\"")
-    return text.strip()
-
-
-def _resolve_setup_token(
-    *,
-    token: str,
-    token_file: Path | None,
-    token_stdin: bool,
-    token_env: str,
-) -> str:
-    explicit_sources = sum(
-        1 for value in (bool(token), token_file is not None, token_stdin) if value
-    )
-    if explicit_sources > 1:
-        raise CloudBundleError("choose only one token source: --token, --token-file, or --token-stdin")
-    if token:
-        resolved = token.strip()
-    elif token_file is not None:
-        resolved = _read_token_file(token_file)
-    elif token_stdin:
-        resolved = sys.stdin.read().strip()
-    else:
-        resolved = os.environ.get(token_env, "").strip()
-    if not resolved:
-        raise CloudBundleError(
-            "cloud setup needs a token; pass --token-stdin, --token-file, "
-            f"or set {token_env}"
-        )
-    return resolved
-
-
-def render_setup_env(
-    *,
-    token: str,
-    endpoint: str,
-    team_id: str,
-    install_id: str,
-) -> str:
-    _validate_upload_endpoint(endpoint)
-    assignments = {
-        DEFAULT_TOKEN_ENV: token.strip(),
-        "CODE_MOWER_CLOUD_ENDPOINT": endpoint.strip(),
-        DEFAULT_TEAM_ID_ENV: team_id.strip(),
-        DEFAULT_INSTALL_ID_ENV: install_id.strip(),
-    }
-    lines = [
-        "# Code Mower Cloud local token file",
-        "# Keep this file private. It contains a bearer token.",
-    ]
-    lines.extend(
-        f"export {name}={shlex.quote(value)}"
-        for name, value in assignments.items()
-        if value
-    )
-    return "\n".join(lines) + "\n"
-
-
-def write_setup_env_file(
-    *,
-    path: Path,
-    text: str,
-    force: bool = False,
-) -> None:
-    target = path.expanduser()
-    if target.exists() and not force:
-        raise CloudBundleError(f"setup file already exists; pass --force to overwrite: {target}")
-    parent_existed = target.parent.exists()
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not parent_existed:
-            target.parent.chmod(0o700)
-    except OSError as exc:
-        raise CloudBundleError(f"unable to prepare setup directory {target.parent}: {exc}") from exc
-    flags = os.O_WRONLY | os.O_CREAT
-    if not force:
-        flags |= os.O_EXCL
-    try:
-        fd = os.open(target, flags, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.truncate(0)
-            handle.write(text)
-        target.chmod(0o600)
-    except FileExistsError as exc:
-        raise CloudBundleError(
-            f"setup file already exists; pass --force to overwrite: {target}"
-        ) from exc
-    except OSError as exc:
-        raise CloudBundleError(f"unable to write setup file {target}: {exc}") from exc
-
-
-def run_cloud_setup(
-    *,
-    token: str,
-    token_file: Path | None,
-    token_stdin: bool,
-    token_env: str,
-    endpoint: str,
-    team_id: str,
-    install_id: str,
-    out: Path | None,
-    force: bool = False,
-    dry_run: bool = False,
-) -> dict[str, Any]:
-    resolved_install_id = install_id.strip() or DEFAULT_SETUP_INSTALL_ID
-    target = out.expanduser() if out else _default_setup_path(resolved_install_id)
-    resolved_token = _resolve_setup_token(
-        token=token,
-        token_file=token_file,
-        token_stdin=token_stdin,
-        token_env=token_env,
-    )
-    env_text = render_setup_env(
-        token=resolved_token,
-        endpoint=endpoint,
-        team_id=team_id,
-        install_id=resolved_install_id,
-    )
-    if not dry_run:
-        write_setup_env_file(path=target, text=env_text, force=force)
-    return {
-        "mode": "cloud-setup",
-        "status": "dry_run" if dry_run else "written",
-        "path": str(target),
-        "endpoint": endpoint,
-        "team_id": team_id,
-        "install_id": resolved_install_id,
-        "token_prefix": _token_prefix(resolved_token),
-        "shell": f"source {shlex.quote(str(target))}",
-    }
-
-
-def _safe_kind(value: str) -> str:
-    kind = value.strip()
-    if kind not in SAFE_REPORT_KINDS:
-        allowed = ", ".join(sorted(SAFE_REPORT_KINDS))
-        raise CloudBundleError(f"unsupported report kind {value!r}; allowed: {allowed}")
-    return kind
-
-
-def _safe_event_type(value: str) -> str:
-    event_type = value.strip()
-    if event_type not in SAFE_EVENT_TYPES:
-        allowed = ", ".join(sorted(SAFE_EVENT_TYPES))
-        raise CloudBundleError(
-            f"unsupported event type {value!r}; allowed: {allowed}"
-        )
-    return event_type
-
-
-def _utc_now() -> str:
-    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
-
-
-def _run_git(repo_path: Path, args: list[str]) -> str:
-    try:
-        completed = subprocess.run(
-            ["git", *args],
-            cwd=repo_path,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
-        return ""
-    if completed.returncode != 0:
-        return ""
-    return completed.stdout.strip()
-
-
-def _repo_slug_from_remote(remote_url: str) -> str:
-    remote = remote_url.strip()
-    if not remote:
-        return ""
-    if remote.startswith("git@github.com:"):
-        remote = remote.removeprefix("git@github.com:")
-    elif remote.startswith("https://github.com/"):
-        remote = remote.removeprefix("https://github.com/")
-    elif remote.startswith("http://github.com/"):
-        remote = remote.removeprefix("http://github.com/")
-    else:
-        return ""
-    remote = remote.removesuffix(".git").strip("/")
-    parts = remote.split("/")
-    if len(parts) >= 2 and parts[0] and parts[1]:
-        return f"{parts[0]}/{parts[1]}"
-    return ""
-
-
-def _detect_repo_slug(repo_path: Path) -> str:
-    return _repo_slug_from_remote(_run_git(repo_path, ["config", "--get", "remote.origin.url"]))
-
-
-def _build_dogfood_event(
-    *,
-    repo_path: Path,
-    plan: DogfoodPlan,
-) -> dict[str, Any]:
-    status = _run_git(repo_path, ["status", "--porcelain"])
-    return {
-        "schema": EVENT_SCHEMA,
-        "event_id": str(uuid.uuid4()),
-        "event_type": "dogfood_upload",
-        "created_at": _utc_now(),
-        "repo_slug": plan.repo_slug,
-        "team_id": plan.team_id,
-        "install_id": plan.install_id,
-        "source": plan.source,
-        "provider": "",
-        "lens": "",
-        "status": "observed",
-        "git": {
-            "sha": _run_git(repo_path, ["rev-parse", "HEAD"]),
-            "branch": _run_git(repo_path, ["branch", "--show-current"]),
-            "dirty": bool(status),
-        },
-        "metrics": {
-            "report_count": plan.report_count,
-            "extra_event_count": plan.extra_event_count,
-        },
-        "dimensions": {
-            "command": "code-mower cloud dogfood",
-        },
-    }
-
-
-def _event_id_from_github_run(repo_slug: str, run: dict[str, Any]) -> str:
-    database_id = str(run.get("databaseId") or "").strip()
-    if database_id:
-        run_url = f"https://github.com/{repo_slug}/actions/runs/{database_id}"
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, run_url))
-    run_url = str(run.get("url") or "").strip()
-    if run_url:
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, run_url))
-    return str(uuid.uuid4())
-
-
-def _run_gh_run_list(
-    *,
-    repo_slug: str,
-    limit: int,
-    repo_path: Path,
-) -> list[dict[str, Any]]:
-    command = [
-        "gh",
-        "run",
-        "list",
-        "--repo",
-        repo_slug,
-        "--limit",
-        str(limit),
-        "--json",
-        ",".join(GITHUB_RUN_LIST_FIELDS),
-    ]
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=repo_path,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except OSError as exc:
-        raise CloudBundleError("GitHub Actions catch-up requires the `gh` CLI") from exc
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise CloudBundleError(
-            "unable to read GitHub Actions runs with `gh run list`"
-            + (f": {detail}" if detail else "")
-        )
-    try:
-        parsed = json.loads(completed.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        raise CloudBundleError("`gh run list --json` returned invalid JSON") from exc
-    if not isinstance(parsed, list):
-        raise CloudBundleError("`gh run list --json` must return a JSON array")
-    runs: list[dict[str, Any]] = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            raise CloudBundleError("`gh run list --json` returned a non-object run")
-        runs.append(item)
-    return runs
-
-
-def _build_workflow_run_event(
-    *,
-    repo_slug: str,
-    team_id: str,
-    install_id: str,
-    source: str,
-    run: dict[str, Any],
-    include_git_ref: bool,
-) -> dict[str, Any]:
-    status = str(run.get("conclusion") or run.get("status") or "observed")
-    dimensions: dict[str, Any] = {
-        "workflow_name": str(run.get("name") or ""),
-        "trigger": str(run.get("event") or ""),
-        "run_status": str(run.get("status") or ""),
-        "run_conclusion": str(run.get("conclusion") or ""),
-        "run_url": str(run.get("url") or ""),
-        "updated_at": str(run.get("updatedAt") or ""),
-    }
-    if include_git_ref:
-        dimensions["head_branch"] = str(run.get("headBranch") or "")
-        dimensions["head_sha"] = str(run.get("headSha") or "")
-    event = {
-        "schema": EVENT_SCHEMA,
-        "event_id": _event_id_from_github_run(repo_slug, run),
-        "event_type": "workflow_run",
-        "created_at": str(run.get("createdAt") or _utc_now()),
-        "repo_slug": repo_slug,
-        "team_id": team_id,
-        "install_id": install_id,
-        "source": source,
-        "provider": "",
-        "lens": "base",
-        "status": status,
-        "metrics": {},
-        "dimensions": dimensions,
-    }
-    return _normalize_event(event, "workflow_run")
-
-
-def _normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
-    validate_metadata_payload(value)
-    normalized = dict(value)
-    normalized["schema"] = str(normalized.get("schema") or EVENT_SCHEMA)
-    if normalized["schema"] != EVENT_SCHEMA:
-        raise CloudBundleError(
-            f"unsupported event schema {normalized['schema']!r}; expected {EVENT_SCHEMA}"
-        )
-    normalized["event_type"] = _safe_event_type(
-        str(normalized.get("event_type") or event_type)
-    )
-    normalized["event_id"] = str(normalized.get("event_id") or uuid.uuid4())
-    normalized["created_at"] = str(normalized.get("created_at") or _utc_now())
-    for key in ("repo_slug", "team_id", "install_id", "source", "provider", "lens", "status"):
-        normalized[key] = str(normalized.get(key) or "")
-    metrics = normalized.get("metrics")
-    if metrics is None:
-        normalized["metrics"] = {}
-    elif not isinstance(metrics, dict):
-        raise CloudBundleError("structured event metrics must be an object")
-    dimensions = normalized.get("dimensions")
-    if dimensions is None:
-        normalized["dimensions"] = {}
-    elif not isinstance(dimensions, dict):
-        raise CloudBundleError("structured event dimensions must be an object")
-    validate_metadata_payload(normalized)
-    return normalized
-
-
-def _load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
-    source = path.expanduser()
-    if not source.is_file():
-        raise CloudBundleError(f"event file does not exist or is not a file: {source}")
-    try:
-        text = source.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise CloudBundleError(f"event file is not UTF-8 text: {source}") from exc
-    except OSError as exc:
-        raise CloudBundleError(f"unable to read event file {source}: {exc}") from exc
-    if not text.strip():
-        return []
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        parsed = []
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            if not line.strip():
-                continue
-            try:
-                parsed.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                raise CloudBundleError(
-                    f"event file {source} line {line_number} is not JSON"
-                ) from exc
-    if isinstance(parsed, dict):
-        parsed_events = [parsed]
-    elif isinstance(parsed, list):
-        parsed_events = parsed
-    else:
-        raise CloudBundleError(f"event file must contain an object, array, or JSONL: {source}")
-    events: list[dict[str, Any]] = []
-    for item in parsed_events:
-        if not isinstance(item, dict):
-            raise CloudBundleError(f"event file contains a non-object event: {source}")
-        events.append(_normalize_event(item, event_type))
-    return events
-
-
-def _parse_event_args(values: list[str]) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    for raw in values:
-        if "=" not in raw:
-            raise CloudBundleError(
-                "--event entries must use EVENT_TYPE=PATH, for example reviewer_run=run.json"
-            )
-        event_type, path_text = raw.split("=", 1)
-        events.extend(_load_event_file(Path(path_text), _safe_event_type(event_type)))
-    if len(events) > MAX_EVENT_COUNT:
-        raise CloudBundleError(
-            f"too many events: {len(events)}; max {MAX_EVENT_COUNT}"
-        )
-    return events
 
 
 def _safe_target_name(path: Path, index: int, *, anonymous: bool = False) -> str:

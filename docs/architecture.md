@@ -33,11 +33,13 @@ known PR outcomes, and optionally upload sanitized metadata to CodeMower.com.
 src/code_mower/
   cli.py                         command routing
   init.py                        easy-mode generated setup
-  doctor.py                      runtime, provider, GitHub, cost, cloud checks
+  doctor.py                      thin doctor CLI adapter
+  doctor_checks/                 runtime, provider, GitHub, cost, cloud checks
   provider_registry.py           provider metadata and posture
   prompts.py                     lane prompt loading
   reviewer_metrics.py            reviewer value/report calculations
-  cloud.py                       export, doctor, upload, dogfood commands
+  cloud.py                       thin cloud CLI adapter
+  cloud_client/                  bundle, upload, setup, and event helpers
   migration.py                   package install and mirror-removal rehearsals
   *_audit_pr.py                  provider-specific audit runners
   adapters/                      hosted/SaaS adapter helpers
@@ -73,7 +75,7 @@ team dashboards and eventually aggregate benchmarks.
 flowchart TD
   A["Install Code Mower"] --> B["code-mower init --easy"]
   B --> C["Generate .code-mower.generated"]
-  C --> D["code-mower doctor --v05"]
+  C --> D["code-mower doctor --preflight"]
   D --> E["Run local/manual audits"]
   E --> F["Build calibration corpus"]
   F --> G["Generate reviewer value report"]
