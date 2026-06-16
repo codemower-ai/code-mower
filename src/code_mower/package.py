@@ -23,6 +23,12 @@ if __package__ in {None, "", "tools"}:
         load_config,
         validate_config,
     )
+    from tools.code_mower_package_paths import (
+        DEFAULT_PROVIDER_TEMPLATES,
+        _as_mapping,
+        load_provider_templates,
+        resolve_provider_templates_path,
+    )
 else:  # pragma: no cover - exercised after package extraction.
     from .config import (
         ConfigError,
@@ -32,9 +38,14 @@ else:  # pragma: no cover - exercised after package extraction.
         load_config,
         validate_config,
     )
+    from .package_paths import (
+        DEFAULT_PROVIDER_TEMPLATES,
+        _as_mapping,
+        load_provider_templates,
+        resolve_provider_templates_path,
+    )
 
 
-DEFAULT_PROVIDER_TEMPLATES = "code-mower.provider-templates.yml"
 DEFAULT_PACKAGE_CONFIG = "code-mower.example.yml"
 
 PACKAGE_FILES = (
@@ -99,6 +110,7 @@ PACKAGE_FILES = (
     ("src/code_mower/migration.py", "src/code_mower/migration.py", "core"),
     ("tools/code_mower_next_steps.py", "src/code_mower/next_steps.py", "core"),
     ("tools/code_mower_package.py", "src/code_mower/package.py", "core"),
+    ("src/code_mower/package_paths.py", "src/code_mower/package_paths.py", "core"),
     ("tools/code_mower_prompts.py", "src/code_mower/prompts.py", "core"),
     ("src/code_mower/release_readiness.py", "src/code_mower/release_readiness.py", "core"),
     ("tools/code_mower_secrets.py", "src/code_mower/secrets.py", "core"),
@@ -1229,41 +1241,6 @@ CLI_COMMANDS = (
     "python scripts/smoke_easy_mode.py --json",
     "python scripts/fresh_clone_rehearsal.py --json",
 )
-
-
-def _as_mapping(value: Any, name: str) -> Mapping[str, Any]:
-    if isinstance(value, Mapping):
-        return value
-    raise ConfigError(f"{name} must be a mapping")
-
-
-def load_provider_templates(path: Path) -> Mapping[str, Any]:
-    templates = load_config(path)
-    if templates.get("version") not in {1, "1"}:
-        raise ConfigError("provider templates version must be 1")
-    _as_mapping(templates.get("provider_templates"), "provider_templates")
-    profiles = _as_mapping(templates.get("profiles"), "profiles")
-    for profile_id, profile in profiles.items():
-        if not isinstance(profile, Mapping):
-            raise ConfigError(f"provider template profile {profile_id!r} must be a mapping")
-    return templates
-
-
-def resolve_provider_templates_path(path_text: str) -> Path:
-    path = Path(path_text)
-    if path_text != DEFAULT_PROVIDER_TEMPLATES or path.is_absolute():
-        return path
-
-    module_dir = Path(__file__).resolve().parent
-    candidates = (
-        module_dir.parent / DEFAULT_PROVIDER_TEMPLATES,
-        module_dir / "templates" / "providers.yml",
-        Path.cwd() / DEFAULT_PROVIDER_TEMPLATES,
-    )
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0]
 
 
 def resolve_package_config_path(path_text: str, *, explicit: bool = False) -> Path:

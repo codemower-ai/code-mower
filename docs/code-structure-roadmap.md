@@ -16,8 +16,8 @@ comfortable contributor onboarding:
 | Module | Approximate Lines | Current Responsibility |
 | --- | ---: | --- |
 | `codex_audit_pr.py` | 1,917 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
-| `package.py` | 1,861 | extraction package generation, template copying, manifest validation |
 | `migration.py` | 1,757 | wrapper migration, rehearsal, mirror-removal planning |
+| `package.py` | 1,849 | package materialization, embedded generated files, packaging CLI |
 | `local_llm_audit_pr.py` | 1,351 | local model audit wrapper, prompt setup, subprocess isolation |
 | `claude_audit_pr.py` | 1,130 | Claude audit wrapper, budget handling, verdict posting |
 
@@ -102,6 +102,10 @@ tested internal seams:
   helper logic, and dogfood/catch-up/reviewer-run/repo-sync orchestration.
   `cloud.py` remains the CLI adapter for export, doctor, setup, dogfood,
   repo-sync, and upload.
+- `code_mower.package_paths` now owns provider-template loading and package
+  provider-template path resolution. `package.py` remains the materializer
+  adapter and still owns generated static payloads, package plans, and output
+  writes.
 - `builder-experiment` and authoring-intelligence docs establish the future
   `run_role`/`purpose` event shape without requiring a full orchestrator runtime
   before v1.0.

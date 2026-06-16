@@ -31,6 +31,7 @@ from code_mower import init as code_mower_init
 from code_mower import migration as code_mower_migration
 from code_mower import next_steps
 from code_mower import package as code_mower_package
+from code_mower import package_paths
 from code_mower import release_readiness
 from code_mower import secrets as code_mower_secrets
 from code_mower import config as code_mower_config
@@ -242,6 +243,14 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIs(code_mower_cloud.build_upload_payload, cloud_client.build_upload_payload)
         self.assertIs(code_mower_cloud.post_upload_payload, cloud_client.post_upload_payload)
         self.assertEqual(code_mower_cloud.UPLOAD_SCHEMA, cloud_client.UPLOAD_SCHEMA)
+        self.assertIs(
+            code_mower_package.load_provider_templates,
+            package_paths.load_provider_templates,
+        )
+        self.assertIs(
+            code_mower_package.resolve_provider_templates_path,
+            package_paths.resolve_provider_templates_path,
+        )
         preview = cloud_client.build_dogfood_dry_run_preview(
             endpoint="https://codemower.com/api/ingest",
             payload={

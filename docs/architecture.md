@@ -40,6 +40,7 @@ src/code_mower/
   reviewer_metrics.py            reviewer value/report calculations
   cloud.py                       thin cloud CLI adapter
   cloud_client/                  export, upload, setup, doctor, events, operations
+  package_paths.py               package materializer provider-template path helpers
   migration.py                   package install and mirror-removal rehearsals
   *_audit_pr.py                  provider-specific audit runners
   adapters/                      hosted/SaaS adapter helpers
