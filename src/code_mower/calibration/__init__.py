@@ -64,6 +64,7 @@ from .truth import (
     normalize_truth_expectation,
     truth_for_item,
 )
+from .value_report import build_value_report, render_value_report_text
 
 __all__ = [
     "KNOWN_EVIDENCE_DISPOSITIONS",
@@ -90,6 +91,7 @@ __all__ = [
     "USEFUL_EVIDENCE_DISPOSITIONS",
     "build_lane_policy_report",
     "build_reviewer_evidence_report",
+    "build_value_report",
     "build_pilot_plan",
     "count_normalized_findings",
     "audit_input_insufficient_result",
@@ -115,6 +117,7 @@ __all__ = [
     "build_overlap_report",
     "render_overlap_text",
     "render_evidence_text",
+    "render_value_report_text",
     "run_records_from_summary",
     "run_matches_disposition_rule",
     "safe_slug",
