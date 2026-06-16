@@ -26,6 +26,7 @@ from .models import (
     DoctorCheck,
     DoctorReport,
 )
+from .output import render_doctor_text
 from .providers import (
     check_lane_runtime,
     effective_lane,
@@ -70,6 +71,7 @@ __all__ = [
     "load_inputs",
     "local_cli_probe_remediation",
     "provider_template_coverage",
+    "render_doctor_text",
     "selected_lanes",
     "token_file_mentions_cloud_token",
 ]
