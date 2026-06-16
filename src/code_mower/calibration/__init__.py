@@ -23,8 +23,9 @@ from .policy import (
     MERGE_GATE_USEFUL_RATE,
     SELECTIVE_USEFUL_RATE,
     build_lane_policy_report,
+    render_policy_text,
 )
-from .planning import build_pilot_plan
+from .planning import build_pilot_plan, render_plan_text
 from .results import (
     AUDIT_INPUT_INSUFFICIENT_PATTERNS,
     audit_input_insufficient_result,
@@ -117,6 +118,8 @@ __all__ = [
     "build_overlap_report",
     "render_overlap_text",
     "render_evidence_text",
+    "render_plan_text",
+    "render_policy_text",
     "render_value_report_text",
     "run_records_from_summary",
     "run_matches_disposition_rule",

@@ -120,6 +120,36 @@ def _local_cli_output_leaf(*, lane_slug: str, lane_id: str, reviewer_id: str) ->
     return safe_slug(reviewer_id, lane_slug)
 
 
+def render_plan_text(plan: Mapping[str, Any]) -> str:
+    lines = [
+        "Code Mower calibration pilot plan",
+        f"Corpus: {plan.get('corpus_name', '')}",
+        f"Runs: {plan.get('run_count', 0)}",
+        "",
+        "Arms:",
+    ]
+    for arm in plan.get("arms", []) or []:
+        if isinstance(arm, Mapping):
+            lines.append(f"- {arm.get('arm_id')}: {arm.get('kind')} - {arm.get('purpose')}")
+    lines.extend(["", "First commands:"])
+    shown = 0
+    for run in plan.get("runs", []) or []:
+        if not isinstance(run, Mapping):
+            continue
+        if run.get("requires_explicit_arm"):
+            continue
+        for command in run.get("commands", []) or []:
+            if shown >= 3:
+                break
+            lines.append("- " + " ".join(str(part) for part in command))
+            shown += 1
+        if shown >= 3:
+            break
+    if shown == 0:
+        lines.append("- none; this corpus currently needs manual structured audit invocations")
+    return "\n".join(lines) + "\n"
+
+
 def build_pilot_plan(
     corpus: Mapping[str, Any],
     *,
