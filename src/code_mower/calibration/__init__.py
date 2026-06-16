@@ -19,6 +19,7 @@ from .policy import (
     MERGE_GATE_MIN_FINDINGS,
     MERGE_GATE_USEFUL_RATE,
     SELECTIVE_USEFUL_RATE,
+    build_lane_policy_report,
 )
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "NON_BLOCKING_CODERABBIT_SEVERITIES",
     "SELECTIVE_USEFUL_RATE",
     "USEFUL_EVIDENCE_DISPOSITIONS",
+    "build_lane_policy_report",
     "float_or_zero",
     "head_slug",
     "load_json_object",
