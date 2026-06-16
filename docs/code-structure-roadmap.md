@@ -102,10 +102,11 @@ tested internal seams:
   helper logic, and dogfood/catch-up/reviewer-run/repo-sync orchestration.
   `cloud.py` remains the CLI adapter for export, doctor, setup, dogfood,
   repo-sync, and upload.
-- `code_mower.package_paths` now owns provider-template loading and package
-  provider-template path resolution. `package.py` remains the materializer
-  adapter and still owns generated static payloads, package plans, and output
-  writes.
+- `code_mower.package_manifest`, `code_mower.package_content`,
+  `code_mower.package_static`, and `code_mower.package_paths` now own package
+  file manifests, generated content builders, static generated file bodies,
+  CLI command inventory, and provider-template path resolution. `package.py`
+  remains the materializer adapter for package plans and output writes.
 - `builder-experiment` and authoring-intelligence docs establish the future
   `run_role`/`purpose` event shape without requiring a full orchestrator runtime
   before v1.0.
