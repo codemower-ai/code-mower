@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public alpha baseline is `v0.5.0-alpha.41`. It is intended to be
+The current public alpha baseline is `v0.5.0-alpha.42`. It is intended to be
 installed from the `codemower-ai/code-mower` public repository and has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
