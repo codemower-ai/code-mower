@@ -283,6 +283,14 @@ class ReleaseHygieneTests(unittest.TestCase):
             calibration_pkg.corpus_with_run_results,
         )
         self.assertIs(
+            code_mower_calibration.build_overlap_report,
+            calibration_pkg.build_overlap_report,
+        )
+        self.assertIs(
+            code_mower_calibration.render_overlap_text,
+            calibration_pkg.render_overlap_text,
+        )
+        self.assertIs(
             code_mower_calibration._normalize_disposition,
             calibration_pkg.normalize_disposition,
         )
@@ -311,6 +319,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("src/code_mower/calibration/planning.py", package_targets)
         self.assertIn("src/code_mower/calibration/results.py", package_targets)
         self.assertIn("src/code_mower/calibration/run_results.py", package_targets)
+        self.assertIn("src/code_mower/calibration/overlap.py", package_targets)
         self.assertIn("src/code_mower/calibration/run_status.py", package_targets)
         self.assertIn("src/code_mower/calibration/truth.py", package_targets)
 
