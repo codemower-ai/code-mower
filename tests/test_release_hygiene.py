@@ -1016,11 +1016,25 @@ printf '%s\\n' "${lane}"
         expected_sources = {
             "src/code_mower/package_content.py": "tools/code_mower_package_content.py",
             "src/code_mower/package_manifest.py": "tools/code_mower_package_manifest.py",
+            "src/code_mower/package_rendering.py": "tools/code_mower_package_rendering.py",
             "src/code_mower/package_static.py": "tools/code_mower_package_static.py",
         }
         for target, source in expected_sources.items():
             with self.subTest(target=target):
                 self.assertEqual(packaged_sources_by_target[target], source)
+
+    def test_package_rendering_legacy_fallback_stays_valid_yaml_subset(self) -> None:
+        payload = {
+            "providers": {
+                "codex": {"enabled": True, "labels": ["needs-codex-audit"]},
+                "local": {"enabled": False, "labels": []},
+            }
+        }
+
+        rendered = code_mower_package._render_provider_catalog_json_fallback(payload)
+
+        self.assertEqual(json.loads(rendered), payload)
+        self.assertTrue(rendered.endswith("\n"))
 
     def test_package_materializer_prefers_loaded_checkout_before_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

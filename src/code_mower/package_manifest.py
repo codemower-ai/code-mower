@@ -73,6 +73,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_package_content.py", "src/code_mower/package_content.py", "core"),
     ("tools/code_mower_package_manifest.py", "src/code_mower/package_manifest.py", "core"),
     ("src/code_mower/package_paths.py", "src/code_mower/package_paths.py", "core"),
+    ("tools/code_mower_package_rendering.py", "src/code_mower/package_rendering.py", "core"),
     ("tools/code_mower_package_static.py", "src/code_mower/package_static.py", "core"),
     ("tools/code_mower_prompts.py", "src/code_mower/prompts.py", "core"),
     ("src/code_mower/release_readiness.py", "src/code_mower/release_readiness.py", "core"),

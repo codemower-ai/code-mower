@@ -79,7 +79,8 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
   package file manifests now live under `code_mower.package_manifest`, and
   generated package content builders and CLI command inventory now live under
   `code_mower.package_content`; generated static package file bodies live under
-  `code_mower.package_static`.
+  `code_mower.package_static`; YAML/provider-catalog rendering helpers live
+  under `code_mower.package_rendering`.
   Package-aware config/template path helpers live under
   `code_mower.package_paths`, while `package.py` remains the
   backwards-compatible CLI and manifest-generation surface.

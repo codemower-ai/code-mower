@@ -103,9 +103,10 @@ tested internal seams:
   `cloud.py` remains the CLI adapter for export, doctor, setup, dogfood,
   repo-sync, and upload.
 - `code_mower.package_manifest`, `code_mower.package_content`,
-  `code_mower.package_static`, and `code_mower.package_paths` now own package
-  file manifests, generated content builders, static generated file bodies,
-  CLI command inventory, and provider-template path resolution. `package.py`
+  `code_mower.package_static`, `code_mower.package_rendering`, and
+  `code_mower.package_paths` now own package file manifests, generated content
+  builders, static generated file bodies, YAML/provider-catalog rendering, CLI
+  command inventory, and provider-template path resolution. `package.py`
   remains the materializer adapter for package plans and output writes.
 - `builder-experiment` and authoring-intelligence docs establish the future
   `run_role`/`purpose` event shape without requiring a full orchestrator runtime
