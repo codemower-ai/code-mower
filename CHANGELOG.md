@@ -4,6 +4,23 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.45
+
+This alpha continues the public-package structure hardening path after the
+doctor and migration refactors.
+
+### Changed
+
+- GitHub doctor internals now split redacted `gh api` helpers from Actions
+  billing/cost diagnostics, leaving repository setup orchestration in a smaller
+  `github.py` module.
+- Package-install rehearsals now keep first-user readiness artifacts and
+  scorecards in `code_mower.migration_readiness`, while
+  `code_mower.migration_rehearsal` stays focused on fresh-repo rehearsal
+  execution.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.45`.
+
 ## v0.5.0-alpha.44
 
 This alpha consolidates the recent structural cleanup into a cleaner public
