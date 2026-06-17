@@ -66,18 +66,15 @@ Trailer protocol (mirrors Devin/local LLM):
 from __future__ import annotations
 
 import argparse
-import http.client
 import json
 import os
 import selectors
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
-import urllib.request
 import warnings
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -88,19 +85,25 @@ if __package__ in {None, "", "tools"}:
     try:
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.provider_runners import (
+            fetch_pull_request,
             pop_github_token_env,
+            post_pr_comment,
             resolve_github_token_from_stdin_or_env,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from provider_runners import (  # type: ignore
+            fetch_pull_request,
             pop_github_token_env,
+            post_pr_comment,
             resolve_github_token_from_stdin_or_env,
         )
 else:  # pragma: no cover - exercised after package extraction.
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .provider_runners import (
+        fetch_pull_request,
         pop_github_token_env,
+        post_pr_comment,
         resolve_github_token_from_stdin_or_env,
     )
 
@@ -254,66 +257,6 @@ class ReviewContextDiagnostics:
 STALE_TRAILER = "<!-- CODEX_AUDIT_STATE: needs-codex-audit -->"
 DONE_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
 BLOCKED_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
-
-
-# ----- GitHub helpers -----
-
-
-def _gh_request(
-    method: str,
-    path: str,
-    *,
-    token: str,
-    body: Optional[Dict[str, Any]] = None,
-    accept: str = "application/vnd.github+json",
-    timeout: int = 30,
-) -> Any:
-    """GitHub REST call. Returns parsed JSON."""
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(
-        f"https://api.github.com{path}",
-        data=data,
-        headers={
-            "Accept": accept,
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-        method=method,
-    )
-    max_attempts = 3 if method.upper() in {"GET", "HEAD"} else 1
-    transient_errors = (
-        TimeoutError,
-        socket.timeout,
-        http.client.IncompleteRead,
-        http.client.RemoteDisconnected,
-        urllib.error.URLError,
-    )
-    for attempt in range(1, max_attempts + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                text = response.read().decode("utf-8")
-                return json.loads(text) if text else None
-        except urllib.error.HTTPError:
-            raise
-        except transient_errors:
-            if attempt >= max_attempts:
-                raise
-            time.sleep(min(2 ** (attempt - 1), 4))
-    raise AssertionError("unreachable GitHub request retry loop")
-
-
-def fetch_pull_request(repo: str, pr_number: int, *, token: str) -> Dict[str, Any]:
-    return _gh_request("GET", f"/repos/{repo}/pulls/{pr_number}", token=token)
-
-
-def post_pr_comment(repo: str, pr_number: int, body: str, *, token: str) -> Dict[str, Any]:
-    return _gh_request(
-        "POST",
-        f"/repos/{repo}/issues/{pr_number}/comments",
-        token=token,
-        body={"body": body},
-    )
 
 
 def _safe_artifact_slug(value: str) -> str:

@@ -10,9 +10,12 @@ from .github_auth import (
     resolve_github_token_from_env_or_gh,
     resolve_github_token_from_stdin_or_env,
 )
+from .github_pr import fetch_pull_request, post_pr_comment
 
 __all__ = [
+    "fetch_pull_request",
     "pop_github_token_env",
+    "post_pr_comment",
     "resolve_github_token_from_env_or_gh",
     "resolve_github_token_from_stdin_or_env",
 ]
