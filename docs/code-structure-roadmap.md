@@ -45,6 +45,9 @@ repository-level setup orchestration.
 Doctor privacy redaction now lives in `code_mower.doctor_checks.privacy`, so
 auth probe outputs can report shape metadata without preserving account names,
 emails, scopes, or token-adjacent diagnostics.
+The doctor boundary is now test-enforced: `doctor.py` should remain a CLI and
+compatibility adapter, while runtime, GitHub, provider, Actions-cost, cloud,
+output, and privacy implementation details live under `code_mower.doctor_checks`.
 
 These are not urgent correctness problems. They are readability and evolution
 risks: new contributors cannot quickly tell which functions are stable API,
@@ -173,7 +176,7 @@ existing commands.
      redaction now live behind the same registry seam.
    - Next: reduce import-compatibility plumbing only where it improves
      contributor comprehension; the main doctor domain boundaries are now
-     established.
+     established and guarded by `tests/test_doctor_boundaries.py`.
    - Keep `doctor --preflight` behavior unchanged.
    - Add tests at the check-result level, not only command-output level.
 
