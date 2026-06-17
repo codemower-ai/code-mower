@@ -29,7 +29,7 @@ from code_mower import doctor
 from code_mower import doctor_checks
 from code_mower import init as code_mower_init
 from code_mower import migration as code_mower_migration
-from code_mower import migration_rehearsal as code_mower_migration_rehearsal
+from code_mower import migration_install as code_mower_migration_install
 from code_mower import next_steps
 from code_mower import package as code_mower_package
 from code_mower import package_paths
@@ -2818,11 +2818,11 @@ def main():
             )
 
             with mock.patch.object(
-                code_mower_migration_rehearsal,
+                code_mower_migration_install,
                 "_run_rehearsal_step",
                 return_value=completed,
             ) as run_step:
-                result = code_mower_migration_rehearsal._run_rehearsal_step_to_file(
+                result = code_mower_migration_install._run_rehearsal_step_to_file(
                     ["code-mower", "example"],
                     cwd=Path(tmp),
                     env={"PATH": os.defpath},

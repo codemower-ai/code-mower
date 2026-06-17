@@ -88,12 +88,14 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
   Package-aware config/template path helpers live under
   `code_mower.package_paths`, while `package.py` remains the
   backwards-compatible CLI and manifest-generation surface.
-- Package-install rehearsal now lives under `code_mower.migration_rehearsal`,
-  first-user readiness scoring now lives under `code_mower.migration_readiness`,
-  and mirror-removal planning and runner-alias reporting now live under
-  `code_mower.migration_mirror`; `migration.py` remains the backwards-compatible
-  migration command adapter for wrapper rehearsal, release-readiness routing,
-  mirror planning, and package-install orchestration.
+- Package-install rehearsal flow now lives under
+  `code_mower.migration_rehearsal`; clean-venv/pip/toy-repo command primitives
+  live under `code_mower.migration_install`; first-user readiness scoring lives
+  under `code_mower.migration_readiness`; and mirror-removal planning plus
+  runner-alias reporting live under `code_mower.migration_mirror`.
+  `migration.py` remains the backwards-compatible migration command adapter for
+  wrapper rehearsal, release-readiness routing, mirror planning, and
+  package-install orchestration.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.

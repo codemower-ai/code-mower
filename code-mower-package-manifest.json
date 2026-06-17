@@ -309,6 +309,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/migration_install.py",
+      "target": "src/code_mower/migration_install.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/migration_mirror.py",
       "target": "src/code_mower/migration_mirror.py"
     },
