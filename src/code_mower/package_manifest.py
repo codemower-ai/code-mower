@@ -66,6 +66,11 @@ PACKAGE_FILES = (
     ("src/code_mower/doctor_checks/common.py", "src/code_mower/doctor_checks/common.py", "core"),
     ("src/code_mower/doctor_checks/github_actions.py", "src/code_mower/doctor_checks/github_actions.py", "core"),
     (
+        "src/code_mower/doctor_checks/github_actions_permissions.py",
+        "src/code_mower/doctor_checks/github_actions_permissions.py",
+        "core",
+    ),
+    (
         "src/code_mower/doctor_checks/github_actions_cost.py",
         "src/code_mower/doctor_checks/github_actions_cost.py",
         "core",
@@ -76,7 +81,15 @@ PACKAGE_FILES = (
         "core",
     ),
     ("src/code_mower/doctor_checks/github_api.py", "src/code_mower/doctor_checks/github_api.py", "core"),
+    ("src/code_mower/doctor_checks/github_branch.py", "src/code_mower/doctor_checks/github_branch.py", "core"),
+    ("src/code_mower/doctor_checks/github_config.py", "src/code_mower/doctor_checks/github_config.py", "core"),
     ("src/code_mower/doctor_checks/github.py", "src/code_mower/doctor_checks/github.py", "core"),
+    (
+        "src/code_mower/doctor_checks/github_provider.py",
+        "src/code_mower/doctor_checks/github_provider.py",
+        "core",
+    ),
+    ("src/code_mower/doctor_checks/github_repo.py", "src/code_mower/doctor_checks/github_repo.py", "core"),
     ("src/code_mower/doctor_checks/groups.py", "src/code_mower/doctor_checks/groups.py", "core"),
     ("src/code_mower/doctor_checks/models.py", "src/code_mower/doctor_checks/models.py", "core"),
     ("src/code_mower/doctor_checks/output.py", "src/code_mower/doctor_checks/output.py", "core"),
