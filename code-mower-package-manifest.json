@@ -249,6 +249,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions_permissions.py",
+      "target": "src/code_mower/doctor_checks/github_actions_permissions.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/github_actions_cost.py",
       "target": "src/code_mower/doctor_checks/github_actions_cost.py"
     },
@@ -264,8 +269,28 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_branch.py",
+      "target": "src/code_mower/doctor_checks/github_branch.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_config.py",
+      "target": "src/code_mower/doctor_checks/github_config.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/github.py",
       "target": "src/code_mower/doctor_checks/github.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_provider.py",
+      "target": "src/code_mower/doctor_checks/github_provider.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_repo.py",
+      "target": "src/code_mower/doctor_checks/github_repo.py"
     },
     {
       "kind": "core",
