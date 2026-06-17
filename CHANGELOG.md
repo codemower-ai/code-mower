@@ -4,6 +4,23 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.47
+
+This alpha is the public package marker after the first provider-runner seam
+extractions.
+
+### Changed
+
+- Shared GitHub PR metadata and PR comment helpers now live in
+  `code_mower.provider_runners.github_pr` instead of the Codex provider.
+- Shared audit verdict artifact write/load/repost helpers now live in
+  `code_mower.provider_runners.verdict_artifacts` instead of the Codex
+  provider.
+- Codex and Claude audit wrappers now import those provider-neutral helpers
+  from `provider_runners`, reducing cross-provider coupling.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.47`.
+
 ## v0.5.0-alpha.46
 
 This alpha is the next public package marker after the migration structure
