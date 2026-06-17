@@ -43,27 +43,35 @@ class DoctorBoundaryTests(unittest.TestCase):
             & imported_roots,
             "doctor.py should stay a CLI adapter; runtime/network checks belong in doctor_checks",
         )
-        self.assertFalse(
-            {
-                "code_mower.doctor_checks.github",
-                "code_mower.doctor_checks.github_actions",
-                "code_mower.doctor_checks.github_api",
-                "code_mower.doctor_checks.provider_api_model",
-                "code_mower.doctor_checks.provider_local_cli",
-                "code_mower.doctor_checks.provider_probe",
-                "code_mower.doctor_checks.privacy",
-            }
-            & imported_modules,
+        implementation_imports = sorted(
+            module
+            for module in imported_modules
+            if module.startswith(
+                (
+                    ".doctor_checks.",
+                    "doctor_checks.",
+                    "code_mower.doctor_checks.",
+                    "tools.doctor_checks.",
+                )
+            )
+        )
+        self.assertEqual(
+            implementation_imports,
+            [],
             "doctor.py should import doctor_checks facade exports, not implementation modules",
         )
 
     def test_doctor_import_guard_normalizes_relative_implementation_imports(self) -> None:
         _, imported_modules = _imported_roots_and_modules(
             "from .doctor_checks.github import check_github_setup\n"
+            "from code_mower.doctor_checks.runtime import check_python_runtime\n"
+            "from tools.doctor_checks.output import render_doctor_text\n"
         )
 
         self.assertIn("code_mower.doctor_checks.github", imported_modules)
         self.assertIn(".doctor_checks.github", imported_modules)
+        self.assertIn("code_mower.doctor_checks.runtime", imported_modules)
+        self.assertIn("tools.doctor_checks.output", imported_modules)
 
     def test_doctor_check_modules_are_explicit_package_seams(self) -> None:
         expected_modules = (
