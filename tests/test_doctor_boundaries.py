@@ -7,19 +7,31 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _imported_roots_and_modules(source: str) -> tuple[set[str], set[str]]:
+    tree = ast.parse(source)
+    imported_roots: set[str] = set()
+    imported_modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_roots.add(alias.name.split(".", 1)[0])
+                imported_modules.add(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            module = node.module
+            imported_roots.add(module.split(".", 1)[0])
+            imported_modules.add(module)
+            if node.level:
+                imported_modules.add("." * node.level + module)
+                if module.startswith("doctor_checks."):
+                    imported_modules.add("code_mower." + module)
+    return imported_roots, imported_modules
+
+
 class DoctorBoundaryTests(unittest.TestCase):
     def test_doctor_cli_adapter_does_not_own_check_implementations(self) -> None:
-        tree = ast.parse((ROOT / "src/code_mower/doctor.py").read_text(encoding="utf-8"))
-        imported_roots: set[str] = set()
-        imported_modules: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imported_roots.add(alias.name.split(".", 1)[0])
-                    imported_modules.add(alias.name)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported_roots.add(node.module.split(".", 1)[0])
-                imported_modules.add(node.module)
+        imported_roots, imported_modules = _imported_roots_and_modules(
+            (ROOT / "src/code_mower/doctor.py").read_text(encoding="utf-8")
+        )
 
         self.assertFalse(
             {
@@ -44,6 +56,14 @@ class DoctorBoundaryTests(unittest.TestCase):
             & imported_modules,
             "doctor.py should import doctor_checks facade exports, not implementation modules",
         )
+
+    def test_doctor_import_guard_normalizes_relative_implementation_imports(self) -> None:
+        _, imported_modules = _imported_roots_and_modules(
+            "from .doctor_checks.github import check_github_setup\n"
+        )
+
+        self.assertIn("code_mower.doctor_checks.github", imported_modules)
+        self.assertIn(".doctor_checks.github", imported_modules)
 
     def test_doctor_check_modules_are_explicit_package_seams(self) -> None:
         expected_modules = (
