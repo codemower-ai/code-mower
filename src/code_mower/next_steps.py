@@ -18,15 +18,20 @@ if __package__ in {None, "", "tools"}:
     from code_mower import __version__ as CODE_MOWER_VERSION
     from tools import code_mower_package
     from tools.code_mower_config import ConfigError
+    try:
+        from tools import code_mower_versioning
+    except ImportError:  # pragma: no cover - package-installed fallback.
+        from code_mower import versioning as code_mower_versioning
 else:  # pragma: no cover - exercised after package extraction.
     from . import __version__ as CODE_MOWER_VERSION
     from . import package as code_mower_package
     from .config import ConfigError
+    from . import versioning as code_mower_versioning
 
 
 DEFAULT_PROVIDER_TEMPLATES = code_mower_package.DEFAULT_PROVIDER_TEMPLATES
 DEFAULT_PROFILE = "recommended"
-PUBLIC_REPO_URL = "https://github.com/codemower-ai/code-mower"
+PUBLIC_REPO_URL = code_mower_versioning.PUBLIC_REPO_URL
 GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PR_NUMBER_RE = re.compile(r"^[1-9][0-9]*$")
 REQUEST_LABEL_RE = re.compile(r"^needs-[A-Za-z0-9][A-Za-z0-9_-]*-(audit|review)$")
@@ -112,13 +117,13 @@ def _validate_repo_and_pr(repo: str, pr: str) -> None:
 def current_public_tag(version: str = CODE_MOWER_VERSION) -> str:
     """Return the GitHub release tag for the current package version."""
 
-    return "v" + version.replace("a", "-alpha.")
+    return code_mower_versioning.release_tag_for_version(version)
 
 
 def current_alpha_package_spec(version: str = CODE_MOWER_VERSION) -> str:
     """Return the documented installable package spec for alpha users."""
 
-    return f"git+{PUBLIC_REPO_URL}.git@{current_public_tag(version)}"
+    return code_mower_versioning.public_package_spec(version, repo_url=PUBLIC_REPO_URL)
 
 
 def build_next_steps(
