@@ -309,6 +309,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/package_rendering.py",
+      "target": "src/code_mower/package_rendering.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/package_static.py",
       "target": "src/code_mower/package_static.py"
     },
