@@ -68,7 +68,9 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
   plus human-readable output rendering, first-run presets, and package-aware
   config/template path resolution live under `code_mower.doctor_checks`. Doctor
   report orchestration also now lives under `code_mower.doctor_checks.runner`,
-  leaving `doctor.py` as a small CLI adapter.
+  leaving `doctor.py` as a small CLI adapter. Provider doctor checks are now
+  split into token/env checks, local CLI discovery/probes, API-model probes,
+  and a thin provider catalog/runtime orchestrator.
 - `cloud.py` has completed its first major transition into a thin compatibility
   adapter: local cloud setup/token handling, cloud doctor diagnostics, local
   bundle materialization, structured event/repo helpers, and dogfood/catch-up/
