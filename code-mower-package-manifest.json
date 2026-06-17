@@ -279,6 +279,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/privacy.py",
+      "target": "src/code_mower/doctor_checks/privacy.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/providers.py",
       "target": "src/code_mower/doctor_checks/providers.py"
     },

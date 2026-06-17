@@ -40,9 +40,9 @@ from .providers import (
     selected_lanes,
 )
 from .provider_probe import evaluate_json_probe, local_cli_probe_remediation
+from .privacy import auth_probe_output_detail
 from .registry import DEFAULT_CHECK_GROUPS, DoctorCheckGroup, default_check_group_ids
 from .runtime import (
-    auth_probe_output_detail,
     check_github_auth_surface,
     check_pytest,
     check_python_runtime,

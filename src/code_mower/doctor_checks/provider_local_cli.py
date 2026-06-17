@@ -19,7 +19,7 @@ from .common import (
     local_cli_remediation,
 )
 from .provider_probe import evaluate_json_probe, local_cli_probe_remediation
-from .runtime import auth_probe_output_detail
+from .privacy import auth_probe_output_detail
 
 
 def _candidate_local_cli_commands(lane: Mapping[str, Any]) -> list[str]:
