@@ -4,6 +4,22 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.52
+
+This alpha is the public package marker after extracting the doctor privacy
+redaction helper.
+
+### Changed
+
+- Auth-probe output shape reporting now lives in
+  `code_mower.doctor_checks.privacy`.
+- Runtime and doctor compatibility exports still expose the redaction helper,
+  while provider and GitHub doctor checks import it from the privacy boundary.
+- Added focused `unittest` coverage that verifies auth probe details never
+  preserve raw output content.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.52`.
+
 ## v0.5.0-alpha.51
 
 This alpha is the public package marker after extracting shared doctor provider
