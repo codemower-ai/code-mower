@@ -21,6 +21,8 @@ The rehearsal verifies:
 - `code-mower doctor --easy`;
 - recommended next-step output;
 - standalone wrapper behavior;
+- optional external-repo readiness when `--repo-path` points at a repository
+  without Code Mower wrapper files;
 - starter calibration plan, evidence, metrics, lane policy, and value report;
 - draft calibration auto-discovery can turn recent PR metadata into a reviewable
   corpus without promoting it to ground truth;
@@ -77,10 +79,36 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
+## External Repo Rehearsal
+
+Use `--repo-path` to prove the installed Code Mower CLI can inspect a real
+repository after the package install succeeds:
+
+```bash
+code-mower migration package-install-rehearsal \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.78" \
+  --repo-path /path/to/external-repo \
+  --python "$(command -v python3.12)" \
+  --json
+```
+
+When the target repository does not contain `tools/code_mower`, Code Mower
+does not try to run mirror-removal or wrapper-parity checks. Instead it records
+`external_repo_readiness` by running:
+
+```bash
+code-mower checks detect --repo-path /path/to/external-repo --json
+code-mower checks run --repo-path /path/to/external-repo --dry-run --json
+code-mower doctor --easy --json
+```
+
+This is the right path for early adopters and private-repo pilots such as
+mobile apps or web apps that have never installed Code Mower before.
+
 ## Product Repo Comparison
 
-Use `--repo-path` only when a product repository already has Code Mower wrapper
-files and you want to compare the installed package against those wrappers:
+When a product repository already has Code Mower wrapper files, the same
+`--repo-path` option compares the installed package against those wrappers:
 
 ```bash
 code-mower migration package-install-rehearsal \
@@ -90,8 +118,8 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
-This is useful during mirror-removal migrations. It is not required for a new
-Code Mower user.
+That wrapper comparison is useful during mirror-removal migrations. It is not
+required for a new Code Mower user.
 
 ## Output Artifacts
 
@@ -133,6 +161,8 @@ Treat the rehearsal as passing only when:
 - `first_user_readiness.status` is `pass`;
 - every step has `returncode` 0;
 - the value report path exists;
+- external repo readiness is `pass` when `--repo-path` points at a repo without
+  Code Mower wrapper files;
 - cloud upload reports dry-run mode;
 - dogfood reports dry-run mode; and
 - no step output contains secrets, raw source, or raw model transcripts.

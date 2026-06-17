@@ -204,9 +204,10 @@ def build_next_steps(
                 "Installs Code Mower into a clean venv, verifies the easy-mode "
                 "starter path in a fresh toy repo, writes the first value-report "
                 "and cloud dry-run artifacts, emits `first_user_readiness`, and "
-                "optionally compares an existing product repo when --repo-path is "
-                "provided. The alpha path uses the current GitHub tag until PyPI "
-                "publishing is promoted."
+                "optionally checks a real repo when --repo-path is provided. "
+                "Wrapper-bearing repos get parity checks; fresh external repos "
+                "get installed-CLI readiness checks. The alpha path uses the "
+                "current GitHub tag until PyPI publishing is promoted."
             ),
             "artifacts": [
                 "outputs/package-install-rehearsal.json",

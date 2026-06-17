@@ -89,6 +89,88 @@ __all__ = [
 ]
 
 
+def _repo_has_product_wrapper(repo_path: Path) -> bool:
+    return (repo_path / "tools" / "code_mower").is_file()
+
+
+def _run_external_repo_readiness(
+    *,
+    code_mower_bin: Path,
+    repo_path: Path,
+    env: dict[str, str],
+    steps: list[dict[str, Any]],
+    timeout: int,
+) -> dict[str, Any]:
+    """Validate installed CLI behavior against a repo without local wrappers."""
+
+    detect_completed = _run_rehearsal_step(
+        [
+            str(code_mower_bin),
+            "checks",
+            "detect",
+            "--repo-path",
+            str(repo_path),
+            "--json",
+        ],
+        cwd=repo_path,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+    detect_payload = _json_payload(detect_completed.stdout)
+    dry_run_completed = _run_rehearsal_step(
+        [
+            str(code_mower_bin),
+            "checks",
+            "run",
+            "--repo-path",
+            str(repo_path),
+            "--dry-run",
+            "--json",
+        ],
+        cwd=repo_path,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+    dry_run_payload = _json_payload(dry_run_completed.stdout)
+    doctor_completed = _run_rehearsal_step(
+        [
+            str(code_mower_bin),
+            "doctor",
+            "--easy",
+            "--json",
+        ],
+        cwd=repo_path,
+        env=env,
+        steps=steps,
+        timeout=timeout,
+    )
+    doctor_payload = _json_payload(doctor_completed.stdout)
+
+    check_count = 0
+    if isinstance(detect_payload, dict):
+        check_count = int(detect_payload.get("check_count") or 0)
+
+    return {
+        "mode": "code-mower-external-repo-readiness",
+        # _run_rehearsal_step raises RehearsalError on non-zero exit, so reaching
+        # this point means all three installed-CLI checks completed successfully.
+        "status": "pass",
+        "repo_path": str(repo_path),
+        "wrapper_present": False,
+        "check_count": check_count,
+        "checks_detect": detect_payload,
+        "checks_dry_run": dry_run_payload,
+        "doctor": doctor_payload,
+        "note": (
+            "No repo-local tools/code_mower wrapper was found, so the rehearsal "
+            "validated the installed Code Mower CLI against the repo instead of "
+            "running product-wrapper parity."
+        ),
+    }
+
+
 def _write_rehearsal_auto_discovery_fixture(path: Path) -> None:
     """Write a tiny GitHub PR-list fixture for offline auto-discovery rehearsal."""
 
@@ -451,62 +533,72 @@ def run_package_install_rehearsal(
 
     product_wrapper_payload: dict[str, Any] | None = None
     product_mirror_payload: dict[str, Any] | None = None
+    external_repo_payload: dict[str, Any] | None = None
     if repo_path is not None:
         repo_path = repo_path.expanduser().resolve()
         if not repo_path.is_dir():
             raise ValueError(f"repo path is not a directory: {repo_path}")
-        product_local_command = (
-            tuple(local_command)
-            if local_command
-            else _default_product_rehearsal_local_command(repo_path)
-        )
-        product_local_command_text = " ".join(product_local_command)
-        wrapper_completed = _run_rehearsal_step(
-            [
-                str(code_mower_bin),
-                "migration",
-                "wrapper-rehearsal",
-                "--repo-path",
-                str(repo_path),
-                "--local-command",
-                product_local_command_text,
-                "--package-command",
-                str(code_mower_bin),
-                "--json",
-            ],
-            cwd=repo_path,
-            env=env,
-            steps=steps,
-            timeout=timeout,
-        )
-        product_wrapper_payload = _json_payload(wrapper_completed.stdout)
-        if (
-            not isinstance(product_wrapper_payload, dict)
-            or product_wrapper_payload.get("status") != "pass"
-        ):
-            raise RehearsalError(
-                "product wrapper rehearsal did not pass",
-                steps,
+        if local_command or _repo_has_product_wrapper(repo_path):
+            product_local_command = (
+                tuple(local_command)
+                if local_command
+                else _default_product_rehearsal_local_command(repo_path)
             )
-        mirror_completed = _run_rehearsal_step(
-            [
-                str(code_mower_bin),
-                "migration",
-                "mirror-removal-plan",
-                "--repo-path",
-                str(repo_path),
-                "--shadow-cycles",
-                str(shadow_cycles),
-                "--standalone-default-cycles",
-                str(standalone_default_cycles),
-                "--json",
-            ],
-            cwd=repo_path,
-            env=env,
-            steps=steps,
-            timeout=timeout,
-        )
-        product_mirror_payload = _json_payload(mirror_completed.stdout)
+            product_local_command_text = " ".join(product_local_command)
+            wrapper_completed = _run_rehearsal_step(
+                [
+                    str(code_mower_bin),
+                    "migration",
+                    "wrapper-rehearsal",
+                    "--repo-path",
+                    str(repo_path),
+                    "--local-command",
+                    product_local_command_text,
+                    "--package-command",
+                    str(code_mower_bin),
+                    "--json",
+                ],
+                cwd=repo_path,
+                env=env,
+                steps=steps,
+                timeout=timeout,
+            )
+            product_wrapper_payload = _json_payload(wrapper_completed.stdout)
+            if (
+                not isinstance(product_wrapper_payload, dict)
+                or product_wrapper_payload.get("status") != "pass"
+            ):
+                raise RehearsalError(
+                    "product wrapper rehearsal did not pass",
+                    steps,
+                )
+            mirror_completed = _run_rehearsal_step(
+                [
+                    str(code_mower_bin),
+                    "migration",
+                    "mirror-removal-plan",
+                    "--repo-path",
+                    str(repo_path),
+                    "--shadow-cycles",
+                    str(shadow_cycles),
+                    "--standalone-default-cycles",
+                    str(standalone_default_cycles),
+                    "--json",
+                ],
+                cwd=repo_path,
+                env=env,
+                steps=steps,
+                timeout=timeout,
+            )
+            product_mirror_payload = _json_payload(mirror_completed.stdout)
+        else:
+            external_repo_payload = _run_external_repo_readiness(
+                code_mower_bin=code_mower_bin,
+                repo_path=repo_path,
+                env=env,
+                steps=steps,
+                timeout=timeout,
+            )
 
     readiness = _first_user_readiness_scorecard(
         toy_repo=toy_repo,
@@ -539,6 +631,7 @@ def run_package_install_rehearsal(
         "steps": steps,
         "product_wrapper_rehearsal": product_wrapper_payload,
         "product_mirror_removal_plan": product_mirror_payload,
+        "external_repo_readiness": external_repo_payload,
     }
     _write_json(outputs / "package-install-rehearsal.json", payload)
     return payload
@@ -582,11 +675,20 @@ def render_package_install_rehearsal_text(payload: dict[str, Any]) -> str:
             [
                 f"Product repo: {payload['repo_path']}",
                 "Product wrapper rehearsal: "
-                f"{payload.get('product_wrapper_rehearsal', {}).get('status', 'not-run')}",
+                f"{(payload.get('product_wrapper_rehearsal') or {}).get('status', 'not-run')}",
                 "Product mirror-removal status: "
-                f"{payload.get('product_mirror_removal_plan', {}).get('status', 'not-run')}",
+                f"{(payload.get('product_mirror_removal_plan') or {}).get('status', 'not-run')}",
             ]
         )
+        external = payload.get("external_repo_readiness") or {}
+        if external:
+            lines.extend(
+                [
+                    "External repo readiness: "
+                    f"{external.get('status', 'not-run')} "
+                    f"({external.get('check_count', 0)} native checks detected)",
+                ]
+            )
     lines.append("")
     lines.append(
         f"Full JSON: {Path(payload['work_dir']) / 'outputs' / 'package-install-rehearsal.json'}"

@@ -126,14 +126,18 @@ code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
   --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.78" \
+  --repo-path /path/to/repo \
   --json
 code-mower audit pr 123
 code-mower calibration value-report templates/calibration-corpus.json
 python scripts/smoke_easy_mode.py --json
 ```
 
-Use `--repo-path /path/to/product-repo` with `package-install-rehearsal` only
-for existing product repos that still carry repo-local Code Mower wrappers.
+Use `migration wrapper-rehearsal` for existing product repos that still carry
+repo-local Code Mower wrappers. Use `migration package-install-rehearsal
+--repo-path /path/to/repo` for either wrapper-bearing product repos or fresh
+external repos; fresh repos get installed-CLI readiness checks instead of
+wrapper parity.
 
 The bundled starter corpus is for proving the first report path. It should not
 be confused with Code Mower's richer reference corpus or a user's

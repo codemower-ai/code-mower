@@ -14,6 +14,4 @@ claude_review:
   token_env_any: []
   trigger_policy: "manual"
   provider_config: {}
-  review_hygiene:
-    workflow: ".github/workflows/claude-clear-stale.yml"
-    token_env: "CLAUDE_REVIEW_LABEL_TOKEN"
+  review_hygiene: {}

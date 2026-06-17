@@ -15,4 +15,6 @@ devin:
   token_env_any: []
   trigger_policy: "manual"
   provider_config: {}
-  review_hygiene: {}
+  review_hygiene:
+    workflow: ".github/workflows/devin-clear-stale.yml"
+    token_env: "GITHUB_TOKEN"

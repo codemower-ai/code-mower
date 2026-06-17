@@ -228,6 +228,10 @@ For paid or hosted lanes, use `--dispatch-workflow` and `--dispatch-input` when
 the stale requeue needs to fire a bridge workflow immediately instead of relying
 on a newly-added label to trigger another workflow.
 
+The Devin provider template includes this stale-label hygiene by default when
+you deliberately enable that hosted merge-authority lane. It remains opt-in:
+the default first-user profiles do not enable Devin or other paid hosted lanes.
+
 ## Provider-Unavailable Bypass
 
 A promoted reviewer can fail for reasons that are not code findings: expired
