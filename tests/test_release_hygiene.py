@@ -29,6 +29,7 @@ from code_mower import doctor
 from code_mower import doctor_checks
 from code_mower import init as code_mower_init
 from code_mower import migration as code_mower_migration
+from code_mower import migration_rehearsal as code_mower_migration_rehearsal
 from code_mower import next_steps
 from code_mower import package as code_mower_package
 from code_mower import package_paths
@@ -2515,17 +2516,22 @@ def main():
                 ),
             ]
         )
-        migration_text = (ROOT / "src/code_mower/migration.py").read_text(
-            encoding="utf-8"
-        )
-        for text in (smoke_text, package_text, migration_text):
+        migration_rehearsal_text = (
+            ROOT / "src/code_mower/migration_rehearsal.py"
+        ).read_text(encoding="utf-8")
+        for text in (smoke_text, package_text, migration_rehearsal_text):
             with self.subTest():
                 self.assertIn("lane-policy=lane-policy.json", text)
                 self.assertIn("cloud-upload-dry-run.json", text)
 
     def test_package_install_rehearsal_covers_first_user_artifacts(self) -> None:
-        migration_text = (ROOT / "src/code_mower/migration.py").read_text(
-            encoding="utf-8"
+        migration_text = "\n".join(
+            [
+                (ROOT / "src/code_mower/migration.py").read_text(encoding="utf-8"),
+                (ROOT / "src/code_mower/migration_rehearsal.py").read_text(
+                    encoding="utf-8"
+                ),
+            ]
         )
 
         self.assertIn("first_user_artifacts", migration_text)
@@ -2809,11 +2815,11 @@ def main():
             )
 
             with mock.patch.object(
-                code_mower_migration,
+                code_mower_migration_rehearsal,
                 "_run_rehearsal_step",
                 return_value=completed,
             ) as run_step:
-                result = code_mower_migration._run_rehearsal_step_to_file(
+                result = code_mower_migration_rehearsal._run_rehearsal_step_to_file(
                     ["code-mower", "example"],
                     cwd=Path(tmp),
                     env={"PATH": os.defpath},
