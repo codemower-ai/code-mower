@@ -34,7 +34,7 @@ src/code_mower/
   cli.py                         command routing
   init.py                        easy-mode generated setup
   doctor.py                      thin doctor CLI adapter
-  doctor_checks/                 runtime, provider, GitHub, cost, cloud, output checks
+  doctor_checks/                 runtime, provider, GitHub, Actions cost, cloud, output checks
   provider_registry.py           provider metadata and posture
   prompts.py                     lane prompt loading
   reviewer_metrics.py            reviewer value/report calculations

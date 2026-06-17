@@ -71,6 +71,8 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
   leaving `doctor.py` as a small CLI adapter. Provider doctor checks are now
   split into token/env checks, local CLI discovery/probes, API-model probes,
   and a thin provider catalog/runtime orchestrator.
+  GitHub doctor internals are also split so redacted API calls and Actions
+  billing/cost diagnostics can evolve without bloating repo setup checks.
 - `cloud.py` has completed its first major transition into a thin compatibility
   adapter: local cloud setup/token handling, cloud doctor diagnostics, local
   bundle materialization, structured event/repo helpers, and dogfood/catch-up/
