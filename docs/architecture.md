@@ -43,7 +43,8 @@ src/code_mower/
   package_paths.py               package materializer provider-template path helpers
   migration.py                   thin migration CLI adapter
   migration_mirror.py            mirror-removal planning and runner aliases
-  migration_rehearsal.py         package install and first-user rehearsals
+  migration_rehearsal.py         package install and fresh-repo rehearsals
+  migration_readiness.py         first-user readiness scorecards
   *_audit_pr.py                  provider-specific audit runners
   adapters/                      hosted/SaaS adapter helpers
   lane_configs/                  provider lane declarations

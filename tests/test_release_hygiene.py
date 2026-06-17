@@ -2531,6 +2531,9 @@ def main():
                 (ROOT / "src/code_mower/migration_rehearsal.py").read_text(
                     encoding="utf-8"
                 ),
+                (ROOT / "src/code_mower/migration_readiness.py").read_text(
+                    encoding="utf-8"
+                ),
             ]
         )
 
