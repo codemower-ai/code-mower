@@ -13,6 +13,7 @@ from .github_auth import (
     resolve_github_token_from_stdin_or_env,
 )
 from .github_pr import fetch_pull_request, post_pr_comment
+from .process import DEFAULT_HOME_ENV_KEYS, build_allowlisted_child_env
 from .repo_paths import parse_repo_paths
 from .text_schema import clip_text, one_line, require_exact_keys
 from .verdict_artifacts import (
@@ -29,6 +30,7 @@ __all__ = [
     "limit_comment_body",
     "MAX_GITHUB_COMMENT_CHARS",
     "clip_text",
+    "DEFAULT_HOME_ENV_KEYS",
     "one_line",
     "parse_repo_paths",
     "pop_github_token_env",
@@ -38,5 +40,6 @@ __all__ = [
     "resolve_github_token_from_env_or_gh",
     "resolve_github_token_from_stdin_or_env",
     "run_git",
+    "build_allowlisted_child_env",
     "write_audit_verdict_artifact",
 ]

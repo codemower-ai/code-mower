@@ -20,13 +20,17 @@ if __package__ in {None, ""}:
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower import gemini_cli_audit_pr
         from code_mower import prompts as code_mower_prompts
+        from code_mower.provider_runners import build_allowlisted_child_env
     else:
         from tools import gemini_cli_audit_pr, code_mower_prompts
+        from tools.provider_runners import build_allowlisted_child_env
 elif __package__ == "tools":
     from tools import gemini_cli_audit_pr, code_mower_prompts
+    from tools.provider_runners import build_allowlisted_child_env
 else:  # pragma: no cover - exercised after package extraction.
     from . import gemini_cli_audit_pr
     from . import prompts as code_mower_prompts
+    from .provider_runners import build_allowlisted_child_env
 
 
 DEFAULT_HERMES_COMMAND = "hermes"
@@ -64,30 +68,35 @@ def _env_flag_enabled(name: str) -> bool:
 
 
 def build_hermes_child_env(home_dir: Path, *, preserve_ambient_home: bool) -> dict[str, str]:
-    child_env = {
-        key: value
-        for key in HERMES_ENV_ALLOWLIST
-        if (value := os.environ.get(key))
-    }
-    if preserve_ambient_home:
-        for key in ("HOME", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
-            if os.environ.get(key):
-                child_env[key] = os.environ[key]
-    else:
-        child_env["HOME"] = str(home_dir)
-        child_env["HERMES_HOME"] = str(home_dir / ".hermes")
-        child_env["XDG_CONFIG_HOME"] = str(home_dir / ".config")
-        child_env["XDG_CACHE_HOME"] = str(home_dir / ".cache")
-        child_env["XDG_STATE_HOME"] = str(home_dir / ".local" / "state")
-    # Keep oneshot review deterministic and quiet. The CLI still needs ambient
-    # auth in current releases, but Code Mower does not need project rules,
-    # tool progress, or default toolsets for a diff-only calibration review.
-    child_env["HERMES_IGNORE_USER_CONFIG"] = "1"
-    child_env["HERMES_IGNORE_RULES"] = "1"
-    child_env["HERMES_CORE_TOOLS"] = ""
-    child_env["HERMES_TOOL_PROGRESS"] = "0"
-    child_env["HERMES_QUIET"] = "1"
-    return child_env
+    return build_allowlisted_child_env(
+        HERMES_ENV_ALLOWLIST,
+        extra_env={
+            # Keep oneshot review deterministic and quiet. The CLI still needs
+            # ambient auth in current releases, but Code Mower does not need
+            # project rules, tool progress, or default toolsets for a diff-only
+            # calibration review.
+            "HERMES_IGNORE_USER_CONFIG": "1",
+            "HERMES_IGNORE_RULES": "1",
+            "HERMES_CORE_TOOLS": "",
+            "HERMES_TOOL_PROGRESS": "0",
+            "HERMES_QUIET": "1",
+        },
+        home_env={
+            "HOME": home_dir,
+            "HERMES_HOME": home_dir / ".hermes",
+            "XDG_CONFIG_HOME": home_dir / ".config",
+            "XDG_CACHE_HOME": home_dir / ".cache",
+            "XDG_STATE_HOME": home_dir / ".local" / "state",
+        },
+        preserve_ambient_home=preserve_ambient_home,
+        ambient_home_keys=(
+            "HOME",
+            "HERMES_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+        ),
+    )
 
 
 def verify_hermes_oneshot_contract(

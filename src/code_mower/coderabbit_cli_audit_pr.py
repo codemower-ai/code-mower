@@ -20,24 +20,28 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(module_dir.parent))
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower.provider_runners import (
+            build_allowlisted_child_env,
             local_head_sha as _local_head_sha,
             resolve_github_token_from_env_or_gh,
             run_git as _git,
         )
     else:
         from tools.provider_runners import (
+            build_allowlisted_child_env,
             local_head_sha as _local_head_sha,
             resolve_github_token_from_env_or_gh,
             run_git as _git,
         )
 elif __package__ == "tools":
     from tools.provider_runners import (
+        build_allowlisted_child_env,
         local_head_sha as _local_head_sha,
         resolve_github_token_from_env_or_gh,
         run_git as _git,
     )
 else:  # pragma: no cover - exercised after package extraction.
     from .provider_runners import (
+        build_allowlisted_child_env,
         local_head_sha as _local_head_sha,
         resolve_github_token_from_env_or_gh,
         run_git as _git,
@@ -121,11 +125,7 @@ def resolve_github_token() -> str:
 
 
 def build_coderabbit_child_env() -> dict[str, str]:
-    return {
-        key: value
-        for key in CODERABBIT_ENV_ALLOWLIST
-        if (value := os.environ.get(key))
-    }
+    return build_allowlisted_child_env(CODERABBIT_ENV_ALLOWLIST)
 
 
 def _working_tree_status(repo_path: Path) -> str:

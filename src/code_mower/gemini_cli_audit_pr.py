@@ -23,6 +23,7 @@ if __package__ in {None, ""}:
         from code_mower import prompts as code_mower_prompts
         from code_mower import secrets as code_mower_secrets
         from code_mower.provider_runners import (
+            build_allowlisted_child_env,
             fetch_local_checkout_diff,
             local_head_sha as _local_head_sha,
             resolve_github_token_from_env_or_gh,
@@ -30,6 +31,7 @@ if __package__ in {None, ""}:
     else:
         from tools import code_mower_prompts, code_mower_secrets
         from tools.provider_runners import (
+            build_allowlisted_child_env,
             fetch_local_checkout_diff,
             local_head_sha as _local_head_sha,
             resolve_github_token_from_env_or_gh,
@@ -37,6 +39,7 @@ if __package__ in {None, ""}:
 elif __package__ == "tools":
     from tools import code_mower_prompts, code_mower_secrets
     from tools.provider_runners import (
+        build_allowlisted_child_env,
         fetch_local_checkout_diff,
         local_head_sha as _local_head_sha,
         resolve_github_token_from_env_or_gh,
@@ -45,6 +48,7 @@ else:  # pragma: no cover - exercised after package extraction.
     from . import prompts as code_mower_prompts
     from . import secrets as code_mower_secrets
     from .provider_runners import (
+        build_allowlisted_child_env,
         fetch_local_checkout_diff,
         local_head_sha as _local_head_sha,
         resolve_github_token_from_env_or_gh,
@@ -178,25 +182,22 @@ def build_gemini_child_env(
     exclude_env: tuple[str, ...] = (),
     preserve_ambient_home: bool = False,
 ) -> dict[str, str]:
-    excluded = set(exclude_env)
-    child_env = {
-        key: value
-        for key in GEMINI_ENV_ALLOWLIST
-        if key not in excluded and (value := os.environ.get(key))
-    }
+    extra_env = {}
     if gemini_api_key:
-        child_env["GEMINI_API_KEY"] = gemini_api_key
-        child_env["GOOGLE_API_KEY"] = gemini_api_key
-    if preserve_ambient_home:
-        for key in ("HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
-            if os.environ.get(key):
-                child_env[key] = os.environ[key]
-    else:
-        child_env["HOME"] = str(home_dir)
-        child_env["XDG_CONFIG_HOME"] = str(home_dir / ".config")
-        child_env["XDG_CACHE_HOME"] = str(home_dir / ".cache")
-        child_env["XDG_STATE_HOME"] = str(home_dir / ".local" / "state")
-    return child_env
+        extra_env["GEMINI_API_KEY"] = gemini_api_key
+        extra_env["GOOGLE_API_KEY"] = gemini_api_key
+    return build_allowlisted_child_env(
+        GEMINI_ENV_ALLOWLIST,
+        exclude_env=exclude_env,
+        extra_env=extra_env,
+        home_env={
+            "HOME": home_dir,
+            "XDG_CONFIG_HOME": home_dir / ".config",
+            "XDG_CACHE_HOME": home_dir / ".cache",
+            "XDG_STATE_HOME": home_dir / ".local" / "state",
+        },
+        preserve_ambient_home=preserve_ambient_home,
+    )
 
 
 def _google_cli_safety_settings() -> dict[str, Any]:
