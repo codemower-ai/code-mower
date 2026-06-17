@@ -4,6 +4,23 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.61
+
+This alpha is the public package marker after moving more provider-runner
+plumbing out of CodeRabbit-specific code.
+
+### Changed
+
+- Added a shared `provider_runners.workspace` helper for local checkout status
+  and head validation.
+- CodeRabbit CLI now uses the shared workspace helper while keeping its
+  provider-specific workspace error type.
+- CodeRabbit CLI pull-request metadata reads now delegate to the shared
+  provider-runner GitHub helper instead of carrying a duplicate REST client.
+- Added focused tests for the new workspace helper and CodeRabbit GitHub
+  metadata compatibility wrapper.
+- Public install and release-readiness docs now point to `v0.5.0-alpha.61`.
+
 ## v0.5.0-alpha.60
 
 This alpha is the public package marker after test-enforcing the doctor package
