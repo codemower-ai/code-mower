@@ -437,6 +437,7 @@ TEMPLATE_FILES = (
     ("workflow", "templates/workflows/hosted-bridge.yml.j2"),
     ("workflow", "templates/workflows/audit-label-cleanup.yml.j2"),
     ("workflow", "templates/workflows/review-clear-stale.yml.j2"),
+    ("workflow", "src/code_mower/templates/workflows/review-clear-stale.yml.j2"),
     ("workflow", "templates/workflows/private-standalone-shadow.yml.j2"),
     ("workflow", "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2"),
     ("config", "templates/code-mower.yml.j2"),

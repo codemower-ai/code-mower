@@ -1169,6 +1169,14 @@ printf '%s\\n' "${lane}"
         ):
             self.assertIn(source, packaged_sources)
 
+        packaged_template_targets = {
+            target for _kind, target in code_mower_package.TEMPLATE_FILES
+        }
+        self.assertIn(
+            "src/code_mower/templates/workflows/review-clear-stale.yml.j2",
+            packaged_template_targets,
+        )
+
     def test_package_manifest_has_unique_targets_and_known_source_reuse(self) -> None:
         from collections import Counter
 
