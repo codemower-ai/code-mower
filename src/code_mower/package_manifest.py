@@ -74,6 +74,7 @@ PACKAGE_FILES = (
         "src/code_mower/doctor_checks/provider_local_cli.py",
         "core",
     ),
+    ("src/code_mower/doctor_checks/provider_probe.py", "src/code_mower/doctor_checks/provider_probe.py", "core"),
     ("src/code_mower/doctor_checks/providers.py", "src/code_mower/doctor_checks/providers.py", "core"),
     ("src/code_mower/doctor_checks/registry.py", "src/code_mower/doctor_checks/registry.py", "core"),
     ("src/code_mower/doctor_checks/runner.py", "src/code_mower/doctor_checks/runner.py", "core"),

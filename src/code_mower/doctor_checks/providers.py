@@ -19,6 +19,8 @@ from .provider_env import check_required_env, check_token_env
 from .provider_local_cli import (
     check_local_cli,
     check_local_cli_probe,
+)
+from .provider_probe import (
     evaluate_json_probe,
     local_cli_probe_remediation,
 )
