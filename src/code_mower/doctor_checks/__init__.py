@@ -41,7 +41,15 @@ from .providers import (
 )
 from .provider_probe import evaluate_json_probe, local_cli_probe_remediation
 from .privacy import auth_probe_output_detail
-from .registry import DEFAULT_CHECK_GROUPS, DoctorCheckGroup, default_check_group_ids
+from .registry import (
+    DEFAULT_CHECK_GROUPS,
+    BASE_DOCTOR_STAGES,
+    OPTIONAL_DOCTOR_STAGES,
+    DoctorCheckGroup,
+    DoctorCheckStage,
+    build_doctor_run_plan,
+    default_check_group_ids,
+)
 from .runtime import (
     check_github_auth_surface,
     check_pytest,
@@ -52,12 +60,15 @@ from .runner import run_doctor
 
 __all__ = [
     "DEFAULT_CHECK_GROUPS",
+    "BASE_DOCTOR_STAGES",
+    "OPTIONAL_DOCTOR_STAGES",
     "ACTIONS_COST_SAMPLE_DEFAULT",
     "ACTIONS_COST_SAMPLE_MAX",
     "DEFAULT_CLOUD_TOKEN_DIR",
     "DEFAULT_CLOUD_TOKEN_ENV",
     "DoctorCheck",
     "DoctorCheckGroup",
+    "DoctorCheckStage",
     "DoctorReport",
     "STATUS_FAIL",
     "STATUS_PASS",
@@ -65,6 +76,7 @@ __all__ = [
     "STATUS_WARN",
     "apply_first_run_defaults",
     "auth_probe_output_detail",
+    "build_doctor_run_plan",
     "check_cloud_token_surface",
     "check_github_auth_surface",
     "check_github_setup",

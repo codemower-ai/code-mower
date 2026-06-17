@@ -18,11 +18,12 @@ Status: warn
 Config: /path/to/code-mower.example.yml
 Provider templates: /path/to/providers.yml
 Profile: recommended
-Checks: 20 total, 5 warnings, 1 skipped
+Checks: 21 total, 5 warnings, 1 skipped
 
 Setup
 - PASS config.validate: config validates
 - PASS provider_templates.load: provider templates load
+- PASS doctor.plan: doctor run plan: load-inputs, select-profile, runtime, providers, github, cloud
 - PASS profile.select: selected profile recommended: codex, claude_audit, gitar
 - PASS provider_templates.coverage: provider templates cover selected lanes
 
