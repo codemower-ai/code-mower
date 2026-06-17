@@ -4,6 +4,22 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.63
+
+This alpha is the public package marker after sharing GitHub PR changed-file
+fetching across provider runners.
+
+### Changed
+
+- Added `provider_runners.fetch_pull_request_files` as a shared paginated
+  helper for GitHub pull-request file metadata.
+- Local LLM audit now delegates PR metadata and changed-file fetching to shared
+  provider-runner helpers while keeping raw file-content fetches and comment
+  posting local to the lane.
+- Added focused tests for shared file pagination, invalid GitHub file payloads,
+  and local LLM compatibility wrapper behavior.
+- Public install and release-readiness docs now point to `v0.5.0-alpha.63`.
+
 ## v0.5.0-alpha.62
 
 This alpha is the public package marker after sharing GitHub PR diff fetching
