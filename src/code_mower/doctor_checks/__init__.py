@@ -26,7 +26,7 @@ from .models import (
     DoctorCheck,
     DoctorReport,
 )
-from .output import render_doctor_text
+from .output import doctor_output_group, render_doctor_text
 from .presets import (
     apply_first_run_defaults,
     resolve_doctor_config_path,
@@ -73,6 +73,7 @@ __all__ = [
     "check_python_runtime",
     "check_ripgrep",
     "default_check_group_ids",
+    "doctor_output_group",
     "effective_lane",
     "evaluate_json_probe",
     "load_inputs",
