@@ -4,6 +4,22 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.2
+
+This beta tightens the first-user rehearsal path after a real external-repo
+install exposed a Python command-resolution sharp edge.
+
+### Changed
+
+- `migration package-install-rehearsal --python python3.12` now resolves
+  command-style Python names through `PATH` instead of treating them as repo
+  relative paths.
+- Rehearsed `v0.5.0-beta.1` against `DrinkBetter-AI/mobile-app`: easy init,
+  doctor, native check detection, lint, typecheck, tests, and package-install
+  readiness all passed when run with Python 3.12.
+- Kept the documented public install target and package metadata aligned on
+  `v0.5.0-beta.2` / `0.5.0b2`.
+
 ## v0.5.0-beta.1
 
 This beta is the public package marker after alpha.79 clean-install rehearsal,

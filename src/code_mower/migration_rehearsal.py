@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -77,6 +78,7 @@ __all__ = [
     "_json_payload",
     "_load_release_readiness",
     "_pip_install_command",
+    "_resolve_python_executable",
     "_resolve_install_package_spec",
     "_run",
     "_run_rehearsal_step",
@@ -217,6 +219,26 @@ def _write_rehearsal_auto_discovery_fixture(path: Path) -> None:
     )
 
 
+def _resolve_python_executable(python: Path | None) -> Path:
+    if python is None:
+        return Path(sys.executable)
+
+    raw = python.expanduser()
+    if not raw.is_absolute() and len(raw.parts) == 1:
+        resolved_command = shutil.which(str(raw))
+        if resolved_command:
+            return Path(resolved_command).resolve()
+        raise ValueError(
+            f"Python executable not found on PATH: {raw}. "
+            "Use an absolute path such as `--python \"$(command -v python3.12)\"`."
+        )
+
+    resolved = raw.resolve()
+    if not resolved.exists():
+        raise ValueError(f"Python executable does not exist: {resolved}")
+    return resolved
+
+
 def run_package_install_rehearsal(
     *,
     package_spec: str,
@@ -244,7 +266,7 @@ def run_package_install_rehearsal(
     work_dir.mkdir(parents=True, exist_ok=True)
     outputs.mkdir(parents=True, exist_ok=True)
 
-    python_bin = python.expanduser().resolve() if python else Path(sys.executable)
+    python_bin = _resolve_python_executable(python)
     steps: list[dict[str, Any]] = []
 
     _run_rehearsal_step(
