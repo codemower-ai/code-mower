@@ -65,6 +65,7 @@ from .manifest import (
     load_bundle_manifest,
     report_path_from_manifest,
 )
+from .reports import included_report_payloads
 from .operations import (
     catch_up_upload,
     dogfood_upload,
@@ -132,6 +133,7 @@ __all__ = [
     "event_id_from_github_run",
     "existing_bundle_manifest",
     "health_url_for_endpoint",
+    "included_report_payloads",
     "is_local_http_endpoint",
     "is_bundle_manifest",
     "load_bundle_manifest",
