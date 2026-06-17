@@ -4,6 +4,24 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.59
+
+This alpha is the public package marker after adding a named doctor run-plan
+registry.
+
+### Changed
+
+- Doctor now builds an explicit run plan from base stages plus optional GitHub
+  and Code Mower Cloud stages.
+- Doctor JSON/text output includes a token-safe `doctor.plan` setup check so
+  first-time users and support logs show which diagnostic stages ran.
+- `doctor.plan` is grouped with setup output instead of falling into a generic
+  catch-all section.
+- Added focused coverage for the doctor registry vocabulary, optional stage
+  selection, and runner-level plan emission.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.59`.
+
 ## v0.5.0-alpha.58
 
 This alpha is the public package marker after improving first-run doctor output
