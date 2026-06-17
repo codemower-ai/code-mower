@@ -229,6 +229,16 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions.py",
+      "target": "src/code_mower/doctor_checks/github_actions.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_api.py",
+      "target": "src/code_mower/doctor_checks/github_api.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/github.py",
       "target": "src/code_mower/doctor_checks/github.py"
     },

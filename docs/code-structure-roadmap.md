@@ -34,6 +34,10 @@ first-user readiness scoring now live under `code_mower.migration_rehearsal`,
 and mirror-removal planning plus runner aliases now live under
 `code_mower.migration_mirror`. `migration.py` remains a smaller migration
 CLI/compatibility adapter.
+The GitHub doctor checks also now keep redacted `gh api` helpers in
+`code_mower.doctor_checks.github_api` and Actions billing/cost probes in
+`code_mower.doctor_checks.github_actions`, leaving `github.py` focused on
+repository-level setup orchestration.
 
 These are not urgent correctness problems. They are readability and evolution
 risks: new contributors cannot quickly tell which functions are stable API,
@@ -98,9 +102,11 @@ tested internal seams:
   diagnostics, human-readable output rendering, first-run presets, and
   package-aware config/template path resolution. Provider diagnostics are split
   into token/env checks, local CLI discovery/probes, API-model probes, and a
-  thin provider catalog/runtime orchestrator. It also owns doctor report
-  orchestration through `code_mower.doctor_checks.runner`; `doctor.py` remains
-  the backwards-compatible CLI adapter.
+  thin provider catalog/runtime orchestrator. GitHub API and Actions-cost
+  internals are split into `doctor_checks.github_api` and
+  `doctor_checks.github_actions`. It also owns doctor report orchestration
+  through `code_mower.doctor_checks.runner`; `doctor.py` remains the
+  backwards-compatible CLI adapter.
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
   stdin-safe audit wrappers and local CLI lanes.
 - `code_mower.cloud_client` now owns cloud endpoint probing, cloud doctor
