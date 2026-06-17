@@ -97,6 +97,7 @@ class DoctorBoundaryTests(unittest.TestCase):
             "code_mower.doctor_checks.provider_api_model_openai",
             "code_mower.doctor_checks.provider_api_model_profiles",
             "code_mower.doctor_checks.provider_env",
+            "code_mower.doctor_checks.provider_env_tokens",
             "code_mower.doctor_checks.provider_local_cli",
             "code_mower.doctor_checks.provider_local_cli_commands",
             "code_mower.doctor_checks.provider_local_cli_probe_config",

@@ -3,33 +3,24 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any, Mapping
 
 from .common import (
-    SUPPORTED_TOKEN_FILE_ENV_NAMES,
     TRUTHY_ENV_VALUES,
     DoctorCheck,
     STATUS_PASS,
     STATUS_SKIP,
     STATUS_WARN,
     as_sequence,
-    code_mower_secrets,
     token_remediation,
 )
+from .provider_env_tokens import provider_token_status
 
 
 def check_token_env(lane_id: str, lane: Mapping[str, Any]) -> list[DoctorCheck]:
-    token_env = list(as_sequence(lane.get("token_env", [])))
-    token_env_any = [
-        [str(item) for item in as_sequence(group)]
-        for group in as_sequence(lane.get("token_env_any", []))
-    ]
-    review_hygiene = lane.get("review_hygiene", {})
-    if not token_env and isinstance(review_hygiene, Mapping) and review_hygiene.get("token_env"):
-        token_env = [review_hygiene["token_env"]]
+    token_status = provider_token_status(lane)
     checks: list[DoctorCheck] = []
-    if not token_env and not token_env_any:
+    if not token_status.declares_tokens:
         checks.append(
             DoctorCheck(
                 name="env.tokens",
@@ -40,43 +31,9 @@ def check_token_env(lane_id: str, lane: Mapping[str, Any]) -> list[DoctorCheck]:
         )
         return checks
 
-    def token_file_value(name: str, path_text: str) -> str:
-        if name not in SUPPORTED_TOKEN_FILE_ENV_NAMES:
-            return ""
-        try:
-            result = code_mower_secrets.read_secret_file(
-                Path(path_text),
-                supported_env_names=SUPPORTED_TOKEN_FILE_ENV_NAMES,
-            )
-        except OSError:
-            return ""
-        return result.value
-
-    def token_is_present(name: str) -> bool:
-        if os.environ.get(name):
-            return True
-        path_text = os.environ.get(f"{name}_FILE", "").strip()
-        if not path_text:
-            return False
-        return bool(token_file_value(name, path_text))
-
-    token_file_env = [
-        f"{name}_FILE"
-        for name in [str(item) for item in token_env]
-        if name in SUPPORTED_TOKEN_FILE_ENV_NAMES and os.environ.get(f"{name}_FILE")
-    ]
-    token_file_env.extend(
-        f"{name}_FILE"
-        for group in token_env_any
-        for name in group
-        if name in SUPPORTED_TOKEN_FILE_ENV_NAMES and os.environ.get(f"{name}_FILE")
-    )
-    missing = [str(name) for name in token_env if not token_is_present(str(name))]
-    missing_any = [
-        group
-        for group in token_env_any
-        if group and not any(token_is_present(name) for name in group)
-    ]
+    missing = list(token_status.missing)
+    missing_any = [list(group) for group in token_status.missing_any]
+    token_file_env = list(token_status.token_file_env)
     if missing or missing_any:
         messages = []
         if missing:
@@ -92,7 +49,7 @@ def check_token_env(lane_id: str, lane: Mapping[str, Any]) -> list[DoctorCheck]:
                 detail={
                     "missing": missing,
                     "missing_any": missing_any,
-                    "token_file_env": sorted(set(token_file_env)),
+                    "token_file_env": token_file_env,
                 },
                 remediation=token_remediation(missing, missing_any),
             )
@@ -105,9 +62,9 @@ def check_token_env(lane_id: str, lane: Mapping[str, Any]) -> list[DoctorCheck]:
                 lane=lane_id,
                 message="token env vars are set",
                 detail={
-                    "token_env": [str(name) for name in token_env],
-                    "token_env_any": token_env_any,
-                    "token_file_env": sorted(set(token_file_env)),
+                    "token_env": list(token_status.token_env),
+                    "token_env_any": [list(group) for group in token_status.token_env_any],
+                    "token_file_env": token_file_env,
                 },
             )
         )
@@ -170,4 +127,3 @@ def check_required_env(lane_id: str, lane: Mapping[str, Any]) -> list[DoctorChec
             },
         )
     ]
-

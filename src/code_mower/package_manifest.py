@@ -136,6 +136,11 @@ PACKAGE_FILES = (
     ),
     ("src/code_mower/doctor_checks/provider_env.py", "src/code_mower/doctor_checks/provider_env.py", "core"),
     (
+        "src/code_mower/doctor_checks/provider_env_tokens.py",
+        "src/code_mower/doctor_checks/provider_env_tokens.py",
+        "core",
+    ),
+    (
         "src/code_mower/doctor_checks/provider_local_cli.py",
         "src/code_mower/doctor_checks/provider_local_cli.py",
         "core",
