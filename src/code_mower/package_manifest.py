@@ -141,6 +141,26 @@ PACKAGE_FILES = (
         "core",
     ),
     ("src/code_mower/doctor_checks/provider_probe.py", "src/code_mower/doctor_checks/provider_probe.py", "core"),
+    (
+        "src/code_mower/doctor_checks/provider_probe_auth.py",
+        "src/code_mower/doctor_checks/provider_probe_auth.py",
+        "core",
+    ),
+    (
+        "src/code_mower/doctor_checks/provider_probe_evaluation.py",
+        "src/code_mower/doctor_checks/provider_probe_evaluation.py",
+        "core",
+    ),
+    (
+        "src/code_mower/doctor_checks/provider_probe_json.py",
+        "src/code_mower/doctor_checks/provider_probe_json.py",
+        "core",
+    ),
+    (
+        "src/code_mower/doctor_checks/provider_probe_remediation.py",
+        "src/code_mower/doctor_checks/provider_probe_remediation.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/privacy.py", "src/code_mower/doctor_checks/privacy.py", "core"),
     ("src/code_mower/doctor_checks/providers.py", "src/code_mower/doctor_checks/providers.py", "core"),
     ("src/code_mower/doctor_checks/registry.py", "src/code_mower/doctor_checks/registry.py", "core"),

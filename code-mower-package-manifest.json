@@ -369,6 +369,26 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/provider_probe_auth.py",
+      "target": "src/code_mower/doctor_checks/provider_probe_auth.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/provider_probe_evaluation.py",
+      "target": "src/code_mower/doctor_checks/provider_probe_evaluation.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/provider_probe_json.py",
+      "target": "src/code_mower/doctor_checks/provider_probe_json.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/provider_probe_remediation.py",
+      "target": "src/code_mower/doctor_checks/provider_probe_remediation.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/privacy.py",
       "target": "src/code_mower/doctor_checks/privacy.py"
     },
