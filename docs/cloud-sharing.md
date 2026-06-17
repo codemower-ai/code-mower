@@ -255,6 +255,32 @@ reviewed and accepted that metadata tradeoff.
 Use catch-up once or occasionally after onboarding a repository. Use
 `cloud dogfood` for ongoing current-state uploads.
 
+### Safe Catch-Up Checklist
+
+Use this checklist before turning on `--yes`:
+
+1. Run the dry run first:
+
+   ```bash
+   code-mower cloud catch-up --repo-slug owner/repo --limit 50 --json
+   ```
+
+2. Confirm the preview reports `workflow_run` events only. Catch-up is for
+   GitHub Actions metadata, not source code, raw logs, raw diffs, or model
+   transcripts.
+3. Keep `--include-git-ref` off unless your team has decided that branch names
+   and head SHAs are acceptable metadata.
+4. Use a small `--limit` first, then widen if the dashboard value is useful.
+5. Upload only after loading a team token:
+
+   ```bash
+   source ~/.config/code-mower/tokens/your-install-id.env
+   code-mower cloud catch-up --repo-slug owner/repo --limit 50 --yes --json
+   ```
+
+6. After the one-time catch-up, prefer `code-mower cloud dogfood --yes --json`
+   or a low-cost main-branch workflow for ongoing uploads.
+
 ## Historical Reviewer Runs
 
 If you already have local Code Mower audit verdict artifacts, upload them

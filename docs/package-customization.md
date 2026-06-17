@@ -251,6 +251,11 @@ tools/code_mower clear-stale \
 Code Mower ships `templates/workflows/review-clear-stale.yml.j2` as a starter
 workflow for this pattern.
 
+When you enable the Devin hosted merge-authority lane, the provider template
+adds `.github/workflows/devin-clear-stale.yml` to `init --apply` output. Keep
+the workflow installed for private/product repos where stale terminal labels
+could otherwise survive a new commit.
+
 That fallback keeps private-repo labeler workflows from trying to clone the
 standalone repository over unauthenticated HTTPS, but it also means mirrored
 repo-local implementation files are still required. Before removing mirrors,

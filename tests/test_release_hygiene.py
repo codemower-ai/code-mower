@@ -670,6 +670,13 @@ exit 1
         ).read_text(encoding="utf-8")
         self.assertEqual(
             template,
+            (
+                ROOT
+                / "src/code_mower/templates/workflows/review-clear-stale.yml.j2"
+            ).read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            template,
             code_mower_package_content._workflow_template_text(
                 "templates/workflows/review-clear-stale.yml.j2"
             ),
@@ -765,6 +772,55 @@ exit 1
                     encoding="utf-8"
                 ),
             )
+
+            devin_config = {
+                "version": 1,
+                "project": {
+                    "name": "devin-stale-test",
+                    "state_dir": "~/.cache/code-mower",
+                },
+                "repositories": [{"slug": "owner/repo", "default_branch": "main"}],
+                "lanes": {
+                    "devin": {
+                        "type": "audit",
+                        "driver": "hosted_bridge",
+                        "provider": "devin",
+                        "merge_authority": True,
+                        "trigger_policy": "manual",
+                        "labels": {
+                            "needs": "needs-devin-audit",
+                            "done": "devin-audit-done",
+                            "blocked": "devin-audit-blocked",
+                        },
+                        "token_env": ["DEVIN_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"],
+                        "review_hygiene": {
+                            "workflow": ".github/workflows/devin-clear-stale.yml",
+                            "token_env": "GITHUB_TOKEN",
+                        },
+                    }
+                },
+                "profiles": {
+                    "recommended": {
+                        "description": "Devin stale workflow test",
+                        "lanes": ["devin"],
+                    }
+                },
+            }
+            stale_plan = code_mower_init.render_init_plan(
+                devin_config,
+                package_mode=True,
+                package_command="code-mower",
+            )
+            stale_generated = Path(tmp) / ".code-mower.generated-devin-stale"
+            stale_apply = code_mower_init.apply_init_plan(stale_plan, stale_generated)
+            stale_workflow = stale_generated / ".github/workflows/devin-clear-stale.yml"
+            self.assertIn(str(stale_workflow), stale_apply["written_files"])
+            self.assertNotIn(str(stale_workflow), stale_apply["placeholder_files"])
+            stale_text = stale_workflow.read_text(encoding="utf-8")
+            self.assertIn("tools/code_mower clear-stale", stale_text)
+            self.assertIn("--dispatch-workflow", stale_text)
+            self.assertIn("github.event.pull_request.head.sha", stale_text)
+
             result = subprocess.run(
                 [str(output_dir / "tools/code_mower"), "--version"],
                 cwd=output_dir,
@@ -2753,6 +2809,35 @@ def main():
         self.assertIn("first-user-readiness.json", migration_text)
         self.assertIn("First-user readiness:", migration_text)
         self.assertIn("cloud-upload-dry-run-privacy", migration_text)
+        self.assertIn("external_repo_readiness", migration_text)
+        self.assertIn("checks_dry_run", migration_text)
+
+    def test_package_install_rehearsal_render_handles_external_repo_readiness(
+        self,
+    ) -> None:
+        text = code_mower_migration.render_package_install_rehearsal_text(
+            {
+                "status": "pass",
+                "package_spec": "code-mower",
+                "version": "code-mower 0.5.0a78",
+                "work_dir": "/tmp/code-mower-rehearsal",
+                "toy_repo": "/tmp/code-mower-rehearsal/toy-repo",
+                "step_count": 1,
+                "first_user_readiness": {},
+                "first_user_artifacts": {},
+                "repo_path": "/tmp/external-repo",
+                "product_wrapper_rehearsal": None,
+                "product_mirror_removal_plan": None,
+                "external_repo_readiness": {
+                    "status": "pass",
+                    "check_count": 3,
+                },
+            }
+        )
+
+        self.assertIn("Product wrapper rehearsal: not-run", text)
+        self.assertIn("Product mirror-removal status: not-run", text)
+        self.assertIn("External repo readiness: pass (3 native checks detected)", text)
 
     def test_package_install_rehearsal_artifact_contract_is_structured(self) -> None:
         toy_repo = Path("/tmp/code-mower-example-toy-repo")

@@ -693,6 +693,8 @@ def render_init_plan(
                 {
                     "path": stale_path,
                     "source": "shared-stale-label-template",
+                    "copy_from": "templates/workflows/review-clear-stale.yml.j2",
+                    "package_copy_from": "templates/workflows/review-clear-stale.yml.j2",
                 }
             )
     for target, copy_from, package_copy_from, source_name in STARTER_DATA_FILES:

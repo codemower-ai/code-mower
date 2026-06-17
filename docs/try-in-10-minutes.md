@@ -102,6 +102,18 @@ report, and proves cloud upload/dogfood paths stay dry-run. See
 release-gate checklist. The JSON includes `first_user_readiness`, a compact
 scorecard that shows which install, doctor, report, and privacy gates passed.
 
+To rehearse against a real repository that has not installed Code Mower yet,
+add `--repo-path /path/to/repo`. Code Mower will detect the repo-native check
+surface and dry-run it instead of trying product-wrapper parity:
+
+```bash
+code-mower migration package-install-rehearsal \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.78" \
+  --repo-path /path/to/repo \
+  --python "$(command -v python3.12)" \
+  --json
+```
+
 For the manual report path in your pilot repository:
 
 ```bash
