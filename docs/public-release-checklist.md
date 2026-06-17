@@ -9,9 +9,9 @@ not know the original reference repos.
 
 - Public repository exists.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
-- The package has alpha releases and reports its version with
+- The package has alpha/beta releases and reports its version with
   `code-mower --version`.
-- The v0.5 alpha entrypoint is `v0.5.0-alpha.79`, with `code-mower doctor
+- The v0.5 beta entrypoint is `v0.5.0-beta.1`, with `code-mower doctor
   --preflight` as the first-run setup diagnostic. `doctor --v05` remains the
   versioned equivalent for scripts.
 - The README now shows a shortened `doctor --preflight` example so fresh users can
@@ -116,7 +116,7 @@ interpreter.
 ## Recommended Before v1.0
 
 - Publish a short "easy mode" walkthrough using a toy repo.
-- Publish a GitHub Release for the current public alpha tag and mark alpha/beta
+- Publish a GitHub Release for the current public release tag and mark alpha/beta
   tags as prereleases in GitHub.
 - Confirm the release workflow builds source/wheel distributions for every
   public alpha.

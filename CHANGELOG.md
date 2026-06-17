@@ -1,8 +1,25 @@
 # Changelog
 
 All notable public Code Mower OSS changes should be summarized here. The
-project uses alpha tags while the first-user setup path, provider posture, and
-optional cloud sharing loop are still hardening.
+project uses alpha/beta prerelease tags while the first-user setup path,
+provider posture, and optional cloud sharing loop are still hardening.
+
+## v0.5.0-beta.1
+
+This beta is the public package marker after alpha.79 clean-install rehearsal,
+CodeMower.com dogfood/backfill verification, and dashboard data-coverage
+clarity improvements.
+
+### Changed
+
+- Promoted the documented public install target from `v0.5.0-alpha.79` to
+  `v0.5.0-beta.1`.
+- Updated release-readiness output to report `release_tag` while retaining the
+  legacy `alpha_tag` field for compatibility.
+- Kept public docs, first-user rehearsal commands, package-index rehearsal
+  commands, and package manifests aligned on `0.5.0b1`.
+- Verified a non-editable local package-install rehearsal with a passing
+  first-user readiness scorecard before the beta cut.
 
 ## v0.5.0-alpha.63
 
