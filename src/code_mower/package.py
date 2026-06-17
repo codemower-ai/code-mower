@@ -53,7 +53,7 @@ else:  # pragma: no cover - exercised after package extraction.
 if __package__ in {None, "", "tools"}:  # pragma: no cover - legacy product-local layout.
     try:
         from tools.code_mower_package_content import (
-            CLI_COMMANDS,
+            cli_commands,
             _config_template_text,
             _init_py_text,
             _pyproject_text,
@@ -61,7 +61,7 @@ if __package__ in {None, "", "tools"}:  # pragma: no cover - legacy product-loca
         )
     except ModuleNotFoundError:
         from code_mower.package_content import (
-            CLI_COMMANDS,
+            cli_commands,
             _config_template_text,
             _init_py_text,
             _pyproject_text,
@@ -69,7 +69,7 @@ if __package__ in {None, "", "tools"}:  # pragma: no cover - legacy product-loca
         )
 else:  # pragma: no cover - exercised after package extraction.
     from .package_content import (
-        CLI_COMMANDS,
+        cli_commands,
         _config_template_text,
         _init_py_text,
         _pyproject_text,
@@ -278,6 +278,8 @@ def render_package_plan(
         {"kind": "provider-template", "target": row["template_path"]}
         for row in template_rows
     )
+    package_version = _running_code_mower_version()
+    command_inventory = cli_commands(package_version)
     data = {
         "mode": "dry-run",
         "package": {
@@ -285,13 +287,14 @@ def render_package_plan(
             "module": "code_mower",
             "console_script": f"{package_name}=code_mower.cli:main",
             "source_layout": "src/code_mower",
+            "version": package_version,
         },
         "package_files": package_files,
         "deferred_package_files": deferred_package_files,
         "template_files": template_files,
         "provider_templates": template_rows,
         "profiles": profiles,
-        "cli_commands": list(CLI_COMMANDS),
+        "cli_commands": list(command_inventory),
         "install_docs": [
             "README.md",
             "docs/getting-started.md",
@@ -339,7 +342,7 @@ def render_package_plan(
     )
 
     lines.extend(["", "CLI commands to document:"])
-    lines.extend(f"- {command}" for command in CLI_COMMANDS)
+    lines.extend(f"- {command}" for command in command_inventory)
 
     return RenderedPlan(text="\n".join(lines) + "\n", data=data)
 

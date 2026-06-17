@@ -32,11 +32,13 @@ from code_mower import migration as code_mower_migration
 from code_mower import migration_install as code_mower_migration_install
 from code_mower import next_steps
 from code_mower import package as code_mower_package
+from code_mower import package_content as code_mower_package_content
 from code_mower import package_paths
 from code_mower import release_readiness
 from code_mower import secrets as code_mower_secrets
 from code_mower import config as code_mower_config
 from code_mower import provider_runners
+from code_mower import versioning as code_mower_versioning
 from code_mower.calibration import arms as calibration_arms
 from code_mower.calibration import policy as calibration_policy
 from scripts import privacy_scan
@@ -1059,10 +1061,95 @@ printf '%s\\n' "${lane}"
             "src/code_mower/package_manifest.py": "tools/code_mower_package_manifest.py",
             "src/code_mower/package_rendering.py": "tools/code_mower_package_rendering.py",
             "src/code_mower/package_static.py": "tools/code_mower_package_static.py",
+            "src/code_mower/versioning.py": "tools/code_mower_versioning.py",
         }
         for target, source in expected_sources.items():
             with self.subTest(target=target):
                 self.assertEqual(packaged_sources_by_target[target], source)
+
+        self.assertEqual(
+            (ROOT / "src/code_mower/versioning.py").read_text(encoding="utf-8"),
+            (ROOT / "tools/code_mower_versioning.py").read_text(encoding="utf-8"),
+        )
+
+    def test_package_content_legacy_tools_import_falls_back_without_tools_shim(self) -> None:
+        original_path = list(sys.path)
+        saved_modules = {
+            key: sys.modules.get(key)
+            for key in ("tools", "tools.code_mower_package_content")
+            if key in sys.modules
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tools_dir = tmp_path / "tools"
+            tools_dir.mkdir()
+            tools_dir.joinpath("__init__.py").write_text("", encoding="utf-8")
+            tools_dir.joinpath("code_mower_package_content.py").write_text(
+                (ROOT / "src/code_mower/package_content.py").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            try:
+                sys.path.insert(0, str(tmp_path))
+                sys.modules.pop("tools", None)
+                sys.modules.pop("tools.code_mower_package_content", None)
+                legacy_module = __import__(
+                    "tools.code_mower_package_content",
+                    fromlist=["current_alpha_package_spec"],
+                )
+                self.assertEqual(
+                    legacy_module.current_alpha_package_spec("0.5.0a63"),
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.63",
+                )
+            finally:
+                sys.path[:] = original_path
+                sys.modules.pop("tools", None)
+                sys.modules.pop("tools.code_mower_package_content", None)
+                for key, module in saved_modules.items():
+                    if module is not None:
+                        sys.modules[key] = module
+
+    def test_package_content_legacy_tools_import_is_self_contained_with_tools_shim(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tools_dir = tmp_path / "tools"
+            tools_dir.mkdir()
+            tools_dir.joinpath("__init__.py").write_text("", encoding="utf-8")
+            for filename in (
+                "code_mower_package_content.py",
+                "code_mower_versioning.py",
+            ):
+                tools_dir.joinpath(filename).write_text(
+                    (ROOT / "tools" / filename).read_text(encoding="utf-8")
+                    if (ROOT / "tools" / filename).is_file()
+                    else (ROOT / "src/code_mower/package_content.py").read_text(
+                        encoding="utf-8",
+                    ),
+                    encoding="utf-8",
+                )
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from tools import code_mower_package_content as c; "
+                        "print(c.current_alpha_package_spec('0.5.0a63'))"
+                    ),
+                ],
+                cwd=tmp_path,
+                env={"PYTHONPATH": str(tmp_path), "PATH": os.environ.get("PATH", "")},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            completed.stdout.strip(),
+            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.63",
+        )
 
     def test_package_rendering_legacy_fallback_stays_valid_yaml_subset(self) -> None:
         payload = {
@@ -3073,7 +3160,15 @@ def main():
             "v0.5.0-alpha.63",
         )
         self.assertEqual(
+            code_mower_versioning.release_tag_for_version("0.5.0a63"),
+            "v0.5.0-alpha.63",
+        )
+        self.assertEqual(
             release_readiness._release_tag_for_version("0.5.0b2"),
+            "v0.5.0-beta.2",
+        )
+        self.assertEqual(
+            code_mower_versioning.release_tag_for_version("0.5.0b2"),
             "v0.5.0-beta.2",
         )
         self.assertEqual(
@@ -3081,8 +3176,54 @@ def main():
             "v1.0.0-rc.1",
         )
         self.assertEqual(
+            code_mower_versioning.release_tag_for_version("1.0.0rc1"),
+            "v1.0.0-rc.1",
+        )
+        self.assertEqual(
             release_readiness._release_tag_for_version("1.0.0"),
             "v1.0.0",
+        )
+        self.assertEqual(
+            code_mower_versioning.release_tag_for_version("1.0.0"),
+            "v1.0.0",
+        )
+
+    def test_package_command_inventory_derives_current_alpha_spec(self) -> None:
+        package_content_text = (ROOT / "src/code_mower/package_content.py").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            code_mower_package_content.current_alpha_package_spec(__version__),
+            next_steps.current_alpha_package_spec(),
+        )
+        self.assertEqual(
+            code_mower_package_content.current_alpha_package_spec("0.5.0b2"),
+            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.2",
+        )
+        self.assertNotIn(next_steps.current_public_tag(), package_content_text)
+        self.assertNotIn("v0.0.0", package_content_text)
+        self.assertIn(
+            (
+                "code-mower migration package-install-rehearsal "
+                f"--package-spec {next_steps.current_alpha_package_spec()} "
+                "--repo-path /path/to/product-repo --json"
+            ),
+            code_mower_package_content.cli_commands(__version__),
+        )
+
+        plan = code_mower_package.render_package_plan(
+            code_mower_package.load_config(
+                ROOT / "src/code_mower/templates/code-mower.example.yml",
+            ),
+            code_mower_package.load_provider_templates(
+                ROOT / "src/code_mower/templates/providers.yml",
+            ),
+        )
+        self.assertEqual(plan.data["package"]["version"], __version__)
+        self.assertIn(
+            next_steps.current_alpha_package_spec(),
+            "\n".join(plan.data["cli_commands"]),
         )
 
     def test_release_readiness_workflow_parsing_is_job_order_independent(self) -> None:

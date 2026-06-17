@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from . import package as package_module
+from . import versioning as code_mower_versioning
 
 
 RELEASE_DOC_PATHS = (
@@ -37,11 +38,6 @@ PUBLIC_HYGIENE_DOC_PATHS = (
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/dependabot.yml",
 )
-STAGE_TAG_NAMES = {
-    "a": "alpha",
-    "b": "beta",
-    "rc": "rc",
-}
 PACKAGE_INDEX_SETUP_URLS = {
     "github_environments": (
         "https://github.com/codemower-ai/code-mower/settings/environments"
@@ -130,18 +126,7 @@ def _materialized_package_versions(repo_path: Path) -> dict[str, Any]:
 
 
 def _release_tag_for_version(version: str) -> str:
-    match = re.fullmatch(
-        r"(?P<base>\d+\.\d+\.\d+)(?:(?P<stage>a|b|rc)(?P<num>\d+))?",
-        version,
-    )
-    if not match:
-        return f"v{version}"
-    base = match.group("base")
-    stage = match.group("stage")
-    number = match.group("num")
-    if not stage or not number:
-        return f"v{base}"
-    return f"v{base}-{STAGE_TAG_NAMES[stage]}.{number}"
+    return code_mower_versioning.release_tag_for_version(version)
 
 
 def _release_docs(repo_path: Path) -> dict[str, str]:
