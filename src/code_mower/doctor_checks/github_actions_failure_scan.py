@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from .common import (
-    ACTIONS_INSPECTABLE_FAILURE_CONCLUSIONS,
     MAX_ACTIONS_FAILED_JOBS_TO_INSPECT,
     MAX_ACTIONS_FAILED_RUNS_TO_INSPECT,
 )
@@ -16,6 +15,12 @@ from .github_actions_failure_annotations import (
 from .github_actions_failure_models import (
     ActionsBillingBlock,
     ActionsFailureInspection,
+)
+from .github_actions_failure_selection import (
+    _actions_job_context,
+    _actions_run_context,
+    _incomplete_inspection_detail,
+    _is_inspectable_actions_failure,
 )
 from .github_api import _github_api_json, _github_api_list
 
@@ -50,22 +55,20 @@ def inspect_recent_actions_failures(
     billing_blocks: list[ActionsBillingBlock] = []
     incomplete_inspections: list[dict[str, Any]] = []
     for run in raw_runs:
-        if (
-            not isinstance(run, Mapping)
-            or run.get("conclusion") not in ACTIONS_INSPECTABLE_FAILURE_CONCLUSIONS
-        ):
+        if not _is_inspectable_actions_failure(run):
             continue
         if inspected_runs >= MAX_ACTIONS_FAILED_RUNS_TO_INSPECT:
             _append_incomplete(
                 incomplete_inspections,
-                {
-                    "stage": "runs",
-                    "reason": "inspection_limit_reached",
-                    "limit": MAX_ACTIONS_FAILED_RUNS_TO_INSPECT,
-                },
+                _incomplete_inspection_detail(
+                    stage="runs",
+                    reason="inspection_limit_reached",
+                    limit=MAX_ACTIONS_FAILED_RUNS_TO_INSPECT,
+                ),
             )
             break
-        run_id = run.get("id")
+        run_context = _actions_run_context(run)
+        run_id = run_context["run_id"]
         if run_id is None:
             continue
         inspected_runs += 1
@@ -74,73 +77,71 @@ def inspect_recent_actions_failures(
             f"repos/{slug}/actions/runs/{run_id}/jobs?per_page=20",
             http_timeout=http_timeout,
         )
-        workflow = str(run.get("name") or "")
+        workflow = run_context["workflow"]
         if jobs_payload is None:
             _append_incomplete(
                 incomplete_inspections,
-                {
-                    "run_id": run_id,
-                    "workflow": workflow,
-                    "stage": "jobs",
-                },
+                _incomplete_inspection_detail(
+                    run_id=run_id,
+                    workflow=workflow,
+                    stage="jobs",
+                ),
             )
             continue
         raw_jobs = jobs_payload.get("jobs")
         if not isinstance(raw_jobs, list):
             _append_incomplete(
                 incomplete_inspections,
-                {
-                    "run_id": run_id,
-                    "workflow": workflow,
-                    "stage": "jobs",
-                    "reason": "missing_jobs",
-                },
+                _incomplete_inspection_detail(
+                    run_id=run_id,
+                    workflow=workflow,
+                    stage="jobs",
+                    reason="missing_jobs",
+                ),
             )
             continue
         if not raw_jobs:
             _append_incomplete(
                 incomplete_inspections,
-                {
-                    "run_id": run_id,
-                    "workflow": workflow,
-                    "stage": "jobs",
-                    "reason": "no_jobs",
-                },
+                _incomplete_inspection_detail(
+                    run_id=run_id,
+                    workflow=workflow,
+                    stage="jobs",
+                    reason="no_jobs",
+                ),
             )
             continue
         for job in raw_jobs:
-            if (
-                not isinstance(job, Mapping)
-                or job.get("conclusion") not in ACTIONS_INSPECTABLE_FAILURE_CONCLUSIONS
-            ):
+            if not _is_inspectable_actions_failure(job):
                 continue
             if inspected_jobs >= MAX_ACTIONS_FAILED_JOBS_TO_INSPECT:
                 _append_incomplete(
                     incomplete_inspections,
-                    {
-                        "run_id": run_id,
-                        "workflow": workflow,
-                        "stage": "annotations",
-                        "reason": "inspection_limit_reached",
-                        "limit": MAX_ACTIONS_FAILED_JOBS_TO_INSPECT,
-                    },
+                    _incomplete_inspection_detail(
+                        run_id=run_id,
+                        workflow=workflow,
+                        stage="annotations",
+                        reason="inspection_limit_reached",
+                        limit=MAX_ACTIONS_FAILED_JOBS_TO_INSPECT,
+                    ),
                 )
                 break
-            job_id = job.get("id")
+            job_context = _actions_job_context(job)
+            job_id = job_context["job_id"]
             if job_id is None:
                 continue
             check_run_id = _check_run_id_from_actions_job(job)
-            job_name = str(job.get("name") or "")
+            job_name = job_context["job"]
             if check_run_id is None:
                 _append_incomplete(
                     incomplete_inspections,
-                    {
-                        "run_id": run_id,
-                        "workflow": workflow,
-                        "job": job_name,
-                        "stage": "annotations",
-                        "reason": "missing_check_run_id",
-                    },
+                    _incomplete_inspection_detail(
+                        run_id=run_id,
+                        workflow=workflow,
+                        job=job_name,
+                        stage="annotations",
+                        reason="missing_check_run_id",
+                    ),
                 )
                 continue
             inspected_jobs += 1
@@ -152,13 +153,13 @@ def inspect_recent_actions_failures(
             if annotations is None:
                 _append_incomplete(
                     incomplete_inspections,
-                    {
-                        "run_id": run_id,
-                        "workflow": workflow,
-                        "job_id": job_id,
-                        "job": job_name,
-                        "stage": "annotations",
-                    },
+                    _incomplete_inspection_detail(
+                        run_id=run_id,
+                        workflow=workflow,
+                        job_id=job_id,
+                        job=job_name,
+                        stage="annotations",
+                    ),
                 )
                 continue
             for annotation in annotations:
@@ -170,7 +171,7 @@ def inspect_recent_actions_failures(
                         ActionsBillingBlock(
                             run_id=run_id,
                             workflow=workflow,
-                            head_sha=str(run.get("head_sha") or ""),
+                            head_sha=run_context["head_sha"],
                             job_id=job_id,
                             check_run_id=str(check_run_id),
                             job=job_name,

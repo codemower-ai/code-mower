@@ -85,6 +85,7 @@ class DoctorBoundaryTests(unittest.TestCase):
             "code_mower.doctor_checks.github_actions_failure_annotations",
             "code_mower.doctor_checks.github_actions_failure_models",
             "code_mower.doctor_checks.github_actions_failure_scan",
+            "code_mower.doctor_checks.github_actions_failure_selection",
             "code_mower.doctor_checks.github_api",
             "code_mower.doctor_checks.github_branch",
             "code_mower.doctor_checks.github_config",
