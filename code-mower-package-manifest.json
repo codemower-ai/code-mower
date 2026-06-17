@@ -249,6 +249,16 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions_cost.py",
+      "target": "src/code_mower/doctor_checks/github_actions_cost.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions_failures.py",
+      "target": "src/code_mower/doctor_checks/github_actions_failures.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/github_api.py",
       "target": "src/code_mower/doctor_checks/github_api.py"
     },
@@ -256,6 +266,11 @@
       "kind": "core",
       "source": "src/code_mower/doctor_checks/github.py",
       "target": "src/code_mower/doctor_checks/github.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/groups.py",
+      "target": "src/code_mower/doctor_checks/groups.py"
     },
     {
       "kind": "core",
