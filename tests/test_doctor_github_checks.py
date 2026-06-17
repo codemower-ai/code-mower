@@ -2,6 +2,13 @@ import unittest
 from unittest import mock
 
 from code_mower.doctor_checks.github_actions_permissions import check_actions_permissions
+from code_mower.doctor_checks.github_actions_failure_scan import (
+    _check_run_id_from_actions_job,
+    inspect_recent_actions_failures,
+)
+from code_mower.doctor_checks.github_actions_failures import (
+    _check_recent_actions_billing_blocks,
+)
 from code_mower.doctor_checks.github_branch import check_branch_protection
 from code_mower.doctor_checks.github_config import (
     configured_repositories,
@@ -67,6 +74,99 @@ class GitHubDoctorCheckTests(unittest.TestCase):
 
         self.assertEqual(check.status, "warn")
         self.assertEqual(check.detail["enabled"], False)
+
+    def test_actions_failure_scan_detects_billing_block_annotation(self) -> None:
+        with (
+            mock.patch(
+                "code_mower.doctor_checks.github_actions_failure_scan._github_api_json",
+                side_effect=[
+                    (
+                        {
+                            "workflow_runs": [
+                                {
+                                    "id": 100,
+                                    "name": "Code Mower CI",
+                                    "conclusion": "failure",
+                                    "head_sha": "abc123",
+                                }
+                            ]
+                        },
+                        {},
+                    ),
+                    (
+                        {
+                            "jobs": [
+                                {
+                                    "id": 200,
+                                    "name": "package",
+                                    "conclusion": "failure",
+                                    "check_run_url": "https://api.github.com/repos/o/r/check-runs/300",
+                                }
+                            ]
+                        },
+                        {},
+                    ),
+                ],
+            ),
+            mock.patch(
+                "code_mower.doctor_checks.github_actions_failure_scan._github_api_list",
+                return_value=(
+                    [{"message": "Recent account payments have failed."}],
+                    {},
+                ),
+            ),
+        ):
+            inspection = inspect_recent_actions_failures(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                http_timeout=1,
+            )
+
+        self.assertTrue(inspection.has_billing_blocks)
+        self.assertEqual(inspection.inspected_failed_runs, 1)
+        self.assertEqual(inspection.inspected_failed_jobs, 1)
+        self.assertEqual(inspection.billing_blocks[0].check_run_id, "300")
+
+    def test_actions_failure_doctor_warns_when_annotations_cannot_be_inspected(
+        self,
+    ) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.github_actions_failures.inspect_recent_actions_failures",
+            return_value=mock.Mock(
+                unavailable_detail=None,
+                missing_workflow_runs=False,
+                has_billing_blocks=False,
+                incomplete_inspections=(
+                    {
+                        "run_id": 100,
+                        "workflow": "Code Mower CI",
+                        "stage": "annotations",
+                        "reason": "missing_check_run_id",
+                    },
+                ),
+                incomplete_inspection_count=1,
+                inspected_failed_runs=1,
+                inspected_failed_jobs=0,
+            ),
+        ):
+            check = _check_recent_actions_billing_blocks(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                http_timeout=1,
+            )
+
+        self.assertEqual(check.status, "warn")
+        self.assertIn("could not fully inspect", check.message)
+        self.assertEqual(check.detail["incomplete_inspection_count"], 1)
+
+    def test_actions_job_check_run_id_parser(self) -> None:
+        self.assertEqual(
+            _check_run_id_from_actions_job(
+                {"check_run_url": "https://api.github.com/repos/o/r/check-runs/12345"}
+            ),
+            "12345",
+        )
+        self.assertIsNone(_check_run_id_from_actions_job({"check_run_url": ""}))
 
     def test_branch_protection_counts_required_contexts(self) -> None:
         with mock.patch(
