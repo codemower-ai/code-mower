@@ -6,6 +6,7 @@ Gemini/Antigravity, Hermes, and local reviewer lanes.
 """
 
 from .comments import MAX_GITHUB_COMMENT_CHARS, limit_comment_body
+from .git import fetch_local_checkout_diff, local_head_sha, run_git
 from .github_auth import (
     pop_github_token_env,
     resolve_github_token_from_env_or_gh,
@@ -22,7 +23,9 @@ from .verdict_artifacts import (
 
 __all__ = [
     "fetch_pull_request",
+    "fetch_local_checkout_diff",
     "load_audit_verdict_artifact",
+    "local_head_sha",
     "limit_comment_body",
     "MAX_GITHUB_COMMENT_CHARS",
     "clip_text",
@@ -34,5 +37,6 @@ __all__ = [
     "require_exact_keys",
     "resolve_github_token_from_env_or_gh",
     "resolve_github_token_from_stdin_or_env",
+    "run_git",
     "write_audit_verdict_artifact",
 ]
