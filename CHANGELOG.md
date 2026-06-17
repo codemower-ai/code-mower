@@ -4,6 +4,21 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.48
+
+This alpha is the public package marker after the provider text/schema helper
+extraction.
+
+### Changed
+
+- Shared provider text clipping, one-line sanitizing, and strict key-validation
+  helpers now live in `code_mower.provider_runners.text_schema`.
+- Codex and Claude audit wrappers both import those helpers from the
+  provider-runner layer, removing another Claude dependency on Codex internals.
+- Added focused unit coverage for the provider text/schema helper contract.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.48`.
+
 ## v0.5.0-alpha.47
 
 This alpha is the public package marker after the first provider-runner seam
