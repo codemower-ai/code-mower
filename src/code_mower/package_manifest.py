@@ -48,6 +48,11 @@ PACKAGE_FILES = (
     ("src/code_mower/cloud_client/errors.py", "src/code_mower/cloud_client/errors.py", "core"),
     ("src/code_mower/cloud_client/events.py", "src/code_mower/cloud_client/events.py", "core"),
     ("src/code_mower/cloud_client/export.py", "src/code_mower/cloud_client/export.py", "core"),
+    (
+        "src/code_mower/cloud_client/git_metadata.py",
+        "src/code_mower/cloud_client/git_metadata.py",
+        "core",
+    ),
     ("src/code_mower/cloud_client/operations.py", "src/code_mower/cloud_client/operations.py", "core"),
     ("src/code_mower/cloud_client/setup.py", "src/code_mower/cloud_client/setup.py", "core"),
     ("src/code_mower/cloud_client/upload.py", "src/code_mower/cloud_client/upload.py", "core"),

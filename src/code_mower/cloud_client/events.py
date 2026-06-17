@@ -12,6 +12,7 @@ from typing import Any
 from .bundle import MAX_EVENT_COUNT, SAFE_EVENT_TYPES, SAFE_REPORT_KINDS, validate_metadata_payload
 from .dogfood import DogfoodPlan
 from .errors import CloudBundleError
+from .git_metadata import run_git
 
 
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
@@ -49,45 +50,6 @@ def safe_event_type(value: str) -> str:
 
 def utc_now() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
-
-
-def run_git(repo_path: Path, args: list[str]) -> str:
-    try:
-        completed = subprocess.run(
-            ["git", *args],
-            cwd=repo_path,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
-        return ""
-    if completed.returncode != 0:
-        return ""
-    return completed.stdout.strip()
-
-
-def repo_slug_from_remote(remote_url: str) -> str:
-    remote = remote_url.strip()
-    if not remote:
-        return ""
-    if remote.startswith("git@github.com:"):
-        remote = remote.removeprefix("git@github.com:")
-    elif remote.startswith("https://github.com/"):
-        remote = remote.removeprefix("https://github.com/")
-    elif remote.startswith("http://github.com/"):
-        remote = remote.removeprefix("http://github.com/")
-    else:
-        return ""
-    remote = remote.removesuffix(".git").strip("/")
-    parts = remote.split("/")
-    if len(parts) >= 2 and parts[0] and parts[1]:
-        return f"{parts[0]}/{parts[1]}"
-    return ""
-
-
-def detect_repo_slug(repo_path: Path) -> str:
-    return repo_slug_from_remote(run_git(repo_path, ["config", "--get", "remote.origin.url"]))
 
 
 def build_dogfood_event(
