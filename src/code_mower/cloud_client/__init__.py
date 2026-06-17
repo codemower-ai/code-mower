@@ -61,6 +61,10 @@ from .git_metadata import (
     repo_slug_from_remote,
     run_git,
 )
+from .manifest import (
+    load_bundle_manifest,
+    report_path_from_manifest,
+)
 from .operations import (
     catch_up_upload,
     dogfood_upload,
@@ -88,7 +92,6 @@ from .setup import (
 from .upload import (
     UPLOAD_SCHEMA,
     build_upload_payload,
-    load_bundle_manifest,
     post_upload_payload,
 )
 
@@ -146,6 +149,7 @@ __all__ = [
     "repo_slug_from_remote",
     "repo_sync_output_name",
     "repo_sync_upload",
+    "report_path_from_manifest",
     "resolve_setup_token",
     "reviewer_runs_upload",
     "run_cloud_doctor",

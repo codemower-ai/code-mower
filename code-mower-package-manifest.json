@@ -189,6 +189,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/cloud_client/manifest.py",
+      "target": "src/code_mower/cloud_client/manifest.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/cloud_client/operations.py",
       "target": "src/code_mower/cloud_client/operations.py"
     },
