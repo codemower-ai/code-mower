@@ -274,6 +274,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/provider_probe.py",
+      "target": "src/code_mower/doctor_checks/provider_probe.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/providers.py",
       "target": "src/code_mower/doctor_checks/providers.py"
     },

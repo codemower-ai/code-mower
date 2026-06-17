@@ -36,11 +36,10 @@ from .presets import (
 from .providers import (
     check_lane_runtime,
     effective_lane,
-    evaluate_json_probe,
-    local_cli_probe_remediation,
     provider_template_coverage,
     selected_lanes,
 )
+from .provider_probe import evaluate_json_probe, local_cli_probe_remediation
 from .registry import DEFAULT_CHECK_GROUPS, DoctorCheckGroup, default_check_group_ids
 from .runtime import (
     auth_probe_output_detail,
