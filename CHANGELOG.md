@@ -4,6 +4,23 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.53
+
+This alpha is the public package marker after extracting shared provider git
+helpers.
+
+### Changed
+
+- Shared provider-runner git helpers now live in
+  `code_mower.provider_runners.git`.
+- Gemini CLI and CodeRabbit CLI audit wrappers use the shared helper for local
+  git command execution and HEAD lookup instead of keeping duplicate
+  implementations.
+- Package manifests now include the shared provider git helper.
+- Added focused unit coverage for provider-runner git helper behavior.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.53`.
+
 ## v0.5.0-alpha.52
 
 This alpha is the public package marker after extracting the doctor privacy
