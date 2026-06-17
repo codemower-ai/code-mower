@@ -73,6 +73,38 @@ def fetch_pull_request_diff(repo: str, pr_number: int, *, token: str) -> str:
     )
 
 
+def fetch_pull_request_files(
+    repo: str,
+    pr_number: int,
+    *,
+    token: str,
+    max_pages: int = 5,
+    per_page: int = 100,
+) -> list[dict[str, Any]]:
+    """Return changed-file entries for a pull request.
+
+    GitHub caps pull file pages at 100 entries. Provider runners usually do
+    not benefit from reviewing enormous PRs in full, so the default mirrors the
+    legacy local-LLM cap of 500 files while keeping the paging behavior shared.
+    """
+
+    all_files: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        chunk = _gh_request(
+            "GET",
+            f"/repos/{repo}/pulls/{pr_number}/files?per_page={per_page}&page={page}",
+            token=token,
+        )
+        if not chunk:
+            break
+        if not isinstance(chunk, list):
+            raise ValueError("GitHub pull request files response was not a list")
+        all_files.extend(chunk)
+        if len(chunk) < per_page:
+            break
+    return all_files
+
+
 def post_pr_comment(
     repo: str,
     pr_number: int,

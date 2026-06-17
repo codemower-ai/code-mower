@@ -70,17 +70,33 @@ if __package__ in {None, ""}:
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower import local_llm_profiles
         from code_mower import prompts as code_mower_prompts
-        from code_mower.provider_runners import resolve_github_token_from_env_or_gh
+        from code_mower.provider_runners import (
+            fetch_pull_request as _fetch_pull_request,
+            fetch_pull_request_files as _fetch_pull_request_files,
+            resolve_github_token_from_env_or_gh,
+        )
     else:
         from tools import code_mower_prompts, local_llm_profiles
-        from tools.provider_runners import resolve_github_token_from_env_or_gh
+        from tools.provider_runners import (
+            fetch_pull_request as _fetch_pull_request,
+            fetch_pull_request_files as _fetch_pull_request_files,
+            resolve_github_token_from_env_or_gh,
+        )
 elif __package__ == "tools":
     from tools import code_mower_prompts, local_llm_profiles
-    from tools.provider_runners import resolve_github_token_from_env_or_gh
+    from tools.provider_runners import (
+        fetch_pull_request as _fetch_pull_request,
+        fetch_pull_request_files as _fetch_pull_request_files,
+        resolve_github_token_from_env_or_gh,
+    )
 else:  # pragma: no cover - exercised after package extraction.
     from . import local_llm_profiles
     from . import prompts as code_mower_prompts
-    from .provider_runners import resolve_github_token_from_env_or_gh
+    from .provider_runners import (
+        fetch_pull_request as _fetch_pull_request,
+        fetch_pull_request_files as _fetch_pull_request_files,
+        resolve_github_token_from_env_or_gh,
+    )
 
 
 # ----- Configuration / defaults -----
@@ -200,25 +216,22 @@ def _gh_request(
 
 
 def fetch_pull_request(repo: str, pr_number: int, *, token: str) -> Dict[str, Any]:
-    return _gh_request("GET", f"/repos/{repo}/pulls/{pr_number}", token=token)
+    payload = _fetch_pull_request(repo, pr_number, token=token)
+    if not isinstance(payload, dict):
+        raise ValueError("GitHub pull request response was not an object")
+    return payload
 
 
 def fetch_pr_files(repo: str, pr_number: int, *, token: str) -> List[Dict[str, Any]]:
-    """Return list of per-file diff entries (status, filename, patch, etc.).
-    GitHub paginates at 100; we collect up to 5 pages = 500 files."""
-    all_files: List[Dict[str, Any]] = []
-    for page in range(1, 6):
-        chunk = _gh_request(
-            "GET",
-            f"/repos/{repo}/pulls/{pr_number}/files?per_page=100&page={page}",
-            token=token,
-        )
-        if not chunk:
-            break
-        all_files.extend(chunk)
-        if len(chunk) < 100:
-            break
-    return all_files
+    """Return per-file diff entries (status, filename, patch, etc.)."""
+
+    return _fetch_pull_request_files(
+        repo,
+        pr_number,
+        token=token,
+        max_pages=MAX_FETCHED_PR_FILES // 100,
+        per_page=100,
+    )
 
 
 def fetch_file_content(repo: str, path: str, ref: str, *, token: str) -> Optional[bytes]:
