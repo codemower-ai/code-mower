@@ -434,6 +434,11 @@
     },
     {
       "kind": "reviewer",
+      "source": "src/code_mower/provider_runners/text_schema.py",
+      "target": "src/code_mower/provider_runners/text_schema.py"
+    },
+    {
+      "kind": "reviewer",
       "source": "src/code_mower/provider_runners/verdict_artifacts.py",
       "target": "src/code_mower/provider_runners/verdict_artifacts.py"
     },

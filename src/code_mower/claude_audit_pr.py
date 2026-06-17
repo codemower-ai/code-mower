@@ -29,17 +29,17 @@ if __package__ in {None, "", "tools"}:
         from tools import code_mower_prompts
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.provider_runners import (
+            clip_text as _clip_text,
             fetch_pull_request,
+            one_line as _one_line,
             post_pr_comment,
             repost_audit_verdict_artifact,
+            require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
             write_audit_verdict_artifact,
         )
         from tools.codex_audit_pr import (
             _parse_repo_paths,
-            _require_exact_keys,
-            _one_line,
-            _clip_text,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
         try:
@@ -48,33 +48,33 @@ if __package__ in {None, "", "tools"}:
             import prompts as code_mower_prompts  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from provider_runners import (  # type: ignore
+            clip_text as _clip_text,
             fetch_pull_request,
+            one_line as _one_line,
             post_pr_comment,
             repost_audit_verdict_artifact,
+            require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
             write_audit_verdict_artifact,
         )
         from codex_audit_pr import (  # type: ignore
             _parse_repo_paths,
-            _require_exact_keys,
-            _one_line,
-            _clip_text,
         )
 else:  # pragma: no cover - exercised after package extraction.
     from . import prompts as code_mower_prompts
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .provider_runners import (
+        clip_text as _clip_text,
         fetch_pull_request,
+        one_line as _one_line,
         post_pr_comment,
         repost_audit_verdict_artifact,
+        require_exact_keys as _require_exact_keys,
         resolve_github_token_from_stdin_or_env,
         write_audit_verdict_artifact,
     )
     from .codex_audit_pr import (
         _parse_repo_paths,
-        _require_exact_keys,
-        _one_line,
-        _clip_text,
     )
 
 
