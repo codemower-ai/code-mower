@@ -76,6 +76,11 @@ PACKAGE_FILES = (
         "core",
     ),
     (
+        "src/code_mower/doctor_checks/github_actions_cost_summary.py",
+        "src/code_mower/doctor_checks/github_actions_cost_summary.py",
+        "core",
+    ),
+    (
         "src/code_mower/doctor_checks/github_actions_failures.py",
         "src/code_mower/doctor_checks/github_actions_failures.py",
         "core",
