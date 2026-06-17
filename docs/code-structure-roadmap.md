@@ -31,7 +31,9 @@ acts as a materializer adapter around package manifest, content, static,
 rendering, and path helper modules.
 `migration.py` has also dropped off this list: package-install rehearsal and
 first-user readiness scoring now live under `code_mower.migration_rehearsal`,
-leaving `migration.py` as a smaller migration CLI/compatibility adapter.
+and mirror-removal planning plus runner aliases now live under
+`code_mower.migration_mirror`. `migration.py` remains a smaller migration
+CLI/compatibility adapter.
 
 These are not urgent correctness problems. They are readability and evolution
 risks: new contributors cannot quickly tell which functions are stable API,
@@ -116,8 +118,11 @@ tested internal seams:
   remains the materializer adapter for package plans and output writes.
 - `code_mower.migration_rehearsal` now owns package-install rehearsal,
   first-user readiness scorecards, and clean-venv/toy-repo rehearsal helpers.
+- `code_mower.migration_mirror` now owns mirror-removal planning, workflow
+  dependency detection, local fallback detection, and runner-alias reporting.
   `migration.py` remains the compatibility adapter for migration subcommands,
-  wrapper comparisons, mirror-removal planning, and runner-alias reporting.
+  wrapper comparisons, release-readiness routing, mirror planning, and
+  package-install orchestration.
 - `builder-experiment` and authoring-intelligence docs establish the future
   `run_role`/`purpose` event shape without requiring a full orchestrator runtime
   before v1.0.
@@ -183,8 +188,10 @@ existing commands.
 6. **Package/migration boundary**
    - Completed: package-install rehearsal and first-user readiness scoring now
      live under `code_mower.migration_rehearsal`.
-   - Next: split mirror-removal planning and runner-alias reporting when that
-     would make migration commands easier for new contributors to reason about.
+   - Completed: mirror-removal planning and runner-alias reporting now live
+     under `code_mower.migration_mirror`.
+   - Next: keep product-repo wrapper support as command plumbing unless a
+     concrete external API consumer needs import-level stability.
    - Product-repo wrapper support should read like a compatibility layer, not
      the center of the project.
 
