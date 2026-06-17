@@ -5,6 +5,7 @@ This package holds common process/auth helpers used by Codex, Claude,
 Gemini/Antigravity, Hermes, and local reviewer lanes.
 """
 
+from .comments import MAX_GITHUB_COMMENT_CHARS, limit_comment_body
 from .github_auth import (
     pop_github_token_env,
     resolve_github_token_from_env_or_gh,
@@ -22,6 +23,8 @@ from .verdict_artifacts import (
 __all__ = [
     "fetch_pull_request",
     "load_audit_verdict_artifact",
+    "limit_comment_body",
+    "MAX_GITHUB_COMMENT_CHARS",
     "clip_text",
     "one_line",
     "parse_repo_paths",

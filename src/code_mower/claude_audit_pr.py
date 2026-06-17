@@ -31,6 +31,7 @@ if __package__ in {None, "", "tools"}:
         from tools.provider_runners import (
             clip_text as _clip_text,
             fetch_pull_request,
+            limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
             post_pr_comment,
@@ -48,6 +49,7 @@ if __package__ in {None, "", "tools"}:
         from provider_runners import (  # type: ignore
             clip_text as _clip_text,
             fetch_pull_request,
+            limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
             post_pr_comment,
@@ -62,6 +64,7 @@ else:  # pragma: no cover - exercised after package extraction.
     from .provider_runners import (
         clip_text as _clip_text,
         fetch_pull_request,
+        limit_comment_body,
         one_line as _one_line,
         parse_repo_paths as _parse_repo_paths,
         post_pr_comment,
@@ -80,7 +83,6 @@ DEFAULT_MAX_DIFF_BYTES = 180_000
 DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES = 600_000
 DEFAULT_MAX_BUDGET_USD = "2.00"
 CLAUDE_AUDIT_SCHEMA_ID = "codeMower.claudeAudit.v1"
-MAX_GITHUB_COMMENT_CHARS = 64_000
 MAX_RENDERED_FINDINGS = 50
 MAX_SUMMARY_CHARS = 4_000
 MAX_FINDING_TITLE_CHARS = 300
@@ -730,18 +732,6 @@ def run_claude_audit(
     return _extract_structured_output(result.stdout), result.stdout, result.stderr
 
 
-def _limit_comment_body(body: str, trailer: str) -> str:
-    if len(body) <= MAX_GITHUB_COMMENT_CHARS:
-        return body
-    note = "\n\n[Claude audit comment truncated to stay under GitHub's comment-size limit.]\n\n"
-    suffix = note + trailer + "\n"
-    allowed_prefix_len = MAX_GITHUB_COMMENT_CHARS - len(suffix)
-    if allowed_prefix_len < 0:
-        return suffix[-MAX_GITHUB_COMMENT_CHARS:]
-    prefix = body.rsplit(trailer, 1)[0] if trailer in body else body
-    return prefix[:allowed_prefix_len].rstrip() + suffix
-
-
 def format_comment(
     parsed: ClaudeVerdict,
     head_sha: str,
@@ -761,7 +751,7 @@ def format_comment(
             + STALE_TRAILER
             + "\n"
         )
-        return _limit_comment_body(body, STALE_TRAILER)
+        return limit_comment_body(body, STALE_TRAILER, provider_name="Claude")
     if is_unknown:
         body = (
             header
@@ -771,7 +761,7 @@ def format_comment(
             + STALE_TRAILER
             + "\n"
         )
-        return _limit_comment_body(body, STALE_TRAILER)
+        return limit_comment_body(body, STALE_TRAILER, provider_name="Claude")
 
     header += (
         f"Findings: P0={parsed.p0_count}, P1={parsed.p1_count}, "
@@ -789,7 +779,7 @@ def format_comment(
         "",
         trailer,
     ]) + "\n"
-    return _limit_comment_body(body, trailer)
+    return limit_comment_body(body, trailer, provider_name="Claude")
 
 
 def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAuditResult:
