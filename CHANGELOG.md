@@ -4,6 +4,20 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.46
+
+This alpha is the next public package marker after the migration structure
+hardening slices.
+
+### Changed
+
+- Package-install rehearsal internals now split install, venv, pip,
+  command-runner, and toy-repo helpers into `code_mower.migration_install`.
+- `code_mower.migration_rehearsal` now focuses on the fresh-repo rehearsal flow
+  while preserving the previous compatibility import surface.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.46`.
+
 ## v0.5.0-alpha.45
 
 This alpha continues the public-package structure hardening path after the
