@@ -28,6 +28,38 @@ class GitHubPrHelperTests(unittest.TestCase):
             token="ghs_token",
         )
 
+    def test_fetch_pull_request_files_paginates_until_short_page(self) -> None:
+        page_one = [{"filename": f"file_{index}.py"} for index in range(100)]
+        page_two = [{"filename": "last.py"}]
+        with mock.patch.object(
+            github_pr,
+            "_gh_request",
+            side_effect=[page_one, page_two],
+        ) as request:
+            files = github_pr.fetch_pull_request_files("owner/repo", 12, token="ghs_token")
+
+        self.assertEqual(files, [*page_one, *page_two])
+        self.assertEqual(request.call_count, 2)
+        request.assert_has_calls(
+            [
+                mock.call(
+                    "GET",
+                    "/repos/owner/repo/pulls/12/files?per_page=100&page=1",
+                    token="ghs_token",
+                ),
+                mock.call(
+                    "GET",
+                    "/repos/owner/repo/pulls/12/files?per_page=100&page=2",
+                    token="ghs_token",
+                ),
+            ]
+        )
+
+    def test_fetch_pull_request_files_rejects_non_list_payload(self) -> None:
+        with mock.patch.object(github_pr, "_gh_request", return_value={"message": "bad"}):
+            with self.assertRaisesRegex(ValueError, "files response was not a list"):
+                github_pr.fetch_pull_request_files("owner/repo", 12, token="ghs_token")
+
 
 if __name__ == "__main__":
     unittest.main()
