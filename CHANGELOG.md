@@ -4,6 +4,22 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.51
+
+This alpha is the public package marker after extracting shared doctor provider
+auth smoke-probe helpers.
+
+### Changed
+
+- Provider auth smoke-probe JSON parsing and remediation now live in
+  `code_mower.doctor_checks.provider_probe`.
+- Local CLI doctor checks and provider registry exports share the same probe
+  helper implementation.
+- Added focused `unittest` coverage for noisy JSON extraction and auth-detail
+  redaction.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.51`.
+
 ## v0.5.0-alpha.50
 
 This alpha is the public package marker after extracting shared GitHub comment
