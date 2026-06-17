@@ -166,6 +166,11 @@ PACKAGE_FILES = (
     ("src/code_mower/doctor_checks/registry.py", "src/code_mower/doctor_checks/registry.py", "core"),
     ("src/code_mower/doctor_checks/runner.py", "src/code_mower/doctor_checks/runner.py", "core"),
     ("src/code_mower/doctor_checks/runtime.py", "src/code_mower/doctor_checks/runtime.py", "core"),
+    (
+        "src/code_mower/doctor_checks/runtime_github_auth.py",
+        "src/code_mower/doctor_checks/runtime_github_auth.py",
+        "core",
+    ),
     ("tools/code_mower_init.py", "src/code_mower/init.py", "core"),
     ("tools/code_mower_merge.py", "src/code_mower/code_mower_merge.py", "core"),
     ("src/code_mower/migration.py", "src/code_mower/migration.py", "core"),
