@@ -20,7 +20,7 @@ def _gh_request(
     accept: str = "application/vnd.github+json",
     timeout: int = 30,
 ) -> Any:
-    """Make a GitHub REST request and return parsed JSON."""
+    """Make a GitHub REST request and return parsed JSON or text diffs."""
 
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(
@@ -45,7 +45,9 @@ def _gh_request(
     for attempt in range(1, max_attempts + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
-                text = response.read().decode("utf-8")
+                text = response.read().decode("utf-8", errors="replace")
+                if accept.endswith("diff"):
+                    return text
                 return json.loads(text) if text else None
         except urllib.error.HTTPError:
             raise
@@ -58,6 +60,17 @@ def _gh_request(
 
 def fetch_pull_request(repo: str, pr_number: int, *, token: str) -> dict[str, Any]:
     return _gh_request("GET", f"/repos/{repo}/pulls/{pr_number}", token=token)
+
+
+def fetch_pull_request_diff(repo: str, pr_number: int, *, token: str) -> str:
+    return str(
+        _gh_request(
+            "GET",
+            f"/repos/{repo}/pulls/{pr_number}",
+            token=token,
+            accept="application/vnd.github.v3.diff",
+        )
+    )
 
 
 def post_pr_comment(
