@@ -55,6 +55,7 @@ PACKAGE_FILES = (
     ),
     ("src/code_mower/cloud_client/manifest.py", "src/code_mower/cloud_client/manifest.py", "core"),
     ("src/code_mower/cloud_client/operations.py", "src/code_mower/cloud_client/operations.py", "core"),
+    ("src/code_mower/cloud_client/reports.py", "src/code_mower/cloud_client/reports.py", "core"),
     ("src/code_mower/cloud_client/setup.py", "src/code_mower/cloud_client/setup.py", "core"),
     ("src/code_mower/cloud_client/upload.py", "src/code_mower/cloud_client/upload.py", "core"),
     ("tools/code_mower_config.py", "src/code_mower/config.py", "core"),

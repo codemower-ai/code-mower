@@ -8,13 +8,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .bundle import (
-    MAX_REPORT_UPLOAD_BYTES,
-    validate_metadata_payload,
-)
+from .bundle import validate_metadata_payload
 from .endpoints import validate_upload_endpoint
 from .errors import CloudBundleError
-from .manifest import load_bundle_manifest, report_path_from_manifest
+from .manifest import load_bundle_manifest
+from .reports import included_report_payloads
 
 
 UPLOAD_SCHEMA = "code_mower.cloudUpload.v1"
@@ -25,41 +23,6 @@ def _validate_upload_endpoint(endpoint: str) -> None:
         validate_upload_endpoint(endpoint)
     except ValueError as exc:
         raise CloudBundleError(str(exc)) from exc
-
-
-def _included_report_payloads(
-    manifest: dict[str, Any],
-    bundle_dir: Path,
-    *,
-    include_reports: bool,
-) -> list[dict[str, Any]]:
-    payloads: list[dict[str, Any]] = []
-    for entry in manifest.get("included_reports", []):
-        if not isinstance(entry, dict):
-            raise CloudBundleError("bundle manifest has a non-object included_reports entry")
-        target = str(entry.get("target", ""))
-        report_payload = {
-            "kind": entry.get("kind", ""),
-            "target": target,
-            "bytes": entry.get("bytes", 0),
-            "source_basename": entry.get("source_basename", ""),
-        }
-        if include_reports:
-            path = report_path_from_manifest(bundle_dir, target)
-            size = path.stat().st_size
-            if size > MAX_REPORT_UPLOAD_BYTES:
-                raise CloudBundleError(
-                    f"refusing to upload {target}: {size} bytes exceeds "
-                    f"{MAX_REPORT_UPLOAD_BYTES} byte limit"
-                )
-            try:
-                report_payload["text"] = path.read_text(encoding="utf-8")
-            except UnicodeDecodeError as exc:
-                raise CloudBundleError(f"report is not UTF-8 text: {target}") from exc
-            except OSError as exc:
-                raise CloudBundleError(f"unable to read report {target}: {exc}") from exc
-        payloads.append(report_payload)
-    return payloads
 
 
 def build_upload_payload(
@@ -82,7 +45,7 @@ def build_upload_payload(
         "team_id": manifest.get("team_id", ""),
         "install_id": manifest.get("install_id", ""),
         "excluded_content": manifest.get("excluded_content", []),
-        "reports": _included_report_payloads(
+        "reports": included_report_payloads(
             manifest,
             bundle_dir,
             include_reports=include_reports,
