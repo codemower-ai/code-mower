@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any, Mapping
 
 from .common import (
-    TRUTHY_ENV_VALUES,
     DoctorCheck,
     STATUS_PASS,
     STATUS_SKIP,
     STATUS_WARN,
-    as_sequence,
     token_remediation,
 )
+from .provider_env_required import provider_required_env_status
 from .provider_env_tokens import provider_token_status
 
 
@@ -72,27 +70,13 @@ def check_token_env(lane_id: str, lane: Mapping[str, Any]) -> list[DoctorCheck]:
 
 
 def check_required_env(lane_id: str, lane: Mapping[str, Any]) -> list[DoctorCheck]:
-    provider_config = lane.get("provider_config", {})
-    if not isinstance(provider_config, Mapping):
+    env_status = provider_required_env_status(lane)
+    if not env_status.declares_required_env:
         return []
-    required = [
-        str(name)
-        for name in as_sequence(provider_config.get("required_env", []))
-        if str(name).strip()
-    ]
-    required_truthy = [
-        str(name)
-        for name in as_sequence(provider_config.get("required_env_truthy", []))
-        if str(name).strip()
-    ]
-    if not required and not required_truthy:
-        return []
-    missing = [name for name in required if not os.environ.get(name)]
-    missing_truthy = [
-        name
-        for name in required_truthy
-        if os.environ.get(name, "").strip().lower() not in TRUTHY_ENV_VALUES
-    ]
+    required = list(env_status.required)
+    required_truthy = list(env_status.required_truthy)
+    missing = list(env_status.missing)
+    missing_truthy = list(env_status.missing_truthy)
     if missing or missing_truthy:
         return [
             DoctorCheck(
