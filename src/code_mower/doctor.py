@@ -14,106 +14,39 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(module_dir.parent))
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower import config as code_mower_config
+        from code_mower import doctor_checks as _doctor_checks
         from code_mower import package as code_mower_package
-        from code_mower.doctor_checks import (
-            ACTIONS_COST_SAMPLE_DEFAULT,
-            ACTIONS_COST_SAMPLE_MAX,
-            DEFAULT_CLOUD_TOKEN_DIR,
-            DEFAULT_CLOUD_TOKEN_ENV,
-            STATUS_FAIL,
-            STATUS_PASS,
-            STATUS_SKIP,
-            STATUS_WARN,
-            DoctorCheck,
-            DoctorReport,
-            auth_probe_output_detail as _auth_probe_output_detail,
-            check_cloud_token_surface as _check_cloud_token_surface,
-            evaluate_json_probe as _evaluate_json_probe,
-            local_cli_probe_remediation as _local_cli_probe_remediation,
-            render_doctor_text,
-            resolve_doctor_config_path,
-            resolve_doctor_config_path_for_script,
-            resolve_doctor_provider_templates_path,
-            run_doctor,
-            token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
-            apply_first_run_defaults as _apply_first_run_defaults,
-        )
     else:
-        from tools import code_mower_config, code_mower_package
-        from tools.doctor_checks import (
-            ACTIONS_COST_SAMPLE_DEFAULT,
-            ACTIONS_COST_SAMPLE_MAX,
-            DEFAULT_CLOUD_TOKEN_DIR,
-            DEFAULT_CLOUD_TOKEN_ENV,
-            STATUS_FAIL,
-            STATUS_PASS,
-            STATUS_SKIP,
-            STATUS_WARN,
-            DoctorCheck,
-            DoctorReport,
-            auth_probe_output_detail as _auth_probe_output_detail,
-            check_cloud_token_surface as _check_cloud_token_surface,
-            evaluate_json_probe as _evaluate_json_probe,
-            local_cli_probe_remediation as _local_cli_probe_remediation,
-            render_doctor_text,
-            resolve_doctor_config_path,
-            resolve_doctor_config_path_for_script,
-            resolve_doctor_provider_templates_path,
-            run_doctor,
-            token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
-            apply_first_run_defaults as _apply_first_run_defaults,
-        )
+        from tools import code_mower_config, code_mower_package, doctor_checks as _doctor_checks
 elif __package__ == "tools":
-    from tools import code_mower_config, code_mower_package
-    from tools.doctor_checks import (
-        ACTIONS_COST_SAMPLE_DEFAULT,
-        ACTIONS_COST_SAMPLE_MAX,
-        DEFAULT_CLOUD_TOKEN_DIR,
-        DEFAULT_CLOUD_TOKEN_ENV,
-        STATUS_FAIL,
-        STATUS_PASS,
-        STATUS_SKIP,
-        STATUS_WARN,
-        DoctorCheck,
-        DoctorReport,
-        auth_probe_output_detail as _auth_probe_output_detail,
-        check_cloud_token_surface as _check_cloud_token_surface,
-        evaluate_json_probe as _evaluate_json_probe,
-        local_cli_probe_remediation as _local_cli_probe_remediation,
-        render_doctor_text,
-        resolve_doctor_config_path,
-        resolve_doctor_config_path_for_script,
-        resolve_doctor_provider_templates_path,
-        run_doctor,
-        token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
-        apply_first_run_defaults as _apply_first_run_defaults,
-    )
+    from tools import code_mower_config, code_mower_package, doctor_checks as _doctor_checks
 else:  # pragma: no cover - exercised after package extraction.
     from . import config as code_mower_config
+    from . import doctor_checks as _doctor_checks
     from . import package as code_mower_package
-    from .doctor_checks import (
-        ACTIONS_COST_SAMPLE_DEFAULT,
-        ACTIONS_COST_SAMPLE_MAX,
-        DEFAULT_CLOUD_TOKEN_DIR,
-        DEFAULT_CLOUD_TOKEN_ENV,
-        STATUS_FAIL,
-        STATUS_PASS,
-        STATUS_SKIP,
-        STATUS_WARN,
-        DoctorCheck,
-        DoctorReport,
-        auth_probe_output_detail as _auth_probe_output_detail,
-        check_cloud_token_surface as _check_cloud_token_surface,
-        evaluate_json_probe as _evaluate_json_probe,
-        local_cli_probe_remediation as _local_cli_probe_remediation,
-        render_doctor_text,
-        resolve_doctor_config_path,
-        resolve_doctor_config_path_for_script,
-        resolve_doctor_provider_templates_path,
-        run_doctor,
-        token_file_mentions_cloud_token as _token_file_mentions_cloud_token,
-        apply_first_run_defaults as _apply_first_run_defaults,
-    )
+
+
+ACTIONS_COST_SAMPLE_DEFAULT = _doctor_checks.ACTIONS_COST_SAMPLE_DEFAULT
+ACTIONS_COST_SAMPLE_MAX = _doctor_checks.ACTIONS_COST_SAMPLE_MAX
+DEFAULT_CLOUD_TOKEN_DIR = _doctor_checks.DEFAULT_CLOUD_TOKEN_DIR
+DEFAULT_CLOUD_TOKEN_ENV = _doctor_checks.DEFAULT_CLOUD_TOKEN_ENV
+STATUS_FAIL = _doctor_checks.STATUS_FAIL
+STATUS_PASS = _doctor_checks.STATUS_PASS
+STATUS_SKIP = _doctor_checks.STATUS_SKIP
+STATUS_WARN = _doctor_checks.STATUS_WARN
+DoctorCheck = _doctor_checks.DoctorCheck
+DoctorReport = _doctor_checks.DoctorReport
+_auth_probe_output_detail = _doctor_checks.auth_probe_output_detail
+_check_cloud_token_surface = _doctor_checks.check_cloud_token_surface
+_evaluate_json_probe = _doctor_checks.evaluate_json_probe
+_local_cli_probe_remediation = _doctor_checks.local_cli_probe_remediation
+render_doctor_text = _doctor_checks.render_doctor_text
+resolve_doctor_config_path = _doctor_checks.resolve_doctor_config_path
+resolve_doctor_config_path_for_script = _doctor_checks.resolve_doctor_config_path_for_script
+resolve_doctor_provider_templates_path = _doctor_checks.resolve_doctor_provider_templates_path
+run_doctor = _doctor_checks.run_doctor
+_token_file_mentions_cloud_token = _doctor_checks.token_file_mentions_cloud_token
+_apply_first_run_defaults = _doctor_checks.apply_first_run_defaults
 
 
 _DOCTOR_COMPAT_EXPORTS = (
