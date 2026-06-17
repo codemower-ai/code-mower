@@ -184,6 +184,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/cloud_client/git_metadata.py",
+      "target": "src/code_mower/cloud_client/git_metadata.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/cloud_client/operations.py",
       "target": "src/code_mower/cloud_client/operations.py"
     },

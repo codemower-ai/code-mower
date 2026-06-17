@@ -15,10 +15,10 @@ from .errors import CloudBundleError
 from .events import (
     build_dogfood_event,
     build_workflow_run_event,
-    detect_repo_slug,
     run_gh_run_list,
 )
 from .export import build_cloud_bundle
+from .git_metadata import detect_repo_slug
 from .setup import DEFAULT_INSTALL_ID_ENV, DEFAULT_TEAM_ID_ENV
 from .upload import build_upload_payload, post_upload_payload
 

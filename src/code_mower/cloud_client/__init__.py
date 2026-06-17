@@ -47,17 +47,19 @@ from .events import (
     GITHUB_RUN_LIST_FIELDS,
     build_dogfood_event,
     build_workflow_run_event,
-    detect_repo_slug,
     event_id_from_github_run,
     load_event_file,
     normalize_event,
     parse_event_args,
-    repo_slug_from_remote,
     run_gh_run_list,
-    run_git,
     safe_event_type,
     safe_kind,
     utc_now,
+)
+from .git_metadata import (
+    detect_repo_slug,
+    repo_slug_from_remote,
+    run_git,
 )
 from .operations import (
     catch_up_upload,
