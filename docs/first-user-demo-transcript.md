@@ -12,9 +12,9 @@ The transcript uses `$WORK_DIR` instead of a real local path.
 python3.12 -m venv "$WORK_DIR/venv"
 "$WORK_DIR/venv/bin/python" -m pip install --upgrade pip
 "$WORK_DIR/venv/bin/python" -m pip install \
-  "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.79"
+  "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.1"
 "$WORK_DIR/venv/bin/code-mower" migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.79" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.1" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -26,7 +26,7 @@ python3.12 -m venv "$WORK_DIR/venv"
   "mode": "package-install-rehearsal",
   "status": "pass",
   "steps": 27,
-  "package_spec": "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.79",
+  "package_spec": "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.1",
   "toy_repo": "$WORK_DIR/toy-repo",
   "doctor_status": "warn",
   "generated_artifacts": {

@@ -217,7 +217,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     pyproject_version = _pyproject_version(repo_path)
     version = init_version or pyproject_version
     materialized_versions = _materialized_package_versions(repo_path)
-    alpha_tag = _release_tag_for_version(version) if version else ""
+    release_tag = _release_tag_for_version(version) if version else ""
     package_index_spec = f"code-mower=={version}" if version else ""
     doc_blob = "\n".join(docs.values())
     public_hygiene_blobs = {
@@ -228,12 +228,12 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     version_docs = [
         relative_path
         for relative_path, text in docs.items()
-        if alpha_tag and alpha_tag in text
+        if release_tag and release_tag in text
     ]
-    missing_alpha_docs = [
+    missing_release_docs = [
         relative_path
         for relative_path in REQUIRED_ALPHA_TAG_DOC_PATHS
-        if alpha_tag and alpha_tag not in docs.get(relative_path, "")
+        if release_tag and release_tag not in docs.get(relative_path, "")
     ]
     package_index_docs = [
         relative_path
@@ -382,14 +382,14 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             evidence=str(workflow_path),
         ),
         _release_check(
-            check_id="alpha-tag-docs-current",
-            title="Current alpha tag is present in public install docs",
-            status="pass" if alpha_tag and not missing_alpha_docs else "fail",
-            evidence=alpha_tag or "missing version",
+            check_id="release-tag-docs-current",
+            title="Current release tag is present in public install docs",
+            status="pass" if release_tag and not missing_release_docs else "fail",
+            evidence=release_tag or "missing version",
             detail={
                 "docs": version_docs,
                 "required_docs": list(REQUIRED_ALPHA_TAG_DOC_PATHS),
-                "missing_docs": missing_alpha_docs,
+                "missing_docs": missing_release_docs,
             },
         ),
         _release_check(
@@ -510,7 +510,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         "status": status,
         "repo_path": str(repo_path),
         "version": version,
-        "alpha_tag": alpha_tag,
+        "release_tag": release_tag,
+        "alpha_tag": release_tag,
         "package_index_spec": package_index_spec,
         "passed": passed,
         "failed": failed,
@@ -528,7 +529,7 @@ def render_release_readiness_text(payload: dict[str, Any]) -> str:
         "",
         f"status: {payload['status']}",
         f"version: {payload.get('version') or 'unknown'}",
-        f"alpha_tag: {payload.get('alpha_tag') or 'unknown'}",
+        f"release_tag: {payload.get('release_tag') or payload.get('alpha_tag') or 'unknown'}",
         f"checks: {payload['passed']} passed, {payload['failed']} failed, {payload['warnings']} warnings",
         "",
         "Checks:",

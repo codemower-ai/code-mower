@@ -1,6 +1,6 @@
 # PyPI Release Runbook
 
-Code Mower alpha users currently install from a tagged GitHub release. The
+Code Mower beta users currently install from a tagged GitHub release. The
 release workflow already builds source and wheel distributions; package-index
 publishing should be enabled in this order so first-user installs become:
 
@@ -20,7 +20,7 @@ pipx install code-mower
   the `CODE_MOWER_PYPI_PUBLISH` repository variable or manual
   `workflow_dispatch` input.
 - Trusted publishing must be configured before using this for public users.
-- GitHub-tag install remains the documented alpha path until a TestPyPI install
+- GitHub-tag install remains the documented beta path until a TestPyPI install
   rehearsal passes.
 
 ## One-Time TestPyPI Setup
@@ -101,7 +101,7 @@ Before switching docs to package-index install:
 ```bash
 python3.12 -m venv /tmp/code-mower-pypi-smoke
 /tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
-/tmp/code-mower-pypi-smoke/bin/python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ code-mower==0.5.0a79
+/tmp/code-mower-pypi-smoke/bin/python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ code-mower==0.5.0b1
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
@@ -111,7 +111,7 @@ URL:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0a79 \
+  --package-spec code-mower==0.5.0b1 \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \

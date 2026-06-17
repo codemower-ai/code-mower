@@ -121,7 +121,7 @@ def current_public_tag(version: str = CODE_MOWER_VERSION) -> str:
 
 
 def current_alpha_package_spec(version: str = CODE_MOWER_VERSION) -> str:
-    """Return the documented installable package spec for alpha users."""
+    """Return the documented installable package spec for prerelease users."""
 
     return code_mower_versioning.public_package_spec(version, repo_url=PUBLIC_REPO_URL)
 
@@ -206,7 +206,7 @@ def build_next_steps(
                 "and cloud dry-run artifacts, emits `first_user_readiness`, and "
                 "optionally checks a real repo when --repo-path is provided. "
                 "Wrapper-bearing repos get parity checks; fresh external repos "
-                "get installed-CLI readiness checks. The alpha path uses the "
+                "get installed-CLI readiness checks. The tagged release path uses the "
                 "current GitHub tag until PyPI publishing is promoted."
             ),
             "artifacts": [
