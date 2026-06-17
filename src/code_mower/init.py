@@ -704,7 +704,7 @@ def render_init_plan(
         )
     for lane_id, lane in selected_lanes.items():
         hygiene = lane.get("review_hygiene")
-        if not isinstance(hygiene, Mapping):
+        if not isinstance(hygiene, Mapping) or not hygiene:
             continue
         stale_path = str(hygiene["workflow"])
         if stale_path not in generated_paths:

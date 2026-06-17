@@ -476,14 +476,15 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
         review_hygiene = lane_map.get("review_hygiene")
         if review_hygiene is not None:
             hygiene_map = _as_mapping(review_hygiene, f"{path}.review_hygiene", issues)
-            _require_workflow_path(
-                hygiene_map.get("workflow"),
-                f"{path}.review_hygiene.workflow",
-                issues,
-            )
-            token = hygiene_map.get("token_env")
-            if token is not None:
-                _require_string(token, f"{path}.review_hygiene.token_env", issues)
+            if hygiene_map:
+                _require_workflow_path(
+                    hygiene_map.get("workflow"),
+                    f"{path}.review_hygiene.workflow",
+                    issues,
+                )
+                token = hygiene_map.get("token_env")
+                if token is not None:
+                    _require_string(token, f"{path}.review_hygiene.token_env", issues)
 
     profiles = _as_mapping(config.get("profiles", {}), "profiles", issues)
     for profile_id, profile in profiles.items():

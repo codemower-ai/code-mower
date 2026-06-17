@@ -857,6 +857,35 @@ exit 1
             self.assertIn("github.event.inputs.lane || 'custom'", custom_text)
             self.assertNotIn("{% raw %}", custom_text)
 
+            disabled_hygiene_config = {
+                **devin_config,
+                "lanes": {
+                    "manual_review": {
+                        **devin_config["lanes"]["devin"],
+                        "driver": "manual",
+                        "provider": "manual-reviewer",
+                        "merge_authority": False,
+                        "review_hygiene": {},
+                    }
+                },
+                "profiles": {
+                    "recommended": {
+                        "description": "Disabled stale workflow test",
+                        "lanes": ["manual_review"],
+                    }
+                },
+            }
+            self.assertEqual(code_mower_config.validate_config(disabled_hygiene_config), [])
+            disabled_plan = code_mower_init.render_init_plan(
+                disabled_hygiene_config,
+                package_mode=True,
+                package_command="code-mower",
+            )
+            disabled_paths = {
+                item["path"] for item in disabled_plan.data["generated_files"]
+            }
+            self.assertNotIn(".github/workflows/devin-clear-stale.yml", disabled_paths)
+
             result = subprocess.run(
                 [str(output_dir / "tools/code_mower"), "--version"],
                 cwd=output_dir,
