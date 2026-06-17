@@ -299,6 +299,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/migration_rehearsal.py",
+      "target": "src/code_mower/migration_rehearsal.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/next_steps.py",
       "target": "src/code_mower/next_steps.py"
     },

@@ -10,14 +10,12 @@ This document tracks the structure hardening path.
 
 The package is usable and has public release gates. The first calibration split
 is largely complete, and the doctor check registry now contains the first real
-runtime/cloud check implementations. Several modules are still too large for
-comfortable contributor onboarding:
+runtime/cloud check implementations. Several modules are still large enough to
+slow contributor onboarding:
 
 | Module | Approximate Lines | Current Responsibility |
 | --- | ---: | --- |
 | `codex_audit_pr.py` | 1,917 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
-| `migration.py` | 1,757 | wrapper migration, rehearsal, mirror-removal planning |
-| `package.py` | 1,849 | package materialization, embedded generated files, packaging CLI |
 | `local_llm_audit_pr.py` | 1,351 | local model audit wrapper, prompt setup, subprocess isolation |
 | `claude_audit_pr.py` | 1,130 | Claude audit wrapper, budget handling, verdict posting |
 
@@ -28,6 +26,12 @@ is now roughly 600 lines and delegates most domain behavior to
 acts as a backwards-compatible CLI adapter around `code_mower.doctor_checks`.
 `cloud.py` has also dropped off this list: it is now roughly 680 lines and acts
 as a backwards-compatible CLI adapter around `code_mower.cloud_client`.
+`package.py` has also dropped off this list: it is now roughly 670 lines and
+acts as a materializer adapter around package manifest, content, static,
+rendering, and path helper modules.
+`migration.py` has also dropped off this list: package-install rehearsal and
+first-user readiness scoring now live under `code_mower.migration_rehearsal`,
+leaving `migration.py` as a smaller migration CLI/compatibility adapter.
 
 These are not urgent correctness problems. They are readability and evolution
 risks: new contributors cannot quickly tell which functions are stable API,
@@ -110,6 +114,10 @@ tested internal seams:
   builders, static generated file bodies, YAML/provider-catalog rendering, CLI
   command inventory, and provider-template path resolution. `package.py`
   remains the materializer adapter for package plans and output writes.
+- `code_mower.migration_rehearsal` now owns package-install rehearsal,
+  first-user readiness scorecards, and clean-venv/toy-repo rehearsal helpers.
+  `migration.py` remains the compatibility adapter for migration subcommands,
+  wrapper comparisons, mirror-removal planning, and runner-alias reporting.
 - `builder-experiment` and authoring-intelligence docs establish the future
   `run_role`/`purpose` event shape without requiring a full orchestrator runtime
   before v1.0.
@@ -173,7 +181,10 @@ existing commands.
      useful from manual and semi-manual runs.
 
 6. **Package/migration boundary**
-   - Separate template rendering from migration policy.
+   - Completed: package-install rehearsal and first-user readiness scoring now
+     live under `code_mower.migration_rehearsal`.
+   - Next: split mirror-removal planning and runner-alias reporting when that
+     would make migration commands easier for new contributors to reason about.
    - Product-repo wrapper support should read like a compatibility layer, not
      the center of the project.
 
