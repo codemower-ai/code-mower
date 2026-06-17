@@ -13,35 +13,47 @@ optional cloud-token setup. This sample is sanitized and intentionally generic.
 
 ```text
 $ code-mower doctor --preflight
-PASS  config.validate                  config validates
-PASS  provider_templates.load          provider templates load
-PASS  profile.select                   selected profile recommended: codex, claude_audit, gitar
-PASS  provider_templates.coverage      provider templates cover selected lanes
-PASS  runtime.python                   Python 3.12 satisfies Code Mower's >=3.11 requirement
-PASS  runtime.pytest                   pytest import is available for product-side test wrappers
-PASS  runtime.github_auth              GitHub CLI auth probe succeeded
-PASS  runtime.ripgrep                  rg found
+Code Mower doctor
+Status: warn
+Config: /path/to/code-mower.example.yml
+Provider templates: /path/to/providers.yml
+Profile: recommended
+Checks: 20 total, 5 warnings, 1 skipped
 
-WARN  env.tokens codex                 missing token env vars: CODEX_AUDIT_LABEL_TOKEN, GITHUB_TOKEN
-PASS  runtime.local_cli codex          codex found
-PASS  runtime.local_cli.probe codex    codex probe succeeded
+Setup
+- PASS config.validate: config validates
+- PASS provider_templates.load: provider templates load
+- PASS profile.select: selected profile recommended: codex, claude_audit, gitar
+- PASS provider_templates.coverage: provider templates cover selected lanes
 
-WARN  env.tokens claude_audit          missing token env vars: CLAUDE_AUDIT_LABEL_TOKEN, GITHUB_TOKEN
-PASS  runtime.local_cli claude_audit   claude found
-PASS  runtime.local_cli.probe claude   claude auth smoke probe succeeded
+Runtime
+- PASS runtime.python: Python 3.12 satisfies Code Mower's >=3.11 requirement
+- PASS runtime.pytest: pytest import is available for product-side test wrappers
+- PASS runtime.github_auth: GitHub CLI auth probe succeeded
+- PASS runtime.ripgrep: rg found
 
-WARN  env.tokens gitar                 missing token env vars: GITAR_AUDIT_LABEL_TOKEN, GITHUB_TOKEN
-SKIP  runtime.probe gitar              SaaS event lanes do not have a local runtime probe yet
+Provider lanes (3 warnings)
+- WARN env.tokens [codex]: missing token env vars: CODEX_AUDIT_LABEL_TOKEN, GITHUB_TOKEN
+  remediation: set CODEX_AUDIT_LABEL_TOKEN, GITHUB_TOKEN in your shell or GitHub secret store before enabling this lane.
+- PASS runtime.local_cli [codex]: codex found
+- PASS runtime.local_cli.probe [codex]: codex probe succeeded
+- WARN env.tokens [claude_audit]: missing token env vars: CLAUDE_AUDIT_LABEL_TOKEN, GITHUB_TOKEN
+  remediation: set CLAUDE_AUDIT_LABEL_TOKEN, GITHUB_TOKEN in your shell or GitHub secret store before enabling this lane.
+- PASS runtime.local_cli [claude_audit]: claude found
+- PASS runtime.local_cli.probe [claude_audit]: claude auth smoke probe succeeded
+- WARN env.tokens [gitar]: missing token env vars: GITAR_AUDIT_LABEL_TOKEN, GITHUB_TOKEN
+  remediation: set GITAR_AUDIT_LABEL_TOKEN, GITHUB_TOKEN in your shell or GitHub secret store before enabling this lane.
+- SKIP runtime.probe [gitar]: SaaS event lanes do not have a local runtime probe yet
 
-PASS  github.cli                       gh found for GitHub setup checks
-WARN  github.repo.metadata             could not read GitHub repository metadata for owner/repo
-WARN  github.provider.private_repo     could not determine repository visibility for SaaS lanes
-PASS  cloud.token                      optional Code Mower Cloud token file is configured
+GitHub (2 warnings)
+- PASS github.cli: gh found for GitHub setup checks
+- WARN github.repo.metadata: could not read GitHub repository metadata for owner/repo
+  remediation: Verify gh auth can read this repo. Private repos need a token or GitHub App installation with repository access.
+- WARN github.provider.private_repo: could not determine repository visibility for SaaS/hosted lanes: gitar
+  remediation: Verify gh auth can read repository metadata before deciding whether hosted provider apps need private-repo access.
 
-Summary: warn
-Checks: 20
-Failures: 0
-Warnings: 5
+Code Mower Cloud
+- PASS cloud.token: optional Code Mower Cloud token file is configured
 ```
 
 ## What To Do With It
