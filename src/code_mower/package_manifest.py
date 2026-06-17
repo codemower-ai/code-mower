@@ -109,6 +109,11 @@ PACKAGE_FILES = (
         "reviewer",
     ),
     (
+        "src/code_mower/provider_runners/comments.py",
+        "src/code_mower/provider_runners/comments.py",
+        "reviewer",
+    ),
+    (
         "src/code_mower/provider_runners/github_auth.py",
         "src/code_mower/provider_runners/github_auth.py",
         "reviewer",

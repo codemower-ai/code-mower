@@ -87,6 +87,7 @@ if __package__ in {None, "", "tools"}:
         from tools.provider_runners import (
             clip_text as _clip_text,
             fetch_pull_request,
+            limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
             pop_github_token_env,
@@ -101,6 +102,7 @@ if __package__ in {None, "", "tools"}:
         from provider_runners import (  # type: ignore
             clip_text as _clip_text,
             fetch_pull_request,
+            limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
             pop_github_token_env,
@@ -115,6 +117,7 @@ else:  # pragma: no cover - exercised after package extraction.
     from .provider_runners import (
         clip_text as _clip_text,
         fetch_pull_request,
+        limit_comment_body,
         one_line as _one_line,
         parse_repo_paths as _parse_repo_paths,
         pop_github_token_env,
@@ -139,7 +142,6 @@ CODEX_AUDIT_VERDICT_SCHEMA_PATH = (
     Path(__file__).resolve().with_name("codex_audit_verdict.schema.json")
 )
 MAX_VERDICT_FILE_BYTES = 1_000_000
-MAX_GITHUB_COMMENT_CHARS = 64_000
 MAX_RENDERED_FINDINGS = 50
 MAX_SUMMARY_CHARS = 4_000
 MAX_FINDING_TITLE_CHARS = 300
@@ -1134,23 +1136,6 @@ def run_codex_verdict_structuring(
 # ----- Comment formatting -----
 
 
-def _limit_comment_body(body: str, trailer: str) -> str:
-    if len(body) <= MAX_GITHUB_COMMENT_CHARS:
-        return body
-
-    note = (
-        "\n\n[Codex audit comment truncated to stay under GitHub's "
-        "comment-size limit.]\n\n"
-    )
-    suffix = note + trailer + "\n"
-    allowed_prefix_len = MAX_GITHUB_COMMENT_CHARS - len(suffix)
-    if allowed_prefix_len < 0:
-        return suffix[-MAX_GITHUB_COMMENT_CHARS:]
-
-    prefix = body.rsplit(trailer, 1)[0] if trailer in body else body
-    return prefix[:allowed_prefix_len].rstrip() + suffix
-
-
 def format_comment(
     parsed: CodexVerdict,
     head_sha: str,
@@ -1170,7 +1155,7 @@ def format_comment(
             + STALE_TRAILER
             + "\n"
         )
-        return _limit_comment_body(body, STALE_TRAILER)
+        return limit_comment_body(body, STALE_TRAILER, provider_name="Codex")
     if is_unknown:
         body = (
             header
@@ -1182,7 +1167,7 @@ def format_comment(
             + STALE_TRAILER
             + "\n"
         )
-        return _limit_comment_body(body, STALE_TRAILER)
+        return limit_comment_body(body, STALE_TRAILER, provider_name="Codex")
 
     header += (
         f"Findings: P0={parsed.p0_count}, P1={parsed.p1_count}, "
@@ -1205,7 +1190,11 @@ def format_comment(
         "",
         trailer,
     ]
-    return _limit_comment_body("\n".join(body_lines) + "\n", trailer)
+    return limit_comment_body(
+        "\n".join(body_lines) + "\n",
+        trailer,
+        provider_name="Codex",
+    )
 
 
 # ----- Orchestration -----

@@ -424,6 +424,11 @@
     },
     {
       "kind": "reviewer",
+      "source": "src/code_mower/provider_runners/comments.py",
+      "target": "src/code_mower/provider_runners/comments.py"
+    },
+    {
+      "kind": "reviewer",
       "source": "src/code_mower/provider_runners/github_auth.py",
       "target": "src/code_mower/provider_runners/github_auth.py"
     },
