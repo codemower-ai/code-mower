@@ -22,17 +22,33 @@ if __package__ in {None, ""}:
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower import prompts as code_mower_prompts
         from code_mower import secrets as code_mower_secrets
-        from code_mower.provider_runners import resolve_github_token_from_env_or_gh
+        from code_mower.provider_runners import (
+            fetch_local_checkout_diff,
+            local_head_sha as _local_head_sha,
+            resolve_github_token_from_env_or_gh,
+        )
     else:
         from tools import code_mower_prompts, code_mower_secrets
-        from tools.provider_runners import resolve_github_token_from_env_or_gh
+        from tools.provider_runners import (
+            fetch_local_checkout_diff,
+            local_head_sha as _local_head_sha,
+            resolve_github_token_from_env_or_gh,
+        )
 elif __package__ == "tools":
     from tools import code_mower_prompts, code_mower_secrets
-    from tools.provider_runners import resolve_github_token_from_env_or_gh
+    from tools.provider_runners import (
+        fetch_local_checkout_diff,
+        local_head_sha as _local_head_sha,
+        resolve_github_token_from_env_or_gh,
+    )
 else:  # pragma: no cover - exercised after package extraction.
     from . import prompts as code_mower_prompts
     from . import secrets as code_mower_secrets
-    from .provider_runners import resolve_github_token_from_env_or_gh
+    from .provider_runners import (
+        fetch_local_checkout_diff,
+        local_head_sha as _local_head_sha,
+        resolve_github_token_from_env_or_gh,
+    )
 
 
 DEFAULT_GEMINI_COMMAND = "gemini"
@@ -120,38 +136,6 @@ def fetch_pull_request_diff(repo: str, pr_number: int, *, token: str) -> str:
             accept="application/vnd.github.v3.diff",
         )
     )
-
-
-def _git(
-    repo_path: Path,
-    args: list[str],
-    *,
-    timeout: int = 30,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(repo_path), *args],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=timeout,
-    )
-
-
-def _local_head_sha(repo_path: Path) -> str:
-    return _git(repo_path, ["rev-parse", "HEAD"]).stdout.strip()
-
-
-def fetch_local_checkout_diff(repo_path: Path, *, base_ref: str) -> tuple[str, str]:
-    resolved_repo_path = repo_path.expanduser().resolve()
-    if not resolved_repo_path.is_dir():
-        raise ValueError(f"repo path does not exist: {resolved_repo_path}")
-    head_sha = _local_head_sha(resolved_repo_path)
-    diff = _git(
-        resolved_repo_path,
-        ["diff", "--no-ext-diff", "--find-renames", f"{base_ref}...HEAD"],
-        timeout=120,
-    ).stdout
-    return head_sha, diff
 
 
 def resolve_github_token() -> str:

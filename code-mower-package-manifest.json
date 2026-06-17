@@ -439,6 +439,11 @@
     },
     {
       "kind": "reviewer",
+      "source": "src/code_mower/provider_runners/git.py",
+      "target": "src/code_mower/provider_runners/git.py"
+    },
+    {
+      "kind": "reviewer",
       "source": "src/code_mower/provider_runners/github_auth.py",
       "target": "src/code_mower/provider_runners/github_auth.py"
     },

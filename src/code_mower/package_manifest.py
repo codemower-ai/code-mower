@@ -116,6 +116,11 @@ PACKAGE_FILES = (
         "reviewer",
     ),
     (
+        "src/code_mower/provider_runners/git.py",
+        "src/code_mower/provider_runners/git.py",
+        "reviewer",
+    ),
+    (
         "src/code_mower/provider_runners/github_auth.py",
         "src/code_mower/provider_runners/github_auth.py",
         "reviewer",

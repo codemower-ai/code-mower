@@ -19,13 +19,29 @@ if __package__ in {None, ""}:
     module_dir = Path(__file__).resolve().parent
     sys.path.insert(0, str(module_dir.parent))
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
-        from code_mower.provider_runners import resolve_github_token_from_env_or_gh
+        from code_mower.provider_runners import (
+            local_head_sha as _local_head_sha,
+            resolve_github_token_from_env_or_gh,
+            run_git as _git,
+        )
     else:
-        from tools.provider_runners import resolve_github_token_from_env_or_gh
+        from tools.provider_runners import (
+            local_head_sha as _local_head_sha,
+            resolve_github_token_from_env_or_gh,
+            run_git as _git,
+        )
 elif __package__ == "tools":
-    from tools.provider_runners import resolve_github_token_from_env_or_gh
+    from tools.provider_runners import (
+        local_head_sha as _local_head_sha,
+        resolve_github_token_from_env_or_gh,
+        run_git as _git,
+    )
 else:  # pragma: no cover - exercised after package extraction.
-    from .provider_runners import resolve_github_token_from_env_or_gh
+    from .provider_runners import (
+        local_head_sha as _local_head_sha,
+        resolve_github_token_from_env_or_gh,
+        run_git as _git,
+    )
 
 
 DEFAULT_CODERABBIT_COMMAND = "coderabbit"
@@ -110,26 +126,6 @@ def build_coderabbit_child_env() -> dict[str, str]:
         for key in CODERABBIT_ENV_ALLOWLIST
         if (value := os.environ.get(key))
     }
-
-
-def _git(
-    repo_path: Path,
-    args: Sequence[str],
-    *,
-    check: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(repo_path), *args],
-        capture_output=True,
-        text=True,
-        check=check,
-        timeout=30,
-    )
-
-
-def _local_head_sha(repo_path: Path) -> str:
-    completed = _git(repo_path, ["rev-parse", "HEAD"])
-    return completed.stdout.strip()
 
 
 def _working_tree_status(repo_path: Path) -> str:
