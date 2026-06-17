@@ -115,6 +115,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "calibration",
                 "claude-audit",
                 "clear-stale",
+                "checks",
                 "cloud",
                 "config",
                 "context-packs",
@@ -162,6 +163,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         )
         self.assertIn("  init", help_text)
         self.assertIn("  doctor", help_text)
+        self.assertIn("  checks", help_text)
         self.assertIn("  calibration", help_text)
         self.assertIn("  cloud", help_text)
         self.assertNotIn("trailer-comment-labeler", help_text)

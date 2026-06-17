@@ -28,6 +28,9 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
 - `code-mower init --easy`, `doctor --preflight`, `next-steps`, and starter
   value-report generation;
+- `code-mower checks detect` and `code-mower checks run` for repository-native
+  lint/test/build discovery instead of assuming Ruff, ESLint, or any other
+  single check surface applies to every codebase;
 - pinned standalone consumption from the private reference/product repos;
 - mirror-removal pilots where product repos use package-backed wrappers instead
   of maintaining duplicate implementation files;
@@ -243,7 +246,8 @@ leaving room for future orchestrator adapters.
 1. Pass the senior-engineer readiness gate: README, quickstart, architecture,
    privacy, install, and first report should tell one coherent story.
 2. Finish the public/installable v0.5 path: docs, package install, doctor,
-   first audit, first value report, and optional cloud token setup.
+   native checks, first audit, first value report, and optional cloud token
+   setup.
 3. Make the public repository the unambiguous source of truth: keep public docs
    and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
    compatibility shims where they confuse contributors, and keep private

@@ -96,6 +96,8 @@ From the repository you want to pilot:
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --preflight --json
+code-mower checks detect --json
+code-mower checks run --dry-run --json
 ```
 
 Then generate the starter local report:
@@ -254,10 +256,12 @@ engineer can:
 1. install Code Mower in a clean repo;
 2. understand the local/cloud trust boundary;
 3. run `init --easy` and `doctor --preflight`;
-4. produce a local value report from known PR outcomes;
-5. decide which lanes should stay informational, selective, or merge-gating;
+4. detect and run the repo's native lint/test/build surface instead of assuming
+   every project uses the same tools;
+5. produce a local value report from known PR outcomes;
+6. decide which lanes should stay informational, selective, or merge-gating;
    and
-6. optionally upload sanitized metadata to CodeMower.com and see useful team
+7. optionally upload sanitized metadata to CodeMower.com and see useful team
    dashboard signal.
 
 Future builder/orchestrator experiments extend the same loop from "who reviews

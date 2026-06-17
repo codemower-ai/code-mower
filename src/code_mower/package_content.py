@@ -385,6 +385,8 @@ def cli_commands(version: str) -> tuple[str, ...]:
         "code-mower doctor --easy --json",
         "code-mower doctor --profile recommended --json",
         "code-mower doctor --profile privacy --probe-runtime --json",
+        "code-mower checks detect --json",
+        "code-mower checks run --dry-run --json",
         "code-mower init --profile recommended --dry-run",
         "code-mower init --profile recommended --apply --output-dir .code-mower.generated",
         "code-mower merge-plan owner/repo#123 --json",
