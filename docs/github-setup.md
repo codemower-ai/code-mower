@@ -210,6 +210,24 @@ The default v1.0 posture is:
 - Cursor BugBot, CodeRabbit CLI, Gemini/Antigravity, Hermes, local LLMs, Qodo,
   Greptile, Devin, and future hosted lanes require calibration before promotion.
 
+## Stale Merge-Authority Labels
+
+Terminal merge-authority labels are head-bound. A label such as
+`devin-audit-done` must not satisfy the merge bar after a PR receives new
+commits unless the latest trusted terminal reviewer comment is explicitly tied
+to the current head SHA.
+
+Install the generated stale-clear workflow, or call the command directly from a
+`pull_request_target.synchronize` workflow:
+
+```bash
+tools/code_mower clear-stale --lane devin --repo owner/repo --pr 123 --json
+```
+
+For paid or hosted lanes, use `--dispatch-workflow` and `--dispatch-input` when
+the stale requeue needs to fire a bridge workflow immediately instead of relying
+on a newly-added label to trigger another workflow.
+
 ## Provider-Unavailable Bypass
 
 A promoted reviewer can fail for reasons that are not code findings: expired

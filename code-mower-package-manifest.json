@@ -644,6 +644,11 @@
     },
     {
       "kind": "labeler",
+      "source": "src/code_mower/clear_stale.py",
+      "target": "src/code_mower/clear_stale.py"
+    },
+    {
+      "kind": "labeler",
       "source": "src/code_mower/trailer_comment_labeler.py",
       "target": "src/code_mower/trailer_comment_labeler.py"
     },

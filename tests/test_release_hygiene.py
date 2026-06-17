@@ -114,6 +114,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "builder-experiment",
                 "calibration",
                 "claude-audit",
+                "clear-stale",
                 "cloud",
                 "config",
                 "context-packs",

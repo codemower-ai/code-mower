@@ -213,6 +213,55 @@ def fetch_pull_request(
     return response
 
 
+def fetch_issue_labels(
+    repo: str,
+    issue_number: int,
+    *,
+    tokens: Sequence[GitHubToken],
+) -> list[str]:
+    response = github_request_with_fallback(
+        "GET",
+        f"/repos/{repo}/issues/{issue_number}",
+        tokens=tokens,
+    )
+    if not isinstance(response, dict):
+        raise RuntimeError("GitHub API issue lookup returned a non-object response")
+    return [
+        str(label.get("name") or "")
+        for label in response.get("labels") or []
+        if str(label.get("name") or "")
+    ]
+
+
+def fetch_issue_comments(
+    repo: str,
+    issue_number: int,
+    *,
+    tokens: Sequence[GitHubToken],
+    page_cap: int,
+) -> list[dict[str, Any]]:
+    comments: list[dict[str, Any]] = []
+    page = 1
+    while page <= page_cap:
+        chunk = github_request_with_fallback(
+            "GET",
+            f"/repos/{repo}/issues/{issue_number}/comments?per_page=100&page={page}",
+            tokens=tokens,
+        ) or []
+        if not isinstance(chunk, list):
+            raise RuntimeError("GitHub API issue comments returned a non-list response")
+        if not chunk:
+            return comments
+        comments.extend(comment for comment in chunk if isinstance(comment, dict))
+        if len(chunk) < 100:
+            return comments
+        page += 1
+    raise RuntimeError(
+        f"hit pagination cap of {page_cap} pages ({page_cap * 100} comments) "
+        f"for {repo}#{issue_number}; refusing to classify stale labels on partial data"
+    )
+
+
 def apply_label_decision(
     repo: str,
     decision: LabelDecision,

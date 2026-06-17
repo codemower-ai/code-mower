@@ -120,6 +120,7 @@ Before deleting mirrors, workflows should call package-backed commands:
 ```bash
 tools/code_mower trailer-comment-labeler --lane codex
 tools/code_mower trailer-comment-labeler --lane claude
+tools/code_mower clear-stale --lane devin --repo owner/repo --pr 123 --json
 tools/code_mower saas-reviewer-labeler --adapter gitar
 tools/code_mower bootstrap --print-python
 ```
@@ -136,6 +137,14 @@ may keep thin shell wrappers such as `tools/run_codex_audit_pr.sh` and
 `tools/run_claude_audit_pr.sh` for token handling and operator muscle memory,
 but those wrappers should delegate to `tools/code_mower codex-audit` and
 `tools/code_mower claude-audit` instead of importing mirrored Python files.
+
+For merge-authority hosted or paid lanes, move stale-on-push logic into
+`tools/code_mower clear-stale` before deleting repo-local workflow glue. The
+command clears stale `*-audit-done` / `*-audit-blocked` labels after a PR head
+changes unless a trusted terminal comment is explicitly tied to the current
+head SHA. It can also directly `workflow_dispatch` a hosted bridge when a new
+`needs-*` label is added, which avoids depending on labels added by
+`GITHUB_TOKEN` to trigger a follow-on workflow.
 
 `mirror-removal-plan --json` reports two support groups:
 

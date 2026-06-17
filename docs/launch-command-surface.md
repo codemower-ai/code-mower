@@ -31,7 +31,7 @@ These commands are real, but they are not the first-user spine.
 - Provider runners: `codex-audit`, `claude-audit`, `gemini-cli`,
   `antigravity-cli`, `hermes-cli`, `coderabbit-cli`, `local-llm`.
 - Workflow helpers: `trailer-comment-labeler`, `saas-reviewer-labeler`,
-  `blind-review`.
+  `clear-stale`, `blind-review`.
 - Migration and packaging internals: `package`, `bootstrap`, advanced
   `migration` subcommands.
 - Experimental surfaces: `builder-experiment`, `telemetry`, future ACP or

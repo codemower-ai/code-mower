@@ -309,6 +309,7 @@ def cli_commands(version: str) -> tuple[str, ...]:
         "code-mower init --profile recommended --dry-run",
         "code-mower init --profile recommended --apply --output-dir .code-mower.generated",
         "code-mower merge-plan owner/repo#123 --json",
+        "code-mower clear-stale --lane devin --repo owner/repo --pr 123 --json",
         "code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json",
         "code-mower migration mirror-removal-plan --repo-path /path/to/product-repo --shadow-cycles 1 --standalone-default-cycles 1 --json",
         "code-mower migration runner-aliases --json",
