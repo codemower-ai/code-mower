@@ -434,6 +434,11 @@
     },
     {
       "kind": "reviewer",
+      "source": "src/code_mower/provider_runners/verdict_artifacts.py",
+      "target": "src/code_mower/provider_runners/verdict_artifacts.py"
+    },
+    {
+      "kind": "reviewer",
       "source": "src/code_mower/codex_audit_pr.py",
       "target": "src/code_mower/codex_audit_pr.py"
     },
