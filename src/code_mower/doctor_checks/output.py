@@ -36,7 +36,7 @@ def doctor_output_group(check: DoctorCheck) -> str:
         return "providers"
     if name.startswith("runtime."):
         return "runtime"
-    if name.startswith(("config.", "provider_templates.", "profile.")):
+    if name.startswith(("config.", "provider_templates.", "profile.", "doctor.")):
         return "setup"
     return "other"
 

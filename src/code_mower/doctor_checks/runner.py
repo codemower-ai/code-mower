@@ -12,6 +12,7 @@ from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
 from .github import check_github_setup
 from .models import STATUS_FAIL, STATUS_PASS, DoctorCheck, DoctorReport
 from .providers import check_lane_runtime, effective_lane, provider_template_coverage, selected_lanes
+from .registry import DoctorCheckStage, build_doctor_run_plan
 from .runtime import (
     check_github_auth_surface,
     check_pytest,
@@ -36,6 +37,31 @@ def _global_runtime_checks(
     )
 
 
+def _run_plan_check(
+    plan: tuple[DoctorCheckStage, ...],
+    *,
+    probe_runtime: bool,
+    actions_cost_sample: int,
+) -> DoctorCheck:
+    return DoctorCheck(
+        name="doctor.plan",
+        status=STATUS_PASS,
+        message="doctor run plan: " + ", ".join(stage.id for stage in plan),
+        detail={
+            "stages": [
+                {
+                    "id": stage.id,
+                    "group": stage.group_id,
+                    "optional": stage.optional,
+                }
+                for stage in plan
+            ],
+            "probe_runtime": probe_runtime,
+            "actions_cost_sample": actions_cost_sample,
+        },
+    )
+
+
 def run_doctor(
     *,
     config_path: Path,
@@ -47,7 +73,16 @@ def run_doctor(
     http_timeout: int = 5,
     actions_cost_sample: int = ACTIONS_COST_SAMPLE_DEFAULT,
 ) -> DoctorReport:
+    plan = build_doctor_run_plan(github=github, cloud=cloud)
+    enabled_stages = {stage.id for stage in plan}
     config, templates, checks = load_inputs(config_path, provider_templates_path)
+    checks.append(
+        _run_plan_check(
+            plan,
+            probe_runtime=probe_runtime,
+            actions_cost_sample=actions_cost_sample,
+        )
+    )
     if config is None or templates is None:
         return DoctorReport(
             config_path=str(config_path),
@@ -132,7 +167,7 @@ def run_doctor(
             )
         )
 
-    if github:
+    if "github" in enabled_stages:
         checks.extend(
             check_github_setup(
                 config=config,
@@ -142,7 +177,7 @@ def run_doctor(
             )
         )
 
-    if cloud:
+    if "cloud" in enabled_stages:
         checks.append(check_cloud_token_surface())
 
     return DoctorReport(

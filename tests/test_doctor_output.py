@@ -23,6 +23,11 @@ class DoctorOutputTests(unittest.TestCase):
                     message="config validates",
                 ),
                 DoctorCheck(
+                    name="doctor.plan",
+                    status=STATUS_PASS,
+                    message="doctor run plan: load-inputs, select-profile, runtime, providers",
+                ),
+                DoctorCheck(
                     name="runtime.python",
                     status=STATUS_PASS,
                     message="Python 3.12 is available",
@@ -54,7 +59,7 @@ class DoctorOutputTests(unittest.TestCase):
 
         rendered = output.render_doctor_text(report)
 
-        self.assertIn("Checks: 6 total, 2 warnings, 1 skipped", rendered)
+        self.assertIn("Checks: 7 total, 2 warnings, 1 skipped", rendered)
         self.assertLess(rendered.index("Setup"), rendered.index("Runtime"))
         self.assertLess(rendered.index("Runtime"), rendered.index("Provider lanes"))
         self.assertLess(rendered.index("Provider lanes"), rendered.index("GitHub"))
@@ -66,6 +71,10 @@ class DoctorOutputTests(unittest.TestCase):
         )
         self.assertIn(
             "  remediation: set GITHUB_TOKEN before enabling this lane.",
+            rendered,
+        )
+        self.assertIn(
+            "- PASS doctor.plan: doctor run plan: load-inputs, select-profile, runtime, providers",
             rendered,
         )
 
