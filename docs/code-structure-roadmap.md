@@ -90,7 +90,9 @@ tested internal seams:
 - `code_mower.doctor_checks` now owns doctor result models, named check groups,
   runtime/toolchain checks, optional cloud-token checks, GitHub/provider/Actions
   diagnostics, human-readable output rendering, first-run presets, and
-  package-aware config/template path resolution. It also owns doctor report
+  package-aware config/template path resolution. Provider diagnostics are split
+  into token/env checks, local CLI discovery/probes, API-model probes, and a
+  thin provider catalog/runtime orchestrator. It also owns doctor report
   orchestration through `code_mower.doctor_checks.runner`; `doctor.py` remains
   the backwards-compatible CLI adapter.
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
@@ -133,8 +135,9 @@ existing commands.
 2. **Doctor check registry**
    - Completed: result models, group registry, runtime/toolchain checks, and
      optional cloud-token checks now live under `code_mower.doctor_checks`.
-   - GitHub repository diagnostics, provider probes, and Actions cost checks
-     now also live behind that seam.
+   - GitHub repository diagnostics, provider token/env checks, local CLI
+     discovery/probes, API-model probes, and Actions cost checks now also live
+     behind that seam.
    - Next: move the remaining output/privacy checks behind the same registry
      seam.
    - Keep `doctor --preflight` behavior unchanged.

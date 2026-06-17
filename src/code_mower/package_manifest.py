@@ -61,6 +61,17 @@ PACKAGE_FILES = (
     ("src/code_mower/doctor_checks/models.py", "src/code_mower/doctor_checks/models.py", "core"),
     ("src/code_mower/doctor_checks/output.py", "src/code_mower/doctor_checks/output.py", "core"),
     ("src/code_mower/doctor_checks/presets.py", "src/code_mower/doctor_checks/presets.py", "core"),
+    (
+        "src/code_mower/doctor_checks/provider_api_model.py",
+        "src/code_mower/doctor_checks/provider_api_model.py",
+        "core",
+    ),
+    ("src/code_mower/doctor_checks/provider_env.py", "src/code_mower/doctor_checks/provider_env.py", "core"),
+    (
+        "src/code_mower/doctor_checks/provider_local_cli.py",
+        "src/code_mower/doctor_checks/provider_local_cli.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/providers.py", "src/code_mower/doctor_checks/providers.py", "core"),
     ("src/code_mower/doctor_checks/registry.py", "src/code_mower/doctor_checks/registry.py", "core"),
     ("src/code_mower/doctor_checks/runner.py", "src/code_mower/doctor_checks/runner.py", "core"),
