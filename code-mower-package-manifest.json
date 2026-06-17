@@ -304,6 +304,16 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/provider_local_cli_commands.py",
+      "target": "src/code_mower/doctor_checks/provider_local_cli_commands.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/provider_local_cli_probe_config.py",
+      "target": "src/code_mower/doctor_checks/provider_local_cli_probe_config.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/provider_probe.py",
       "target": "src/code_mower/doctor_checks/provider_probe.py"
     },
@@ -404,6 +414,11 @@
     },
     {
       "kind": "core",
+      "source": "tools/code_mower_versioning.py",
+      "target": "src/code_mower/versioning.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/prompts.py",
       "target": "src/code_mower/prompts.py"
     },
@@ -501,6 +516,11 @@
       "kind": "reviewer",
       "source": "src/code_mower/provider_runners/verdict_artifacts.py",
       "target": "src/code_mower/provider_runners/verdict_artifacts.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/provider_runners/workspace.py",
+      "target": "src/code_mower/provider_runners/workspace.py"
     },
     {
       "kind": "reviewer",
@@ -1069,6 +1089,7 @@
     "console_script": "code-mower=code_mower.cli:main",
     "module": "code_mower",
     "name": "code-mower",
-    "source_layout": "src/code_mower"
+    "source_layout": "src/code_mower",
+    "version": "0.5.0a67"
   }
 }

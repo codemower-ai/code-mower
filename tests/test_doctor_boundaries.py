@@ -86,6 +86,8 @@ class DoctorBoundaryTests(unittest.TestCase):
             "code_mower.doctor_checks.provider_api_model",
             "code_mower.doctor_checks.provider_env",
             "code_mower.doctor_checks.provider_local_cli",
+            "code_mower.doctor_checks.provider_local_cli_commands",
+            "code_mower.doctor_checks.provider_local_cli_probe_config",
             "code_mower.doctor_checks.provider_probe",
             "code_mower.doctor_checks.providers",
             "code_mower.doctor_checks.privacy",
