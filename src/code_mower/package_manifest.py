@@ -82,6 +82,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_merge.py", "src/code_mower/code_mower_merge.py", "core"),
     ("src/code_mower/migration.py", "src/code_mower/migration.py", "core"),
     ("src/code_mower/migration_mirror.py", "src/code_mower/migration_mirror.py", "core"),
+    ("src/code_mower/migration_readiness.py", "src/code_mower/migration_readiness.py", "core"),
     ("src/code_mower/migration_rehearsal.py", "src/code_mower/migration_rehearsal.py", "core"),
     ("tools/code_mower_next_steps.py", "src/code_mower/next_steps.py", "core"),
     ("tools/code_mower_package.py", "src/code_mower/package.py", "core"),

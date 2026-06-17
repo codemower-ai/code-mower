@@ -29,11 +29,11 @@ as a backwards-compatible CLI adapter around `code_mower.cloud_client`.
 `package.py` has also dropped off this list: it is now roughly 670 lines and
 acts as a materializer adapter around package manifest, content, static,
 rendering, and path helper modules.
-`migration.py` has also dropped off this list: package-install rehearsal and
-first-user readiness scoring now live under `code_mower.migration_rehearsal`,
-and mirror-removal planning plus runner aliases now live under
-`code_mower.migration_mirror`. `migration.py` remains a smaller migration
-CLI/compatibility adapter.
+`migration.py` has also dropped off this list: package-install rehearsal lives
+under `code_mower.migration_rehearsal`, first-user readiness scoring lives
+under `code_mower.migration_readiness`, and mirror-removal planning plus runner
+aliases now live under `code_mower.migration_mirror`. `migration.py` remains a
+smaller migration CLI/compatibility adapter.
 The GitHub doctor checks also now keep redacted `gh api` helpers in
 `code_mower.doctor_checks.github_api` and Actions billing/cost probes in
 `code_mower.doctor_checks.github_actions`, leaving `github.py` focused on
@@ -122,8 +122,9 @@ tested internal seams:
   builders, static generated file bodies, YAML/provider-catalog rendering, CLI
   command inventory, and provider-template path resolution. `package.py`
   remains the materializer adapter for package plans and output writes.
-- `code_mower.migration_rehearsal` now owns package-install rehearsal,
-  first-user readiness scorecards, and clean-venv/toy-repo rehearsal helpers.
+- `code_mower.migration_rehearsal` now owns package-install rehearsal and
+  clean-venv/toy-repo rehearsal helpers; `code_mower.migration_readiness` owns
+  first-user readiness artifacts and scorecards.
 - `code_mower.migration_mirror` now owns mirror-removal planning, workflow
   dependency detection, local fallback detection, and runner-alias reporting.
   `migration.py` remains the compatibility adapter for migration subcommands,
@@ -192,8 +193,9 @@ existing commands.
      useful from manual and semi-manual runs.
 
 6. **Package/migration boundary**
-   - Completed: package-install rehearsal and first-user readiness scoring now
-     live under `code_mower.migration_rehearsal`.
+   - Completed: package-install rehearsal now lives under
+     `code_mower.migration_rehearsal`; first-user readiness artifacts and
+     scorecards now live under `code_mower.migration_readiness`.
    - Completed: mirror-removal planning and runner-alias reporting now live
      under `code_mower.migration_mirror`.
    - Next: keep product-repo wrapper support as command plumbing unless a

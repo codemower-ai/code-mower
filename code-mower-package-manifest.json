@@ -314,6 +314,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/migration_readiness.py",
+      "target": "src/code_mower/migration_readiness.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/migration_rehearsal.py",
       "target": "src/code_mower/migration_rehearsal.py"
     },
