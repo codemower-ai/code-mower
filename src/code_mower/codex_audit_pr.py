@@ -85,30 +85,39 @@ if __package__ in {None, "", "tools"}:
     try:
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.provider_runners import (
+            clip_text as _clip_text,
             fetch_pull_request,
+            one_line as _one_line,
             pop_github_token_env,
             post_pr_comment,
             repost_audit_verdict_artifact,
+            require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
             write_audit_verdict_artifact,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from provider_runners import (  # type: ignore
+            clip_text as _clip_text,
             fetch_pull_request,
+            one_line as _one_line,
             pop_github_token_env,
             post_pr_comment,
             repost_audit_verdict_artifact,
+            require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
             write_audit_verdict_artifact,
         )
 else:  # pragma: no cover - exercised after package extraction.
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .provider_runners import (
+        clip_text as _clip_text,
         fetch_pull_request,
+        one_line as _one_line,
         pop_github_token_env,
         post_pr_comment,
         repost_audit_verdict_artifact,
+        require_exact_keys as _require_exact_keys,
         resolve_github_token_from_stdin_or_env,
         write_audit_verdict_artifact,
     )
@@ -274,36 +283,6 @@ def _unknown_structured_verdict(reason: str) -> CodexVerdict:
             "requeue and retry)"
         ),
     )
-
-
-def _clip_text(value: str, limit: int) -> str:
-    value = value.strip()
-    if len(value) <= limit:
-        return value
-    suffix = "... [truncated]"
-    return value[: max(0, limit - len(suffix))].rstrip() + suffix
-
-
-def _one_line(value: str, limit: int) -> str:
-    return _clip_text(
-        value.replace("\r", " ").replace("\n", " ").replace("`", "'"),
-        limit,
-    )
-
-
-def _require_exact_keys(
-    value: Dict[str, Any],
-    required: set,
-    where: str,
-) -> Optional[str]:
-    keys = set(value.keys())
-    missing = sorted(required - keys)
-    extra = sorted(keys - required)
-    if missing:
-        return f"{where} missing required keys: {', '.join(missing)}"
-    if extra:
-        return f"{where} contains unsupported keys: {', '.join(extra)}"
-    return None
 
 
 def _render_structured_prose(
