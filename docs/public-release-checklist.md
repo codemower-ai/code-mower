@@ -11,7 +11,7 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha releases and reports its version with
   `code-mower --version`.
-- The v0.5 alpha entrypoint is `v0.5.0-alpha.69`, with `code-mower doctor
+- The v0.5 alpha entrypoint is `v0.5.0-alpha.70`, with `code-mower doctor
   --preflight` as the first-run setup diagnostic. `doctor --v05` remains the
   versioned equivalent for scripts.
 - The README now shows a shortened `doctor --preflight` example so fresh users can
