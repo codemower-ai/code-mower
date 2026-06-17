@@ -65,7 +65,7 @@ else:
 @dataclass(frozen=True)
 class TrustedTerminalComment:
     status: str
-    reviewed_sha: str
+    reviewed_sha: Optional[str]
     author: str
     created_at: str
 
@@ -107,8 +107,6 @@ def latest_trusted_terminal_comment(
         if status not in {"done", "blocked"}:
             continue
         reviewed_sha = _extract_reviewed_sha(body)
-        if not reviewed_sha:
-            continue
         return TrustedTerminalComment(
             status=status,
             reviewed_sha=reviewed_sha,
@@ -133,9 +131,13 @@ def resolve_stale_clear_decision(
         return StaleClearResult(None, "no terminal audit labels present")
 
     current_comment = latest_trusted_terminal_comment(comments, config=config)
-    if current_comment and sha_matches_reviewed_head(
-        current_comment.reviewed_sha,
-        current_head_sha,
+    if (
+        current_comment
+        and current_comment.reviewed_sha
+        and sha_matches_reviewed_head(
+            current_comment.reviewed_sha,
+            current_head_sha,
+        )
     ):
         expected_label = _status_label(config, current_comment.status)
         wrong_terminal_labels = tuple(sorted(present_terminal - {expected_label}))

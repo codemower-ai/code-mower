@@ -144,6 +144,31 @@ class ClearStaleTests(unittest.TestCase):
         self.assertEqual(result.decision.add_label, "needs-devin-audit")
         self.assertIsNone(result.decision.reviewed_sha)
 
+    def test_newer_no_sha_terminal_comment_blocks_older_matching_approval(self) -> None:
+        result = resolve_stale_clear_decision(
+            issue_number=123,
+            current_head_sha=CURRENT_SHA,
+            labels=["devin-audit-done"],
+            comments=[
+                _comment(
+                    "devin-ai-integration[bot]",
+                    _devin_body("devin-audit-done", CURRENT_SHA),
+                    created_at="2026-06-17T00:01:00Z",
+                ),
+                _comment(
+                    "devin-ai-integration[bot]",
+                    _devin_body("devin-audit-done", None),
+                    created_at="2026-06-17T00:02:00Z",
+                ),
+            ],
+            config=self.config,
+        )
+
+        self.assertIsNotNone(result.decision)
+        assert result.decision is not None
+        self.assertEqual(result.decision.add_label, "needs-devin-audit")
+        self.assertIsNone(result.decision.reviewed_sha)
+
     def test_untrusted_comment_does_not_preserve_terminal_label(self) -> None:
         result = resolve_stale_clear_decision(
             issue_number=123,
