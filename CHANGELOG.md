@@ -4,6 +4,24 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.60
+
+This alpha is the public package marker after test-enforcing the doctor package
+boundary.
+
+### Changed
+
+- Added doctor boundary tests that keep `doctor.py` as a thin CLI and
+  compatibility adapter.
+- The guard rejects direct imports of doctor check implementation modules such
+  as runtime, GitHub, provider, Actions-cost, output, privacy, and cloud
+  submodules.
+- The guard covers package-relative, fully qualified, and legacy
+  `tools.doctor_checks.*` import styles.
+- Updated the code-structure roadmap to document the test-enforced doctor
+  boundary.
+- Public install and release-readiness docs now point to `v0.5.0-alpha.60`.
+
 ## v0.5.0-alpha.59
 
 This alpha is the public package marker after adding a named doctor run-plan

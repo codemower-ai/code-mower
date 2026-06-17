@@ -135,7 +135,7 @@ serialize through their shared lock. The default checkout-lock timeout is long
 enough for normal audit runs to queue instead of failing after two minutes;
 dead locks are still cleared by the PID/staleness checks.
 
-`v0.5.0-alpha.59` keeps the smoke runner, package plan, docs, next-step cloud
+`v0.5.0-alpha.60` keeps the smoke runner, package plan, docs, next-step cloud
 export examples, draft auto-discovery rehearsal, and opt-in upload dry run
 aligned on reviewer metrics, lane policy, and value report bundles. The public
 package also includes the formerly private hardening work that made product
