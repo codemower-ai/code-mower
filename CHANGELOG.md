@@ -4,6 +4,24 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.54
+
+This alpha is the public package marker after extracting shared provider
+process environment helpers.
+
+### Changed
+
+- Shared provider child-process environment construction now lives in
+  `code_mower.provider_runners.process`.
+- Gemini CLI, Hermes CLI, and CodeRabbit CLI wrappers use the shared helper for
+  allowlisted ambient variables, isolated HOME/XDG paths, and provider-specific
+  explicit environment values.
+- Package manifests now include the shared provider process helper.
+- Added focused unit coverage for ambient env filtering, isolated home handling,
+  provider auth-key mapping, Hermes quiet flags, and CodeRabbit env allowlisting.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.54`.
+
 ## v0.5.0-alpha.53
 
 This alpha is the public package marker after extracting shared provider git
