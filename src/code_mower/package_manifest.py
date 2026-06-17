@@ -157,6 +157,11 @@ PACKAGE_FILES = (
         "src/code_mower/provider_runners/verdict_artifacts.py",
         "reviewer",
     ),
+    (
+        "src/code_mower/provider_runners/workspace.py",
+        "src/code_mower/provider_runners/workspace.py",
+        "reviewer",
+    ),
     ("tools/codex_audit_pr.py", "src/code_mower/codex_audit_pr.py", "reviewer"),
     (
         "tools/codex_audit_env_preflight.py",

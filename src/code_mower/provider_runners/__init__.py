@@ -21,6 +21,11 @@ from .verdict_artifacts import (
     repost_audit_verdict_artifact,
     write_audit_verdict_artifact,
 )
+from .workspace import (
+    ProviderWorkspaceError,
+    verify_checkout_at_head,
+    working_tree_status,
+)
 
 __all__ = [
     "fetch_pull_request",
@@ -35,11 +40,14 @@ __all__ = [
     "parse_repo_paths",
     "pop_github_token_env",
     "post_pr_comment",
+    "ProviderWorkspaceError",
     "repost_audit_verdict_artifact",
     "require_exact_keys",
     "resolve_github_token_from_env_or_gh",
     "resolve_github_token_from_stdin_or_env",
     "run_git",
+    "verify_checkout_at_head",
+    "working_tree_status",
     "build_allowlisted_child_env",
     "write_audit_verdict_artifact",
 ]
