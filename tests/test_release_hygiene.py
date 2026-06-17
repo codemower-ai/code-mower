@@ -975,6 +975,46 @@ printf '%s\\n' "${lane}"
         )
         self.assertEqual(manifest["output_dir"], "<generated-output-dir>")
 
+    def test_package_manifest_excludes_generated_cache_artifacts(self) -> None:
+        forbidden_fragments = (
+            "__pycache__",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".mypy_cache",
+            ".egg-info",
+        )
+        forbidden_suffixes = (".pyc", ".pyo")
+
+        package_entries = {
+            value
+            for source, target, _mode in code_mower_package.PACKAGE_FILES
+            for value in (source, target)
+        }
+        bad_package_entries = sorted(
+            entry
+            for entry in package_entries
+            if any(fragment in entry for fragment in forbidden_fragments)
+            or entry.endswith(forbidden_suffixes)
+        )
+        self.assertEqual(bad_package_entries, [])
+
+        tracked_files = subprocess.check_output(
+            ["git", "ls-files"],
+            cwd=ROOT,
+            text=True,
+        ).splitlines()
+        bad_tracked_files = sorted(
+            path
+            for path in tracked_files
+            if any(fragment in path for fragment in forbidden_fragments)
+            or path.endswith(forbidden_suffixes)
+        )
+        self.assertEqual(bad_tracked_files, [])
+
+        manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        self.assertIn("global-exclude *.py[cod]", manifest)
+        self.assertIn("global-exclude __pycache__", manifest)
+
     def test_package_materializer_includes_product_support_templates(self) -> None:
         packaged_sources = {source for _, source, _ in code_mower_package.PACKAGE_FILES}
         for source in (
