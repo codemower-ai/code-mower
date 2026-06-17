@@ -22,6 +22,7 @@ if __package__ in {None, "", "tools"}:
         blind_review_coordinator,
         bootstrap as code_mower_bootstrap,
         claude_audit_pr,
+        clear_stale,
         coderabbit_cli_audit_pr,
         codex_audit_env_preflight,
         codex_audit_pr,
@@ -56,6 +57,7 @@ else:  # pragma: no cover - exercised after package extraction.
     from . import bootstrap as code_mower_bootstrap
     from . import builder_experiment as code_mower_builder_experiment
     from . import claude_audit_pr
+    from . import clear_stale
     from . import cloud as code_mower_cloud
     from . import coderabbit_cli_audit_pr
     from . import codex_audit_env_preflight
@@ -345,6 +347,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "builder-experiment": "Capture builder-side experiment metadata.",
     "calibration": "Create corpora, dispositions, policy, and value reports.",
     "claude-audit": "Run a Claude structured audit lane.",
+    "clear-stale": "Clear stale terminal audit labels after a PR head changes.",
     "cloud": "Export or upload sanitized benchmark metadata.",
     "config": "Validate or inspect a Code Mower config.",
     "context-packs": "Build selective surrounding-file context packs.",
@@ -463,6 +466,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "builder-experiment": code_mower_builder_experiment.main,
     "calibration": code_mower_calibration.main,
     "claude-audit": claude_audit_pr.main,
+    "clear-stale": clear_stale.main,
     "cloud": code_mower_cloud.main,
     "config": _config_main,
     "context-packs": code_mower_context_packs.main,

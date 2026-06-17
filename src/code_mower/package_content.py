@@ -252,6 +252,85 @@ jobs:
 """.strip()
             + "\n"
         )
+    if target.endswith("review-clear-stale.yml.j2"):
+        return (
+            r"""# Code Mower workflow template: clear stale terminal audit labels on new commits.
+#
+# Defaults to the Devin lane because hosted/paid lanes are the most likely to
+# need explicit re-dispatch. Change CLEAR_STALE_LANE or generate one workflow
+# per merge-authority lane.
+name: Code Mower Clear Stale Audits
+
+on:
+  pull_request_target:
+    types: [synchronize]
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "Code Mower trailer lane, for example devin"
+        required: false
+        default: "devin"
+      pr:
+        description: "Pull request number for manual runs"
+        required: false
+      head_sha:
+        description: "Current PR head SHA for manual runs"
+        required: false
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  clear-stale:
+    runs-on: ubuntu-latest
+    env:
+      CLEAR_STALE_LANE: {% raw %}${{ github.event.inputs.lane || 'devin' }}{% endraw %}
+      CLEAR_STALE_PR: {% raw %}${{ github.event.pull_request.number || github.event.inputs.pr }}{% endraw %}
+      CLEAR_STALE_HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha || github.event.inputs.head_sha }}{% endraw %}
+      # Optional: dispatch the paid/hosted audit bridge directly when this
+      # command adds a fresh needs-* label. Keep unset for label-only requeue.
+      # CLEAR_STALE_DISPATCH_WORKFLOW: devin-audit-bridge.yml
+      # CLEAR_STALE_DISPATCH_REF: main
+      # CLEAR_STALE_DISPATCH_INPUTS: |
+      #   pr_number={pr}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Clear stale Code Mower audit labels
+        env:
+          GITHUB_TOKEN: {% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}
+        run: |
+          set -euo pipefail
+
+          extra_args=()
+          if [ -n "${CLEAR_STALE_DISPATCH_WORKFLOW:-}" ]; then
+            extra_args+=(--dispatch-workflow "${CLEAR_STALE_DISPATCH_WORKFLOW}")
+          fi
+          if [ -n "${CLEAR_STALE_DISPATCH_REF:-}" ]; then
+            extra_args+=(--dispatch-ref "${CLEAR_STALE_DISPATCH_REF}")
+          fi
+          if [ -n "${CLEAR_STALE_DISPATCH_INPUTS:-}" ]; then
+            while IFS= read -r dispatch_input; do
+              [ -n "${dispatch_input}" ] || continue
+              extra_args+=(--dispatch-input "${dispatch_input}")
+            done <<< "${CLEAR_STALE_DISPATCH_INPUTS}"
+          fi
+
+          tools/code_mower clear-stale \
+            --lane "${CLEAR_STALE_LANE}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pr "${CLEAR_STALE_PR}" \
+            --head-sha "${CLEAR_STALE_HEAD_SHA}" \
+            --json \
+            "${extra_args[@]}"
+""".strip()
+            + "\n"
+        )
     workflow_name = Path(target).stem.replace("-", " ").title()
     return "\n".join(
         [
@@ -309,6 +388,7 @@ def cli_commands(version: str) -> tuple[str, ...]:
         "code-mower init --profile recommended --dry-run",
         "code-mower init --profile recommended --apply --output-dir .code-mower.generated",
         "code-mower merge-plan owner/repo#123 --json",
+        "code-mower clear-stale --lane devin --repo owner/repo --pr 123 --json",
         "code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json",
         "code-mower migration mirror-removal-plan --repo-path /path/to/product-repo --shadow-cycles 1 --standalone-default-cycles 1 --json",
         "code-mower migration runner-aliases --json",

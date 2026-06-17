@@ -203,6 +203,13 @@ case "${1:-}" in
     python_bin="$("${bootstrap_python}" "${script_dir}/code_mower_bootstrap.py" --repo-root "${repo_root}" --print-python)"
     exec "${python_bin}" "${script_dir}/saas_reviewer_labeler.py" "$@"
     ;;
+  clear-stale)
+    if [ -f "${script_dir}/clear_stale.py" ]; then
+      shift
+      python_bin="$("${bootstrap_python}" "${script_dir}/code_mower_bootstrap.py" --repo-root "${repo_root}" --print-python)"
+      exec "${python_bin}" "${script_dir}/clear_stale.py" "$@"
+    fi
+    ;;
 esac
 
 python_bin="$("${bootstrap_python}" "${script_dir}/code_mower_bootstrap.py" --repo-root "${repo_root}" --print-python)"

@@ -284,6 +284,7 @@ PACKAGE_FILES = (
         "reviewer",
     ),
     ("tools/claude_audit_pr.py", "src/code_mower/claude_audit_pr.py", "reviewer"),
+    ("src/code_mower/clear_stale.py", "src/code_mower/clear_stale.py", "labeler"),
     ("tools/trailer_comment_labeler.py", "src/code_mower/trailer_comment_labeler.py", "labeler"),
     ("tools/saas_reviewer_labeler.py", "src/code_mower/saas_reviewer_labeler.py", "labeler"),
     ("tools/local_llm_audit_pr.py", "src/code_mower/local_llm_audit_pr.py", "reviewer"),

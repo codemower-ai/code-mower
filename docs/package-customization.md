@@ -201,6 +201,7 @@ before deleting implementation files:
 ```bash
 tools/code_mower trailer-comment-labeler --lane codex
 tools/code_mower saas-reviewer-labeler --adapter gitar
+tools/code_mower clear-stale --lane devin --repo owner/repo --pr 123 --json
 tools/code_mower bootstrap --print-python
 ```
 
@@ -213,6 +214,42 @@ CODE_MOWER_USE_LOCAL=1 tools/code_mower trailer-comment-labeler --lane codex
 CODE_MOWER_USE_LOCAL=1 tools/code_mower saas-reviewer-labeler --adapter gitar
 CODE_MOWER_USE_LOCAL=1 tools/code_mower bootstrap --print-python
 ```
+
+## Stale Merge-Authority Audit Labels
+
+Merge-authority labels such as `devin-audit-done` or
+`devin-audit-blocked` are valid only for the pull request head that was
+reviewed. After a PR receives new commits, stale terminal labels must not
+continue to satisfy the merge bar.
+
+Use `clear-stale` from a `pull_request_target.synchronize` workflow for hosted
+or paid merge-authority lanes:
+
+```bash
+tools/code_mower clear-stale --lane devin --repo owner/repo --pr 123 --json
+```
+
+The command preserves terminal labels only when the latest trusted,
+Head-SHA-bound reviewer comment matches the current PR head. Otherwise it adds
+the lane's `needs-*` label and clears the lane's terminal labels. It ignores
+fallback comments without a `Head SHA`, which keeps old prose or label-state
+comments from accidentally approving a new head.
+
+For lanes where adding a label with `GITHUB_TOKEN` would not trigger the paid
+or hosted reviewer again, pass an explicit workflow dispatch:
+
+```bash
+tools/code_mower clear-stale \
+  --lane devin \
+  --repo owner/repo \
+  --pr 123 \
+  --dispatch-workflow devin-audit-bridge.yml \
+  --dispatch-input 'pr_number={pr}' \
+  --json
+```
+
+Code Mower ships `templates/workflows/review-clear-stale.yml.j2` as a starter
+workflow for this pattern.
 
 That fallback keeps private-repo labeler workflows from trying to clone the
 standalone repository over unauthenticated HTTPS, but it also means mirrored
