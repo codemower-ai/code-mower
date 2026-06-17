@@ -4,6 +4,23 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.55
+
+This alpha is the public package marker after extracting CodeMower.com Git
+metadata helpers.
+
+### Changed
+
+- Cloud Git remote metadata helpers now live in
+  `code_mower.cloud_client.git_metadata`.
+- Cloud event construction keeps building dogfood events while importing the
+  Git helper from the narrower cloud metadata boundary.
+- Package manifests now include the cloud Git metadata helper.
+- Added focused unit coverage for GitHub remote slug parsing, non-repository
+  fallback behavior, and best-effort Git command output.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.55`.
+
 ## v0.5.0-alpha.54
 
 This alpha is the public package marker after extracting shared provider
