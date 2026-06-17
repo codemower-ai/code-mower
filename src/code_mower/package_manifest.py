@@ -92,6 +92,16 @@ PACKAGE_FILES = (
         "src/code_mower/doctor_checks/provider_local_cli.py",
         "core",
     ),
+    (
+        "src/code_mower/doctor_checks/provider_local_cli_commands.py",
+        "src/code_mower/doctor_checks/provider_local_cli_commands.py",
+        "core",
+    ),
+    (
+        "src/code_mower/doctor_checks/provider_local_cli_probe_config.py",
+        "src/code_mower/doctor_checks/provider_local_cli_probe_config.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/provider_probe.py", "src/code_mower/doctor_checks/provider_probe.py", "core"),
     ("src/code_mower/doctor_checks/privacy.py", "src/code_mower/doctor_checks/privacy.py", "core"),
     ("src/code_mower/doctor_checks/providers.py", "src/code_mower/doctor_checks/providers.py", "core"),
