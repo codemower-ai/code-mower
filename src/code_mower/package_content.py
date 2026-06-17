@@ -287,9 +287,9 @@ jobs:
   clear-stale:
     runs-on: ubuntu-latest
     env:
-      CLEAR_STALE_LANE: ${{ github.event.inputs.lane || 'devin' }}
-      CLEAR_STALE_PR: ${{ github.event.pull_request.number || github.event.inputs.pr }}
-      CLEAR_STALE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.inputs.head_sha }}
+      CLEAR_STALE_LANE: {% raw %}${{ github.event.inputs.lane || 'devin' }}{% endraw %}
+      CLEAR_STALE_PR: {% raw %}${{ github.event.pull_request.number || github.event.inputs.pr }}{% endraw %}
+      CLEAR_STALE_HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha || github.event.inputs.head_sha }}{% endraw %}
       # Optional: dispatch the paid/hosted audit bridge directly when this
       # command adds a fresh needs-* label. Keep unset for label-only requeue.
       # CLEAR_STALE_DISPATCH_WORKFLOW: devin-audit-bridge.yml
@@ -303,7 +303,7 @@ jobs:
 
       - name: Clear stale Code Mower audit labels
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: {% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}
         run: |
           set -euo pipefail
 

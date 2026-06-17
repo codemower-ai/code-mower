@@ -677,6 +677,11 @@ exit 1
             template,
         )
         self.assertNotIn("actions/checkout@v4", template)
+        self.assertIn(
+            "{% raw %}${{ github.event.inputs.lane || 'devin' }}{% endraw %}",
+            template,
+        )
+        self.assertIn("{% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}", template)
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
