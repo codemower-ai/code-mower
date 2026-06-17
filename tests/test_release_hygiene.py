@@ -820,6 +820,41 @@ exit 1
             self.assertIn("tools/code_mower clear-stale", stale_text)
             self.assertIn("--dispatch-workflow", stale_text)
             self.assertIn("github.event.pull_request.head.sha", stale_text)
+            self.assertIn("github.event.inputs.lane || 'devin'", stale_text)
+            self.assertNotIn("{% raw %}", stale_text)
+            self.assertNotIn("{% endraw %}", stale_text)
+
+            custom_config = {
+                **devin_config,
+                "lanes": {
+                    "custom": {
+                        **devin_config["lanes"]["devin"],
+                        "trailer_lane": "devin",
+                        "review_hygiene": {
+                            "workflow": ".github/workflows/custom-clear-stale.yml",
+                            "token_env": "GITHUB_TOKEN",
+                        },
+                    }
+                },
+                "profiles": {
+                    "recommended": {
+                        "description": "Custom stale workflow test",
+                        "lanes": ["custom"],
+                    }
+                },
+            }
+            custom_plan = code_mower_init.render_init_plan(
+                custom_config,
+                package_mode=True,
+                package_command="code-mower",
+            )
+            custom_generated = Path(tmp) / ".code-mower.generated-custom-stale"
+            code_mower_init.apply_init_plan(custom_plan, custom_generated)
+            custom_text = (
+                custom_generated / ".github/workflows/custom-clear-stale.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("github.event.inputs.lane || 'devin'", custom_text)
+            self.assertNotIn("{% raw %}", custom_text)
 
             result = subprocess.run(
                 [str(output_dir / "tools/code_mower"), "--version"],

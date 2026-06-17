@@ -34,9 +34,6 @@ lanes:
     informational: true
     merge_authority: false
     trigger_policy: manual
-    review_hygiene:
-      workflow: .github/workflows/claude-clear-stale.yml
-      token_env: CLAUDE_REVIEW_LABEL_TOKEN
     labels:
       needs: needs-claude-review
       done: claude-review-done

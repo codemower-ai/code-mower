@@ -464,6 +464,16 @@ def _placeholder_text(path: str, source: str) -> str:
     )
 
 
+def _render_stale_workflow_template(text: str, *, lane: str) -> str:
+    """Render the shared stale-label workflow without requiring Jinja at runtime."""
+
+    return (
+        text.replace("{% raw %}", "")
+        .replace("{% endraw %}", "")
+        .replace("github.event.inputs.lane || 'devin'", f"github.event.inputs.lane || '{lane}'")
+    )
+
+
 def _copy_source_candidates(source_root: Path, entry: Mapping[str, Any], path: str) -> tuple[Path, ...]:
     candidates: list[Path] = []
     package_copy_from = entry.get("package_copy_from")
@@ -567,7 +577,16 @@ def apply_init_plan(
             None,
         )
         if source is not None:
-            shutil.copyfile(source, destination)
+            if entry.get("source") == "shared-stale-label-template":
+                destination.write_text(
+                    _render_stale_workflow_template(
+                        source.read_text(encoding="utf-8"),
+                        lane=str(entry.get("stale_lane") or "devin"),
+                    ),
+                    encoding="utf-8",
+                )
+            else:
+                shutil.copyfile(source, destination)
         else:
             destination.write_text(_placeholder_text(path, str(entry["source"])), encoding="utf-8")
             placeholder_files.append(str(destination))
@@ -695,6 +714,7 @@ def render_init_plan(
                     "source": "shared-stale-label-template",
                     "copy_from": "templates/workflows/review-clear-stale.yml.j2",
                     "package_copy_from": "templates/workflows/review-clear-stale.yml.j2",
+                    "stale_lane": _trailer_lane_name(lane_id, lane),
                 }
             )
     for target, copy_from, package_copy_from, source_name in STARTER_DATA_FILES:

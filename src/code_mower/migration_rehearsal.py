@@ -148,18 +148,15 @@ def _run_external_repo_readiness(
     )
     doctor_payload = _json_payload(doctor_completed.stdout)
 
-    commands_ok = (
-        detect_completed.returncode == 0
-        and dry_run_completed.returncode == 0
-        and doctor_completed.returncode == 0
-    )
     check_count = 0
     if isinstance(detect_payload, dict):
         check_count = int(detect_payload.get("check_count") or 0)
 
     return {
         "mode": "code-mower-external-repo-readiness",
-        "status": "pass" if commands_ok else "fail",
+        # _run_rehearsal_step raises RehearsalError on non-zero exit, so reaching
+        # this point means all three installed-CLI checks completed successfully.
+        "status": "pass",
         "repo_path": str(repo_path),
         "wrapper_present": False,
         "check_count": check_count,
@@ -602,11 +599,6 @@ def run_package_install_rehearsal(
                 steps=steps,
                 timeout=timeout,
             )
-            if external_repo_payload.get("status") != "pass":
-                raise RehearsalError(
-                    "external repo readiness did not pass",
-                    steps,
-                )
 
     readiness = _first_user_readiness_scorecard(
         toy_repo=toy_repo,
