@@ -4,6 +4,24 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.57
+
+This alpha is the public package marker after extracting CodeMower.com bundle
+report payload helpers.
+
+### Changed
+
+- Cloud upload report payload construction now lives in
+  `code_mower.cloud_client.reports`.
+- Cloud upload orchestration keeps the existing public API while importing
+  report payload helpers from the narrower cloud report boundary.
+- Package manifests now include the cloud report payload helper module.
+- Added focused coverage for metadata-only report summaries, embedded report
+  text, invalid manifest report entries, non-UTF-8 report files, and report
+  upload size guards.
+- Public install and release-readiness docs now point to
+  `v0.5.0-alpha.57`.
+
 ## v0.5.0-alpha.56
 
 This alpha is the public package marker after extracting CodeMower.com bundle
@@ -19,7 +37,7 @@ manifest helpers.
 - Added focused coverage for valid bundle manifests, unsupported schemas,
   unsafe report targets, and missing report files.
 - Public install and release-readiness docs now point to
-  `v0.5.0-alpha.56`.
+  `v0.5.0-alpha.57`.
 
 ## v0.5.0-alpha.55
 
