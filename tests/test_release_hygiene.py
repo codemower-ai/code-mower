@@ -690,6 +690,9 @@ exit 1
             "{% raw %}${{ github.event.inputs.lane || 'devin' }}{% endraw %}",
             template,
         )
+        self.assertIn("code-mower-clear-stale-", template)
+        self.assertIn("cancel-in-progress: true", template)
+        self.assertIn("No PR/head SHA available for stale-label cleanup", template)
         self.assertIn("{% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}", template)
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
@@ -820,6 +823,9 @@ exit 1
             self.assertIn("tools/code_mower clear-stale", stale_text)
             self.assertIn("--dispatch-workflow", stale_text)
             self.assertIn("github.event.pull_request.head.sha", stale_text)
+            self.assertIn("code-mower-clear-stale-", stale_text)
+            self.assertIn("cancel-in-progress: true", stale_text)
+            self.assertIn("No PR/head SHA available for stale-label cleanup", stale_text)
             self.assertIn('default: "devin"', stale_text)
             self.assertIn("github.event.inputs.lane || 'devin'", stale_text)
             self.assertNotIn("{% raw %}", stale_text)
