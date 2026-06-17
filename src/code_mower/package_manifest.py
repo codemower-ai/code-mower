@@ -86,6 +86,16 @@ PACKAGE_FILES = (
         "src/code_mower/doctor_checks/provider_api_model.py",
         "core",
     ),
+    (
+        "src/code_mower/doctor_checks/provider_api_model_openai.py",
+        "src/code_mower/doctor_checks/provider_api_model_openai.py",
+        "core",
+    ),
+    (
+        "src/code_mower/doctor_checks/provider_api_model_profiles.py",
+        "src/code_mower/doctor_checks/provider_api_model_profiles.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/provider_env.py", "src/code_mower/doctor_checks/provider_env.py", "core"),
     (
         "src/code_mower/doctor_checks/provider_local_cli.py",
