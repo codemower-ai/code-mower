@@ -65,6 +65,16 @@ PACKAGE_FILES = (
     ("src/code_mower/doctor_checks/cloud.py", "src/code_mower/doctor_checks/cloud.py", "core"),
     ("src/code_mower/doctor_checks/common.py", "src/code_mower/doctor_checks/common.py", "core"),
     ("src/code_mower/doctor_checks/github_actions.py", "src/code_mower/doctor_checks/github_actions.py", "core"),
+    (
+        "src/code_mower/doctor_checks/github_actions_cost.py",
+        "src/code_mower/doctor_checks/github_actions_cost.py",
+        "core",
+    ),
+    (
+        "src/code_mower/doctor_checks/github_actions_failures.py",
+        "src/code_mower/doctor_checks/github_actions_failures.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/github_api.py", "src/code_mower/doctor_checks/github_api.py", "core"),
     ("src/code_mower/doctor_checks/github.py", "src/code_mower/doctor_checks/github.py", "core"),
     ("src/code_mower/doctor_checks/groups.py", "src/code_mower/doctor_checks/groups.py", "core"),
