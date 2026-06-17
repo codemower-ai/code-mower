@@ -820,6 +820,7 @@ exit 1
             self.assertIn("tools/code_mower clear-stale", stale_text)
             self.assertIn("--dispatch-workflow", stale_text)
             self.assertIn("github.event.pull_request.head.sha", stale_text)
+            self.assertIn('default: "devin"', stale_text)
             self.assertIn("github.event.inputs.lane || 'devin'", stale_text)
             self.assertNotIn("{% raw %}", stale_text)
             self.assertNotIn("{% endraw %}", stale_text)
@@ -829,7 +830,6 @@ exit 1
                 "lanes": {
                     "custom": {
                         **devin_config["lanes"]["devin"],
-                        "trailer_lane": "devin",
                         "review_hygiene": {
                             "workflow": ".github/workflows/custom-clear-stale.yml",
                             "token_env": "GITHUB_TOKEN",
@@ -853,7 +853,8 @@ exit 1
             custom_text = (
                 custom_generated / ".github/workflows/custom-clear-stale.yml"
             ).read_text(encoding="utf-8")
-            self.assertIn("github.event.inputs.lane || 'devin'", custom_text)
+            self.assertIn('default: "custom"', custom_text)
+            self.assertIn("github.event.inputs.lane || 'custom'", custom_text)
             self.assertNotIn("{% raw %}", custom_text)
 
             result = subprocess.run(

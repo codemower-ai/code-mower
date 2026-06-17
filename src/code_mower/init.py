@@ -470,6 +470,7 @@ def _render_stale_workflow_template(text: str, *, lane: str) -> str:
     return (
         text.replace("{% raw %}", "")
         .replace("{% endraw %}", "")
+        .replace('default: "devin"', f'default: "{lane}"')
         .replace("github.event.inputs.lane || 'devin'", f"github.event.inputs.lane || '{lane}'")
     )
 
