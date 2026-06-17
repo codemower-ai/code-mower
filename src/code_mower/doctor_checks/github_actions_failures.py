@@ -2,32 +2,14 @@
 
 from __future__ import annotations
 
-import re
-from typing import Any, Mapping
-
-from .common import (
-    ACTIONS_BILLING_BLOCK_PATTERNS,
-    ACTIONS_INSPECTABLE_FAILURE_CONCLUSIONS,
-    MAX_ACTIONS_FAILED_JOBS_TO_INSPECT,
-    MAX_ACTIONS_FAILED_RUNS_TO_INSPECT,
-    DoctorCheck,
-    STATUS_PASS,
-    STATUS_WARN,
+from .common import DoctorCheck, STATUS_PASS, STATUS_WARN
+from .github_actions_failure_annotations import (
+    _annotation_mentions_actions_billing_block,
+    _check_run_id_from_actions_job,
 )
-from .github_api import _github_api_json, _github_api_list
-
-
-def _annotation_mentions_actions_billing_block(message: str) -> bool:
-    lowered = message.lower()
-    return any(pattern in lowered for pattern in ACTIONS_BILLING_BLOCK_PATTERNS)
-
-
-def _check_run_id_from_actions_job(job: Mapping[str, Any]) -> Any | None:
-    check_run_url = str(job.get("check_run_url") or "")
-    match = re.search(r"/check-runs/([0-9]+)$", check_run_url)
-    if match:
-        return match.group(1)
-    return None
+from .github_actions_failure_scan import (
+    inspect_recent_actions_failures,
+)
 
 
 def _check_recent_actions_billing_blocks(
@@ -36,25 +18,24 @@ def _check_recent_actions_billing_blocks(
     slug: str,
     http_timeout: int,
 ) -> DoctorCheck:
-    runs_payload, runs_detail = _github_api_json(
-        gh_path,
-        f"repos/{slug}/actions/runs?per_page=10",
+    inspection = inspect_recent_actions_failures(
+        gh_path=gh_path,
+        slug=slug,
         http_timeout=http_timeout,
     )
-    if runs_payload is None:
+    if inspection.unavailable_detail is not None:
         return DoctorCheck(
             name="github.actions.recent_failures",
             status=STATUS_WARN,
             message=f"could not inspect recent GitHub Actions runs for {slug}",
-            detail={"repo": slug, **runs_detail},
+            detail={"repo": slug, **inspection.unavailable_detail},
             remediation=(
                 "Verify gh auth can read Actions run metadata, then rerun "
                 "`code-mower doctor --github`."
             ),
         )
 
-    raw_runs = runs_payload.get("workflow_runs")
-    if not isinstance(raw_runs, list):
+    if inspection.missing_workflow_runs:
         return DoctorCheck(
             name="github.actions.recent_failures",
             status=STATUS_WARN,
@@ -62,158 +43,39 @@ def _check_recent_actions_billing_blocks(
             detail={"repo": slug},
         )
 
-    inspected_runs = 0
-    inspected_jobs = 0
-    incomplete_inspections: list[dict[str, Any]] = []
-    for run in raw_runs:
-        if (
-            not isinstance(run, Mapping)
-            or run.get("conclusion") not in ACTIONS_INSPECTABLE_FAILURE_CONCLUSIONS
-        ):
-            continue
-        if inspected_runs >= MAX_ACTIONS_FAILED_RUNS_TO_INSPECT:
-            incomplete_inspections.append(
-                {
-                    "stage": "runs",
-                    "reason": "inspection_limit_reached",
-                    "limit": MAX_ACTIONS_FAILED_RUNS_TO_INSPECT,
-                }
-            )
-            break
-        run_id = run.get("id")
-        if run_id is None:
-            continue
-        inspected_runs += 1
-        jobs_payload, _jobs_detail = _github_api_json(
-            gh_path,
-            f"repos/{slug}/actions/runs/{run_id}/jobs?per_page=20",
-            http_timeout=http_timeout,
+    if inspection.has_billing_blocks:
+        return DoctorCheck(
+            name="github.actions.recent_failures",
+            status=STATUS_WARN,
+            message=(
+                f"{slug} has recent Actions jobs blocked by billing "
+                "or spending limits"
+            ),
+            detail={
+                "repo": slug,
+                "billing_block_count": len(inspection.billing_blocks),
+                "billing_blocks": [block.as_detail() for block in inspection.billing_blocks],
+                "inspected_failed_runs": inspection.inspected_failed_runs,
+                "inspected_failed_jobs": inspection.inspected_failed_jobs,
+            },
+            remediation=(
+                "Fix GitHub billing or Actions spending limits, then rerun "
+                "failed workflows before relying on branch protection or "
+                "deploy checks."
+            ),
         )
-        if jobs_payload is None:
-            incomplete_inspections.append(
-                {
-                    "run_id": run_id,
-                    "workflow": str(run.get("name") or ""),
-                    "stage": "jobs",
-                }
-            )
-            continue
-        raw_jobs = jobs_payload.get("jobs")
-        if not isinstance(raw_jobs, list):
-            incomplete_inspections.append(
-                {
-                    "run_id": run_id,
-                    "workflow": str(run.get("name") or ""),
-                    "stage": "jobs",
-                    "reason": "missing_jobs",
-                }
-            )
-            continue
-        if not raw_jobs:
-            incomplete_inspections.append(
-                {
-                    "run_id": run_id,
-                    "workflow": str(run.get("name") or ""),
-                    "stage": "jobs",
-                    "reason": "no_jobs",
-                }
-            )
-            continue
-        for job in raw_jobs:
-            if (
-                not isinstance(job, Mapping)
-                or job.get("conclusion") not in ACTIONS_INSPECTABLE_FAILURE_CONCLUSIONS
-            ):
-                continue
-            if inspected_jobs >= MAX_ACTIONS_FAILED_JOBS_TO_INSPECT:
-                incomplete_inspections.append(
-                    {
-                        "run_id": run_id,
-                        "workflow": str(run.get("name") or ""),
-                        "stage": "annotations",
-                        "reason": "inspection_limit_reached",
-                        "limit": MAX_ACTIONS_FAILED_JOBS_TO_INSPECT,
-                    }
-                )
-                break
-            job_id = job.get("id")
-            if job_id is None:
-                continue
-            check_run_id = _check_run_id_from_actions_job(job)
-            if check_run_id is None:
-                incomplete_inspections.append(
-                    {
-                        "run_id": run_id,
-                        "workflow": str(run.get("name") or ""),
-                        "job": str(job.get("name") or ""),
-                        "stage": "annotations",
-                        "reason": "missing_check_run_id",
-                    }
-                )
-                continue
-            inspected_jobs += 1
-            annotations, _annotations_detail = _github_api_list(
-                gh_path,
-                f"repos/{slug}/check-runs/{check_run_id}/annotations?per_page=20",
-                http_timeout=http_timeout,
-            )
-            if annotations is None:
-                incomplete_inspections.append(
-                    {
-                        "run_id": run_id,
-                        "workflow": str(run.get("name") or ""),
-                        "job_id": job_id,
-                        "job": str(job.get("name") or ""),
-                        "stage": "annotations",
-                    }
-                )
-                continue
-            for annotation in annotations:
-                if not isinstance(annotation, Mapping):
-                    continue
-                message = str(annotation.get("message") or "")
-                if _annotation_mentions_actions_billing_block(message):
-                    return DoctorCheck(
-                        name="github.actions.recent_failures",
-                        status=STATUS_WARN,
-                        message=(
-                            f"{slug} has recent Actions jobs blocked by billing "
-                            "or spending limits"
-                        ),
-                        detail={
-                            "repo": slug,
-                            "billing_block_count": 1,
-                            "billing_blocks": [
-                                {
-                                    "run_id": run_id,
-                                    "workflow": str(run.get("name") or ""),
-                                    "head_sha": str(run.get("head_sha") or ""),
-                                    "job_id": job_id,
-                                    "check_run_id": str(check_run_id),
-                                    "job": str(job.get("name") or ""),
-                                }
-                            ],
-                            "inspected_failed_runs": inspected_runs,
-                            "inspected_failed_jobs": inspected_jobs,
-                        },
-                        remediation=(
-                            "Fix GitHub billing or Actions spending limits, then rerun "
-                            "failed workflows before relying on branch protection or "
-                            "deploy checks."
-                        ),
-                    )
 
-    if incomplete_inspections:
+    if inspection.incomplete_inspections:
         return DoctorCheck(
             name="github.actions.recent_failures",
             status=STATUS_WARN,
             message=f"{slug} has recent failed Actions runs that doctor could not fully inspect",
             detail={
                 "repo": slug,
-                "incomplete_inspection_count": len(incomplete_inspections),
-                "incomplete_inspections": incomplete_inspections[:5],
-                "inspected_failed_runs": inspected_runs,
-                "inspected_failed_jobs": inspected_jobs,
+                "incomplete_inspection_count": inspection.incomplete_inspection_count,
+                "incomplete_inspections": list(inspection.incomplete_inspections[:5]),
+                "inspected_failed_runs": inspection.inspected_failed_runs,
+                "inspected_failed_jobs": inspection.inspected_failed_jobs,
             },
             remediation=(
                 "Verify gh auth can read workflow jobs and annotations, or inspect "
@@ -228,7 +90,14 @@ def _check_recent_actions_billing_blocks(
         message=f"{slug} has no recent Actions billing-block annotations",
         detail={
             "repo": slug,
-            "inspected_failed_runs": inspected_runs,
-            "inspected_failed_jobs": inspected_jobs,
+            "inspected_failed_runs": inspection.inspected_failed_runs,
+            "inspected_failed_jobs": inspection.inspected_failed_jobs,
         },
     )
+
+
+__all__ = (
+    "_annotation_mentions_actions_billing_block",
+    "_check_recent_actions_billing_blocks",
+    "_check_run_id_from_actions_job",
+)

@@ -264,6 +264,21 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions_failure_annotations.py",
+      "target": "src/code_mower/doctor_checks/github_actions_failure_annotations.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions_failure_models.py",
+      "target": "src/code_mower/doctor_checks/github_actions_failure_models.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions_failure_scan.py",
+      "target": "src/code_mower/doctor_checks/github_actions_failure_scan.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/github_api.py",
       "target": "src/code_mower/doctor_checks/github_api.py"
     },
