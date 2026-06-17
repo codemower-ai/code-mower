@@ -298,7 +298,7 @@ CLI_COMMANDS = (
     "code-mower migration runner-aliases --json",
     (
         "code-mower migration package-install-rehearsal "
-        "--package-spec git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.53 "
+        "--package-spec git+https://github.com/codemower-ai/code-mower.git@v0.5.0-alpha.54 "
         "--repo-path /path/to/product-repo --json"
     ),
     "code-mower local-llm profiles --json",
