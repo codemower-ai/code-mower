@@ -22,29 +22,33 @@ if __package__ in {None, ""}:
         from code_mower.provider_runners import (
             build_allowlisted_child_env,
             local_head_sha as _local_head_sha,
+            ProviderWorkspaceError,
             resolve_github_token_from_env_or_gh,
-            run_git as _git,
+            verify_checkout_at_head as _verify_checkout_at_head,
         )
     else:
         from tools.provider_runners import (
             build_allowlisted_child_env,
             local_head_sha as _local_head_sha,
+            ProviderWorkspaceError,
             resolve_github_token_from_env_or_gh,
-            run_git as _git,
+            verify_checkout_at_head as _verify_checkout_at_head,
         )
 elif __package__ == "tools":
     from tools.provider_runners import (
         build_allowlisted_child_env,
         local_head_sha as _local_head_sha,
+        ProviderWorkspaceError,
         resolve_github_token_from_env_or_gh,
-        run_git as _git,
+        verify_checkout_at_head as _verify_checkout_at_head,
     )
 else:  # pragma: no cover - exercised after package extraction.
     from .provider_runners import (
         build_allowlisted_child_env,
         local_head_sha as _local_head_sha,
+        ProviderWorkspaceError,
         resolve_github_token_from_env_or_gh,
-        run_git as _git,
+        verify_checkout_at_head as _verify_checkout_at_head,
     )
 
 
@@ -85,7 +89,7 @@ class CoderabbitCliHeadChangedError(RuntimeError):
     pass
 
 
-class CoderabbitCliWorkspaceError(RuntimeError):
+class CoderabbitCliWorkspaceError(ProviderWorkspaceError):
     pass
 
 
@@ -128,41 +132,24 @@ def build_coderabbit_child_env() -> dict[str, str]:
     return build_allowlisted_child_env(CODERABBIT_ENV_ALLOWLIST)
 
 
-def _working_tree_status(repo_path: Path) -> str:
-    completed = _git(repo_path, ["status", "--porcelain"])
-    return completed.stdout
-
-
 def verify_checkout(
     repo_path: Path,
     *,
     expected_head_sha: str,
     allow_dirty: bool = False,
 ) -> dict[str, Any]:
-    if not repo_path.is_dir():
-        raise CoderabbitCliWorkspaceError(f"repo path does not exist: {repo_path}")
     try:
-        local_head = _local_head_sha(repo_path)
-    except subprocess.CalledProcessError as exc:
-        raise CoderabbitCliWorkspaceError(
-            f"repo path is not a git checkout: {repo_path}"
-        ) from exc
-    if local_head.lower() != expected_head_sha.lower():
-        raise CoderabbitCliWorkspaceError(
-            "local checkout must be at the PR head for CodeRabbit CLI "
-            f"calibration; local={local_head} expected={expected_head_sha}."
+        return _verify_checkout_at_head(
+            repo_path,
+            expected_head_sha=expected_head_sha,
+            allow_dirty=allow_dirty,
+            purpose="CodeRabbit CLI calibration",
+            dirty_remediation=(
+                "commit/stash them or pass --allow-dirty for an explicitly exploratory run"
+            ),
         )
-    status = _working_tree_status(repo_path)
-    if status.strip() and not allow_dirty:
-        raise CoderabbitCliWorkspaceError(
-            "local checkout has uncommitted changes; commit/stash them or pass "
-            "--allow-dirty for an explicitly exploratory run."
-        )
-    return {
-        "repo_path": str(repo_path),
-        "local_head_sha": local_head,
-        "dirty": bool(status.strip()),
-    }
+    except ProviderWorkspaceError as exc:
+        raise CoderabbitCliWorkspaceError(str(exc)) from exc
 
 
 def _unwrap_fenced_json(text: str) -> str:
