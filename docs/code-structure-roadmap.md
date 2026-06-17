@@ -15,9 +15,12 @@ slow contributor onboarding:
 
 | Module | Approximate Lines | Current Responsibility |
 | --- | ---: | --- |
-| `codex_audit_pr.py` | 1,917 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
+| `codex_audit_pr.py` | 1,730 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
 | `local_llm_audit_pr.py` | 1,351 | local model audit wrapper, prompt setup, subprocess isolation |
-| `claude_audit_pr.py` | 1,130 | Claude audit wrapper, budget handling, verdict posting |
+| `claude_audit_pr.py` | 1,120 | Claude audit wrapper, budget handling, verdict posting |
+| `gemini_cli_audit_pr.py` | 940 | Gemini/Antigravity-era local CLI wrapper, prompt setup, subprocess isolation |
+| `init.py` | 865 | easy-mode generated-file planning and package/template materialization glue |
+| `saas_reviewer_labeler.py` | 810 | SaaS reviewer label detection and trailer/label state orchestration |
 
 The calibration adapter is no longer on this list: `code_mower_calibration.py`
 is now roughly 600 lines and delegates most domain behavior to
@@ -39,6 +42,9 @@ The GitHub doctor checks also now keep redacted `gh api` helpers in
 `code_mower.doctor_checks.github_api` and Actions billing/cost probes in
 `code_mower.doctor_checks.github_actions`, leaving `github.py` focused on
 repository-level setup orchestration.
+Doctor privacy redaction now lives in `code_mower.doctor_checks.privacy`, so
+auth probe outputs can report shape metadata without preserving account names,
+emails, scopes, or token-adjacent diagnostics.
 
 These are not urgent correctness problems. They are readability and evolution
 risks: new contributors cannot quickly tell which functions are stable API,
@@ -105,11 +111,14 @@ tested internal seams:
   into token/env checks, local CLI discovery/probes, API-model probes, and a
   thin provider catalog/runtime orchestrator. GitHub API and Actions-cost
   internals are split into `doctor_checks.github_api` and
-  `doctor_checks.github_actions`. It also owns doctor report orchestration
-  through `code_mower.doctor_checks.runner`; `doctor.py` remains the
-  backwards-compatible CLI adapter.
+  `doctor_checks.github_actions`. Privacy-preserving auth-probe output details
+  are split into `doctor_checks.privacy`. It also owns doctor report
+  orchestration through `code_mower.doctor_checks.runner`; `doctor.py` remains
+  the backwards-compatible CLI adapter.
 - `code_mower.provider_runners` now owns shared GitHub token resolution for
-  stdin-safe audit wrappers and local CLI lanes.
+  stdin-safe audit wrappers and local CLI lanes, shared PR metadata/comment
+  helpers, repo-path parsing, audit comment truncation, text/schema helpers, and
+  verdict artifact write/load/repost helpers.
 - `code_mower.cloud_client` now owns cloud endpoint probing, cloud doctor
   diagnostics, bundle schema and privacy metadata, bundle materialization,
   dogfood report discovery, dry-run preview shape, upload payload construction,
@@ -160,16 +169,21 @@ existing commands.
    - GitHub repository diagnostics, provider token/env checks, local CLI
      discovery/probes, API-model probes, and Actions cost checks now also live
      behind that seam.
-   - Next: move the remaining output/privacy checks behind the same registry
-     seam.
+   - Completed: human-readable output rendering and auth-probe privacy
+     redaction now live behind the same registry seam.
+   - Next: reduce import-compatibility plumbing only where it improves
+     contributor comprehension; the main doctor domain boundaries are now
+     established.
    - Keep `doctor --preflight` behavior unchanged.
    - Add tests at the check-result level, not only command-output level.
 
 3. **Provider runner base**
-   - Extract shared audit-wrapper primitives from Codex, Claude, Gemini,
-     Antigravity, Hermes, and local LLM wrappers:
-     diff context, subprocess execution, token handling, verdict artifacts,
-     and PR comment posting.
+   - Completed: shared GitHub token handling, repo-path parsing, PR metadata,
+     PR comment posting, audit comment truncation, text/schema helpers, and
+     verdict artifact persistence/reposting.
+   - Next: extract shared audit-wrapper primitives from Codex, Claude, Gemini,
+     Antigravity, Hermes, and local LLM wrappers for diff context and
+     subprocess execution.
    - Provider modules should mostly describe provider-specific commands and
      output parsing.
 
