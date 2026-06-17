@@ -113,6 +113,11 @@ PACKAGE_FILES = (
         "src/code_mower/provider_runners/github_auth.py",
         "reviewer",
     ),
+    (
+        "src/code_mower/provider_runners/github_pr.py",
+        "src/code_mower/provider_runners/github_pr.py",
+        "reviewer",
+    ),
     ("tools/codex_audit_pr.py", "src/code_mower/codex_audit_pr.py", "reviewer"),
     (
         "tools/codex_audit_env_preflight.py",

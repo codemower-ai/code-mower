@@ -429,6 +429,11 @@
     },
     {
       "kind": "reviewer",
+      "source": "src/code_mower/provider_runners/github_pr.py",
+      "target": "src/code_mower/provider_runners/github_pr.py"
+    },
+    {
+      "kind": "reviewer",
       "source": "src/code_mower/codex_audit_pr.py",
       "target": "src/code_mower/codex_audit_pr.py"
     },
