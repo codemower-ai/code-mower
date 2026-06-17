@@ -108,6 +108,7 @@ class DoctorBoundaryTests(unittest.TestCase):
             "code_mower.doctor_checks.registry",
             "code_mower.doctor_checks.runner",
             "code_mower.doctor_checks.runtime",
+            "code_mower.doctor_checks.runtime_github_auth",
         )
         for module_name in expected_modules:
             with self.subTest(module=module_name):
