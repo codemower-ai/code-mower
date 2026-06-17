@@ -4,6 +4,24 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha tags while the first-user setup path, provider posture, and
 optional cloud sharing loop are still hardening.
 
+## v0.5.0-alpha.62
+
+This alpha is the public package marker after sharing GitHub PR diff fetching
+across provider runners.
+
+### Changed
+
+- Added `provider_runners.fetch_pull_request_diff` so provider lanes can reuse
+  the same GitHub PR diff request behavior.
+- Gemini CLI now delegates PR metadata and diff fetching to shared
+  provider-runner helpers while keeping its compatibility wrapper API.
+- Hermes continues to call the Gemini compatibility wrappers, so existing
+  Hermes calibration paths inherit the shared diff helper without a public
+  interface change.
+- Added focused tests for JSON PR metadata fetches and `diff` Accept-header
+  behavior.
+- Public install and release-readiness docs now point to `v0.5.0-alpha.62`.
+
 ## v0.5.0-alpha.61
 
 This alpha is the public package marker after moving more provider-runner
