@@ -285,6 +285,10 @@ permissions:
   issues: write
   pull-requests: read
 
+concurrency:
+  group: {% raw %}code-mower-clear-stale-${{ github.event.pull_request.number || github.event.inputs.pr || github.run_id }}{% endraw %}
+  cancel-in-progress: true
+
 jobs:
   clear-stale:
     runs-on: ubuntu-latest
@@ -308,6 +312,11 @@ jobs:
           GITHUB_TOKEN: {% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}
         run: |
           set -euo pipefail
+
+          if [ -z "${CLEAR_STALE_PR:-}" ] || [ -z "${CLEAR_STALE_HEAD_SHA:-}" ]; then
+            echo "::notice::No PR/head SHA available for stale-label cleanup; skipping."
+            exit 0
+          fi
 
           extra_args=()
           if [ -n "${CLEAR_STALE_DISPATCH_WORKFLOW:-}" ]; then
