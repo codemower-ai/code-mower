@@ -79,6 +79,7 @@ class DoctorBoundaryTests(unittest.TestCase):
             "code_mower.doctor_checks.github",
             "code_mower.doctor_checks.github_actions",
             "code_mower.doctor_checks.github_api",
+            "code_mower.doctor_checks.groups",
             "code_mower.doctor_checks.output",
             "code_mower.doctor_checks.provider_api_model",
             "code_mower.doctor_checks.provider_env",

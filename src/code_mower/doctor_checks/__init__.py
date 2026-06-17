@@ -18,6 +18,7 @@ from .common import (
     load_inputs,
 )
 from .github import check_github_setup
+from .groups import GROUP_LABELS, doctor_check_group_id
 from .models import (
     STATUS_FAIL,
     STATUS_PASS,
@@ -60,6 +61,7 @@ from .runner import run_doctor
 
 __all__ = [
     "DEFAULT_CHECK_GROUPS",
+    "GROUP_LABELS",
     "BASE_DOCTOR_STAGES",
     "OPTIONAL_DOCTOR_STAGES",
     "ACTIONS_COST_SAMPLE_DEFAULT",
@@ -85,6 +87,7 @@ __all__ = [
     "check_python_runtime",
     "check_ripgrep",
     "default_check_group_ids",
+    "doctor_check_group_id",
     "doctor_output_group",
     "effective_lane",
     "evaluate_json_probe",

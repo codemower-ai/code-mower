@@ -67,6 +67,7 @@ PACKAGE_FILES = (
     ("src/code_mower/doctor_checks/github_actions.py", "src/code_mower/doctor_checks/github_actions.py", "core"),
     ("src/code_mower/doctor_checks/github_api.py", "src/code_mower/doctor_checks/github_api.py", "core"),
     ("src/code_mower/doctor_checks/github.py", "src/code_mower/doctor_checks/github.py", "core"),
+    ("src/code_mower/doctor_checks/groups.py", "src/code_mower/doctor_checks/groups.py", "core"),
     ("src/code_mower/doctor_checks/models.py", "src/code_mower/doctor_checks/models.py", "core"),
     ("src/code_mower/doctor_checks/output.py", "src/code_mower/doctor_checks/output.py", "core"),
     ("src/code_mower/doctor_checks/presets.py", "src/code_mower/doctor_checks/presets.py", "core"),

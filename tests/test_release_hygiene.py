@@ -201,11 +201,16 @@ class ReleaseHygieneTests(unittest.TestCase):
             doctor_checks.apply_first_run_defaults,
         )
         rendered_doctor = doctor_checks.render_doctor_text(
-            doctor_checks.DoctorReport(
+            doctor_report := doctor_checks.DoctorReport(
                 config_path="code-mower.yml",
                 provider_templates_path="code-mower.provider-templates.yml",
                 profile="recommended",
                 checks=(
+                    doctor_checks.DoctorCheck(
+                        name="runtime.python",
+                        status=doctor_checks.STATUS_PASS,
+                        message="Python is supported",
+                    ),
                     doctor_checks.DoctorCheck(
                         name="provider.claude.auth",
                         status=doctor_checks.STATUS_WARN,
@@ -217,6 +222,25 @@ class ReleaseHygieneTests(unittest.TestCase):
             )
         )
         self.assertIn("Profile: recommended", rendered_doctor)
+        self.assertEqual(
+            doctor_report.as_dict()["groups"],
+            {
+                "runtime": {
+                    "label": "Runtime",
+                    "checks": 1,
+                    "failures": 0,
+                    "warnings": 0,
+                    "skipped": 0,
+                },
+                "providers": {
+                    "label": "Provider lanes",
+                    "checks": 1,
+                    "failures": 0,
+                    "warnings": 1,
+                    "skipped": 0,
+                },
+            },
+        )
         self.assertIn(
             "- WARN provider.claude.auth [claude-audit]: runtime probe needs attention",
             rendered_doctor,
@@ -1028,6 +1052,24 @@ printf '%s\\n' "${lane}"
             "src/code_mower/templates/product-support/safe_gh_comment.py",
         ):
             self.assertIn(source, packaged_sources)
+
+    def test_package_manifest_has_unique_targets_and_known_source_reuse(self) -> None:
+        from collections import Counter
+
+        sources = [source for source, _target, _mode in code_mower_package.PACKAGE_FILES]
+        targets = [target for _source, target, _mode in code_mower_package.PACKAGE_FILES]
+        self.assertEqual(len(targets), len(set(targets)))
+        expected_source_reuse = {
+            "tools/builder_experiment.example.json",
+            "tools/calibration_corpus.example.json",
+            "tools/context_packs.example.json",
+            "tools/reviewer_spend.example.json",
+            "tools/reviewer_value_report.example.md",
+        }
+        repeated_sources = {
+            source for source, count in Counter(sources).items() if count > 1
+        }
+        self.assertEqual(repeated_sources, expected_source_reuse)
 
     def test_package_materializer_includes_internal_package_seams(self) -> None:
         packaged_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}

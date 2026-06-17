@@ -5,45 +5,20 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Iterable
 
+from .groups import GROUP_LABELS, doctor_check_group_id
 from .models import STATUS_FAIL, STATUS_SKIP, STATUS_WARN, DoctorCheck
 from .models import DoctorReport
-
-
-_GROUP_LABELS = OrderedDict(
-    (
-        ("setup", "Setup"),
-        ("runtime", "Runtime"),
-        ("providers", "Provider lanes"),
-        ("github", "GitHub"),
-        ("cloud", "Code Mower Cloud"),
-        ("output", "Output"),
-        ("other", "Other"),
-    )
-)
 
 
 def doctor_output_group(check: DoctorCheck) -> str:
     """Return the human-output group for a doctor check."""
 
-    name = check.name
-    if name.startswith("github."):
-        return "github"
-    if name.startswith("cloud."):
-        return "cloud"
-    if name.startswith("output."):
-        return "output"
-    if check.lane or name.startswith(("env.", "provider.", "runtime.local_cli")):
-        return "providers"
-    if name.startswith("runtime."):
-        return "runtime"
-    if name.startswith(("config.", "provider_templates.", "profile.", "doctor.")):
-        return "setup"
-    return "other"
+    return doctor_check_group_id(check.name, check.lane)
 
 
 def _group_checks(checks: Iterable[DoctorCheck]) -> OrderedDict[str, list[DoctorCheck]]:
     grouped: OrderedDict[str, list[DoctorCheck]] = OrderedDict(
-        (group_id, []) for group_id in _GROUP_LABELS
+        (group_id, []) for group_id in GROUP_LABELS
     )
     for check in checks:
         grouped.setdefault(doctor_output_group(check), []).append(check)
@@ -99,7 +74,7 @@ def render_doctor_text(report: DoctorReport) -> str:
             summary.append(f"{failed} failed")
         if warnings:
             summary.append(f"{warnings} warnings")
-        heading = _GROUP_LABELS.get(group_id, group_id.title())
+        heading = GROUP_LABELS.get(group_id, group_id.title())
         if summary:
             heading = f"{heading} ({', '.join(summary)})"
         lines.append(heading)

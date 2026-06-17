@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
+from .groups import GROUP_LABELS, doctor_check_group_id
+
 
 STATUS_PASS = "pass"
 STATUS_WARN = "warn"
@@ -55,6 +57,28 @@ class DoctorReport:
             return STATUS_WARN
         return STATUS_PASS
 
+    def group_summary(self) -> dict[str, dict[str, int | str]]:
+        summary: dict[str, dict[str, int | str]] = {}
+        for group_id, label in GROUP_LABELS.items():
+            group_checks = [
+                check
+                for check in self.checks
+                if doctor_check_group_id(check.name, check.lane) == group_id
+            ]
+            if not group_checks:
+                continue
+            failures = sum(1 for check in group_checks if check.status == STATUS_FAIL)
+            warnings = sum(1 for check in group_checks if check.status == STATUS_WARN)
+            skipped = sum(1 for check in group_checks if check.status == STATUS_SKIP)
+            summary[group_id] = {
+                "label": label,
+                "checks": len(group_checks),
+                "failures": failures,
+                "warnings": warnings,
+                "skipped": skipped,
+            }
+        return summary
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "mode": "doctor",
@@ -67,5 +91,6 @@ class DoctorReport:
                 "failures": self.failures,
                 "warnings": self.warnings,
             },
+            "groups": self.group_summary(),
             "checks": [check.as_dict() for check in self.checks],
         }
