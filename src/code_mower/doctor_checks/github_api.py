@@ -6,7 +6,7 @@ import json
 import subprocess
 from typing import Any, Mapping
 
-from .runtime import auth_probe_output_detail
+from .privacy import auth_probe_output_detail
 
 
 def _github_api_payload(

@@ -7,9 +7,9 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Any
 
 from .models import STATUS_FAIL, STATUS_PASS, STATUS_WARN, DoctorCheck
+from .privacy import auth_probe_output_detail
 
 
 def check_python_runtime() -> DoctorCheck:
@@ -34,16 +34,6 @@ def check_python_runtime() -> DoctorCheck:
             else "Run Code Mower with Python >=3.11, then rerun doctor."
         ),
     )
-
-
-def auth_probe_output_detail(output: str) -> dict[str, Any]:
-    """Return non-content diagnostics for auth probes."""
-
-    text = output.strip()
-    return {
-        "output_redacted": bool(text),
-        "output_line_count": len(text.splitlines()) if text else 0,
-    }
 
 
 def check_github_auth_surface(
