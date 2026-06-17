@@ -284,6 +284,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions_failure_selection.py",
+      "target": "src/code_mower/doctor_checks/github_actions_failure_selection.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/github_api.py",
       "target": "src/code_mower/doctor_checks/github_api.py"
     },

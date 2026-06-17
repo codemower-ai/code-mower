@@ -100,6 +100,11 @@ PACKAGE_FILES = (
         "src/code_mower/doctor_checks/github_actions_failure_scan.py",
         "core",
     ),
+    (
+        "src/code_mower/doctor_checks/github_actions_failure_selection.py",
+        "src/code_mower/doctor_checks/github_actions_failure_selection.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/github_api.py", "src/code_mower/doctor_checks/github_api.py", "core"),
     ("src/code_mower/doctor_checks/github_branch.py", "src/code_mower/doctor_checks/github_branch.py", "core"),
     ("src/code_mower/doctor_checks/github_config.py", "src/code_mower/doctor_checks/github_config.py", "core"),
