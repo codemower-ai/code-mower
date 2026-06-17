@@ -60,7 +60,30 @@ Warnings are setup guidance. They are only fatal when you pass `--strict`.
 If you want to see the shape of the output before installing, start with
 `docs/first-run-transcript.md` and `docs/sample-doctor-output.md`.
 
-## 5. Generate The Starter Value Report
+## 5. Detect Your Repo's Native Checks
+
+```bash
+code-mower checks detect --json
+code-mower checks run --dry-run --json
+```
+
+`checks detect` reads your repository's declared check surface. For
+JavaScript/TypeScript projects it uses `package.json` scripts and the lockfile
+to choose npm, pnpm, yarn, or bun. For Python projects it detects Ruff config,
+`tests/`, and a repo-local `.venv` before falling back to the current Python
+interpreter. This is intentionally not a replacement for your repo's own
+contract: TypeScript applications should still run their package-manager
+lint/test/build scripts, while Python projects should run Ruff/pytest when
+configured.
+
+Use `checks run --dry-run` first to review commands before executing them.
+Then run selected checks explicitly, for example:
+
+```bash
+code-mower checks run --only lint,test --json
+```
+
+## 6. Generate The Starter Value Report
 
 If you want to prove the whole first-user path in one command, run the package
 install rehearsal instead:

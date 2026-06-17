@@ -50,6 +50,7 @@ if __package__ in {None, "", "tools"}:
         saas_reviewer_labeler,
         trailer_comment_labeler,
     )
+    from code_mower import checks as code_mower_checks
 else:  # pragma: no cover - exercised after package extraction.
     from . import __version__
     from . import blind_review_coordinator
@@ -65,6 +66,7 @@ else:  # pragma: no cover - exercised after package extraction.
     from . import codex_audit_schema_smoke
     from . import config as code_mower_config
     from . import code_mower_calibration
+    from . import checks as code_mower_checks
     from . import code_mower_context_packs
     from . import code_mower_merge
     from . import next_steps as code_mower_next_steps
@@ -348,6 +350,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "calibration": "Create corpora, dispositions, policy, and value reports.",
     "claude-audit": "Run a Claude structured audit lane.",
     "clear-stale": "Clear stale terminal audit labels after a PR head changes.",
+    "checks": "Detect and run a repository's native lint/test/build surface.",
     "cloud": "Export or upload sanitized benchmark metadata.",
     "config": "Validate or inspect a Code Mower config.",
     "context-packs": "Build selective surrounding-file context packs.",
@@ -376,6 +379,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
 FIRST_USER_COMMANDS = (
     "init",
     "doctor",
+    "checks",
     "next-steps",
     "calibration",
     "reviewer-metrics",
@@ -467,6 +471,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "calibration": code_mower_calibration.main,
     "claude-audit": claude_audit_pr.main,
     "clear-stale": clear_stale.main,
+    "checks": code_mower_checks.main,
     "cloud": code_mower_cloud.main,
     "config": _config_main,
     "context-packs": code_mower_context_packs.main,
