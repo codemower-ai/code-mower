@@ -44,6 +44,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/checks.py",
+      "target": "src/code_mower/checks.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/calibration/__init__.py",
       "target": "src/code_mower/calibration/__init__.py"
     },
@@ -1085,6 +1090,11 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "src/code_mower/templates/workflows/review-clear-stale.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "templates/workflows/private-standalone-shadow.yml.j2"
     },
     {
@@ -1190,6 +1200,6 @@
     "module": "code_mower",
     "name": "code-mower",
     "source_layout": "src/code_mower",
-    "version": "0.5.0a78"
+    "version": "0.5.0a79"
   }
 }
