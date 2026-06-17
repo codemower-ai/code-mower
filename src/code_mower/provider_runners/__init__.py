@@ -12,7 +12,7 @@ from .github_auth import (
     resolve_github_token_from_env_or_gh,
     resolve_github_token_from_stdin_or_env,
 )
-from .github_pr import fetch_pull_request, post_pr_comment
+from .github_pr import fetch_pull_request, fetch_pull_request_diff, post_pr_comment
 from .process import DEFAULT_HOME_ENV_KEYS, build_allowlisted_child_env
 from .repo_paths import parse_repo_paths
 from .text_schema import clip_text, one_line, require_exact_keys
@@ -29,6 +29,7 @@ from .workspace import (
 
 __all__ = [
     "fetch_pull_request",
+    "fetch_pull_request_diff",
     "fetch_local_checkout_diff",
     "load_audit_verdict_artifact",
     "local_head_sha",

@@ -12,7 +12,6 @@ import sys
 import tempfile
 import time
 import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -25,6 +24,8 @@ if __package__ in {None, ""}:
         from code_mower.provider_runners import (
             build_allowlisted_child_env,
             fetch_local_checkout_diff,
+            fetch_pull_request as _fetch_pull_request,
+            fetch_pull_request_diff as _fetch_pull_request_diff,
             local_head_sha as _local_head_sha,
             resolve_github_token_from_env_or_gh,
         )
@@ -33,6 +34,8 @@ if __package__ in {None, ""}:
         from tools.provider_runners import (
             build_allowlisted_child_env,
             fetch_local_checkout_diff,
+            fetch_pull_request as _fetch_pull_request,
+            fetch_pull_request_diff as _fetch_pull_request_diff,
             local_head_sha as _local_head_sha,
             resolve_github_token_from_env_or_gh,
         )
@@ -41,6 +44,8 @@ elif __package__ == "tools":
     from tools.provider_runners import (
         build_allowlisted_child_env,
         fetch_local_checkout_diff,
+        fetch_pull_request as _fetch_pull_request,
+        fetch_pull_request_diff as _fetch_pull_request_diff,
         local_head_sha as _local_head_sha,
         resolve_github_token_from_env_or_gh,
     )
@@ -50,6 +55,8 @@ else:  # pragma: no cover - exercised after package extraction.
     from .provider_runners import (
         build_allowlisted_child_env,
         fetch_local_checkout_diff,
+        fetch_pull_request as _fetch_pull_request,
+        fetch_pull_request_diff as _fetch_pull_request_diff,
         local_head_sha as _local_head_sha,
         resolve_github_token_from_env_or_gh,
     )
@@ -98,48 +105,15 @@ class GeminiCliUnsupportedError(RuntimeError):
     pass
 
 
-def _gh_request(
-    method: str,
-    path: str,
-    *,
-    token: str,
-    accept: str = "application/vnd.github+json",
-    timeout: int = 30,
-) -> Any:
-    request = urllib.request.Request(
-        f"https://api.github.com{path}",
-        headers={
-            "Accept": accept,
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-        method=method,
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        raw = response.read()
-    text = raw.decode("utf-8", errors="replace")
-    if accept.endswith("diff"):
-        return text
-    return json.loads(text) if text else None
-
-
 def fetch_pull_request(repo: str, pr_number: int, *, token: str) -> Mapping[str, Any]:
-    payload = _gh_request("GET", f"/repos/{repo}/pulls/{pr_number}", token=token)
+    payload = _fetch_pull_request(repo, pr_number, token=token)
     if not isinstance(payload, Mapping):
         raise ValueError("GitHub pull request response was not an object")
     return payload
 
 
 def fetch_pull_request_diff(repo: str, pr_number: int, *, token: str) -> str:
-    return str(
-        _gh_request(
-            "GET",
-            f"/repos/{repo}/pulls/{pr_number}",
-            token=token,
-            accept="application/vnd.github.v3.diff",
-        )
-    )
+    return _fetch_pull_request_diff(repo, pr_number, token=token)
 
 
 def resolve_github_token() -> str:
