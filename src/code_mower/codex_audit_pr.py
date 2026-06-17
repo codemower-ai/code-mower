@@ -88,6 +88,7 @@ if __package__ in {None, "", "tools"}:
             clip_text as _clip_text,
             fetch_pull_request,
             one_line as _one_line,
+            parse_repo_paths as _parse_repo_paths,
             pop_github_token_env,
             post_pr_comment,
             repost_audit_verdict_artifact,
@@ -101,6 +102,7 @@ if __package__ in {None, "", "tools"}:
             clip_text as _clip_text,
             fetch_pull_request,
             one_line as _one_line,
+            parse_repo_paths as _parse_repo_paths,
             pop_github_token_env,
             post_pr_comment,
             repost_audit_verdict_artifact,
@@ -114,6 +116,7 @@ else:  # pragma: no cover - exercised after package extraction.
         clip_text as _clip_text,
         fetch_pull_request,
         one_line as _one_line,
+        parse_repo_paths as _parse_repo_paths,
         pop_github_token_env,
         post_pr_comment,
         repost_audit_verdict_artifact,
@@ -1499,22 +1502,6 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
 
 
 # ----- CLI entry point -----
-
-
-def _parse_repo_paths(spec: str) -> Dict[str, Path]:
-    """Parse `owner/repo:/path,owner/repo:/path,...` into a dict."""
-    out: Dict[str, Path] = {}
-    for entry in spec.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        if ":" not in entry:
-            raise ValueError(
-                f"bad CODEX_AUDIT_REPO_PATHS entry: {entry!r} (expected owner/repo:/path)"
-            )
-        repo, path = entry.split(":", 1)
-        out[repo.strip()] = Path(path.strip())
-    return out
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:

@@ -119,6 +119,11 @@ PACKAGE_FILES = (
         "reviewer",
     ),
     (
+        "src/code_mower/provider_runners/repo_paths.py",
+        "src/code_mower/provider_runners/repo_paths.py",
+        "reviewer",
+    ),
+    (
         "src/code_mower/provider_runners/text_schema.py",
         "src/code_mower/provider_runners/text_schema.py",
         "reviewer",

@@ -434,6 +434,11 @@
     },
     {
       "kind": "reviewer",
+      "source": "src/code_mower/provider_runners/repo_paths.py",
+      "target": "src/code_mower/provider_runners/repo_paths.py"
+    },
+    {
+      "kind": "reviewer",
       "source": "src/code_mower/provider_runners/text_schema.py",
       "target": "src/code_mower/provider_runners/text_schema.py"
     },

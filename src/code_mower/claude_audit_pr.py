@@ -32,14 +32,12 @@ if __package__ in {None, "", "tools"}:
             clip_text as _clip_text,
             fetch_pull_request,
             one_line as _one_line,
+            parse_repo_paths as _parse_repo_paths,
             post_pr_comment,
             repost_audit_verdict_artifact,
             require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
             write_audit_verdict_artifact,
-        )
-        from tools.codex_audit_pr import (
-            _parse_repo_paths,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
         try:
@@ -51,14 +49,12 @@ if __package__ in {None, "", "tools"}:
             clip_text as _clip_text,
             fetch_pull_request,
             one_line as _one_line,
+            parse_repo_paths as _parse_repo_paths,
             post_pr_comment,
             repost_audit_verdict_artifact,
             require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
             write_audit_verdict_artifact,
-        )
-        from codex_audit_pr import (  # type: ignore
-            _parse_repo_paths,
         )
 else:  # pragma: no cover - exercised after package extraction.
     from . import prompts as code_mower_prompts
@@ -67,14 +63,12 @@ else:  # pragma: no cover - exercised after package extraction.
         clip_text as _clip_text,
         fetch_pull_request,
         one_line as _one_line,
+        parse_repo_paths as _parse_repo_paths,
         post_pr_comment,
         repost_audit_verdict_artifact,
         require_exact_keys as _require_exact_keys,
         resolve_github_token_from_stdin_or_env,
         write_audit_verdict_artifact,
-    )
-    from .codex_audit_pr import (
-        _parse_repo_paths,
     )
 
 
