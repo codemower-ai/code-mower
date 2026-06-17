@@ -14,6 +14,7 @@ from typing import Any, Optional, Sequence
 if __package__ and __package__.startswith("code_mower"):
     from .audit_labeler_lib import (
         GitHubToken,
+        IssueCommentPaginationLimitExceeded,
         LabelDecision,
         apply_label_decision,
         fetch_issue_comments,
@@ -30,6 +31,7 @@ else:
     try:
         from tools.audit_labeler_lib import (
             GitHubToken,
+            IssueCommentPaginationLimitExceeded,
             LabelDecision,
             apply_label_decision,
             fetch_issue_comments,
@@ -45,6 +47,7 @@ else:
     except ImportError:  # pragma: no cover - direct `python tools/foo.py` execution
         from audit_labeler_lib import (
             GitHubToken,
+            IssueCommentPaginationLimitExceeded,
             LabelDecision,
             apply_label_decision,
             fetch_issue_comments,
@@ -65,6 +68,10 @@ class TrustedTerminalComment:
     reviewed_sha: str
     author: str
     created_at: str
+
+
+def _status_label(config: Any, status: str) -> str:
+    return config.done_label if status == "done" else config.blocked_label
 
 
 @dataclass(frozen=True)
@@ -130,11 +137,30 @@ def resolve_stale_clear_decision(
         current_comment.reviewed_sha,
         current_head_sha,
     ):
+        expected_label = _status_label(config, current_comment.status)
+        wrong_terminal_labels = tuple(sorted(present_terminal - {expected_label}))
+        if expected_label in label_set and not wrong_terminal_labels:
+            return StaleClearResult(
+                None,
+                (
+                    f"terminal label is current: {current_comment.status} by "
+                    f"{current_comment.author} for {current_comment.reviewed_sha}"
+                ),
+            )
         return StaleClearResult(
-            None,
+            LabelDecision(
+                issue_number=issue_number,
+                add_label=expected_label,
+                remove_labels=(config.needs_label, *wrong_terminal_labels),
+                reviewed_sha=current_comment.reviewed_sha,
+                reason=(
+                    f"repaired terminal label mismatch for current head "
+                    f"{current_head_sha}: expected {expected_label}"
+                ),
+            ),
             (
-                f"terminal label is current: {current_comment.status} by "
-                f"{current_comment.author} for {current_comment.reviewed_sha}"
+                "terminal audit label mismatch for current trusted "
+                f"{current_comment.status} result"
             ),
         )
 
@@ -271,7 +297,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pull_request = fetch_pull_request(repo, issue_number, tokens=tokens)
         current_head_sha = str((pull_request.get("head") or {}).get("sha") or current_head_sha)
         labels = fetch_issue_labels(repo, issue_number, tokens=tokens)
-        comments = fetch_issue_comments(repo, issue_number, tokens=tokens, page_cap=args.page_cap)
+        try:
+            comments = fetch_issue_comments(
+                repo,
+                issue_number,
+                tokens=tokens,
+                page_cap=args.page_cap,
+            )
+        except IssueCommentPaginationLimitExceeded as exc:
+            # Conservative for merge-authority lanes: if we cannot inspect enough
+            # comments to prove a terminal label is current, clear and requeue
+            # rather than leaving stale approval authoritative.
+            print(f"warning: {exc}; using conservative stale requeue", file=sys.stderr)
+            comments = []
     else:
         comments = list((event.get("comments") or []))
 

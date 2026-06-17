@@ -93,6 +93,10 @@ class GitHubRequestError(RuntimeError):
         super().__init__(f"GitHub API {method} {path} failed: HTTP {code}\n{response_body}")
 
 
+class IssueCommentPaginationLimitExceeded(RuntimeError):
+    """Raised when issue comments exceed the configured safe pagination cap."""
+
+
 def load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -256,7 +260,7 @@ def fetch_issue_comments(
         if len(chunk) < 100:
             return comments
         page += 1
-    raise RuntimeError(
+    raise IssueCommentPaginationLimitExceeded(
         f"hit pagination cap of {page_cap} pages ({page_cap * 100} comments) "
         f"for {repo}#{issue_number}; refusing to classify stale labels on partial data"
     )

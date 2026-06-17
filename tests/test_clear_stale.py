@@ -60,6 +60,29 @@ class ClearStaleTests(unittest.TestCase):
         self.assertIsNone(result.decision)
         self.assertIn("terminal label is current", result.reason)
 
+    def test_current_blocked_comment_repairs_stale_done_label(self) -> None:
+        result = resolve_stale_clear_decision(
+            issue_number=123,
+            current_head_sha=CURRENT_SHA,
+            labels=["devin-audit-done"],
+            comments=[
+                _comment(
+                    "devin-ai-integration[bot]",
+                    _devin_body("devin-audit-blocked", CURRENT_SHA),
+                )
+            ],
+            config=self.config,
+        )
+
+        self.assertIsNotNone(result.decision)
+        assert result.decision is not None
+        self.assertEqual(result.decision.add_label, "devin-audit-blocked")
+        self.assertEqual(
+            result.decision.remove_labels,
+            ("needs-devin-audit", "devin-audit-done"),
+        )
+        self.assertFalse(result.requeue_added)
+
     def test_stale_terminal_comment_requeues_and_clears_terminal_labels(self) -> None:
         result = resolve_stale_clear_decision(
             issue_number=123,

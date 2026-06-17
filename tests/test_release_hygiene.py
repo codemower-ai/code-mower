@@ -662,6 +662,22 @@ exit 1
             ),
         )
 
+    def test_clear_stale_workflow_template_matches_package_generator(self) -> None:
+        template = (
+            ROOT / "templates/workflows/review-clear-stale.yml.j2"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            template,
+            code_mower_package_content._workflow_template_text(
+                "templates/workflows/review-clear-stale.yml.j2"
+            ),
+        )
+        self.assertIn(
+            "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
+            template,
+        )
+        self.assertNotIn("actions/checkout@v4", template)
+
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
 
