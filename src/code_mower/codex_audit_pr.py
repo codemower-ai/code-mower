@@ -88,7 +88,9 @@ if __package__ in {None, "", "tools"}:
             fetch_pull_request,
             pop_github_token_env,
             post_pr_comment,
+            repost_audit_verdict_artifact,
             resolve_github_token_from_stdin_or_env,
+            write_audit_verdict_artifact,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
@@ -96,7 +98,9 @@ if __package__ in {None, "", "tools"}:
             fetch_pull_request,
             pop_github_token_env,
             post_pr_comment,
+            repost_audit_verdict_artifact,
             resolve_github_token_from_stdin_or_env,
+            write_audit_verdict_artifact,
         )
 else:  # pragma: no cover - exercised after package extraction.
     from .audit_progress import AuditProgress, run_subprocess_with_progress
@@ -104,7 +108,9 @@ else:  # pragma: no cover - exercised after package extraction.
         fetch_pull_request,
         pop_github_token_env,
         post_pr_comment,
+        repost_audit_verdict_artifact,
         resolve_github_token_from_stdin_or_env,
+        write_audit_verdict_artifact,
     )
 
 
@@ -127,8 +133,6 @@ MAX_SUMMARY_CHARS = 4_000
 MAX_FINDING_TITLE_CHARS = 300
 MAX_FINDING_FILE_CHARS = 500
 MAX_FINDING_DETAIL_CHARS = 4_000
-VERDICT_ARTIFACT_SCHEMA = "code_mower.auditVerdictArtifact.v1"
-VERDICT_ARTIFACT_DIR_ENV = "CODE_MOWER_VERDICT_ARTIFACT_DIR"
 
 
 # ----- Data classes -----
@@ -257,96 +261,6 @@ class ReviewContextDiagnostics:
 STALE_TRAILER = "<!-- CODEX_AUDIT_STATE: needs-codex-audit -->"
 DONE_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
 BLOCKED_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
-
-
-def _safe_artifact_slug(value: str) -> str:
-    safe = "".join(char if char.isalnum() or char in "._-" else "-" for char in value)
-    safe = safe.strip("._-")
-    while "--" in safe:
-        safe = safe.replace("--", "-")
-    return safe or "item"
-
-
-def _verdict_artifact_root() -> Path:
-    configured = os.environ.get(VERDICT_ARTIFACT_DIR_ENV, "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return Path.home() / ".cache" / "code-mower-audits" / "verdicts"
-
-
-def write_audit_verdict_artifact(
-    *,
-    lane_id: str,
-    repo: str,
-    pr_number: int,
-    head_sha_start: str,
-    head_sha_end: str,
-    verdict: str,
-    trailer: str,
-    comment_body: str,
-) -> Optional[Path]:
-    """Persist the rendered audit comment before posting to GitHub.
-
-    This artifact is intentionally just the public comment body plus metadata.
-    It gives operators a replay source if the final GitHub POST fails after the
-    expensive model review has already completed.
-    """
-
-    root = _verdict_artifact_root()
-    repo_slug = _safe_artifact_slug(repo.replace("/", "__"))
-    head_slug = _safe_artifact_slug(head_sha_start[:16] or "unknown-head")
-    lane_slug = _safe_artifact_slug(lane_id)
-    now = datetime.now(timezone.utc)
-    timestamp = now.strftime("%Y%m%dT%H%M%SZ")
-    filename = f"{timestamp}-{lane_slug}-{_safe_artifact_slug(verdict.lower())}.json"
-    path = root / repo_slug / f"pr-{pr_number}" / head_slug / filename
-    payload = {
-        "schema": VERDICT_ARTIFACT_SCHEMA,
-        "lane_id": lane_id,
-        "repo": repo,
-        "pr_number": pr_number,
-        "head_sha_start": head_sha_start,
-        "head_sha_end": head_sha_end,
-        "verdict": verdict,
-        "trailer": trailer,
-        "comment_body": comment_body,
-        "created_at": now.isoformat().replace("+00:00", "Z"),
-        "posted_comment_url": None,
-    }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        return path
-    except OSError as exc:
-        print(
-            f"warning: failed to write audit verdict artifact {path}: {exc}",
-            file=sys.stderr,
-        )
-        return None
-
-
-def load_audit_verdict_artifact(path: Path) -> Dict[str, Any]:
-    payload = json.loads(path.expanduser().read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("verdict artifact must contain a JSON object")
-    if payload.get("schema") != VERDICT_ARTIFACT_SCHEMA:
-        raise ValueError(
-            f"unsupported verdict artifact schema: {payload.get('schema')!r}"
-        )
-    for key in ("repo", "pr_number", "comment_body"):
-        if key not in payload:
-            raise ValueError(f"verdict artifact missing {key}")
-    return payload
-
-
-def repost_audit_verdict_artifact(path: Path, *, token: str) -> Dict[str, Any]:
-    artifact = load_audit_verdict_artifact(path)
-    return post_pr_comment(
-        str(artifact["repo"]),
-        int(artifact["pr_number"]),
-        str(artifact["comment_body"]),
-        token=token,
-    )
 
 
 # ----- Structured verdict validation -----
