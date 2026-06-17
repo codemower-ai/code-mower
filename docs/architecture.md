@@ -42,8 +42,9 @@ src/code_mower/
   cloud_client/                  export, upload, setup, doctor, events, operations
   package_paths.py               package materializer provider-template path helpers
   migration.py                   thin migration CLI adapter
+  migration_install.py           venv, pip, command, and toy-repo helpers
   migration_mirror.py            mirror-removal planning and runner aliases
-  migration_rehearsal.py         package install and fresh-repo rehearsals
+  migration_rehearsal.py         package install and fresh-repo rehearsal flow
   migration_readiness.py         first-user readiness scorecards
   *_audit_pr.py                  provider-specific audit runners
   adapters/                      hosted/SaaS adapter helpers
