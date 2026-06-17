@@ -9,13 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from .bundle import (
-    BUNDLE_MANIFEST_FILENAME,
     MAX_REPORT_UPLOAD_BYTES,
-    is_bundle_manifest,
     validate_metadata_payload,
 )
 from .endpoints import validate_upload_endpoint
 from .errors import CloudBundleError
+from .manifest import load_bundle_manifest, report_path_from_manifest
 
 
 UPLOAD_SCHEMA = "code_mower.cloudUpload.v1"
@@ -26,35 +25,6 @@ def _validate_upload_endpoint(endpoint: str) -> None:
         validate_upload_endpoint(endpoint)
     except ValueError as exc:
         raise CloudBundleError(str(exc)) from exc
-
-
-def load_bundle_manifest(bundle_dir: Path) -> dict[str, Any]:
-    manifest_path = bundle_dir / BUNDLE_MANIFEST_FILENAME
-    if not manifest_path.is_file():
-        raise CloudBundleError(f"bundle manifest not found: {manifest_path}")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CloudBundleError(f"unable to read bundle manifest {manifest_path}: {exc}") from exc
-    if not is_bundle_manifest(manifest):
-        raise CloudBundleError(f"unsupported bundle manifest schema in {manifest_path}")
-    return manifest
-
-
-def _report_path_from_manifest(bundle_dir: Path, target: str) -> Path:
-    if not target or target.startswith("/") or ".." in Path(target).parts:
-        raise CloudBundleError(f"unsafe report target in bundle manifest: {target!r}")
-    path = bundle_dir / target
-    try:
-        resolved = path.resolve()
-        bundle_resolved = bundle_dir.resolve()
-    except OSError as exc:
-        raise CloudBundleError(f"unable to resolve bundle report path {path}: {exc}") from exc
-    if not resolved.is_relative_to(bundle_resolved):
-        raise CloudBundleError(f"report target escapes bundle directory: {target!r}")
-    if not resolved.is_file():
-        raise CloudBundleError(f"bundle report file is missing: {target!r}")
-    return resolved
 
 
 def _included_report_payloads(
@@ -75,7 +45,7 @@ def _included_report_payloads(
             "source_basename": entry.get("source_basename", ""),
         }
         if include_reports:
-            path = _report_path_from_manifest(bundle_dir, target)
+            path = report_path_from_manifest(bundle_dir, target)
             size = path.stat().st_size
             if size > MAX_REPORT_UPLOAD_BYTES:
                 raise CloudBundleError(

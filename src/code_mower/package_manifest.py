@@ -53,6 +53,7 @@ PACKAGE_FILES = (
         "src/code_mower/cloud_client/git_metadata.py",
         "core",
     ),
+    ("src/code_mower/cloud_client/manifest.py", "src/code_mower/cloud_client/manifest.py", "core"),
     ("src/code_mower/cloud_client/operations.py", "src/code_mower/cloud_client/operations.py", "core"),
     ("src/code_mower/cloud_client/setup.py", "src/code_mower/cloud_client/setup.py", "core"),
     ("src/code_mower/cloud_client/upload.py", "src/code_mower/cloud_client/upload.py", "core"),
