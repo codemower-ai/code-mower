@@ -22,10 +22,13 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.6`. It is intended
-to be installed from the `codemower-ai/code-mower` public repository. Beta.4 is
-the first baseline where the installed-package audit path, release workflow,
-and production dogfood uploads are all green after a public tag validation.
+The current verified public beta baseline is `v0.5.0-beta.6`, published on
+PyPI as `code-mower==0.5.0b6`. It is intended to be installed from the package
+index for friendly-user pilots, with GitHub tag/source installs kept as a
+fallback and development path. Beta.6 is the first baseline where the
+PyPI-first install path, release workflow, production PyPI trusted publishing,
+package-install rehearsal, and production dogfood uploads are all green after
+public release validation.
 It has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
@@ -34,6 +37,9 @@ It has proved:
 - `code-mower checks detect` and `code-mower checks run` for repository-native
   lint/test/build discovery instead of assuming Ruff, ESLint, or any other
   single check surface applies to every codebase;
+- merge-authority stale-audit protection via generated workflow/template
+  support and `clear-stale`, so stale `*-audit-done` / `*-audit-blocked` labels
+  cannot satisfy a merge bar after new commits land;
 - pinned standalone consumption from the private reference/product repos;
 - mirror-removal pilots where product repos use package-backed wrappers instead
   of maintaining duplicate implementation files;
@@ -133,6 +139,12 @@ The cloud service currently supports:
 - dogfood uploads from Code Mower and product development; and
 - self-service metadata export and deletion for signed-in team members/admins.
 
+The next CodeMower.com product slice is Dashboard IA phase 1: authenticated
+tabs, a freshness/provenance strip, clearer first-upload guidance, and a more
+visible "what should I enable next?" panel. That plan is maintained in the
+CodeMower.com operator docs so the public OSS repository stays focused on the
+installable client and metadata contract.
+
 It does not yet provide automated retention jobs or true cross-team cohort
 benchmark calculations. Those are preconditions for broad cloud-data collection
 beyond friendly pilots.
@@ -153,7 +165,7 @@ without knowing the original reference repos.
 
 The v0.5 experience should be:
 
-1. install Code Mower from GitHub or a package index;
+1. install Code Mower from PyPI;
 2. run `code-mower init --easy`;
 3. run `code-mower doctor --preflight`;
 4. run a first manual/local audit;
@@ -186,10 +198,10 @@ structure feel boring and credible.
 
 ## v0.5 Beta Learning Addendum
 
-A short PRD addendum captures the beta.5 lessons without rewriting the product
-requirements: installed-package rehearsals are release-gating, dashboard trust
-depends on provenance labels, and current dogfood metadata is not the same as
-historical benchmark backfill. See
+A short PRD addendum captures the v0.5 beta lessons without rewriting the
+product requirements: installed-package rehearsals are release-gating, dashboard
+trust depends on provenance labels, and current dogfood metadata is not the same
+as historical benchmark backfill. See
 [`docs/prd-addendum-v05-beta.md`](prd-addendum-v05-beta.md).
 
 ## Fresh-Eyes Feedback Incorporated
@@ -201,8 +213,8 @@ still has too much setup friction.
 
 Treat these as product gates before widening beyond friendly early adopters:
 
-- **Install friction:** GitHub-tag installs are acceptable for alpha users, but
-  public adoption needs a normal package-index path.
+- **Install friction:** GitHub-tag installs are acceptable as a fallback, but
+  public adoption should default to the PyPI package path.
 - **CLI overwhelm:** default help should show the launch-safe commands first;
   provider bridges, labelers, migration internals, and operator commands belong
   behind `code-mower --help-all` or deeper docs.
@@ -270,10 +282,9 @@ leaving room for future orchestrator adapters.
    and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
    compatibility shims where they confuse contributors, and keep private
    product repos as consumers of pinned releases.
-4. Create a public GitHub prerelease for the current beta, explicitly mark it as
-   GitHub's latest release, verify the release workflow builds source/wheel
-   artifacts, and configure PyPI trusted
-   publishing before widening beyond friendly early adopters.
+4. Keep PyPI-first releases boring: every wider-friendly beta should verify
+   GitHub release artifacts, PyPI trusted publishing, exact-version install, and
+   package-install rehearsal from the published package.
 5. Add a short terminal recording or screenshot showing `doctor --preflight`
    and the first value-report path. A static transcript now exists in
    `docs/first-run-transcript.md`; replace or augment it with a recording
@@ -303,9 +314,15 @@ leaving room for future orchestrator adapters.
     bootstrapped from project history with human review.
 16. Reduce first-read README friction: one-screen pitch, install, doctor sample,
     demo report, and links to deeper docs.
-17. Add builder-experiment capture only after the reviewer/value loop is
+17. Promote reusable stale-audit lane handling from product-repo lessons into
+    the default merge-authority lane templates, docs, and generated support
+    output.
+18. Keep repository-native checks central: detect and run each repo's declared
+    ESLint/Vitest/Ruff/pytest/build surface instead of treating Code Mower's own
+    tooling as a universal product-repo lint policy.
+19. Add builder-experiment capture only after the reviewer/value loop is
     producing durable evidence.
-18. Keep commercial implementation, hosted reporting, telemetry products, and
+20. Keep commercial implementation, hosted reporting, telemetry products, and
     monetization plans in the private CodeMower.com repo.
 
 ## Documentation Ownership
