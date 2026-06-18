@@ -15,6 +15,22 @@ claude auth status
 claude -p "Reply with exactly: ok" --output-format json
 ```
 
+If prompt auth only fails inside a long-lived parent process such as Codex,
+first try the non-destructive bounce helper:
+
+```bash
+code-mower claude-bounce --json
+code-mower claude-bounce --write-env ~/.config/code-mower/claude-clean-env.sh
+source ~/.config/code-mower/claude-clean-env.sh
+```
+
+The bounce helper runs the same kind of real Claude prompt smoke twice: once
+with the inherited environment and once with known stale Claude/Anthropic auth
+override variables removed from the child process. It does not delete Claude
+credentials, modify keychain state, or log raw provider output. If `clean_env`
+passes while `inherited_env` fails, restart the parent app or source the
+generated unset snippet before retrying.
+
 `code-mower doctor --preflight` runs the provider-configured Claude smoke probe
 with a bounded model and budget cap. If that probe reports a provider
 authentication failure, refresh Claude Code auth and rerun the smoke:

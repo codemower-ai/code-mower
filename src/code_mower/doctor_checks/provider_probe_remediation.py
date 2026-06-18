@@ -17,10 +17,13 @@ def local_cli_probe_remediation(
         return (
             "Run `claude auth status`, then run "
             "`claude -p \"Reply with exactly: ok\" --output-format json`. "
-            "If status says logged in but the prompt returns 401, refresh Claude "
-            "Code OAuth by removing stale local Claude credentials and running "
-            "`claude` to log in again. For automation, prefer a provider/API-key "
-            "credential path over interactive Claude.ai OAuth."
+            "If status says logged in but the prompt returns 401, run "
+            "`code-mower claude-bounce --json` first to distinguish inherited "
+            "environment issues from stale local credentials. If clean_env also "
+            "returns 401, refresh Claude Code OAuth by removing stale local "
+            "Claude credentials and running `claude` to log in again. For "
+            "automation, prefer a provider/API-key credential path over "
+            "interactive Claude.ai OAuth."
         )
     if auth_error_detected:
         return (

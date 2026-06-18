@@ -28,6 +28,7 @@ if __package__ in {None, "", "tools"}:
     try:
         from tools import code_mower_prompts
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
+        from tools.claude_cli_environment import clean_claude_cli_env, env_flag
         from tools.provider_runners import (
             clip_text as _clip_text,
             fetch_pull_request,
@@ -46,6 +47,7 @@ if __package__ in {None, "", "tools"}:
         except ImportError:
             import prompts as code_mower_prompts  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
+        from claude_cli_environment import clean_claude_cli_env, env_flag  # type: ignore
         from provider_runners import (  # type: ignore
             clip_text as _clip_text,
             fetch_pull_request,
@@ -61,6 +63,7 @@ if __package__ in {None, "", "tools"}:
 else:  # pragma: no cover - exercised after package extraction.
     from . import prompts as code_mower_prompts
     from .audit_progress import AuditProgress, run_subprocess_with_progress
+    from .claude_cli_environment import clean_claude_cli_env, env_flag
     from .provider_runners import (
         clip_text as _clip_text,
         fetch_pull_request,
@@ -344,9 +347,12 @@ def parse_structured_claude_verdict(data: Any) -> ClaudeVerdict:
 
 
 def _claude_env() -> Dict[str, str]:
-    env = dict(os.environ)
-    for sensitive in ("GITHUB_TOKEN", "GH_TOKEN"):
-        env.pop(sensitive, None)
+    preserve_auth_overrides = env_flag(os.environ.get("CODE_MOWER_CLAUDE_KEEP_AUTH_ENV"))
+    env, _removed = clean_claude_cli_env(
+        os.environ,
+        unset_github_tokens=True,
+        scrub_auth_overrides=not preserve_auth_overrides,
+    )
     return env
 
 
