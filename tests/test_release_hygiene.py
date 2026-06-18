@@ -23,6 +23,7 @@ from code_mower import audit_progress
 from code_mower import calibration as calibration_pkg
 from code_mower import cloud as code_mower_cloud
 from code_mower import code_mower_calibration
+from code_mower import codex_audit_pr
 from code_mower import cli as code_mower_cli
 from code_mower import cloud_client
 from code_mower import doctor
@@ -46,7 +47,7 @@ from scripts import privacy_scan
 
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_current_v05_prerelease(self) -> None:
-        self.assertEqual(__version__, "0.5.0b3")
+        self.assertEqual(__version__, "0.5.0b4")
 
     def test_release_workflow_verifies_downloaded_distributions_before_publish(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
@@ -157,7 +158,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn(
             (
                 "code-mower migration package-install-rehearsal --package-spec "
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.3 "
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.4 "
                 "--json"
             ),
             help_text,
@@ -188,6 +189,72 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("builder-experiment", help_text)
         self.assertIn("providers", help_text)
         self.assertIn("migration", help_text)
+
+    def test_codex_audit_transport_commands_skip_git_repo_check(self) -> None:
+        config = codex_audit_pr.AuditConfig(
+            github_token="",
+            repo_paths={},
+            codex_cli_path="codex",
+        )
+
+        review_command = codex_audit_pr._codex_exec_command(
+            config,
+            "--sandbox",
+            "read-only",
+            "review",
+        )
+        self.assertNotIn("--skip-git-repo-check", review_command)
+
+        transport_command = codex_audit_pr._codex_exec_command(
+            config,
+            "--sandbox",
+            "read-only",
+            "--output-schema",
+            "schema.json",
+            "-",
+            skip_git_repo_check=True,
+        )
+        self.assertIn("--skip-git-repo-check", transport_command)
+        self.assertLess(
+            transport_command.index("--skip-git-repo-check"),
+            transport_command.index("--sandbox"),
+        )
+
+    def test_codex_audit_preflight_requires_skip_git_repo_check_flag(self) -> None:
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if command == ["codex", "--version"]:
+                return subprocess.CompletedProcess(command, 0, stdout="codex 0.140.0\n", stderr="")
+            if command == ["codex", "exec", "--help"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="--output-schema\n--output-last-message\n",
+                    stderr="",
+                )
+            if command == ["codex", "exec", "review", "--help"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="--base\n--output-last-message\n",
+                    stderr="",
+                )
+            raise AssertionError(f"unexpected command: {command}")
+
+        config = codex_audit_pr.AuditConfig(
+            github_token="",
+            repo_paths={},
+            codex_cli_path="codex",
+        )
+        with (
+            mock.patch.object(
+                codex_audit_pr,
+                "_resolve_executable_path",
+                return_value="codex",
+            ),
+            mock.patch.object(codex_audit_pr.subprocess, "run", side_effect=fake_run),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "--skip-git-repo-check"):
+                codex_audit_pr.preflight_codex_cli(config)
 
     def test_internal_package_seams_keep_cli_first_surface(self) -> None:
         self.assertIs(doctor.DoctorCheck, doctor_checks.DoctorCheck)
@@ -1301,8 +1368,8 @@ printf '%s\\n' "${lane}"
                     fromlist=["current_alpha_package_spec"],
                 )
                 self.assertEqual(
-                    legacy_module.current_alpha_package_spec("0.5.0b3"),
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.3",
+                    legacy_module.current_alpha_package_spec("0.5.0b4"),
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.4",
                 )
             finally:
                 sys.path[:] = original_path
@@ -1339,7 +1406,7 @@ printf '%s\\n' "${lane}"
                     "-c",
                     (
                         "from tools import code_mower_package_content as c; "
-                        "print(c.current_alpha_package_spec('0.5.0b3'))"
+                        "print(c.current_alpha_package_spec('0.5.0b4'))"
                     ),
                 ],
                 cwd=tmp_path,
@@ -1352,7 +1419,7 @@ printf '%s\\n' "${lane}"
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             completed.stdout.strip(),
-            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.3",
+            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.4",
         )
 
     def test_package_rendering_legacy_fallback_stays_valid_yaml_subset(self) -> None:
@@ -1428,11 +1495,11 @@ printf '%s\\n' "${lane}"
                 (output_dir / "src/code_mower/cloud_client/dogfood.py").is_file()
             )
             self.assertIn(
-                'version = "0.5.0b3"',
+                'version = "0.5.0b4"',
                 (output_dir / "pyproject.toml").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                '__version__ = "0.5.0b3"',
+                '__version__ = "0.5.0b4"',
                 (output_dir / "src/code_mower/__init__.py").read_text(
                     encoding="utf-8"
                 ),
@@ -2901,7 +2968,7 @@ def main():
             {
                 "status": "pass",
                 "package_spec": "code-mower",
-                "version": "code-mower 0.5.0b3",
+                "version": "code-mower 0.5.0b4",
                 "work_dir": "/tmp/code-mower-rehearsal",
                 "toy_repo": "/tmp/code-mower-rehearsal/toy-repo",
                 "step_count": 1,
@@ -3013,7 +3080,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b3",
+                version="code-mower 0.5.0b4",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -3092,7 +3159,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b3",
+                version="code-mower 0.5.0b4",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -3154,7 +3221,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b3",
+                version="code-mower 0.5.0b4",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -3220,24 +3287,24 @@ def main():
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.3",
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.4",
                     base_dir=package,
                 ),
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.3",
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.4",
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "code-mower==0.5.0b3",
+                    "code-mower==0.5.0b4",
                     base_dir=package,
                 ),
-                "code-mower==0.5.0b3",
+                "code-mower==0.5.0b4",
             )
 
     def test_package_install_rehearsal_supports_index_aware_pip_install(self) -> None:
         self.assertEqual(
             code_mower_migration._pip_install_command(
                 Path("/tmp/venv/bin/python"),
-                "code-mower==0.5.0b3",
+                "code-mower==0.5.0b4",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
             ),
@@ -3250,7 +3317,7 @@ def main():
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
                 "https://pypi.org/simple/",
-                "code-mower==0.5.0b3",
+                "code-mower==0.5.0b4",
             ],
         )
 
@@ -3270,10 +3337,10 @@ def main():
         payload = release_readiness.render_release_readiness(ROOT)
 
         self.assertEqual(payload["status"], "pass")
-        self.assertEqual(payload["version"], "0.5.0b3")
-        self.assertEqual(payload["release_tag"], "v0.5.0-beta.3")
-        self.assertEqual(payload["alpha_tag"], "v0.5.0-beta.3")
-        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0b3")
+        self.assertEqual(payload["version"], "0.5.0b4")
+        self.assertEqual(payload["release_tag"], "v0.5.0-beta.4")
+        self.assertEqual(payload["alpha_tag"], "v0.5.0-beta.4")
+        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0b4")
         check_ids = {check["id"]: check for check in payload["checks"]}
         self.assertEqual(check_ids["package-version-consistency"]["status"], "pass")
         self.assertEqual(
@@ -3322,7 +3389,7 @@ def main():
         check_ids = {check["id"]: check for check in payload["checks"]}
         check = check_ids["materialized-package-version-consistency"]
         self.assertEqual(check["status"], "fail")
-        self.assertEqual(check["detail"]["source_version"], "0.5.0b3")
+        self.assertEqual(check["detail"]["source_version"], "0.5.0b4")
         self.assertEqual(check["detail"]["generated_init_version"], "0.0.0")
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
@@ -3402,20 +3469,20 @@ def main():
 
     def test_release_readiness_tag_derivation_supports_release_stages(self) -> None:
         self.assertEqual(
-            release_readiness._release_tag_for_version("0.5.0b3"),
-            "v0.5.0-beta.3",
+            release_readiness._release_tag_for_version("0.5.0b4"),
+            "v0.5.0-beta.4",
         )
         self.assertEqual(
-            code_mower_versioning.release_tag_for_version("0.5.0b3"),
-            "v0.5.0-beta.3",
+            code_mower_versioning.release_tag_for_version("0.5.0b4"),
+            "v0.5.0-beta.4",
         )
         self.assertEqual(
-            release_readiness._release_tag_for_version("0.5.0b3"),
-            "v0.5.0-beta.3",
+            release_readiness._release_tag_for_version("0.5.0b4"),
+            "v0.5.0-beta.4",
         )
         self.assertEqual(
-            code_mower_versioning.release_tag_for_version("0.5.0b3"),
-            "v0.5.0-beta.3",
+            code_mower_versioning.release_tag_for_version("0.5.0b4"),
+            "v0.5.0-beta.4",
         )
         self.assertEqual(
             release_readiness._release_tag_for_version("1.0.0rc1"),
@@ -3444,8 +3511,8 @@ def main():
             next_steps.current_alpha_package_spec(),
         )
         self.assertEqual(
-            code_mower_package_content.current_alpha_package_spec("0.5.0b3"),
-            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.3",
+            code_mower_package_content.current_alpha_package_spec("0.5.0b4"),
+            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.4",
         )
         self.assertNotIn(next_steps.current_public_tag(), package_content_text)
         self.assertNotIn("v0.0.0", package_content_text)
@@ -3618,7 +3685,7 @@ def main():
         )
         self.assertIn("doctor --v05", doctor_step["command"])
         self.assertIn(
-            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.3",
+            "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.4",
             package_step["command"],
         )
         self.assertIn("current GitHub tag", package_step["why"])

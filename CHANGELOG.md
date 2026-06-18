@@ -4,6 +4,21 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.4
+
+This beta fixes an installed-package Codex audit regression found while
+dogfooding `v0.5.0-beta.3` against CodeMower.com.
+
+### Changed
+
+- Codex structured-output transport steps now pass `--skip-git-repo-check`
+  so installed `code-mower codex-audit` and `code-mower
+  codex-audit-schema-smoke` can run schema conversion from package context
+  while the actual PR review remains anchored in the target repository.
+- Codex CLI preflight now checks for the `--skip-git-repo-check` capability
+  explicitly, producing a direct setup error instead of a later UNKNOWN audit
+  verdict when the CLI is too old.
+
 ## v0.5.0-beta.3
 
 This beta adds a small but important reliability helper for Claude Code CLI

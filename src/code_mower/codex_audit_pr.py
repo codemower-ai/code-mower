@@ -983,6 +983,8 @@ def preflight_codex_cli(config: AuditConfig) -> str:
     for flag in ("--output-schema", "--output-last-message"):
         if flag not in exec_text:
             missing.append(f"codex exec {flag}")
+    if "--skip-git-repo-check" not in exec_text:
+        missing.append("codex exec --skip-git-repo-check")
     for flag in ("--base", "--output-last-message"):
         if flag not in review_text:
             missing.append(f"codex exec review {flag}")
@@ -995,10 +997,16 @@ def preflight_codex_cli(config: AuditConfig) -> str:
     return (version.stdout or version.stderr).strip()
 
 
-def _codex_exec_command(config: AuditConfig, *args: str) -> List[str]:
+def _codex_exec_command(
+    config: AuditConfig,
+    *args: str,
+    skip_git_repo_check: bool = False,
+) -> List[str]:
     command = [config.codex_cli_path, "exec"]
     if config.ignore_user_config:
         command.append("--ignore-user-config")
+    if skip_git_repo_check:
+        command.append("--skip-git-repo-check")
     command.extend(args)
     return command
 
@@ -1105,6 +1113,7 @@ def run_codex_verdict_structuring(
         "--output-last-message",
         str(verdict_path),
         "-",
+        skip_git_repo_check=True,
     )
     try:
         result = run_subprocess_with_progress(

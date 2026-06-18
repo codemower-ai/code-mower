@@ -91,6 +91,7 @@ def run_schema_smoke(codex_cli_path: str, timeout: int) -> int:
         "--output-last-message",
         str(verdict_path),
         "-",
+        skip_git_repo_check=True,
     )
     try:
         result = subprocess.run(
