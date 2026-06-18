@@ -40,15 +40,21 @@ history opens the repository. They should be able to confirm:
 
 ## Current Beta Baseline
 
-The current public-release baseline is `v0.5.0-beta.6` of the standalone
+The current public-release baseline is `v0.5.0-beta.7` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
-- public package installation from PyPI as `code-mower==0.5.0b6`;
+- public package installation from PyPI as `code-mower==0.5.0b7`;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
-  private reference/product repos on the beta.6 client baseline;
+  private reference/product repos on the beta.7 client baseline;
+- CodeMower.com evidence/detail URLs for uploads and events, so dashboard rows
+  can be inspected and exported without exposing source, raw diffs, transcripts,
+  auth output, or secrets;
+- explicit catch-up provenance, so imported GitHub Actions history is useful
+  for activity/backfill without being confused for calibrated reviewer-quality
+  evidence;
 - `code-mower init --easy` smoke behavior;
 - `doctor --v05` provider probes for configured local CLIs, GitHub setup,
   Actions cost traps, and optional cloud-token setup;
@@ -102,6 +108,9 @@ package. It has proved:
   shared editable source checkout cannot mutate under an active command.
 - optional cloud-upload dry run and explicit `--yes` upload path for sanitized
   benchmark bundles, with metadata-only payloads by default.
+- dashboard trust depends on stable row-level evidence links, provenance labels,
+  and a clear distinction between current dogfood metadata, imported history,
+  and calibrated reviewer/lens evidence.
 - `code-mower doctor --v05` as the early-adopter preset for easy profile,
   runtime probes, GitHub setup, private-repo caveats, Actions cost diagnostics,
   and optional cloud-token setup.
@@ -136,7 +145,7 @@ It has not yet proved:
 ## Easy Mode Flow
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b6
+pipx install --python python3.12 code-mower==0.5.0b7
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --v05
@@ -145,7 +154,7 @@ code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b6 \
+  --package-spec code-mower==0.5.0b7 \
   --repo-path /path/to/repo \
   --json
 code-mower audit pr 123

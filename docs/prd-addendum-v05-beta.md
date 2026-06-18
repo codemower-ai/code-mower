@@ -12,7 +12,7 @@ environment before they are treated as shareable.
 
 `v0.5.0-beta.3` dogfood found a real installed-package gap: the Codex audit
 schema-structuring phase inherited a repository check that only made sense from
-an editable source checkout. `v0.5.0-beta.6` fixed that by making the
+an editable source checkout. `v0.5.0-beta.7` fixed that by making the
 installed-package transport path explicit and then validating it from the public
 tag.
 

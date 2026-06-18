@@ -22,13 +22,13 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.6`, published on
-PyPI as `code-mower==0.5.0b6`. It is intended to be installed from the package
+The current verified public beta baseline is `v0.5.0-beta.7`, published on
+PyPI as `code-mower==0.5.0b7`. It is intended to be installed from the package
 index for friendly-user pilots, with GitHub tag/source installs kept as a
-fallback and development path. Beta.6 is the first baseline where the
-PyPI-first install path, release workflow, production PyPI trusted publishing,
-package-install rehearsal, and production dogfood uploads are all green after
-public release validation.
+fallback and development path. Beta.7 keeps the PyPI-first install path,
+release workflow, production PyPI trusted publishing, package-install
+rehearsal, and production dogfood uploads green after public release
+validation, while tightening the CodeMower.com evidence/detail path.
 It has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
@@ -59,8 +59,15 @@ It has proved:
   prints the same plan near the header so support tooling and first-time users
   can see exactly which optional GitHub/cloud stages ran;
 - Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
-  private reference/product repos, all using the `v0.5.0-beta.6` client
+  private reference/product repos, all using the `v0.5.0-beta.7` client
   baseline; and
+- stable CodeMower.com evidence URLs for signed-in users, with per-upload and
+  per-event detail pages plus token-safe JSON export links for support,
+  debugging, and dashboard trust checks; and
+- a clearer cloud catch-up story: routine dogfood uploads represent current
+  metadata, while historical imports must be run explicitly through
+  `code-mower cloud catch-up` or `repo-sync --mode catch-up` and are displayed
+  as imported history rather than calibrated reviewer evidence; and
 - GitHub-first setup checks, including private-repo Actions cost visibility.
 - public repo hygiene artifacts: issue templates, pull request template,
   Dependabot config, security policy, and an explicit repo-hardening checklist.
@@ -137,15 +144,18 @@ The cloud service currently supports:
 - structured benchmark events;
 - per-team ingest tokens;
 - a protected dashboard for team/token management;
-- GitHub, Google, and Apple login UI through Supabase Auth; and
-- dogfood uploads from Code Mower and product development; and
+- GitHub, Google, and Apple login UI through Supabase Auth;
+- dogfood uploads from Code Mower and product development;
+- per-upload and per-event evidence detail URLs plus JSON export links for
+  signed-in users; and
 - self-service metadata export and deletion for signed-in team members/admins.
 
-The next CodeMower.com product slice is Dashboard IA phase 1: authenticated
-tabs, a freshness/provenance strip, clearer first-upload guidance, and a more
-visible "what should I enable next?" panel. That plan is maintained in the
-CodeMower.com operator docs so the public OSS repository stays focused on the
-installable client and metadata contract.
+The next CodeMower.com product slice is dashboard usefulness rather than raw
+receipt volume: clearer imported-history versus calibrated-evidence labeling,
+more visual provider/lens signal, and team-level recommendations that answer
+"what should I enable next?" That plan is maintained in the CodeMower.com
+operator docs so the public OSS repository stays focused on the installable
+client and metadata contract.
 
 It does not yet provide automated retention jobs or true cross-team cohort
 benchmark calculations. Those are preconditions for broad cloud-data collection
