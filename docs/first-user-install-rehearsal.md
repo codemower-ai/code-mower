@@ -43,7 +43,7 @@ Use the current public tag or release candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5" \
+  --package-spec code-mower==0.5.0b6 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -66,7 +66,7 @@ For a fixed output directory:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5" \
+  --package-spec code-mower==0.5.0b6 \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-first-user-rehearsal \
   --json
@@ -76,9 +76,18 @@ For a TestPyPI candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b5 \
+  --package-spec code-mower==0.5.0b6 \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
+  --python "$(command -v python3.12)" \
+  --json
+```
+
+For a GitHub tag fallback, pass the tag URL explicitly:
+
+```bash
+code-mower migration package-install-rehearsal \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.6" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -90,7 +99,7 @@ repository after the package install succeeds:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5" \
+  --package-spec code-mower==0.5.0b6 \
   --repo-path /path/to/external-repo \
   --python "$(command -v python3.12)" \
   --json
@@ -116,7 +125,7 @@ When a product repository already has Code Mower wrapper files, the same
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5" \
+  --package-spec code-mower==0.5.0b6 \
   --repo-path /path/to/product-repo \
   --python "$(command -v python3.12)" \
   --json

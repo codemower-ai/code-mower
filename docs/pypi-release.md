@@ -1,11 +1,11 @@
 # PyPI Release Runbook
 
-Code Mower beta users currently install from a tagged GitHub release. The
-release workflow already builds source and wheel distributions; package-index
-publishing should be enabled in this order so first-user installs become:
+Code Mower beta users install from PyPI. The release workflow builds source
+and wheel distributions, verifies them with `twine check`, and can publish to
+TestPyPI or production PyPI through trusted publishing.
 
 ```bash
-pipx install code-mower
+pipx install --python python3.12 code-mower==0.5.0b6
 ```
 
 ## Current Status
@@ -19,9 +19,9 @@ pipx install code-mower
 - Production PyPI publishing is gated behind the `pypi` GitHub environment and
   the `CODE_MOWER_PYPI_PUBLISH` repository variable or manual
   `workflow_dispatch` input.
-- Trusted publishing must be configured before using this for public users.
-- GitHub-tag install remains the documented beta path until a TestPyPI install
-  rehearsal passes.
+- Trusted publishing is configured for TestPyPI and production PyPI.
+- GitHub-tag install remains a fallback for release debugging, not the primary
+  early-adopter path.
 
 ## One-Time TestPyPI Setup
 
@@ -74,14 +74,16 @@ Every GitHub release run should leave `build-distributions` and
 same artifact download path used by the optional PyPI publish job, then runs
 `twine check dist/*` without publishing anything.
 
-For beta releases, also verify the GitHub release is the public release line:
+For beta releases, keep release metadata honest:
 
 ```bash
-gh release edit v0.5.0-beta.5 --repo codemower-ai/code-mower --latest
+gh release view v0.5.0-beta.6 --repo codemower-ai/code-mower
+gh api repos/codemower-ai/code-mower/releases/latest
 ```
 
-GitHub can otherwise continue showing an older alpha as "Latest" even after
-newer beta prereleases exist.
+It is acceptable for the `/releases/latest` endpoint to return `404` while the
+newest public artifact is a beta prerelease. Do not manually mark beta releases
+as stable "Latest"; that makes the release line look more mature than it is.
 
 Before any package-index promotion, run the static release-readiness check from
 the repository root:
@@ -105,26 +107,29 @@ Before publishing to TestPyPI, run the release workflow once with both publish
 inputs set to `false` and confirm `build-distributions` and
 `verify-distributions` are green.
 
-Before switching docs to package-index install:
+For production PyPI verification:
 
 ```bash
 python3.12 -m venv /tmp/code-mower-pypi-smoke
 /tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
-/tmp/code-mower-pypi-smoke/bin/python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ code-mower==0.5.0b5
+/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==0.5.0b6
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
-Then run the release-gate first-user rehearsal. For TestPyPI, pass the package
-spec that points at the candidate distribution; for a GitHub tag, pass the tag
-URL:
+Then run the release-gate first-user rehearsal against the same package:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b5 \
-  --pip-index-url https://test.pypi.org/simple/ \
-  --pip-extra-index-url https://pypi.org/simple/ \
+  --package-spec code-mower==0.5.0b6 \
   --python "$(command -v python3.12)" \
   --json
+```
+
+For a TestPyPI candidate, add:
+
+```bash
+  --pip-index-url https://test.pypi.org/simple/ \
+  --pip-extra-index-url https://pypi.org/simple/
 ```
 
 See [First-User Install Rehearsal](first-user-install-rehearsal.md) for the full
@@ -154,10 +159,16 @@ Promotion criteria:
 - Public docs still describe privacy boundaries and do not imply cloud upload is
   required.
 
-## When To Switch The README
+## README Install Command Policy
 
-Only change the primary README install command from GitHub-tag install to
-`pipx install code-mower` after:
+The primary README command should stay on an explicit beta version until a
+stable `1.0` line exists:
+
+```bash
+pipx install --python python3.12 code-mower==0.5.0b6
+```
+
+Do not switch to unpinned `pipx install code-mower` until:
 
 - TestPyPI install has passed.
 - Production PyPI trusted publishing has passed.

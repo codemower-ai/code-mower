@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.5`. It is intended
+The current verified public beta baseline is `v0.5.0-beta.6`. It is intended
 to be installed from the `codemower-ai/code-mower` public repository. Beta.4 is
 the first baseline where the installed-package audit path, release workflow,
 and production dogfood uploads are all green after a public tag validation.
@@ -51,7 +51,7 @@ It has proved:
   and optional cloud-token setup. `doctor --v05` remains the versioned alias for
   scripts;
 - Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
-  private reference/product repos, all using the `v0.5.0-beta.5` client
+  private reference/product repos, all using the `v0.5.0-beta.6` client
   baseline; and
 - GitHub-first setup checks, including private-repo Actions cost visibility.
 - public repo hygiene artifacts: issue templates, pull request template,

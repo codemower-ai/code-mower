@@ -11,9 +11,11 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha/beta releases and reports its version with
   `code-mower --version`.
-- The v0.5 beta entrypoint is `v0.5.0-beta.5`, with `code-mower doctor
-  --preflight` as the first-run setup diagnostic. `doctor --v05` remains the
-  versioned equivalent for scripts.
+- The v0.5 beta entrypoint is `code-mower==0.5.0b6` from
+  [PyPI](https://pypi.org/project/code-mower/), with `code-mower doctor
+  --preflight` as the first-run setup diagnostic. The corresponding GitHub tag
+  is `v0.5.0-beta.6`; `doctor --v05` remains the versioned equivalent for
+  scripts.
 - The README now shows a shortened `doctor --preflight` example so fresh users can
   see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and
@@ -27,8 +29,8 @@ not know the original reference repos.
   beyond friendly alpha users. Alpha-specific rehearsal notes remain as
   historical transcripts.
 - Public CI now runs the package-install first-user rehearsal from the current
-  checkout, so every PR proves the same installed-package path that early
-  adopters exercise from a public tag.
+  checkout, and release-gate rehearsals run against the published PyPI beta
+  before widening.
 - Private reference/product repos have proven pinned standalone consumption and
   mirror removal while preserving their own CI/deploy gates.
 - Hosted/commercial service implementation remains outside the public OSS repo.

@@ -32,12 +32,14 @@ Run:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5" \
+  --package-spec code-mower==0.5.0b6 \
   --repo-path /path/to/product-repo \
   --json
 ```
 
-During alpha testing, use a local path or git URL for `--package-spec`.
+During beta testing, use the published PyPI beta by default. Use a local path
+or git URL for `--package-spec` only when rehearsing a release candidate before
+publication.
 
 ### Mirrors Removed
 
