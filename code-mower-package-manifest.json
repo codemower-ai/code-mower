@@ -648,6 +648,16 @@
       "target": "src/code_mower/claude_audit_pr.py"
     },
     {
+      "kind": "reviewer",
+      "source": "src/code_mower/claude_cli_bounce.py",
+      "target": "src/code_mower/claude_cli_bounce.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/claude_cli_environment.py",
+      "target": "src/code_mower/claude_cli_environment.py"
+    },
+    {
       "kind": "labeler",
       "source": "src/code_mower/clear_stale.py",
       "target": "src/code_mower/clear_stale.py"
@@ -1200,6 +1210,6 @@
     "module": "code_mower",
     "name": "code-mower",
     "source_layout": "src/code_mower",
-    "version": "0.5.0b2"
+    "version": "0.5.0b3"
   }
 }
