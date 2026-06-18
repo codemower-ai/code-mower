@@ -114,6 +114,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "builder-experiment",
                 "calibration",
                 "claude-audit",
+                "claude-bounce",
                 "clear-stale",
                 "checks",
                 "cloud",
@@ -168,6 +169,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("  cloud", help_text)
         self.assertNotIn("trailer-comment-labeler", help_text)
         self.assertNotIn("codex-audit-env-preflight", help_text)
+        self.assertNotIn("claude-bounce", help_text)
         self.assertNotIn("  providers", help_text)
         self.assertNotIn("  migration", help_text)
 
@@ -182,6 +184,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("Advanced/provider/operator commands:", help_text)
         self.assertIn("trailer-comment-labeler", help_text)
         self.assertIn("codex-audit-env-preflight", help_text)
+        self.assertIn("claude-bounce", help_text)
         self.assertIn("builder-experiment", help_text)
         self.assertIn("providers", help_text)
         self.assertIn("migration", help_text)

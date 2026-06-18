@@ -22,6 +22,7 @@ if __package__ in {None, "", "tools"}:
         blind_review_coordinator,
         bootstrap as code_mower_bootstrap,
         claude_audit_pr,
+        claude_cli_bounce,
         clear_stale,
         coderabbit_cli_audit_pr,
         codex_audit_env_preflight,
@@ -58,6 +59,7 @@ else:  # pragma: no cover - exercised after package extraction.
     from . import bootstrap as code_mower_bootstrap
     from . import builder_experiment as code_mower_builder_experiment
     from . import claude_audit_pr
+    from . import claude_cli_bounce
     from . import clear_stale
     from . import cloud as code_mower_cloud
     from . import coderabbit_cli_audit_pr
@@ -349,6 +351,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "builder-experiment": "Capture builder-side experiment metadata.",
     "calibration": "Create corpora, dispositions, policy, and value reports.",
     "claude-audit": "Run a Claude structured audit lane.",
+    "claude-bounce": "Diagnose and retry Claude CLI auth with a clean subprocess env.",
     "clear-stale": "Clear stale terminal audit labels after a PR head changes.",
     "checks": "Detect and run a repository's native lint/test/build surface.",
     "cloud": "Export or upload sanitized benchmark metadata.",
@@ -470,6 +473,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "builder-experiment": code_mower_builder_experiment.main,
     "calibration": code_mower_calibration.main,
     "claude-audit": claude_audit_pr.main,
+    "claude-bounce": claude_cli_bounce.main,
     "clear-stale": clear_stale.main,
     "checks": code_mower_checks.main,
     "cloud": code_mower_cloud.main,
