@@ -1,8 +1,8 @@
 # Code Mower Quickstart
 
 This guide gets one developer from install to a first local Code Mower setup
-check. Code Mower is still alpha software; start on one repository and keep
-all reviewer lanes manual until the output is useful on your codebase.
+check. Code Mower v0.5 is beta software; start on one repository and keep all
+reviewer lanes manual until the output is useful on your codebase.
 
 To see the value loop before you touch a product repository, open the
 [Demo Calibration Example](../examples/demo-calibration/README.md) and the
@@ -14,7 +14,7 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.1"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.2"
 code-mower --version
 ```
 
@@ -105,7 +105,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.1" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.2" \
   --python "$(command -v python3.12)" \
   --json
 ```
