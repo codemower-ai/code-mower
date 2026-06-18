@@ -21,7 +21,7 @@ RELEASE_DOC_PATHS = (
     "docs/pypi-release.md",
     "docs/public-release-checklist.md",
 )
-REQUIRED_ALPHA_TAG_DOC_PATHS = (
+REQUIRED_RELEASE_TAG_DOC_PATHS = (
     "README.md",
     "docs/quickstart.md",
     "docs/try-in-10-minutes.md",
@@ -232,7 +232,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     ]
     missing_release_docs = [
         relative_path
-        for relative_path in REQUIRED_ALPHA_TAG_DOC_PATHS
+        for relative_path in REQUIRED_RELEASE_TAG_DOC_PATHS
         if release_tag and release_tag not in docs.get(relative_path, "")
     ]
     package_index_docs = [
@@ -388,7 +388,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             evidence=release_tag or "missing version",
             detail={
                 "docs": version_docs,
-                "required_docs": list(REQUIRED_ALPHA_TAG_DOC_PATHS),
+                "required_docs": list(REQUIRED_RELEASE_TAG_DOC_PATHS),
                 "missing_docs": missing_release_docs,
             },
         ),
