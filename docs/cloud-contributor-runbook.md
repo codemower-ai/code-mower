@@ -130,6 +130,11 @@ useful history before cloud sharing was enabled, run `code-mower cloud catch-up`
 or `code-mower cloud repo-sync --mode catch-up` explicitly, then use dogfood for
 ongoing current-state uploads.
 
+After upload, use the authenticated dashboard detail links to inspect exactly
+what landed. Upload and event detail pages expose token-safe metadata, payload
+previews, report summaries, and JSON export links. If a chart looks surprising,
+start from those detail pages before assuming a calibration conclusion.
+
 ## Codex: Product Repository Work
 
 Use a product-specific Codex token and the product repo slug:

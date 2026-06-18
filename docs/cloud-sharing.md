@@ -27,6 +27,12 @@ cohort median" or "this SaaS lane is noisy for repos with similar shape." The
 default upload payload is metadata-only so teams can contribute toward that
 future benchmark without sharing source.
 
+CodeMower.com should also make every visible number inspectable. Signed-in
+users can drill from recent uploads and events to token-safe evidence detail
+pages and export JSON for support/debugging. Those pages are meant to answer
+"what data is this chart using?" without exposing source, raw diffs, raw model
+transcripts, auth output, or secrets.
+
 ## Setup Personas
 
 There are two different setup jobs:
