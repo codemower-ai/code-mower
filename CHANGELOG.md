@@ -4,6 +4,22 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.3
+
+This beta adds a small but important reliability helper for Claude Code CLI
+auth drift during local dogfood and early-adopter setup.
+
+### Changed
+
+- Added `code-mower claude-bounce`, a guided helper that runs a real Claude
+  smoke prompt, clears cached Claude sessions, opens the local Claude config
+  folder, and gives explicit next steps when `claude auth status` says logged
+  in but actual prompt requests return `401` or other credential failures.
+- Claude audit preflight now shares the same environment/auth detection helper
+  used by doctor and bounce diagnostics, reducing divergent remediation advice.
+- Provider setup docs and troubleshooting now point users to the prompt-level
+  Claude smoke test instead of trusting auth-status output alone.
+
 ## v0.5.0-beta.2
 
 This beta tightens the first-user rehearsal path after a real external-repo
