@@ -227,6 +227,11 @@ For GitHub Actions, keep the workflow low-cost and optional: run it on `main`
 pushes, use `secrets.CODE_MOWER_CLOUD_TOKEN`, and skip the upload when the
 secret is absent.
 
+Dogfood is a current-state signal. It uploads metadata about the current
+checkout/workflow run and any current shareable reports that exist. It does not
+reconstruct old pull requests, old reviewer comments, older GitHub Actions runs,
+or historical benchmark outcomes.
+
 ## Historical Catch-Up
 
 If you enabled cloud sharing after already running Code Mower, you can catch up
@@ -254,6 +259,14 @@ reviewed and accepted that metadata tradeoff.
 
 Use catch-up once or occasionally after onboarding a repository. Use
 `cloud dogfood` for ongoing current-state uploads.
+
+Catch-up is intentionally separate from dogfood. Use `code-mower cloud
+catch-up` for sanitized GitHub Actions history, or `code-mower cloud repo-sync
+--mode catch-up` when syncing multiple repositories from an operator machine.
+Use `reviewer-runs` for existing local verdict artifacts. Keeping these modes
+separate lets CodeMower.com label provenance honestly: current dogfood,
+historical workflow history, and reviewer/calibration evidence are different
+signals.
 
 ### Safe Catch-Up Checklist
 

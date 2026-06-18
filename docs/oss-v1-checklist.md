@@ -45,6 +45,9 @@ package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
+- public-tag install validation after the beta.4 release;
+- production dogfood uploads from Code Mower OSS, CodeMower.com, and two
+  private reference/product repos on the beta.4 client baseline;
 - `code-mower init --easy` smoke behavior;
 - `doctor --v05` provider probes for configured local CLIs, GitHub setup,
   Actions cost traps, and optional cloud-token setup;
@@ -105,7 +108,15 @@ package. It has proved:
 It has not yet proved:
 
 - public package installation from PyPI or another package index;
-- calibration auto-discovery from recent PRs with human disposition review;
+- enough first-user polish that a new user can install, run doctor, perform a
+  first audit/report, and understand optional cloud sharing without project
+  history;
+- historical catch-up UX that clearly separates GitHub Actions history,
+  reviewer-run artifacts, and routine dogfood/current metadata;
+- dashboard trust/value for first-time uploaders beyond receipt rows, including
+  clear provenance labels and useful "what should I enable next?" guidance;
+- calibration auto-discovery from recent PRs with human disposition review and
+  enough evidence to justify lane promotion;
 - broad private-repo standalone checkout across arbitrary organizations and
   token policies;
 - mirror deletion across arbitrary user repositories;
@@ -170,9 +181,12 @@ v1.0 should ship in six ordered slices:
    corpus.
 4. **Calibration bootstrap.** Build a draft corpus from recent PR history so a
    first-time user can see a project-specific report before investing hours in
-   manual corpus curation.
+   manual corpus curation. Keep human disposition review explicit before any
+   lane is promoted.
 5. **Cloud-ready export.** Produce a sanitized local benchmark bundle that can
-   later feed an opt-in cloud service, without uploading in v1.0.
+   feed an opt-in cloud service, with current dogfood metadata, historical
+   catch-up, reviewer-run artifacts, and calibration evidence labeled as
+   separate provenance categories.
 6. **Measured lane promotion.** Generate a value report from known-clean and
    known-blocked PRs, then classify lanes as informational, selective, or
    merge-gating eligible.
