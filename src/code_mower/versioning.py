@@ -29,4 +29,12 @@ def release_tag_for_version(version: str) -> str:
 
 
 def public_package_spec(version: str, repo_url: str = PUBLIC_REPO_URL) -> str:
+    """Return the package-index install spec for public prerelease users."""
+
+    return f"code-mower=={version}"
+
+
+def github_package_spec(version: str, repo_url: str = PUBLIC_REPO_URL) -> str:
+    """Return the GitHub-tag install spec used for release debugging."""
+
     return f"git+{repo_url}.git@{release_tag_for_version(version)}"

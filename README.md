@@ -86,8 +86,15 @@ Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5"
+pipx install --python python3.12 code-mower==0.5.0b6
 code-mower --version
+```
+
+`0.5.0b6` is a beta release. Until Code Mower publishes a stable `1.0`
+line, use the explicit beta version above or allow prereleases with:
+
+```bash
+pipx install --python python3.12 --pip-args="--pre" code-mower
 ```
 
 From the repository you want to pilot:
@@ -220,11 +227,11 @@ best?" to "which AI builder plus reviewer loop ships best on this product?" See
 
 ## Installation Status
 
-The current public beta is `v0.5.0-beta.5` from
-[codemower-ai/code-mower](https://github.com/codemower-ai/code-mower). PyPI
-distribution builds now run from GitHub Releases. Publishing to PyPI remains
-off by default until trusted publishing is configured, so use the tagged GitHub
-install command above for this beta.
+The current public beta is `v0.5.0-beta.6` from
+[codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), and it
+is published as `code-mower==0.5.0b6` on
+[PyPI](https://pypi.org/project/code-mower/). GitHub releases remain the
+auditable source for tags, build artifacts, and release notes.
 
 For source checkout development and release rehearsal, use:
 
@@ -238,10 +245,9 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 
 ## Known Limitations
 
-- PyPI distribution builds exist, but publishing is gated until trusted
-  publishing is configured; use the tagged GitHub install command. See
-  [docs/pypi-release.md](docs/pypi-release.md) for the TestPyPI/PyPI
-  activation path.
+- PyPI distribution publishing is active through trusted publishing; see
+  [docs/pypi-release.md](docs/pypi-release.md) for the release and
+  verification runbook.
 - GitHub is the primary supported forge. GitLab, Bitbucket, and ACP bridges are
   roadmap items.
 - Hosted/SaaS reviewers start informational or manual until calibration data

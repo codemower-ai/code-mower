@@ -206,8 +206,9 @@ def build_next_steps(
                 "and cloud dry-run artifacts, emits `first_user_readiness`, and "
                 "optionally checks a real repo when --repo-path is provided. "
                 "Wrapper-bearing repos get parity checks; fresh external repos "
-                "get installed-CLI readiness checks. The tagged release path uses the "
-                "current GitHub tag until PyPI publishing is promoted."
+                "get installed-CLI readiness checks. The default beta path uses "
+                "the current published PyPI prerelease; GitHub tags remain a "
+                "release-debug fallback."
             ),
             "artifacts": [
                 "outputs/package-install-rehearsal.json",

@@ -21,7 +21,7 @@ RELEASE_DOC_PATHS = (
     "docs/pypi-release.md",
     "docs/public-release-checklist.md",
 )
-REQUIRED_RELEASE_TAG_DOC_PATHS = (
+REQUIRED_PUBLIC_PACKAGE_SPEC_DOC_PATHS = (
     "README.md",
     "docs/quickstart.md",
     "docs/try-in-10-minutes.md",
@@ -230,10 +230,15 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         for relative_path, text in docs.items()
         if release_tag and release_tag in text
     ]
-    missing_release_docs = [
+    package_spec_docs = [
         relative_path
-        for relative_path in REQUIRED_RELEASE_TAG_DOC_PATHS
-        if release_tag and release_tag not in docs.get(relative_path, "")
+        for relative_path, text in docs.items()
+        if package_index_spec and package_index_spec in text
+    ]
+    missing_package_spec_docs = [
+        relative_path
+        for relative_path in REQUIRED_PUBLIC_PACKAGE_SPEC_DOC_PATHS
+        if package_index_spec and package_index_spec not in docs.get(relative_path, "")
     ]
     package_index_docs = [
         relative_path
@@ -382,14 +387,15 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             evidence=str(workflow_path),
         ),
         _release_check(
-            check_id="release-tag-docs-current",
-            title="Current release tag is present in public install docs",
-            status="pass" if release_tag and not missing_release_docs else "fail",
-            evidence=release_tag or "missing version",
+            check_id="public-package-spec-docs-current",
+            title="Current package-index spec is present in public install docs",
+            status="pass" if package_index_spec and not missing_package_spec_docs else "fail",
+            evidence=package_index_spec or "missing version",
             detail={
-                "docs": version_docs,
-                "required_docs": list(REQUIRED_RELEASE_TAG_DOC_PATHS),
-                "missing_docs": missing_release_docs,
+                "release_tag_docs": version_docs,
+                "package_spec_docs": package_spec_docs,
+                "required_docs": list(REQUIRED_PUBLIC_PACKAGE_SPEC_DOC_PATHS),
+                "missing_docs": missing_package_spec_docs,
             },
         ),
         _release_check(

@@ -16,8 +16,15 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5"
+pipx install --python python3.12 code-mower==0.5.0b6
 code-mower --version
+```
+
+`0.5.0b6` is a beta release. To follow the newest beta line instead of
+pinning this exact build:
+
+```bash
+pipx install --python python3.12 --pip-args="--pre" code-mower
 ```
 
 ## 2. Authenticate GitHub
@@ -90,7 +97,7 @@ install rehearsal instead:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5" \
+  --package-spec code-mower==0.5.0b6 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -111,7 +118,7 @@ surface and dry-run it instead of trying product-wrapper parity:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5" \
+  --package-spec code-mower==0.5.0b6 \
   --repo-path /path/to/repo \
   --python "$(command -v python3.12)" \
   --json
