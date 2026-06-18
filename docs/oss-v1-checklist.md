@@ -45,9 +45,10 @@ package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
-- public-tag install validation after the beta.5 release;
+- public package installation from PyPI as `code-mower==0.5.0b6`;
+- public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
-  private reference/product repos on the beta.5 client baseline;
+  private reference/product repos on the beta.6 client baseline;
 - `code-mower init --easy` smoke behavior;
 - `doctor --v05` provider probes for configured local CLIs, GitHub setup,
   Actions cost traps, and optional cloud-token setup;
@@ -104,10 +105,15 @@ package. It has proved:
 - `code-mower doctor --v05` as the early-adopter preset for easy profile,
   runtime probes, GitHub setup, private-repo caveats, Actions cost diagnostics,
   and optional cloud-token setup.
+- repository-native check detection and execution, so TypeScript/React repos use
+  their declared ESLint/Vitest/build surface, Python repos can use Ruff/pytest
+  where configured, and Code Mower does not impose its own lint policy on
+  product repos.
+- reusable stale-audit lane handling for merge-authority lanes through
+  `clear-stale` and generated stale-clear workflow templates.
 
 It has not yet proved:
 
-- public package installation from PyPI or another package index;
 - enough first-user polish that a new user can install, run doctor, perform a
   first audit/report, and understand optional cloud sharing without project
   history;
@@ -123,6 +129,9 @@ It has not yet proved:
 - broader spend-bearing context-pack lens runs beyond the first solver-runtime
   Gemini proof;
 - a large enough reviewer/lens corpus for new merge gates.
+- Dashboard IA phase 1 on CodeMower.com: authenticated tabs, freshness and
+  provenance strip, clearer first-upload guidance, and a visibly useful
+  "what should I enable next?" panel.
 
 ## Easy Mode Flow
 
@@ -193,6 +202,10 @@ v1.0 should ship in six ordered slices:
 7. **First builder-experiment scaffold.** Keep this harness-only for v1.0:
    record authoring run metadata and reports, but do not require autonomous
    orchestration or hosted source access.
+8. **Reusable merge-authority lane hygiene.** Ship stale-audit label clearing,
+   current-head comment validation, trusted-bot author controls, and direct
+   redispatch behavior as reusable templates/commands instead of product-repo
+   glue.
 
 GitLab and Bitbucket stay post-v1.0. Keep schemas source-control-neutral, but
 do not spend v1.0 work on non-GitHub workflow rendering.
@@ -281,6 +294,14 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 - Support a simple documented path for a single PR.
 - Keep new non-core lanes informational by default.
 - Preserve head-SHA pinning and structured verdicts.
+- For merge-authority lanes, clear stale terminal labels on new commits unless
+  the latest trusted reviewer verdict is explicitly tied to the current head
+  SHA.
+- Keep stale-label requeue and redispatch behavior reusable through generated
+  templates or `code-mower clear-stale`, not bespoke product-repo workflows.
+- Treat repo-native check surfaces as first-class audit context: Code Mower
+  should detect and run the repository's declared checks rather than substitute
+  its own Python/Ruff policy for non-Python projects.
 
 ### Calibration And Reports
 
