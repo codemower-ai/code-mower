@@ -119,6 +119,17 @@ code-mower cloud repo-sync \
   --json
 ```
 
+Use the modes deliberately:
+
+- `dogfood` uploads current repo metadata and current shareable reports;
+- `reviewer-runs` uploads existing local verdict artifacts; and
+- `catch-up` uploads sanitized GitHub Actions history.
+
+Routine dogfood workflows are not historical benchmark imports. If a repo has
+useful history before cloud sharing was enabled, run `code-mower cloud catch-up`
+or `code-mower cloud repo-sync --mode catch-up` explicitly, then use dogfood for
+ongoing current-state uploads.
+
 ## Codex: Product Repository Work
 
 Use a product-specific Codex token and the product repo slug:

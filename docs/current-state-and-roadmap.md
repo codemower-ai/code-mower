@@ -22,8 +22,11 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public beta baseline is `v0.5.0-beta.4`. It is intended to be
-installed from the `codemower-ai/code-mower` public repository and has proved:
+The current verified public beta baseline is `v0.5.0-beta.4`. It is intended
+to be installed from the `codemower-ai/code-mower` public repository. Beta.4 is
+the first baseline where the installed-package audit path, release workflow,
+and production dogfood uploads are all green after a public tag validation.
+It has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
 - `code-mower init --easy`, `doctor --preflight`, `next-steps`, and starter
@@ -47,7 +50,9 @@ installed from the `codemower-ai/code-mower` public repository and has proved:
   mode, runtime probes, GitHub/private-repo setup, Actions cost diagnostics,
   and optional cloud-token setup. `doctor --v05` remains the versioned alias for
   scripts;
-- Code Mower Cloud dogfood events from the OSS repo and product work; and
+- Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
+  private reference/product repos, all using the `v0.5.0-beta.4` client
+  baseline; and
 - GitHub-first setup checks, including private-repo Actions cost visibility.
 - public repo hygiene artifacts: issue templates, pull request template,
   Dependabot config, security policy, and an explicit repo-hardening checklist.
@@ -132,6 +137,11 @@ It does not yet provide automated retention jobs or true cross-team cohort
 benchmark calculations. Those are preconditions for broad cloud-data collection
 beyond friendly pilots.
 
+Dashboard provenance is part of the product contract: routine dogfood/current
+metadata, imported GitHub Actions history, and calibrated reviewer/lens evidence
+must stay visually and analytically distinct. Workflow history can prove
+activity and upload health, but it is not the same as reviewer-quality evidence.
+
 OAuth, Supabase, Vercel, DNS, and hosted-secret setup are CodeMower.com
 operator responsibilities. OSS users should only need a dashboard-issued or
 operator-issued developer/team token when they opt into cloud sharing.
@@ -173,6 +183,14 @@ these questions in the first few minutes:
 The v0.5-to-v1.0 work should optimize for that trust test. More provider
 adapters are useful only after install, doctor, first report, privacy, and code
 structure feel boring and credible.
+
+## v0.5 Beta Learning Addendum
+
+A short PRD addendum captures the beta.4 lessons without rewriting the product
+requirements: installed-package rehearsals are release-gating, dashboard trust
+depends on provenance labels, and current dogfood metadata is not the same as
+historical benchmark backfill. See
+[`docs/prd-addendum-v05-beta.md`](prd-addendum-v05-beta.md).
 
 ## Fresh-Eyes Feedback Incorporated
 
