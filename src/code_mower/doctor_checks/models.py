@@ -57,6 +57,30 @@ class DoctorReport:
             return STATUS_WARN
         return STATUS_PASS
 
+    @property
+    def run_plan(self) -> tuple[dict[str, Any], ...]:
+        """Return the structured doctor run plan when a report contains one."""
+
+        for check in self.checks:
+            if check.name != "doctor.plan" or not isinstance(check.detail, Mapping):
+                continue
+            stages = check.detail.get("stages")
+            if not isinstance(stages, list):
+                return ()
+            plan: list[dict[str, Any]] = []
+            for stage in stages:
+                if not isinstance(stage, Mapping):
+                    continue
+                plan.append(
+                    {
+                        "id": str(stage.get("id", "")),
+                        "group": str(stage.get("group", "")),
+                        "optional": bool(stage.get("optional", False)),
+                    }
+                )
+            return tuple(plan)
+        return ()
+
     def group_summary(self) -> dict[str, dict[str, int | str]]:
         summary: dict[str, dict[str, int | str]] = {}
         for group_id, label in GROUP_LABELS.items():
@@ -91,6 +115,7 @@ class DoctorReport:
                 "failures": self.failures,
                 "warnings": self.warnings,
             },
+            "run_plan": list(self.run_plan),
             "groups": self.group_summary(),
             "checks": [check.as_dict() for check in self.checks],
         }

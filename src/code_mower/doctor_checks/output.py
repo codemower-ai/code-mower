@@ -39,6 +39,16 @@ def _format_status_summary(report: DoctorReport) -> str:
     return ", ".join(parts)
 
 
+def _format_run_plan(report: DoctorReport) -> str | None:
+    if not report.run_plan:
+        return None
+    stages = []
+    for stage in report.run_plan:
+        suffix = " optional" if stage.get("optional") else ""
+        stages.append(f"{stage.get('id', '')} ({stage.get('group', '')}{suffix})")
+    return ", ".join(stages)
+
+
 def _format_check(check: DoctorCheck) -> list[str]:
     lane = f" [{check.lane}]" if check.lane else ""
     lines = [f"- {check.status.upper()} {check.name}{lane}: {check.message}"]
@@ -57,6 +67,9 @@ def render_doctor_text(report: DoctorReport) -> str:
     ]
     if report.profile:
         lines.append(f"Profile: {report.profile}")
+    run_plan = _format_run_plan(report)
+    if run_plan:
+        lines.append(f"Run plan: {run_plan}")
     lines.append(f"Checks: {_format_status_summary(report)}")
     lines.append("")
 

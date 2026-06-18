@@ -67,6 +67,10 @@ Warnings are setup guidance. They are only fatal when you pass `--strict`.
 If you want to see the shape of the output before installing, start with
 `docs/first-run-transcript.md` and `docs/sample-doctor-output.md`.
 
+In JSON mode, check the top-level `run_plan` field first. It tells you whether
+the preflight included GitHub and optional cloud checks before you inspect
+individual provider warnings.
+
 ## 5. Detect Your Repo's Native Checks
 
 ```bash

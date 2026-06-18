@@ -26,6 +26,14 @@ class DoctorOutputTests(unittest.TestCase):
                     name="doctor.plan",
                     status=STATUS_PASS,
                     message="doctor run plan: load-inputs, select-profile, runtime, providers",
+                    detail={
+                        "stages": [
+                            {"id": "load-inputs", "group": "runtime", "optional": False},
+                            {"id": "select-profile", "group": "runtime", "optional": False},
+                            {"id": "runtime", "group": "runtime", "optional": False},
+                            {"id": "providers", "group": "providers", "optional": False},
+                        ]
+                    },
                 ),
                 DoctorCheck(
                     name="runtime.python",
@@ -59,6 +67,11 @@ class DoctorOutputTests(unittest.TestCase):
 
         rendered = output.render_doctor_text(report)
 
+        self.assertIn(
+            "Run plan: load-inputs (runtime), select-profile (runtime), "
+            "runtime (runtime), providers (providers)",
+            rendered,
+        )
         self.assertIn("Checks: 7 total, 2 warnings, 1 skipped", rendered)
         self.assertLess(rendered.index("Setup"), rendered.index("Runtime"))
         self.assertLess(rendered.index("Runtime"), rendered.index("Provider lanes"))
