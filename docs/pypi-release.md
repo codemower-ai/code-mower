@@ -74,6 +74,15 @@ Every GitHub release run should leave `build-distributions` and
 same artifact download path used by the optional PyPI publish job, then runs
 `twine check dist/*` without publishing anything.
 
+For beta releases, also verify the GitHub release is the public release line:
+
+```bash
+gh release edit v0.5.0-beta.5 --repo codemower-ai/code-mower --latest
+```
+
+GitHub can otherwise continue showing an older alpha as "Latest" even after
+newer beta prereleases exist.
+
 Before any package-index promotion, run the static release-readiness check from
 the repository root:
 
@@ -81,7 +90,7 @@ the repository root:
 code-mower migration release-readiness --json
 ```
 
-It verifies the package version, current alpha tag references, release workflow
+It verifies the package version, current release tag references, release workflow
 shape, TestPyPI/PyPI gates, trusted-publishing permissions, and the package-index
 install rehearsal docs. Treat a failure as a release blocker. The JSON also
 includes `setup_urls` for the GitHub environments, release workflow, PyPI
@@ -101,7 +110,7 @@ Before switching docs to package-index install:
 ```bash
 python3.12 -m venv /tmp/code-mower-pypi-smoke
 /tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
-/tmp/code-mower-pypi-smoke/bin/python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ code-mower==0.5.0b4
+/tmp/code-mower-pypi-smoke/bin/python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ code-mower==0.5.0b5
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
@@ -111,7 +120,7 @@ URL:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b4 \
+  --package-spec code-mower==0.5.0b5 \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \

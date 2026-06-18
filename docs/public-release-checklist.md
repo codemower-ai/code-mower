@@ -11,7 +11,7 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha/beta releases and reports its version with
   `code-mower --version`.
-- The v0.5 beta entrypoint is `v0.5.0-beta.4`, with `code-mower doctor
+- The v0.5 beta entrypoint is `v0.5.0-beta.5`, with `code-mower doctor
   --preflight` as the first-run setup diagnostic. `doctor --v05` remains the
   versioned equivalent for scripts.
 - The README now shows a shortened `doctor --preflight` example so fresh users can
@@ -116,8 +116,9 @@ interpreter.
 ## Recommended Before v1.0
 
 - Publish a short "easy mode" walkthrough using a toy repo.
-- Publish a GitHub Release for the current public release tag and mark alpha/beta
-  tags as prereleases in GitHub.
+- Publish a GitHub Release for the current public release tag, mark alpha/beta
+  tags as prereleases in GitHub, and explicitly mark the newest beta as the
+  latest release so GitHub does not keep advertising an older alpha.
 - Confirm the release workflow builds source/wheel distributions for every
   public alpha.
 - Configure PyPI trusted publishing before widening beyond friendly alpha users,

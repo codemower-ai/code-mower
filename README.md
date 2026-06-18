@@ -80,13 +80,13 @@ known-blocked control, and three reviewer lanes. It shows the decision Code
 Mower is built to support: which AI reviewers are useful, noisy, expensive,
 fast, or eligible for stronger merge policy on your actual codebase.
 
-## Try It In 10 Minutes
+## Try It First
 
 Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.4"
+pipx install --python python3.12 "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5"
 code-mower --version
 ```
 
@@ -94,15 +94,15 @@ From the repository you want to pilot:
 
 ```bash
 code-mower init --easy
-code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower doctor --preflight --json
+code-mower doctor --preflight
 code-mower checks detect --json
-code-mower checks run --dry-run --json
 ```
 
-Then generate the starter local report:
+When those look sane, write the generated setup to a reviewable folder and
+produce the starter local report:
 
 ```bash
+code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower calibration value-report .code-mower.generated/calibration-corpus.json \
   --output .code-mower/reviewer-value-report.md
 ```
@@ -149,16 +149,18 @@ metadata. Cross-team cohort benchmarking is a roadmap feature that becomes
 valuable only as enough teams contribute sanitized data. The local OSS path
 stays useful without the hosted service.
 
-Create an inspectable metadata-only bundle:
+The cloud value loop is:
+
+1. run local Code Mower reports;
+2. inspect the metadata-only bundle or dogfood preview;
+3. upload only with `--yes`; and
+4. use [CodeMower.com](https://codemower.com) to see repo rollups, provider/lens
+   signal, cost/latency, noisy lanes, and next-lane recommendations over time.
+
+Start with a dry run:
 
 ```bash
-code-mower cloud export \
-  --report value-report=.code-mower/reviewer-value-report.md \
-  --output-dir .code-mower/cloud-benchmark-bundle \
-  --anonymous \
-  --json
-
-code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
+code-mower cloud dogfood --json
 ```
 
 Nothing uploads unless you pass `--yes`.
@@ -175,61 +177,8 @@ code-mower cloud setup \
   --out ~/.config/code-mower/tokens/your-laptop.env
 ```
 
-After token setup, use the dogfood path for repeated metadata uploads:
-
-```bash
-source ~/.config/code-mower/tokens/your-laptop.env
-code-mower cloud dogfood --json
-code-mower cloud dogfood --yes --json
-```
-
-The first command previews the metadata locally. The second sends only sanitized
-metadata and a `dogfood_upload` event so the dashboard can start showing repo,
-provider/lens, cost, latency, and recommendation rows.
-
-To backfill recent GitHub Actions history after enabling cloud sharing, use the
-catch-up path. It reads workflow run metadata through the GitHub CLI, creates
-`workflow_run` events, and stays dry-run until `--yes` is explicit:
-
-```bash
-code-mower cloud catch-up --repo-slug OWNER/REPO --limit 50 --json
-code-mower cloud catch-up --repo-slug OWNER/REPO --limit 50 --yes --json
-```
-
-Branch names and SHAs are excluded by default; add `--include-git-ref` only when
-your team is comfortable sharing that metadata.
-
-To backfill historical reviewer verdicts from this machine without uploading raw
-audit text:
-
-```bash
-code-mower cloud reviewer-runs --repo-slug OWNER/REPO --json
-code-mower cloud reviewer-runs --repo-slug OWNER/REPO --yes --json
-```
-
-For operator machines that work across several repositories, preview a
-multi-repo dogfood/reviewer-run sync:
-
-```bash
-code-mower cloud repo-sync \
-  --repo OWNER/REPO=/path/to/repo \
-  --repo OTHER/REPO=/path/to/other-repo \
-  --json
-```
-
-Add `--yes` only after inspecting the dry run. `--mode` is exact selection, so
-include every desired mode when you also want recent GitHub Actions history:
-
-```bash
-code-mower cloud repo-sync \
-  --repo OWNER/REPO=/path/to/repo \
-  --mode dogfood \
-  --mode reviewer-runs \
-  --mode catch-up \
-  --json
-```
-
-Cloud sharing details: [docs/cloud-sharing.md](docs/cloud-sharing.md).
+Cloud sharing details, historical catch-up, and repo-sync commands live in
+[docs/cloud-sharing.md](docs/cloud-sharing.md).
 
 ## Provider Posture
 
@@ -271,7 +220,7 @@ best?" to "which AI builder plus reviewer loop ships best on this product?" See
 
 ## Installation Status
 
-The current public beta is `v0.5.0-beta.4` from
+The current public beta is `v0.5.0-beta.5` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower). PyPI
 distribution builds now run from GitHub Releases. Publishing to PyPI remains
 off by default until trusted publishing is configured, so use the tagged GitHub

@@ -32,7 +32,7 @@ Run:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.4" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.5" \
   --repo-path /path/to/product-repo \
   --json
 ```

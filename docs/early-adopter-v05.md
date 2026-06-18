@@ -97,7 +97,7 @@ Before inviting users:
 - Known limitations are documented plainly.
 - `docs/early-adopter-invite-runbook.md` has the current tagged install command
   and invite copy for the first 5-10 friendly users.
-- A public GitHub Release exists for the current alpha tag, so users do not
+- A public GitHub Release exists for the current release tag, so users do not
   have to infer release state from tags alone.
 
 ## Cloud Sharing Positioning
@@ -134,7 +134,7 @@ Cut a v0.5 alpha or beta only after:
 
 ## Current Beta
 
-`v0.5.0-beta.4` is the current friendly-user beta. It keeps the
+`v0.5.0-beta.5` is the current friendly-user beta. It keeps the
 local-first package path from alpha.1, the cloud doctor service-readiness check
 from alpha.5, the hardened provider-auth doctor diagnostics needed for
 early-adopter troubleshooting, the dogfood dry-run path that feeds the

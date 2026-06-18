@@ -22,7 +22,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.4`. It is intended
+The current verified public beta baseline is `v0.5.0-beta.5`. It is intended
 to be installed from the `codemower-ai/code-mower` public repository. Beta.4 is
 the first baseline where the installed-package audit path, release workflow,
 and production dogfood uploads are all green after a public tag validation.
@@ -51,7 +51,7 @@ It has proved:
   and optional cloud-token setup. `doctor --v05` remains the versioned alias for
   scripts;
 - Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
-  private reference/product repos, all using the `v0.5.0-beta.4` client
+  private reference/product repos, all using the `v0.5.0-beta.5` client
   baseline; and
 - GitHub-first setup checks, including private-repo Actions cost visibility.
 - public repo hygiene artifacts: issue templates, pull request template,
@@ -186,7 +186,7 @@ structure feel boring and credible.
 
 ## v0.5 Beta Learning Addendum
 
-A short PRD addendum captures the beta.4 lessons without rewriting the product
+A short PRD addendum captures the beta.5 lessons without rewriting the product
 requirements: installed-package rehearsals are release-gating, dashboard trust
 depends on provenance labels, and current dogfood metadata is not the same as
 historical benchmark backfill. See
@@ -270,8 +270,9 @@ leaving room for future orchestrator adapters.
    and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
    compatibility shims where they confuse contributors, and keep private
    product repos as consumers of pinned releases.
-4. Create a public GitHub prerelease for the current alpha, verify the release
-   workflow builds source/wheel artifacts, and configure PyPI trusted
+4. Create a public GitHub prerelease for the current beta, explicitly mark it as
+   GitHub's latest release, verify the release workflow builds source/wheel
+   artifacts, and configure PyPI trusted
    publishing before widening beyond friendly early adopters.
 5. Add a short terminal recording or screenshot showing `doctor --preflight`
    and the first value-report path. A static transcript now exists in
