@@ -55,7 +55,9 @@ It has proved:
 - `code-mower doctor --preflight` as the friendly early-adopter preset for easy
   mode, runtime probes, GitHub/private-repo setup, Actions cost diagnostics,
   and optional cloud-token setup. `doctor --v05` remains the versioned alias for
-  scripts;
+  scripts. Doctor JSON now exposes a top-level `run_plan`, and human output
+  prints the same plan near the header so support tooling and first-time users
+  can see exactly which optional GitHub/cloud stages ran;
 - Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
   private reference/product repos, all using the `v0.5.0-beta.6` client
   baseline; and

@@ -54,6 +54,14 @@ class DoctorRegistryTests(unittest.TestCase):
             tuple(stage["id"] for stage in plan_check.detail["stages"]),
             ("load-inputs", "select-profile", "runtime", "providers", "github", "cloud"),
         )
+        self.assertEqual(
+            tuple(stage["id"] for stage in report.run_plan),
+            ("load-inputs", "select-profile", "runtime", "providers", "github", "cloud"),
+        )
+        self.assertEqual(
+            tuple(stage["id"] for stage in report.as_dict()["run_plan"]),
+            ("load-inputs", "select-profile", "runtime", "providers", "github", "cloud"),
+        )
 
 
 if __name__ == "__main__":

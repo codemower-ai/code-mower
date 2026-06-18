@@ -18,6 +18,7 @@ Status: warn
 Config: /path/to/code-mower.example.yml
 Provider templates: /path/to/providers.yml
 Profile: recommended
+Run plan: load-inputs (runtime), select-profile (runtime), runtime (runtime), providers (providers), github (github optional), cloud (cloud optional)
 Checks: 21 total, 5 warnings, 1 skipped
 
 Setup
@@ -81,6 +82,8 @@ code-mower doctor --preflight --json > code-mower-doctor.json
 The output includes:
 
 - top-level status and summary counts;
+- the top-level doctor `run_plan`, so support tooling can tell which optional
+  GitHub/cloud checks ran without parsing human text;
 - one object per check;
 - lane-specific remediation when available;
 - token-safe cloud setup diagnostics; and
