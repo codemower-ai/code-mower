@@ -258,6 +258,34 @@ Treat these as product gates before widening beyond friendly early adopters:
   not just receipt rows. Cohort benchmarks, recommendation quality, and
   public/dogfood examples are the reasons a careful team would opt in.
 
+The next fresh-eyes round added a sharper engineering-readiness point: Code
+Mower now looks like a real beta from the outside, but v1.0 should not merely
+polish the first-run path. It should also make the implementation look
+intentional to a senior engineer reading the package for the first time. That
+means the remaining "extraction-era" seams are product work, not cleanup
+churn:
+
+- **Provider wrappers:** `codex_audit_pr.py`, `claude_audit_pr.py`,
+  `gemini_cli_audit_pr.py`, `local_llm_audit_pr.py`, and similar wrappers
+  should share a provider-runner base instead of duplicating checkout, PR
+  loading, subprocess, verdict parsing, comment posting, and cleanup flow.
+- **CLI/package imports:** direct-source compatibility shims and `tools`
+  fallbacks should be removed from shipped package entrypoints once the PyPI
+  path is the public happy path. A direct source checkout can fail with a clear
+  "install the package or use scripts/dev-python" message instead of carrying
+  confusing legacy import branches.
+- **Top-level shape:** provider-specific runners, package/materialization
+  internals, cloud commands, and experiment harnesses should continue moving
+  into subpackages until the package root reads like a product API, not a
+  scripts directory.
+- **Static confidence:** broaden lint/type checks gradually. Ruff should move
+  beyond syntax/undefined-name once module boundaries stabilize, and a
+  narrowly scoped type-checking gate should start with the most stable domain
+  modules before becoming a repo-wide v1.0 bar.
+- **Zero-config first value:** `init --easy` and `doctor --preflight` are good,
+  but a future `code-mower try OWNER/REPO` or equivalent should produce a
+  draft corpus/value report from recent PR history with minimal setup.
+
 ## v1.0 Direction
 
 v1.0 should be "easy mode with a path to power":
@@ -335,22 +363,32 @@ leaving room for future orchestrator adapters.
 13. Increase tests around verdict parsing, calibration/value-report math,
     provider runner stubs, and cloud bundle privacy before presenting Code
     Mower as merge-gate infrastructure.
-14. Triage CLI help into a smaller first-user command set, with advanced
+14. Extract shared provider-runner primitives so the main provider wrappers are
+    thin adapters around a tested PR-audit pipeline.
+15. Remove remaining shipped-package dual-import and `tools` fallback shims once
+    release rehearsals prove source-checkout users have a clear supported path.
+16. Add a file-size/module-boundary review gate for the root package. Start by
+    splitting `init`, `cloud`, `config`, `cli`, and provider wrappers where it
+    improves contributor comprehension.
+17. Introduce static analysis in stages: broaden Ruff on stable packages first,
+    then add a scoped type-checking gate before making it a v1.0 release
+    requirement.
+18. Triage CLI help into a smaller first-user command set, with advanced
     operator/internal commands documented separately.
-15. Harden calibration auto-discovery with more real PR shapes, first-user
+19. Harden calibration auto-discovery with more real PR shapes, first-user
     examples, and package-install rehearsal coverage so first reports can be
     bootstrapped from project history with human review.
-16. Reduce first-read README friction: one-screen pitch, install, doctor sample,
+20. Reduce first-read README friction: one-screen pitch, install, doctor sample,
     demo report, and links to deeper docs.
-17. Keep hardening reusable stale-audit lane handling with real product-repo
+21. Keep hardening reusable stale-audit lane handling with real product-repo
     feedback now that `clear-stale` and generated stale-clear workflows ship
     in the default merge-authority lane support.
-18. Keep repository-native checks central: detect and run each repo's declared
+22. Keep repository-native checks central: detect and run each repo's declared
     ESLint/Vitest/Ruff/pytest/build surface instead of treating Code Mower's own
     tooling as a universal product-repo lint policy.
-19. Add builder-experiment capture only after the reviewer/value loop is
+23. Add builder-experiment capture only after the reviewer/value loop is
     producing durable evidence.
-20. Keep commercial implementation, hosted reporting, telemetry products, and
+24. Keep commercial implementation, hosted reporting, telemetry products, and
     monetization plans in the private CodeMower.com repo.
 
 ## Documentation Ownership
