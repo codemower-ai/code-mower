@@ -152,8 +152,25 @@ interpreter.
 - Decompose the largest extraction-era modules before v1.0 where it materially
   improves contributor onboarding: calibration, doctor, cloud, package, and
   provider runners.
+- Extract a shared provider-audit runner so provider-specific wrappers contain
+  provider behavior rather than repeated PR checkout, subprocess, verdict,
+  comment-posting, and cleanup orchestration.
+- Remove shipped-package `tools` import fallbacks and direct-source
+  compatibility shims from console entrypoints after the PyPI install path is
+  the documented happy path. Unsupported direct execution should fail with a
+  precise install/remediation message.
+- Keep the package root small enough to explain in one pass. Large root modules
+  should either become subpackages or have an explicit architecture note before
+  v1.0.
 - Add focused unit tests around the large modules instead of relying mostly on
   release-hygiene integration tests.
+- Add static-analysis gates in stages: broaden Ruff for stable subpackages
+  first, then add a scoped type-checking gate before treating Code Mower as
+  broadly contributor-ready.
+- Add a zero-config first-value experiment, such as `code-mower try OWNER/REPO`,
+  that can auto-discover recent PR history, generate a draft corpus, and
+  produce a value report without asking a new user to understand the full
+  calibration model first.
 - Make the public repository the clear source of truth for OSS users. Private
   product repos should consume pinned public releases, not appear to generate or
   overwrite the public package.

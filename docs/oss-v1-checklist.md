@@ -260,6 +260,16 @@ do not spend v1.0 work on non-GitHub workflow rendering.
   GitHub App token.
 - Keep the read-only deploy-key workflow template for users who pin a private
   fork or private source checkout.
+- Remove legacy direct-source import shims from shipped console entrypoints once
+  the public PyPI package is the documented happy path. Source checkouts should
+  use the checked-in dev/runtime helpers; unsupported direct execution should
+  fail loudly with a precise remediation.
+- Keep provider-specific audit wrappers as thin adapters over shared,
+  fixture-tested provider-runner primitives. The duplicated audit lifecycle
+  should not remain spread across every provider wrapper at v1.0.
+- Keep the package root intentionally small. Provider wrappers, cloud commands,
+  package materialization, and experiment harnesses should live in named
+  subpackages unless they are part of the public CLI entry surface.
 
 ### Init
 
