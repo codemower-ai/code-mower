@@ -87,14 +87,19 @@ if __package__ in {None, "", "tools"}:
         from tools.provider_runners import (
             clip_text as _clip_text,
             fetch_pull_request,
+            fetch_base_ref as _shared_fetch_base_ref,
+            fetch_pr_head as _shared_fetch_pr_head,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
             pop_github_token_env,
             post_pr_comment,
+            create_temp_worktree as _shared_create_temp_worktree,
+            remove_worktree as _shared_remove_worktree,
             repost_audit_verdict_artifact,
             require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
+            run_git_text as _shared_run_git_text,
             write_audit_verdict_artifact,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
@@ -102,29 +107,39 @@ if __package__ in {None, "", "tools"}:
         from provider_runners import (  # type: ignore
             clip_text as _clip_text,
             fetch_pull_request,
+            fetch_base_ref as _shared_fetch_base_ref,
+            fetch_pr_head as _shared_fetch_pr_head,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
             pop_github_token_env,
             post_pr_comment,
+            create_temp_worktree as _shared_create_temp_worktree,
+            remove_worktree as _shared_remove_worktree,
             repost_audit_verdict_artifact,
             require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
+            run_git_text as _shared_run_git_text,
             write_audit_verdict_artifact,
         )
 else:  # pragma: no cover - exercised after package extraction.
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .provider_runners import (
         clip_text as _clip_text,
+        create_temp_worktree as _shared_create_temp_worktree,
+        fetch_base_ref as _shared_fetch_base_ref,
         fetch_pull_request,
+        fetch_pr_head as _shared_fetch_pr_head,
         limit_comment_body,
         one_line as _one_line,
         parse_repo_paths as _parse_repo_paths,
         pop_github_token_env,
         post_pr_comment,
+        remove_worktree as _shared_remove_worktree,
         repost_audit_verdict_artifact,
         require_exact_keys as _require_exact_keys,
         resolve_github_token_from_stdin_or_env,
+        run_git_text as _shared_run_git_text,
         write_audit_verdict_artifact,
     )
 
@@ -612,46 +627,21 @@ def dump_cli_failure(
 def _create_temp_worktree(local_repo: Path, head_sha: str) -> Path:
     """Create a detached worktree at `head_sha` under a tempdir. Returns
     the worktree path."""
-    # First make sure the SHA is present locally. `git fetch origin
-    # pull/<N>/head` would also work but we don't know the PR number here;
-    # use a direct fetch of the commit.
-    # Actually for PR commits not on main, we need to ensure the SHA is
-    # locally available. The caller (audit_pr) handles this by passing
-    # the head SHA after fetching pull/<n>/head.
-    tmp_root = Path(tempfile.mkdtemp(prefix="codex-audit-"))
-    worktree_path = tmp_root / "wt"
-    subprocess.run(
-        ["git", "-C", str(local_repo), "worktree", "add", "--detach",
-         str(worktree_path), head_sha],
-        check=True, capture_output=True, text=True,
+    return _shared_create_temp_worktree(
+        local_repo,
+        head_sha,
+        prefix="codex-audit-",
     )
-    return worktree_path
 
 
 def _remove_worktree(local_repo: Path, worktree_path: Path) -> None:
     """Remove a worktree, ignoring errors (best-effort cleanup)."""
-    try:
-        subprocess.run(
-            ["git", "-C", str(local_repo), "worktree", "remove", "--force",
-             str(worktree_path)],
-            check=False, capture_output=True, text=True,
-        )
-    except Exception:  # noqa: BLE001
-        pass
-    # Also rmdir the tempdir parent
-    try:
-        worktree_path.parent.rmdir()
-    except Exception:  # noqa: BLE001
-        pass
+    _shared_remove_worktree(local_repo, worktree_path)
 
 
 def _fetch_pr_head(local_repo: Path, pr_number: int) -> None:
     """Ensure the PR's head commit is locally available."""
-    subprocess.run(
-        ["git", "-C", str(local_repo), "fetch", "origin",
-         f"pull/{pr_number}/head"],
-        check=True, capture_output=True, text=True,
-    )
+    _shared_fetch_pr_head(local_repo, pr_number)
 
 
 def _fetch_base_ref(local_repo: Path, base_ref: str) -> None:
@@ -666,33 +656,11 @@ def _fetch_base_ref(local_repo: Path, base_ref: str) -> None:
     `origin/main`. We `git fetch origin main` (the remote branch part)
     to update the corresponding tracking ref.
     """
-    # Parse `origin/<branch>` or fall back to the full ref string.
-    # Codex meta-review round 2 — P2: avoid str.removeprefix() (Python 3.9+
-    # only). The repo's local `python3` is 3.7, and we don't want this
-    # tool to require .venv just to extract a branch name.
-    if "/" in base_ref and base_ref.startswith("origin/"):
-        remote_branch = base_ref[len("origin/"):]
-        subprocess.run(
-            ["git", "-C", str(local_repo), "fetch", "origin", remote_branch],
-            check=True, capture_output=True, text=True,
-        )
-    else:
-        # Generic fetch — let git figure out the remote.
-        subprocess.run(
-            ["git", "-C", str(local_repo), "fetch", "origin", base_ref],
-            check=True, capture_output=True, text=True,
-        )
+    _shared_fetch_base_ref(local_repo, base_ref)
 
 
 def _run_git_text(local_repo: Path, args: List[str], *, timeout: int = 60) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(local_repo), *args],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    return result.stdout
+    return _shared_run_git_text(local_repo, args, timeout=timeout)
 
 
 def _count_git_stdout_bytes(

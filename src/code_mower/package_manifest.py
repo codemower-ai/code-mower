@@ -249,6 +249,11 @@ PACKAGE_FILES = (
         "reviewer",
     ),
     (
+        "src/code_mower/provider_runners/pr_worktree.py",
+        "src/code_mower/provider_runners/pr_worktree.py",
+        "reviewer",
+    ),
+    (
         "src/code_mower/provider_runners/repo_paths.py",
         "src/code_mower/provider_runners/repo_paths.py",
         "reviewer",
