@@ -25,7 +25,7 @@ https://github.com/codemower-ai/code-mower
 The current verified public beta baseline is `v0.5.0-beta.8`, published on
 PyPI as `code-mower==0.5.0b8`. It is intended to be installed from the package
 index for friendly-user pilots, with GitHub tag/source installs kept as a
-fallback and development path. Beta.7 keeps the PyPI-first install path,
+fallback and development path. Beta.8 keeps the PyPI-first install path,
 release workflow, production PyPI trusted publishing, package-install
 rehearsal, and production dogfood uploads green after public release
 validation, while tightening the CodeMower.com evidence/detail path.
@@ -61,6 +61,17 @@ It has proved:
 - Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
   private reference/product repos, all using the `v0.5.0-beta.8` client
   baseline; and
+- a real metadata-only `repo-sync --mode catch-up --limit 100` import across
+  the OSS repo, hosted service repo, and two private reference/product repos,
+  with imported history flagged as `history_only: true` and
+  `calibration_evidence: false`; and
+- a package-installed beta.8 calibration/value-report pipeline that generated
+  reviewer metrics, lane policy, and value-report artifacts, then uploaded the
+  sanitized report bundle to CodeMower.com for current dashboard dogfood; and
+- a private-repo install rehearsal against
+  [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
+  proving `code-mower==0.5.0b8` can detect and dry-run repository-native checks
+  in an external-ish private repo without committing support files first; and
 - stable CodeMower.com evidence URLs for signed-in users, with per-upload and
   per-event detail pages plus token-safe JSON export links for support,
   debugging, and dashboard trust checks; and

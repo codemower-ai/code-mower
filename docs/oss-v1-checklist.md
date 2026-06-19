@@ -48,7 +48,15 @@ package. It has proved:
 - public package installation from PyPI as `code-mower==0.5.0b8`;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
-  private reference/product repos on the beta.7 client baseline;
+  private reference/product repos on the beta.8 client baseline;
+- production catch-up upload across those four dogfood repos using
+  `repo-sync --mode catch-up`, with imported workflow history separated from
+  reviewer/lens calibration evidence;
+- beta.8 private-repo package-install rehearsal against
+  [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app),
+  including repository-native check detection and dry-run execution;
+- beta.8 calibration/value-report generation from the installed package plus a
+  sanitized report upload to CodeMower.com;
 - CodeMower.com evidence/detail URLs for uploads and events, so dashboard rows
   can be inspected and exported without exposing source, raw diffs, transcripts,
   auth output, or secrets;
@@ -126,10 +134,14 @@ It has not yet proved:
 - enough first-user polish that a new user can install, run doctor, perform a
   first audit/report, and understand optional cloud sharing without project
   history;
-- historical catch-up UX that clearly separates GitHub Actions history,
-  reviewer-run artifacts, and routine dogfood/current metadata;
+- enough repeated friendly-user proof that the current first-user path is
+  boring across multiple private repos and machines;
+- historical catch-up UX that is obvious on the dashboard, not just documented:
+  GitHub Actions history, reviewer-run artifacts, and routine dogfood/current
+  metadata must remain visibly distinct;
 - dashboard trust/value for first-time uploaders beyond receipt rows, including
-  clear provenance labels and useful "what should I enable next?" guidance;
+  sharper provenance labels, benchmark trust scoring, and useful "what should I
+  enable next?" guidance;
 - calibration auto-discovery from recent PRs with human disposition review and
   enough evidence to justify lane promotion;
 - broad private-repo standalone checkout across arbitrary organizations and
