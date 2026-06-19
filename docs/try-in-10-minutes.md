@@ -157,7 +157,7 @@ structured audit trailers, and review-request signals to propose known-clean
 and known-blocked cases. Review every disposition before promoting lanes to
 selective or merge-gating roles.
 
-## 6. Optional Cloud Dry Run
+## 7. Optional Cloud Dry Run
 
 Cloud sharing is optional. The default upload payload excludes source code, raw
 diffs, raw model transcripts, raw stdout/stderr, auth probe output, and secrets.

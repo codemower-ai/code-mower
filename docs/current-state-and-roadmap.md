@@ -73,6 +73,10 @@ It has proved:
   to prove `code-mower==0.5.0b10` can detect and dry-run repository-native
   checks in an external-ish private repo without committing support files first;
   and
+- a public PyPI package-install rehearsal from `code-mower==0.5.0b10` with a
+  10/10 first-user readiness score, proving install, generated setup, doctor,
+  draft calibration, value-report, cloud export, and dry-run dogfood without a
+  local Code Mower checkout; and
 - stable CodeMower.com evidence URLs for signed-in users, with per-upload and
   per-event detail pages plus token-safe JSON export links for support,
   debugging, and dashboard trust checks; and
@@ -338,9 +342,9 @@ leaving room for future orchestrator adapters.
     bootstrapped from project history with human review.
 16. Reduce first-read README friction: one-screen pitch, install, doctor sample,
     demo report, and links to deeper docs.
-17. Promote reusable stale-audit lane handling from product-repo lessons into
-    the default merge-authority lane templates, docs, and generated support
-    output.
+17. Keep hardening reusable stale-audit lane handling with real product-repo
+    feedback now that `clear-stale` and generated stale-clear workflows ship
+    in the default merge-authority lane support.
 18. Keep repository-native checks central: detect and run each repo's declared
     ESLint/Vitest/Ruff/pytest/build surface instead of treating Code Mower's own
     tooling as a universal product-repo lint policy.
