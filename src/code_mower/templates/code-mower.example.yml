@@ -26,6 +26,9 @@ lanes:
       command: codex
       doctor_probe_args:
         - --version
+    review_hygiene:
+      workflow: .github/workflows/codex-clear-stale.yml
+      token_env: GITHUB_TOKEN
 
   claude_review:
     type: review
@@ -81,6 +84,9 @@ lanes:
         - api_error_status
       doctor_probe_auth_status_fields:
         - api_error_status
+    review_hygiene:
+      workflow: .github/workflows/claude-clear-stale.yml
+      token_env: GITHUB_TOKEN
 
   greptile:
     type: audit

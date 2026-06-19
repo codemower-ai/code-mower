@@ -769,6 +769,70 @@ exit 1
         self.assertIn("No PR/head SHA available for stale-label cleanup", template)
         self.assertIn("{% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}", template)
 
+    def test_reviewer_workflow_templates_are_real_and_packaged(self) -> None:
+        workflow_templates = (
+            "audit-label-cleanup.yml.j2",
+            "hosted-bridge.yml.j2",
+            "local-cli-audit.yml.j2",
+            "saas-reviewer-labeler.yml.j2",
+            "trailer-comment-labeler.yml.j2",
+        )
+        for filename in workflow_templates:
+            with self.subTest(workflow=filename):
+                template = (
+                    ROOT / "templates/workflows" / filename
+                ).read_text(encoding="utf-8")
+                packaged_template = (
+                    ROOT / "src/code_mower/templates/workflows" / filename
+                ).read_text(encoding="utf-8")
+                self.assertEqual(template, packaged_template)
+                self.assertEqual(
+                    template,
+                    code_mower_package_content._workflow_template_text(
+                        f"templates/workflows/{filename}"
+                    ),
+                )
+                self.assertEqual(
+                    template,
+                    code_mower_package_content._workflow_template_text(
+                        f"src/code_mower/templates/workflows/{filename}"
+                    ),
+                )
+                self.assertNotIn("Replace placeholders", template)
+                self.assertNotIn("Install this generated template", template)
+
+        trailer = (
+            ROOT / "templates/workflows/trailer-comment-labeler.yml.j2"
+        ).read_text(encoding="utf-8")
+        self.assertIn("tools/code_mower trailer-comment-labeler", trailer)
+        self.assertIn("__TRAILER_LANE__", trailer)
+        hosted = (
+            ROOT / "templates/workflows/hosted-bridge.yml.j2"
+        ).read_text(encoding="utf-8")
+        self.assertIn("gh issue edit", hosted)
+        saas = (
+            ROOT / "templates/workflows/saas-reviewer-labeler.yml.j2"
+        ).read_text(encoding="utf-8")
+        self.assertIn("tools/code_mower saas-reviewer-labeler", saas)
+
+    def test_provider_catalog_wires_merge_authority_stale_hygiene(self) -> None:
+        for relative_path in (
+            "templates/providers.yml",
+            "src/code_mower/templates/providers.yml",
+        ):
+            catalog = code_mower_config.load_config(ROOT / relative_path)
+            providers = catalog["provider_templates"]
+            self.assertEqual(
+                providers["codex"]["review_hygiene"]["workflow"],
+                ".github/workflows/codex-clear-stale.yml",
+            )
+            self.assertEqual(
+                providers["claude_audit"]["review_hygiene"]["workflow"],
+                ".github/workflows/claude-clear-stale.yml",
+            )
+            self.assertEqual(providers["acp_bridge"]["review_hygiene"], {})
+            self.assertEqual(providers["aider"]["review_hygiene"], {})
+
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
 
@@ -797,6 +861,137 @@ exit 1
         self.assertEqual(payload["mirrored_file_count"], 0)
         self.assertIn("tools/run_codex_audit_pr.sh", payload["product_support_files"])
         self.assertIn("tools/safe_gh_comment.py", payload["product_support_files"])
+
+    def test_init_apply_generates_real_reviewer_workflows(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        plan = code_mower_init.render_init_plan(
+            code_mower_config.load_config(config_path),
+            package_mode=True,
+            package_command="code-mower",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / ".code-mower.generated"
+            result = code_mower_init.apply_init_plan(plan, output_dir)
+            placeholder_files = {
+                str(Path(path).relative_to(output_dir))
+                for path in result["placeholder_files"]
+                if Path(path).is_relative_to(output_dir)
+            }
+            expected = {
+                ".github/workflows/audit-label-cleanup.yml",
+                ".github/workflows/claude-audit-labeler.yml",
+                ".github/workflows/claude-clear-stale.yml",
+                ".github/workflows/codex-audit-labeler.yml",
+                ".github/workflows/codex-clear-stale.yml",
+                ".github/workflows/gitar-audit-labeler.yml",
+            }
+            self.assertTrue(expected.isdisjoint(placeholder_files))
+            for rel_path in expected:
+                text = output_dir.joinpath(rel_path).read_text(encoding="utf-8")
+                self.assertNotIn("__WORKFLOW_NAME__", text)
+                self.assertNotIn("{% raw %}", text)
+                self.assertNotIn("{% endraw %}", text)
+                self.assertNotIn("Install this generated template", text)
+
+            claude = output_dir.joinpath(
+                ".github/workflows/claude-audit-labeler.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("tools/code_mower trailer-comment-labeler --lane", claude)
+            self.assertIn("TRAILER_LANE: ${{ github.event.inputs.lane || 'claude' }}", claude)
+            self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", claude)
+            self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS", claude)
+
+            codex_stale = output_dir.joinpath(
+                ".github/workflows/codex-clear-stale.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("tools/code_mower clear-stale", codex_stale)
+            self.assertIn('default: "codex"', codex_stale)
+            self.assertIn("github.event.inputs.lane || 'codex'", codex_stale)
+
+            gitar = output_dir.joinpath(
+                ".github/workflows/gitar-audit-labeler.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("tools/code_mower saas-reviewer-labeler --adapter", gitar)
+            self.assertIn("REVIEWER_ADAPTER: ${{ github.event.inputs.adapter || 'gitar' }}", gitar)
+            self.assertIn("GITAR_AUDIT_LABEL_TOKEN", gitar)
+            self.assertIn("GITAR_BOT_AUTHORS", gitar)
+
+    def test_init_apply_generates_devin_bridge_labeler_and_stale_workflow(self) -> None:
+        devin_config = {
+            "version": 1,
+            "project": {
+                "name": "devin-generated-workflow-test",
+                "state_dir": "~/.cache/code-mower",
+            },
+            "repositories": [{"slug": "owner/repo", "default_branch": "main"}],
+            "lanes": {
+                "devin": {
+                    "type": "audit",
+                    "driver": "hosted_bridge",
+                    "provider": "devin",
+                    "merge_authority": True,
+                    "trigger_policy": "manual",
+                    "labels": {
+                        "needs": "needs-devin-audit",
+                        "done": "devin-audit-done",
+                        "blocked": "devin-audit-blocked",
+                    },
+                    "token_env": ["DEVIN_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"],
+                    "review_hygiene": {
+                        "workflow": ".github/workflows/devin-clear-stale.yml",
+                        "token_env": "GITHUB_TOKEN",
+                    },
+                }
+            },
+            "profiles": {
+                "recommended": {
+                    "description": "Devin generated workflow test",
+                    "lanes": ["devin"],
+                }
+            },
+        }
+        plan = code_mower_init.render_init_plan(
+            devin_config,
+            package_mode=True,
+            package_command="code-mower",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / ".code-mower.generated-devin"
+            result = code_mower_init.apply_init_plan(plan, output_dir)
+            placeholder_files = {
+                str(Path(path).relative_to(output_dir))
+                for path in result["placeholder_files"]
+                if Path(path).is_relative_to(output_dir)
+            }
+            expected = {
+                ".github/workflows/devin-audit-bridge.yml",
+                ".github/workflows/devin-audit-labeler.yml",
+                ".github/workflows/devin-clear-stale.yml",
+            }
+            self.assertTrue(expected.isdisjoint(placeholder_files))
+
+            bridge = output_dir.joinpath(
+                ".github/workflows/devin-audit-bridge.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("gh issue edit", bridge)
+            self.assertIn("needs-devin-audit", bridge)
+            self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", bridge)
+
+            labeler = output_dir.joinpath(
+                ".github/workflows/devin-audit-labeler.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("tools/code_mower trailer-comment-labeler --lane", labeler)
+            self.assertIn("TRAILER_LANE: ${{ github.event.inputs.lane || 'devin' }}", labeler)
+            self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", labeler)
+            self.assertIn("DEVIN_BOT_AUTHORS", labeler)
+
+            stale = output_dir.joinpath(
+                ".github/workflows/devin-clear-stale.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("tools/code_mower clear-stale", stale)
+            self.assertIn('default: "devin"', stale)
 
     def test_init_apply_generates_product_support_wrappers(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"

@@ -169,6 +169,89 @@ def _lane_module_name(lane_id: str) -> str:
     return lane_id.replace("-", "_")
 
 
+def _display_name(raw_name: str) -> str:
+    return raw_name.replace("_", " ").replace("-", " ").title()
+
+
+def _workflow_name_for_target(target: str) -> str:
+    stem = Path(target).stem.replace("-", " ")
+    return stem[:1].upper() + stem[1:]
+
+
+def _audit_token_env(lane: Mapping[str, Any]) -> str:
+    token_env = lane.get("token_env", [])
+    if not isinstance(token_env, list):
+        token_env = []
+    names = [str(name) for name in token_env]
+    for name in names:
+        if name != "GITHUB_TOKEN" and name.endswith("_LABEL_TOKEN"):
+            return name
+    for name in names:
+        if name != "GITHUB_TOKEN":
+            return name
+    return "CODE_MOWER_AUDIT_LABEL_TOKEN"
+
+
+def _authors_env_for_trailer_lane(trailer_lane: str) -> str:
+    normalized = trailer_lane.replace("-", "_").upper()
+    explicit = {
+        "CLAUDE": "CLAUDE_AUDIT_BOT_AUTHORS",
+        "CODEX": "CODEX_BOT_AUTHORS",
+        "DEVIN": "DEVIN_BOT_AUTHORS",
+    }
+    return explicit.get(normalized, f"{normalized}_BOT_AUTHORS")
+
+
+def _trailer_prefix_for_lane(trailer_lane: str) -> str:
+    return f"{trailer_lane.replace('-', '_').upper()}_AUDIT_STATE"
+
+
+def _workflow_entry_for_target(
+    lane_id: str,
+    lane: Mapping[str, Any],
+    target: str,
+) -> dict[str, str]:
+    driver = str(lane.get("driver"))
+    labels = _labels_for(lane)
+    trailer_lane = _trailer_lane_name(lane_id, lane)
+    common = {
+        "path": target,
+        "lane_id": lane_id,
+        "workflow_name": _workflow_name_for_target(target),
+        "display_name": _display_name(trailer_lane),
+        "needs_label": str(labels["needs"]),
+        "done_label": str(labels["done"]),
+        "blocked_label": str(labels["blocked"]),
+        "label_token_env": _audit_token_env(lane),
+    }
+    if target.endswith("-bridge.yml"):
+        return {
+            **common,
+            "source": "hosted-bridge-workflow-template",
+            "copy_from": "templates/workflows/hosted-bridge.yml.j2",
+            "package_copy_from": "templates/workflows/hosted-bridge.yml.j2",
+        }
+    if driver == "saas_event":
+        adapter = str(lane.get("adapter") or lane.get("provider") or lane_id)
+        return {
+            **common,
+            "source": "saas-reviewer-labeler-workflow-template",
+            "copy_from": "templates/workflows/saas-reviewer-labeler.yml.j2",
+            "package_copy_from": "templates/workflows/saas-reviewer-labeler.yml.j2",
+            "adapter": adapter,
+            "authors_env": f"{adapter.replace('-', '_').upper()}_BOT_AUTHORS",
+        }
+    return {
+        **common,
+        "source": "trailer-comment-labeler-workflow-template",
+        "copy_from": "templates/workflows/trailer-comment-labeler.yml.j2",
+        "package_copy_from": "templates/workflows/trailer-comment-labeler.yml.j2",
+        "trailer_lane": trailer_lane,
+        "trailer_prefix": _trailer_prefix_for_lane(trailer_lane),
+        "authors_env": _authors_env_for_trailer_lane(trailer_lane),
+    }
+
+
 def _running_as_package() -> bool:
     return bool(__package__ and __package__ != "tools")
 
@@ -475,6 +558,37 @@ def _render_stale_workflow_template(text: str, *, lane: str) -> str:
     )
 
 
+def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
+    """Render lightweight workflow placeholders without requiring Jinja."""
+
+    rendered = text.replace("{% raw %}", "").replace("{% endraw %}", "")
+    replacements = {
+        "__ADAPTER__": str(entry.get("adapter") or ""),
+        "__AUTHORS_ENV__": str(entry.get("authors_env") or ""),
+        "__BLOCKED_LABEL__": str(entry.get("blocked_label") or ""),
+        "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
+        "__DONE_LABEL__": str(entry.get("done_label") or ""),
+        "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
+        "__LANE_ID__": str(entry.get("lane_id") or ""),
+        "__NEEDS_LABEL__": str(entry.get("needs_label") or ""),
+        "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
+        "__TRAILER_PREFIX__": str(entry.get("trailer_prefix") or ""),
+        "__WORKFLOW_NAME__": str(entry.get("workflow_name") or "Code Mower labeler"),
+    }
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    return rendered
+
+
+def _workflow_template_needs_render(source: str) -> bool:
+    return source in {
+        "shared-cleanup-template",
+        "hosted-bridge-workflow-template",
+        "saas-reviewer-labeler-workflow-template",
+        "trailer-comment-labeler-workflow-template",
+    }
+
+
 def _copy_source_candidates(source_root: Path, entry: Mapping[str, Any], path: str) -> tuple[Path, ...]:
     candidates: list[Path] = []
     package_copy_from = entry.get("package_copy_from")
@@ -586,6 +700,11 @@ def apply_init_plan(
                     ),
                     encoding="utf-8",
                 )
+            elif _workflow_template_needs_render(str(entry.get("source"))):
+                destination.write_text(
+                    _render_workflow_template(source.read_text(encoding="utf-8"), entry),
+                    encoding="utf-8",
+                )
             else:
                 shutil.copyfile(source, destination)
         else:
@@ -674,7 +793,7 @@ def render_init_plan(
             )
             if target not in generated_paths:
                 generated_paths.add(target)
-                generated_files.append({"path": target, "source": "workflow-template"})
+                generated_files.append(_workflow_entry_for_target(lane_id, lane, target))
         if lane.get("driver") in {"local_cli", "hosted_bridge", "api_model"}:
             trailer_lane = _trailer_lane_name(lane_id, lane)
             trailer_module = _lane_module_name(trailer_lane)
@@ -700,6 +819,8 @@ def render_init_plan(
             {
                 "path": cleanup_path,
                 "source": "shared-cleanup-template",
+                "copy_from": "templates/workflows/audit-label-cleanup.yml.j2",
+                "package_copy_from": "templates/workflows/audit-label-cleanup.yml.j2",
             }
         )
     for lane_id, lane in selected_lanes.items():

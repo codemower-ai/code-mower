@@ -15,4 +15,6 @@ claude_audit:
   token_env_any: []
   trigger_policy: "label"
   provider_config: {}
-  review_hygiene: {}
+  review_hygiene:
+    workflow: ".github/workflows/claude-clear-stale.yml"
+    token_env: "GITHUB_TOKEN"

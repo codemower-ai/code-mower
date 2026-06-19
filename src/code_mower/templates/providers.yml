@@ -120,7 +120,9 @@ provider_templates:
         - "api_error_status"
       doctor_probe_auth_status_fields:
         - "api_error_status"
-    review_hygiene: {}
+    review_hygiene:
+      workflow: ".github/workflows/claude-clear-stale.yml"
+      token_env: "GITHUB_TOKEN"
   claude_review:
     provider: "claude"
     driver: "manual"
@@ -179,7 +181,9 @@ provider_templates:
       command: "codex"
       doctor_probe_args:
         - "--version"
-    review_hygiene: {}
+    review_hygiene:
+      workflow: ".github/workflows/codex-clear-stale.yml"
+      token_env: "GITHUB_TOKEN"
   cursor_bugbot:
     provider: "cursor_bugbot"
     driver: "saas_event"
