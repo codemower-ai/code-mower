@@ -14,7 +14,8 @@ environment before they are treated as shareable.
 schema-structuring phase inherited a repository check that only made sense from
 an editable source checkout. `v0.5.0-beta.8` fixed that by making the
 installed-package transport path explicit and then validating it from the public
-tag.
+tag. `v0.5.0-beta.9` keeps that installed-package gate and carries the same
+provenance discipline into stale-audit, catch-up, and dashboard trust work.
 
 Going forward, package-install rehearsal is release-gating, not optional polish.
 

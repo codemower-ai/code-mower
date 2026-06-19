@@ -390,7 +390,7 @@ Branch names and SHAs remain excluded unless `--include-git-ref` is explicit.
 This command is intended for trusted local/operator environments, not as a
 background cron and not as a requirement for every OSS user.
 
-A real beta.8 dogfood import used this shape across the OSS repo, the hosted
+A real beta.9 dogfood import used this shape across the OSS repo, the hosted
 service repo, and two private reference/product repos with
 `--mode catch-up --limit 100`. Those uploads are intentionally displayed as
 imported history, not as calibrated reviewer/lens evidence.
