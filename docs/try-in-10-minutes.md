@@ -16,11 +16,11 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b8
+pipx install --python python3.12 code-mower==0.5.0b9
 code-mower --version
 ```
 
-`0.5.0b8` is a beta release. To follow the newest beta line instead of
+`0.5.0b9` is a beta release. To follow the newest beta line instead of
 pinning this exact build:
 
 ```bash
@@ -101,7 +101,7 @@ install rehearsal instead:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b8 \
+  --package-spec code-mower==0.5.0b9 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -122,7 +122,7 @@ surface and dry-run it instead of trying product-wrapper parity:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b8 \
+  --package-spec code-mower==0.5.0b9 \
   --repo-path /path/to/repo \
   --python "$(command -v python3.12)" \
   --json
