@@ -181,3 +181,27 @@ Treat the rehearsal as passing only when:
 - no step output contains secrets, raw source, or raw model transcripts.
 
 If this fails, fix the first-user path before cutting or promoting a release.
+
+## Latest Public Package Proof
+
+The latest public-package rehearsal for `v0.5.0-beta.10` was run from PyPI with:
+
+```bash
+code-mower migration package-install-rehearsal \
+  --package-spec code-mower==0.5.0b10 \
+  --python "$(command -v python3.12)" \
+  --work-dir /tmp/code-mower-beta10-public-rehearsal \
+  --json
+```
+
+Result:
+
+- `status`: `pass`
+- `version`: `code-mower 0.5.0b10`
+- `first_user_readiness.status`: `pass`
+- `first_user_readiness`: 10 passed, 0 failed, 0 warnings
+- package source: [PyPI `code-mower==0.5.0b10`](https://pypi.org/project/code-mower/0.5.0b10/)
+
+That rehearsal proved the public install, generated setup, doctor, draft
+calibration corpus, starter value report, cloud export, cloud upload dry run,
+and CodeMower.com dogfood dry run without relying on a local checkout.

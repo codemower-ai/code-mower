@@ -131,6 +131,10 @@ every disposition before using it for lane promotion or merge policy.
 Full walkthrough: [docs/try-in-10-minutes.md](docs/try-in-10-minutes.md).
 First-time command map: [docs/launch-command-surface.md](docs/launch-command-surface.md).
 
+The current PyPI beta has been rehearsed end-to-end from a clean install:
+[First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
+the latest 10/10 public-package readiness proof for `code-mower==0.5.0b10`.
+
 ## Why Not Just Run Codex Or Claude Yourself?
 
 You should, at first. Code Mower is not a replacement for a good local agent or
