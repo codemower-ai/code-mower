@@ -23,6 +23,56 @@ from .setup import DEFAULT_INSTALL_ID_ENV, DEFAULT_TEAM_ID_ENV
 from .upload import build_upload_payload, post_upload_payload
 
 
+def build_catch_up_summary(
+    *,
+    repo_slug: str,
+    runs: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    requested_limit: int,
+    include_git_ref: bool,
+) -> dict[str, Any]:
+    """Summarize imported GitHub Actions history without exposing ref details."""
+
+    def increment(target: dict[str, int], raw: object) -> None:
+        value = str(raw or "").strip() or "unknown"
+        target[value] = target.get(value, 0) + 1
+
+    workflow_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    conclusion_counts: dict[str, int] = {}
+    created_values: list[str] = []
+    updated_values: list[str] = []
+
+    for run in runs:
+        increment(workflow_counts, run.get("name"))
+        increment(status_counts, run.get("status"))
+        increment(conclusion_counts, run.get("conclusion"))
+        created_at = str(run.get("createdAt") or "").strip()
+        updated_at = str(run.get("updatedAt") or "").strip()
+        if created_at:
+            created_values.append(created_at)
+        if updated_at:
+            updated_values.append(updated_at)
+
+    return {
+        "repo_slug": repo_slug,
+        "requested_limit": requested_limit,
+        "run_count": len(runs),
+        "event_count": len(events),
+        "provenance": "imported_history",
+        "source_category": "history",
+        "history_only": True,
+        "calibration_evidence": False,
+        "git_ref_included": include_git_ref,
+        "workflow_counts": dict(sorted(workflow_counts.items())),
+        "status_counts": dict(sorted(status_counts.items())),
+        "conclusion_counts": dict(sorted(conclusion_counts.items())),
+        "oldest_run_at": min(created_values) if created_values else "",
+        "newest_run_at": max(created_values) if created_values else "",
+        "last_updated_at": max(updated_values) if updated_values else "",
+    }
+
+
 def dogfood_upload(
     *,
     repo_path: Path,
@@ -157,6 +207,13 @@ def catch_up_upload(
         )
         for run in runs
     ]
+    catch_up_summary = build_catch_up_summary(
+        repo_slug=detected_repo_slug,
+        runs=runs,
+        events=events,
+        requested_limit=limit,
+        include_git_ref=include_git_ref,
+    )
     export_result = build_cloud_bundle(
         reports=[],
         events=events,
@@ -178,6 +235,7 @@ def catch_up_upload(
             "status": "doctor_failed",
             "repo_slug": detected_repo_slug,
             "run_count": len(runs),
+            "catch_up": catch_up_summary,
             "export": export_result,
             "doctor": doctor_result,
         }
@@ -188,6 +246,7 @@ def catch_up_upload(
             "status": "dry_run",
             "repo_slug": detected_repo_slug,
             "run_count": len(runs),
+            "catch_up": catch_up_summary,
             "export": export_result,
             "doctor": doctor_result,
             "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
@@ -202,6 +261,7 @@ def catch_up_upload(
         "status": "uploaded",
         "repo_slug": detected_repo_slug,
         "run_count": len(runs),
+        "catch_up": catch_up_summary,
         "export": export_result,
         "doctor": doctor_result,
         "upload": post_upload_payload(

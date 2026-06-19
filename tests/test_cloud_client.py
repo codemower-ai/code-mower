@@ -28,6 +28,60 @@ from code_mower.cloud_client import (
 from code_mower import cloud as cloud_cli
 
 
+def test_cloud_catch_up_summary_separates_history_from_calibration() -> None:
+    runs = [
+        {
+            "name": "CI",
+            "status": "completed",
+            "conclusion": "success",
+            "createdAt": "2026-06-15T00:00:00Z",
+            "updatedAt": "2026-06-15T00:01:00Z",
+        },
+        {
+            "name": "CI",
+            "status": "completed",
+            "conclusion": "failure",
+            "createdAt": "2026-06-16T00:00:00Z",
+            "updatedAt": "2026-06-16T00:02:00Z",
+        },
+        {
+            "name": "Dogfood",
+            "status": "in_progress",
+            "conclusion": "",
+            "createdAt": "2026-06-17T00:00:00Z",
+            "updatedAt": "2026-06-17T00:03:00Z",
+        },
+    ]
+
+    summary = cloud_operations.build_catch_up_summary(
+        repo_slug="owner/repo",
+        runs=runs,
+        events=[{"event_type": "workflow_run"} for _ in runs],
+        requested_limit=50,
+        include_git_ref=False,
+    )
+
+    assert summary["repo_slug"] == "owner/repo"
+    assert summary["requested_limit"] == 50
+    assert summary["run_count"] == 3
+    assert summary["event_count"] == 3
+    assert summary["provenance"] == "imported_history"
+    assert summary["source_category"] == "history"
+    assert summary["history_only"] is True
+    assert summary["calibration_evidence"] is False
+    assert summary["git_ref_included"] is False
+    assert summary["workflow_counts"] == {"CI": 2, "Dogfood": 1}
+    assert summary["status_counts"] == {"completed": 2, "in_progress": 1}
+    assert summary["conclusion_counts"] == {
+        "failure": 1,
+        "success": 1,
+        "unknown": 1,
+    }
+    assert summary["oldest_run_at"] == "2026-06-15T00:00:00Z"
+    assert summary["newest_run_at"] == "2026-06-17T00:00:00Z"
+    assert summary["last_updated_at"] == "2026-06-17T00:03:00Z"
+
+
 def test_cloud_setup_round_trip_writes_private_file() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
