@@ -40,16 +40,16 @@ CLI usage:
       owner/repo:/path/to/reference-app,\\
       owner/other-repo:/path/to/reference-service \\
     GITHUB_TOKEN=... \\
-    tools/run_codex_audit_pr.sh --repo owner/other-repo --pr 233
+    code-mower codex-audit --repo owner/other-repo --pr 233
 
-Prefer the wrapper over direct `python3 tools/codex_audit_pr.py`: it
-selects a controlled Python interpreter for this script and refuses to
-fall back silently to ambient system Python.
+Prefer the packaged CLI over direct module execution: the package entrypoint
+selects the supported runtime path and avoids silently falling back to ambient
+system Python.
 
 Module usage (called by `codex_audit_bridge.py` if/when we add a polling
 daemon analogous to local_llm_audit_bridge.py):
 
-    from tools.codex_audit_pr import AuditConfig, audit_pr
+    from code_mower.codex_audit_pr import AuditConfig, audit_pr
     result = audit_pr(config, "owner/other-repo", 233)
 
 Exit codes (CLI mode):
@@ -1341,16 +1341,15 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                     )
                 # Loud-failure contract: post_pr_comment() raises on any
                 # HTTP error or network failure. DO NOT catch here. The
-                # wrapper (tools/run_codex_audit_pr.sh) relies on this
+                # packaged CLI/product-support wrapper relies on this
                 # script exiting non-zero when posting fails so its
                 # finish_lock trap can log status="failed" instead of
                 # "completed". A silent catch would re-create the
                 # reference-app#184 silent-failure mode where three audit
                 # runs reported exitCode=0 but never posted a GitHub
-                # comment. See run_codex_audit_pr.sh's finish_lock
-                # comment for the wrapper-side history and the memory
-                # file feedback_silent_success_silent_failure.md for the
-                # general lesson.
+                # comment. See generated product-support wrapper
+                # finish_lock handling for the wrapper-side history and
+                # the general silent-success/silent-failure lesson.
                 posted = post_pr_comment(repo, pr_number, comment_body,
                                           token=config.github_token)
                 result.posted_comment_url = posted.get("html_url")

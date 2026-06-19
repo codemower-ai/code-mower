@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reference dispatcher for the future standalone Code Mower CLI."""
+"""Command dispatcher for the packaged Code Mower CLI."""
 
 from __future__ import annotations
 
@@ -11,82 +11,47 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
-
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-if __package__ in {None, "", "tools"}:
-    from tools import __version__
-    from tools import (
-        antigravity_cli_audit_pr,
-        blind_review_coordinator,
-        bootstrap as code_mower_bootstrap,
-        claude_audit_pr,
-        claude_cli_bounce,
-        clear_stale,
-        coderabbit_cli_audit_pr,
-        codex_audit_env_preflight,
-        codex_audit_pr,
-        codex_audit_schema_smoke,
-        hermes_cli_audit_pr,
-        code_mower_builder_experiment,
-        code_mower_cloud,
-        code_mower_config,
-        code_mower_calibration,
-        code_mower_context_packs,
-        code_mower_doctor,
-        code_mower_init,
-        code_mower_merge,
-        code_mower_next_steps,
-        code_mower_package,
-        code_mower_prompts,
-        code_mower_telemetry,
-        migration as code_mower_migration,
-        gemini_cli_audit_pr,
-        local_llm_bakeoff,
-        local_llm_calibration,
-        local_llm_audit_pr,
-        local_llm_profiles,
-        reviewer_metrics,
-        saas_reviewer_labeler,
-        trailer_comment_labeler,
+    raise SystemExit(
+        "code_mower.cli is a packaged entrypoint. Install Code Mower with "
+        "`pipx install code-mower==0.5.0b10`, or run source checkouts with "
+        "`PYTHONPATH=src python -m code_mower.cli`."
     )
-    from code_mower import checks as code_mower_checks
-else:  # pragma: no cover - exercised after package extraction.
-    from . import __version__
-    from . import blind_review_coordinator
-    from . import antigravity_cli_audit_pr
-    from . import bootstrap as code_mower_bootstrap
-    from . import builder_experiment as code_mower_builder_experiment
-    from . import claude_audit_pr
-    from . import claude_cli_bounce
-    from . import clear_stale
-    from . import cloud as code_mower_cloud
-    from . import coderabbit_cli_audit_pr
-    from . import codex_audit_env_preflight
-    from . import codex_audit_pr
-    from . import codex_audit_schema_smoke
-    from . import config as code_mower_config
-    from . import code_mower_calibration
-    from . import checks as code_mower_checks
-    from . import code_mower_context_packs
-    from . import code_mower_merge
-    from . import next_steps as code_mower_next_steps
-    from . import doctor as code_mower_doctor
-    from . import gemini_cli_audit_pr
-    from . import hermes_cli_audit_pr
-    from . import init as code_mower_init
-    from . import code_mower_telemetry
-    from . import local_llm_bakeoff
-    from . import local_llm_calibration
-    from . import local_llm_audit_pr
-    from . import local_llm_profiles
-    from . import migration as code_mower_migration
-    from . import package as code_mower_package
-    from . import prompts as code_mower_prompts
-    from . import reviewer_metrics
-    from . import saas_reviewer_labeler
-    from . import trailer_comment_labeler
+
+from . import __version__
+from . import antigravity_cli_audit_pr
+from . import blind_review_coordinator
+from . import bootstrap as code_mower_bootstrap
+from . import builder_experiment as code_mower_builder_experiment
+from . import checks as code_mower_checks
+from . import claude_audit_pr
+from . import claude_cli_bounce
+from . import clear_stale
+from . import cloud as code_mower_cloud
+from . import coderabbit_cli_audit_pr
+from . import codex_audit_env_preflight
+from . import codex_audit_pr
+from . import codex_audit_schema_smoke
+from . import code_mower_calibration
+from . import code_mower_context_packs
+from . import code_mower_merge
+from . import code_mower_telemetry
+from . import config as code_mower_config
+from . import doctor as code_mower_doctor
+from . import gemini_cli_audit_pr
+from . import hermes_cli_audit_pr
+from . import init as code_mower_init
+from . import local_llm_audit_pr
+from . import local_llm_bakeoff
+from . import local_llm_calibration
+from . import local_llm_profiles
+from . import migration as code_mower_migration
+from . import next_steps as code_mower_next_steps
+from . import package as code_mower_package
+from . import prompts as code_mower_prompts
+from . import reviewer_metrics
+from . import saas_reviewer_labeler
+from . import trailer_comment_labeler
 
 
 def _has_positional_config(argv: list[str], options_with_values: set[str]) -> bool:
