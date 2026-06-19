@@ -22,14 +22,13 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current beta.10 release target is `v0.5.0-beta.10`, to be published on
-PyPI as `code-mower==0.5.0b10` after release gates pass. It is intended to be
-installed from the package index for friendly-user pilots, with GitHub
-tag/source installs kept as a fallback and development path. Beta.10 keeps the
-PyPI-first install path, release workflow, production PyPI trusted publishing,
-package-install rehearsal, and production dogfood upload shape from beta.9
-while tightening catch-up provenance, stale-audit inspection, and
-CodeMower.com trust guidance.
+The current verified public beta baseline is `v0.5.0-beta.10`, published on
+PyPI as `code-mower==0.5.0b10`. It is intended to be installed from the package
+index for friendly-user pilots, with GitHub tag/source installs kept as a
+fallback and development path. Beta.10 keeps the PyPI-first install path,
+release workflow, production PyPI trusted publishing, package-install
+rehearsal, and production dogfood upload shape from beta.9 while tightening
+catch-up provenance, stale-audit inspection, and CodeMower.com trust guidance.
 It has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
