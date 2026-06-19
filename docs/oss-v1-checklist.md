@@ -40,8 +40,8 @@ history opens the repository. They should be able to confirm:
 
 ## Current Beta Baseline
 
-The current public-release target is `v0.5.0-beta.10` of the standalone
-package. It is intended to prove:
+The current public-release baseline is `v0.5.0-beta.10` of the standalone
+package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;

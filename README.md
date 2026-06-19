@@ -234,11 +234,11 @@ best?" to "which AI builder plus reviewer loop ships best on this product?" See
 
 ## Installation Status
 
-The current release target is `v0.5.0-beta.10` from
+The current public beta is `v0.5.0-beta.10` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), published
-as `code-mower==0.5.0b10` on [PyPI](https://pypi.org/project/code-mower/)
-after release gates pass. GitHub releases remain the auditable source for tags,
-build artifacts, and release notes.
+as `code-mower==0.5.0b10` on [PyPI](https://pypi.org/project/code-mower/).
+GitHub releases remain the auditable source for tags, build artifacts, and
+release notes.
 
 For source checkout development and release rehearsal, use:
 
