@@ -59,6 +59,9 @@ class ClearStaleTests(unittest.TestCase):
 
         self.assertIsNone(result.decision)
         self.assertIn("terminal label is current", result.reason)
+        self.assertEqual(result.trusted_terminal_status, "done")
+        self.assertEqual(result.trusted_terminal_sha, CURRENT_SHA)
+        self.assertEqual(result.trusted_terminal_author, "devin-ai-integration[bot]")
 
     def test_current_blocked_comment_repairs_stale_done_label(self) -> None:
         result = resolve_stale_clear_decision(
@@ -106,6 +109,8 @@ class ClearStaleTests(unittest.TestCase):
         )
         self.assertEqual(result.decision.reviewed_sha, OLD_SHA)
         self.assertTrue(result.requeue_added)
+        self.assertEqual(result.trusted_terminal_status, "done")
+        self.assertEqual(result.trusted_terminal_sha, OLD_SHA)
 
     def test_existing_needs_label_avoids_duplicate_requeue_dispatch_signal(self) -> None:
         result = resolve_stale_clear_decision(

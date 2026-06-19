@@ -80,6 +80,9 @@ class StaleClearResult:
     reason: str
     requeue_added: bool = False
     dispatch_requested: bool = False
+    trusted_terminal_status: Optional[str] = None
+    trusted_terminal_sha: Optional[str] = None
+    trusted_terminal_author: Optional[str] = None
 
 
 def _comment_created_at(comment: dict[str, Any]) -> str:
@@ -148,6 +151,9 @@ def resolve_stale_clear_decision(
                     f"terminal label is current: {current_comment.status} by "
                     f"{current_comment.author} for {current_comment.reviewed_sha}"
                 ),
+                trusted_terminal_status=current_comment.status,
+                trusted_terminal_sha=current_comment.reviewed_sha,
+                trusted_terminal_author=current_comment.author,
             )
         return StaleClearResult(
             LabelDecision(
@@ -164,6 +170,9 @@ def resolve_stale_clear_decision(
                 "terminal audit label mismatch for current trusted "
                 f"{current_comment.status} result"
             ),
+            trusted_terminal_status=current_comment.status,
+            trusted_terminal_sha=current_comment.reviewed_sha,
+            trusted_terminal_author=current_comment.author,
         )
 
     decision = LabelDecision(
@@ -179,6 +188,9 @@ def resolve_stale_clear_decision(
         decision,
         "terminal audit label is stale or lacks a current trusted Head SHA",
         requeue_added=config.needs_label not in label_set,
+        trusted_terminal_status=current_comment.status if current_comment else None,
+        trusted_terminal_sha=current_comment.reviewed_sha if current_comment else None,
+        trusted_terminal_author=current_comment.author if current_comment else None,
     )
 
 
@@ -356,6 +368,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "decision": result.decision.__dict__ if result.decision else None,
         "requeue_added": result.requeue_added,
         "dispatch_requested": dispatch_requested,
+        "trusted_terminal": {
+            "status": result.trusted_terminal_status,
+            "reviewed_sha": result.trusted_terminal_sha,
+            "author": result.trusted_terminal_author,
+            "head_bound": bool(result.trusted_terminal_sha),
+        },
     }
     if args.json or args.dry_run:
         print(json.dumps(output, indent=2, sort_keys=True))

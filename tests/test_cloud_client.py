@@ -69,6 +69,14 @@ def test_cloud_catch_up_summary_separates_history_from_calibration() -> None:
     assert summary["source_category"] == "history"
     assert summary["history_only"] is True
     assert summary["calibration_evidence"] is False
+    assert summary["trust_guidance"] == {
+        "use_for": "historical activity context and dashboard coverage backfill",
+        "do_not_use_for": "reviewer or lens accuracy, lane promotion, or merge-gate policy",
+        "next_step": (
+            "run current dogfood uploads plus reviewer-runs or calibration evidence "
+            "before making provider/lens decisions"
+        ),
+    }
     assert summary["git_ref_included"] is False
     assert summary["workflow_counts"] == {"CI": 2, "Dogfood": 1}
     assert summary["status_counts"] == {"completed": 2, "in_progress": 1}
