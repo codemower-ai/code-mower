@@ -26,8 +26,8 @@ not know the original reference repos.
 - `docs/first-user-install-rehearsal.md` records the executable release-gate
   path: package install, easy-mode smoke, first value report, cloud upload dry
   run, and dogfood dry run. Re-run it against the public tag before widening
-  beyond friendly alpha users. Alpha-specific rehearsal notes remain as
-  historical transcripts.
+  beyond friendly beta users. Alpha-specific rehearsal notes live under
+  `docs/archive/` as historical transcripts.
 - Public CI now runs the package-install first-user rehearsal from the current
   checkout, and release-gate rehearsals run against the published PyPI beta
   before widening.
