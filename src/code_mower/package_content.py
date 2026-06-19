@@ -53,7 +53,24 @@ def _pyproject_text(package_name: str, *, version: str) -> str:
     )
 
 
+def _workflow_template_file_text(target: str) -> str | None:
+    module_dir = Path(__file__).resolve().parent
+    filename = Path(target).name
+    candidates = (
+        module_dir / "templates" / "workflows" / filename,
+        module_dir.parent / "templates" / "workflows" / filename,
+        module_dir.parents[1] / "templates" / "workflows" / filename,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    return None
+
+
 def _workflow_template_text(target: str) -> str:
+    file_text = _workflow_template_file_text(target)
+    if file_text is not None:
+        return file_text
     if target.endswith("blind-review-artifacts-dry-run.yml.j2"):
         return "\n".join(
             [
