@@ -40,12 +40,12 @@ history opens the repository. They should be able to confirm:
 
 ## Current Beta Baseline
 
-The current public-release baseline is `v0.5.0-beta.7` of the standalone
+The current public-release baseline is `v0.5.0-beta.8` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
-- public package installation from PyPI as `code-mower==0.5.0b7`;
+- public package installation from PyPI as `code-mower==0.5.0b8`;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
   private reference/product repos on the beta.7 client baseline;
@@ -145,7 +145,7 @@ It has not yet proved:
 ## Easy Mode Flow
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b7
+pipx install --python python3.12 code-mower==0.5.0b8
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --v05
@@ -154,7 +154,7 @@ code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b7 \
+  --package-spec code-mower==0.5.0b8 \
   --repo-path /path/to/repo \
   --json
 code-mower audit pr 123

@@ -22,8 +22,8 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.7`, published on
-PyPI as `code-mower==0.5.0b7`. It is intended to be installed from the package
+The current verified public beta baseline is `v0.5.0-beta.8`, published on
+PyPI as `code-mower==0.5.0b8`. It is intended to be installed from the package
 index for friendly-user pilots, with GitHub tag/source installs kept as a
 fallback and development path. Beta.7 keeps the PyPI-first install path,
 release workflow, production PyPI trusted publishing, package-install
@@ -59,7 +59,7 @@ It has proved:
   prints the same plan near the header so support tooling and first-time users
   can see exactly which optional GitHub/cloud stages ran;
 - Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
-  private reference/product repos, all using the `v0.5.0-beta.7` client
+  private reference/product repos, all using the `v0.5.0-beta.8` client
   baseline; and
 - stable CodeMower.com evidence URLs for signed-in users, with per-upload and
   per-event detail pages plus token-safe JSON export links for support,
