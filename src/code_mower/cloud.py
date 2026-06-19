@@ -601,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Status: {result['status']}")
                 print(f"Repository: {result['repo_slug']}")
                 print(f"Runs: {result['run_count']}")
+                print("Provenance: imported history (not calibration evidence)")
                 print(f"Bundle: {result['export']['output_dir']}")
                 print(f"Events: {result['export']['event_count']}")
                 if result["status"] == "uploaded":

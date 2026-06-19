@@ -607,6 +607,11 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertEqual(result["mode"], "cloud-catch-up")
         self.assertEqual(result["status"], "dry_run")
         self.assertEqual(result["run_count"], 1)
+        self.assertEqual(result["catch_up"]["provenance"], "imported_history")
+        self.assertTrue(result["catch_up"]["history_only"])
+        self.assertFalse(result["catch_up"]["calibration_evidence"])
+        self.assertEqual(result["catch_up"]["workflow_counts"], {"CI": 1})
+        self.assertEqual(result["catch_up"]["conclusion_counts"], {"success": 1})
         self.assertEqual(result["export"]["event_count"], 1)
         self.assertFalse(result["upload"]["would_upload"])
         event = manifest["events"][0]

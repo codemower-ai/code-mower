@@ -263,6 +263,12 @@ SHAs are intentionally excluded by default because branch naming can reveal
 product or customer details. Use `--include-git-ref` only when your team has
 reviewed and accepted that metadata tradeoff.
 
+The command result also includes a `catch_up` summary with workflow, status,
+and conclusion counts plus `provenance: imported_history`,
+`history_only: true`, and `calibration_evidence: false`. Dashboards and support
+tools should use that summary to avoid treating historical GitHub Actions
+imports as calibrated provider/lens evidence.
+
 Use catch-up once or occasionally after onboarding a repository. Use
 `cloud dogfood` for ongoing current-state uploads.
 
