@@ -40,23 +40,24 @@ history opens the repository. They should be able to confirm:
 
 ## Current Beta Baseline
 
-The current public-release baseline is `v0.5.0-beta.9` of the standalone
-package. It has proved:
+The current public-release target is `v0.5.0-beta.10` of the standalone
+package. It is intended to prove:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
-- public package installation from PyPI as `code-mower==0.5.0b9`;
+- public package installation from PyPI as `code-mower==0.5.0b10`;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
-  private reference/product repos on the beta.9 client baseline;
+  private reference/product repos, with beta.10 preserving the same client path
+  and adding clearer catch-up/stale-audit trust diagnostics;
 - production catch-up upload across those four dogfood repos using
   `repo-sync --mode catch-up`, with imported workflow history separated from
   reviewer/lens calibration evidence;
-- beta.9 private-repo package-install rehearsal against
+- beta.10 private-repo package-install rehearsal against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app),
   including repository-native check detection and dry-run execution;
-- beta.9 calibration/value-report generation from the installed package plus a
-  sanitized report upload to CodeMower.com;
+- beta.10 calibration/value-report generation from the installed package plus
+  sanitized report upload coverage for CodeMower.com;
 - CodeMower.com evidence/detail URLs for uploads and events, so dashboard rows
   can be inspected and exported without exposing source, raw diffs, transcripts,
   auth output, or secrets;
@@ -157,7 +158,7 @@ It has not yet proved:
 ## Easy Mode Flow
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b9
+pipx install --python python3.12 code-mower==0.5.0b10
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --v05
@@ -166,7 +167,7 @@ code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b9 \
+  --package-spec code-mower==0.5.0b10 \
   --repo-path /path/to/repo \
   --json
 code-mower audit pr 123

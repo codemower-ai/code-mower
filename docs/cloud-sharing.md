@@ -265,9 +265,10 @@ reviewed and accepted that metadata tradeoff.
 
 The command result also includes a `catch_up` summary with workflow, status,
 and conclusion counts plus `provenance: imported_history`,
-`history_only: true`, and `calibration_evidence: false`. Dashboards and support
-tools should use that summary to avoid treating historical GitHub Actions
-imports as calibrated provider/lens evidence.
+`history_only: true`, `calibration_evidence: false`, and `trust_guidance`
+entries for `use_for`, `do_not_use_for`, and `next_step`. Dashboards and
+support tools should use that summary to avoid treating historical GitHub
+Actions imports as calibrated provider/lens evidence.
 
 Use catch-up once or occasionally after onboarding a repository. Use
 `cloud dogfood` for ongoing current-state uploads.
@@ -390,10 +391,11 @@ Branch names and SHAs remain excluded unless `--include-git-ref` is explicit.
 This command is intended for trusted local/operator environments, not as a
 background cron and not as a requirement for every OSS user.
 
-A real beta.9 dogfood import used this shape across the OSS repo, the hosted
-service repo, and two private reference/product repos with
+Recent dogfood/catch-up imports used this shape across the OSS repo, the
+hosted service repo, and two private reference/product repos with
 `--mode catch-up --limit 100`. Those uploads are intentionally displayed as
-imported history, not as calibrated reviewer/lens evidence.
+imported history, not as calibrated reviewer/lens evidence. Beta.10 makes that
+distinction explicit in the catch-up command result and terminal output.
 
 ## What codemower.com Stores First
 

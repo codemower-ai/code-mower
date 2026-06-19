@@ -23,6 +23,16 @@ from .setup import DEFAULT_INSTALL_ID_ENV, DEFAULT_TEAM_ID_ENV
 from .upload import build_upload_payload, post_upload_payload
 
 
+CATCH_UP_TRUST_GUIDANCE = {
+    "use_for": "historical activity context and dashboard coverage backfill",
+    "do_not_use_for": "reviewer or lens accuracy, lane promotion, or merge-gate policy",
+    "next_step": (
+        "run current dogfood uploads plus reviewer-runs or calibration evidence "
+        "before making provider/lens decisions"
+    ),
+}
+
+
 def build_catch_up_summary(
     *,
     repo_slug: str,
@@ -63,6 +73,7 @@ def build_catch_up_summary(
         "source_category": "history",
         "history_only": True,
         "calibration_evidence": False,
+        "trust_guidance": CATCH_UP_TRUST_GUIDANCE,
         "git_ref_included": include_git_ref,
         "workflow_counts": dict(sorted(workflow_counts.items())),
         "status_counts": dict(sorted(status_counts.items())),

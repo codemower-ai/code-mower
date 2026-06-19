@@ -602,6 +602,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Repository: {result['repo_slug']}")
                 print(f"Runs: {result['run_count']}")
                 print("Provenance: imported history (not calibration evidence)")
+                guidance = result.get("catch_up", {}).get("trust_guidance", {})
+                if guidance:
+                    print(f"Use for: {guidance.get('use_for', '')}")
+                    print(f"Do not use for: {guidance.get('do_not_use_for', '')}")
+                    print(f"Next: {guidance.get('next_step', '')}")
                 print(f"Bundle: {result['export']['output_dir']}")
                 print(f"Events: {result['export']['event_count']}")
                 if result["status"] == "uploaded":
