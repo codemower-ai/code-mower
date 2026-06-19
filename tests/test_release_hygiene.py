@@ -1819,11 +1819,16 @@ printf '%s\\n' "${lane}"
         text = (ROOT / "src/code_mower/claude_audit_pr.py").read_text(
             encoding="utf-8"
         )
+        helper_text = (
+            ROOT / "src/code_mower/provider_runners/pr_worktree.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("def _fetch_base_sha_for_diff", text)
         self.assertIn("def _fetch_pr_head_sha_for_diff", text)
-        self.assertIn('fetch_refspec = f"+{base_ref}:{local_ref}"', text)
-        self.assertIn('f"+pull/{pr_number}/head:{local_ref}"', text)
-        self.assertIn('["git", "-C", str(local_repo), "update-ref", "-d", local_ref]', text)
+        self.assertIn("return _shared_fetch_base_ref_sha", text)
+        self.assertIn("return _shared_fetch_pr_head_sha", text)
+        self.assertIn('fetch_refspec = f"+{base_ref}:{local_ref}"', helper_text)
+        self.assertIn('f"+pull/{pr_number}/head:{local_ref}"', helper_text)
+        self.assertIn('["update-ref", "-d", local_ref]', helper_text)
         self.assertIn("fetched_base_ref = _fetch_base_sha_for_diff", text)
         self.assertIn("fetched_head_ref = _fetch_pr_head_sha_for_diff", text)
         self.assertNotIn('["rev-parse", "FETCH_HEAD"]', text)

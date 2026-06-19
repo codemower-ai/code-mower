@@ -32,13 +32,17 @@ if __package__ in {None, "", "tools"}:
         from tools.provider_runners import (
             clip_text as _clip_text,
             fetch_pull_request,
+            fetch_base_ref_sha as _shared_fetch_base_ref_sha,
+            fetch_pr_head_sha as _shared_fetch_pr_head_sha,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
             post_pr_comment,
+            FetchedHeadMismatch,
             repost_audit_verdict_artifact,
             require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
+            run_git_text as _shared_run_git_text,
             write_audit_verdict_artifact,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
@@ -51,13 +55,17 @@ if __package__ in {None, "", "tools"}:
         from provider_runners import (  # type: ignore
             clip_text as _clip_text,
             fetch_pull_request,
+            fetch_base_ref_sha as _shared_fetch_base_ref_sha,
+            fetch_pr_head_sha as _shared_fetch_pr_head_sha,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
             post_pr_comment,
+            FetchedHeadMismatch,
             repost_audit_verdict_artifact,
             require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
+            run_git_text as _shared_run_git_text,
             write_audit_verdict_artifact,
         )
 else:  # pragma: no cover - exercised after package extraction.
@@ -65,8 +73,11 @@ else:  # pragma: no cover - exercised after package extraction.
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .claude_cli_environment import clean_claude_cli_env, env_flag
     from .provider_runners import (
+        FetchedHeadMismatch,
         clip_text as _clip_text,
+        fetch_base_ref_sha as _shared_fetch_base_ref_sha,
         fetch_pull_request,
+        fetch_pr_head_sha as _shared_fetch_pr_head_sha,
         limit_comment_body,
         one_line as _one_line,
         parse_repo_paths as _parse_repo_paths,
@@ -74,6 +85,7 @@ else:  # pragma: no cover - exercised after package extraction.
         repost_audit_verdict_artifact,
         require_exact_keys as _require_exact_keys,
         resolve_github_token_from_stdin_or_env,
+        run_git_text as _shared_run_git_text,
         write_audit_verdict_artifact,
     )
 
@@ -173,15 +185,6 @@ class ClaudeAuditResult:
     parsed: Optional[ClaudeVerdict] = None
     posted_comment_url: Optional[str] = None
     verdict_artifact_path: Optional[Path] = None
-
-
-class FetchedHeadMismatch(RuntimeError):
-    def __init__(self, expected_sha: str, actual_sha: str) -> None:
-        self.expected_sha = expected_sha
-        self.actual_sha = actual_sha
-        super().__init__(
-            f"fetched PR head {actual_sha} does not match expected {expected_sha}"
-        )
 
 
 @dataclass(frozen=True)
@@ -365,81 +368,15 @@ def _timeout_output(value: Any) -> str:
 
 
 def _run_git(local_repo: Path, args: List[str], *, timeout: int = 60) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(local_repo), *args],
-        check=True,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-    )
-    return result.stdout
+    return _shared_run_git_text(local_repo, args, timeout=timeout)
 
 
 def _fetch_base_sha_for_diff(local_repo: Path, base_ref: str) -> str:
-    temporary_ref = False
-    if base_ref.startswith("origin/"):
-        remote_branch = base_ref[len("origin/") :]
-        local_ref = f"refs/remotes/origin/{remote_branch}"
-        fetch_refspec = f"+{remote_branch}:{local_ref}"
-    elif base_ref.startswith("refs/heads/"):
-        remote_branch = base_ref[len("refs/heads/") :]
-        local_ref = f"refs/remotes/origin/{remote_branch}"
-        fetch_refspec = f"+{base_ref}:{local_ref}"
-    elif "/" not in base_ref:
-        local_ref = f"refs/remotes/origin/{base_ref}"
-        fetch_refspec = f"+{base_ref}:{local_ref}"
-    else:
-        local_ref = f"refs/code-mower/base/{os.getpid()}-{secrets.token_hex(8)}"
-        fetch_refspec = f"+{base_ref}:{local_ref}"
-        temporary_ref = True
-    try:
-        subprocess.run(
-            ["git", "-C", str(local_repo), "fetch", "origin", fetch_refspec],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return _run_git(
-            local_repo,
-            ["rev-parse", "--verify", f"{local_ref}^{{commit}}"],
-        ).strip()
-    finally:
-        if temporary_ref:
-            subprocess.run(
-                ["git", "-C", str(local_repo), "update-ref", "-d", local_ref],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+    return _shared_fetch_base_ref_sha(local_repo, base_ref)
 
 
 def _fetch_pr_head_sha_for_diff(local_repo: Path, pr_number: int) -> str:
-    local_ref = f"refs/code-mower/pr/{pr_number}/{os.getpid()}-{secrets.token_hex(8)}"
-    try:
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(local_repo),
-                "fetch",
-                "origin",
-                f"+pull/{pr_number}/head:{local_ref}",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return _run_git(
-            local_repo,
-            ["rev-parse", "--verify", f"{local_ref}^{{commit}}"],
-        ).strip()
-    finally:
-        subprocess.run(
-            ["git", "-C", str(local_repo), "update-ref", "-d", local_ref],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+    return _shared_fetch_pr_head_sha(local_repo, pr_number)
 
 
 def _clip_bytes(text: str, max_bytes: int) -> Tuple[str, bool]:

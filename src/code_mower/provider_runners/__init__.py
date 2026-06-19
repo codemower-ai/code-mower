@@ -19,6 +19,17 @@ from .github_pr import (
     post_pr_comment,
 )
 from .process import DEFAULT_HOME_ENV_KEYS, build_allowlisted_child_env
+from .pr_worktree import (
+    FetchedHeadMismatch,
+    create_temp_worktree,
+    fetch_base_ref,
+    fetch_base_ref_sha,
+    fetch_pr_head,
+    fetch_pr_head_sha,
+    fetch_pr_head_sha_or_raise,
+    remove_worktree,
+    run_git_text,
+)
 from .repo_paths import parse_repo_paths
 from .text_schema import clip_text, one_line, require_exact_keys
 from .verdict_artifacts import (
@@ -36,7 +47,13 @@ __all__ = [
     "fetch_pull_request",
     "fetch_pull_request_diff",
     "fetch_pull_request_files",
+    "FetchedHeadMismatch",
+    "fetch_base_ref",
+    "fetch_base_ref_sha",
     "fetch_local_checkout_diff",
+    "fetch_pr_head",
+    "fetch_pr_head_sha",
+    "fetch_pr_head_sha_or_raise",
     "load_audit_verdict_artifact",
     "local_head_sha",
     "limit_comment_body",
@@ -53,6 +70,9 @@ __all__ = [
     "resolve_github_token_from_env_or_gh",
     "resolve_github_token_from_stdin_or_env",
     "run_git",
+    "run_git_text",
+    "create_temp_worktree",
+    "remove_worktree",
     "verify_checkout_at_head",
     "working_tree_status",
     "build_allowlisted_child_env",
