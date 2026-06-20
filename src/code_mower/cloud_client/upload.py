@@ -44,6 +44,7 @@ def build_upload_payload(
         "repo_slug": manifest.get("repo_slug", ""),
         "team_id": manifest.get("team_id", ""),
         "install_id": manifest.get("install_id", ""),
+        "provenance": manifest.get("provenance", {}),
         "excluded_content": manifest.get("excluded_content", []),
         "reports": included_report_payloads(
             manifest,

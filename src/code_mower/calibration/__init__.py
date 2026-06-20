@@ -99,7 +99,7 @@ from .truth import (
     normalize_truth_expectation,
     truth_for_item,
 )
-from .value_report import build_value_report, render_value_report_text
+from .value_report import build_value_report, render_value_report_html, render_value_report_text
 
 __all__ = [
     "KNOWN_EVIDENCE_DISPOSITIONS",
@@ -169,6 +169,7 @@ __all__ = [
     "render_plan_text",
     "render_policy_text",
     "render_value_report_text",
+    "render_value_report_html",
     "run_records_from_summary",
     "run_matches_disposition_rule",
     "reviewer_dimensions",

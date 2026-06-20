@@ -136,7 +136,8 @@ code-mower reviewer-metrics calibration-evidence.json --spend .code-mower.genera
 code-mower calibration policy reviewer-metrics.json --json > lane-policy.json
 code-mower calibration value-report .code-mower.generated/calibration-corpus.json \
   --spend .code-mower.generated/reviewer-spend.json \
-  --output reviewer-value-report.md
+  --output reviewer-value-report.md \
+  --html-output reviewer-value-report.html
 ```
 
 The starter corpus proves the command path. To bootstrap a project-specific

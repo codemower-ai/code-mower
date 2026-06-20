@@ -190,6 +190,15 @@ def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
                     "provider": "codex",
                     "lens": "base",
                     "status": "pass",
+                    "tool": {
+                        "role": "reviewer",
+                        "tool_name": "codex",
+                        "tool_version": "0.139.0",
+                        "provider": "openai",
+                        "model": "gpt-5",
+                        "integration": "cli",
+                        "lens": "base",
+                    },
                     "metrics": {"latency_ms": 42},
                 }
             ],
@@ -203,6 +212,10 @@ def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
         assert upload["upload_mode"] == "metadata_only"
         assert upload["repo_slug"] == "codemower-ai/code-mower"
         assert upload["events"][0]["provider"] == "codex"
+        assert upload["events"][0]["tool"]["tool_name"] == "codex"
+        assert upload["events"][0]["tool"]["model"] == "gpt-5"
+        assert upload["provenance"]["events_with_tool_provenance"] == 1
+        assert upload["provenance"]["tools"][0]["tool_name"] == "codex"
 
 
 def test_cloud_doctor_runs_from_client_module() -> None:

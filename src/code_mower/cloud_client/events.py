@@ -9,6 +9,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from code_mower import __version__
+from code_mower.providers import build_code_mower_tool_provenance, normalize_tool_provenance
+
 from .bundle import MAX_EVENT_COUNT, SAFE_EVENT_TYPES, SAFE_REPORT_KINDS, validate_metadata_payload
 from .dogfood import DogfoodPlan
 from .errors import CloudBundleError
@@ -70,6 +73,11 @@ def build_dogfood_event(
         "provider": "",
         "lens": "",
         "status": "observed",
+        "tool": build_code_mower_tool_provenance(
+            source=plan.source,
+            version=__version__,
+            role="reporter",
+        ),
         "git": {
             "sha": run_git(repo_path, ["rev-parse", "HEAD"]),
             "branch": run_git(repo_path, ["branch", "--show-current"]),
@@ -176,6 +184,16 @@ def build_workflow_run_event(
         "provider": "",
         "lens": "base",
         "status": status,
+        "tool": normalize_tool_provenance(
+            {
+                "role": "workflow",
+                "tool_name": "github-actions",
+                "provider": "github",
+                "integration": "github-actions",
+                "lens": "base",
+                "source": source,
+            }
+        ),
         "metrics": {},
         "dimensions": dimensions,
     }
@@ -215,6 +233,12 @@ def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
         normalized["dimensions"] = {}
     elif not isinstance(dimensions, dict):
         raise CloudBundleError("structured event dimensions must be an object")
+    tool = normalize_tool_provenance(normalized.get("tool"), event=normalized)
+    normalized["tool"] = tool
+    if not normalized["provider"] and tool.get("provider"):
+        normalized["provider"] = tool["provider"]
+    if not normalized["lens"] and tool.get("lens"):
+        normalized["lens"] = tool["lens"]
     validate_metadata_payload(normalized)
     return normalized
 
