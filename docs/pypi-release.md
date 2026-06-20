@@ -5,7 +5,7 @@ and wheel distributions, verifies them with `twine check`, and can publish to
 TestPyPI or production PyPI through trusted publishing.
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b11
+pipx install --python python3.12 code-mower==0.5.0b12
 ```
 
 ## Current Status
@@ -77,7 +77,7 @@ same artifact download path used by the optional PyPI publish job, then runs
 For beta releases, keep release metadata honest:
 
 ```bash
-gh release view v0.5.0-beta.11 --repo codemower-ai/code-mower
+gh release view v0.5.0-beta.12 --repo codemower-ai/code-mower
 gh api repos/codemower-ai/code-mower/releases/latest
 ```
 
@@ -112,7 +112,7 @@ For production PyPI verification:
 ```bash
 python3.12 -m venv /tmp/code-mower-pypi-smoke
 /tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
-/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==0.5.0b11
+/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==0.5.0b12
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
@@ -120,7 +120,7 @@ Then run the release-gate first-user rehearsal against the same package:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b11 \
+  --package-spec code-mower==0.5.0b12 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -165,7 +165,7 @@ The primary README command should stay on an explicit beta version until a
 stable `1.0` line exists:
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b11
+pipx install --python python3.12 code-mower==0.5.0b12
 ```
 
 Do not switch to unpinned `pipx install code-mower` until:
