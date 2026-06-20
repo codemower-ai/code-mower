@@ -102,6 +102,14 @@ Supported event types are:
 - `lane_policy_snapshot`
 - `workflow_run`
 
+Events may include a `tool` object with metadata-only provenance: tool name,
+tool version, provider, model, integration, runtime environment, lens, and
+prompt-pack version. This is the field CodeMower.com uses to answer "which AI
+builder/reviewer/version produced this signal?" Missing tool/model provenance
+is still accepted for operational dogfood, but it is not enough for strong
+benchmark claims. The dashboard should therefore treat provenance coverage as
+a quality signal, not a vanity count.
+
 Include events from JSON, JSON arrays, or JSONL:
 
 ```bash
@@ -237,6 +245,10 @@ Dogfood is a current-state signal. It uploads metadata about the current
 checkout/workflow run and any current shareable reports that exist. It does not
 reconstruct old pull requests, old reviewer comments, older GitHub Actions runs,
 or historical benchmark outcomes.
+
+Current Code Mower dogfood events include Code Mower client provenance. Provider
+lanes should add their own tool/model provenance as they mature; until then,
+CodeMower.com will show those rows as missing provider/model detail.
 
 ## Historical Catch-Up
 
@@ -394,7 +406,7 @@ background cron and not as a requirement for every OSS user.
 Recent dogfood/catch-up imports used this shape across the OSS repo, the
 hosted service repo, and two private reference/product repos with
 `--mode catch-up --limit 100`. Those uploads are intentionally displayed as
-imported history, not as calibrated reviewer/lens evidence. Beta.11 makes that
+imported history, not as calibrated reviewer/lens evidence. Beta.12 makes that
 distinction explicit in the catch-up command result and terminal output.
 
 ## What codemower.com Stores First

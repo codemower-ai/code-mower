@@ -40,24 +40,27 @@ history opens the repository. They should be able to confirm:
 
 ## Current Beta Baseline
 
-The current public-release baseline is `v0.5.0-beta.11` of the standalone
+The current public-release baseline is `v0.5.0-beta.12` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
-- public package installation from PyPI as `code-mower==0.5.0b11`;
+- public package installation from PyPI as `code-mower==0.5.0b12`;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
-  private reference/product repos, with beta.11 preserving the same client path
+  private reference/product repos, with beta.12 preserving the same client path
   and adding clearer catch-up/stale-audit trust diagnostics;
 - production catch-up upload across those four dogfood repos using
   `repo-sync --mode catch-up`, with imported workflow history separated from
   reviewer/lens calibration evidence;
-- beta.11 private-repo package-install rehearsal against
+- beta.12 private-repo package-install rehearsal against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app),
   including repository-native check detection and dry-run execution;
-- beta.11 calibration/value-report generation from the installed package plus
+- beta.12 calibration/value-report generation from the installed package plus
   sanitized report upload coverage for CodeMower.com;
+- metadata-only AI tool/model provenance in cloud bundles and dogfood events,
+  with CodeMower.com distinguishing known provider/model/version signal from
+  missing provenance before making benchmark recommendations;
 - CodeMower.com evidence/detail URLs for uploads and events, so dashboard rows
   can be inspected and exported without exposing source, raw diffs, transcripts,
   auth output, or secrets;
@@ -76,7 +79,7 @@ package. It has proved:
   fan-out commands, including a dry-run proof on a known-problematic
   solver-runtime lens case;
 - standalone labeler and bootstrap entrypoints for migrating product workflows
-  away from mirrored Python files.
+  away from mirrored Python files;
 - explicit mirror-removal completion status when a product repo has already
   deleted mirrored implementation files;
 - mirror-removal pilots in both private reference/product repos: wrappers
@@ -90,7 +93,7 @@ package. It has proved:
   only the pinned ref from product support files;
 - standalone Codex and Claude structured audit commands plus Codex env
   preflight/schema-smoke helpers, so product shell wrappers can remain thin
-  compatibility shims without mirrored Python implementation files.
+  compatibility shims without mirrored Python implementation files;
 - packaged starter value-report fixture generation, so the public starter
   corpus has an expected first-run report that can be compared in tests and
   shipped through `init --easy --apply`.
@@ -143,6 +146,9 @@ It has not yet proved:
 - dashboard trust/value for first-time uploaders beyond receipt rows, including
   sharper provenance labels, benchmark trust scoring, and useful "what should I
   enable next?" guidance;
+- enough provider/lens provenance completeness to answer "which AI coding tool,
+  model, version, and prompt lens produced this signal?" across dogfood and
+  calibration runs instead of only at the Code Mower client level;
 - calibration auto-discovery from recent PRs with human disposition review and
   enough evidence to justify lane promotion;
 - broad private-repo standalone checkout across arbitrary organizations and
@@ -150,7 +156,7 @@ It has not yet proved:
 - mirror deletion across arbitrary user repositories;
 - broader spend-bearing context-pack lens runs beyond the first solver-runtime
   Gemini proof;
-- a large enough reviewer/lens corpus for new merge gates.
+- a large enough reviewer/lens corpus for new merge gates; and
 - Dashboard IA phase 1 on CodeMower.com: authenticated tabs, freshness and
   provenance strip, clearer first-upload guidance, and a visibly useful
   "what should I enable next?" panel.
@@ -158,7 +164,7 @@ It has not yet proved:
 ## Easy Mode Flow
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b11
+pipx install --python python3.12 code-mower==0.5.0b12
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --v05
@@ -167,7 +173,7 @@ code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b11 \
+  --package-spec code-mower==0.5.0b12 \
   --repo-path /path/to/repo \
   --json
 code-mower audit pr 123
