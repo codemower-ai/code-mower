@@ -415,7 +415,7 @@ background cron and not as a requirement for every OSS user.
 Recent dogfood/catch-up imports used this shape across the OSS repo, the
 hosted service repo, and two private reference/product repos with
 `--mode catch-up --limit 100`. Those uploads are intentionally displayed as
-imported history, not as calibrated reviewer/lens evidence. Beta.13 makes that
+imported history, not as calibrated reviewer/lens evidence. Beta.14 makes that
 distinction explicit in the catch-up command result and terminal output.
 
 ## What codemower.com Stores First
