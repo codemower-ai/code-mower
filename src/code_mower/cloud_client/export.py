@@ -13,6 +13,7 @@ from .bundle import (
     EXCLUDED_CONTENT,
     EXPECTED_BUNDLE_ENTRIES,
     MAX_EVENT_COUNT,
+    event_type_counts,
     is_bundle_manifest,
 )
 from .errors import CloudBundleError
@@ -320,14 +321,6 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "events_missing_tool_version_provenance": missing_tool_version_events,
         "tools": normalized_tools,
     }
-
-
-def event_type_counts(events: list[dict[str, Any]]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for event in events:
-        event_type = str(event.get("event_type") or "unknown")
-        counts[event_type] = counts.get(event_type, 0) + 1
-    return dict(sorted(counts.items()))
 
 
 def render_bundle_readme(manifest: dict[str, Any]) -> str:

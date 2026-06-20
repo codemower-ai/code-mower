@@ -211,6 +211,7 @@ def build_provider_catalog_snapshot_events(
     team_id: str,
     install_id: str,
     source: str,
+    include_version_probe: bool = True,
 ) -> list[dict[str, Any]]:
     """Build metadata-only events describing configured provider lanes.
 
@@ -225,6 +226,7 @@ def build_provider_catalog_snapshot_events(
             lane_id,
             lane,
             source=source,
+            include_version_probe=include_version_probe,
         )
         event = {
             "schema": EVENT_SCHEMA,

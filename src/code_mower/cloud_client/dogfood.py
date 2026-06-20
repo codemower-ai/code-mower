@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .bundle import event_type_counts
+
 
 DEFAULT_DOGFOOD_REPORTS: tuple[tuple[str, str], ...] = (
     ("docs/reviewer-value-report.md", "value-report"),
@@ -65,10 +67,6 @@ def build_dogfood_dry_run_preview(
     endpoint: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    event_types: dict[str, int] = {}
-    for event in payload["events"]:
-        event_type = str(event.get("event_type") or "unknown")
-        event_types[event_type] = event_types.get(event_type, 0) + 1
     return {
         "mode": "cloud-upload-dry-run",
         "endpoint": endpoint,
@@ -77,7 +75,7 @@ def build_dogfood_dry_run_preview(
         "upload_mode": payload["upload_mode"],
         "report_count": len(payload["reports"]),
         "event_count": len(payload["events"]),
-        "event_types": dict(sorted(event_types.items())),
+        "event_types": event_type_counts(payload["events"]),
         "privacy_mode": payload["privacy_mode"],
         "excluded_content": payload["excluded_content"],
     }
