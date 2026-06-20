@@ -101,7 +101,7 @@ Before tagging an early alpha, run these from a clean standalone checkout:
 
 ```bash
 scripts/dev-python -m venv .venv
-.venv/bin/python -m pip install -e . ruff
+.venv/bin/python -m pip install -e ".[test]"
 .venv/bin/code-mower --version
 .venv/bin/python -m ruff check .
 .venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json

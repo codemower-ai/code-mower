@@ -145,7 +145,7 @@ Before a public alpha promotion, run:
 
 ```bash
 scripts/dev-python -m venv .venv
-.venv/bin/python -m pip install -e . ruff
+.venv/bin/python -m pip install -e ".[test]"
 .venv/bin/python -m ruff check .
 .venv/bin/python -m unittest discover -s tests
 .venv/bin/python -m pytest -q
