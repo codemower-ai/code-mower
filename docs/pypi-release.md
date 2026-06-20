@@ -13,12 +13,14 @@ pipx install --python python3.12 code-mower==0.5.0b14
 - GitHub Release workflow builds distributions on every published release.
 - The release workflow downloads the uploaded distributions and runs
   `twine check` before any optional PyPI publish job can start.
-- TestPyPI publishing is gated behind the `testpypi` GitHub environment and
-  the `CODE_MOWER_TESTPYPI_PUBLISH` repository variable or manual
-  `workflow_dispatch` input.
-- Production PyPI publishing is gated behind the `pypi` GitHub environment and
-  the `CODE_MOWER_PYPI_PUBLISH` repository variable or manual
-  `workflow_dispatch` input.
+- TestPyPI publishing is gated behind the `testpypi` GitHub environment.
+  Manual `workflow_dispatch` rehearsals publish only when
+  `publish_testpypi=true`; published GitHub releases publish only when the
+  `CODE_MOWER_TESTPYPI_PUBLISH` repository variable is `true`.
+- Production PyPI publishing is gated behind the `pypi` GitHub environment.
+  Manual `workflow_dispatch` rehearsals publish only when `publish_pypi=true`;
+  published GitHub releases publish only when the `CODE_MOWER_PYPI_PUBLISH`
+  repository variable is `true`.
 - Trusted publishing is configured for TestPyPI and production PyPI.
 - GitHub-tag install remains a fallback for release debugging, not the primary
   early-adopter path.
@@ -36,8 +38,9 @@ pipx install --python python3.12 code-mower==0.5.0b14
 3. Add a `testpypi` GitHub environment at
    [https://github.com/codemower-ai/code-mower/settings/environments](https://github.com/codemower-ai/code-mower/settings/environments).
 4. Keep the `CODE_MOWER_TESTPYPI_PUBLISH` repository variable unset or `false`
-   for normal releases. Use manual `workflow_dispatch` with
-   `publish_testpypi=true` when rehearsing a package-index release candidate.
+   unless a published GitHub release should automatically publish to TestPyPI.
+   Manual `workflow_dispatch` runs ignore this variable and require
+   `publish_testpypi=true`.
 5. Keep the production `pypi` environment separate.
 
 ## One-Time Production PyPI Setup
@@ -52,8 +55,8 @@ pipx install --python python3.12 code-mower==0.5.0b14
    TestPyPI release has been installed in a fresh repo.
 4. Keep the `CODE_MOWER_PYPI_PUBLISH` repository variable unset or `false`
    until production PyPI trusted publishing has passed a deliberate release
-   gate. Prefer manual `workflow_dispatch` with `publish_pypi=true` for the
-   first production publish.
+   gate. Manual `workflow_dispatch` runs ignore this variable and require
+   `publish_pypi=true`, which is the preferred first production publish path.
 
 ## Workflow Dispatch Matrix
 
@@ -66,6 +69,11 @@ for manual release rehearsals:
 | `true` | `false` | Build, verify, then publish to TestPyPI using the `testpypi` environment. |
 | `false` | `true` | Build, verify, then publish to production PyPI using the `pypi` environment. Use only after TestPyPI passes. |
 | `true` | `true` | Avoid this for normal releases; publish to TestPyPI and PyPI as separate, auditable runs. |
+
+Manual dispatch inputs are the only publish controls for manual runs. Repository
+variables are intentionally scoped to `release` events so a dry-run dispatch with
+both inputs set to `false` cannot publish just because a repository variable was
+left enabled.
 
 ## Release Verification
 

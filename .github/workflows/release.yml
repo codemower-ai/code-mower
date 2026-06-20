@@ -68,7 +68,7 @@ jobs:
   publish-testpypi:
     needs: verify-distributions
     runs-on: ubuntu-latest
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_testpypi) || vars.CODE_MOWER_TESTPYPI_PUBLISH == 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_testpypi == true) || (github.event_name == 'release' && vars.CODE_MOWER_TESTPYPI_PUBLISH == 'true') }}
     permissions:
       contents: read
       id-token: write
@@ -88,7 +88,7 @@ jobs:
   publish-pypi:
     needs: verify-distributions
     runs-on: ubuntu-latest
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_pypi) || vars.CODE_MOWER_PYPI_PUBLISH == 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true) || (github.event_name == 'release' && vars.CODE_MOWER_PYPI_PUBLISH == 'true') }}
     permissions:
       contents: read
       id-token: write
