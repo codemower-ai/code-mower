@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 import urllib.error
 from argparse import Namespace
@@ -60,6 +61,14 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("          python -m twine check dist/*\n", workflow)
         publish_job = workflow.split("  publish-pypi:\n", 1)[1]
         self.assertIn("    needs: verify-distributions\n", publish_job)
+
+    def test_test_extra_matches_contributor_setup_docs(self) -> None:
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+        extras = pyproject["project"]["optional-dependencies"]
+        self.assertIn("test", extras)
+        self.assertIn("pytest>=8.0", extras["test"])
+        self.assertIn("ruff>=0.8", extras["test"])
 
     def test_release_workflow_has_separate_testpypi_publish_gate(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")

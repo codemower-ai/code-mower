@@ -249,7 +249,7 @@ For source checkout development and release rehearsal, use:
 ```bash
 scripts/dev-python
 scripts/dev-python -m venv .venv
-.venv/bin/python -m pip install -e . ruff
+.venv/bin/python -m pip install -e ".[test]"
 ```
 
 The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
