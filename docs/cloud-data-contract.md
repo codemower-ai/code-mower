@@ -58,12 +58,19 @@ Supported event types include:
 - `calibration_run`
 - `value_report_snapshot`
 - `lane_policy_snapshot`
+- `provider_catalog_snapshot`
 - `workflow_run`
 
 Events may include provider/lens names, timing, cost, verdict, useful finding
 counts, false-positive counts, repository slug, install id, and coarse runtime
 metadata. They must not include source code, raw diffs, raw transcripts,
 stdout/stderr, auth output, or secrets.
+
+`provider_catalog_snapshot` events are special: they describe configured
+provider lanes and safe tool/model/version coverage. They are useful for setup
+and benchmark trust diagnostics, but they are not reviewer accuracy evidence and
+must not be counted as useful findings, false positives, or lane-promotion
+support.
 
 Each event may also include a `tool` object using schema
 `code_mower.toolProvenance.v1`. This object is the benchmark-grade provenance

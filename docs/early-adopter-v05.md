@@ -134,7 +134,7 @@ Cut a v0.5 alpha or beta only after:
 
 ## Current Beta
 
-`v0.5.0-beta.12` is the current friendly-user beta. It keeps the
+`v0.5.0-beta.13` is the current friendly-user beta. It keeps the
 local-first package path from alpha.1, the cloud doctor service-readiness check
 from alpha.5, the hardened provider-auth doctor diagnostics needed for
 early-adopter troubleshooting, the dogfood dry-run path that feeds the

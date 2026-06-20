@@ -93,6 +93,8 @@ provider_templates:
     trigger_policy: "label"
     provider_config:
       command: "claude"
+      model_env: "CLAUDE_AUDIT_MODEL"
+      default_model: "sonnet"
       doctor_probe_args:
         - "--print"
         - "--output-format"

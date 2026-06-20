@@ -100,6 +100,7 @@ Supported event types are:
 - `calibration_run`
 - `value_report_snapshot`
 - `lane_policy_snapshot`
+- `provider_catalog_snapshot`
 - `workflow_run`
 
 Events may include a `tool` object with metadata-only provenance: tool name,
@@ -246,9 +247,14 @@ checkout/workflow run and any current shareable reports that exist. It does not
 reconstruct old pull requests, old reviewer comments, older GitHub Actions runs,
 or historical benchmark outcomes.
 
-Current Code Mower dogfood events include Code Mower client provenance. Provider
-lanes should add their own tool/model provenance as they mature; until then,
-CodeMower.com will show those rows as missing provider/model detail.
+Current Code Mower dogfood bundles include Code Mower client provenance and a
+`provider_catalog_snapshot` event for each configured provider lane. Catalog
+snapshots report what Code Mower can safely know from configuration and harmless
+local version probes: tool surface, version when available, provider, model when
+configured, lane/lens id, integration, and runtime environment. They are
+coverage evidence, not reviewer-quality evidence. CodeMower.com should use them
+to identify missing tool/model/version metadata and should use reviewer or
+calibration events for usefulness, false-positive, and lane-promotion claims.
 
 ## Historical Catch-Up
 
@@ -406,7 +412,7 @@ background cron and not as a requirement for every OSS user.
 Recent dogfood/catch-up imports used this shape across the OSS repo, the
 hosted service repo, and two private reference/product repos with
 `--mode catch-up --limit 100`. Those uploads are intentionally displayed as
-imported history, not as calibrated reviewer/lens evidence. Beta.12 makes that
+imported history, not as calibrated reviewer/lens evidence. Beta.13 makes that
 distinction explicit in the catch-up command result and terminal output.
 
 ## What codemower.com Stores First

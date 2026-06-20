@@ -25,6 +25,7 @@ SAFE_EVENT_TYPES = {
     "calibration_run",
     "dogfood_upload",
     "lane_policy_snapshot",
+    "provider_catalog_snapshot",
     "reviewer_run",
     "value_report_snapshot",
     "workflow_run",
