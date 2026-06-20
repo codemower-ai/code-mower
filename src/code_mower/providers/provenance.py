@@ -143,22 +143,50 @@ def _first_text(values: Any) -> str:
     return ""
 
 
+def _text_values(values: Any) -> tuple[str, ...]:
+    if isinstance(values, str):
+        text = _safe_text(values)
+        return (text,) if text else ()
+    if isinstance(values, (list, tuple)):
+        result: list[str] = []
+        for value in values:
+            text = _safe_text(value)
+            if text and text not in result:
+                result.append(text)
+        return tuple(result)
+    return ()
+
+
 def _env_value(config: Mapping[str, Any], key: str) -> str:
     env_name = _safe_text(config.get(key))
     return _safe_text(os.environ.get(env_name)) if env_name else ""
 
 
-def _configured_command(config: Mapping[str, Any], provider: str) -> str:
+def _configured_command_candidates(
+    config: Mapping[str, Any],
+    provider: str,
+) -> tuple[str, ...]:
     override = _env_value(config, "command_env")
     if override:
-        return override
+        return (override,)
+    candidates: list[str] = []
     command = _safe_text(config.get("command"))
     if command:
-        return command
-    alternate = _first_text(config.get("alternate_commands"))
-    if alternate:
-        return alternate
-    return provider
+        candidates.append(command)
+    for alternate in _text_values(config.get("alternate_commands")):
+        if alternate not in candidates:
+            candidates.append(alternate)
+    if not candidates:
+        candidates.append(provider)
+    return tuple(candidates)
+
+
+def _select_available_command(candidates: tuple[str, ...]) -> tuple[str, str]:
+    for command in candidates:
+        resolved = shutil.which(command)
+        if resolved:
+            return command, resolved
+    return (candidates[0] if candidates else "", "")
 
 
 def build_provider_lane_tool_provenance(
@@ -178,7 +206,8 @@ def build_provider_lane_tool_provenance(
     config = _provider_config(lane)
     provider = _safe_text(_lane_value(lane, "provider")) or lane_id
     driver = _safe_text(_lane_value(lane, "driver")) or "unknown"
-    command = _configured_command(config, provider)
+    command_candidates = _configured_command_candidates(config, provider)
+    command, resolved_command = _select_available_command(command_candidates)
     model = _env_value(config, "model_env") or _safe_text(config.get("default_model"))
     provider_from_env = _env_value(config, "provider_env")
     if provider_from_env:
@@ -197,16 +226,16 @@ def build_provider_lane_tool_provenance(
         "lane_id": lane_id,
         "driver": driver,
         "command": command if driver == "local_cli" else "",
+        "command_candidates": list(command_candidates) if driver == "local_cli" else [],
         "model_known": bool(model),
         "version_known": False,
     }
     tool_version = ""
     if driver == "local_cli" and include_version_probe and command:
-        resolved = shutil.which(command)
-        detail["command_found"] = bool(resolved)
-        if resolved:
-            detail["path_basename"] = os.path.basename(resolved)
-            version_detail = detect_local_cli_version(resolved)
+        detail["command_found"] = bool(resolved_command)
+        if resolved_command:
+            detail["path_basename"] = os.path.basename(resolved_command)
+            version_detail = detect_local_cli_version(resolved_command)
             tool_version = _safe_text(version_detail.get("tool_version"))
             detail["version_known"] = bool(tool_version)
             detail["tool_version_available"] = bool(
