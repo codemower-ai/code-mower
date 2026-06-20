@@ -251,10 +251,13 @@ Current Code Mower dogfood bundles include Code Mower client provenance and a
 `provider_catalog_snapshot` event for each configured provider lane. Catalog
 snapshots report what Code Mower can safely know from configuration and harmless
 local version probes: tool surface, version when available, provider, model when
-configured, lane/lens id, integration, and runtime environment. They are
-coverage evidence, not reviewer-quality evidence. CodeMower.com should use them
-to identify missing tool/model/version metadata and should use reviewer or
-calibration events for usefulness, false-positive, and lane-promotion claims.
+configured, lane/lens id, integration, and runtime environment. Reviewer and
+calibration summaries may also preserve provider-observed model ids from
+structured CLI stats when the run output includes them, such as the main
+Google-compatible model used for a review. They are coverage evidence, not
+reviewer-quality evidence. CodeMower.com should use them to identify missing
+tool/model/version metadata and should use reviewer or calibration events for
+usefulness, false-positive, and lane-promotion claims.
 
 ## Historical Catch-Up
 

@@ -86,6 +86,12 @@ surface for AI tool/version/model data:
 - `lens` and `prompt_pack_version`: the review lens/prompt bundle that shaped
   the run.
 
+Model identity can come from explicit user configuration, safe provider
+metadata, or structured provider summary stats. For example, Google-compatible
+CLI summaries may report multiple internal models; Code Mower records the main
+review model when it can identify one, and leaves the model blank when it
+cannot do so safely.
+
 Code Mower treats missing tool/model provenance as acceptable for operational
 dogfood, but incomplete for benchmark claims. CodeMower.com therefore displays
 provenance coverage separately from upload volume.
