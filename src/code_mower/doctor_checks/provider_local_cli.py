@@ -27,6 +27,40 @@ from .provider_probe import evaluate_json_probe, local_cli_probe_remediation
 from .privacy import auth_probe_output_detail
 
 
+def _safe_version_line(output: str) -> str:
+    line = next((item.strip() for item in output.splitlines() if item.strip()), "")
+    if not line:
+        return ""
+    return " ".join(line.split())[:180]
+
+
+def detect_local_cli_version(resolved: str) -> dict[str, Any]:
+    """Run a short version probe for display-only tool provenance."""
+
+    try:
+        completed = subprocess.run(
+            [resolved, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"tool_version_available": False, "tool_version_error": str(exc)[:180]}
+    output = (completed.stdout or completed.stderr or "").strip()
+    version = _safe_version_line(output)
+    if not version:
+        return {
+            "tool_version_available": False,
+            "tool_version_returncode": completed.returncode,
+        }
+    return {
+        "tool_version_available": completed.returncode == 0,
+        "tool_version": version,
+        "tool_version_returncode": completed.returncode,
+    }
+
+
 def check_local_cli(lane_id: str, lane: Mapping[str, Any]) -> DoctorCheck:
     provider_config = lane.get("provider_config", {})
     commands = candidate_local_cli_commands(lane)
@@ -40,12 +74,14 @@ def check_local_cli(lane_id: str, lane: Mapping[str, Any]) -> DoctorCheck:
     for command in commands:
         resolved = shutil.which(command)
         if resolved:
-            detail.update({"command": command, "path": resolved})
+            version_detail = detect_local_cli_version(resolved)
+            detail.update({"command": command, "path": resolved, **version_detail})
+            version = version_detail.get("tool_version")
             return DoctorCheck(
                 name="runtime.local_cli",
                 status=STATUS_PASS,
                 lane=lane_id,
-                message=f"{command} found",
+                message=f"{command} found" + (f" ({version})" if version else ""),
                 detail=detail,
             )
     return DoctorCheck(

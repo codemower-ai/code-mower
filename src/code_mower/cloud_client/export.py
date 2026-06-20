@@ -191,6 +191,7 @@ def build_cloud_bundle(
         "install_id": "" if anonymous else install_id,
         "included_reports": included_reports,
         "events": [] if anonymous else included_events,
+        "provenance": {} if anonymous else build_provenance_summary(included_events),
         "excluded_content": list(EXCLUDED_CONTENT),
         "notes": [
             "This bundle is local-only; upload support must present a dry-run before network transfer.",
@@ -230,7 +231,76 @@ def build_cloud_bundle(
         "readme": str(readme),
         "included_reports": included_reports,
         "event_count": len(manifest["events"]),
+        "provenance": manifest["provenance"],
         "upload_ready": False,
+    }
+
+
+def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return a compact metadata-only summary of event tool provenance."""
+
+    tools: dict[tuple[str, str, str], dict[str, Any]] = {}
+    missing_tool_events = 0
+    for event in events:
+        tool = event.get("tool")
+        if not isinstance(tool, dict):
+            missing_tool_events += 1
+            continue
+        tool_name = str(tool.get("tool_name") or "").strip()
+        provider = str(tool.get("provider") or event.get("provider") or "").strip()
+        model = str(tool.get("model") or "").strip()
+        if not tool_name and not provider and not model:
+            missing_tool_events += 1
+            continue
+        key = (tool_name or "unknown", provider or "unknown", model or "")
+        row = tools.setdefault(
+            key,
+            {
+                "tool_name": key[0],
+                "provider": key[1],
+                "model": key[2],
+                "events": 0,
+                "versions": set(),
+                "roles": set(),
+                "lenses": set(),
+            },
+        )
+        row["events"] += 1
+        for field, target in (
+            ("tool_version", "versions"),
+            ("role", "roles"),
+            ("lens", "lenses"),
+        ):
+            value = str(tool.get(field) or "").strip()
+            if value:
+                row[target].add(value)
+    normalized_tools = []
+    for row in tools.values():
+        normalized_tools.append(
+            {
+                "tool_name": row["tool_name"],
+                "provider": row["provider"],
+                "model": row["model"],
+                "events": row["events"],
+                "versions": sorted(row["versions"]),
+                "roles": sorted(row["roles"]),
+                "lenses": sorted(row["lenses"]),
+            }
+        )
+    normalized_tools.sort(
+        key=lambda item: (
+            -int(item["events"]),
+            str(item["tool_name"]),
+            str(item["provider"]),
+            str(item["model"]),
+        )
+    )
+    return {
+        "schema": "code_mower.cloudProvenanceSummary.v1",
+        "event_count": len(events),
+        "events_with_tool_provenance": len(events) - missing_tool_events,
+        "events_missing_tool_provenance": missing_tool_events,
+        "tools": normalized_tools,
     }
 
 
@@ -252,6 +322,22 @@ def render_bundle_readme(manifest: dict[str, Any]) -> str:
         )
     else:
         lines.append("- none")
+    provenance = manifest.get("provenance", {})
+    if isinstance(provenance, dict):
+        lines.extend(["", "Tool provenance:"])
+        tools = provenance.get("tools", [])
+        if isinstance(tools, list) and tools:
+            for tool in tools:
+                if not isinstance(tool, dict):
+                    continue
+                model = f" / {tool.get('model')}" if tool.get("model") else ""
+                lines.append(
+                    f"- {tool.get('tool_name', 'unknown')} "
+                    f"({tool.get('provider', 'unknown')}{model}): "
+                    f"{tool.get('events', 0)} events"
+                )
+        else:
+            lines.append("- none reported")
     lines.extend(["", "Structured events:"])
     events = manifest.get("events", [])
     if events:

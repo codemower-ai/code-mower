@@ -65,6 +65,24 @@ counts, false-positive counts, repository slug, install id, and coarse runtime
 metadata. They must not include source code, raw diffs, raw transcripts,
 stdout/stderr, auth output, or secrets.
 
+Each event may also include a `tool` object using schema
+`code_mower.toolProvenance.v1`. This object is the benchmark-grade provenance
+surface for AI tool/version/model data:
+
+- `role`: `builder`, `reviewer`, `workflow`, or another explicit lane role;
+- `tool_name` and `tool_version`: the local CLI, GitHub App, hosted reviewer,
+  or agent surface that produced the event;
+- `provider`, `model`, and `model_version_raw`: the AI provider/model identity
+  when known;
+- `integration` and `runtime_environment`: for example `cli`, `github_app`,
+  `hosted`, `local`, or `github_actions`; and
+- `lens` and `prompt_pack_version`: the review lens/prompt bundle that shaped
+  the run.
+
+Code Mower treats missing tool/model provenance as acceptable for operational
+dogfood, but incomplete for benchmark claims. CodeMower.com therefore displays
+provenance coverage separately from upload volume.
+
 The OSS client fails closed for structured events that contain unsafe field
 names such as raw output, transcripts, tokens, secrets, auth previews, or
 secret-like values. Fix the event producer instead of relying on cloud upload

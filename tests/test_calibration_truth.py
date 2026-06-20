@@ -32,6 +32,10 @@ class CalibrationTruthTests(unittest.TestCase):
                 encoding="utf-8"
             ),
         )
+        html = code_mower_calibration.render_value_report_html(report)
+        self.assertIn("<!doctype html>", html)
+        self.assertIn("Reviewer Value Report", html)
+        self.assertIn("small-known-pr-pilot", html)
 
     def test_explicit_truth_marks_known_clean_without_source_prefix(self) -> None:
         corpus = self._load_corpus(

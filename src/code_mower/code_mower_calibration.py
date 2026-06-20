@@ -62,6 +62,7 @@ if __package__ in {None, ""}:
             render_overlap_text,
             render_plan_text,
             render_policy_text,
+            render_value_report_html,
             render_value_report_text,
             render_effect_report_text,
             safe_slug as _safe_slug,
@@ -130,6 +131,7 @@ if __package__ in {None, ""}:
             render_overlap_text,
             render_plan_text,
             render_policy_text,
+            render_value_report_html,
             render_value_report_text,
             render_effect_report_text,
             safe_slug as _safe_slug,
@@ -198,6 +200,7 @@ elif __package__ == "tools":
         render_overlap_text,
         render_plan_text,
         render_policy_text,
+        render_value_report_html,
         render_value_report_text,
         render_effect_report_text,
         safe_slug as _safe_slug,
@@ -266,6 +269,7 @@ else:  # pragma: no cover - exercised after package extraction.
         render_overlap_text,
         render_plan_text,
         render_policy_text,
+        render_value_report_html,
         render_value_report_text,
         render_effect_report_text,
         safe_slug as _safe_slug,
@@ -468,6 +472,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Optional calibration run-results JSON files to fold into reviewer metrics.",
     )
     value_parser.add_argument("--output", type=Path, default=None)
+    value_parser.add_argument(
+        "--html-output",
+        type=Path,
+        default=None,
+        help="Optional self-contained local HTML value report output path.",
+    )
     value_parser.add_argument("--json", action="store_true")
 
     effect_parser = subparsers.add_parser("effect-report")
@@ -603,6 +613,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.output is not None:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(render_value_report_text(payload), encoding="utf-8")
+            if args.html_output is not None:
+                args.html_output.parent.mkdir(parents=True, exist_ok=True)
+                args.html_output.write_text(
+                    render_value_report_html(payload),
+                    encoding="utf-8",
+                )
             if args.json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:

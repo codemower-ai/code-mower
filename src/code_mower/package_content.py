@@ -408,7 +408,7 @@ def cli_commands(version: str) -> tuple[str, ...]:
         "code-mower calibration plan calibration-corpus.json --replicates 2 --json",
         "code-mower calibration run calibration-corpus.json --lanes antigravity-cli,gemini-cli,hermes-cli --results-dir .code-mower/calibration-results --json",
         "code-mower calibration evidence calibration-corpus.json --json",
-        "code-mower calibration value-report calibration-corpus.json --runs .code-mower/calibration-results/calibration-run-results.json --output reviewer-value-report.md",
+        "code-mower calibration value-report calibration-corpus.json --runs .code-mower/calibration-results/calibration-run-results.json --output reviewer-value-report.md --html-output reviewer-value-report.html",
         "code-mower calibration overlap calibration.json --json",
         "code-mower doctor --easy --json",
         "code-mower doctor --profile recommended --json",

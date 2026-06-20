@@ -22,6 +22,7 @@ from .endpoints import (
     validate_upload_endpoint,
 )
 from .export import (
+    build_provenance_summary,
     build_cloud_bundle,
     existing_bundle_manifest,
     plan_report,
@@ -124,6 +125,7 @@ __all__ = [
     "build_workflow_run_event",
     "build_cloud_bundle",
     "build_upload_payload",
+    "build_provenance_summary",
     "catch_up_upload",
     "dashboard_url_for_endpoint",
     "default_setup_path",

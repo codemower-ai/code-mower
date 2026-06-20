@@ -131,8 +131,13 @@ known-clean and known-blocked PRs before making lane promotion decisions.
 
 ```bash
 code-mower calibration value-report templates/calibration-corpus.json \
-  --output .code-mower/reviewer-value-report.md
+  --output .code-mower/reviewer-value-report.md \
+  --html-output .code-mower/reviewer-value-report.html
 ```
+
+The Markdown report is easy to commit or paste into a PR. The optional HTML
+report is a local, self-contained dashboard-style view for sharing with a team
+before opting into CodeMower.com uploads.
 
 ## 7. Optional Cloud Export
 
