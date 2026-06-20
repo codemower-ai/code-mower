@@ -476,6 +476,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("src/code_mower/calibration/results.py", package_targets)
         self.assertIn("src/code_mower/calibration/run_results.py", package_targets)
         self.assertIn("src/code_mower/calibration/overlap.py", package_targets)
+        self.assertIn("src/code_mower/calibration/effect_report.py", package_targets)
         self.assertIn("src/code_mower/calibration/run_status.py", package_targets)
         self.assertIn("src/code_mower/calibration/truth.py", package_targets)
 

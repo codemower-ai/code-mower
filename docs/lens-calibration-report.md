@@ -60,6 +60,41 @@ This generated classification is evidence, not an automatic repository policy.
 Repository merge bars still require explicit opt-in and the normal Code Mower
 audit protocol.
 
+## Provider vs Lens Effect Proof v2
+
+Code Mower now has a reusable `calibration effect-report` command for comparing
+provider/runtime effects against doctrine-lens effects. The checked-in
+metadata-only v2 corpus lives at
+`examples/doctrine-lens-proof-v2/calibration-corpus.json`, and the generated
+report is `docs/doctrine-lens-proof-v2.md`.
+
+The v2 proof defines:
+
+- **Lens effect:** same provider, `base-audit` vs a doctrine lens.
+- **Provider effect:** same lens, provider-to-provider outcome spread.
+- **Effective catch rate:** known-blocker catches divided by all known-blocker
+  runs, counting input gaps and infra failures as real lane outcomes.
+- **Evaluable catch rate:** known-blocker catches divided only by pass/block
+  runs where the reviewer produced an evaluable result.
+
+Current answer from the v2 corpus:
+
+- mean absolute lens effective-catch delta: `0.33`;
+- mean provider effective-catch spread: `0.60`;
+- provider/lens effective-effect ratio: `1.80x`;
+- mean absolute lens evaluable-catch delta: `0.10`;
+- mean provider evaluable-catch spread: `0.10`; and
+- comparison: `provider_effect_larger`.
+
+Interpretation: provider/runtime choice moved outcomes more than doctrine
+wording on the primary coverage-inclusive metric, while the idealized
+evaluable-only sensitivity check tied. Lenses still mattered inside stable
+providers: Claude and Gemini doctrine lenses improved known-blocker catches in
+this corpus without adding clean-head false blockers. The practical takeaway is
+to keep measuring both axes: use provider choice and context quality as the
+first-order reliability lever, then use lenses as selective signal amplifiers
+once provider/runtime behavior is stable.
+
 ## Lens Policy
 
 For now, the four experimental lens definitions stay calibration-only:

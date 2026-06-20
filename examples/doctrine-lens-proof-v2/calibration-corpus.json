@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "name": "doctrine-lens-proof-v2",
+  "description": "Anonymized provider-vs-lens evidence corpus for measuring whether prompt doctrine/lens effects are larger or smaller than provider effects.",
+  "corpus": [
+    {
+      "repo": "owner/repo",
+      "pr_number": 347,
+      "head_sha": "0683a90fb349a16a698d92f982b8f1abfab2398b",
+      "base_ref": "main",
+      "difficulty": "hard",
+      "review_class": "auth-history",
+      "source": "documented-doctrine-proof-known-blocked",
+      "truth": {
+        "expectation": "known_blocked",
+        "expected_themes": [
+          "solve-history write timing",
+          "replay suppression scope",
+          "server-side history quota enforcement"
+        ],
+        "notes": "Known-blocked historical auth/history head used in the Claude, Gemini, Hermes, and Antigravity doctrine proofs."
+      },
+      "expected_findings": [
+        {
+          "path": "src/history",
+          "summary": "History writes, replay suppression, or quota enforcement can lose or leak solve history."
+        }
+      ],
+      "reviewer_runs": [
+        {"reviewer": "claude-base-audit", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 105.0},
+        {"reviewer": "claude-generic-programming", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 105.0},
+        {"reviewer": "claude-context-driven-quality", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 105.0},
+        {"reviewer": "gemini-base-audit", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 146.7},
+        {"reviewer": "gemini-generic-programming", "status": "blocked", "finding_count": 2, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 106.8},
+        {"reviewer": "gemini-context-driven-quality", "status": "blocked", "finding_count": 2, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 63.5},
+        {"reviewer": "gemini-security-threat-model", "status": "blocked", "finding_count": 2, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 66.8},
+        {"reviewer": "gemini-operability", "status": "blocked", "finding_count": 2, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 72.8},
+        {"reviewer": "antigravity-base-audit", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 34.8},
+        {"reviewer": "antigravity-generic-programming", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 89.2},
+        {"reviewer": "antigravity-context-driven-quality", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 197.3},
+        {"reviewer": "antigravity-security-threat-model", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 188.4},
+        {"reviewer": "antigravity-operability", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 32.8},
+        {"reviewer": "hermes-base-audit", "status": "blocked", "finding_count": 2, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 147.6},
+        {"reviewer": "hermes-generic-programming", "status": "audit_input_insufficient", "finding_count": 0, "duration_seconds": 107.9},
+        {"reviewer": "hermes-context-driven-quality", "status": "audit_input_insufficient", "finding_count": 0, "duration_seconds": 99.8}
+      ],
+      "notes": "Only run-level outcomes and timing are retained; raw transcripts, diffs, and source code are intentionally omitted."
+    },
+    {
+      "repo": "owner/repo",
+      "pr_number": 390,
+      "head_sha": "2f7807300c2fe7118e48ff0c6271d2edba11166b",
+      "base_ref": "main",
+      "difficulty": "hard",
+      "review_class": "ios-solver-runtime",
+      "source": "documented-doctrine-proof-known-blocked-context-sensitive",
+      "truth": {
+        "expectation": "known_blocked",
+        "expected_themes": [
+          "solver cancellation",
+          "runtime context insufficiency"
+        ],
+        "notes": "Known-blocked historical solver-runtime head. Several lanes need targeted context packs before the target blocker is evaluable."
+      },
+      "expected_findings": [
+        {
+          "path": "src/solver",
+          "summary": "Solver cancellation or replay behavior can leave stale runtime state."
+        }
+      ],
+      "context_packs": [
+        "ios-solver-runtime"
+      ],
+      "reviewer_runs": [
+        {"reviewer": "claude-base-audit", "status": "pass", "finding_count": 0, "expected_blocker_caught": false, "expected_finding_matches": 0, "duration_seconds": 105.0},
+        {"reviewer": "claude-generic-programming", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 105.0},
+        {"reviewer": "claude-context-driven-quality", "status": "blocked", "finding_count": 1, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 105.0},
+        {"reviewer": "gemini-base-audit", "status": "audit_input_insufficient", "finding_count": 1, "expected_blocker_caught": false, "expected_finding_matches": 0, "duration_seconds": 48.933},
+        {"reviewer": "gemini-generic-programming", "status": "blocked", "finding_count": 2, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 218.047},
+        {"reviewer": "gemini-context-driven-quality", "status": "blocked", "finding_count": 2, "expected_blocker_caught": true, "expected_finding_matches": 1, "duration_seconds": 168.997},
+        {"reviewer": "antigravity-base-audit", "status": "audit_input_insufficient", "finding_count": 1, "expected_blocker_caught": false, "expected_finding_matches": 0, "duration_seconds": 34.8},
+        {"reviewer": "antigravity-generic-programming", "status": "audit_input_insufficient", "finding_count": 1, "expected_blocker_caught": false, "expected_finding_matches": 0, "duration_seconds": 89.2},
+        {"reviewer": "antigravity-context-driven-quality", "status": "unknown", "finding_count": 0, "expected_blocker_caught": false, "expected_finding_matches": 0, "duration_seconds": 197.3},
+        {"reviewer": "antigravity-security-threat-model", "status": "unknown", "finding_count": 0, "expected_blocker_caught": false, "expected_finding_matches": 0, "duration_seconds": 188.4},
+        {"reviewer": "antigravity-operability", "status": "audit_input_insufficient", "finding_count": 1, "expected_blocker_caught": false, "expected_finding_matches": 0, "duration_seconds": 32.8},
+        {"reviewer": "hermes-base-audit", "status": "audit_input_insufficient", "finding_count": 1, "expected_blocker_caught": false, "expected_finding_matches": 0, "duration_seconds": 147.6},
+        {"reviewer": "hermes-generic-programming", "status": "infra_error", "finding_count": 0, "expected_blocker_caught": false, "expected_finding_matches": 0, "duration_seconds": 107.9},
+        {"reviewer": "hermes-context-driven-quality", "status": "audit_input_insufficient", "finding_count": 1, "expected_blocker_caught": false, "expected_finding_matches": 0, "duration_seconds": 99.8}
+      ],
+      "notes": "Input-insufficient outcomes are counted separately from ordinary misses."
+    },
+    {
+      "repo": "owner/repo",
+      "pr_number": 377,
+      "head_sha": "ebc0a99d36d4974e72fc15a6bdb79972903ba5c1",
+      "base_ref": "main",
+      "difficulty": "medium",
+      "review_class": "prompt-lens-control",
+      "source": "documented-doctrine-proof-known-clean",
+      "truth": {
+        "expectation": "known_clean",
+        "notes": "Known-clean prompt-lens control."
+      },
+      "expected_findings": [],
+      "reviewer_runs": [
+        {"reviewer": "claude-base-audit", "status": "pass", "finding_count": 0, "duration_seconds": 105.0},
+        {"reviewer": "claude-generic-programming", "status": "pass", "finding_count": 0, "duration_seconds": 105.0},
+        {"reviewer": "claude-context-driven-quality", "status": "pass", "finding_count": 0, "duration_seconds": 105.0},
+        {"reviewer": "gemini-base-audit", "status": "pass", "finding_count": 0, "duration_seconds": 21.2},
+        {"reviewer": "gemini-generic-programming", "status": "pass", "finding_count": 0, "duration_seconds": 20.7},
+        {"reviewer": "gemini-context-driven-quality", "status": "pass", "finding_count": 0, "duration_seconds": 21.3},
+        {"reviewer": "antigravity-base-audit", "status": "pass", "finding_count": 0, "duration_seconds": 34.8},
+        {"reviewer": "antigravity-generic-programming", "status": "pass", "finding_count": 0, "duration_seconds": 89.2},
+        {"reviewer": "antigravity-context-driven-quality", "status": "pass", "finding_count": 0, "duration_seconds": 197.3},
+        {"reviewer": "antigravity-security-threat-model", "status": "pass", "finding_count": 0, "duration_seconds": 188.4},
+        {"reviewer": "antigravity-operability", "status": "pass", "finding_count": 0, "duration_seconds": 32.8},
+        {"reviewer": "hermes-base-audit", "status": "pass", "finding_count": 0, "duration_seconds": 147.6},
+        {"reviewer": "hermes-generic-programming", "status": "pass", "finding_count": 0, "duration_seconds": 107.9},
+        {"reviewer": "hermes-context-driven-quality", "status": "pass", "finding_count": 0, "duration_seconds": 99.8}
+      ]
+    },
+    {
+      "repo": "owner/repo",
+      "pr_number": 380,
+      "head_sha": "c45ce1c00c37a97a44fc35f0efeaf32a4fad9393",
+      "base_ref": "main",
+      "difficulty": "medium",
+      "review_class": "clean-control",
+      "source": "documented-doctrine-proof-known-clean",
+      "truth": {
+        "expectation": "known_clean",
+        "notes": "Known-clean control used to measure false blocking behavior."
+      },
+      "expected_findings": [],
+      "reviewer_runs": [
+        {"reviewer": "claude-base-audit", "status": "pass", "finding_count": 0, "duration_seconds": 105.0},
+        {"reviewer": "claude-generic-programming", "status": "pass", "finding_count": 0, "duration_seconds": 105.0},
+        {"reviewer": "claude-context-driven-quality", "status": "pass", "finding_count": 0, "duration_seconds": 105.0},
+        {"reviewer": "gemini-base-audit", "status": "pass", "finding_count": 0, "duration_seconds": 139.9},
+        {"reviewer": "gemini-generic-programming", "status": "pass", "finding_count": 1, "duration_seconds": 189.0},
+        {"reviewer": "gemini-context-driven-quality", "status": "pass", "finding_count": 0, "duration_seconds": 105.4},
+        {"reviewer": "gemini-security-threat-model", "status": "pass", "finding_count": 0, "duration_seconds": 66.8},
+        {"reviewer": "gemini-operability", "status": "pass", "finding_count": 0, "duration_seconds": 72.8},
+        {"reviewer": "antigravity-base-audit", "status": "pass", "finding_count": 0, "duration_seconds": 34.8},
+        {"reviewer": "antigravity-generic-programming", "status": "pass", "finding_count": 1, "duration_seconds": 89.2},
+        {"reviewer": "antigravity-context-driven-quality", "status": "pass", "finding_count": 0, "duration_seconds": 197.3},
+        {"reviewer": "antigravity-security-threat-model", "status": "pass", "finding_count": 0, "duration_seconds": 188.4},
+        {"reviewer": "antigravity-operability", "status": "pass", "finding_count": 0, "duration_seconds": 32.8},
+        {"reviewer": "hermes-base-audit", "status": "blocked", "finding_count": 1, "duration_seconds": 147.6},
+        {"reviewer": "hermes-generic-programming", "status": "pass", "finding_count": 1, "duration_seconds": 107.9},
+        {"reviewer": "hermes-context-driven-quality", "status": "pass", "finding_count": 1, "duration_seconds": 99.8}
+      ],
+      "notes": "Non-blocking clean findings remain separate from blocking false positives."
+    }
+  ]
+}

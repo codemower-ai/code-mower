@@ -89,6 +89,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/calibration/effect_report.py",
+      "target": "src/code_mower/calibration/effect_report.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/calibration/identity.py",
       "target": "src/code_mower/calibration/identity.py"
     },
@@ -604,6 +609,11 @@
     },
     {
       "kind": "reviewer",
+      "source": "src/code_mower/provider_runners/pr_worktree.py",
+      "target": "src/code_mower/provider_runners/pr_worktree.py"
+    },
+    {
+      "kind": "reviewer",
       "source": "src/code_mower/provider_runners/repo_paths.py",
       "target": "src/code_mower/provider_runners/repo_paths.py"
     },
@@ -1100,6 +1110,31 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "src/code_mower/templates/workflows/trailer-comment-labeler.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/saas-reviewer-labeler.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/local-cli-audit.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/hosted-bridge.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/audit-label-cleanup.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "src/code_mower/templates/workflows/review-clear-stale.yml.j2"
     },
     {
@@ -1210,6 +1245,6 @@
     "module": "code_mower",
     "name": "code-mower",
     "source_layout": "src/code_mower",
-    "version": "0.5.0b6"
+    "version": "0.5.0b11"
   }
 }

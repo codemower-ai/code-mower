@@ -29,6 +29,11 @@ PACKAGE_FILES = (
         "src/code_mower/calibration/evidence_report.py",
         "core",
     ),
+    (
+        "src/code_mower/calibration/effect_report.py",
+        "src/code_mower/calibration/effect_report.py",
+        "core",
+    ),
     ("src/code_mower/calibration/identity.py", "src/code_mower/calibration/identity.py", "core"),
     ("src/code_mower/calibration/metrics.py", "src/code_mower/calibration/metrics.py", "core"),
     ("src/code_mower/calibration/overlap.py", "src/code_mower/calibration/overlap.py", "core"),
