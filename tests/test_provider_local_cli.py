@@ -83,6 +83,41 @@ def test_provider_lane_tool_provenance_reads_version_and_model_env(
     assert tool["model"] == "model-v1"
     assert tool["lens"] == "security-threat-model"
     assert detail["lane_id"] == "gemini_cli"
+    assert detail["command_candidates"] == ["provider-cli"]
     assert detail["command_found"] is True
     assert detail["model_known"] is True
+    assert detail["version_known"] is True
+
+
+def test_provider_lane_tool_provenance_uses_available_alternate_command(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executable = _write_executable(
+        tmp_path / "antigravity",
+        "#!/bin/sh\nprintf 'antigravity 1.2.3\\n'\n",
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    lane = {
+        "driver": "local_cli",
+        "provider": "antigravity",
+        "provider_config": {
+            "command": "agy",
+            "alternate_commands": ("antigravity",),
+            "model_env": "ANTIGRAVITY_MODEL",
+        },
+    }
+
+    tool, detail = build_provider_lane_tool_provenance(
+        "antigravity_cli",
+        lane,
+        source="unit-test",
+    )
+
+    assert tool["tool_name"] == "antigravity"
+    assert tool["tool_version"] == "antigravity 1.2.3"
+    assert tool["provider"] == "antigravity"
+    assert detail["command"] == "antigravity"
+    assert detail["command_candidates"] == ["agy", "antigravity"]
+    assert detail["command_found"] is True
     assert detail["version_known"] is True

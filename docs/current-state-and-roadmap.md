@@ -64,7 +64,10 @@ It has proved:
   the next rollout; and
 - metadata-only AI tool/model provenance in cloud bundles and structured
   events, so dashboards can distinguish known provider/model/version signal
-  from missing provenance before making benchmark claims; and
+  from missing provenance before making benchmark claims. Local CLI provenance
+  now resolves configured alternate command names before declaring tool/version
+  metadata missing, which matters for transitions such as Gemini CLI to
+  Antigravity-style commands; and
 - calibration result normalization that preserves provider-observed model ids
   from structured CLI stats when explicit model configuration is absent,
   improving Google/Antigravity-style value-report provenance without uploading
