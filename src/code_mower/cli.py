@@ -14,7 +14,7 @@ from pathlib import Path
 if __package__ in {None, ""}:
     raise SystemExit(
         "code_mower.cli is a packaged entrypoint. Install Code Mower with "
-        "`pipx install code-mower==0.5.0b12`, or run source checkouts with "
+        "`pipx install code-mower==0.5.0b13`, or run source checkouts with "
         "`PYTHONPATH=src python -m code_mower.cli`."
     )
 

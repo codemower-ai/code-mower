@@ -118,6 +118,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         merge_authority=True,
         provider_config={
             "command": "claude",
+            "model_env": "CLAUDE_AUDIT_MODEL",
+            "default_model": "sonnet",
             "doctor_probe_args": (
                 "--print",
                 "--output-format",

@@ -14,6 +14,7 @@ from .endpoints import is_local_http_endpoint
 from .errors import CloudBundleError
 from .events import (
     build_dogfood_event,
+    build_provider_catalog_snapshot_events,
     build_workflow_run_event,
     run_gh_run_list,
 )
@@ -117,11 +118,19 @@ def dogfood_upload(
         reports=resolved_reports,
         events=events,
     )
+    provider_catalog_events = build_provider_catalog_snapshot_events(
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        source=source,
+        include_version_probe=yes,
+    )
     all_events = [
         build_dogfood_event(
             repo_path=repo_path,
             plan=dogfood_plan,
         ),
+        *provider_catalog_events,
         *events,
     ]
     export_result = build_cloud_bundle(

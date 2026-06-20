@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .bundle import event_type_counts
+
 
 DEFAULT_DOGFOOD_REPORTS: tuple[tuple[str, str], ...] = (
     ("docs/reviewer-value-report.md", "value-report"),
@@ -73,6 +75,7 @@ def build_dogfood_dry_run_preview(
         "upload_mode": payload["upload_mode"],
         "report_count": len(payload["reports"]),
         "event_count": len(payload["events"]),
+        "event_types": event_type_counts(payload["events"]),
         "privacy_mode": payload["privacy_mode"],
         "excluded_content": payload["excluded_content"],
     }

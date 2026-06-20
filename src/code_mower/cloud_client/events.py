@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from code_mower import __version__
-from code_mower.providers import build_code_mower_tool_provenance, normalize_tool_provenance
+from code_mower.provider_registry import REFERENCE_PROVIDERS
+from code_mower.providers import (
+    build_code_mower_tool_provenance,
+    build_provider_lane_tool_provenance,
+    normalize_tool_provenance,
+)
 
 from .bundle import MAX_EVENT_COUNT, SAFE_EVENT_TYPES, SAFE_REPORT_KINDS, validate_metadata_payload
 from .dogfood import DogfoodPlan
@@ -198,6 +203,62 @@ def build_workflow_run_event(
         "dimensions": dimensions,
     }
     return normalize_event(event, "workflow_run")
+
+
+def build_provider_catalog_snapshot_events(
+    *,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+    include_version_probe: bool = True,
+) -> list[dict[str, Any]]:
+    """Build metadata-only events describing configured provider lanes.
+
+    Catalog snapshots are coverage evidence, not reviewer-quality evidence.
+    They let CodeMower.com report which configured AI tools have exact
+    tool/model/version metadata and which still need adapter work.
+    """
+
+    events: list[dict[str, Any]] = []
+    for lane_id, lane in sorted(REFERENCE_PROVIDERS.items()):
+        tool, detail = build_provider_lane_tool_provenance(
+            lane_id,
+            lane,
+            source=source,
+            include_version_probe=include_version_probe,
+        )
+        event = {
+            "schema": EVENT_SCHEMA,
+            "event_id": str(uuid.uuid4()),
+            "event_type": "provider_catalog_snapshot",
+            "created_at": utc_now(),
+            "repo_slug": repo_slug,
+            "team_id": team_id,
+            "install_id": install_id,
+            "source": source,
+            "provider": tool.get("provider", ""),
+            "lens": tool.get("lens", ""),
+            "status": "observed",
+            "tool": tool,
+            "metrics": {},
+            "dimensions": {
+                "lane_id": lane_id,
+                "lane_type": lane.lane_type,
+                "driver": lane.driver,
+                "informational": lane.informational,
+                "merge_authority": lane.merge_authority,
+                "enabled_by_default": lane.enabled_by_default,
+                "trigger_policy": lane.trigger_policy,
+                "spend_policy": lane.spend_policy,
+                "model_known": bool(tool.get("model")),
+                "version_known": bool(tool.get("tool_version")),
+                "catalog_snapshot": True,
+                **detail,
+            },
+        }
+        events.append(normalize_event(event, "provider_catalog_snapshot"))
+    return events
 
 
 def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:

@@ -13,6 +13,7 @@ from .bundle import (
     EXCLUDED_CONTENT,
     EXPECTED_BUNDLE_ENTRIES,
     MAX_EVENT_COUNT,
+    event_type_counts,
     is_bundle_manifest,
 )
 from .errors import CloudBundleError
@@ -231,6 +232,7 @@ def build_cloud_bundle(
         "readme": str(readme),
         "included_reports": included_reports,
         "event_count": len(manifest["events"]),
+        "event_types": event_type_counts(manifest["events"]),
         "provenance": manifest["provenance"],
         "upload_ready": False,
     }
@@ -241,17 +243,29 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
 
     tools: dict[tuple[str, str, str], dict[str, Any]] = {}
     missing_tool_events = 0
+    missing_model_events = 0
+    missing_tool_version_events = 0
     for event in events:
         tool = event.get("tool")
         if not isinstance(tool, dict):
             missing_tool_events += 1
+            missing_model_events += 1
+            missing_tool_version_events += 1
             continue
         tool_name = str(tool.get("tool_name") or "").strip()
         provider = str(tool.get("provider") or event.get("provider") or "").strip()
         model = str(tool.get("model") or "").strip()
+        model_version_raw = str(tool.get("model_version_raw") or "").strip()
+        tool_version = str(tool.get("tool_version") or "").strip()
         if not tool_name and not provider and not model:
             missing_tool_events += 1
+            missing_model_events += 1
+            missing_tool_version_events += 1
             continue
+        if not model and not model_version_raw:
+            missing_model_events += 1
+        if not tool_version:
+            missing_tool_version_events += 1
         key = (tool_name or "unknown", provider or "unknown", model or "")
         row = tools.setdefault(
             key,
@@ -300,6 +314,11 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "event_count": len(events),
         "events_with_tool_provenance": len(events) - missing_tool_events,
         "events_missing_tool_provenance": missing_tool_events,
+        "events_with_model_provenance": len(events) - missing_model_events,
+        "events_missing_model_provenance": missing_model_events,
+        "events_with_tool_version_provenance": len(events)
+        - missing_tool_version_events,
+        "events_missing_tool_version_provenance": missing_tool_version_events,
         "tools": normalized_tools,
     }
 

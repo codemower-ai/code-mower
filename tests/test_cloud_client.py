@@ -10,6 +10,7 @@ from code_mower.cloud_client import (
     CloudBundleError,
     DEFAULT_SETUP_INSTALL_ID,
     EVENT_SCHEMA,
+    build_provider_catalog_snapshot_events,
     build_cloud_bundle,
     build_upload_payload,
     default_setup_path,
@@ -215,7 +216,32 @@ def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
         assert upload["events"][0]["tool"]["tool_name"] == "codex"
         assert upload["events"][0]["tool"]["model"] == "gpt-5"
         assert upload["provenance"]["events_with_tool_provenance"] == 1
+        assert upload["provenance"]["events_with_model_provenance"] == 1
+        assert upload["provenance"]["events_with_tool_version_provenance"] == 1
         assert upload["provenance"]["tools"][0]["tool_name"] == "codex"
+
+
+def test_provider_catalog_snapshot_events_are_metadata_only(monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "")
+
+    events = build_provider_catalog_snapshot_events(
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        source="unit-test",
+    )
+
+    assert events
+    codex = next(event for event in events if event["dimensions"]["lane_id"] == "codex")
+    assert codex["event_type"] == "provider_catalog_snapshot"
+    assert codex["repo_slug"] == "owner/repo"
+    assert codex["source"] == "unit-test"
+    assert codex["tool"]["tool_name"] == "codex"
+    assert codex["tool"]["provider"] == "codex"
+    assert codex["dimensions"]["catalog_snapshot"] is True
+    assert codex["dimensions"]["merge_authority"] is True
+    assert "token_env" not in codex["dimensions"]
+    assert "auth" not in codex["dimensions"]
 
 
 def test_cloud_doctor_runs_from_client_module() -> None:

@@ -25,6 +25,7 @@ SAFE_EVENT_TYPES = {
     "calibration_run",
     "dogfood_upload",
     "lane_policy_snapshot",
+    "provider_catalog_snapshot",
     "reviewer_run",
     "value_report_snapshot",
     "workflow_run",
@@ -90,6 +91,14 @@ UNSAFE_METADATA_VALUE_PATTERNS = tuple(
 
 def is_bundle_manifest(manifest: Any) -> bool:
     return isinstance(manifest, dict) and manifest.get("schema") == BUNDLE_SCHEMA
+
+
+def event_type_counts(events: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for event in events:
+        event_type = str(event.get("event_type") or "unknown")
+        counts[event_type] = counts.get(event_type, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _is_unsafe_metadata_key(key: str) -> bool:
