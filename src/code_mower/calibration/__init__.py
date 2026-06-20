@@ -13,6 +13,11 @@ from .evidence import (
     USEFUL_EVIDENCE_DISPOSITIONS,
 )
 from .evidence_report import build_reviewer_evidence_report, render_evidence_text
+from .effect_report import (
+    build_effect_report,
+    render_effect_report_text,
+    reviewer_dimensions,
+)
 from .arms import DEFAULT_CLI_LANES, DEFAULT_LOCAL_LLM_PROFILES, default_arms
 from .commands import (
     command_lane_id,
@@ -121,6 +126,7 @@ __all__ = [
     "TRUTH_EXPECTATION_UNKNOWN",
     "USEFUL_EVIDENCE_DISPOSITIONS",
     "build_lane_policy_report",
+    "build_effect_report",
     "build_reviewer_evidence_report",
     "build_value_report",
     "build_pilot_plan",
@@ -158,12 +164,14 @@ __all__ = [
     "build_overlap_report",
     "render_overlap_text",
     "render_evidence_text",
+    "render_effect_report_text",
     "render_materialized_context_pack_prompt_text",
     "render_plan_text",
     "render_policy_text",
     "render_value_report_text",
     "run_records_from_summary",
     "run_matches_disposition_rule",
+    "reviewer_dimensions",
     "repo_path_for_item",
     "repo_roots_from_path_map",
     "result_command_dir",

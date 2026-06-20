@@ -37,6 +37,7 @@ if __package__ in {None, ""}:
             build_lane_policy_report,
             build_reviewer_evidence_report,
             build_value_report,
+            build_effect_report,
             audit_input_insufficient_result as _audit_input_insufficient_result,
             coderabbit_blocking_findings as _coderabbit_blocking_findings,
             corpus_with_run_results,
@@ -62,6 +63,7 @@ if __package__ in {None, ""}:
             render_plan_text,
             render_policy_text,
             render_value_report_text,
+            render_effect_report_text,
             safe_slug as _safe_slug,
             summary_path_for_command as _summary_path_for_command,
             text_from_timeout_stream as _text_from_timeout_stream,
@@ -103,6 +105,7 @@ if __package__ in {None, ""}:
             build_lane_policy_report,
             build_reviewer_evidence_report,
             build_value_report,
+            build_effect_report,
             audit_input_insufficient_result as _audit_input_insufficient_result,
             coderabbit_blocking_findings as _coderabbit_blocking_findings,
             corpus_with_run_results,
@@ -128,6 +131,7 @@ if __package__ in {None, ""}:
             render_plan_text,
             render_policy_text,
             render_value_report_text,
+            render_effect_report_text,
             safe_slug as _safe_slug,
             summary_path_for_command as _summary_path_for_command,
             text_from_timeout_stream as _text_from_timeout_stream,
@@ -169,6 +173,7 @@ elif __package__ == "tools":
         build_lane_policy_report,
         build_reviewer_evidence_report,
         build_value_report,
+        build_effect_report,
         audit_input_insufficient_result as _audit_input_insufficient_result,
         coderabbit_blocking_findings as _coderabbit_blocking_findings,
         corpus_with_run_results,
@@ -194,6 +199,7 @@ elif __package__ == "tools":
         render_plan_text,
         render_policy_text,
         render_value_report_text,
+        render_effect_report_text,
         safe_slug as _safe_slug,
         summary_path_for_command as _summary_path_for_command,
         text_from_timeout_stream as _text_from_timeout_stream,
@@ -235,6 +241,7 @@ else:  # pragma: no cover - exercised after package extraction.
         build_lane_policy_report,
         build_reviewer_evidence_report,
         build_value_report,
+        build_effect_report,
         audit_input_insufficient_result as _audit_input_insufficient_result,
         coderabbit_blocking_findings as _coderabbit_blocking_findings,
         corpus_with_run_results,
@@ -260,6 +267,7 @@ else:  # pragma: no cover - exercised after package extraction.
         render_plan_text,
         render_policy_text,
         render_value_report_text,
+        render_effect_report_text,
         safe_slug as _safe_slug,
         summary_path_for_command as _summary_path_for_command,
         text_from_timeout_stream as _text_from_timeout_stream,
@@ -461,6 +469,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     value_parser.add_argument("--output", type=Path, default=None)
     value_parser.add_argument("--json", action="store_true")
+
+    effect_parser = subparsers.add_parser("effect-report")
+    effect_parser.add_argument("corpus", type=Path)
+    effect_parser.add_argument(
+        "--runs",
+        nargs="+",
+        type=Path,
+        default=[],
+        help="Optional calibration run-results JSON files to fold into provider/lens effect metrics.",
+    )
+    effect_parser.add_argument("--output", type=Path, default=None)
+    effect_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -587,6 +607,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
                 print(render_value_report_text(payload), end="")
+            return 0
+        if args.command == "effect-report":
+            payload = build_effect_report(
+                load_corpus(args.corpus),
+                run_results=_load_run_results(args.runs) if args.runs else [],
+            )
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                if args.json:
+                    _write_json(args.output, payload)
+                else:
+                    args.output.write_text(
+                        render_effect_report_text(payload),
+                        encoding="utf-8",
+                    )
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(render_effect_report_text(payload), end="")
             return 0
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
