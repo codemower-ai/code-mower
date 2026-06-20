@@ -358,6 +358,9 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 if (
                     _needs_job(testpypi_job, "verify-distributions")
                     and "inputs.publish_testpypi" in testpypi_job_text
+                    and "inputs.publish_testpypi == true" in testpypi_job_text
+                    and "github.event_name == 'workflow_dispatch'" in testpypi_job_text
+                    and "github.event_name == 'release'" in testpypi_job_text
                     and "CODE_MOWER_TESTPYPI_PUBLISH" in testpypi_job_text
                     and _job_uses_environment(testpypi_job, "testpypi")
                     and _permissions_include(testpypi_job, "id-token", "write")
@@ -376,6 +379,9 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 if (
                     _needs_job(pypi_job, "verify-distributions")
                     and "inputs.publish_pypi" in pypi_job_text
+                    and "inputs.publish_pypi == true" in pypi_job_text
+                    and "github.event_name == 'workflow_dispatch'" in pypi_job_text
+                    and "github.event_name == 'release'" in pypi_job_text
                     and "CODE_MOWER_PYPI_PUBLISH" in pypi_job_text
                     and _job_uses_environment(pypi_job, "pypi")
                     and _permissions_include(pypi_job, "id-token", "write")

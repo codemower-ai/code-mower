@@ -81,6 +81,9 @@ class ReleaseHygieneTests(unittest.TestCase):
         )[0]
         self.assertIn("    needs: verify-distributions\n", testpypi_job)
         self.assertIn("inputs.publish_testpypi", testpypi_job)
+        self.assertIn("inputs.publish_testpypi == true", testpypi_job)
+        self.assertIn("github.event_name == 'workflow_dispatch'", testpypi_job)
+        self.assertIn("github.event_name == 'release'", testpypi_job)
         self.assertIn("CODE_MOWER_TESTPYPI_PUBLISH", testpypi_job)
         self.assertIn("    environment: testpypi\n", testpypi_job)
         self.assertIn("repository-url: https://test.pypi.org/legacy/", testpypi_job)
@@ -90,9 +93,37 @@ class ReleaseHygieneTests(unittest.TestCase):
         )
         production_job = workflow.split("  publish-pypi:\n", 1)[1]
         self.assertIn("inputs.publish_pypi", production_job)
+        self.assertIn("inputs.publish_pypi == true", production_job)
+        self.assertIn("github.event_name == 'workflow_dispatch'", production_job)
+        self.assertIn("github.event_name == 'release'", production_job)
         self.assertIn("CODE_MOWER_PYPI_PUBLISH", production_job)
         self.assertIn("    environment: pypi\n", production_job)
         self.assertNotIn("test.pypi.org", production_job)
+
+    def test_release_workflow_variables_only_apply_to_release_events(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        testpypi_job = workflow.split("  publish-testpypi:\n", 1)[1].split(
+            "  publish-pypi:\n",
+            1,
+        )[0]
+        production_job = workflow.split("  publish-pypi:\n", 1)[1]
+
+        self.assertIn(
+            "(github.event_name == 'release' && vars.CODE_MOWER_TESTPYPI_PUBLISH == 'true')",
+            testpypi_job,
+        )
+        self.assertIn(
+            "(github.event_name == 'release' && vars.CODE_MOWER_PYPI_PUBLISH == 'true')",
+            production_job,
+        )
+        self.assertNotIn(
+            "(github.event_name == 'workflow_dispatch' && vars.CODE_MOWER_TESTPYPI_PUBLISH",
+            testpypi_job,
+        )
+        self.assertNotIn(
+            "(github.event_name == 'workflow_dispatch' && vars.CODE_MOWER_PYPI_PUBLISH",
+            production_job,
+        )
 
     def test_ci_workflow_runs_release_readiness_gate(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
