@@ -65,6 +65,10 @@ It has proved:
 - metadata-only AI tool/model provenance in cloud bundles and structured
   events, so dashboards can distinguish known provider/model/version signal
   from missing provenance before making benchmark claims; and
+- calibration result normalization that preserves provider-observed model ids
+  from structured CLI stats when explicit model configuration is absent,
+  improving Google/Antigravity-style value-report provenance without uploading
+  raw prompts, diffs, or transcripts; and
 - a real metadata-only `repo-sync --mode catch-up --limit 100` import across
   the OSS repo, hosted service repo, and two private reference/product repos,
   with imported history flagged as `history_only: true` and

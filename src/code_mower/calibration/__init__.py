@@ -58,6 +58,7 @@ from .results import (
     coderabbit_blocking_findings,
     infra_run_record,
     local_llm_findings,
+    observed_model_from_summary,
     run_records_from_summary,
 )
 from .run_results import (
@@ -158,6 +159,7 @@ __all__ = [
     "normalize_run_status_category",
     "normalize_truth",
     "normalize_truth_expectation",
+    "observed_model_from_summary",
     "option_value",
     "parse_int",
     "parse_repo_path_map",

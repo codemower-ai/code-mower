@@ -88,6 +88,46 @@ def local_llm_findings(run: Mapping[str, Any]) -> list[dict[str, Any]]:
     return findings
 
 
+def observed_model_from_summary(summary: Mapping[str, Any]) -> str:
+    """Return explicit or provider-observed model metadata from a run summary."""
+
+    explicit = str(summary.get("model") or "").strip()
+    if explicit:
+        return explicit
+    stats = summary.get("stats")
+    if not isinstance(stats, Mapping):
+        return ""
+    models = stats.get("models")
+    if not isinstance(models, Mapping):
+        return ""
+    candidates: list[tuple[int, str]] = []
+    role_priority = {
+        "main": 0,
+        "reviewer": 1,
+        "default": 2,
+        "utility_router": 4,
+    }
+    for model_name, detail in models.items():
+        model = str(model_name or "").strip()
+        if not model:
+            continue
+        priority = 3
+        if isinstance(detail, Mapping):
+            roles = detail.get("roles")
+            if isinstance(roles, Mapping):
+                role_ranks = [
+                    role_priority.get(str(role_name), 3)
+                    for role_name in roles
+                    if str(role_name).strip()
+                ]
+                if role_ranks:
+                    priority = min(role_ranks)
+        candidates.append((priority, model))
+    if not candidates:
+        return ""
+    return sorted(candidates)[0][1]
+
+
 def observed_head_field(observed_head_sha: str, head_sha: str) -> dict[str, str]:
     if observed_head_sha and observed_head_sha != head_sha:
         return {"observed_head_sha": observed_head_sha}
@@ -165,7 +205,7 @@ def run_records_from_summary(
                 "duration_seconds": summary.get("duration_seconds"),
                 "parse_status": parse_status,
                 "artifact": artifact,
-                "model": summary.get("model") or "",
+                "model": observed_model_from_summary(summary),
                 "repo": repo,
                 "pr_number": pr_number,
                 "head_sha": head_sha,

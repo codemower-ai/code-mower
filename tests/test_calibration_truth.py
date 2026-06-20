@@ -21,6 +21,65 @@ class CalibrationTruthTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
             return code_mower_calibration.load_corpus(path)
 
+    def test_run_summary_preserves_explicit_cli_model(self) -> None:
+        [record] = code_mower_calibration._run_records_from_summary(
+            summary={
+                "mode": "gemini-cli-audit",
+                "repo": "owner/repo",
+                "pr_number": 1,
+                "model": "gemini-explicit",
+                "verdict": {"verdict": "pass", "findings": []},
+            },
+            item={"repo": "owner/repo", "pr_number": 1, "head_sha": "a" * 40},
+            command_result={"summary_path": "/tmp/summary.json", "returncode": 0},
+        )
+
+        self.assertEqual(record["model"], "gemini-explicit")
+
+    def test_run_summary_infers_google_cli_main_model_from_stats(self) -> None:
+        [record] = code_mower_calibration._run_records_from_summary(
+            summary={
+                "mode": "gemini-cli-audit",
+                "repo": "owner/repo",
+                "pr_number": 1,
+                "verdict": {"verdict": "pass", "findings": []},
+                "stats": {
+                    "models": {
+                        "gemini-3.1-flash-lite": {
+                            "roles": {"utility_router": {"totalRequests": 1}}
+                        },
+                        "gemini-3.5-flash": {
+                            "roles": {"main": {"totalRequests": 1}}
+                        },
+                    }
+                },
+            },
+            item={"repo": "owner/repo", "pr_number": 1, "head_sha": "a" * 40},
+            command_result={"summary_path": "/tmp/summary.json", "returncode": 0},
+        )
+
+        self.assertEqual(record["model"], "gemini-3.5-flash")
+
+    def test_run_summary_uses_deterministic_model_fallback(self) -> None:
+        [record] = code_mower_calibration._run_records_from_summary(
+            summary={
+                "mode": "antigravity-cli-audit",
+                "repo": "owner/repo",
+                "pr_number": 1,
+                "verdict": {"verdict": "pass", "findings": []},
+                "stats": {
+                    "models": {
+                        "z-model": {"api": {"totalRequests": 1}},
+                        "a-model": {"api": {"totalRequests": 1}},
+                    }
+                },
+            },
+            item={"repo": "owner/repo", "pr_number": 1, "head_sha": "a" * 40},
+            command_result={"summary_path": "/tmp/summary.json", "returncode": 0},
+        )
+
+        self.assertEqual(record["model"], "a-model")
+
     def test_starter_value_report_matches_packaged_example(self) -> None:
         corpus = code_mower_calibration.load_corpus(
             ROOT / "src/code_mower/templates/calibration-corpus.json"
