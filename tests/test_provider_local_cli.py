@@ -86,7 +86,9 @@ def test_provider_lane_tool_provenance_reads_version_and_model_env(
     assert detail["command_candidates"] == ["provider-cli"]
     assert detail["command_found"] is True
     assert detail["model_known"] is True
+    assert detail["model_source"] == "env"
     assert detail["version_known"] is True
+    assert detail["version_source"] == "cli_version_probe"
 
 
 def test_provider_lane_tool_provenance_uses_available_alternate_command(
@@ -121,3 +123,43 @@ def test_provider_lane_tool_provenance_uses_available_alternate_command(
     assert detail["command_candidates"] == ["agy", "antigravity"]
     assert detail["command_found"] is True
     assert detail["version_known"] is True
+
+
+def test_provider_lane_tool_provenance_reads_model_from_selected_profile(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executable = _write_executable(
+        tmp_path / "local-model-cli",
+        "#!/bin/sh\nprintf 'local-model-cli 1.0.0\\n'\n",
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setenv("LOCAL_LLM_PROFILE", "qwen3-coder-next-lmstudio")
+    monkeypatch.delenv("LOCAL_LLM_MODEL", raising=False)
+    lane = {
+        "driver": "local_cli",
+        "provider": "openai_compatible",
+        "provider_config": {
+            "command": "local-model-cli",
+            "model_env": "LOCAL_LLM_MODEL",
+            "profile_env": "LOCAL_LLM_PROFILE",
+            "profiles": {
+                "qwen3-coder-next-lmstudio": {
+                    "model": "qwen/qwen3-coder-next",
+                    "endpoint": "lmstudio",
+                }
+            },
+        },
+    }
+
+    tool, detail = build_provider_lane_tool_provenance(
+        "local_llm",
+        lane,
+        source="unit-test",
+    )
+
+    assert tool["model"] == "qwen/qwen3-coder-next"
+    assert detail["model_known"] is True
+    assert detail["model_source"] == "profile:qwen3-coder-next-lmstudio"
+    assert detail["version_known"] is True
+    assert detail["version_source"] == "cli_version_probe"
