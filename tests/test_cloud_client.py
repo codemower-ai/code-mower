@@ -460,6 +460,68 @@ def test_cloud_doctor_warns_when_model_provenance_is_missing() -> None:
         assert "CODE_MOWER_CODEX_MODEL" in check["remediation"]
 
 
+def test_cloud_doctor_fans_out_multiple_model_provenance_commands() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        build_cloud_bundle(
+            reports=[],
+            events=[
+                {
+                    "event_type": "reviewer_run",
+                    "repo_slug": "owner/repo",
+                    "provider": "codex",
+                    "lens": "base",
+                    "status": "pass",
+                    "tool": {
+                        "role": "reviewer",
+                        "tool_name": "codex",
+                        "provider": "codex",
+                        "tool_version": "0.142.0",
+                        "model_source": "missing",
+                    },
+                },
+                {
+                    "event_type": "reviewer_run",
+                    "repo_slug": "owner/repo",
+                    "provider": "gemini",
+                    "lens": "base",
+                    "status": "pass",
+                    "tool": {
+                        "role": "reviewer",
+                        "tool_name": "gemini",
+                        "provider": "gemini",
+                        "tool_version": "0.45.2",
+                        "model_source": "missing",
+                    },
+                },
+            ],
+            output_dir=root / "bundle",
+            repo_slug="owner/repo",
+        )
+
+        report = run_cloud_doctor(
+            bundle_dir=root / "bundle",
+            endpoint="https://codemower.com/api/ingest",
+            token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+            require_token=False,
+        )
+
+        check = next(
+            item for item in report["checks"] if item["name"] == "model-provenance"
+        )
+        assert check["status"] == "warn"
+        assert check["detail"]["model_env_commands"] == [
+            "code-mower providers provenance-env --provider codex --shell",
+            "code-mower providers provenance-env --provider gemini --shell",
+        ]
+        assert check["detail"]["model_env_command_all"] == (
+            "code-mower providers provenance-env --provider codex "
+            "--provider gemini --shell"
+        )
+        assert "detail.model_env_commands" in check["remediation"]
+        assert "detail.model_env_command_all" in check["remediation"]
+
+
 def test_cloud_doctor_passes_when_model_provenance_is_complete() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
