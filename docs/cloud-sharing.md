@@ -117,6 +117,8 @@ Common source values:
 - `env`: the user explicitly configured the model in the environment;
 - `profile:<name>`: the selected Code Mower provider profile supplied the model;
 - `default`: Code Mower used a safe provider default;
+- `vendor_hidden`: a hosted/manual reviewer lane does not expose the underlying
+  model id;
 - `cli_version_probe`: Code Mower read a local CLI/package version;
 - `not_probed`: version probing was intentionally skipped; and
 - `missing`: the event could not safely report the field.
@@ -260,14 +262,17 @@ or historical benchmark outcomes.
 Current Code Mower dogfood bundles include Code Mower client provenance and a
 `provider_catalog_snapshot` event for each configured provider lane. Catalog
 snapshots report what Code Mower can safely know from configuration and harmless
-local version probes: tool surface, version when available, provider, model when
-configured, lane/lens id, integration, and runtime environment. Reviewer and
-calibration summaries may also preserve provider-observed model ids from
-structured CLI stats when the run output includes them, such as the main
-Google-compatible model used for a review. They are coverage evidence, not
-reviewer-quality evidence. CodeMower.com should use them to identify missing
-tool/model/version metadata and should use reviewer or calibration events for
-usefulness, false-positive, and lane-promotion claims.
+local version probes, even in dry-run mode: tool surface, version when
+available, provider, model when configured, lane/lens id, integration, and
+runtime environment. Hosted/manual reviewers may report
+`model_source=vendor_hidden` when the service does not expose a model id. Local
+CLI/API lanes report `model_source=missing` until the model is configured by env
+var, profile, or default. Reviewer and calibration summaries may also preserve
+provider-observed model ids from structured CLI stats when the run output
+includes them, such as the main Google-compatible model used for a review. They
+are coverage evidence, not reviewer-quality evidence. CodeMower.com should use
+them to identify missing tool/model/version metadata and should use reviewer or
+calibration events for usefulness, false-positive, and lane-promotion claims.
 
 ## Historical Catch-Up
 

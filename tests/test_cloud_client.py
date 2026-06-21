@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from code_mower.cloud_client import (
     CloudBundleError,
     DEFAULT_SETUP_INSTALL_ID,
     EVENT_SCHEMA,
+    build_provenance_summary,
     build_provider_catalog_snapshot_events,
     build_cloud_bundle,
     build_upload_payload,
@@ -244,6 +246,84 @@ def test_provider_catalog_snapshot_events_are_metadata_only(monkeypatch) -> None
     assert codex["dimensions"]["merge_authority"] is True
     assert "token_env" not in codex["dimensions"]
     assert "auth" not in codex["dimensions"]
+
+
+def test_provenance_summary_treats_vendor_hidden_model_as_known_source() -> None:
+    summary = build_provenance_summary(
+        [
+            normalize_event(
+                {
+                    "schema": EVENT_SCHEMA,
+                    "event_id": "evt-vendor-hidden",
+                    "event_type": "provider_catalog_snapshot",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "repo_slug": "owner/repo",
+                    "team_id": "team",
+                    "install_id": "install",
+                    "source": "unit-test",
+                    "tool": {
+                        "role": "reviewer",
+                        "tool_name": "gitar",
+                        "provider": "gitar",
+                        "model": "",
+                        "model_source": "vendor_hidden",
+                        "version_source": "not_probed",
+                    },
+                },
+                "provider_catalog_snapshot",
+            )
+        ]
+    )
+
+    assert summary["events_with_model_provenance"] == 1
+    assert summary["events_missing_model_provenance"] == 0
+
+
+def test_dogfood_dry_run_preserves_version_probe(monkeypatch, tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    calls: list[bool] = []
+
+    def fake_catalog_events(**kwargs):
+        calls.append(bool(kwargs["include_version_probe"]))
+        return []
+
+    monkeypatch.setattr(
+        "code_mower.cloud_client.operations.build_provider_catalog_snapshot_events",
+        fake_catalog_events,
+    )
+
+    result = dogfood_upload(
+        repo_path=tmp_path,
+        output_dir=tmp_path / ".code-mower/cloud-dogfood-bundle",
+        reports=[],
+        events=[],
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        source="unit-test",
+        endpoint="https://codemower.com/api/ingest",
+        token_env="CODE_MOWER_TEST_EMPTY_TOKEN",
+        include_reports=False,
+        yes=False,
+        timeout=0.1,
+    )
+
+    assert result["status"] == "dry_run"
+    assert calls == [True]
 
 
 def test_cloud_doctor_runs_from_client_module() -> None:

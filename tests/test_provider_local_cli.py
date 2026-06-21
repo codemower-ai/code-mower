@@ -129,6 +129,29 @@ def test_provider_lane_tool_provenance_uses_available_alternate_command(
     assert detail["version_known"] is True
 
 
+def test_provider_lane_tool_provenance_marks_hosted_model_as_vendor_hidden() -> None:
+    lane = {
+        "driver": "saas_event",
+        "provider": "gitar",
+        "adapter": "gitar",
+        "provider_config": {},
+    }
+
+    tool, detail = build_provider_lane_tool_provenance(
+        "gitar",
+        lane,
+        source="unit-test",
+    )
+
+    assert tool["tool_name"] == "gitar"
+    assert tool["provider"] == "gitar"
+    assert tool["model"] == ""
+    assert tool["model_source"] == "vendor_hidden"
+    assert tool["version_source"] == "not_probed"
+    assert detail["model_known"] is False
+    assert detail["model_source"] == "vendor_hidden"
+
+
 def test_provider_lane_tool_provenance_reads_model_from_selected_profile(
     monkeypatch,
     tmp_path: Path,

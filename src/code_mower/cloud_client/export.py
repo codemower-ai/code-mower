@@ -256,13 +256,14 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         provider = str(tool.get("provider") or event.get("provider") or "").strip()
         model = str(tool.get("model") or "").strip()
         model_version_raw = str(tool.get("model_version_raw") or "").strip()
+        model_source = str(tool.get("model_source") or "").strip()
         tool_version = str(tool.get("tool_version") or "").strip()
         if not tool_name and not provider and not model:
             missing_tool_events += 1
             missing_model_events += 1
             missing_tool_version_events += 1
             continue
-        if not model and not model_version_raw:
+        if not model and not model_version_raw and model_source in {"", "missing"}:
             missing_model_events += 1
         if not tool_version:
             missing_tool_version_events += 1

@@ -178,7 +178,10 @@ def _profile_model(config: Mapping[str, Any]) -> tuple[str, str]:
     return _safe_text(profile.get("model")), profile_id
 
 
-def _configured_model(config: Mapping[str, Any]) -> tuple[str, str]:
+_VENDOR_HIDDEN_MODEL_DRIVERS = frozenset({"hosted_bridge", "manual", "saas_event"})
+
+
+def _configured_model(config: Mapping[str, Any], driver: str) -> tuple[str, str]:
     env_model = _env_value(config, "model_env")
     if env_model:
         return env_model, "env"
@@ -188,6 +191,8 @@ def _configured_model(config: Mapping[str, Any]) -> tuple[str, str]:
     default_model = _safe_text(config.get("default_model"))
     if default_model:
         return default_model, "default"
+    if driver in _VENDOR_HIDDEN_MODEL_DRIVERS:
+        return "", "vendor_hidden"
     return "", "missing"
 
 
@@ -237,7 +242,7 @@ def build_provider_lane_tool_provenance(
     driver = _safe_text(_lane_value(lane, "driver")) or "unknown"
     command_candidates = _configured_command_candidates(config, provider)
     command, resolved_command = _select_available_command(command_candidates)
-    model, model_source = _configured_model(config)
+    model, model_source = _configured_model(config, driver)
     provider_from_env = _env_value(config, "provider_env")
     if provider_from_env:
         provider = provider_from_env
