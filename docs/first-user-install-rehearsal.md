@@ -190,7 +190,7 @@ The latest public-package rehearsal for `v0.5.0-beta.28` was run from PyPI with:
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.5.0b28 \
   --python "$(command -v python3.12)" \
-  --work-dir /tmp/code-mower-beta18-public-rehearsal \
+  --work-dir /tmp/code-mower-beta28-pypi-rehearsal-2 \
   --json
 ```
 
@@ -205,3 +205,14 @@ Result:
 That rehearsal proved the public install, generated setup, doctor, draft
 calibration corpus, starter value report, cloud export, cloud upload dry run,
 and CodeMower.com dogfood dry run without relying on a local checkout.
+
+The same release was also verified from TestPyPI before production PyPI publish
+using the same package spec and:
+
+```bash
+--pip-index-url https://test.pypi.org/simple/ \
+--pip-extra-index-url https://pypi.org/simple/
+```
+
+TestPyPI artifact:
+[https://test.pypi.org/project/code-mower/0.5.0b28/](https://test.pypi.org/project/code-mower/0.5.0b28/).
