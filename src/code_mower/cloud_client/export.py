@@ -266,7 +266,9 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         if not model and not model_version_raw and model_source in {"", "missing"}:
             missing_model_events += 1
         if not tool_version:
-            missing_tool_version_events += 1
+            version_source = str(tool.get("version_source") or "").strip()
+            if version_source in {"", "missing"}:
+                missing_tool_version_events += 1
         key = (tool_name or "unknown", provider or "unknown", model or "")
         row = tools.setdefault(
             key,
@@ -276,6 +278,8 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
                 "model": key[2],
                 "events": 0,
                 "versions": set(),
+                "model_sources": set(),
+                "version_sources": set(),
                 "roles": set(),
                 "lenses": set(),
             },
@@ -283,6 +287,8 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         row["events"] += 1
         for field, target in (
             ("tool_version", "versions"),
+            ("model_source", "model_sources"),
+            ("version_source", "version_sources"),
             ("role", "roles"),
             ("lens", "lenses"),
         ):
@@ -298,6 +304,8 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
                 "model": row["model"],
                 "events": row["events"],
                 "versions": sorted(row["versions"]),
+                "model_sources": sorted(row["model_sources"]),
+                "version_sources": sorted(row["version_sources"]),
                 "roles": sorted(row["roles"]),
                 "lenses": sorted(row["lenses"]),
             }

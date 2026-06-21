@@ -277,6 +277,71 @@ def test_provenance_summary_treats_vendor_hidden_model_as_known_source() -> None
 
     assert summary["events_with_model_provenance"] == 1
     assert summary["events_missing_model_provenance"] == 0
+    assert summary["events_with_tool_version_provenance"] == 1
+    assert summary["events_missing_tool_version_provenance"] == 0
+    assert summary["tools"][0]["model_sources"] == ["vendor_hidden"]
+    assert summary["tools"][0]["version_sources"] == ["not_probed"]
+
+
+def test_provenance_summary_preserves_source_quality_fields() -> None:
+    summary = build_provenance_summary(
+        [
+            normalize_event(
+                {
+                    "schema": EVENT_SCHEMA,
+                    "event_id": "evt-code-mower",
+                    "event_type": "dogfood_upload",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "repo_slug": "owner/repo",
+                    "team_id": "team",
+                    "install_id": "install",
+                    "source": "unit-test",
+                    "tool": {
+                        "role": "reporter",
+                        "tool_name": "code-mower",
+                        "tool_version": "0.5.0b21",
+                        "provider": "code-mower",
+                        "model": "",
+                        "model_source": "not_applicable",
+                        "version_source": "package_version",
+                    },
+                },
+                "dogfood_upload",
+            ),
+            normalize_event(
+                {
+                    "schema": EVENT_SCHEMA,
+                    "event_id": "evt-gemini",
+                    "event_type": "provider_catalog_snapshot",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "repo_slug": "owner/repo",
+                    "team_id": "team",
+                    "install_id": "install",
+                    "source": "unit-test",
+                    "tool": {
+                        "role": "reviewer",
+                        "tool_name": "gemini",
+                        "tool_version": "0.45.2",
+                        "provider": "gemini",
+                        "model": "",
+                        "model_source": "missing",
+                        "version_source": "cli_version_probe",
+                    },
+                },
+                "provider_catalog_snapshot",
+            ),
+        ]
+    )
+
+    assert summary["events_with_model_provenance"] == 1
+    assert summary["events_missing_model_provenance"] == 1
+    assert summary["events_with_tool_version_provenance"] == 2
+    assert summary["events_missing_tool_version_provenance"] == 0
+    rows = {row["tool_name"]: row for row in summary["tools"]}
+    assert rows["code-mower"]["model_sources"] == ["not_applicable"]
+    assert rows["code-mower"]["version_sources"] == ["package_version"]
+    assert rows["gemini"]["model_sources"] == ["missing"]
+    assert rows["gemini"]["version_sources"] == ["cli_version_probe"]
 
 
 def test_dogfood_dry_run_preserves_version_probe(monkeypatch, tmp_path: Path) -> None:
