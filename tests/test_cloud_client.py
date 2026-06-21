@@ -238,6 +238,8 @@ def test_provider_catalog_snapshot_events_are_metadata_only(monkeypatch) -> None
     assert codex["source"] == "unit-test"
     assert codex["tool"]["tool_name"] == "codex"
     assert codex["tool"]["provider"] == "codex"
+    assert codex["tool"]["model_source"] == "missing"
+    assert codex["tool"]["version_source"] == "missing"
     assert codex["dimensions"]["catalog_snapshot"] is True
     assert codex["dimensions"]["merge_authority"] is True
     assert "token_env" not in codex["dimensions"]

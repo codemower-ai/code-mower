@@ -81,6 +81,8 @@ def test_provider_lane_tool_provenance_reads_version_and_model_env(
     assert tool["tool_version"] == "provider-cli 9.8.7"
     assert tool["provider"] == "gemini"
     assert tool["model"] == "model-v1"
+    assert tool["model_source"] == "env"
+    assert tool["version_source"] == "cli_version_probe"
     assert tool["lens"] == "security-threat-model"
     assert detail["lane_id"] == "gemini_cli"
     assert detail["command_candidates"] == ["provider-cli"]
@@ -119,6 +121,8 @@ def test_provider_lane_tool_provenance_uses_available_alternate_command(
     assert tool["tool_name"] == "antigravity"
     assert tool["tool_version"] == "antigravity 1.2.3"
     assert tool["provider"] == "antigravity"
+    assert tool["model_source"] == "missing"
+    assert tool["version_source"] == "cli_version_probe"
     assert detail["command"] == "antigravity"
     assert detail["command_candidates"] == ["agy", "antigravity"]
     assert detail["command_found"] is True
@@ -159,6 +163,8 @@ def test_provider_lane_tool_provenance_reads_model_from_selected_profile(
     )
 
     assert tool["model"] == "qwen/qwen3-coder-next"
+    assert tool["model_source"] == "profile:qwen3-coder-next-lmstudio"
+    assert tool["version_source"] == "cli_version_probe"
     assert detail["model_known"] is True
     assert detail["model_source"] == "profile:qwen3-coder-next-lmstudio"
     assert detail["version_known"] is True
