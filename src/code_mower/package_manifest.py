@@ -187,6 +187,11 @@ PACKAGE_FILES = (
         "src/code_mower/doctor_checks/provider_probe_remediation.py",
         "core",
     ),
+    (
+        "src/code_mower/doctor_checks/provider_review_hygiene.py",
+        "src/code_mower/doctor_checks/provider_review_hygiene.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/privacy.py", "src/code_mower/doctor_checks/privacy.py", "core"),
     ("src/code_mower/doctor_checks/providers.py", "src/code_mower/doctor_checks/providers.py", "core"),
     ("src/code_mower/doctor_checks/registry.py", "src/code_mower/doctor_checks/registry.py", "core"),

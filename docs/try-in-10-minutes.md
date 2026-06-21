@@ -59,6 +59,7 @@ It expands to the checks early adopters need:
 - recommended profile selection;
 - Python/runtime checks;
 - local provider CLI discovery and smoke probes;
+- stale terminal-label hygiene for merge-authority reviewer lanes;
 - GitHub repository visibility, permissions, branch protection, and Actions
   cost diagnostics; and
 - optional Code Mower Cloud token setup diagnostics.
@@ -70,6 +71,12 @@ If you want to see the shape of the output before installing, start with
 In JSON mode, check the top-level `run_plan` field first. It tells you whether
 the preflight included GitHub and optional cloud checks before you inspect
 individual provider warnings.
+
+For merge-authority lanes such as Codex, Claude audit, or Devin, also look for
+`provider.review_hygiene`. It should pass for lanes that can satisfy the merge
+bar. That check means Code Mower knows how to clear stale `*-audit-done` or
+`*-audit-blocked` labels when a PR receives new commits, so an old review cannot
+quietly approve a new head.
 
 ## 5. Detect Your Repo's Native Checks
 
