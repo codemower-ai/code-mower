@@ -218,8 +218,9 @@ includes the dashboard URL and token-safe next-step commands, so it is suitable
 for support screenshots and CI logs.
 
 If the bundle contains reviewer/provider events with missing model provenance,
-doctor reports a non-blocking `model-provenance` warning and suggests the
-`CODE_MOWER_*_MODEL` environment variables to set before the next export or
+doctor reports a non-blocking `model-provenance` warning with a copyable
+`code-mower providers provenance-env ... --shell` command. That command prints
+safe `CODE_MOWER_*_MODEL` export templates to set before the next export or
 dogfood upload. Uploads still work, but CodeMower.com should treat those rows as
 operational signal until the model source is explicit enough for benchmark
 claims.
