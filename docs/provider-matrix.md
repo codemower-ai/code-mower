@@ -80,6 +80,12 @@ These values are metadata, not secrets. Never store API keys, prompts, raw
 diffs, transcripts, auth output, or secret-like values in model/version fields.
 If model provenance is missing, `code-mower cloud doctor` reports the relevant
 provider env names and CodeMower.com shows provider-specific provenance fixes.
+You can generate the same setup plan from the installed package:
+
+```bash
+code-mower providers provenance-env
+code-mower providers provenance-env --provider antigravity_cli --shell
+```
 
 ## Cursor BugBot Policy
 

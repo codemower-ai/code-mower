@@ -224,6 +224,17 @@ dogfood upload. Uploads still work, but CodeMower.com should treat those rows as
 operational signal until the model source is explicit enough for benchmark
 claims.
 
+Use the provider setup helper when closing those warnings:
+
+```bash
+code-mower providers provenance-env
+code-mower providers provenance-env --provider gemini_cli --shell
+```
+
+The helper reports whether model env vars are set without printing their values.
+The `--shell` output uses `TODO_MODEL_NAME` placeholders so it is safe to paste
+into support notes or CI setup PRs.
+
 ## Upload
 
 When you are ready to send metadata to Code Mower Cloud:

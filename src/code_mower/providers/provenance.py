@@ -183,6 +183,100 @@ def _env_value_any(config: Mapping[str, Any], key: str, any_key: str) -> str:
     return ""
 
 
+def model_env_names(config: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return ordered model env vars for a provider config.
+
+    The primary provider env var is listed first, followed by aliases from
+    ``model_env_any``. Duplicate names are removed while preserving order.
+    """
+
+    env_names: list[str] = []
+    primary = _safe_text(config.get("model_env"))
+    if primary:
+        env_names.append(primary)
+    for env_name in _text_values(config.get("model_env_any")):
+        if env_name not in env_names:
+            env_names.append(env_name)
+    return tuple(env_names)
+
+
+def preferred_model_env_name(config: Mapping[str, Any]) -> str:
+    """Choose the env var Code Mower should recommend setting.
+
+    Prefer the Code Mower-specific alias when present so users can record
+    benchmark model identity without changing the behavior of the provider CLI
+    itself.
+    """
+
+    names = model_env_names(config)
+    for name in names:
+        if name.startswith("CODE_MOWER_"):
+            return name
+    return names[0] if names else ""
+
+
+def build_provider_model_env_report(
+    lanes: Mapping[str, Any],
+    *,
+    providers: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Build a privacy-safe model-provenance setup report for provider lanes."""
+
+    requested = {provider.strip() for provider in providers if provider.strip()}
+    rows: list[dict[str, Any]] = []
+    matched: set[str] = set()
+    for lane_id, lane in sorted(lanes.items()):
+        provider = _safe_text(_lane_value(lane, "provider")) or lane_id
+        if requested and lane_id not in requested and provider not in requested:
+            continue
+        if lane_id in requested:
+            matched.add(lane_id)
+        if provider in requested:
+            matched.add(provider)
+        config = _provider_config(lane)
+        driver = _safe_text(_lane_value(lane, "driver")) or "unknown"
+        model, model_source = _configured_model(config, driver)
+        env_names = model_env_names(config)
+        preferred_env = preferred_model_env_name(config)
+        env_status = [
+            {"name": name, "is_set": bool(os.environ.get(name, "").strip())}
+            for name in env_names
+        ]
+        if model_source == "missing" and preferred_env:
+            action = "set_model_env"
+            export_command = f'export {preferred_env}="TODO_MODEL_NAME"'
+        elif model_source == "missing":
+            action = "not_configurable"
+            export_command = ""
+        else:
+            action = "none"
+            export_command = ""
+        rows.append(
+            {
+                "lane_id": lane_id,
+                "provider": provider,
+                "driver": driver,
+                "model_known": bool(model),
+                "model_source": model_source,
+                "env_names": list(env_names),
+                "preferred_env": preferred_env,
+                "env_status": env_status,
+                "action": action,
+                "export_command": export_command,
+            }
+        )
+    unknown = sorted(requested - matched)
+    missing = [row for row in rows if row["action"] == "set_model_env"]
+    return {
+        "mode": "code-mower-provider-model-env-report",
+        "providers": rows,
+        "provider_count": len(rows),
+        "missing_model_env_count": len(missing),
+        "unknown_providers": unknown,
+        "status": "fail" if unknown else "pass",
+    }
+
+
 def _profile_model(config: Mapping[str, Any]) -> tuple[str, str]:
     profile_env = _safe_text(config.get("profile_env"))
     profile_id = _safe_text(os.environ.get(profile_env)) if profile_env else ""
