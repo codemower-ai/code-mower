@@ -123,7 +123,7 @@ def dogfood_upload(
         team_id=resolved_team_id,
         install_id=resolved_install_id,
         source=source,
-        include_version_probe=yes,
+        include_version_probe=True,
     )
     all_events = [
         build_dogfood_event(
