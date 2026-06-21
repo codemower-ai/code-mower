@@ -17,6 +17,7 @@ provider_templates:
     trigger_policy: "manual"
     provider_config:
       command_env: "CODE_MOWER_ACP_COMMAND"
+      model_env: "CODE_MOWER_ACP_MODEL"
       protocol: "agent-client-protocol"
       prompt_lenses:
         - "base-audit"
@@ -42,6 +43,9 @@ provider_templates:
       command: "aider"
       mode: "review-only"
       model_env: "AIDER_MODEL"
+      model_env_any:
+        - "CODE_MOWER_AIDER_MODEL"
+        - "AIDER_CHAT_MODEL"
       api_base_env: "AIDER_API_BASE"
       status: "optional tool lane; provider-specific invocation belongs in an adapter"
     review_hygiene: {}
@@ -66,6 +70,8 @@ provider_templates:
         - "antigravity"
       command_env: "ANTIGRAVITY_CLI_COMMAND"
       model_env: "ANTIGRAVITY_MODEL"
+      model_env_any:
+        - "CODE_MOWER_ANTIGRAVITY_MODEL"
       prompt_lenses:
         - "base-audit"
       required_env_truthy:
@@ -161,6 +167,9 @@ provider_templates:
       command: "coderabbit"
       alternate_commands:
         - "cr"
+      model_env_any:
+        - "CODE_MOWER_CODERABBIT_MODEL"
+        - "CODERABBIT_MODEL"
       status: "optional CLI lane for local/on-demand review capture"
     review_hygiene: {}
   codex:
@@ -181,6 +190,10 @@ provider_templates:
     trigger_policy: "label"
     provider_config:
       command: "codex"
+      model_env_any:
+        - "CODE_MOWER_CODEX_MODEL"
+        - "CODEX_MODEL"
+        - "OPENAI_MODEL"
       doctor_probe_args:
         - "--version"
     review_hygiene:
@@ -253,6 +266,9 @@ provider_templates:
       command: "gemini"
       command_env: "GEMINI_CLI_COMMAND"
       model_env: "GEMINI_MODEL"
+      model_env_any:
+        - "CODE_MOWER_GEMINI_MODEL"
+        - "GOOGLE_GENAI_MODEL"
       prompt_lenses:
         - "base-audit"
       doctor_probe_args:
@@ -335,6 +351,9 @@ provider_templates:
       command: "hermes"
       command_env: "HERMES_CLI_COMMAND"
       model_env: "HERMES_INFERENCE_MODEL"
+      model_env_any:
+        - "CODE_MOWER_HERMES_MODEL"
+        - "HERMES_MODEL"
       provider_env: "HERMES_PROVIDER"
       prompt_lenses:
         - "base-audit"
@@ -365,6 +384,8 @@ provider_templates:
     provider_config:
       api_base_env: "LOCAL_LLM_API_BASE"
       model_env: "LOCAL_LLM_MODEL"
+      model_env_any:
+        - "CODE_MOWER_LOCAL_LLM_MODEL"
       bot_authors_env: "LOCAL_LLM_BOT_AUTHORS"
       default_api_base: "http://localhost:1234/v1"
       profile_env: "LOCAL_LLM_PROFILE"

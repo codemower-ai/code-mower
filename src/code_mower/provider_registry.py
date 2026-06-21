@@ -85,6 +85,11 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         merge_authority=True,
         provider_config={
             "command": "codex",
+            "model_env_any": (
+                "CODE_MOWER_CODEX_MODEL",
+                "CODEX_MODEL",
+                "OPENAI_MODEL",
+            ),
             "doctor_probe_args": ("--version",),
         },
     ),
@@ -273,6 +278,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         provider_config={
             "api_base_env": "LOCAL_LLM_API_BASE",
             "model_env": "LOCAL_LLM_MODEL",
+            "model_env_any": ("CODE_MOWER_LOCAL_LLM_MODEL",),
             "bot_authors_env": "LOCAL_LLM_BOT_AUTHORS",
             "default_api_base": "http://localhost:1234/v1",
             "profile_env": "LOCAL_LLM_PROFILE",
@@ -301,6 +307,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "command": "aider",
             "mode": "review-only",
             "model_env": "AIDER_MODEL",
+            "model_env_any": ("CODE_MOWER_AIDER_MODEL", "AIDER_CHAT_MODEL"),
             "api_base_env": "AIDER_API_BASE",
             "status": "optional tool lane; provider-specific invocation belongs in an adapter",
         },
@@ -326,6 +333,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "command": "gemini",
             "command_env": "GEMINI_CLI_COMMAND",
             "model_env": "GEMINI_MODEL",
+            "model_env_any": ("CODE_MOWER_GEMINI_MODEL", "GOOGLE_GENAI_MODEL"),
             "prompt_lenses": ("base-audit",),
             "doctor_probe_args": (
                 "-p",
@@ -362,6 +370,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "alternate_commands": ("antigravity",),
             "command_env": "ANTIGRAVITY_CLI_COMMAND",
             "model_env": "ANTIGRAVITY_MODEL",
+            "model_env_any": ("CODE_MOWER_ANTIGRAVITY_MODEL",),
             "prompt_lenses": ("base-audit",),
             "required_env_truthy": ("ANTIGRAVITY_CLI_USE_AMBIENT_HOME",),
             "doctor_probe_args": ("--version",),
@@ -396,6 +405,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "command": "hermes",
             "command_env": "HERMES_CLI_COMMAND",
             "model_env": "HERMES_INFERENCE_MODEL",
+            "model_env_any": ("CODE_MOWER_HERMES_MODEL", "HERMES_MODEL"),
             "provider_env": "HERMES_PROVIDER",
             "prompt_lenses": ("base-audit",),
             "required_env_truthy": ("HERMES_CLI_USE_AMBIENT_HOME",),
@@ -430,6 +440,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         provider_config={
             "command": "coderabbit",
             "alternate_commands": ("cr",),
+            "model_env_any": ("CODE_MOWER_CODERABBIT_MODEL", "CODERABBIT_MODEL"),
             "status": "optional CLI lane for local/on-demand review capture",
         },
     ),
@@ -451,6 +462,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         spend_policy="none",
         provider_config={
             "command_env": "CODE_MOWER_ACP_COMMAND",
+            "model_env": "CODE_MOWER_ACP_MODEL",
             "protocol": "agent-client-protocol",
             "prompt_lenses": ("base-audit",),
             "status": "protocol research lane; no automatic merge authority",
