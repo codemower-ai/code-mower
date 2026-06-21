@@ -81,16 +81,24 @@ surface for AI tool/version/model data:
   or agent surface that produced the event;
 - `provider`, `model`, and `model_version_raw`: the AI provider/model identity
   when known;
+- `model_source`: where the normalized model identity came from, such as `env`,
+  `profile:<name>`, `default`, or `missing`;
+- `version_source`: where the tool/package version came from, such as
+  `cli_version_probe`, `not_probed`, or `missing`;
 - `integration` and `runtime_environment`: for example `cli`, `github_app`,
   `hosted`, `local`, or `github_actions`; and
 - `lens` and `prompt_pack_version`: the review lens/prompt bundle that shaped
   the run.
 
-Model identity can come from explicit user configuration, safe provider
-metadata, or structured provider summary stats. For example, Google-compatible
-CLI summaries may report multiple internal models; Code Mower records the main
-review model when it can identify one, and leaves the model blank when it
-cannot do so safely.
+Model identity can come from explicit environment configuration, the selected
+Code Mower provider profile, a safe default, safe provider metadata, or
+structured provider summary stats. For example, Google-compatible CLI summaries
+may report multiple internal models; Code Mower records the main review model
+when it can identify one, and leaves the model blank when it cannot do so
+safely. CodeMower.com should display `model_source` and `version_source`
+alongside tool/model rows so benchmark readers can tell the difference between
+exact configured provenance, profile-derived provenance, defaults, and missing
+metadata.
 
 Code Mower treats missing tool/model provenance as acceptable for operational
 dogfood, but incomplete for benchmark claims. CodeMower.com therefore displays
