@@ -142,8 +142,9 @@ CodeMower.com dashboard, and the draft auto-discovery path that helps first
 users reach a reviewable value report without hand-building every corpus item.
 It also adds a first-user readiness scorecard to the package-install rehearsal
 so install, doctor, report, and cloud dry-run privacy gates can be checked at a
-glance, and it uses a conventional `requirements/requirements.txt` manifest so
-Dependabot's Dependency Graph path stays green. Earlier alpha hardening also keeps the package
+glance, and it carries provider/model/version provenance through cloud bundles
+so CodeMower.com can separate benchmark-grade evidence from operational
+dogfood. Earlier alpha hardening also keeps the package
 materializer self-hosting from installed checkouts, gates release readiness on
 generated standalone package versions, and rejects unsafe structured cloud
 metadata before export or upload instead of relying on hosted-side cleanup.
