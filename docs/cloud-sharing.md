@@ -127,6 +127,31 @@ Common source values:
 - `not_probed`: version probing was intentionally skipped; and
 - `missing`: the event could not safely report the field.
 
+For benchmark-quality provider comparisons, configure exact model names for
+local CLI lanes when the provider CLI does not expose them through a safe
+metadata API. Code Mower reads the lane's native model env var first, then
+Code-Mower-specific aliases. Useful defaults include:
+
+- Codex: `CODEX_MODEL`, `OPENAI_MODEL`, or `CODE_MOWER_CODEX_MODEL`
+- Gemini CLI: `GEMINI_MODEL`, `GOOGLE_GENAI_MODEL`, or
+  `CODE_MOWER_GEMINI_MODEL`
+- Antigravity CLI: `ANTIGRAVITY_MODEL` or
+  `CODE_MOWER_ANTIGRAVITY_MODEL`
+- Hermes CLI: `HERMES_INFERENCE_MODEL`, `HERMES_MODEL`, or
+  `CODE_MOWER_HERMES_MODEL`
+- Aider: `AIDER_MODEL`, `AIDER_CHAT_MODEL`, or `CODE_MOWER_AIDER_MODEL`
+- CodeRabbit CLI: `CODERABBIT_MODEL` or `CODE_MOWER_CODERABBIT_MODEL`
+- ACP bridge: `CODE_MOWER_ACP_MODEL`
+- OpenAI-compatible local LLM lanes: `LOCAL_LLM_MODEL` or
+  `CODE_MOWER_LOCAL_LLM_MODEL`
+
+Do not put API keys, auth output, session ids, prompts, diffs, or raw model
+responses into provenance fields. Model identifiers and tool versions are enough
+for CodeMower.com to compare quality, cost, latency, and noise.
+Prefer the `CODE_MOWER_*_MODEL` variables when the same underlying vendor powers
+multiple lanes; that keeps Gemini CLI, Antigravity CLI, and future related lanes
+from accidentally inheriting each other's model labels.
+
 Include events from JSON, JSON arrays, or JSONL:
 
 ```bash

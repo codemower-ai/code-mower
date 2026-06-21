@@ -168,6 +168,21 @@ def _env_value(config: Mapping[str, Any], key: str) -> str:
     return _safe_text(os.environ.get(env_name)) if env_name else ""
 
 
+def _env_value_any(config: Mapping[str, Any], key: str, any_key: str) -> str:
+    env_names = []
+    primary = _safe_text(config.get(key))
+    if primary:
+        env_names.append(primary)
+    for env_name in _text_values(config.get(any_key)):
+        if env_name not in env_names:
+            env_names.append(env_name)
+    for env_name in env_names:
+        value = _safe_text(os.environ.get(env_name))
+        if value:
+            return value
+    return ""
+
+
 def _profile_model(config: Mapping[str, Any]) -> tuple[str, str]:
     profile_env = _safe_text(config.get("profile_env"))
     profile_id = _safe_text(os.environ.get(profile_env)) if profile_env else ""
@@ -184,7 +199,7 @@ _VENDOR_HIDDEN_MODEL_DRIVERS = frozenset({"hosted_bridge", "manual", "saas_event
 
 
 def _configured_model(config: Mapping[str, Any], driver: str) -> tuple[str, str]:
-    env_model = _env_value(config, "model_env")
+    env_model = _env_value_any(config, "model_env", "model_env_any")
     if env_model:
         return env_model, "env"
     profile_model, profile_id = _profile_model(config)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from code_mower.provider_registry import REFERENCE_PROVIDERS
 from code_mower.providers import build_provider_lane_tool_provenance
 from code_mower.providers.provenance import build_code_mower_tool_provenance
 from code_mower.providers.local_cli import detect_local_cli_version, safe_version_line
@@ -92,6 +93,96 @@ def test_provider_lane_tool_provenance_reads_version_and_model_env(
     assert detail["model_source"] == "env"
     assert detail["version_known"] is True
     assert detail["version_source"] == "cli_version_probe"
+
+
+def test_provider_lane_tool_provenance_reads_model_env_aliases(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executable = _write_executable(
+        tmp_path / "codex",
+        "#!/bin/sh\nprintf 'codex-cli 0.142.0\\n'\n",
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.delenv("CODEX_MODEL", raising=False)
+    monkeypatch.setenv("CODE_MOWER_CODEX_MODEL", "gpt-5.5-codex")
+    lane = {
+        "driver": "local_cli",
+        "provider": "codex",
+        "provider_config": {
+            "command": "codex",
+            "model_env": "CODEX_MODEL",
+            "model_env_any": ("CODE_MOWER_CODEX_MODEL", "OPENAI_MODEL"),
+        },
+    }
+
+    tool, detail = build_provider_lane_tool_provenance(
+        "codex",
+        lane,
+        source="unit-test",
+    )
+
+    assert tool["model"] == "gpt-5.5-codex"
+    assert tool["model_source"] == "env"
+    assert tool["version_source"] == "cli_version_probe"
+    assert detail["model_known"] is True
+    assert detail["model_source"] == "env"
+
+
+def test_provider_lane_tool_provenance_prefers_primary_model_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executable = _write_executable(
+        tmp_path / "gemini",
+        "#!/bin/sh\nprintf '0.45.2\\n'\n",
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-primary")
+    monkeypatch.setenv("CODE_MOWER_GEMINI_MODEL", "gemini-alias")
+    lane = {
+        "driver": "local_cli",
+        "provider": "gemini",
+        "provider_config": {
+            "command": "gemini",
+            "model_env": "GEMINI_MODEL",
+            "model_env_any": ("CODE_MOWER_GEMINI_MODEL",),
+        },
+    }
+
+    tool, _detail = build_provider_lane_tool_provenance(
+        "gemini_cli",
+        lane,
+        source="unit-test",
+    )
+
+    assert tool["model"] == "gemini-primary"
+    assert tool["model_source"] == "env"
+
+
+def test_antigravity_does_not_inherit_gemini_model_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executable = _write_executable(
+        tmp_path / "agy",
+        "#!/bin/sh\nprintf '1.0.8\\n'\n",
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-only-model")
+    monkeypatch.delenv("ANTIGRAVITY_MODEL", raising=False)
+    monkeypatch.delenv("CODE_MOWER_ANTIGRAVITY_MODEL", raising=False)
+
+    tool, detail = build_provider_lane_tool_provenance(
+        "antigravity_cli",
+        REFERENCE_PROVIDERS["antigravity_cli"],
+        source="unit-test",
+    )
+
+    assert tool["provider"] == "antigravity"
+    assert tool["model"] == ""
+    assert tool["model_source"] == "missing"
+    assert detail["model_known"] is False
 
 
 def test_provider_lane_tool_provenance_uses_available_alternate_command(

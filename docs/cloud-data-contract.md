@@ -102,6 +102,11 @@ alongside tool/model rows so benchmark readers can tell the difference between
 exact configured provenance, profile-derived provenance, defaults, and missing
 metadata.
 
+For local CLI lanes, prefer explicit model environment variables such as
+`CODE_MOWER_CODEX_MODEL`, `CODE_MOWER_GEMINI_MODEL`, or the provider's native
+model variable when the CLI does not expose model identity through safe
+metadata. Model identifiers are benchmark metadata, not secrets.
+
 Hosted/manual reviewer lanes may report `model_source=vendor_hidden` and
 `version_source=vendor_hidden` when the review service does not expose the
 underlying model or app version. That is known provenance about the provider
