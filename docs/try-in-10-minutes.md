@@ -78,7 +78,29 @@ bar. That check means Code Mower knows how to clear stale `*-audit-done` or
 `*-audit-blocked` labels when a PR receives new commits, so an old review cannot
 quietly approve a new head.
 
-## 5. Detect Your Repo's Native Checks
+## 5. Set Model Provenance For Better Benchmarks
+
+Code Mower can prove uploads and reviewer events without exact model names, but
+CodeMower.com will mark those rows as incomplete benchmark evidence. For the
+cleanest first run, set the model variables for the lanes you plan to compare:
+
+```bash
+export CODE_MOWER_CODEX_MODEL="gpt-5"
+export CLAUDE_AUDIT_MODEL="claude-opus-4-8"
+export CODE_MOWER_ANTIGRAVITY_MODEL="gemini-3.5-flash"
+export CODE_MOWER_HERMES_MODEL="hermes-3-llama-3.1-405b"
+```
+
+Only set variables for tools you actually use. Model identifiers are benchmark
+metadata, not secrets. Do not put API keys, auth output, prompts, diffs, or raw
+model responses in provenance fields. If these are missing, `code-mower cloud
+doctor` and the CodeMower.com dashboard will tell you which provider/tool needs
+attention.
+
+See [Provider Matrix](provider-matrix.md#benchmark-provenance-setup) and
+[Cloud Sharing](cloud-sharing.md#structured-events) for the full provider list.
+
+## 6. Detect Your Repo's Native Checks
 
 ```bash
 code-mower checks detect --json
@@ -101,7 +123,7 @@ Then run selected checks explicitly, for example:
 code-mower checks run --only lint,test --json
 ```
 
-## 6. Generate The Starter Value Report
+## 7. Generate The Starter Value Report
 
 If you want to prove the whole first-user path in one command, run the package
 install rehearsal instead:
@@ -165,7 +187,7 @@ structured audit trailers, and review-request signals to propose known-clean
 and known-blocked cases. Review every disposition before promoting lanes to
 selective or merge-gating roles.
 
-## 7. Optional Cloud Dry Run
+## 8. Optional Cloud Dry Run
 
 Cloud sharing is optional. The default upload payload excludes source code, raw
 diffs, raw model transcripts, raw stdout/stderr, auth probe output, and secrets.
