@@ -61,6 +61,15 @@ def _provider_model_env_names(providers: list[str]) -> dict[str, list[str]]:
     }
 
 
+def _provider_model_env_commands(providers: list[str]) -> list[str]:
+    if not providers:
+        return ["code-mower providers provenance-env --shell"]
+    provider_args = " ".join(
+        f"--provider {shlex.quote(provider)}" for provider in sorted(providers)
+    )
+    return [f"code-mower providers provenance-env {provider_args} --shell"]
+
+
 def run_cloud_doctor(
     *,
     bundle_dir: Path,
@@ -188,6 +197,7 @@ def run_cloud_doctor(
                     }
                     or set(MODEL_PROVENANCE_ENV_EXAMPLES)
                 )
+                model_env_commands = _provider_model_env_commands(missing_model_tools)
                 if missing_model_events:
                     checks.append(
                         {
@@ -200,10 +210,13 @@ def run_cloud_doctor(
                                 "providers": missing_model_tools,
                                 "model_env_by_provider": model_env_by_provider,
                                 "model_env_examples": model_env_examples,
+                                "model_env_commands": model_env_commands,
                             },
                             "remediation": (
-                                "Set provider-specific model env vars before export or dogfood, "
-                                "for example "
+                                "Run "
+                                + " && ".join(model_env_commands)
+                                + " to print safe export templates, then set provider-specific "
+                                "model env vars before export or dogfood. Examples: "
                                 + ", ".join(model_env_examples)
                                 + "."
                             ),

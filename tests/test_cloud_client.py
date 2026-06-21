@@ -451,6 +451,12 @@ def test_cloud_doctor_warns_when_model_provenance_is_missing() -> None:
             "CODE_MOWER_CODEX_MODEL",
             "OPENAI_MODEL",
         ]
+        assert check["detail"]["model_env_commands"] == [
+            "code-mower providers provenance-env --provider codex --shell"
+        ]
+        assert "code-mower providers provenance-env --provider codex --shell" in check[
+            "remediation"
+        ]
         assert "CODE_MOWER_CODEX_MODEL" in check["remediation"]
 
 
