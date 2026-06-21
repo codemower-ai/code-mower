@@ -162,6 +162,7 @@ def run_doctor(
             check_lane_runtime(
                 lane_id,
                 effective,
+                source_lane=lane,
                 probe_runtime=probe_runtime,
                 http_timeout=http_timeout,
             )

@@ -36,6 +36,7 @@ from .presets import (
 )
 from .providers import (
     check_lane_runtime,
+    check_review_hygiene,
     effective_lane,
     provider_template_coverage,
     selected_lanes,
@@ -83,6 +84,7 @@ __all__ = [
     "check_github_auth_surface",
     "check_github_setup",
     "check_lane_runtime",
+    "check_review_hygiene",
     "check_pytest",
     "check_python_runtime",
     "check_ripgrep",

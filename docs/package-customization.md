@@ -251,6 +251,14 @@ tools/code_mower clear-stale \
 Code Mower ships `templates/workflows/review-clear-stale.yml.j2` as a starter
 workflow for this pattern.
 
+`code-mower doctor --preflight --json` reports this as
+`provider.review_hygiene` for every selected merge-authority lane. A missing
+`review_hygiene.workflow` or `review_hygiene.token_env` is a failed doctor
+check, because stale terminal labels are a merge-safety issue rather than a
+cosmetic setup detail. The generated stale-clear workflow currently supports
+`review_hygiene.token_env: GITHUB_TOKEN`; use a custom token only after also
+customizing the workflow that exports credentials to the `clear-stale` command.
+
 When you enable the Devin hosted merge-authority lane, the provider template
 adds `.github/workflows/devin-clear-stale.yml` to `init --apply` output. Keep
 the workflow installed for private/product repos where stale terminal labels

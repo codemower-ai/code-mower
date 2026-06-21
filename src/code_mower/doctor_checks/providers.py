@@ -24,9 +24,11 @@ from .provider_probe import (
     evaluate_json_probe,
     local_cli_probe_remediation,
 )
+from .provider_review_hygiene import check_review_hygiene
 
 __all__ = [
     "check_lane_runtime",
+    "check_review_hygiene",
     "effective_lane",
     "evaluate_json_probe",
     "local_cli_probe_remediation",
@@ -109,10 +111,13 @@ def check_lane_runtime(
     lane_id: str,
     lane: Mapping[str, Any],
     *,
+    source_lane: Mapping[str, Any] | None = None,
     probe_runtime: bool,
     http_timeout: int,
 ) -> list[DoctorCheck]:
-    checks = check_token_env(lane_id, lane)
+    hygiene_source = source_lane if source_lane is not None else lane
+    checks = [check_review_hygiene(lane_id, hygiene_source, effective_lane=lane)]
+    checks.extend(check_token_env(lane_id, lane))
     checks.extend(check_required_env(lane_id, lane))
     driver = str(lane.get("driver", ""))
     if driver == "local_cli":

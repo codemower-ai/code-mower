@@ -107,6 +107,7 @@ class DoctorBoundaryTests(unittest.TestCase):
             "code_mower.doctor_checks.provider_probe_evaluation",
             "code_mower.doctor_checks.provider_probe_json",
             "code_mower.doctor_checks.provider_probe_remediation",
+            "code_mower.doctor_checks.provider_review_hygiene",
             "code_mower.doctor_checks.providers",
             "code_mower.doctor_checks.privacy",
             "code_mower.doctor_checks.registry",
