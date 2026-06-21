@@ -22,8 +22,8 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.16`, published on
-PyPI as `code-mower==0.5.0b16`. It is intended to be installed from the package
+The current verified public beta baseline is `v0.5.0-beta.17`, published on
+PyPI as `code-mower==0.5.0b17`. It is intended to be installed from the package
 index for friendly-user pilots, with GitHub tag/source installs kept as a
 fallback and development path. Beta.16 keeps the PyPI-first install path,
 release workflow, production PyPI trusted publishing, package-install
@@ -81,10 +81,10 @@ It has proved:
   report upload in the release rehearsal path; and
 - a beta.16 private-repo install rehearsal target against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
-  to prove `code-mower==0.5.0b16` can detect and dry-run repository-native
+  to prove `code-mower==0.5.0b17` can detect and dry-run repository-native
   checks in an external-ish private repo without committing support files first;
   and
-- a public PyPI package-install rehearsal from `code-mower==0.5.0b16` with a
+- a public PyPI package-install rehearsal from `code-mower==0.5.0b17` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout; and
