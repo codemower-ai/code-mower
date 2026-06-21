@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from code_mower.providers import build_provider_lane_tool_provenance
+from code_mower.providers.provenance import build_code_mower_tool_provenance
 from code_mower.providers.local_cli import detect_local_cli_version, safe_version_line
 
 
@@ -147,9 +148,10 @@ def test_provider_lane_tool_provenance_marks_hosted_model_as_vendor_hidden() -> 
     assert tool["provider"] == "gitar"
     assert tool["model"] == ""
     assert tool["model_source"] == "vendor_hidden"
-    assert tool["version_source"] == "not_probed"
+    assert tool["version_source"] == "vendor_hidden"
     assert detail["model_known"] is False
     assert detail["model_source"] == "vendor_hidden"
+    assert detail["version_source"] == "vendor_hidden"
 
 
 def test_provider_lane_tool_provenance_reads_model_from_selected_profile(
@@ -192,3 +194,17 @@ def test_provider_lane_tool_provenance_reads_model_from_selected_profile(
     assert detail["model_source"] == "profile:qwen3-coder-next-lmstudio"
     assert detail["version_known"] is True
     assert detail["version_source"] == "cli_version_probe"
+
+
+def test_code_mower_reporter_provenance_marks_model_not_applicable() -> None:
+    tool = build_code_mower_tool_provenance(
+        source="unit-test",
+        version="0.5.0b21",
+    )
+
+    assert tool["tool_name"] == "code-mower"
+    assert tool["tool_version"] == "0.5.0b21"
+    assert tool["provider"] == "code-mower"
+    assert tool["model"] == ""
+    assert tool["model_source"] == "not_applicable"
+    assert tool["version_source"] == "package_version"

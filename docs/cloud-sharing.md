@@ -118,8 +118,12 @@ Common source values:
 - `profile:<name>`: the selected Code Mower provider profile supplied the model;
 - `default`: Code Mower used a safe provider default;
 - `vendor_hidden`: a hosted/manual reviewer lane does not expose the underlying
-  model id;
+  model id or hosted app version;
 - `cli_version_probe`: Code Mower read a local CLI/package version;
+- `package_version`: Code Mower used its own package version for a reporter
+  event;
+- `not_applicable`: no AI model or provider app version applies to this
+  operational event;
 - `not_probed`: version probing was intentionally skipped; and
 - `missing`: the event could not safely report the field.
 
@@ -265,7 +269,9 @@ snapshots report what Code Mower can safely know from configuration and harmless
 local version probes, even in dry-run mode: tool surface, version when
 available, provider, model when configured, lane/lens id, integration, and
 runtime environment. Hosted/manual reviewers may report
-`model_source=vendor_hidden` when the service does not expose a model id. Local
+`model_source=vendor_hidden` and `version_source=vendor_hidden` when the service
+does not expose a model id or app version. Code Mower reporter events use
+`model_source=not_applicable` and `version_source=package_version`. Local
 CLI/API lanes report `model_source=missing` until the model is configured by env
 var, profile, or default. Reviewer and calibration summaries may also preserve
 provider-observed model ids from structured CLI stats when the run output

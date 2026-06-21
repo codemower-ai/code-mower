@@ -82,9 +82,11 @@ surface for AI tool/version/model data:
 - `provider`, `model`, and `model_version_raw`: the AI provider/model identity
   when known;
 - `model_source`: where the normalized model identity came from, such as `env`,
-  `profile:<name>`, `default`, `vendor_hidden`, or `missing`;
+  `profile:<name>`, `default`, `vendor_hidden`, `not_applicable`, or
+  `missing`;
 - `version_source`: where the tool/package version came from, such as
-  `cli_version_probe`, `not_probed`, or `missing`;
+  `cli_version_probe`, `package_version`, `vendor_hidden`, `not_applicable`,
+  `not_probed`, or `missing`;
 - `integration` and `runtime_environment`: for example `cli`, `github_app`,
   `hosted`, `local`, or `github_actions`; and
 - `lens` and `prompt_pack_version`: the review lens/prompt bundle that shaped
@@ -100,11 +102,14 @@ alongside tool/model rows so benchmark readers can tell the difference between
 exact configured provenance, profile-derived provenance, defaults, and missing
 metadata.
 
-Hosted/manual reviewer lanes may report `model_source=vendor_hidden` when the
-review service does not expose the underlying model. That is known provenance
-about the provider surface, not a configured model id. Local CLI or API lanes
-that omit a model remain `missing` until the user configures the relevant
-model environment variable, provider profile, or default.
+Hosted/manual reviewer lanes may report `model_source=vendor_hidden` and
+`version_source=vendor_hidden` when the review service does not expose the
+underlying model or app version. That is known provenance about the provider
+surface, not a configured model id. Code Mower's own reporter events use
+`model_source=not_applicable` because no AI model generated the operational
+event. Local CLI or API lanes that omit a model remain `missing` until the user
+configures the relevant model environment variable, provider profile, or
+default.
 
 Code Mower treats missing tool/model provenance as acceptable for operational
 dogfood, but incomplete for benchmark claims. CodeMower.com therefore displays

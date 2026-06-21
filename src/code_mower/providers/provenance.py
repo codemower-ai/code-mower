@@ -119,6 +119,8 @@ def build_code_mower_tool_provenance(
             "tool_name": "code-mower",
             "tool_version": version,
             "provider": "code-mower",
+            "model_source": "not_applicable",
+            "version_source": "package_version",
             "integration": source,
             "source": source,
         }
@@ -256,6 +258,7 @@ def build_provider_lane_tool_provenance(
         if driver == "local_cli"
         else _safe_text(_lane_value(lane, "adapter")) or provider
     )
+    hidden_vendor_version = driver in _VENDOR_HIDDEN_MODEL_DRIVERS
     detail: dict[str, Any] = {
         "lane_id": lane_id,
         "driver": driver,
@@ -264,7 +267,9 @@ def build_provider_lane_tool_provenance(
         "model_known": bool(model),
         "model_source": model_source,
         "version_known": False,
-        "version_source": "not_probed" if driver != "local_cli" else "missing",
+        "version_source": "vendor_hidden"
+        if hidden_vendor_version
+        else ("not_applicable" if driver == "api_model" else "missing"),
     }
     tool_version = ""
     if driver == "local_cli" and include_version_probe and command:
