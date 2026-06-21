@@ -152,6 +152,18 @@ Prefer the `CODE_MOWER_*_MODEL` variables when the same underlying vendor powers
 multiple lanes; that keeps Gemini CLI, Antigravity CLI, and future related lanes
 from accidentally inheriting each other's model labels.
 
+When model or version provenance is incomplete, run:
+
+```bash
+code-mower cloud doctor .code-mower/cloud-benchmark-bundle --json
+```
+
+The doctor reports provider-specific model env names for missing rows. The
+CodeMower.com dashboard mirrors that idea in the Data Provenance panel by
+showing "Top provenance fixes" for the current filter, so teams can tell
+whether they need a client upgrade, a model env/profile value, or a CLI/package
+version probe before treating the row as benchmark-grade evidence.
+
 Include events from JSON, JSON arrays, or JSONL:
 
 ```bash

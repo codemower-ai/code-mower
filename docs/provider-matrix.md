@@ -56,6 +56,31 @@ repeatable non-gating runs.
 Reference:
 <https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/>
 
+## Benchmark Provenance Setup
+
+Code Mower accepts operational dogfood without exact model names, but strong
+provider comparisons need each reviewer event to identify the tool, version,
+provider, model, and lens that produced it. Prefer the Code-Mower-specific
+aliases when a vendor has multiple CLI surfaces, because those aliases prevent
+one lane from accidentally inheriting another lane's model label.
+
+| Provider lane | Preferred model env | Alternate model envs | Notes |
+|---|---|---|---|
+| Codex audit | `CODE_MOWER_CODEX_MODEL` | `CODEX_MODEL`, `OPENAI_MODEL` | Set to the model/profile you want benchmarked, for example `gpt-5`. |
+| Claude audit | `CLAUDE_AUDIT_MODEL` | none | Mirrors the structured audit wrapper model. |
+| Gemini CLI | `CODE_MOWER_GEMINI_MODEL` | `GEMINI_MODEL`, `GOOGLE_GENAI_MODEL` | Legacy compatibility lane; prefer Antigravity for new Google CLI work. |
+| Antigravity CLI | `CODE_MOWER_ANTIGRAVITY_MODEL` | `ANTIGRAVITY_MODEL` | Deliberately does not inherit Gemini model env vars. |
+| Hermes CLI | `CODE_MOWER_HERMES_MODEL` | `HERMES_INFERENCE_MODEL`, `HERMES_MODEL` | Use the deployed inference model id. |
+| Aider | `CODE_MOWER_AIDER_MODEL` | `AIDER_MODEL`, `AIDER_CHAT_MODEL` | Informational until calibrated. |
+| CodeRabbit CLI | `CODE_MOWER_CODERABBIT_MODEL` | `CODERABBIT_MODEL` | Informational/manual lane. |
+| ACP bridge | `CODE_MOWER_ACP_MODEL` | none | Research lane until runtimes stabilize. |
+| Local LLM | `CODE_MOWER_LOCAL_LLM_MODEL` | `LOCAL_LLM_MODEL` | Use the local endpoint/model id you configured. |
+
+These values are metadata, not secrets. Never store API keys, prompts, raw
+diffs, transcripts, auth output, or secret-like values in model/version fields.
+If model provenance is missing, `code-mower cloud doctor` reports the relevant
+provider env names and CodeMower.com shows provider-specific provenance fixes.
+
 ## Cursor BugBot Policy
 
 Cursor BugBot is useful to test as a convenience reviewer, but it should not be
