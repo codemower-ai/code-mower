@@ -408,6 +408,91 @@ def test_cloud_doctor_runs_from_client_module() -> None:
         assert "http://localhost:3000" in rendered
 
 
+def test_cloud_doctor_warns_when_model_provenance_is_missing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        build_cloud_bundle(
+            reports=[],
+            events=[
+                {
+                    "event_type": "reviewer_run",
+                    "repo_slug": "owner/repo",
+                    "provider": "codex",
+                    "lens": "base",
+                    "status": "pass",
+                    "tool": {
+                        "role": "reviewer",
+                        "tool_name": "codex",
+                        "provider": "codex",
+                        "tool_version": "0.142.0",
+                        "model_source": "missing",
+                    },
+                }
+            ],
+            output_dir=root / "bundle",
+            repo_slug="owner/repo",
+        )
+
+        report = run_cloud_doctor(
+            bundle_dir=root / "bundle",
+            endpoint="https://codemower.com/api/ingest",
+            token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+            require_token=False,
+        )
+
+        check = next(
+            item for item in report["checks"] if item["name"] == "model-provenance"
+        )
+        assert report["status"] == "pass"
+        assert check["status"] == "warn"
+        assert check["detail"]["providers"] == ["codex"]
+        assert check["detail"]["model_env_by_provider"]["codex"] == [
+            "CODEX_MODEL",
+            "CODE_MOWER_CODEX_MODEL",
+            "OPENAI_MODEL",
+        ]
+        assert "CODE_MOWER_CODEX_MODEL" in check["remediation"]
+
+
+def test_cloud_doctor_passes_when_model_provenance_is_complete() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        build_cloud_bundle(
+            reports=[],
+            events=[
+                {
+                    "event_type": "reviewer_run",
+                    "repo_slug": "owner/repo",
+                    "provider": "codex",
+                    "lens": "base",
+                    "status": "pass",
+                    "tool": {
+                        "role": "reviewer",
+                        "tool_name": "codex",
+                        "provider": "codex",
+                        "tool_version": "0.142.0",
+                        "model": "gpt-5",
+                        "model_source": "env",
+                    },
+                }
+            ],
+            output_dir=root / "bundle",
+            repo_slug="owner/repo",
+        )
+
+        report = run_cloud_doctor(
+            bundle_dir=root / "bundle",
+            endpoint="https://codemower.com/api/ingest",
+            token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+            require_token=False,
+        )
+
+        check = next(
+            item for item in report["checks"] if item["name"] == "model-provenance"
+        )
+        assert check["status"] == "pass"
+
+
 def test_cloud_repo_sync_helpers_live_in_client_module() -> None:
     assert parse_repo_sync_spec("/tmp/repo") == ("", Path("/tmp/repo"))
     assert parse_repo_sync_spec("owner/repo=/tmp/repo") == ("owner/repo", Path("/tmp/repo"))
