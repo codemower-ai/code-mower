@@ -162,6 +162,31 @@ def _env_value(config: Mapping[str, Any], key: str) -> str:
     return _safe_text(os.environ.get(env_name)) if env_name else ""
 
 
+def _profile_model(config: Mapping[str, Any]) -> tuple[str, str]:
+    profile_env = _safe_text(config.get("profile_env"))
+    profile_id = _safe_text(os.environ.get(profile_env)) if profile_env else ""
+    profiles = config.get("profiles")
+    if not profile_id or not isinstance(profiles, Mapping):
+        return "", ""
+    profile = profiles.get(profile_id)
+    if not isinstance(profile, Mapping):
+        return "", profile_id
+    return _safe_text(profile.get("model")), profile_id
+
+
+def _configured_model(config: Mapping[str, Any]) -> tuple[str, str]:
+    env_model = _env_value(config, "model_env")
+    if env_model:
+        return env_model, "env"
+    profile_model, profile_id = _profile_model(config)
+    if profile_model:
+        return profile_model, f"profile:{profile_id}"
+    default_model = _safe_text(config.get("default_model"))
+    if default_model:
+        return default_model, "default"
+    return "", "missing"
+
+
 def _configured_command_candidates(
     config: Mapping[str, Any],
     provider: str,
@@ -208,7 +233,7 @@ def build_provider_lane_tool_provenance(
     driver = _safe_text(_lane_value(lane, "driver")) or "unknown"
     command_candidates = _configured_command_candidates(config, provider)
     command, resolved_command = _select_available_command(command_candidates)
-    model = _env_value(config, "model_env") or _safe_text(config.get("default_model"))
+    model, model_source = _configured_model(config)
     provider_from_env = _env_value(config, "provider_env")
     if provider_from_env:
         provider = provider_from_env
@@ -228,7 +253,9 @@ def build_provider_lane_tool_provenance(
         "command": command if driver == "local_cli" else "",
         "command_candidates": list(command_candidates) if driver == "local_cli" else [],
         "model_known": bool(model),
+        "model_source": model_source,
         "version_known": False,
+        "version_source": "not_probed" if driver != "local_cli" else "missing",
     }
     tool_version = ""
     if driver == "local_cli" and include_version_probe and command:
@@ -238,6 +265,7 @@ def build_provider_lane_tool_provenance(
             version_detail = detect_local_cli_version(resolved_command)
             tool_version = _safe_text(version_detail.get("tool_version"))
             detail["version_known"] = bool(tool_version)
+            detail["version_source"] = "cli_version_probe" if tool_version else "missing"
             detail["tool_version_available"] = bool(
                 version_detail.get("tool_version_available")
             )
