@@ -52,6 +52,8 @@ from . import prompts as code_mower_prompts
 from . import reviewer_metrics
 from . import saas_reviewer_labeler
 from . import trailer_comment_labeler
+from .provider_registry import REFERENCE_PROVIDERS
+from .providers import build_provider_model_env_report
 
 
 def _has_positional_config(argv: list[str], options_with_values: set[str]) -> bool:
@@ -120,6 +122,19 @@ def _providers_main(argv: list[str]) -> int:
     show = subparsers.add_parser("show")
     show.add_argument("provider")
     show.add_argument("--json", action="store_true")
+    provenance_env = subparsers.add_parser("provenance-env")
+    provenance_env.add_argument(
+        "--provider",
+        action="append",
+        default=[],
+        help="Limit to a lane id or provider name. May be passed more than once.",
+    )
+    provenance_env.add_argument("--json", action="store_true")
+    provenance_env.add_argument(
+        "--shell",
+        action="store_true",
+        help="Print export command templates for missing model provenance.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -139,6 +154,53 @@ def _providers_main(argv: list[str]) -> int:
     if args.command == "list":
         for provider in sorted(providers):
             print(provider)
+        return 0
+
+    if args.command == "provenance-env":
+        report = build_provider_model_env_report(
+            REFERENCE_PROVIDERS,
+            providers=tuple(args.provider),
+        )
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        elif args.shell:
+            for row in report["providers"]:
+                if row["action"] == "set_model_env":
+                    print(f"# {row['lane_id']} ({row['provider']})")
+                    print(row["export_command"])
+            if not any(row["action"] == "set_model_env" for row in report["providers"]):
+                print("# No missing model-provenance env vars found.")
+        else:
+            print("Code Mower provider model provenance env setup")
+            print(f"Status: {report['status']}")
+            print(f"Providers: {report['provider_count']}")
+            print(f"Missing model env: {report['missing_model_env_count']}")
+            for row in report["providers"]:
+                if row["action"] == "set_model_env":
+                    aliases = ", ".join(row["env_names"]) or "none"
+                    print(
+                        f"- {row['lane_id']}: set {row['preferred_env']} "
+                        f"(aliases: {aliases})"
+                    )
+                elif row["model_source"] == "vendor_hidden":
+                    print(f"- {row['lane_id']}: provider hides model/version metadata")
+                elif row["model_source"] == "default":
+                    print(f"- {row['lane_id']}: using configured default model")
+                elif row["model_source"].startswith("profile:"):
+                    print(f"- {row['lane_id']}: using profile model")
+                elif row["model_source"] == "env":
+                    print(f"- {row['lane_id']}: model env is configured")
+                elif row["model_source"] == "not_applicable":
+                    print(f"- {row['lane_id']}: model env is not applicable")
+                else:
+                    print(f"- {row['lane_id']}: model provenance is unknown")
+        if report["unknown_providers"]:
+            print(
+                "error: unknown provider(s): "
+                + ", ".join(report["unknown_providers"]),
+                file=sys.stderr,
+            )
+            return 1
         return 0
 
     if args.command == "show":

@@ -4,8 +4,12 @@ import os
 from pathlib import Path
 
 from code_mower.provider_registry import REFERENCE_PROVIDERS
+from code_mower import cli as code_mower_cli
 from code_mower.providers import build_provider_lane_tool_provenance
-from code_mower.providers.provenance import build_code_mower_tool_provenance
+from code_mower.providers.provenance import (
+    build_code_mower_tool_provenance,
+    build_provider_model_env_report,
+)
 from code_mower.providers.local_cli import detect_local_cli_version, safe_version_line
 
 
@@ -127,6 +131,89 @@ def test_provider_lane_tool_provenance_reads_model_env_aliases(
     assert tool["version_source"] == "cli_version_probe"
     assert detail["model_known"] is True
     assert detail["model_source"] == "env"
+
+
+def test_provider_model_env_report_prefers_code_mower_alias(monkeypatch) -> None:
+    monkeypatch.delenv("CODE_MOWER_CODEX_MODEL", raising=False)
+    monkeypatch.delenv("CODEX_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    report = build_provider_model_env_report(
+        REFERENCE_PROVIDERS,
+        providers=("codex",),
+    )
+
+    assert report["status"] == "pass"
+    assert report["missing_model_env_count"] == 1
+    row = report["providers"][0]
+    assert row["lane_id"] == "codex"
+    assert row["preferred_env"] == "CODE_MOWER_CODEX_MODEL"
+    assert row["env_names"] == [
+        "CODE_MOWER_CODEX_MODEL",
+        "CODEX_MODEL",
+        "OPENAI_MODEL",
+    ]
+    assert row["action"] == "set_model_env"
+    assert row["export_command"] == 'export CODE_MOWER_CODEX_MODEL="TODO_MODEL_NAME"'
+
+
+def test_provider_model_env_report_never_exposes_env_value(monkeypatch) -> None:
+    monkeypatch.setenv("CODE_MOWER_GEMINI_MODEL", "sensitive-model-name")
+
+    report = build_provider_model_env_report(
+        REFERENCE_PROVIDERS,
+        providers=("gemini_cli",),
+    )
+
+    rendered = str(report)
+    assert "sensitive-model-name" not in rendered
+    row = report["providers"][0]
+    assert row["model_source"] == "env"
+    assert row["model_known"] is True
+    assert row["env_status"] == [
+        {"name": "GEMINI_MODEL", "is_set": False},
+        {"name": "CODE_MOWER_GEMINI_MODEL", "is_set": True},
+        {"name": "GOOGLE_GENAI_MODEL", "is_set": False},
+    ]
+    assert row["action"] == "none"
+
+
+def test_providers_provenance_env_cli_shell_output(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("CODE_MOWER_ANTIGRAVITY_MODEL", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_MODEL", raising=False)
+
+    exit_code = code_mower_cli.main(
+        [
+            "providers",
+            "provenance-env",
+            "--provider",
+            "antigravity_cli",
+            "--shell",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "# antigravity_cli (antigravity)" in captured.out
+    assert 'export CODE_MOWER_ANTIGRAVITY_MODEL="TODO_MODEL_NAME"' in captured.out
+    assert captured.err == ""
+
+
+def test_providers_provenance_env_cli_rejects_unknown(capsys) -> None:
+    exit_code = code_mower_cli.main(
+        [
+            "providers",
+            "provenance-env",
+            "--provider",
+            "not-a-provider",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert '"unknown_providers": [' in captured.out
+    assert "not-a-provider" in captured.err
 
 
 def test_provider_lane_tool_provenance_prefers_primary_model_env(

@@ -97,6 +97,14 @@ model responses in provenance fields. If these are missing, `code-mower cloud
 doctor` and the CodeMower.com dashboard will tell you which provider/tool needs
 attention.
 
+To generate a provider-specific setup checklist from the current Code Mower
+registry:
+
+```bash
+code-mower providers provenance-env
+code-mower providers provenance-env --provider codex --shell
+```
+
 See [Provider Matrix](provider-matrix.md#benchmark-provenance-setup) and
 [Cloud Sharing](cloud-sharing.md#structured-events) for the full provider list.
 
