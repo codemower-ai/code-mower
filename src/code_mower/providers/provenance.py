@@ -235,7 +235,12 @@ def build_provider_model_env_report(
             matched.add(provider)
         config = _provider_config(lane)
         driver = _safe_text(_lane_value(lane, "driver")) or "unknown"
-        model, model_source = _configured_model(config, driver)
+        tool, provenance_detail = build_provider_lane_tool_provenance(
+            lane_id,
+            lane,
+            source="code-mower providers provenance-env",
+        )
+        model_source = _safe_text(provenance_detail.get("model_source"))
         env_names = model_env_names(config)
         preferred_env = preferred_model_env_name(config)
         env_status = [
@@ -256,8 +261,16 @@ def build_provider_model_env_report(
                 "lane_id": lane_id,
                 "provider": provider,
                 "driver": driver,
-                "model_known": bool(model),
+                "model_known": bool(provenance_detail.get("model_known")),
                 "model_source": model_source,
+                "tool_name": tool.get("tool_name", ""),
+                "tool_version": tool.get("tool_version", ""),
+                "version_known": bool(provenance_detail.get("version_known")),
+                "version_source": _safe_text(
+                    provenance_detail.get("version_source")
+                ),
+                "command": _safe_text(provenance_detail.get("command")),
+                "command_found": bool(provenance_detail.get("command_found")),
                 "env_names": list(env_names),
                 "preferred_env": preferred_env,
                 "env_status": env_status,
@@ -267,11 +280,17 @@ def build_provider_model_env_report(
         )
     unknown = sorted(requested - matched)
     missing = [row for row in rows if row["action"] == "set_model_env"]
+    missing_version_probe = [
+        row
+        for row in rows
+        if row["driver"] == "local_cli" and row["version_source"] == "missing"
+    ]
     return {
         "mode": "code-mower-provider-model-env-report",
         "providers": rows,
         "provider_count": len(rows),
         "missing_model_env_count": len(missing),
+        "missing_version_probe_count": len(missing_version_probe),
         "unknown_providers": unknown,
         "status": "fail" if unknown else "pass",
     }

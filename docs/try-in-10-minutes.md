@@ -105,6 +105,10 @@ code-mower providers provenance-env
 code-mower providers provenance-env --provider codex --shell
 ```
 
+The plain-text report shows which model env vars are configured and whether
+Code Mower could probe each local CLI version. The `--shell` form prints only
+safe model-env export templates with `TODO_MODEL_NAME` placeholders.
+
 See [Provider Matrix](provider-matrix.md#benchmark-provenance-setup) and
 [Cloud Sharing](cloud-sharing.md#structured-events) for the full provider list.
 

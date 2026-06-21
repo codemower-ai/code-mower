@@ -175,6 +175,7 @@ def _providers_main(argv: list[str]) -> int:
             print(f"Status: {report['status']}")
             print(f"Providers: {report['provider_count']}")
             print(f"Missing model env: {report['missing_model_env_count']}")
+            print(f"Missing CLI version probes: {report['missing_version_probe_count']}")
             for row in report["providers"]:
                 if row["action"] == "set_model_env":
                     aliases = ", ".join(row["env_names"]) or "none"
@@ -182,6 +183,8 @@ def _providers_main(argv: list[str]) -> int:
                         f"- {row['lane_id']}: set {row['preferred_env']} "
                         f"(aliases: {aliases})"
                     )
+                elif row["driver"] == "local_cli" and row["version_source"] == "missing":
+                    print(f"- {row['lane_id']}: CLI version probe is missing")
                 elif row["model_source"] == "vendor_hidden":
                     print(f"- {row['lane_id']}: provider hides model/version metadata")
                 elif row["model_source"] == "default":
