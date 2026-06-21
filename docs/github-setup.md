@@ -232,6 +232,12 @@ The Devin provider template includes this stale-label hygiene by default when
 you deliberately enable that hosted merge-authority lane. It remains opt-in:
 the default first-user profiles do not enable Devin or other paid hosted lanes.
 
+`code-mower doctor --preflight` checks both sides of this setup for installed
+repo configs: the lane must declare `review_hygiene.workflow` and
+`review_hygiene.token_env`, and the configured workflow file must exist in the
+repo. That keeps merge-authority lanes from looking safe when the generated
+stale-clear workflow was not committed.
+
 ## Provider-Unavailable Bypass
 
 A promoted reviewer can fail for reasons that are not code findings: expired

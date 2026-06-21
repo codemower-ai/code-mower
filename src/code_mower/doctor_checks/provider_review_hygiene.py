@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Mapping
 
 from .common import DoctorCheck, STATUS_FAIL, STATUS_PASS, STATUS_SKIP, as_sequence
@@ -12,6 +13,7 @@ def check_review_hygiene(
     lane: Mapping[str, Any],
     *,
     effective_lane: Mapping[str, Any] | None = None,
+    repo_root: Path | None = None,
 ) -> DoctorCheck:
     """Verify that merge-authority lanes have stale terminal-label protection."""
 
@@ -77,6 +79,36 @@ def check_review_hygiene(
                 "clear-stale workflow template before relying on a custom token."
             ),
         )
+
+    if repo_root is not None:
+        workflow_path = Path(workflow)
+        if not workflow_path.is_absolute():
+            workflow_path = repo_root / workflow_path
+        if not workflow_path.is_file():
+            return DoctorCheck(
+                name="provider.review_hygiene",
+                status=STATUS_FAIL,
+                lane=lane_id,
+                message=(
+                    "merge-authority lane stale terminal-label workflow is "
+                    f"configured but missing from the repo: {workflow}"
+                ),
+                detail={
+                    **detail,
+                    "workflow_exists": False,
+                    "workflow_path": str(workflow_path),
+                },
+                remediation=(
+                    "Run `code-mower init --easy --apply` from the repository "
+                    "root, commit the generated clear-stale workflow, then rerun "
+                    "doctor before relying on this lane as merge authority."
+                ),
+            )
+        detail = {
+            **detail,
+            "workflow_exists": True,
+            "workflow_path": str(workflow_path),
+        }
 
     return DoctorCheck(
         name="provider.review_hygiene",

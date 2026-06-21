@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from code_mower.doctor_checks.provider_review_hygiene import check_review_hygiene
@@ -62,6 +64,50 @@ class DoctorProviderReviewHygieneTests(unittest.TestCase):
         self.assertEqual(check.detail["token_env"], "GITHUB_TOKEN")
         self.assertEqual(check.detail["dispatch_workflow"], "codex-audit-labeler.yml")
         self.assertEqual(check.detail["trusted_authors"], ["codex[bot]"])
+
+    def test_merge_authority_lane_fails_when_configured_workflow_is_missing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            check = check_review_hygiene(
+                "codex",
+                {
+                    "merge_authority": True,
+                    "review_hygiene": {
+                        "workflow": ".github/workflows/codex-clear-stale.yml",
+                        "token_env": "GITHUB_TOKEN",
+                    },
+                },
+                repo_root=repo_root,
+            )
+
+        self.assertEqual(check.status, "fail")
+        self.assertIn("configured but missing", check.message)
+        self.assertEqual(check.detail["workflow_exists"], False)
+        self.assertIn(".github/workflows/codex-clear-stale.yml", check.detail["workflow_path"])
+        self.assertIn("code-mower init --easy --apply", check.remediation)
+
+    def test_merge_authority_lane_passes_when_configured_workflow_exists(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            workflow = repo_root / ".github/workflows/codex-clear-stale.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("name: clear stale\n", encoding="utf-8")
+
+            check = check_review_hygiene(
+                "codex",
+                {
+                    "merge_authority": True,
+                    "review_hygiene": {
+                        "workflow": ".github/workflows/codex-clear-stale.yml",
+                        "token_env": "GITHUB_TOKEN",
+                    },
+                },
+                repo_root=repo_root,
+            )
+
+        self.assertEqual(check.status, "pass")
+        self.assertEqual(check.detail["workflow_exists"], True)
+        self.assertEqual(check.detail["workflow_path"], str(workflow))
 
     def test_merge_authority_lane_rejects_custom_hygiene_token_until_template_supports_it(self) -> None:
         check = check_review_hygiene(

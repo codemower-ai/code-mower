@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Mapping
 
 from .common import (
@@ -112,11 +113,19 @@ def check_lane_runtime(
     lane: Mapping[str, Any],
     *,
     source_lane: Mapping[str, Any] | None = None,
+    repo_root: Path | None = None,
     probe_runtime: bool,
     http_timeout: int,
 ) -> list[DoctorCheck]:
     hygiene_source = source_lane if source_lane is not None else lane
-    checks = [check_review_hygiene(lane_id, hygiene_source, effective_lane=lane)]
+    checks = [
+        check_review_hygiene(
+            lane_id,
+            hygiene_source,
+            effective_lane=lane,
+            repo_root=repo_root,
+        )
+    ]
     checks.extend(check_token_env(lane_id, lane))
     checks.extend(check_required_env(lane_id, lane))
     driver = str(lane.get("driver", ""))

@@ -255,7 +255,11 @@ workflow for this pattern.
 `provider.review_hygiene` for every selected merge-authority lane. A missing
 `review_hygiene.workflow` or `review_hygiene.token_env` is a failed doctor
 check, because stale terminal labels are a merge-safety issue rather than a
-cosmetic setup detail. The generated stale-clear workflow currently supports
+cosmetic setup detail. For installed repo configs, doctor also checks that the
+configured workflow file exists on disk, so a config cannot claim stale-label
+protection when the generated workflow was never committed. The packaged
+example config is exempt from this file-presence check because it is used before
+first install. The generated stale-clear workflow currently supports
 `review_hygiene.token_env: GITHUB_TOKEN`; use a custom token only after also
 customizing the workflow that exports credentials to the `clear-stale` command.
 
