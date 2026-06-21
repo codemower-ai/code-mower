@@ -104,12 +104,22 @@ Supported event types are:
 - `workflow_run`
 
 Events may include a `tool` object with metadata-only provenance: tool name,
-tool version, provider, model, integration, runtime environment, lens, and
-prompt-pack version. This is the field CodeMower.com uses to answer "which AI
-builder/reviewer/version produced this signal?" Missing tool/model provenance
-is still accepted for operational dogfood, but it is not enough for strong
-benchmark claims. The dashboard should therefore treat provenance coverage as
-a quality signal, not a vanity count.
+tool version, provider, model, `model_source`, `version_source`, integration,
+runtime environment, lens, and prompt-pack version. This is the field
+CodeMower.com uses to answer "which AI builder/reviewer/version produced this
+signal, and how do we know?" Missing tool/model provenance is still accepted for
+operational dogfood, but it is not enough for strong benchmark claims. The
+dashboard should therefore treat provenance coverage as a quality signal, not a
+vanity count.
+
+Common source values:
+
+- `env`: the user explicitly configured the model in the environment;
+- `profile:<name>`: the selected Code Mower provider profile supplied the model;
+- `default`: Code Mower used a safe provider default;
+- `cli_version_probe`: Code Mower read a local CLI/package version;
+- `not_probed`: version probing was intentionally skipped; and
+- `missing`: the event could not safely report the field.
 
 Include events from JSON, JSON arrays, or JSONL:
 
