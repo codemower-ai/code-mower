@@ -22,10 +22,10 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.17`, published on
-PyPI as `code-mower==0.5.0b17`. It is intended to be installed from the package
+The current verified public beta baseline is `v0.5.0-beta.18`, published on
+PyPI as `code-mower==0.5.0b18`. It is intended to be installed from the package
 index for friendly-user pilots, with GitHub tag/source installs kept as a
-fallback and development path. Beta.17 keeps the PyPI-first install path,
+fallback and development path. Beta.18 keeps the PyPI-first install path,
 release workflow, production PyPI trusted publishing, package-install
 rehearsal, and production dogfood upload shape from the earlier beta line while
 tightening catch-up provenance, stale-audit inspection, AI tool/model
@@ -60,7 +60,7 @@ It has proved:
   prints the same plan near the header so support tooling and first-time users
   can see exactly which optional GitHub/cloud stages ran;
 - Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
-  private reference/product repos, with beta.17 preserving that client path for
+  private reference/product repos, with beta.18 preserving that client path for
   the next rollout; and
 - metadata-only AI tool/model provenance in cloud bundles and structured
   events, so dashboards can distinguish known provider/model/version signal
@@ -76,15 +76,15 @@ It has proved:
   the OSS repo, hosted service repo, and two private reference/product repos,
   with imported history flagged as `history_only: true` and
   `calibration_evidence: false`; and
-- a package-installed beta.17 calibration/value-report pipeline target that
+- a package-installed beta.18 calibration/value-report pipeline target that
   keeps reviewer metrics, lane policy, value-report artifacts, and sanitized
   report upload in the release rehearsal path; and
-- a beta.17 private-repo install rehearsal target against
+- a beta.18 private-repo install rehearsal target against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
-  to prove `code-mower==0.5.0b17` can detect and dry-run repository-native
+  to prove `code-mower==0.5.0b18` can detect and dry-run repository-native
   checks in an external-ish private repo without committing support files first;
   and
-- a public PyPI package-install rehearsal from `code-mower==0.5.0b17` with a
+- a public PyPI package-install rehearsal from `code-mower==0.5.0b18` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout; and
@@ -95,7 +95,7 @@ It has proved:
   metadata, while historical imports must be run explicitly through
   `code-mower cloud catch-up` or `repo-sync --mode catch-up` and are displayed
   as imported history rather than calibrated reviewer evidence; and
-- a local Codex dogfood/catch-up proof using a dashboard-issued token: beta.17
+- a local Codex dogfood/catch-up proof using a dashboard-issued token: beta.18
   uploaded current metadata and sanitized imported GitHub Actions history for
   Code Mower OSS, CodeMower.com, and two private reference/product repos with
   `history_only: true` and `calibration_evidence: false` on historical events;
