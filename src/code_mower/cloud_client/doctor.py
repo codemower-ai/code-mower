@@ -7,6 +7,8 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from code_mower.provider_registry import REFERENCE_PROVIDERS
+
 from .bundle import BUNDLE_MANIFEST_FILENAME
 from .endpoints import (
     dashboard_url_for_endpoint,
@@ -19,11 +21,44 @@ from .errors import CloudBundleError
 from .upload import build_upload_payload
 
 
+MODEL_PROVENANCE_ENV_EXAMPLES = (
+    "CODE_MOWER_CODEX_MODEL",
+    "CODE_MOWER_GEMINI_MODEL",
+    "CODE_MOWER_ANTIGRAVITY_MODEL",
+    "CODE_MOWER_HERMES_MODEL",
+)
+
+
 def _validate_upload_endpoint(endpoint: str) -> None:
     try:
         validate_upload_endpoint(endpoint)
     except ValueError as exc:
         raise CloudBundleError(str(exc)) from exc
+
+
+def _provider_model_env_names(providers: list[str]) -> dict[str, list[str]]:
+    requested = set(providers)
+    env_by_provider: dict[str, list[str]] = {}
+    for lane in REFERENCE_PROVIDERS.values():
+        if lane.provider not in requested:
+            continue
+        config = lane.provider_config
+        env_names: list[str] = []
+        model_env = config.get("model_env")
+        if isinstance(model_env, str) and model_env:
+            env_names.append(model_env)
+        model_env_any = config.get("model_env_any", ())
+        if isinstance(model_env_any, str):
+            env_names.append(model_env_any)
+        elif isinstance(model_env_any, (list, tuple)):
+            env_names.extend(str(name) for name in model_env_any if str(name))
+        if env_names:
+            existing = env_by_provider.setdefault(lane.provider, [])
+            existing.extend(env_names)
+    return {
+        provider: sorted(dict.fromkeys(env_names))
+        for provider, env_names in sorted(env_by_provider.items())
+    }
 
 
 def run_cloud_doctor(
@@ -117,6 +152,7 @@ def run_cloud_doctor(
     if manifest_path.is_file():
         try:
             payload = build_upload_payload(bundle_dir=bundle_dir, include_reports=False)
+            provenance = payload.get("provenance", {})
             checks.append(
                 {
                     "name": "bundle",
@@ -127,6 +163,60 @@ def run_cloud_doctor(
                     ),
                 }
             )
+            if isinstance(provenance, dict):
+                missing_model_events = int(
+                    provenance.get("events_missing_model_provenance") or 0
+                )
+                provenance_tools = provenance.get("tools", [])
+                if not isinstance(provenance_tools, list):
+                    provenance_tools = []
+                missing_model_tools = sorted(
+                    {
+                        str(tool.get("provider") or tool.get("tool_name") or "unknown")
+                        for tool in provenance_tools
+                        if isinstance(tool, dict)
+                        and "missing" in set(tool.get("model_sources") or [])
+                    }
+                )
+                model_env_by_provider = _provider_model_env_names(missing_model_tools)
+                model_env_examples = sorted(
+                    {
+                        name
+                        for names in model_env_by_provider.values()
+                        for name in names
+                        if name.startswith("CODE_MOWER_")
+                    }
+                    or set(MODEL_PROVENANCE_ENV_EXAMPLES)
+                )
+                if missing_model_events:
+                    checks.append(
+                        {
+                            "name": "model-provenance",
+                            "status": "warn",
+                            "message": (
+                                f"{missing_model_events} events are missing model provenance"
+                            ),
+                            "detail": {
+                                "providers": missing_model_tools,
+                                "model_env_by_provider": model_env_by_provider,
+                                "model_env_examples": model_env_examples,
+                            },
+                            "remediation": (
+                                "Set provider-specific model env vars before export or dogfood, "
+                                "for example "
+                                + ", ".join(model_env_examples)
+                                + "."
+                            ),
+                        }
+                    )
+                else:
+                    checks.append(
+                        {
+                            "name": "model-provenance",
+                            "status": "pass",
+                            "message": "bundle has model provenance for all structured events",
+                        }
+                    )
         except CloudBundleError as exc:
             checks.append(
                 {
