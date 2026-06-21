@@ -279,6 +279,11 @@ def test_provenance_summary_treats_vendor_hidden_model_as_known_source() -> None
     assert summary["events_missing_model_provenance"] == 0
     assert summary["events_with_tool_version_provenance"] == 1
     assert summary["events_missing_tool_version_provenance"] == 0
+    assert summary["inventory_event_count"] == 1
+    assert summary["benchmark_event_count"] == 0
+    assert summary["benchmark_events_with_model_provenance"] == 0
+    assert summary["benchmark_events_missing_model_provenance"] == 0
+    assert summary["benchmark_model_missing_providers"] == []
     assert summary["tools"][0]["model_sources"] == ["vendor_hidden"]
     assert summary["tools"][0]["version_sources"] == ["not_probed"]
 
@@ -337,6 +342,13 @@ def test_provenance_summary_preserves_source_quality_fields() -> None:
     assert summary["events_missing_model_provenance"] == 1
     assert summary["events_with_tool_version_provenance"] == 2
     assert summary["events_missing_tool_version_provenance"] == 0
+    assert summary["inventory_event_count"] == 1
+    assert summary["benchmark_event_count"] == 1
+    assert summary["benchmark_events_with_model_provenance"] == 1
+    assert summary["benchmark_events_missing_model_provenance"] == 0
+    assert summary["benchmark_events_with_tool_version_provenance"] == 1
+    assert summary["benchmark_events_missing_tool_version_provenance"] == 0
+    assert summary["benchmark_model_missing_providers"] == []
     rows = {row["tool_name"]: row for row in summary["tools"]}
     assert rows["code-mower"]["model_sources"] == ["not_applicable"]
     assert rows["code-mower"]["version_sources"] == ["package_version"]
@@ -458,6 +470,49 @@ def test_cloud_doctor_warns_when_model_provenance_is_missing() -> None:
             "remediation"
         ]
         assert "CODE_MOWER_CODEX_MODEL" in check["remediation"]
+
+
+def test_cloud_doctor_does_not_warn_for_inventory_only_model_gaps() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        build_cloud_bundle(
+            reports=[],
+            events=[
+                {
+                    "event_type": "provider_catalog_snapshot",
+                    "repo_slug": "owner/repo",
+                    "provider": "gemini",
+                    "lens": "base",
+                    "status": "observed",
+                    "dimensions": {"catalog_snapshot": True},
+                    "tool": {
+                        "role": "reviewer",
+                        "tool_name": "gemini",
+                        "provider": "gemini",
+                        "tool_version": "0.45.2",
+                        "model_source": "missing",
+                    },
+                }
+            ],
+            output_dir=root / "bundle",
+            repo_slug="owner/repo",
+        )
+
+        report = run_cloud_doctor(
+            bundle_dir=root / "bundle",
+            endpoint="https://codemower.com/api/ingest",
+            token_env="CODE_MOWER_TEST_CLOUD_TOKEN",
+            require_token=False,
+        )
+
+        check = next(
+            item for item in report["checks"] if item["name"] == "model-provenance"
+        )
+        assert report["status"] == "pass"
+        assert check["status"] == "pass"
+        assert "benchmark evidence events" in check["message"]
+        assert check["detail"]["raw_missing_model_events"] == 1
+        assert check["detail"]["benchmark_missing_model_events"] == 0
 
 
 def test_cloud_doctor_fans_out_multiple_model_provenance_commands() -> None:

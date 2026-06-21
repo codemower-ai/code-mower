@@ -220,13 +220,15 @@ The service probe checks the endpoint's `/api/health` route. Doctor output also
 includes the dashboard URL and token-safe next-step commands, so it is suitable
 for support screenshots and CI logs.
 
-If the bundle contains reviewer/provider events with missing model provenance,
+If the bundle contains benchmark-evidence events with missing model provenance,
 doctor reports a non-blocking `model-provenance` warning with a copyable
-`code-mower providers provenance-env ... --shell` command. That command prints
-safe `CODE_MOWER_*_MODEL` export templates to set before the next export or
-dogfood upload. Uploads still work, but CodeMower.com should treat those rows as
-operational signal until the model source is explicit enough for benchmark
-claims.
+`code-mower providers provenance-env ... --shell` command. Provider catalog
+snapshots are inventory-only setup diagnostics, so missing model ids in catalog
+rows do not by themselves trigger the warning. The command prints safe
+`CODE_MOWER_*_MODEL` export templates to set before the next export or dogfood
+upload. Uploads still work, but CodeMower.com should treat rows with missing
+benchmark provenance as operational signal until the model source is explicit
+enough for benchmark claims.
 
 Use the provider setup helper when closing those warnings:
 

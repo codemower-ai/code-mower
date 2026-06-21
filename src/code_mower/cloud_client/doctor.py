@@ -183,19 +183,40 @@ def run_cloud_doctor(
             )
             if isinstance(provenance, dict):
                 missing_model_events = int(
+                    provenance.get(
+                        "benchmark_events_missing_model_provenance",
+                        provenance.get("events_missing_model_provenance"),
+                    )
+                    or 0
+                )
+                raw_missing_model_events = int(
                     provenance.get("events_missing_model_provenance") or 0
                 )
                 provenance_tools = provenance.get("tools", [])
                 if not isinstance(provenance_tools, list):
                     provenance_tools = []
-                missing_model_tools = sorted(
-                    {
-                        str(tool.get("provider") or tool.get("tool_name") or "unknown")
-                        for tool in provenance_tools
-                        if isinstance(tool, dict)
-                        and "missing" in set(tool.get("model_sources") or [])
-                    }
+                benchmark_missing_providers = provenance.get(
+                    "benchmark_model_missing_providers"
                 )
+                if isinstance(benchmark_missing_providers, list):
+                    missing_model_tools = sorted(
+                        {
+                            str(provider).strip()
+                            for provider in benchmark_missing_providers
+                            if str(provider).strip()
+                        }
+                    )
+                else:
+                    missing_model_tools = sorted(
+                        {
+                            str(
+                                tool.get("provider") or tool.get("tool_name") or "unknown"
+                            )
+                            for tool in provenance_tools
+                            if isinstance(tool, dict)
+                            and "missing" in set(tool.get("model_sources") or [])
+                        }
+                    )
                 model_env_by_provider = _provider_model_env_names(missing_model_tools)
                 model_env_examples = sorted(
                     {
@@ -236,10 +257,13 @@ def run_cloud_doctor(
                             "name": "model-provenance",
                             "status": "warn",
                             "message": (
-                                f"{missing_model_events} events are missing model provenance"
+                                f"{missing_model_events} benchmark evidence events "
+                                "are missing model provenance"
                             ),
                             "detail": {
                                 "providers": missing_model_tools,
+                                "raw_missing_model_events": raw_missing_model_events,
+                                "benchmark_missing_model_events": missing_model_events,
                                 "model_env_by_provider": model_env_by_provider,
                                 "model_env_examples": model_env_examples,
                                 "model_env_commands": model_env_commands,
@@ -253,7 +277,14 @@ def run_cloud_doctor(
                         {
                             "name": "model-provenance",
                             "status": "pass",
-                            "message": "bundle has model provenance for all structured events",
+                            "message": (
+                                "bundle has model provenance for all benchmark evidence "
+                                "events"
+                            ),
+                            "detail": {
+                                "raw_missing_model_events": raw_missing_model_events,
+                                "benchmark_missing_model_events": missing_model_events,
+                            },
                         }
                     )
         except CloudBundleError as exc:

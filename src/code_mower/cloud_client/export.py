@@ -20,6 +20,15 @@ from .errors import CloudBundleError
 from .events import normalize_event, safe_kind
 
 
+INVENTORY_ONLY_PROVENANCE_EVENT_TYPES = {"provider_catalog_snapshot"}
+
+
+def is_benchmark_provenance_event(event: dict[str, Any]) -> bool:
+    """Return whether an event should count toward benchmark provenance coverage."""
+
+    return str(event.get("event_type") or "") not in INVENTORY_ONLY_PROVENANCE_EVENT_TYPES
+
+
 def safe_target_name(path: Path, index: int, *, anonymous: bool = False) -> str:
     suffix = path.suffix.lower()
     if suffix not in {".json", ".jsonl", ".md", ".txt"}:
@@ -245,12 +254,25 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     missing_tool_events = 0
     missing_model_events = 0
     missing_tool_version_events = 0
+    benchmark_event_count = 0
+    benchmark_missing_model_events = 0
+    benchmark_missing_tool_version_events = 0
+    benchmark_model_missing_providers: set[str] = set()
     for event in events:
+        is_benchmark_event = is_benchmark_provenance_event(event)
+        if is_benchmark_event:
+            benchmark_event_count += 1
         tool = event.get("tool")
         if not isinstance(tool, dict):
             missing_tool_events += 1
             missing_model_events += 1
             missing_tool_version_events += 1
+            if is_benchmark_event:
+                benchmark_missing_model_events += 1
+                benchmark_missing_tool_version_events += 1
+                benchmark_model_missing_providers.add(
+                    str(event.get("provider") or "unknown").strip() or "unknown"
+                )
             continue
         tool_name = str(tool.get("tool_name") or "").strip()
         provider = str(tool.get("provider") or event.get("provider") or "").strip()
@@ -262,13 +284,24 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
             missing_tool_events += 1
             missing_model_events += 1
             missing_tool_version_events += 1
+            if is_benchmark_event:
+                benchmark_missing_model_events += 1
+                benchmark_missing_tool_version_events += 1
+                benchmark_model_missing_providers.add("unknown")
             continue
         if not model and not model_version_raw and model_source in {"", "missing"}:
             missing_model_events += 1
+            if is_benchmark_event:
+                benchmark_missing_model_events += 1
+                benchmark_model_missing_providers.add(
+                    provider or tool_name or "unknown"
+                )
         if not tool_version:
             version_source = str(tool.get("version_source") or "").strip()
             if version_source in {"", "missing"}:
                 missing_tool_version_events += 1
+                if is_benchmark_event:
+                    benchmark_missing_tool_version_events += 1
         key = (tool_name or "unknown", provider or "unknown", model or "")
         row = tools.setdefault(
             key,
@@ -328,6 +361,15 @@ def build_provenance_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "events_with_tool_version_provenance": len(events)
         - missing_tool_version_events,
         "events_missing_tool_version_provenance": missing_tool_version_events,
+        "inventory_event_count": len(events) - benchmark_event_count,
+        "benchmark_event_count": benchmark_event_count,
+        "benchmark_events_with_model_provenance": benchmark_event_count
+        - benchmark_missing_model_events,
+        "benchmark_events_missing_model_provenance": benchmark_missing_model_events,
+        "benchmark_events_with_tool_version_provenance": benchmark_event_count
+        - benchmark_missing_tool_version_events,
+        "benchmark_events_missing_tool_version_provenance": benchmark_missing_tool_version_events,
+        "benchmark_model_missing_providers": sorted(benchmark_model_missing_providers),
         "tools": normalized_tools,
     }
 

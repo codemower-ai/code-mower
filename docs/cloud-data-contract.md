@@ -70,7 +70,9 @@ stdout/stderr, auth output, or secrets.
 provider lanes and safe tool/model/version coverage. They are useful for setup
 and benchmark trust diagnostics, but they are not reviewer accuracy evidence and
 must not be counted as useful findings, false positives, or lane-promotion
-support.
+support. Cloud bundle provenance summaries therefore keep both raw upload counts
+and benchmark-evidence counts: catalog snapshots still appear in raw inventory,
+but they are excluded from `benchmark_*` provenance coverage fields.
 
 Each event may also include a `tool` object using schema
 `code_mower.toolProvenance.v1`. This object is the benchmark-grade provenance
