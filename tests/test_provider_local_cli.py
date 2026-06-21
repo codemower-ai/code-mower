@@ -178,6 +178,65 @@ def test_provider_model_env_report_never_exposes_env_value(monkeypatch) -> None:
     assert row["action"] == "none"
 
 
+def test_provider_model_env_report_includes_cli_version_status(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executable = _write_executable(
+        tmp_path / "custom-reviewer",
+        "#!/bin/sh\nprintf 'custom-reviewer 2.0.0\\n'\n",
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setenv("CUSTOM_REVIEWER_MODEL", "do-not-render-this-model")
+    lanes = {
+        "custom_reviewer": {
+            "driver": "local_cli",
+            "provider": "custom",
+            "provider_config": {
+                "command": "custom-reviewer",
+                "model_env": "CUSTOM_REVIEWER_MODEL",
+            },
+        }
+    }
+
+    report = build_provider_model_env_report(lanes)
+
+    assert report["missing_model_env_count"] == 0
+    assert report["missing_version_probe_count"] == 0
+    row = report["providers"][0]
+    assert row["tool_name"] == "custom-reviewer"
+    assert row["tool_version"] == "custom-reviewer 2.0.0"
+    assert row["version_known"] is True
+    assert row["version_source"] == "cli_version_probe"
+    assert row["command"] == "custom-reviewer"
+    assert row["command_found"] is True
+    assert "do-not-render-this-model" not in str(report)
+
+
+def test_provider_model_env_report_counts_missing_cli_version_probe(monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "")
+    lanes = {
+        "missing_reviewer": {
+            "driver": "local_cli",
+            "provider": "missing",
+            "provider_config": {
+                "command": "missing-reviewer",
+                "model_env": "MISSING_REVIEWER_MODEL",
+            },
+        }
+    }
+
+    report = build_provider_model_env_report(lanes)
+
+    assert report["missing_model_env_count"] == 1
+    assert report["missing_version_probe_count"] == 1
+    row = report["providers"][0]
+    assert row["version_known"] is False
+    assert row["version_source"] == "missing"
+    assert row["command"] == "missing-reviewer"
+    assert row["command_found"] is False
+
+
 def test_providers_provenance_env_cli_shell_output(monkeypatch, capsys) -> None:
     monkeypatch.delenv("CODE_MOWER_ANTIGRAVITY_MODEL", raising=False)
     monkeypatch.delenv("ANTIGRAVITY_MODEL", raising=False)

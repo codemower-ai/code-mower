@@ -163,6 +163,9 @@ CodeMower.com dashboard mirrors that idea in the Data Provenance panel by
 showing "Top provenance fixes" for the current filter, so teams can tell
 whether they need a client upgrade, a model env/profile value, or a CLI/package
 version probe before treating the row as benchmark-grade evidence.
+`code-mower providers provenance-env` also reports whether local CLI version
+probes are available; missing version probes usually mean the provider CLI is
+not installed, is not on `PATH`, or does not support a safe `--version` check.
 
 Include events from JSON, JSON arrays, or JSONL:
 
@@ -232,9 +235,10 @@ code-mower providers provenance-env
 code-mower providers provenance-env --provider gemini_cli --shell
 ```
 
-The helper reports whether model env vars are set without printing their values.
-The `--shell` output uses `TODO_MODEL_NAME` placeholders so it is safe to paste
-into support notes or CI setup PRs.
+The helper reports whether model env vars are set without printing their values,
+and it shows whether local CLI version probes are available. The `--shell`
+output uses `TODO_MODEL_NAME` placeholders so it is safe to paste into support
+notes or CI setup PRs.
 
 ## Upload
 
