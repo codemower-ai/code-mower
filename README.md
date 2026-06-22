@@ -86,11 +86,11 @@ Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b29
+pipx install --python python3.12 code-mower==0.5.0b30
 code-mower --version
 ```
 
-`0.5.0b29` is a beta release. Until Code Mower publishes a stable `1.0`
+`0.5.0b30` is a beta release. Until Code Mower publishes a stable `1.0`
 line, use the explicit beta version above or allow prereleases with:
 
 ```bash
@@ -133,7 +133,7 @@ First-time command map: [docs/launch-command-surface.md](docs/launch-command-sur
 
 The current PyPI beta has been rehearsed end-to-end from a clean install:
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the latest 10/10 public-package readiness proof for `code-mower==0.5.0b29`.
+the latest 10/10 public-package readiness proof for `code-mower==0.5.0b30`.
 
 ## Why Not Just Run Codex Or Claude Yourself?
 
@@ -238,9 +238,9 @@ best?" to "which AI builder plus reviewer loop ships best on this product?" See
 
 ## Installation Status
 
-The current public beta is `v0.5.0-beta.29` from
+The current public beta is `v0.5.0-beta.30` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), published
-as `code-mower==0.5.0b29` on [PyPI](https://pypi.org/project/code-mower/).
+as `code-mower==0.5.0b30` on [PyPI](https://pypi.org/project/code-mower/).
 GitHub releases remain the auditable source for tags, build artifacts, and
 release notes.
 
