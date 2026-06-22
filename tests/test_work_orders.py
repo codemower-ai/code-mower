@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import tempfile
-from pathlib import Path
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+from pathlib import Path
 
 from code_mower import builder_experiment
 from code_mower import work_orders
@@ -156,6 +156,44 @@ def test_plan_from_issue_prints_markdown_when_stdout_is_selected() -> None:
     assert "Add a planning workflow." in text
 
 
+def test_plan_from_issue_reports_missing_body_file_as_cli_error() -> None:
+    err = StringIO()
+    with redirect_stderr(err):
+        exit_code = work_orders.plan_main(
+            [
+                "from-issue",
+                "--title",
+                "Planning workflow",
+                "--body-file",
+                "/tmp/does-not-exist-code-mower-plan.md",
+            ]
+        )
+
+    assert exit_code == 1
+    assert "error: could not read" in err.getvalue()
+
+
+def test_issue_plan_refuses_to_overwrite_without_force() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "issue-plan.md"
+        output.write_text("locally edited\n", encoding="utf-8")
+        plan = work_orders.build_issue_plan(
+            title="Planning workflow",
+            body="Add a planning workflow.",
+        )
+
+        try:
+            work_orders.write_issue_plan(plan, output)
+        except ValueError as exc:
+            assert "pass --force" in str(exc)
+        else:  # pragma: no cover - defensive assertion path.
+            raise AssertionError("existing issue plan should require force")
+        assert output.read_text(encoding="utf-8") == "locally edited\n"
+
+        work_orders.write_issue_plan(plan, output, force=True)
+        assert output.read_text(encoding="utf-8").startswith("# Issue Plan: Planning workflow")
+
+
 def test_work_order_draft_rejects_json_output_path() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         try:
@@ -168,3 +206,33 @@ def test_work_order_draft_rejects_json_output_path() -> None:
             assert "Markdown path" in str(exc)
         else:  # pragma: no cover - defensive assertion path.
             raise AssertionError("JSON work-order output should fail")
+
+
+def test_work_order_draft_refuses_to_overwrite_without_force() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "work-order.md"
+        manifest = Path(tmp) / "work-order.json"
+        output.write_text("locally edited\n", encoding="utf-8")
+        manifest.write_text("{\"edited\": true}\n", encoding="utf-8")
+
+        try:
+            work_orders.draft_work_order(
+                title="Planning workflow",
+                source_text="Add a planning workflow.",
+                output=output,
+            )
+        except ValueError as exc:
+            assert "pass --force" in str(exc)
+        else:  # pragma: no cover - defensive assertion path.
+            raise AssertionError("existing work order should require force")
+
+        assert output.read_text(encoding="utf-8") == "locally edited\n"
+        assert manifest.read_text(encoding="utf-8") == "{\"edited\": true}\n"
+
+        work_orders.draft_work_order(
+            title="Planning workflow",
+            source_text="Add a planning workflow.",
+            output=output,
+            force=True,
+        )
+        assert output.read_text(encoding="utf-8").startswith("# Work Order: Planning workflow")

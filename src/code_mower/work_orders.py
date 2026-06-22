@@ -160,6 +160,8 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ValueError(f"could not read {path}: {exc}") from exc
 
 
 def _write_text(path: Path, text: str, *, force: bool = False) -> bool:
@@ -176,6 +178,11 @@ def _write_json(path: Path, payload: Mapping[str, Any], *, force: bool = True) -
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         force=force,
     )
+
+
+def _require_writable(path: Path, *, force: bool) -> None:
+    if path.exists() and not force:
+        raise ValueError(f"{path} already exists; pass --force to overwrite")
 
 
 def _sha256_file(path: Path) -> str:
@@ -430,8 +437,9 @@ def render_issue_plan_markdown(plan: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def write_issue_plan(plan: Mapping[str, Any], output: Path) -> dict[str, Any]:
+def write_issue_plan(plan: Mapping[str, Any], output: Path, *, force: bool = False) -> dict[str, Any]:
     output.parent.mkdir(parents=True, exist_ok=True)
+    _require_writable(output, force=force)
     if output.suffix.lower() == ".json":
         _write_json(output, plan, force=True)
     else:
@@ -548,11 +556,15 @@ def draft_work_order(
     role_lenses: Sequence[str] = (),
     review_lanes: Sequence[str] = (),
     output: Path | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     title = title.strip() or _extract_heading_title(source_text, "Untitled work order")
     output = output or (DEFAULT_WORK_ORDER_DIR / f"{_safe_slug(title)}.md")
     if output.suffix.lower() == ".json":
         raise ValueError("work-order draft --output must be a Markdown path, not .json")
+    manifest_path = output.with_suffix(".json")
+    _require_writable(output, force=force)
+    _require_writable(manifest_path, force=force)
     markdown = render_work_order(
         title=title,
         source_text=source_text,
@@ -574,7 +586,6 @@ def draft_work_order(
         "role_lenses": list(role_lenses),
         "review_lanes": list(review_lanes),
     }
-    manifest_path = output.with_suffix(".json")
     _write_json(manifest_path, manifest, force=True)
     manifest["manifest_path"] = str(manifest_path)
     return manifest
@@ -763,28 +774,33 @@ def plan_main(argv: list[str] | None = None) -> int:
     issue_parser.add_argument("--issue-number", default="")
     issue_parser.add_argument("--repo", default="")
     issue_parser.add_argument("--output", type=Path)
+    issue_parser.add_argument("--force", action="store_true")
     issue_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     if args.command == "from-issue":
-        body = _read_optional_body(args.body_file, args.body)
-        plan = build_issue_plan(
-            title=args.title,
-            body=body,
-            issue_url=args.issue_url,
-            repo=args.repo,
-            issue_number=args.issue_number,
-        )
-        if args.output:
-            payload = write_issue_plan(plan, args.output)
-            text = (
-                f"Code Mower issue plan\nTitle: {payload.get('title')}\n"
-                f"Output: {payload.get('output_path', '(stdout only)')}\n"
+        try:
+            body = _read_optional_body(args.body_file, args.body)
+            plan = build_issue_plan(
+                title=args.title,
+                body=body,
+                issue_url=args.issue_url,
+                repo=args.repo,
+                issue_number=args.issue_number,
             )
-        else:
-            payload = plan
-            text = render_issue_plan_markdown(plan)
-        return _print_payload(payload, as_json=args.json, text=text)
+            if args.output:
+                payload = write_issue_plan(plan, args.output, force=args.force)
+                text = (
+                    f"Code Mower issue plan\nTitle: {payload.get('title')}\n"
+                    f"Output: {payload.get('output_path', '(stdout only)')}\n"
+                )
+            else:
+                payload = plan
+                text = render_issue_plan_markdown(plan)
+            return _print_payload(payload, as_json=args.json, text=text)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     raise AssertionError(f"unhandled plan command: {args.command}")
 
 
@@ -802,6 +818,7 @@ def work_order_main(argv: list[str] | None = None) -> int:
     draft_parser.add_argument("--role-lens", action="append", default=[])
     draft_parser.add_argument("--review-lane", action="append", default=[])
     draft_parser.add_argument("--output", type=Path)
+    draft_parser.add_argument("--force", action="store_true")
     draft_parser.add_argument("--json", action="store_true")
 
     critique_parser = subparsers.add_parser("critique-plan")
@@ -839,6 +856,7 @@ def work_order_main(argv: list[str] | None = None) -> int:
                 role_lenses=args.role_lens,
                 review_lanes=args.review_lane,
                 output=args.output,
+                force=args.force,
             )
             text = (
                 f"Code Mower work order\nOutput: {payload.get('output_path')}\n"
