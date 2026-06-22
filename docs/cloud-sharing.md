@@ -478,6 +478,13 @@ code-mower cloud repo-sync \
   --json
 ```
 
+The JSON result includes `data_class_summary`, which groups synced data into:
+
+- `current_dogfood`: current repo metadata and provider inventory;
+- `imported_history`: sanitized GitHub Actions history, not calibration
+  evidence; and
+- `reviewer_evidence`: metadata-only reviewer verdict artifacts.
+
 Use `--mode` to choose exact modes:
 
 ```bash
@@ -498,8 +505,8 @@ background cron and not as a requirement for every OSS user.
 Recent dogfood/catch-up imports used this shape across the OSS repo, the
 hosted service repo, and two private reference/product repos with
 `--mode catch-up --limit 100`. Those uploads are intentionally displayed as
-imported history, not as calibrated reviewer/lens evidence. Beta.16 makes that
-distinction explicit in the catch-up command result and terminal output.
+imported history, not as calibrated reviewer/lens evidence. Beta.29 makes that
+distinction explicit in catch-up and repo-sync JSON plus terminal output.
 
 ## What codemower.com Stores First
 

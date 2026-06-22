@@ -125,6 +125,12 @@ Use the modes deliberately:
 - `reviewer-runs` uploads existing local verdict artifacts; and
 - `catch-up` uploads sanitized GitHub Actions history.
 
+`repo-sync` output includes a `data_class_summary` that separates current
+dogfood, imported history, and reviewer evidence. Use that summary before
+treating dashboard rows as benchmark signal: imported history is useful
+coverage/backfill, but reviewer accuracy and lane-promotion decisions need
+reviewer-run or calibration evidence.
+
 Routine dogfood workflows are not historical benchmark imports. If a repo has
 useful history before cloud sharing was enabled, run `code-mower cloud catch-up`
 or `code-mower cloud repo-sync --mode catch-up` explicitly, then use dogfood for

@@ -2779,6 +2779,50 @@ def main():
             )
             self.assertEqual(steps[1]["status"], "no_events")
 
+    def test_cloud_repo_sync_cli_text_summarizes_data_classes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.com"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test"],
+                cwd=root,
+                check=True,
+            )
+            (root / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "fixture"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = code_mower_cloud.main(
+                    [
+                        "repo-sync",
+                        "--repo",
+                        f"owner/repo={root}",
+                        "--output-dir",
+                        str(root / ".code-mower/cloud-repo-sync"),
+                        "--endpoint",
+                        "http://localhost:3000/api/ingest",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            text = output.getvalue()
+            self.assertIn("Code Mower cloud repo sync", text)
+            self.assertIn("Current dogfood: 1 steps, ", text)
+            self.assertIn("Imported history: 0 steps, 0 events (not calibration evidence)", text)
+            self.assertIn("Reviewer evidence: 1 steps, 0 events", text)
+
     def test_cloud_repo_sync_reviewer_only_no_events_is_not_uploaded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
