@@ -233,7 +233,11 @@ v1.0 should ship in six ordered slices:
 7. **First builder-experiment scaffold.** Keep this harness-only for v1.0:
    record authoring run metadata and reports, but do not require autonomous
    orchestration or hosted source access.
-8. **Reusable merge-authority lane hygiene.** Ship stale-audit label clearing,
+8. **Planning and work-order scaffold.** Keep product requirements and
+   architecture notes in issues or local project-context docs, then generate a
+   work order as the builder contract. External context stays metadata-only by
+   default, and critique prompts stay local.
+9. **Reusable merge-authority lane hygiene.** Ship stale-audit label clearing,
    current-head comment validation, trusted-bot author controls, and direct
    redispatch behavior as reusable templates/commands instead of product-repo
    glue.
@@ -365,6 +369,14 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 ### Authoring Intelligence
 
 - Define `authoring_runs.jsonl`.
+- Generate local project-context docs for architecture, hosting, CI/CD, design,
+  quality bar, agent-team roles, and work-spec templates.
+- Record external product/context docs as local metadata-only manifests by
+  default, with bounded text previews only by explicit opt-in.
+- Generate issue-derived work orders that reviewers and builders can use as
+  the shared task contract.
+- Generate critique prompts for multiple agents to improve the work order
+  before implementation.
 - Render a first delivery report from manually supplied authoring-run entries.
 - Connect authoring runs to reviewer outcomes in value reports.
 - Normalize `run_role`/`purpose`, task contract identity, provider/tool/model,

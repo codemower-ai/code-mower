@@ -10,6 +10,8 @@ The short version:
   AI review tools;
 - run setup diagnostics before a lane can surprise you with spend, source
   exposure, or GitHub Actions churn;
+- turn issue text, external docs, and project doctrine into local work orders
+  before an agent starts coding;
 - generate local reviewer value reports from known-clean and known-blocked PRs;
   and
 - optionally share sanitized metadata with [CodeMower.com](https://codemower.com)
@@ -134,6 +136,28 @@ First-time command map: [docs/launch-command-surface.md](docs/launch-command-sur
 The current PyPI beta has been rehearsed end-to-end from a clean install:
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
 the latest 10/10 public-package readiness proof for `code-mower==0.5.0b30`.
+
+## Optional: Plan Before Coding
+
+For larger changes, use GitHub Issues and local work orders as the planning
+surface, then keep pull requests focused on code review and merge readiness:
+
+```bash
+code-mower project-context init --project-name "My Product"
+code-mower context add --external ~/Downloads/product-requirements.md
+code-mower plan from-issue \
+  --repo OWNER/REPO \
+  --title "Add billing settings" \
+  --body-file issue-body.md \
+  --output .code-mower/work-orders/billing-settings-plan.md
+code-mower work-order draft \
+  --issue-plan .code-mower/work-orders/billing-settings-plan.md \
+  --output .code-mower/work-orders/billing-settings.md
+```
+
+The work-order path is local-only by default. External docs are recorded as
+metadata manifests unless you explicitly ask for bounded previews. See
+[docs/planning-work-orders.md](docs/planning-work-orders.md).
 
 ## Why Not Just Run Codex Or Claude Yourself?
 

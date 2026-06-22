@@ -14,6 +14,10 @@ session.
 | `code-mower --version` | Confirm install. | no | no |
 | `code-mower init --easy` | Preview generated setup. | no | no |
 | `code-mower init --easy --apply --output-dir .code-mower.generated` | Write reviewable generated setup files. | yes, local only | no |
+| `code-mower project-context init --project-name "My Product"` | Create editable local project doctrine docs. | yes, local only | no |
+| `code-mower context add --external path/to/doc.md` | Record external planning context as a metadata-only local manifest. | yes, local only | no |
+| `code-mower plan from-issue ...` | Turn issue text into a local planning artifact. | yes, local only | no |
+| `code-mower work-order draft ...` | Create an implementation contract from a plan or prompt. | yes, local only | no |
 | `code-mower doctor --preflight --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
 | `code-mower next-steps --profile recommended --repo OWNER/REPO` | Print the next recommended setup actions. | no | no |
 | `code-mower migration package-install-rehearsal ...` | Prove install, toy repo, starter report, and cloud dry-run path. | yes, scratch workspace | no uploads |
@@ -34,8 +38,13 @@ These commands are real, but they are not the first-user spine.
   `clear-stale`, `blind-review`.
 - Migration and packaging internals: `package`, `bootstrap`, advanced
   `migration` subcommands.
-- Experimental surfaces: `builder-experiment`, `telemetry`, future ACP or
-  orchestrator bridges.
+- Planning and authoring-intelligence surfaces: `work-order`,
+  `builder-experiment`, `telemetry`, future ACP or orchestrator bridges.
+
+The planning commands are local-first and safe to try early, but they are not
+required for a first audit. See [planning-work-orders.md](planning-work-orders.md)
+when a team wants project doctrine, issue-derived plans, or builder experiment
+seeds before implementation starts.
 
 Treat these as opt-in after the launch-safe commands are boring in one
 repository.
