@@ -72,6 +72,12 @@ It has proved:
   from structured CLI stats when explicit model configuration is absent.
   improving Google/Antigravity-style value-report provenance without uploading
   raw prompts, diffs, or transcripts; and
+- local project-context and work-order planning commands:
+  `project-context init`, `context add --external`, `plan from-issue`,
+  `work-order draft`, `work-order critique-plan`, and
+  `work-order builder-experiment`. These give teams a source-free path from
+  issue/spec context to implementation contracts and builder-experiment seeds
+  without turning Code Mower into a mandatory agent orchestrator; and
 - a real metadata-only `repo-sync --mode catch-up --limit 100` import across
   the OSS repo, hosted service repo, and two private reference/product repos,
   with imported history flagged as `history_only: true` and

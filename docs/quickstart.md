@@ -79,6 +79,24 @@ The prompt smoke is the real readiness check. If `claude auth status` says
 logged in but the prompt returns an auth error, follow
 [Troubleshooting](troubleshooting.md#claude-code-reports-logged-in-but-audits-fail).
 
+## Optional: Create Planning Context
+
+You do not need this for the first audit. Use it when a change needs product
+requirements, architecture constraints, or multiple-agent plan critique before
+implementation:
+
+```bash
+code-mower project-context init --project-name "My Product"
+code-mower context add --external ~/Downloads/product-requirements.md
+code-mower plan from-issue --title "Feature" --body-file issue-body.md \
+  --output .code-mower/work-orders/feature-plan.md
+code-mower work-order draft \
+  --issue-plan .code-mower/work-orders/feature-plan.md \
+  --output .code-mower/work-orders/feature.md
+```
+
+Details: [Planning And Work Orders](planning-work-orders.md).
+
 Keep SaaS reviewers such as Gitar, Cursor BugBot, CodeRabbit, Qodo, Greptile,
 and Devin informational/manual until your own calibration data supports
 promotion.

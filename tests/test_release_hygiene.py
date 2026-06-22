@@ -161,6 +161,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "checks",
                 "cloud",
                 "config",
+                "context",
                 "context-packs",
                 "coderabbit-cli",
                 "codex-audit",
@@ -175,12 +176,15 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "merge-plan",
                 "next-steps",
                 "package",
+                "plan",
+                "project-context",
                 "prompts",
                 "providers",
                 "reviewer-metrics",
                 "saas-reviewer-labeler",
                 "telemetry",
                 "trailer-comment-labeler",
+                "work-order",
             ),
         )
         self.assertTrue(
@@ -208,9 +212,11 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("  checks", help_text)
         self.assertIn("  calibration", help_text)
         self.assertIn("  cloud", help_text)
+        self.assertIn("  project-context", help_text)
         self.assertNotIn("trailer-comment-labeler", help_text)
         self.assertNotIn("codex-audit-env-preflight", help_text)
         self.assertNotIn("claude-bounce", help_text)
+        self.assertNotIn("  work-order", help_text)
         self.assertNotIn("  providers", help_text)
         self.assertNotIn("  migration", help_text)
 
@@ -227,6 +233,8 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("codex-audit-env-preflight", help_text)
         self.assertIn("claude-bounce", help_text)
         self.assertIn("builder-experiment", help_text)
+        self.assertIn("context", help_text)
+        self.assertIn("work-order", help_text)
         self.assertIn("providers", help_text)
         self.assertIn("migration", help_text)
 

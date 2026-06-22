@@ -33,6 +33,28 @@ The first implementation is intentionally harness-only. It plans runs and
 reports results, but it does not run autonomous authoring itself. That keeps the
 measurement surface useful while preserving the normal Code Mower merge bar.
 
+If you are starting from product requirements or a GitHub Issue, use the
+planning layer first:
+
+```bash
+code-mower project-context init --project-name "My Product"
+code-mower context add --external ~/Downloads/product-requirements.md
+code-mower plan from-issue --title "Feature" --body-file issue.md \
+  --output .code-mower/work-orders/feature-plan.md
+code-mower work-order draft \
+  --issue-plan .code-mower/work-orders/feature-plan.md \
+  --context-manifest .code-mower/context/external/external-context-manifest.json \
+  --output .code-mower/work-orders/feature.md
+code-mower work-order builder-experiment \
+  .code-mower/work-orders/feature.md \
+  --repo owner/repo \
+  --builder codex-desktop \
+  --builder claude-code \
+  --output .code-mower/work-orders/feature-builder-experiment.json
+```
+
+That route makes the task contract explicit before comparing builder loops.
+
 ## Spec Example
 
 ```json
