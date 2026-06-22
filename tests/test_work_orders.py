@@ -166,6 +166,37 @@ class WorkOrderTests(unittest.TestCase):
             self.assertEqual(work_order["role_lenses"], list(work_orders.DEFAULT_ROLE_LENSES))
             self.assertEqual(work_order["review_lanes"], list(work_orders.DEFAULT_REVIEW_LANES))
 
+    def test_work_order_draft_reads_json_issue_plan_as_structured_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = work_orders.build_issue_plan(
+                title="Structured planning workflow",
+                body="Add a planning workflow.",
+                repo="owner/repo",
+            )
+            issue_plan_path = root / "issue-plan.json"
+            work_orders.write_issue_plan(plan, issue_plan_path)
+
+            out = StringIO()
+            with redirect_stdout(out):
+                work_order = work_orders.work_order_main(
+                    [
+                        "draft",
+                        "--issue-plan",
+                        str(issue_plan_path),
+                        "--output",
+                        str(root / "work-order.md"),
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(work_order, 0)
+            self.assertIn("Structured planning workflow", out.getvalue())
+            text = (root / "work-order.md").read_text(encoding="utf-8")
+            self.assertIn("# Work Order: Structured planning workflow", text)
+            self.assertIn("# Issue Plan: Structured planning workflow", text)
+            self.assertNotIn('"mode": "issue-plan"', text)
+
     def test_plan_from_issue_prints_markdown_when_stdout_is_selected(self) -> None:
         out = StringIO()
         with redirect_stdout(out):

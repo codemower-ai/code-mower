@@ -449,6 +449,20 @@ def _read_optional_body(body_file: Path | None, body: str | None = None) -> str:
     return body or ""
 
 
+def _read_issue_plan_for_work_order(path: Path) -> tuple[str, str]:
+    text = _read_text(path)
+    if path.suffix.lower() != ".json":
+        return _extract_heading_title(text, path.stem), text
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"could not parse issue plan JSON {path}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"issue plan JSON must be an object: {path}")
+    title = str(payload.get("title") or _extract_heading_title(text, path.stem))
+    return title, render_issue_plan_markdown(payload)
+
+
 def build_issue_plan(
     *,
     title: str,
@@ -911,8 +925,8 @@ def work_order_main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "draft":
             if args.issue_plan:
-                source_text = _read_text(args.issue_plan)
-                title = args.title or _extract_heading_title(source_text, args.issue_plan.stem)
+                issue_plan_title, source_text = _read_issue_plan_for_work_order(args.issue_plan)
+                title = args.title or issue_plan_title
             else:
                 source_text = _read_optional_body(args.body_file, args.body)
                 title = args.title
