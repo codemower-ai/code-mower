@@ -143,6 +143,17 @@ PROJECT_CONTEXT_DOCUMENTS: tuple[ProjectContextDocument, ...] = (
     ),
 )
 
+DEFAULT_ROLE_LENSES = (
+    "product-manager",
+    "architect",
+    "implementer",
+    "qa-context-driven-tester",
+    "security-threat-model",
+    "operability",
+    "devils-advocate",
+)
+DEFAULT_REVIEW_LANES = ("codex-audit", "claude-audit", "gitar")
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -327,6 +338,49 @@ def _external_context_entry(
     return entry
 
 
+def _external_context_entry_key(entry: Mapping[str, Any]) -> str:
+    source_path = str(entry.get("source_path") or "")
+    if source_path:
+        return f"source:{source_path}"
+    sha256 = str(entry.get("sha256") or "")
+    if sha256:
+        return f"sha256:{sha256}"
+    return f"filename:{entry.get('filename', '')}"
+
+
+def _read_existing_external_context_entries(manifest_path: Path) -> list[dict[str, Any]]:
+    if not manifest_path.exists():
+        return []
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read existing external context manifest {manifest_path}: {exc}") from exc
+    entries = payload.get("entries", [])
+    if not isinstance(entries, list):
+        return []
+    return [dict(entry) for entry in entries if isinstance(entry, Mapping)]
+
+
+def _merge_external_context_entries(
+    existing: Sequence[Mapping[str, Any]],
+    added: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    positions: dict[str, int] = {}
+    for entry in existing:
+        key = _external_context_entry_key(entry)
+        positions[key] = len(merged)
+        merged.append(dict(entry))
+    for entry in added:
+        key = _external_context_entry_key(entry)
+        if key in positions:
+            merged[positions[key]] = dict(entry)
+        else:
+            positions[key] = len(merged)
+            merged.append(dict(entry))
+    return merged
+
+
 def add_external_context(
     paths: Sequence[Path],
     *,
@@ -339,7 +393,9 @@ def add_external_context(
     if max_preview_chars < 0:
         raise ValueError("--max-preview-chars must be greater than or equal to zero")
     output_dir.mkdir(parents=True, exist_ok=True)
-    entries = [
+    manifest_path = output_dir / "external-context-manifest.json"
+    existing_entries = _read_existing_external_context_entries(manifest_path)
+    added_entries = [
         _external_context_entry(
             path,
             output_dir=output_dir,
@@ -348,19 +404,25 @@ def add_external_context(
         )
         for path in paths
     ]
+    entries = _merge_external_context_entries(existing_entries, added_entries)
+    added_keys = {_external_context_entry_key(entry) for entry in added_entries}
+    preserved_entry_count = sum(
+        1 for entry in existing_entries if _external_context_entry_key(entry) not in added_keys
+    )
     manifest = {
         "mode": "external-context-add",
         "schema": EXTERNAL_CONTEXT_SCHEMA,
         "created_at": _utc_now(),
         "output_dir": str(output_dir),
         "entry_count": len(entries),
+        "added_entry_count": len(added_entries),
+        "preserved_entry_count": preserved_entry_count,
         "entries": entries,
         "cloud_policy": (
             "This manifest records local external context metadata. Do not upload "
             "raw external docs or previews unless a user explicitly opts in."
         ),
     }
-    manifest_path = output_dir / "external-context-manifest.json"
     _write_json(manifest_path, manifest, force=True)
     manifest["manifest_path"] = str(manifest_path)
     return manifest
@@ -490,16 +552,8 @@ def render_work_order(
     role_lenses: Sequence[str] = (),
     review_lanes: Sequence[str] = (),
 ) -> str:
-    role_lenses = tuple(role_lenses) or (
-        "product-manager",
-        "architect",
-        "implementer",
-        "qa-context-driven-tester",
-        "security-threat-model",
-        "operability",
-        "devils-advocate",
-    )
-    review_lanes = tuple(review_lanes) or ("codex-audit", "claude-audit", "gitar")
+    role_lenses = tuple(role_lenses) or DEFAULT_ROLE_LENSES
+    review_lanes = tuple(review_lanes) or DEFAULT_REVIEW_LANES
     lines = [
         f"# Work Order: {title}",
         "",
@@ -577,13 +631,15 @@ def draft_work_order(
     manifest_path = output.with_suffix(".json")
     _require_writable(output, force=force)
     _require_writable(manifest_path, force=force)
+    effective_role_lenses = tuple(role_lenses) or DEFAULT_ROLE_LENSES
+    effective_review_lanes = tuple(review_lanes) or DEFAULT_REVIEW_LANES
     markdown = render_work_order(
         title=title,
         source_text=source_text,
         repo=repo,
         context_manifest=context_manifest,
-        role_lenses=role_lenses,
-        review_lanes=review_lanes,
+        role_lenses=effective_role_lenses,
+        review_lanes=effective_review_lanes,
     )
     _write_text(output, markdown, force=True)
     manifest = {
@@ -595,8 +651,8 @@ def draft_work_order(
         "repo": repo,
         "output_path": str(output),
         "context_manifest": str(context_manifest) if context_manifest else "",
-        "role_lenses": list(role_lenses),
-        "review_lanes": list(review_lanes),
+        "role_lenses": list(effective_role_lenses),
+        "review_lanes": list(effective_review_lanes),
     }
     _write_json(manifest_path, manifest, force=True)
     manifest["manifest_path"] = str(manifest_path)

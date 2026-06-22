@@ -73,6 +73,27 @@ class WorkOrderTests(unittest.TestCase):
             preview_path = Path(entry["text_preview_path"])
             self.assertEqual(preview_path.read_text(encoding="utf-8"), "first\n")
 
+    def test_external_context_add_preserves_existing_manifest_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "product-context.md"
+            second = root / "api-notes.md"
+            first.write_text("# Product context\n", encoding="utf-8")
+            second.write_text("# API notes\n", encoding="utf-8")
+            output_dir = root / "external"
+
+            initial = work_orders.add_external_context([first], output_dir=output_dir)
+            updated = work_orders.add_external_context([second], output_dir=output_dir)
+
+            self.assertEqual(initial["entry_count"], 1)
+            self.assertEqual(updated["entry_count"], 2)
+            self.assertEqual(updated["added_entry_count"], 1)
+            self.assertEqual(updated["preserved_entry_count"], 1)
+            self.assertEqual(
+                [entry["filename"] for entry in updated["entries"]],
+                ["product-context.md", "api-notes.md"],
+            )
+
     def test_external_context_rejects_negative_preview_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "requirements.txt"
@@ -133,6 +154,17 @@ class WorkOrderTests(unittest.TestCase):
             normalized = builder_experiment.normalize_spec(spec)
             self.assertEqual(normalized["tasks"][0]["repo"], "owner/repo")
             self.assertEqual(normalized["builders"][0]["builder_id"], "codex-desktop")
+
+    def test_work_order_manifest_records_default_lanes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work_order = work_orders.draft_work_order(
+                title="Planning workflow",
+                source_text="Add a planning workflow.",
+                output=Path(tmp) / "work-order.md",
+            )
+
+            self.assertEqual(work_order["role_lenses"], list(work_orders.DEFAULT_ROLE_LENSES))
+            self.assertEqual(work_order["review_lanes"], list(work_orders.DEFAULT_REVIEW_LANES))
 
     def test_plan_from_issue_prints_markdown_when_stdout_is_selected(self) -> None:
         out = StringIO()
