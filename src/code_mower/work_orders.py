@@ -164,6 +164,18 @@ def _read_text(path: Path) -> str:
         raise ValueError(f"could not read {path}: {exc}") from exc
 
 
+def _read_text_prefix(path: Path, max_chars: int) -> tuple[str, bool]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            text = handle.read(max_chars + 1)
+    except UnicodeDecodeError:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(max_chars + 1)
+    except OSError as exc:
+        raise ValueError(f"could not read {path}: {exc}") from exc
+    return text[:max_chars], len(text) > max_chars
+
+
 def _write_text(path: Path, text: str, *, force: bool = False) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and not force:
@@ -300,7 +312,7 @@ def _external_context_entry(
         "cloud_policy": "metadata-only by default; raw file stays local",
     }
     if include_preview and resolved.suffix.lower() in TEXT_EXTENSIONS:
-        preview = _read_text(resolved)[:max_preview_chars]
+        preview, preview_truncated = _read_text_prefix(resolved, max_preview_chars)
         preview_name = f"{_safe_slug(resolved.stem, 'external')}-{entry['sha256'][:10]}.preview.txt"
         preview_path = output_dir / "previews" / preview_name
         _write_text(preview_path, preview.rstrip() + "\n", force=True)
@@ -309,7 +321,7 @@ def _external_context_entry(
                 "text_preview_included": True,
                 "text_preview_path": str(preview_path),
                 "text_preview_chars": len(preview),
-                "text_preview_truncated": resolved.stat().st_size > len(preview.encode("utf-8")),
+                "text_preview_truncated": preview_truncated,
             }
         )
     return entry

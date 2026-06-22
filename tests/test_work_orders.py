@@ -66,6 +66,7 @@ def test_external_context_can_write_bounded_preview_when_requested() -> None:
 
         entry = manifest["entries"][0]
         assert entry["text_preview_included"] is True
+        assert entry["text_preview_truncated"] is True
         preview_path = Path(entry["text_preview_path"])
         assert preview_path.read_text(encoding="utf-8") == "first\n"
 
