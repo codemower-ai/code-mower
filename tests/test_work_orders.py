@@ -153,7 +153,9 @@ class WorkOrderTests(unittest.TestCase):
             spec = json.loads(Path(seed["output_path"]).read_text(encoding="utf-8"))
             normalized = builder_experiment.normalize_spec(spec)
             self.assertEqual(normalized["tasks"][0]["repo"], "owner/repo")
+            self.assertEqual(normalized["tasks"][0]["review_classes"], ["planning"])
             self.assertEqual(normalized["builders"][0]["builder_id"], "codex-desktop")
+            self.assertEqual(normalized["builders"][0]["prompt_lenses"], ["generic-programming"])
 
     def test_work_order_manifest_records_default_lanes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -196,6 +198,34 @@ class WorkOrderTests(unittest.TestCase):
             self.assertIn("# Work Order: Structured planning workflow", text)
             self.assertIn("# Issue Plan: Structured planning workflow", text)
             self.assertNotIn('"mode": "issue-plan"', text)
+
+    def test_work_order_draft_strips_markdown_issue_plan_title_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = work_orders.build_issue_plan(
+                title="Markdown planning workflow",
+                body="Add a planning workflow.",
+                repo="owner/repo",
+            )
+            issue_plan_path = root / "issue-plan.md"
+            work_orders.write_issue_plan(plan, issue_plan_path)
+
+            with redirect_stdout(StringIO()):
+                exit_code = work_orders.work_order_main(
+                    [
+                        "draft",
+                        "--issue-plan",
+                        str(issue_plan_path),
+                        "--output",
+                        str(root / "work-order.md"),
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            text = (root / "work-order.md").read_text(encoding="utf-8")
+            self.assertIn("# Work Order: Markdown planning workflow", text)
+            self.assertNotIn("# Work Order: Issue Plan:", text)
 
     def test_plan_from_issue_prints_markdown_when_stdout_is_selected(self) -> None:
         out = StringIO()

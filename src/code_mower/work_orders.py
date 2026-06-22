@@ -452,7 +452,7 @@ def _read_optional_body(body_file: Path | None, body: str | None = None) -> str:
 def _read_issue_plan_for_work_order(path: Path) -> tuple[str, str]:
     text = _read_text(path)
     if path.suffix.lower() != ".json":
-        return _extract_heading_title(text, path.stem), text
+        return _strip_issue_plan_title_prefix(_extract_heading_title(text, path.stem)), text
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -541,6 +541,13 @@ def _extract_heading_title(text: str, fallback: str) -> str:
         if stripped.startswith("#"):
             return stripped.lstrip("#").strip() or fallback
     return fallback
+
+
+def _strip_issue_plan_title_prefix(title: str) -> str:
+    prefix = "Issue Plan:"
+    if title.lower().startswith(prefix.lower()):
+        return title[len(prefix) :].strip() or title
+    return title
 
 
 def _context_manifest_rows(path: Path | None) -> list[str]:
@@ -755,7 +762,7 @@ def seed_builder_experiment(
                     "post-merge health is verified",
                 ],
                 "context_packs": list(context_packs),
-                "review_classes": list(prompt_lenses),
+                "review_classes": [task_class] if task_class else [],
                 "notes": "Seeded by code-mower work-order builder-experiment.",
             }
         ],
