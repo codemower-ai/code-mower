@@ -413,6 +413,58 @@ def repo_sync_output_name(repo_slug: str, repo_path: Path, index: int) -> str:
     return f"{cleaned or 'repo'}-{index + 1}"
 
 
+def build_repo_sync_data_class_summary(
+    repos: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Summarize synced data by dashboard provenance class."""
+
+    summary: dict[str, dict[str, Any]] = {
+        "current_dogfood": {
+            "steps": 0,
+            "events": 0,
+            "description": "current repo metadata and provider inventory",
+        },
+        "imported_history": {
+            "steps": 0,
+            "events": 0,
+            "description": "sanitized GitHub Actions history",
+            "trust_guidance": CATCH_UP_TRUST_GUIDANCE,
+        },
+        "reviewer_evidence": {
+            "steps": 0,
+            "events": 0,
+            "description": "metadata-only reviewer verdict artifacts",
+        },
+    }
+    for repo in repos:
+        steps = repo.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            mode = str(step.get("mode") or "")
+            if mode == "cloud-dogfood":
+                target = summary["current_dogfood"]
+                target["steps"] += 1
+                export = step.get("export")
+                if isinstance(export, dict):
+                    target["events"] += int(export.get("event_count") or 0)
+            elif mode == "cloud-catch-up":
+                target = summary["imported_history"]
+                target["steps"] += 1
+                catch_up = step.get("catch_up")
+                if isinstance(catch_up, dict):
+                    target["events"] += int(catch_up.get("event_count") or 0)
+                else:
+                    target["events"] += int(step.get("run_count") or 0)
+            elif mode == "cloud-reviewer-runs":
+                target = summary["reviewer_evidence"]
+                target["steps"] += 1
+                target["events"] += int(step.get("event_count") or 0)
+    return summary
+
+
 def repo_sync_upload(
     *,
     repo_specs: list[str],
@@ -524,5 +576,6 @@ def repo_sync_upload(
         "step_count": sum(len(repo["steps"]) for repo in repos),
         "error_count": error_count,
         "modes": selected_modes,
+        "data_class_summary": build_repo_sync_data_class_summary(repos),
         "repos": repos,
     }

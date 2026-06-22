@@ -622,6 +622,37 @@ def test_cloud_repo_sync_helpers_live_in_client_module() -> None:
     assert repo_sync_output_name("Owner/Repo", Path("/tmp/repo"), 2) == "owner--repo-3"
 
 
+def test_cloud_repo_sync_data_class_summary_separates_sources() -> None:
+    summary = cloud_operations.build_repo_sync_data_class_summary(
+        [
+            {
+                "steps": [
+                    {
+                        "mode": "cloud-dogfood",
+                        "export": {"event_count": 16},
+                    },
+                    {
+                        "mode": "cloud-catch-up",
+                        "catch_up": {"event_count": 50},
+                    },
+                    {
+                        "mode": "cloud-reviewer-runs",
+                        "event_count": 7,
+                    },
+                ]
+            }
+        ]
+    )
+
+    assert summary["current_dogfood"]["steps"] == 1
+    assert summary["current_dogfood"]["events"] == 16
+    assert summary["imported_history"]["steps"] == 1
+    assert summary["imported_history"]["events"] == 50
+    assert summary["imported_history"]["trust_guidance"] == cloud_operations.CATCH_UP_TRUST_GUIDANCE
+    assert summary["reviewer_evidence"]["steps"] == 1
+    assert summary["reviewer_evidence"]["events"] == 7
+
+
 def test_cloud_py_keeps_legacy_operation_aliases() -> None:
     assert cloud_cli._dogfood_upload is dogfood_upload
     assert cloud_cli._repo_sync_output_name("owner/repo", Path("/tmp/repo"), 0) == "owner--repo-1"
