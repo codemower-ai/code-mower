@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from contextlib import redirect_stdout
+from io import StringIO
 
 from code_mower import builder_experiment
 from code_mower import work_orders
@@ -68,6 +70,24 @@ def test_external_context_can_write_bounded_preview_when_requested() -> None:
         assert preview_path.read_text(encoding="utf-8") == "first\n"
 
 
+def test_external_context_rejects_negative_preview_limit() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "requirements.txt"
+        source.write_text("private context\n", encoding="utf-8")
+
+        try:
+            work_orders.add_external_context(
+                [source],
+                output_dir=Path(tmp) / "external",
+                include_preview=True,
+                max_preview_chars=-1,
+            )
+        except ValueError as exc:
+            assert "max-preview-chars" in str(exc)
+        else:  # pragma: no cover - defensive assertion path.
+            raise AssertionError("negative preview limit should fail")
+
+
 def test_issue_plan_work_order_critique_and_builder_seed_round_trip() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -115,3 +135,36 @@ def test_issue_plan_work_order_critique_and_builder_seed_round_trip() -> None:
         normalized = builder_experiment.normalize_spec(spec)
         assert normalized["tasks"][0]["repo"] == "owner/repo"
         assert normalized["builders"][0]["builder_id"] == "codex-desktop"
+
+
+def test_plan_from_issue_prints_markdown_when_stdout_is_selected() -> None:
+    out = StringIO()
+    with redirect_stdout(out):
+        exit_code = work_orders.plan_main(
+            [
+                "from-issue",
+                "--title",
+                "Planning workflow",
+                "--body",
+                "Add a planning workflow.",
+            ]
+        )
+
+    assert exit_code == 0
+    text = out.getvalue()
+    assert text.startswith("# Issue Plan: Planning workflow")
+    assert "Add a planning workflow." in text
+
+
+def test_work_order_draft_rejects_json_output_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            work_orders.draft_work_order(
+                title="Planning workflow",
+                source_text="Add a planning workflow.",
+                output=Path(tmp) / "work-order.json",
+            )
+        except ValueError as exc:
+            assert "Markdown path" in str(exc)
+        else:  # pragma: no cover - defensive assertion path.
+            raise AssertionError("JSON work-order output should fail")

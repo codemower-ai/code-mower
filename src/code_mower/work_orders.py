@@ -317,6 +317,8 @@ def add_external_context(
 ) -> dict[str, Any]:
     if not paths:
         raise ValueError("at least one --external file is required")
+    if max_preview_chars < 0:
+        raise ValueError("--max-preview-chars must be greater than or equal to zero")
     output_dir.mkdir(parents=True, exist_ok=True)
     entries = [
         _external_context_entry(
@@ -549,6 +551,8 @@ def draft_work_order(
 ) -> dict[str, Any]:
     title = title.strip() or _extract_heading_title(source_text, "Untitled work order")
     output = output or (DEFAULT_WORK_ORDER_DIR / f"{_safe_slug(title)}.md")
+    if output.suffix.lower() == ".json":
+        raise ValueError("work-order draft --output must be a Markdown path, not .json")
     markdown = render_work_order(
         title=title,
         source_text=source_text,
@@ -773,12 +777,13 @@ def plan_main(argv: list[str] | None = None) -> int:
         )
         if args.output:
             payload = write_issue_plan(plan, args.output)
+            text = (
+                f"Code Mower issue plan\nTitle: {payload.get('title')}\n"
+                f"Output: {payload.get('output_path', '(stdout only)')}\n"
+            )
         else:
             payload = plan
-        text = (
-            f"Code Mower issue plan\nTitle: {payload.get('title')}\n"
-            f"Output: {payload.get('output_path', '(stdout only)')}\n"
-        )
+            text = render_issue_plan_markdown(plan)
         return _print_payload(payload, as_json=args.json, text=text)
     raise AssertionError(f"unhandled plan command: {args.command}")
 
