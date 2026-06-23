@@ -1088,6 +1088,7 @@ def build_work_order_cloud_event(manifest: Mapping[str, Any]) -> dict[str, Any]:
 def attach_delivery_to_work_order_event(
     event_path: Path,
     *,
+    pr_repo: str = "",
     pr_url: str = "",
     pr_number: str = "",
     pr_state: str = "",
@@ -1115,6 +1116,7 @@ def attach_delivery_to_work_order_event(
     metrics = dict(metrics) if isinstance(metrics, Mapping) else {}
 
     clean_pr_url = _text_value(pr_url)
+    clean_pr_repo = _text_value(pr_repo)
     clean_pr_number = _text_value(pr_number)
     clean_pr_state = _text_value(pr_state)
     clean_merge_sha = _text_value(merge_sha)
@@ -1124,6 +1126,9 @@ def attach_delivery_to_work_order_event(
     if clean_pr_url:
         dimensions["pr_url"] = clean_pr_url
         dimensions["pull_request_url"] = clean_pr_url
+    if clean_pr_repo:
+        dimensions["pr_repo"] = clean_pr_repo
+        dimensions["pull_request_repo"] = clean_pr_repo
     if clean_pr_number:
         dimensions["pr_number"] = clean_pr_number
         dimensions["pull_request_number"] = clean_pr_number
@@ -1156,6 +1161,7 @@ def attach_delivery_to_work_order_event(
         "mode": "work-order-attach-delivery",
         "event_path": str(event_path),
         "status": updated.get("status"),
+        "pr_repo": dimensions.get("pr_repo", ""),
         "pr_url": dimensions.get("pr_url", ""),
         "pr_number": dimensions.get("pr_number", ""),
         "merge_sha": dimensions.get("merge_sha", ""),
@@ -1696,11 +1702,19 @@ def work_order_main(argv: list[str] | None = None) -> int:
             pr_number = ""
             if args.pr and not github_delivery:
                 pr_repo, pr_number = parse_github_pr_ref(args.pr, repo=args.repo)
+            manual_pr_url = ""
+            if args.pr and not github_delivery:
+                clean_pr = args.pr.strip()
+                if clean_pr.startswith(("http://", "https://")):
+                    manual_pr_url = clean_pr
+                elif pr_repo and pr_number:
+                    manual_pr_url = f"https://github.com/{pr_repo}/pull/{pr_number}"
             reviewer_checks = list(github_delivery.get("reviewer_checks") or [])
             reviewer_checks.extend(args.reviewer_check)
             payload = attach_delivery_to_work_order_event(
                 args.event,
-                pr_url=args.pr_url or str(github_delivery.get("pr_url") or ""),
+                pr_repo=str(github_delivery.get("pr_repo") or pr_repo),
+                pr_url=args.pr_url or str(github_delivery.get("pr_url") or "") or manual_pr_url,
                 pr_number=(
                     args.pr_number
                     or str(github_delivery.get("pr_number") or "")

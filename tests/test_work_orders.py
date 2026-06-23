@@ -426,6 +426,7 @@ class WorkOrderTests(unittest.TestCase):
 
             payload = work_orders.attach_delivery_to_work_order_event(
                 event_path,
+                pr_repo="owner/repo",
                 pr_url="https://github.com/owner/repo/pull/12",
                 pr_number="12",
                 reviewer_checks=["codex-audit=success", "gitar=approved"],
@@ -436,6 +437,7 @@ class WorkOrderTests(unittest.TestCase):
             self.assertEqual(payload["status"], "merged")
             event = json.loads(event_path.read_text(encoding="utf-8"))
             self.assertEqual(event["status"], "merged")
+            self.assertEqual(event["dimensions"]["pr_repo"], "owner/repo")
             self.assertEqual(event["dimensions"]["pr_url"], "https://github.com/owner/repo/pull/12")
             self.assertEqual(event["dimensions"]["pull_request_number"], "12")
             self.assertEqual(event["dimensions"]["merge_sha"], "abc123def456")
@@ -502,6 +504,78 @@ class WorkOrderTests(unittest.TestCase):
                     {"name": "Gitar Review", "status": "success"},
                 ],
             )
+
+    def test_work_order_attach_delivery_cli_preserves_manual_pr_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work_order = work_orders.draft_work_order(
+                title="Full lineage capture",
+                source_text="Tie issue planning to PR delivery evidence.",
+                repo="owner/repo",
+                output=root / "work-order.md",
+            )
+            event_path = Path(work_order["cloud_event_path"])
+
+            out = StringIO()
+            with redirect_stdout(out):
+                exit_code = work_orders.work_order_main(
+                    [
+                        "attach-delivery",
+                        str(event_path),
+                        "--pr",
+                        "owner/repo#12",
+                        "--reviewer-check",
+                        "codex-audit=success",
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(out.getvalue())
+            self.assertEqual(payload["pr_repo"], "owner/repo")
+            self.assertEqual(payload["pr_url"], "https://github.com/owner/repo/pull/12")
+            self.assertEqual(payload["pr_number"], "12")
+            event = json.loads(event_path.read_text(encoding="utf-8"))
+            self.assertEqual(event["status"], "pr-linked")
+            self.assertEqual(event["dimensions"]["pr_repo"], "owner/repo")
+            self.assertEqual(event["dimensions"]["pull_request_repo"], "owner/repo")
+            self.assertEqual(event["dimensions"]["pr_url"], "https://github.com/owner/repo/pull/12")
+            self.assertEqual(event["dimensions"]["pull_request_number"], "12")
+            self.assertEqual(
+                event["dimensions"]["reviewer_checks"],
+                [{"name": "codex-audit", "status": "success"}],
+            )
+
+    def test_work_order_attach_delivery_cli_preserves_manual_pr_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work_order = work_orders.draft_work_order(
+                title="Full lineage capture",
+                source_text="Tie issue planning to PR delivery evidence.",
+                repo="owner/repo",
+                output=root / "work-order.md",
+            )
+            event_path = Path(work_order["cloud_event_path"])
+
+            out = StringIO()
+            with redirect_stdout(out):
+                exit_code = work_orders.work_order_main(
+                    [
+                        "attach-delivery",
+                        str(event_path),
+                        "--pr",
+                        "https://github.example.com/owner/repo/pull/12",
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(out.getvalue())
+            self.assertEqual(payload["pr_repo"], "github.example.com/owner/repo")
+            self.assertEqual(payload["pr_url"], "https://github.example.com/owner/repo/pull/12")
+            event = json.loads(event_path.read_text(encoding="utf-8"))
+            self.assertEqual(event["dimensions"]["pr_repo"], "github.example.com/owner/repo")
+            self.assertEqual(event["dimensions"]["pr_url"], "https://github.example.com/owner/repo/pull/12")
 
     def test_attach_delivery_marks_merged_prs_without_merge_sha_as_merged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
