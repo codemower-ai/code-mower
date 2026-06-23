@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 from code_mower import builder_experiment
 from code_mower import work_orders
@@ -260,6 +262,120 @@ class WorkOrderTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertIn("error: could not read", err.getvalue())
+
+    def test_parse_github_issue_ref_accepts_slug_url_and_number(self) -> None:
+        self.assertEqual(
+            work_orders.parse_github_issue_ref("owner/repo#123"),
+            ("owner/repo", "123"),
+        )
+        self.assertEqual(
+            work_orders.parse_github_issue_ref("https://github.com/owner/repo/issues/123"),
+            ("owner/repo", "123"),
+        )
+        self.assertEqual(
+            work_orders.parse_github_issue_ref("#123", repo="owner/repo"),
+            ("owner/repo", "123"),
+        )
+        self.assertEqual(
+            work_orders.parse_github_issue_ref("https://github.mycorp.com/owner/repo/issues/5"),
+            ("github.mycorp.com/owner/repo", "5"),
+        )
+
+    def test_issue_plan_comment_body_escapes_html_comment_terminator(self) -> None:
+        plan = work_orders.build_issue_plan(
+            title="Planning --> workflow",
+            body="Use GitHub Issues.",
+            repo="owner/repo",
+            issue_number="123",
+        )
+
+        body = work_orders.issue_plan_comment_body(plan)
+
+        trailer_line = [
+            line
+            for line in body.splitlines()
+            if line.startswith("<!-- CODE_MOWER_PLAN_STATE:")
+        ][0]
+        self.assertNotIn("-->", trailer_line.removesuffix(" -->"))
+        self.assertIn("--\\u003e", trailer_line)
+
+    def test_plan_from_github_issue_fetches_issue_and_writes_local_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                self.assertEqual(command[:3], ["gh", "issue", "view"])
+                payload = {
+                    "title": "Planning workflow",
+                    "body": "Use GitHub Issues as planning source of truth.",
+                    "number": 123,
+                    "url": "https://github.com/owner/repo/issues/123",
+                }
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps(payload),
+                    stderr="",
+                )
+
+            with mock.patch.object(work_orders.subprocess, "run", side_effect=fake_run):
+                out = StringIO()
+                with redirect_stdout(out):
+                    exit_code = work_orders.plan_main(
+                        [
+                            "from-github-issue",
+                            "owner/repo#123",
+                            "--output",
+                            str(root / "issue-plan.md"),
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Output:", out.getvalue())
+            text = (root / "issue-plan.md").read_text(encoding="utf-8")
+            self.assertIn("# Issue Plan: Planning workflow", text)
+            self.assertIn("Use GitHub Issues as planning source of truth.", text)
+            self.assertIn("https://github.com/owner/repo/issues/123", text)
+
+    def test_plan_from_github_issue_post_uses_body_file_and_trailer(self) -> None:
+        seen_body_file: Path | None = None
+
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            nonlocal seen_body_file
+            if command[:3] == ["gh", "issue", "view"]:
+                payload = {
+                    "title": "Planning workflow",
+                    "body": "Use GitHub Issues.",
+                    "number": 123,
+                    "url": "https://github.com/owner/repo/issues/123",
+                }
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+            if command[:3] == ["gh", "issue", "comment"]:
+                self.assertIn("--body-file", command)
+                seen_body_file = Path(command[command.index("--body-file") + 1])
+                body = seen_body_file.read_text(encoding="utf-8")
+                self.assertIn("## Code Mower Issue Plan", body)
+                self.assertIn("<!-- CODE_MOWER_PLAN_STATE:", body)
+                self.assertIn('"status":"ready"', body)
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="https://github.com/owner/repo/issues/123#issuecomment-1\n",
+                    stderr="",
+                )
+            raise AssertionError(f"unexpected command: {command}")
+
+        with mock.patch.object(work_orders.subprocess, "run", side_effect=fake_run):
+            out = StringIO()
+            with redirect_stdout(out):
+                exit_code = work_orders.plan_main(
+                    ["from-github-issue", "owner/repo#123", "--post"]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Posted:", out.getvalue())
+        self.assertIsNotNone(seen_body_file)
+        self.assertFalse(seen_body_file.exists())
 
     def test_issue_plan_refuses_to_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

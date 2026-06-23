@@ -71,7 +71,21 @@ GitHub Issues are a better home than pull requests for architecture notes,
 product requirements, and implementation specs. A PR should remain the coding
 artifact.
 
-Draft an issue-derived plan from copied issue text:
+Use a GitHub issue as the source of truth, then post the derived Code Mower plan
+back to that issue:
+
+```bash
+code-mower plan from-github-issue owner/repo#123 \
+  --output .code-mower/work-orders/billing-settings-plan.md \
+  --post
+```
+
+This keeps planning visible to local agents, cloud agents, and humans in the
+same issue timeline. The posted comment includes a hidden
+`CODE_MOWER_PLAN_STATE` trailer so Code Mower can recover provenance later
+without making the human-facing issue noisy.
+
+For private/offline drafting, use copied issue text:
 
 ```bash
 code-mower plan from-issue \

@@ -143,7 +143,9 @@ adds the missing upstream contract:
    hosting, design-system, quality-bar, and agent-team doctrine files.
 2. `code-mower context add --external ...` records external docs as
    metadata-only local manifests by default.
-3. `code-mower plan from-issue ...` turns issue text into a local plan.
+3. `code-mower plan from-github-issue owner/repo#123 --post` turns the GitHub
+   issue into a plan and posts a structured comment back to the issue timeline.
+   `code-mower plan from-issue ...` remains the private/offline drafting path.
 4. `code-mower work-order draft ...` creates an implementation contract with
    role/lens sections.
 5. `code-mower work-order critique-plan ...` creates prompt packets for other

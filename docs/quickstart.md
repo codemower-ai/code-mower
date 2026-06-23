@@ -88,6 +88,17 @@ implementation:
 ```bash
 code-mower project-context init --project-name "My Product"
 code-mower context add --external ~/Downloads/product-requirements.md
+code-mower plan from-github-issue owner/repo#123 --post \
+  --output .code-mower/work-orders/feature-plan.md
+code-mower work-order draft \
+  --issue-plan .code-mower/work-orders/feature-plan.md \
+  --output .code-mower/work-orders/feature.md
+```
+
+The GitHub issue remains the source of truth, while the local plan file is a
+derived working copy. For private/offline drafting:
+
+```bash
 code-mower plan from-issue --title "Feature" --body-file issue-body.md \
   --output .code-mower/work-orders/feature-plan.md
 code-mower work-order draft \
