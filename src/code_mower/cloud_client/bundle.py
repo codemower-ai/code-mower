@@ -28,6 +28,7 @@ SAFE_EVENT_TYPES = {
     "provider_catalog_snapshot",
     "reviewer_run",
     "value_report_snapshot",
+    "work_order",
     "workflow_run",
 }
 EXCLUDED_CONTENT = (

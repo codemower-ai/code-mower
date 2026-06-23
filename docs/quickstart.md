@@ -93,10 +93,17 @@ code-mower plan from-github-issue owner/repo#123 --post \
 code-mower work-order draft \
   --issue-plan .code-mower/work-orders/feature-plan.md \
   --output .code-mower/work-orders/feature.md
+code-mower cloud export \
+  --event work_order=.code-mower/work-orders/feature.cloud-event.json \
+  --output-dir .code-mower/cloud-benchmark-bundle \
+  --repo-slug owner/repo
 ```
 
 The GitHub issue remains the source of truth, while the local plan file is a
-derived working copy. For private/offline drafting:
+derived working copy. The work-order command writes a metadata-only
+`feature.cloud-event.json` sidecar so CodeMower.com can tie future
+builder/reviewer evidence back to the issue without receiving the issue body,
+source code, diffs, or transcripts. For private/offline drafting:
 
 ```bash
 code-mower plan from-issue --title "Feature" --body-file issue-body.md \

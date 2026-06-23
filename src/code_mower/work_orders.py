@@ -10,10 +10,13 @@ import re
 import subprocess
 import sys
 import tempfile
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from code_mower import __version__
 
 
 PROJECT_CONTEXT_SCHEMA = "code_mower.projectContext.v1"
@@ -22,6 +25,8 @@ ISSUE_PLAN_SCHEMA = "code_mower.issuePlan.v1"
 WORK_ORDER_SCHEMA = "code_mower.workOrder.v1"
 CRITIQUE_PLAN_SCHEMA = "code_mower.workOrderCritiquePlan.v1"
 WORK_ORDER_BUILDER_SPEC_SCHEMA = "code_mower.workOrderBuilderExperimentSeed.v1"
+BENCHMARK_EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
+PLAN_STATE_SCHEMA = "code_mower.planState.v1"
 PLAN_STATE_TRAILER_PREFIX = "<!-- CODE_MOWER_PLAN_STATE:"
 
 DEFAULT_PROJECT_CONTEXT_DIR = Path(".code-mower/project-context")
@@ -53,6 +58,14 @@ class ProjectContextDocument:
     title: str
     purpose: str
     sections: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class IssuePlanInput:
+    title: str
+    source_text: str
+    repo: str
+    source: dict[str, Any]
 
 
 PROJECT_CONTEXT_DOCUMENTS: tuple[ProjectContextDocument, ...] = (
@@ -452,10 +465,109 @@ def _read_optional_body(body_file: Path | None, body: str | None = None) -> str:
     return body or ""
 
 
-def _read_issue_plan_for_work_order(path: Path) -> tuple[str, str]:
+def _plan_state_from_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": PLAN_STATE_SCHEMA,
+        "issue_plan_schema": plan.get("schema"),
+        "repo": plan.get("repo") or "",
+        "issue_number": str(plan.get("issue_number") or ""),
+        "issue_url": plan.get("issue_url") or "",
+        "title": plan.get("title") or "",
+        "status": "ready",
+        "created_at": plan.get("created_at") or _utc_now(),
+    }
+
+
+def _plan_state_trailer(plan: Mapping[str, Any]) -> str:
+    serialized = json.dumps(
+        _plan_state_from_plan(plan),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    serialized = serialized.replace("-->", "--\\u003e")
+    return f"{PLAN_STATE_TRAILER_PREFIX} {serialized} -->"
+
+
+def _extract_plan_state(text: str) -> dict[str, Any]:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(PLAN_STATE_TRAILER_PREFIX):
+            continue
+        raw = stripped.removeprefix(PLAN_STATE_TRAILER_PREFIX).strip()
+        if raw.endswith("-->"):
+            raw = raw[:-3].strip()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _extract_backticked_metadata(text: str, label: str) -> str:
+    pattern = re.compile(rf"^{re.escape(label)}:\s*`([^`]+)`\s*$", re.MULTILINE)
+    match = pattern.search(text)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_issue_metadata(text: str) -> str:
+    pattern = re.compile(r"^Issue:\s*(.+?)\s*$", re.MULTILINE)
+    match = pattern.search(text)
+    if not match:
+        return ""
+    value = match.group(1).strip()
+    if value.startswith("`") and value.endswith("`"):
+        value = value[1:-1].strip()
+    return "" if value == "TODO" else value
+
+
+def _source_from_issue_plan(
+    *,
+    payload: Mapping[str, Any] | None = None,
+    text: str = "",
+    path: Path,
+) -> dict[str, Any]:
+    state = _extract_plan_state(text) if text else {}
+    payload = payload or {}
+    repo = str(payload.get("repo") or state.get("repo") or "").strip()
+    issue_number = str(
+        payload.get("issue_number") or state.get("issue_number") or ""
+    ).strip()
+    issue_url = str(payload.get("issue_url") or state.get("issue_url") or "").strip()
+    if text:
+        repo = repo or _extract_backticked_metadata(text, "Repository")
+        issue_value = _extract_issue_metadata(text)
+        if issue_value:
+            if issue_value.startswith("http"):
+                issue_url = issue_url or issue_value
+            else:
+                issue_number = issue_number or issue_value
+    source_type = "github_issue" if repo and (issue_number or issue_url) else "issue_plan"
+    return {
+        "type": source_type,
+        "issue_plan_file": path.name,
+        "repo": repo,
+        "issue_number": issue_number,
+        "issue_url": issue_url,
+        "title": str(payload.get("title") or state.get("title") or "").strip(),
+        "plan_schema": str(payload.get("schema") or state.get("issue_plan_schema") or "").strip(),
+    }
+
+
+def _read_issue_plan_for_work_order(path: Path) -> IssuePlanInput:
     text = _read_text(path)
     if path.suffix.lower() != ".json":
-        return _strip_issue_plan_title_prefix(_extract_heading_title(text, path.stem)), text
+        title = _strip_issue_plan_title_prefix(_extract_heading_title(text, path.stem))
+        source = _source_from_issue_plan(text=text, path=path)
+        if source.get("title"):
+            title = str(source["title"])
+        return IssuePlanInput(
+            title=title,
+            source_text=text,
+            repo=str(source.get("repo") or ""),
+            source=source,
+        )
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -463,7 +575,13 @@ def _read_issue_plan_for_work_order(path: Path) -> tuple[str, str]:
     if not isinstance(payload, Mapping):
         raise ValueError(f"issue plan JSON must be an object: {path}")
     title = str(payload.get("title") or _extract_heading_title(text, path.stem))
-    return title, render_issue_plan_markdown(payload)
+    source = _source_from_issue_plan(payload=payload, path=path)
+    return IssuePlanInput(
+        title=title,
+        source_text=render_issue_plan_markdown(payload),
+        repo=str(source.get("repo") or ""),
+        source=source,
+    )
 
 
 def build_issue_plan(
@@ -485,6 +603,12 @@ def build_issue_plan(
         "repo": repo,
         "issue_url": issue_url,
         "issue_number": issue_number,
+        "source": {
+            "type": "github_issue" if repo and (issue_url or issue_number) else "manual_issue",
+            "repo": repo,
+            "issue_number": issue_number,
+            "issue_url": issue_url,
+        },
         "body": prompt,
         "sections": {
             "problem": prompt or "TODO: paste the issue problem statement.",
@@ -568,23 +692,10 @@ def fetch_github_issue(
 
 
 def issue_plan_comment_body(plan: Mapping[str, Any]) -> str:
-    state = {
-        "schema": "code_mower.planState.v1",
-        "issue_plan_schema": plan.get("schema"),
-        "repo": plan.get("repo") or "",
-        "issue_number": str(plan.get("issue_number") or ""),
-        "issue_url": plan.get("issue_url") or "",
-        "title": plan.get("title") or "",
-        "status": "ready",
-        "created_at": plan.get("created_at") or _utc_now(),
-    }
-    serialized = json.dumps(state, sort_keys=True, separators=(",", ":"))
-    serialized = serialized.replace("-->", "--\\u003e")
     return (
         "## Code Mower Issue Plan\n\n"
         f"{render_issue_plan_markdown(plan).strip()}\n\n"
-        f"{PLAN_STATE_TRAILER_PREFIX} "
-        f"{serialized} -->\n"
+        f"{_plan_state_trailer(plan)}\n"
     )
 
 
@@ -636,7 +747,11 @@ def post_github_issue_plan(
     }
 
 
-def render_issue_plan_markdown(plan: Mapping[str, Any]) -> str:
+def render_issue_plan_markdown(
+    plan: Mapping[str, Any],
+    *,
+    include_state_trailer: bool = False,
+) -> str:
     lines = [
         f"# Issue Plan: {plan.get('title')}",
         "",
@@ -665,6 +780,8 @@ def render_issue_plan_markdown(plan: Mapping[str, Any]) -> str:
         str(plan.get("sections", {}).get("review", "") if isinstance(plan.get("sections"), Mapping) else ""),
         "",
     ]
+    if include_state_trailer:
+        lines.extend([_plan_state_trailer(plan), ""])
     return "\n".join(lines)
 
 
@@ -674,7 +791,11 @@ def write_issue_plan(plan: Mapping[str, Any], output: Path, *, force: bool = Fal
     if output.suffix.lower() == ".json":
         _write_json(output, plan, force=True)
     else:
-        _write_text(output, render_issue_plan_markdown(plan), force=True)
+        _write_text(
+            output,
+            render_issue_plan_markdown(plan, include_state_trailer=True),
+            force=True,
+        )
     return {**dict(plan), "output_path": str(output)}
 
 
@@ -707,6 +828,95 @@ def _context_manifest_rows(path: Path | None) -> list[str]:
     return rows
 
 
+def _work_order_source_rows(source: Mapping[str, Any] | None) -> list[str]:
+    if not source:
+        return []
+    rows = ["", "## Source", ""]
+    source_type = str(source.get("type") or "unknown")
+    rows.append(f"- Source type: `{source_type}`")
+    repo = str(source.get("repo") or "").strip()
+    if repo:
+        rows.append(f"- Repository: `{repo}`")
+    issue_url = str(source.get("issue_url") or "").strip()
+    issue_number = str(source.get("issue_number") or "").strip()
+    if issue_url:
+        rows.append(f"- Issue: {issue_url}")
+    elif issue_number:
+        rows.append(f"- Issue: `{issue_number}`")
+    issue_plan_file = str(source.get("issue_plan_file") or "").strip()
+    if issue_plan_file:
+        rows.append(f"- Issue plan file: `{issue_plan_file}`")
+    return rows
+
+
+def _cloud_work_order_event_path(output: Path) -> Path:
+    return output.with_name(f"{output.stem}.cloud-event.json")
+
+
+def _work_order_event_id(manifest: Mapping[str, Any]) -> str:
+    source = manifest.get("source")
+    source = source if isinstance(source, Mapping) else {}
+    seed = "|".join(
+        [
+            "code-mower-work-order",
+            str(manifest.get("repo") or ""),
+            str(source.get("issue_url") or source.get("issue_number") or ""),
+            str(manifest.get("slug") or manifest.get("title") or ""),
+        ]
+    )
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
+def build_work_order_cloud_event(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a source-free cloud metadata event for a drafted work order."""
+
+    source = manifest.get("source")
+    source = source if isinstance(source, Mapping) else {}
+    role_lenses = list(manifest.get("role_lenses") or [])
+    review_lanes = list(manifest.get("review_lanes") or [])
+    return {
+        "schema": BENCHMARK_EVENT_SCHEMA,
+        "event_id": _work_order_event_id(manifest),
+        "event_type": "work_order",
+        "created_at": str(manifest.get("created_at") or _utc_now()),
+        "repo_slug": str(manifest.get("repo") or source.get("repo") or ""),
+        "team_id": "",
+        "install_id": "",
+        "source": "code-mower-work-order",
+        "provider": "code-mower",
+        "lens": "planning",
+        "status": "drafted",
+        "tool": {
+            "role": "planner",
+            "tool_name": "code-mower",
+            "tool_version": __version__,
+            "provider": "code-mower",
+            "model": "",
+            "model_source": "not_applicable",
+            "version_source": "package_version",
+            "integration": "work-order",
+            "lens": "planning",
+            "source": "code-mower-work-order",
+        },
+        "metrics": {
+            "role_lens_count": len(role_lenses),
+            "review_lane_count": len(review_lanes),
+        },
+        "dimensions": {
+            "source_type": str(source.get("type") or ""),
+            "issue_repo": str(source.get("repo") or ""),
+            "issue_number": str(source.get("issue_number") or ""),
+            "issue_url": str(source.get("issue_url") or ""),
+            "issue_plan_file": str(source.get("issue_plan_file") or ""),
+            "work_order_file": Path(str(manifest.get("output_path") or "")).name,
+            "work_order_manifest_file": Path(str(manifest.get("manifest_path") or "")).name,
+            "work_order_slug": str(manifest.get("slug") or ""),
+            "role_lenses": role_lenses,
+            "review_lanes": review_lanes,
+        },
+    }
+
+
 def render_work_order(
     *,
     title: str,
@@ -715,6 +925,7 @@ def render_work_order(
     context_manifest: Path | None = None,
     role_lenses: Sequence[str] = (),
     review_lanes: Sequence[str] = (),
+    source: Mapping[str, Any] | None = None,
 ) -> str:
     role_lenses = tuple(role_lenses) or DEFAULT_ROLE_LENSES
     review_lanes = tuple(review_lanes) or DEFAULT_REVIEW_LANES
@@ -723,6 +934,7 @@ def render_work_order(
         "",
         f"Schema: `{WORK_ORDER_SCHEMA}`",
         f"Repository: `{repo or 'TODO'}`",
+        *_work_order_source_rows(source),
         "",
         "## Objective",
         "",
@@ -785,6 +997,7 @@ def draft_work_order(
     context_manifest: Path | None = None,
     role_lenses: Sequence[str] = (),
     review_lanes: Sequence[str] = (),
+    source: Mapping[str, Any] | None = None,
     output: Path | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
@@ -793,10 +1006,15 @@ def draft_work_order(
     if output.suffix.lower() == ".json":
         raise ValueError("work-order draft --output must be a Markdown path, not .json")
     manifest_path = output.with_suffix(".json")
+    cloud_event_path = _cloud_work_order_event_path(output)
     _require_writable(output, force=force)
     _require_writable(manifest_path, force=force)
+    _require_writable(cloud_event_path, force=force)
     effective_role_lenses = tuple(role_lenses) or DEFAULT_ROLE_LENSES
     effective_review_lanes = tuple(review_lanes) or DEFAULT_REVIEW_LANES
+    source_metadata = dict(source or {})
+    if repo and not source_metadata.get("repo"):
+        source_metadata["repo"] = repo
     markdown = render_work_order(
         title=title,
         source_text=source_text,
@@ -804,6 +1022,7 @@ def draft_work_order(
         context_manifest=context_manifest,
         role_lenses=effective_role_lenses,
         review_lanes=effective_review_lanes,
+        source=source_metadata,
     )
     _write_text(output, markdown, force=True)
     manifest = {
@@ -817,9 +1036,13 @@ def draft_work_order(
         "context_manifest": str(context_manifest) if context_manifest else "",
         "role_lenses": list(effective_role_lenses),
         "review_lanes": list(effective_review_lanes),
+        "source": source_metadata,
+        "cloud_event_path": str(cloud_event_path),
     }
-    _write_json(manifest_path, manifest, force=True)
     manifest["manifest_path"] = str(manifest_path)
+    _write_json(manifest_path, manifest, force=True)
+    cloud_event = build_work_order_cloud_event(manifest)
+    _write_json(cloud_event_path, cloud_event, force=True)
     return manifest
 
 
@@ -1130,19 +1353,25 @@ def work_order_main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "draft":
+            source: Mapping[str, Any] | None = None
             if args.issue_plan:
-                issue_plan_title, source_text = _read_issue_plan_for_work_order(args.issue_plan)
-                title = args.title or issue_plan_title
+                issue_plan = _read_issue_plan_for_work_order(args.issue_plan)
+                title = args.title or issue_plan.title
+                source_text = issue_plan.source_text
+                repo = args.repo or issue_plan.repo
+                source = issue_plan.source
             else:
                 source_text = _read_optional_body(args.body_file, args.body)
                 title = args.title
+                repo = args.repo
             payload = draft_work_order(
                 title=title,
                 source_text=source_text,
-                repo=args.repo,
+                repo=repo,
                 context_manifest=args.context_manifest,
                 role_lenses=args.role_lens,
                 review_lanes=args.review_lane,
+                source=source,
                 output=args.output,
                 force=args.force,
             )

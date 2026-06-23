@@ -83,7 +83,9 @@ code-mower plan from-github-issue owner/repo#123 \
 This keeps planning visible to local agents, cloud agents, and humans in the
 same issue timeline. The posted comment includes a hidden
 `CODE_MOWER_PLAN_STATE` trailer so Code Mower can recover provenance later
-without making the human-facing issue noisy.
+without making the human-facing issue noisy. The local Markdown output carries
+the same trailer, so local work orders can keep pointing back to the issue even
+after the plan file moves between machines.
 
 For private/offline drafting, use copied issue text:
 
@@ -115,6 +117,21 @@ The work order includes role/lens sections for product, architecture,
 implementation, QA, security, operability, and devil's advocate review. These
 sections are deliberately prompts for thinking, not requirements to spawn a
 heavy multi-agent runtime.
+
+`work-order draft` also writes a `*.cloud-event.json` sidecar next to the work
+order. That sidecar is metadata only: repository, issue number/URL, role lenses,
+review lanes, and Code Mower package provenance. It does not include the issue
+body, source code, diffs, transcripts, stdout/stderr, auth output, or secrets.
+
+Include that sidecar in a cloud bundle when you want CodeMower.com to understand
+that a later builder/reviewer run came from a GitHub issue planning flow:
+
+```bash
+code-mower cloud export \
+  --event work_order=.code-mower/work-orders/billing-settings.cloud-event.json \
+  --output-dir .code-mower/cloud-benchmark-bundle \
+  --repo-slug owner/repo
+```
 
 ## 5. Generate Critique Prompts
 

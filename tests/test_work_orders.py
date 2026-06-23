@@ -122,17 +122,25 @@ class WorkOrderTests(unittest.TestCase):
             )
             issue_plan_path = root / "issue-plan.md"
             work_orders.write_issue_plan(plan, issue_plan_path)
+            issue_plan_input = work_orders._read_issue_plan_for_work_order(issue_plan_path)
 
             work_order = work_orders.draft_work_order(
                 title="Project context setup",
-                source_text=issue_plan_path.read_text(encoding="utf-8"),
-                repo="owner/repo",
+                source_text=issue_plan_input.source_text,
+                repo=issue_plan_input.repo,
                 role_lenses=["architect", "qa"],
                 review_lanes=["codex-audit"],
+                source=issue_plan_input.source,
                 output=root / "work-order.md",
             )
             work_order_path = Path(work_order["output_path"])
             self.assertIn("## Role/Lens Passes", work_order_path.read_text(encoding="utf-8"))
+            event_path = Path(work_order["cloud_event_path"])
+            self.assertTrue(event_path.exists())
+            event = json.loads(event_path.read_text(encoding="utf-8"))
+            self.assertEqual(event["event_type"], "work_order")
+            self.assertEqual(event["repo_slug"], "owner/repo")
+            self.assertEqual(event["dimensions"]["issue_url"], "https://github.com/owner/repo/issues/1")
 
             critique = work_orders.create_critique_plan(
                 work_order_path,
@@ -199,7 +207,13 @@ class WorkOrderTests(unittest.TestCase):
             text = (root / "work-order.md").read_text(encoding="utf-8")
             self.assertIn("# Work Order: Structured planning workflow", text)
             self.assertIn("# Issue Plan: Structured planning workflow", text)
+            self.assertIn("## Source", text)
+            self.assertIn("- Repository: `owner/repo`", text)
             self.assertNotIn('"mode": "issue-plan"', text)
+            manifest = json.loads((root / "work-order.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["repo"], "owner/repo")
+            self.assertEqual(manifest["source"]["type"], "issue_plan")
+            self.assertTrue(Path(manifest["cloud_event_path"]).exists())
 
     def test_work_order_draft_strips_markdown_issue_plan_title_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -228,6 +242,9 @@ class WorkOrderTests(unittest.TestCase):
             text = (root / "work-order.md").read_text(encoding="utf-8")
             self.assertIn("# Work Order: Markdown planning workflow", text)
             self.assertNotIn("# Work Order: Issue Plan:", text)
+            manifest = json.loads((root / "work-order.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["repo"], "owner/repo")
+            self.assertEqual(manifest["source"]["issue_plan_file"], "issue-plan.md")
 
     def test_plan_from_issue_prints_markdown_when_stdout_is_selected(self) -> None:
         out = StringIO()
@@ -336,6 +353,7 @@ class WorkOrderTests(unittest.TestCase):
             self.assertIn("# Issue Plan: Planning workflow", text)
             self.assertIn("Use GitHub Issues as planning source of truth.", text)
             self.assertIn("https://github.com/owner/repo/issues/123", text)
+            self.assertIn("<!-- CODE_MOWER_PLAN_STATE:", text)
 
     def test_plan_from_github_issue_post_uses_body_file_and_trailer(self) -> None:
         seen_body_file: Path | None = None
