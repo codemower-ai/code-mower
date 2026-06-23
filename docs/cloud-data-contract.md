@@ -77,9 +77,10 @@ but they are excluded from `benchmark_*` provenance coverage fields.
 
 `work_order` events are also operational metadata, not reviewer accuracy
 evidence. They connect a GitHub issue planning flow to later builder/reviewer
-runs by recording issue/work-order provenance, role lenses, and review lanes.
-They must not include issue bodies, source code, raw diffs, transcripts,
-stdout/stderr, auth output, or secrets.
+runs by recording issue/work-order provenance, role lenses, review lanes, and
+optional delivery metadata: PR URL/number/state, reviewer-check names/statuses,
+merge SHA, and merged-at time. They must not include issue bodies, source code,
+raw diffs, transcripts, stdout/stderr, auth output, or secrets.
 
 Each event may also include a `tool` object using schema
 `code_mower.toolProvenance.v1`. This object is the benchmark-grade provenance

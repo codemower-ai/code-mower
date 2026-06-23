@@ -88,11 +88,11 @@ Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b31
+pipx install --python python3.12 code-mower==0.5.0b32
 code-mower --version
 ```
 
-`0.5.0b31` is a beta release. Until Code Mower publishes a stable `1.0`
+`0.5.0b32` is a beta release. Until Code Mower publishes a stable `1.0`
 line, use the explicit beta version above or allow prereleases with:
 
 ```bash
@@ -135,7 +135,7 @@ First-time command map: [docs/launch-command-surface.md](docs/launch-command-sur
 
 The current PyPI beta has been rehearsed end-to-end from a clean install:
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the latest 10/10 public-package readiness proof for `code-mower==0.5.0b31`.
+the latest 10/10 public-package readiness proof for `code-mower==0.5.0b32`.
 
 ## Optional: Plan Before Coding
 
@@ -159,6 +159,19 @@ to the issue on CodeMower.com. That sidecar excludes source, raw diffs, raw
 transcripts, stdout/stderr, auth output, secrets, and issue body text. External
 docs are recorded as metadata manifests unless you explicitly ask for bounded
 previews. See [docs/planning-work-orders.md](docs/planning-work-orders.md).
+
+After a PR exists, attach source-free delivery metadata to the same sidecar:
+
+```bash
+code-mower work-order attach-delivery \
+  .code-mower/work-orders/billing-settings.cloud-event.json \
+  --pr OWNER/REPO#124 \
+  --from-github
+```
+
+That lets CodeMower.com show `issue -> plan -> work order -> PR -> reviewer
+checks -> merge` lineage without receiving source, diffs, transcripts, or issue
+body text.
 
 ## Why Not Just Run Codex Or Claude Yourself?
 
@@ -263,9 +276,9 @@ best?" to "which AI builder plus reviewer loop ships best on this product?" See
 
 ## Installation Status
 
-The current public beta is `v0.5.0-beta.31` from
+The current public beta is `v0.5.0-beta.32` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), published
-as `code-mower==0.5.0b31` on [PyPI](https://pypi.org/project/code-mower/).
+as `code-mower==0.5.0b32` on [PyPI](https://pypi.org/project/code-mower/).
 GitHub releases remain the auditable source for tags, build artifacts, and
 release notes.
 

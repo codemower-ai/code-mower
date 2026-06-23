@@ -123,6 +123,30 @@ order. That sidecar is metadata only: repository, issue number/URL, role lenses,
 review lanes, and Code Mower package provenance. It does not include the issue
 body, source code, diffs, transcripts, stdout/stderr, auth output, or secrets.
 
+When implementation reaches a pull request, update the same sidecar with
+source-free delivery metadata:
+
+```bash
+code-mower work-order attach-delivery \
+  .code-mower/work-orders/billing-settings.cloud-event.json \
+  --pr owner/repo#124 \
+  --from-github
+```
+
+`--from-github` reads PR URL, state, merge commit, merge time, and
+reviewer-like checks through `gh pr view`. It filters out ordinary CI checks and
+records reviewer checks as names and statuses only. You can also attach checks
+explicitly:
+
+```bash
+code-mower work-order attach-delivery \
+  .code-mower/work-orders/billing-settings.cloud-event.json \
+  --pr owner/repo#124 \
+  --reviewer-check codex-audit=success \
+  --reviewer-check gitar=approved \
+  --merge-sha abc123def456
+```
+
 Include that sidecar in a cloud bundle when you want CodeMower.com to understand
 that a later builder/reviewer run came from a GitHub issue planning flow:
 
@@ -178,7 +202,6 @@ code-mower builder-experiment plan \
 This is planning and measurement scaffolding, not a full autonomous builder
 orchestrator. It does not:
 
-- fetch GitHub issue bodies automatically;
 - execute agent sessions;
 - upload external docs;
 - decide merge readiness;

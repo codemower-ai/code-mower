@@ -4,6 +4,19 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.32
+
+This beta adds full issue-to-delivery lineage capture for the planning workflow.
+
+### Added
+
+- `code-mower work-order attach-delivery` updates a work-order cloud-event
+  sidecar with source-free PR, reviewer-check, and merge metadata.
+- `--from-github` can read PR URL/state/merge evidence and reviewer-like check
+  names/statuses through `gh pr view`, while filtering ordinary CI checks.
+- Planning, quickstart, and cloud-data-contract docs now show the full
+  `issue -> plan -> work order -> PR -> reviewer checks -> merge` path.
+
 ## v0.5.0-beta.4
 
 This beta fixes an installed-package Codex audit regression found while

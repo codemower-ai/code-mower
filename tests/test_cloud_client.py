@@ -357,7 +357,7 @@ def test_provenance_summary_preserves_source_quality_fields() -> None:
                     "tool": {
                         "role": "reporter",
                         "tool_name": "code-mower",
-                        "tool_version": "0.5.0b31",
+                        "tool_version": "0.5.0b32",
                         "provider": "code-mower",
                         "model": "",
                         "model_source": "not_applicable",
