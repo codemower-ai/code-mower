@@ -7,7 +7,9 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +22,7 @@ ISSUE_PLAN_SCHEMA = "code_mower.issuePlan.v1"
 WORK_ORDER_SCHEMA = "code_mower.workOrder.v1"
 CRITIQUE_PLAN_SCHEMA = "code_mower.workOrderCritiquePlan.v1"
 WORK_ORDER_BUILDER_SPEC_SCHEMA = "code_mower.workOrderBuilderExperimentSeed.v1"
+PLAN_STATE_TRAILER_PREFIX = "<!-- CODE_MOWER_PLAN_STATE:"
 
 DEFAULT_PROJECT_CONTEXT_DIR = Path(".code-mower/project-context")
 DEFAULT_EXTERNAL_CONTEXT_DIR = Path(".code-mower/context/external")
@@ -493,6 +496,146 @@ def build_issue_plan(
     }
 
 
+def parse_github_issue_ref(issue_ref: str, *, repo: str = "") -> tuple[str, str]:
+    """Return (repo, issue_number) for owner/repo#123, URL, or number + --repo."""
+
+    raw = issue_ref.strip()
+    repo = repo.strip()
+    if not raw:
+        raise ValueError("issue reference is required")
+    url_match = re.match(r"^https://([^/\s]+)/([^/\s]+/[^/\s]+)/issues/([0-9]+)(?:[/?#].*)?$", raw)
+    if url_match:
+        host = url_match.group(1)
+        repo_slug = url_match.group(2)
+        issue_number = url_match.group(3)
+        if host != "github.com":
+            repo_slug = f"{host}/{repo_slug}"
+        return repo_slug, issue_number
+    slug_match = re.match(r"^([^/\s]+/[^#\s]+)#([0-9]+)$", raw)
+    if slug_match:
+        return slug_match.group(1), slug_match.group(2)
+    if raw.isdigit() and repo:
+        return repo, raw
+    if raw.startswith("#") and raw[1:].isdigit() and repo:
+        return repo, raw[1:]
+    raise ValueError(
+        "issue reference must be owner/repo#123, a GitHub issue URL, "
+        "or an issue number with --repo"
+    )
+
+
+def fetch_github_issue(
+    issue_ref: str,
+    *,
+    repo: str = "",
+    gh_path: str = "gh",
+) -> dict[str, Any]:
+    issue_repo, issue_number = parse_github_issue_ref(issue_ref, repo=repo)
+    command = [
+        gh_path,
+        "issue",
+        "view",
+        issue_number,
+        "--repo",
+        issue_repo,
+        "--json",
+        "title,body,number,url,state,labels,author",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"could not run gh issue view: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise ValueError(f"gh issue view failed: {detail or completed.returncode}")
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"could not parse gh issue view JSON: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("gh issue view JSON was not an object")
+    return {
+        **dict(payload),
+        "repo": issue_repo,
+        "number": str(payload.get("number") or issue_number),
+    }
+
+
+def issue_plan_comment_body(plan: Mapping[str, Any]) -> str:
+    state = {
+        "schema": "code_mower.planState.v1",
+        "issue_plan_schema": plan.get("schema"),
+        "repo": plan.get("repo") or "",
+        "issue_number": str(plan.get("issue_number") or ""),
+        "issue_url": plan.get("issue_url") or "",
+        "title": plan.get("title") or "",
+        "status": "ready",
+        "created_at": plan.get("created_at") or _utc_now(),
+    }
+    serialized = json.dumps(state, sort_keys=True, separators=(",", ":"))
+    serialized = serialized.replace("-->", "--\\u003e")
+    return (
+        "## Code Mower Issue Plan\n\n"
+        f"{render_issue_plan_markdown(plan).strip()}\n\n"
+        f"{PLAN_STATE_TRAILER_PREFIX} "
+        f"{serialized} -->\n"
+    )
+
+
+def post_github_issue_plan(
+    plan: Mapping[str, Any],
+    *,
+    gh_path: str = "gh",
+) -> dict[str, Any]:
+    repo = str(plan.get("repo") or "")
+    issue_number = str(plan.get("issue_number") or "")
+    if not repo or not issue_number:
+        raise ValueError("cannot post issue plan without repo and issue number")
+    body = issue_plan_comment_body(plan)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as fh:
+        body_path = Path(fh.name)
+        fh.write(body)
+    try:
+        completed = subprocess.run(
+            [
+                gh_path,
+                "issue",
+                "comment",
+                issue_number,
+                "--repo",
+                repo,
+                "--body-file",
+                str(body_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"could not run gh issue comment: {exc}") from exc
+    finally:
+        try:
+            body_path.unlink()
+        except OSError:
+            pass
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise ValueError(f"gh issue comment failed: {detail or completed.returncode}")
+    return {
+        "posted": True,
+        "repo": repo,
+        "issue_number": issue_number,
+        "url": (completed.stdout or "").strip(),
+    }
+
+
 def render_issue_plan_markdown(plan: Mapping[str, Any]) -> str:
     lines = [
         f"# Issue Plan: {plan.get('title')}",
@@ -865,6 +1008,24 @@ def plan_main(argv: list[str] | None = None) -> int:
     issue_parser.add_argument("--output", type=Path)
     issue_parser.add_argument("--force", action="store_true")
     issue_parser.add_argument("--json", action="store_true")
+    github_parser = subparsers.add_parser(
+        "from-github-issue",
+        help="Create a plan from a GitHub issue, optionally posting it back.",
+    )
+    github_parser.add_argument(
+        "issue_ref",
+        help="Issue ref: owner/repo#123, GitHub issue URL, or number with --repo.",
+    )
+    github_parser.add_argument("--repo", default="", help="owner/repo for numeric issue refs.")
+    github_parser.add_argument("--output", type=Path, help="Optional local derived plan path.")
+    github_parser.add_argument(
+        "--post",
+        action="store_true",
+        help="Post the plan back to the GitHub issue as a structured comment.",
+    )
+    github_parser.add_argument("--force", action="store_true")
+    github_parser.add_argument("--gh-path", default="gh", help="Path to the GitHub CLI.")
+    github_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     if args.command == "from-issue":
@@ -886,6 +1047,44 @@ def plan_main(argv: list[str] | None = None) -> int:
             else:
                 payload = plan
                 text = render_issue_plan_markdown(plan)
+            return _print_payload(payload, as_json=args.json, text=text)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    if args.command == "from-github-issue":
+        try:
+            issue = fetch_github_issue(
+                args.issue_ref,
+                repo=args.repo,
+                gh_path=args.gh_path,
+            )
+            plan = build_issue_plan(
+                title=str(issue.get("title") or ""),
+                body=str(issue.get("body") or ""),
+                issue_url=str(issue.get("url") or ""),
+                repo=str(issue.get("repo") or ""),
+                issue_number=str(issue.get("number") or ""),
+            )
+            payload: dict[str, Any]
+            if args.output:
+                payload = write_issue_plan(plan, args.output, force=args.force)
+                text = (
+                    f"Code Mower issue plan\nTitle: {payload.get('title')}\n"
+                    f"Source: {payload.get('issue_url') or args.issue_ref}\n"
+                    f"Output: {payload.get('output_path', '(stdout only)')}\n"
+                )
+            else:
+                payload = dict(plan)
+                text = render_issue_plan_markdown(plan)
+            if args.post:
+                post = post_github_issue_plan(plan, gh_path=args.gh_path)
+                payload["posted_comment"] = post
+                if not args.output:
+                    text = (
+                        f"Code Mower issue plan\nTitle: {payload.get('title')}\n"
+                        f"Source: {payload.get('issue_url') or args.issue_ref}\n"
+                    )
+                text += f"Posted: {post.get('url') or 'yes'}\n"
             return _print_payload(payload, as_json=args.json, text=text)
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)

@@ -16,7 +16,8 @@ session.
 | `code-mower init --easy --apply --output-dir .code-mower.generated` | Write reviewable generated setup files. | yes, local only | no |
 | `code-mower project-context init --project-name "My Product"` | Create editable local project doctrine docs. | yes, local only | no |
 | `code-mower context add --external path/to/doc.md` | Record external planning context as a metadata-only local manifest. | yes, local only | no |
-| `code-mower plan from-issue ...` | Turn issue text into a local planning artifact. | yes, local only | no |
+| `code-mower plan from-github-issue owner/repo#123 --post` | Turn a GitHub issue into a plan and post a structured plan comment back to the issue. | optional local output | GitHub |
+| `code-mower plan from-issue ...` | Turn copied issue text into a local/offline planning artifact. | yes, local only | no |
 | `code-mower work-order draft ...` | Create an implementation contract from a plan or prompt. | yes, local only | no |
 | `code-mower doctor --preflight --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
 | `code-mower next-steps --profile recommended --repo OWNER/REPO` | Print the next recommended setup actions. | no | no |
