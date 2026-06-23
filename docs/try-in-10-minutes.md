@@ -16,11 +16,11 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b31
+pipx install --python python3.12 code-mower==0.5.0b32
 code-mower --version
 ```
 
-`0.5.0b31` is a beta release. To follow the newest beta line instead of
+`0.5.0b32` is a beta release. To follow the newest beta line instead of
 pinning this exact build:
 
 ```bash
@@ -151,6 +151,11 @@ code-mower work-order draft \
   --issue-plan .code-mower/work-orders/feature-plan.md \
   --output .code-mower/work-orders/feature.md
 
+code-mower work-order attach-delivery \
+  .code-mower/work-orders/feature.cloud-event.json \
+  --pr OWNER/REPO#124 \
+  --from-github
+
 code-mower cloud export \
   --event work_order=.code-mower/work-orders/feature.cloud-event.json \
   --output-dir .code-mower/cloud-benchmark-bundle \
@@ -158,9 +163,10 @@ code-mower cloud export \
 ```
 
 The `work_order` cloud event is metadata only: repository, issue number/URL,
-role/lens names, review-lane names, and Code Mower package provenance. It does
-not include source code, raw diffs, raw transcripts, stdout/stderr, auth output,
-secrets, or the issue body text.
+role/lens names, review-lane names, Code Mower package provenance, and optional
+delivery fields such as PR URL, reviewer-check names/statuses, and merge SHA. It
+does not include source code, raw diffs, raw transcripts, stdout/stderr, auth
+output, secrets, or the issue body text.
 
 ## 8. Generate The Starter Value Report
 
@@ -169,7 +175,7 @@ install rehearsal instead:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b31 \
+  --package-spec code-mower==0.5.0b32 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -190,7 +196,7 @@ surface and dry-run it instead of trying product-wrapper parity:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b31 \
+  --package-spec code-mower==0.5.0b32 \
   --repo-path /path/to/repo \
   --python "$(command -v python3.12)" \
   --json

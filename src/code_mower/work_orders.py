@@ -169,6 +169,21 @@ DEFAULT_ROLE_LENSES = (
     "devils-advocate",
 )
 DEFAULT_REVIEW_LANES = ("codex-audit", "claude-audit", "gitar")
+REVIEWER_CHECK_KEYWORDS = (
+    "audit",
+    "review",
+    "bugbot",
+    "coderabbit",
+    "codex",
+    "claude",
+    "devin",
+    "gemini",
+    "antigravity",
+    "gitar",
+    "hermes",
+    "qwen",
+    "gemma",
+)
 
 
 def _utc_now() -> str:
@@ -648,6 +663,34 @@ def parse_github_issue_ref(issue_ref: str, *, repo: str = "") -> tuple[str, str]
     )
 
 
+def parse_github_pr_ref(pr_ref: str, *, repo: str = "") -> tuple[str, str]:
+    """Return (repo, pr_number) for owner/repo#123, PR URL, or number + --repo."""
+
+    raw = pr_ref.strip()
+    repo = repo.strip()
+    if not raw:
+        raise ValueError("pull request reference is required")
+    url_match = re.match(r"^https://([^/\s]+)/([^/\s]+/[^/\s]+)/pull/([0-9]+)(?:[/?#].*)?$", raw)
+    if url_match:
+        host = url_match.group(1)
+        repo_slug = url_match.group(2)
+        pr_number = url_match.group(3)
+        if host != "github.com":
+            repo_slug = f"{host}/{repo_slug}"
+        return repo_slug, pr_number
+    slug_match = re.match(r"^([^/\s]+/[^#\s]+)#([0-9]+)$", raw)
+    if slug_match:
+        return slug_match.group(1), slug_match.group(2)
+    if raw.isdigit() and repo:
+        return repo, raw
+    if raw.startswith("#") and raw[1:].isdigit() and repo:
+        return repo, raw[1:]
+    raise ValueError(
+        "pull request reference must be owner/repo#123, a GitHub PR URL, "
+        "or a PR number with --repo"
+    )
+
+
 def fetch_github_issue(
     issue_ref: str,
     *,
@@ -688,6 +731,131 @@ def fetch_github_issue(
         **dict(payload),
         "repo": issue_repo,
         "number": str(payload.get("number") or issue_number),
+    }
+
+
+def _text_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _looks_like_reviewer_check(name: str) -> bool:
+    lowered = name.lower()
+    tokens = set(filter(None, re.split(r"[^a-z0-9]+", lowered)))
+    compacted = re.sub(r"[^a-z0-9]+", "", lowered)
+    if "audit" in tokens or "review" in tokens:
+        return True
+    return any(
+        keyword not in {"audit", "review"} and (keyword in tokens or keyword in compacted)
+        for keyword in REVIEWER_CHECK_KEYWORDS
+    )
+
+
+def _github_check_status(check: Mapping[str, Any]) -> str:
+    for key in ("conclusion", "state", "status", "result"):
+        value = _text_value(check.get(key)).lower()
+        if value:
+            return value
+    return "observed"
+
+
+def _parse_reviewer_check(value: str) -> dict[str, str]:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("reviewer check entries cannot be empty")
+    separator = "=" if "=" in raw else ":" if ":" in raw else ""
+    if separator:
+        name, status = raw.split(separator, 1)
+    else:
+        name, status = raw, "observed"
+    name = name.strip()
+    status = status.strip() or "observed"
+    if not name:
+        raise ValueError("reviewer check name cannot be empty")
+    return {"name": name, "status": status}
+
+
+def _normalize_reviewer_checks(values: Sequence[Any]) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        if isinstance(value, str):
+            check = _parse_reviewer_check(value)
+        elif isinstance(value, Mapping):
+            name = _text_value(value.get("name") or value.get("context"))
+            status = _text_value(value.get("status")) or "observed"
+            if not name:
+                continue
+            check = {"name": name, "status": status}
+        else:
+            continue
+        key = (check["name"], check["status"])
+        if key in seen:
+            continue
+        seen.add(key)
+        checks.append(check)
+    return checks
+
+
+def fetch_github_pull_request_delivery(
+    pr_ref: str,
+    *,
+    repo: str = "",
+    gh_path: str = "gh",
+) -> dict[str, Any]:
+    """Fetch source-free delivery metadata for a GitHub pull request."""
+
+    pr_repo, pr_number = parse_github_pr_ref(pr_ref, repo=repo)
+    command = [
+        gh_path,
+        "pr",
+        "view",
+        pr_number,
+        "--repo",
+        pr_repo,
+        "--json",
+        "url,number,state,mergeCommit,mergedAt,statusCheckRollup",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"could not run gh pr view: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise ValueError(f"gh pr view failed: {detail or completed.returncode}")
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"could not parse gh pr view JSON: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("gh pr view JSON was not an object")
+    raw_checks = payload.get("statusCheckRollup") or []
+    reviewer_checks: list[dict[str, str]] = []
+    if isinstance(raw_checks, Sequence) and not isinstance(raw_checks, (str, bytes)):
+        for item in raw_checks:
+            if not isinstance(item, Mapping):
+                continue
+            name = _text_value(item.get("name") or item.get("context"))
+            if not name or not _looks_like_reviewer_check(name):
+                continue
+            reviewer_checks.append({"name": name, "status": _github_check_status(item)})
+    merge_commit = payload.get("mergeCommit")
+    merge_sha = ""
+    if isinstance(merge_commit, Mapping):
+        merge_sha = _text_value(merge_commit.get("oid") or merge_commit.get("sha"))
+    return {
+        "pr_repo": pr_repo,
+        "pr_number": str(payload.get("number") or pr_number),
+        "pr_url": _text_value(payload.get("url")),
+        "pr_state": _text_value(payload.get("state")),
+        "merge_sha": merge_sha,
+        "merged_at": _text_value(payload.get("mergedAt")),
+        "reviewer_checks": _normalize_reviewer_checks(reviewer_checks),
     }
 
 
@@ -914,6 +1082,90 @@ def build_work_order_cloud_event(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "role_lenses": role_lenses,
             "review_lanes": review_lanes,
         },
+    }
+
+
+def attach_delivery_to_work_order_event(
+    event_path: Path,
+    *,
+    pr_repo: str = "",
+    pr_url: str = "",
+    pr_number: str = "",
+    pr_state: str = "",
+    merge_sha: str = "",
+    merged_at: str = "",
+    reviewer_checks: Sequence[Any] = (),
+    status: str = "",
+    force: bool = True,
+) -> dict[str, Any]:
+    """Attach source-free PR/reviewer/merge delivery metadata to a work-order event."""
+
+    try:
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read work-order cloud event {event_path}: {exc}") from exc
+    if not isinstance(event, Mapping):
+        raise ValueError("work-order cloud event must be a JSON object")
+    if str(event.get("event_type") or "") != "work_order":
+        raise ValueError("delivery metadata can only be attached to work_order events")
+
+    updated = dict(event)
+    dimensions = updated.get("dimensions")
+    dimensions = dict(dimensions) if isinstance(dimensions, Mapping) else {}
+    metrics = updated.get("metrics")
+    metrics = dict(metrics) if isinstance(metrics, Mapping) else {}
+
+    clean_pr_url = _text_value(pr_url)
+    clean_pr_repo = _text_value(pr_repo)
+    clean_pr_number = _text_value(pr_number)
+    clean_pr_state = _text_value(pr_state)
+    clean_merge_sha = _text_value(merge_sha)
+    clean_merged_at = _text_value(merged_at)
+    checks = _normalize_reviewer_checks(reviewer_checks)
+
+    if clean_pr_url:
+        dimensions["pr_url"] = clean_pr_url
+        dimensions["pull_request_url"] = clean_pr_url
+    if clean_pr_repo:
+        dimensions["pr_repo"] = clean_pr_repo
+        dimensions["pull_request_repo"] = clean_pr_repo
+    if clean_pr_number:
+        dimensions["pr_number"] = clean_pr_number
+        dimensions["pull_request_number"] = clean_pr_number
+    if clean_pr_state:
+        dimensions["pr_state"] = clean_pr_state
+    if clean_merge_sha:
+        dimensions["merge_sha"] = clean_merge_sha
+        dimensions["merge_commit"] = clean_merge_sha
+    if clean_merged_at:
+        dimensions["merged_at"] = clean_merged_at
+    if checks:
+        dimensions["reviewer_checks"] = checks
+        metrics["reviewer_check_count"] = len(checks)
+    elif "reviewer_checks" in dimensions and isinstance(dimensions["reviewer_checks"], list):
+        metrics["reviewer_check_count"] = len(dimensions["reviewer_checks"])
+    dimensions["delivery_updated_at"] = _utc_now()
+
+    clean_status = _text_value(status)
+    if clean_status:
+        updated["status"] = clean_status
+    elif clean_merge_sha or clean_merged_at or clean_pr_state.upper() == "MERGED":
+        updated["status"] = "merged"
+    elif clean_pr_url or clean_pr_number:
+        updated["status"] = "pr-linked"
+
+    updated["dimensions"] = dimensions
+    updated["metrics"] = metrics
+    _write_json(event_path, updated, force=force)
+    return {
+        "mode": "work-order-attach-delivery",
+        "event_path": str(event_path),
+        "status": updated.get("status"),
+        "pr_repo": dimensions.get("pr_repo", ""),
+        "pr_url": dimensions.get("pr_url", ""),
+        "pr_number": dimensions.get("pr_number", ""),
+        "merge_sha": dimensions.get("merge_sha", ""),
+        "reviewer_check_count": metrics.get("reviewer_check_count", 0),
     }
 
 
@@ -1349,6 +1601,33 @@ def work_order_main(argv: list[str] | None = None) -> int:
     builder_parser.add_argument("--output", type=Path, required=True)
     builder_parser.add_argument("--json", action="store_true")
 
+    delivery_parser = subparsers.add_parser(
+        "attach-delivery",
+        help="Attach source-free PR/reviewer/merge metadata to a work-order event.",
+    )
+    delivery_parser.add_argument("event", type=Path)
+    delivery_parser.add_argument("--pr", default="", help="PR ref: owner/repo#123, URL, or number.")
+    delivery_parser.add_argument("--repo", default="", help="owner/repo for numeric PR refs.")
+    delivery_parser.add_argument(
+        "--from-github",
+        action="store_true",
+        help="Fetch PR URL/state/merge/reviewer-check metadata with gh pr view.",
+    )
+    delivery_parser.add_argument("--gh-path", default="gh", help="Path to the GitHub CLI.")
+    delivery_parser.add_argument("--pr-url", default="")
+    delivery_parser.add_argument("--pr-number", default="")
+    delivery_parser.add_argument("--pr-state", default="")
+    delivery_parser.add_argument(
+        "--reviewer-check",
+        action="append",
+        default=[],
+        help="Reviewer check as name=status. Repeat for each reviewer lane.",
+    )
+    delivery_parser.add_argument("--merge-sha", default="")
+    delivery_parser.add_argument("--merged-at", default="")
+    delivery_parser.add_argument("--status", default="")
+    delivery_parser.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
 
     try:
@@ -1407,6 +1686,53 @@ def work_order_main(argv: list[str] | None = None) -> int:
                 f"Code Mower builder experiment seed\n"
                 f"Output: {payload.get('output_path')}\n"
                 f"Builders: {payload.get('builder_count')}\n"
+            )
+            return _print_payload(payload, as_json=args.json, text=text)
+        if args.command == "attach-delivery":
+            github_delivery: dict[str, Any] = {}
+            if args.from_github:
+                if not args.pr:
+                    raise ValueError("--from-github requires --pr")
+                github_delivery = fetch_github_pull_request_delivery(
+                    args.pr,
+                    repo=args.repo,
+                    gh_path=args.gh_path,
+                )
+            pr_repo = ""
+            pr_number = ""
+            if args.pr and not github_delivery:
+                pr_repo, pr_number = parse_github_pr_ref(args.pr, repo=args.repo)
+            manual_pr_url = ""
+            if args.pr and not github_delivery:
+                clean_pr = args.pr.strip()
+                if clean_pr.startswith(("http://", "https://")):
+                    manual_pr_url = clean_pr
+                elif pr_repo and pr_number:
+                    manual_pr_url = f"https://github.com/{pr_repo}/pull/{pr_number}"
+            reviewer_checks = list(github_delivery.get("reviewer_checks") or [])
+            reviewer_checks.extend(args.reviewer_check)
+            payload = attach_delivery_to_work_order_event(
+                args.event,
+                pr_repo=str(github_delivery.get("pr_repo") or pr_repo),
+                pr_url=args.pr_url or str(github_delivery.get("pr_url") or "") or manual_pr_url,
+                pr_number=(
+                    args.pr_number
+                    or str(github_delivery.get("pr_number") or "")
+                    or pr_number
+                ),
+                pr_state=args.pr_state or str(github_delivery.get("pr_state") or ""),
+                merge_sha=args.merge_sha or str(github_delivery.get("merge_sha") or ""),
+                merged_at=args.merged_at or str(github_delivery.get("merged_at") or ""),
+                reviewer_checks=reviewer_checks,
+                status=args.status,
+            )
+            if pr_repo:
+                payload["pr_repo"] = pr_repo
+            text = (
+                f"Code Mower work-order delivery metadata\n"
+                f"Event: {payload.get('event_path')}\n"
+                f"Status: {payload.get('status')}\n"
+                f"Reviewer checks: {payload.get('reviewer_check_count')}\n"
             )
             return _print_payload(payload, as_json=args.json, text=text)
     except ValueError as exc:
