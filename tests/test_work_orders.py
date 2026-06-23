@@ -503,6 +503,59 @@ class WorkOrderTests(unittest.TestCase):
                 ],
             )
 
+    def test_attach_delivery_marks_merged_prs_without_merge_sha_as_merged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work_order = work_orders.draft_work_order(
+                title="Full lineage capture",
+                source_text="Tie issue planning to PR delivery evidence.",
+                repo="owner/repo",
+                output=root / "work-order.md",
+            )
+            event_path = Path(work_order["cloud_event_path"])
+
+            work_orders.attach_delivery_to_work_order_event(
+                event_path,
+                pr_url="https://github.com/owner/repo/pull/12",
+                pr_number="12",
+                pr_state="MERGED",
+                merged_at="2026-06-23T12:00:00Z",
+            )
+
+            event = json.loads(event_path.read_text(encoding="utf-8"))
+            self.assertEqual(event["status"], "merged")
+            self.assertEqual(event["dimensions"]["pr_state"], "MERGED")
+            self.assertEqual(event["dimensions"]["merged_at"], "2026-06-23T12:00:00Z")
+            self.assertNotIn("merge_sha", event["dimensions"])
+
+    def test_github_delivery_filters_preview_deploy_checks_out_of_reviewer_checks(self) -> None:
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            payload = {
+                "number": 12,
+                "url": "https://github.com/owner/repo/pull/12",
+                "state": "OPEN",
+                "mergedAt": "",
+                "mergeCommit": None,
+                "statusCheckRollup": [
+                    {"name": "Vercel Preview", "conclusion": "SUCCESS"},
+                    {"name": "Netlify Preview", "conclusion": "SUCCESS"},
+                    {"name": "CodeRabbit Review", "conclusion": "SUCCESS"},
+                    {"name": "codex-audit", "conclusion": "SUCCESS"},
+                ],
+            }
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+        with mock.patch.object(work_orders.subprocess, "run", side_effect=fake_run):
+            delivery = work_orders.fetch_github_pull_request_delivery("owner/repo#12")
+
+        self.assertEqual(
+            delivery["reviewer_checks"],
+            [
+                {"name": "CodeRabbit Review", "status": "success"},
+                {"name": "codex-audit", "status": "success"},
+            ],
+        )
+
     def test_issue_plan_refuses_to_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "issue-plan.md"

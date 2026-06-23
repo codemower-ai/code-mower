@@ -740,7 +740,14 @@ def _text_value(value: Any) -> str:
 
 def _looks_like_reviewer_check(name: str) -> bool:
     lowered = name.lower()
-    return any(keyword in lowered for keyword in REVIEWER_CHECK_KEYWORDS)
+    tokens = set(filter(None, re.split(r"[^a-z0-9]+", lowered)))
+    compacted = re.sub(r"[^a-z0-9]+", "", lowered)
+    if "audit" in tokens or "review" in tokens:
+        return True
+    return any(
+        keyword not in {"audit", "review"} and (keyword in tokens or keyword in compacted)
+        for keyword in REVIEWER_CHECK_KEYWORDS
+    )
 
 
 def _github_check_status(check: Mapping[str, Any]) -> str:
@@ -1137,7 +1144,7 @@ def attach_delivery_to_work_order_event(
     clean_status = _text_value(status)
     if clean_status:
         updated["status"] = clean_status
-    elif clean_merge_sha:
+    elif clean_merge_sha or clean_merged_at or clean_pr_state.upper() == "MERGED":
         updated["status"] = "merged"
     elif clean_pr_url or clean_pr_number:
         updated["status"] = "pr-linked"
