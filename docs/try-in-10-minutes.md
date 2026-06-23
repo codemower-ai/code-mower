@@ -135,7 +135,34 @@ Then run selected checks explicitly, for example:
 code-mower checks run --only lint,test --json
 ```
 
-## 7. Generate The Starter Value Report
+## 7. Optional: Plan One GitHub Issue Before Coding
+
+Use this when you want a GitHub issue to be the shared planning surface for
+local agents, cloud agents, and humans. The issue remains the source of truth;
+Code Mower writes local planning artifacts that can later connect builder and
+reviewer runs back to that issue on CodeMower.com.
+
+```bash
+code-mower plan from-github-issue OWNER/REPO#123 \
+  --output .code-mower/work-orders/feature-plan.md \
+  --post
+
+code-mower work-order draft \
+  --issue-plan .code-mower/work-orders/feature-plan.md \
+  --output .code-mower/work-orders/feature.md
+
+code-mower cloud export \
+  --event work_order=.code-mower/work-orders/feature.cloud-event.json \
+  --output-dir .code-mower/cloud-benchmark-bundle \
+  --repo-slug OWNER/REPO
+```
+
+The `work_order` cloud event is metadata only: repository, issue number/URL,
+role/lens names, review-lane names, and Code Mower package provenance. It does
+not include source code, raw diffs, raw transcripts, stdout/stderr, auth output,
+secrets, or the issue body text.
+
+## 8. Generate The Starter Value Report
 
 If you want to prove the whole first-user path in one command, run the package
 install rehearsal instead:

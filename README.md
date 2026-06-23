@@ -145,19 +145,20 @@ surface, then keep pull requests focused on code review and merge readiness:
 ```bash
 code-mower project-context init --project-name "My Product"
 code-mower context add --external ~/Downloads/product-requirements.md
-code-mower plan from-issue \
-  --repo OWNER/REPO \
-  --title "Add billing settings" \
-  --body-file issue-body.md \
+code-mower plan from-github-issue OWNER/REPO#123 \
   --output .code-mower/work-orders/billing-settings-plan.md
 code-mower work-order draft \
   --issue-plan .code-mower/work-orders/billing-settings-plan.md \
   --output .code-mower/work-orders/billing-settings.md
 ```
 
-The work-order path is local-only by default. External docs are recorded as
-metadata manifests unless you explicitly ask for bounded previews. See
-[docs/planning-work-orders.md](docs/planning-work-orders.md).
+The GitHub issue remains the source of truth. The local plan and work order are
+derived working artifacts, and `work-order draft` also writes a metadata-only
+`*.cloud-event.json` sidecar that can tie later builder/reviewer evidence back
+to the issue on CodeMower.com. That sidecar excludes source, raw diffs, raw
+transcripts, stdout/stderr, auth output, secrets, and issue body text. External
+docs are recorded as metadata manifests unless you explicitly ask for bounded
+previews. See [docs/planning-work-orders.md](docs/planning-work-orders.md).
 
 ## Why Not Just Run Codex Or Claude Yourself?
 
