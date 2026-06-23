@@ -223,6 +223,59 @@ def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
         assert upload["provenance"]["tools"][0]["tool_name"] == "codex"
 
 
+def test_cloud_export_accepts_work_order_provenance_event() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        event = root / "work-order.cloud-event.json"
+        event.write_text(
+            json.dumps(
+                {
+                    "schema": EVENT_SCHEMA,
+                    "event_id": "work-order-1",
+                    "event_type": "work_order",
+                    "created_at": "2026-06-23T00:00:00Z",
+                    "repo_slug": "owner/repo",
+                    "source": "code-mower-work-order",
+                    "provider": "code-mower",
+                    "lens": "planning",
+                    "status": "drafted",
+                    "tool": {
+                        "role": "planner",
+                        "tool_name": "code-mower",
+                        "tool_version": "0.5.0-test",
+                        "provider": "code-mower",
+                        "model_source": "not_applicable",
+                        "version_source": "package_version",
+                        "integration": "work-order",
+                        "lens": "planning",
+                        "source": "code-mower-work-order",
+                    },
+                    "metrics": {"role_lens_count": 2, "review_lane_count": 1},
+                    "dimensions": {
+                        "source_type": "github_issue",
+                        "issue_repo": "owner/repo",
+                        "issue_number": "123",
+                        "issue_url": "https://github.com/owner/repo/issues/123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = build_cloud_bundle(
+            reports=[],
+            events=parse_event_args([f"work_order={event}"]),
+            output_dir=root / "bundle",
+            repo_slug="owner/repo",
+        )
+
+        assert result["event_types"] == {"work_order": 1}
+        upload = build_upload_payload(bundle_dir=root / "bundle")
+        assert upload["events"][0]["event_type"] == "work_order"
+        assert upload["events"][0]["dimensions"]["issue_number"] == "123"
+        assert upload["provenance"]["tools"][0]["tool_name"] == "code-mower"
+
+
 def test_provider_catalog_snapshot_events_are_metadata_only(monkeypatch) -> None:
     monkeypatch.setenv("PATH", "")
 
