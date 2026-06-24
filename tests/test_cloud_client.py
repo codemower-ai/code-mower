@@ -210,6 +210,8 @@ def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
         )
 
         assert result["mode"] == "cloud-export"
+        assert result["upload_ready"] is True
+        assert result["upload_status"] == "ready_for_dry_run"
         assert (root / "bundle" / BUNDLE_MANIFEST_FILENAME).is_file()
         upload = build_upload_payload(bundle_dir=root / "bundle")
         assert upload["upload_mode"] == "metadata_only"
@@ -269,6 +271,8 @@ def test_cloud_export_accepts_work_order_provenance_event() -> None:
             repo_slug="owner/repo",
         )
 
+        assert result["upload_ready"] is True
+        assert result["upload_status"] == "ready_for_dry_run"
         assert result["event_types"] == {"work_order": 1}
         upload = build_upload_payload(bundle_dir=root / "bundle")
         assert upload["events"][0]["event_type"] == "work_order"
@@ -357,7 +361,7 @@ def test_provenance_summary_preserves_source_quality_fields() -> None:
                     "tool": {
                         "role": "reporter",
                         "tool_name": "code-mower",
-                        "tool_version": "0.5.0b32",
+                        "tool_version": "0.5.0b33",
                         "provider": "code-mower",
                         "model": "",
                         "model_source": "not_applicable",

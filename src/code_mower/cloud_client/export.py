@@ -191,11 +191,13 @@ def build_cloud_bundle(
         raise CloudBundleError(
             f"too many events: {len(included_events)}; max {MAX_EVENT_COUNT}"
         )
+    upload_ready = not anonymous and bool(included_reports or included_events)
+    upload_status = "ready_for_dry_run" if upload_ready else "local_export_only"
     manifest = {
         "schema": BUNDLE_SCHEMA,
         "privacy_mode": "anonymous" if anonymous else "metadata_and_reports",
-        "upload_ready": False,
-        "upload_status": "local_export_only",
+        "upload_ready": upload_ready,
+        "upload_status": upload_status,
         "repo_slug": "" if anonymous else repo_slug,
         "team_id": "" if anonymous else team_id,
         "install_id": "" if anonymous else install_id,
@@ -204,7 +206,7 @@ def build_cloud_bundle(
         "provenance": {} if anonymous else build_provenance_summary(included_events),
         "excluded_content": list(EXCLUDED_CONTENT),
         "notes": [
-            "This bundle is local-only; upload support must present a dry-run before network transfer.",
+            "This bundle is local-first and inspectable; upload requires an explicit dry-run and --yes before network transfer.",
             "Do not include source code, raw diffs, raw transcripts, raw stdout/stderr, auth output, or secrets.",
             "Reports are copied exactly as supplied; review them before sharing outside your machine.",
             "Structured events are metadata-only and should not contain source, diffs, transcripts, stdout/stderr, auth output, or secrets.",
@@ -243,7 +245,8 @@ def build_cloud_bundle(
         "event_count": len(manifest["events"]),
         "event_types": event_type_counts(manifest["events"]),
         "provenance": manifest["provenance"],
-        "upload_ready": False,
+        "upload_ready": upload_ready,
+        "upload_status": upload_status,
     }
 
 
@@ -379,7 +382,7 @@ def render_bundle_readme(manifest: dict[str, Any]) -> str:
         "# Code Mower Cloud Benchmark Bundle",
         "",
         "This local bundle is the cloud-ready handoff shape for opt-in benchmark reporting.",
-        "It is not uploaded by the OSS CLI.",
+        "It is never uploaded automatically; run `code-mower cloud upload --dry-run` first, then add `--yes` only after inspection.",
         "",
         "Excluded by default:",
     ]
