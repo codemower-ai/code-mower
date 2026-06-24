@@ -436,11 +436,11 @@ def test_provider_lane_tool_provenance_reads_model_from_selected_profile(
 def test_code_mower_reporter_provenance_marks_model_not_applicable() -> None:
     tool = build_code_mower_tool_provenance(
         source="unit-test",
-        version="0.5.0b32",
+        version="0.5.0b33",
     )
 
     assert tool["tool_name"] == "code-mower"
-    assert tool["tool_version"] == "0.5.0b32"
+    assert tool["tool_version"] == "0.5.0b33"
     assert tool["provider"] == "code-mower"
     assert tool["model"] == ""
     assert tool["model_source"] == "not_applicable"
