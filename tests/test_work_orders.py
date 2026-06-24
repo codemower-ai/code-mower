@@ -420,6 +420,13 @@ class WorkOrderTests(unittest.TestCase):
                 title="Full lineage capture",
                 source_text="Tie issue planning to PR delivery evidence.",
                 repo="owner/repo",
+                source={
+                    "type": "issue_plan",
+                    "repo": "owner/repo",
+                    "issue_number": "274",
+                    "issue_url": "https://github.com/owner/repo/issues/274",
+                    "issue_plan_file": "issue-plan.json",
+                },
                 output=root / "work-order.md",
             )
             event_path = Path(work_order["cloud_event_path"])
@@ -435,8 +442,21 @@ class WorkOrderTests(unittest.TestCase):
             )
 
             self.assertEqual(payload["status"], "merged")
+            self.assertEqual(payload["schema"], work_orders.BENCHMARK_EVENT_SCHEMA)
+            self.assertEqual(payload["event_type"], "work_order")
+            self.assertEqual(payload["dimensions"]["issue_number"], "274")
+            self.assertEqual(
+                payload["dimensions"]["issue_url"], "https://github.com/owner/repo/issues/274"
+            )
+            self.assertEqual(payload["dimensions"]["work_order_slug"], "full-lineage-capture")
+            self.assertEqual(payload["dimensions"]["pr_repo"], "owner/repo")
+            self.assertEqual(payload["dimensions"]["pr_url"], "https://github.com/owner/repo/pull/12")
+            self.assertEqual(payload["metrics"]["reviewer_check_count"], 2)
+            self.assertEqual(payload["reviewer_check_count"], 2)
             event = json.loads(event_path.read_text(encoding="utf-8"))
             self.assertEqual(event["status"], "merged")
+            self.assertEqual(event, {key: payload[key] for key in event.keys()})
+            self.assertEqual(event["dimensions"]["issue_number"], "274")
             self.assertEqual(event["dimensions"]["pr_repo"], "owner/repo")
             self.assertEqual(event["dimensions"]["pr_url"], "https://github.com/owner/repo/pull/12")
             self.assertEqual(event["dimensions"]["pull_request_number"], "12")
@@ -493,7 +513,10 @@ class WorkOrderTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             payload = json.loads(out.getvalue())
+            self.assertEqual(payload["event_type"], "work_order")
             self.assertEqual(payload["reviewer_check_count"], 2)
+            self.assertEqual(payload["dimensions"]["pr_state"], "MERGED")
+            self.assertEqual(payload["dimensions"]["merge_commit"], "abc123def456")
             event = json.loads(event_path.read_text(encoding="utf-8"))
             self.assertEqual(event["dimensions"]["pr_state"], "MERGED")
             self.assertEqual(event["dimensions"]["merge_commit"], "abc123def456")
@@ -532,9 +555,12 @@ class WorkOrderTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             payload = json.loads(out.getvalue())
+            self.assertEqual(payload["event_type"], "work_order")
             self.assertEqual(payload["pr_repo"], "owner/repo")
             self.assertEqual(payload["pr_url"], "https://github.com/owner/repo/pull/12")
             self.assertEqual(payload["pr_number"], "12")
+            self.assertEqual(payload["dimensions"]["pr_repo"], "owner/repo")
+            self.assertEqual(payload["dimensions"]["pr_url"], "https://github.com/owner/repo/pull/12")
             event = json.loads(event_path.read_text(encoding="utf-8"))
             self.assertEqual(event["status"], "pr-linked")
             self.assertEqual(event["dimensions"]["pr_repo"], "owner/repo")
@@ -571,8 +597,14 @@ class WorkOrderTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             payload = json.loads(out.getvalue())
+            self.assertEqual(payload["event_type"], "work_order")
             self.assertEqual(payload["pr_repo"], "github.example.com/owner/repo")
             self.assertEqual(payload["pr_url"], "https://github.example.com/owner/repo/pull/12")
+            self.assertEqual(payload["dimensions"]["pr_repo"], "github.example.com/owner/repo")
+            self.assertEqual(
+                payload["dimensions"]["pr_url"],
+                "https://github.example.com/owner/repo/pull/12",
+            )
             event = json.loads(event_path.read_text(encoding="utf-8"))
             self.assertEqual(event["dimensions"]["pr_repo"], "github.example.com/owner/repo")
             self.assertEqual(event["dimensions"]["pr_url"], "https://github.example.com/owner/repo/pull/12")

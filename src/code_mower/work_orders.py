@@ -1157,16 +1157,19 @@ def attach_delivery_to_work_order_event(
     updated["dimensions"] = dimensions
     updated["metrics"] = metrics
     _write_json(event_path, updated, force=force)
-    return {
-        "mode": "work-order-attach-delivery",
-        "event_path": str(event_path),
-        "status": updated.get("status"),
-        "pr_repo": dimensions.get("pr_repo", ""),
-        "pr_url": dimensions.get("pr_url", ""),
-        "pr_number": dimensions.get("pr_number", ""),
-        "merge_sha": dimensions.get("merge_sha", ""),
-        "reviewer_check_count": metrics.get("reviewer_check_count", 0),
-    }
+    response = dict(updated)
+    response.update(
+        {
+            "mode": "work-order-attach-delivery",
+            "event_path": str(event_path),
+            "pr_repo": dimensions.get("pr_repo", ""),
+            "pr_url": dimensions.get("pr_url", ""),
+            "pr_number": dimensions.get("pr_number", ""),
+            "merge_sha": dimensions.get("merge_sha", ""),
+            "reviewer_check_count": metrics.get("reviewer_check_count", 0),
+        }
+    )
+    return response
 
 
 def render_work_order(
