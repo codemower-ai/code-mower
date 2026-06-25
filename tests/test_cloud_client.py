@@ -225,6 +225,35 @@ def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
         assert upload["provenance"]["tools"][0]["tool_name"] == "codex"
 
 
+def test_cloud_export_defaults_value_report_snapshot_to_code_mower_provenance() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        result = build_cloud_bundle(
+            reports=[],
+            events=[
+                {
+                    "event_type": "value_report_snapshot",
+                    "repo_slug": "codemower-ai/code-mower",
+                    "source": "unit-test-value-report",
+                    "status": "observed",
+                    "metrics": {"report_count": 1},
+                }
+            ],
+            output_dir=root / "bundle",
+            repo_slug="codemower-ai/code-mower",
+        )
+
+        assert result["provenance"]["benchmark_events_missing_model_provenance"] == 0
+        assert result["provenance"]["benchmark_events_missing_tool_version_provenance"] == 0
+        upload = build_upload_payload(bundle_dir=root / "bundle")
+        event = upload["events"][0]
+        assert event["provider"] == "code-mower"
+        assert event["tool"]["tool_name"] == "code-mower"
+        assert event["tool"]["model_source"] == "not_applicable"
+        assert event["tool"]["version_source"] == "package_version"
+
+
 def test_cloud_export_accepts_work_order_provenance_event() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

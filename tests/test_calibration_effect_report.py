@@ -6,6 +6,7 @@ from code_mower.calibration.effect_report import (
     build_effect_report,
     reviewer_dimensions,
 )
+from code_mower.code_mower_calibration import main as calibration_main
 
 
 class CalibrationEffectReportTests(unittest.TestCase):
@@ -128,6 +129,62 @@ class CalibrationEffectReportTests(unittest.TestCase):
         self.assertEqual(spread["lens"], "context-driven-quality")
         self.assertEqual(spread["effective_catch_rate_spread"], 1.0)
         self.assertIsNone(spread["catch_rate_spread"])
+
+    def test_effect_report_output_file_is_markdown_when_json_stdout_requested(self) -> None:
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            corpus = root / "corpus.json"
+            output = root / "effect-report.md"
+            corpus.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "name": "effect-output-test",
+                        "corpus": [
+                            {
+                                "repo": "owner/repo",
+                                "pr_number": 1,
+                                "head_sha": "1" * 40,
+                                "truth": {"expectation": "known_blocked"},
+                                "reviewer_runs": [
+                                    {
+                                        "reviewer": "claude-base-audit",
+                                        "status": "blocked",
+                                        "finding_count": 1,
+                                        "expected_blocker_caught": True,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = calibration_main(
+                    [
+                        "effect-report",
+                        str(corpus),
+                        "--output",
+                        str(output),
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(output.read_text(encoding="utf-8").startswith("# Code Mower"))
+            self.assertEqual(
+                json.loads(stdout.getvalue())["mode"],
+                "code-mower-provider-lens-effect-report",
+            )
 
 
 if __name__ == "__main__":

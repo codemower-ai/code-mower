@@ -148,6 +148,10 @@ It has not yet proved:
   history;
 - enough repeated friendly-user proof that the current first-user path is
   boring across multiple private repos and machines;
+- a completed friendly-user rollout loop following
+  [v0.5 Friendly-User Rollout Plan](friendly-user-rollout-v05.md), with at
+  least 5 users proving install, doctor, first report, and optional cloud
+  sharing;
 - historical catch-up UX that is obvious on the dashboard, not just documented:
   GitHub Actions history, reviewer-run artifacts, and routine dogfood/current
   metadata must remain visibly distinct;

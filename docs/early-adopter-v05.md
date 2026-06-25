@@ -97,6 +97,9 @@ Before inviting users:
 - Known limitations are documented plainly.
 - `docs/early-adopter-invite-runbook.md` has the current tagged install command
   and invite copy for the first 5-10 friendly users.
+- `docs/friendly-user-rollout-v05.md` has the operator checklist for tracking
+  install, doctor, first report, optional cloud dry-run/upload, and dashboard
+  usefulness across the first friendly users.
 - A public GitHub Release exists for the current release tag, so users do not
   have to infer release state from tags alone.
 

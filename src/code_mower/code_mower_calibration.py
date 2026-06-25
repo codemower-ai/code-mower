@@ -631,13 +631,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if args.output is not None:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
-                if args.json:
-                    _write_json(args.output, payload)
-                else:
-                    args.output.write_text(
-                        render_effect_report_text(payload),
-                        encoding="utf-8",
-                    )
+                args.output.write_text(
+                    render_effect_report_text(payload),
+                    encoding="utf-8",
+                )
             if args.json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
