@@ -58,7 +58,10 @@ package. It has proved:
   raw diffs, raw transcripts, auth output, or secrets;
 - beta.36 private-repo package-install rehearsal against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app),
-  including repository-native check detection and dry-run execution;
+  including repository-native check detection and dry-run execution. That run
+  passed with 10/10 first-user readiness, detected `npm run lint`,
+  `npm run typecheck`, and `npm run test`, and did not require committing
+  Code Mower support files into the private product repo;
 - beta.36 calibration/value-report generation from the installed package plus
   sanitized report upload coverage for CodeMower.com;
 - metadata-only AI tool/model provenance in cloud bundles and dogfood events,
