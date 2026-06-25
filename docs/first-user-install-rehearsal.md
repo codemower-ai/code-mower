@@ -43,7 +43,7 @@ Use the current public tag or release candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b34 \
+  --package-spec code-mower==0.5.0b35 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -66,7 +66,7 @@ For a fixed output directory:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b34 \
+  --package-spec code-mower==0.5.0b35 \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-first-user-rehearsal \
   --json
@@ -76,7 +76,7 @@ For a TestPyPI candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b34 \
+  --package-spec code-mower==0.5.0b35 \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \
@@ -87,7 +87,7 @@ For a GitHub tag fallback, pass the tag URL explicitly:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.34" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.35" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -99,7 +99,7 @@ repository after the package install succeeds:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b34 \
+  --package-spec code-mower==0.5.0b35 \
   --repo-path /path/to/external-repo \
   --python "$(command -v python3.12)" \
   --json
@@ -125,7 +125,7 @@ When a product repository already has Code Mower wrapper files, the same
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b34 \
+  --package-spec code-mower==0.5.0b35 \
   --repo-path /path/to/product-repo \
   --python "$(command -v python3.12)" \
   --json
@@ -184,11 +184,11 @@ If this fails, fix the first-user path before cutting or promoting a release.
 
 ## Latest Public Package Proof
 
-The latest public-package rehearsal for `v0.5.0-beta.34` was run from PyPI with:
+The latest public-package rehearsal for `v0.5.0-beta.35` was run from PyPI with:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b34 \
+  --package-spec code-mower==0.5.0b35 \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-beta28-pypi-rehearsal-2 \
   --json
@@ -197,10 +197,10 @@ code-mower migration package-install-rehearsal \
 Result:
 
 - `status`: `pass`
-- `version`: `code-mower 0.5.0b34`
+- `version`: `code-mower 0.5.0b35`
 - `first_user_readiness.status`: `pass`
 - `first_user_readiness`: 10 passed, 0 failed, 0 warnings
-- package source: [PyPI `code-mower==0.5.0b34`](https://pypi.org/project/code-mower/0.5.0b34/)
+- package source: [PyPI `code-mower==0.5.0b35`](https://pypi.org/project/code-mower/0.5.0b35/)
 
 That rehearsal proved the public install, generated setup, doctor, draft
 calibration corpus, starter value report, cloud export, cloud upload dry run,
@@ -215,4 +215,4 @@ using the same package spec and:
 ```
 
 TestPyPI artifact:
-[https://test.pypi.org/project/code-mower/0.5.0b34/](https://test.pypi.org/project/code-mower/0.5.0b34/).
+[https://test.pypi.org/project/code-mower/0.5.0b35/](https://test.pypi.org/project/code-mower/0.5.0b35/).
