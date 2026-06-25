@@ -25,11 +25,12 @@ https://github.com/codemower-ai/code-mower
 The current verified public beta baseline is `v0.5.0-beta.36`, published on
 PyPI as `code-mower==0.5.0b36`. It is intended to be installed from the package
 index for friendly-user pilots, with GitHub tag/source installs kept as a
-fallback and development path. Beta.28 is the first current baseline after the
-provider/model provenance push: it keeps the PyPI-first install path, trusted
-publishing, release rehearsal, production dogfood upload shape, catch-up
-provenance, stale-audit inspection, AI tool/model source diagnostics, and
-CodeMower.com trust guidance in one verified release line.
+fallback and development path. Beta.36 is the current baseline after the
+provider/model provenance, planning-lineage, and public-package rehearsal push:
+it keeps the PyPI-first install path, trusted publishing, release rehearsal,
+production dogfood upload shape, catch-up provenance, stale-audit inspection,
+AI tool/model source diagnostics, and CodeMower.com trust guidance in one
+verified release line.
 It has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
@@ -70,7 +71,7 @@ It has proved:
   Antigravity-style commands; and
 - calibration result normalization that preserves provider-observed model ids
   from structured CLI stats when explicit model configuration is absent.
-  improving Google/Antigravity-style value-report provenance without uploading
+  This improves Google/Antigravity-style value-report provenance without uploading
   raw prompts, diffs, or transcripts; and
 - local project-context and work-order planning commands:
   `project-context init`, `context add --external`, `plan from-issue`,
@@ -88,8 +89,11 @@ It has proved:
 - a beta.36 private-repo install rehearsal target against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
   to prove `code-mower==0.5.0b36` can detect and dry-run repository-native
-  checks in an external-ish private repo without committing support files first;
-  and
+  checks in an external-ish private repo without committing support files first.
+  The rehearsal passed with 10/10 first-user readiness and 0 readiness
+  warnings, detected `npm run lint`, `npm run typecheck`, and `npm run test`
+  from `package.json`, and separately reported only expected setup diagnostics
+  for optional provider tokens and unprobed GitHub auth; and
 - a public PyPI package-install rehearsal from `code-mower==0.5.0b36` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a

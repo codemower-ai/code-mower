@@ -190,7 +190,7 @@ The latest public-package rehearsal for `v0.5.0-beta.36` was run from PyPI with:
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.5.0b36 \
   --python "$(command -v python3.12)" \
-  --work-dir /tmp/code-mower-beta28-pypi-rehearsal-2 \
+  --work-dir /tmp/code-mower-beta36-pypi-rehearsal \
   --json
 ```
 
@@ -205,6 +205,31 @@ Result:
 That rehearsal proved the public install, generated setup, doctor, draft
 calibration corpus, starter value report, cloud export, cloud upload dry run,
 and CodeMower.com dogfood dry run without relying on a local checkout.
+
+The same beta was also rehearsed against the private
+[DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
+repository using:
+
+```bash
+code-mower migration package-install-rehearsal \
+  --package-spec code-mower==0.5.0b36 \
+  --repo-path "$REPO_PATH" \
+  --work-dir "$WORK_DIR" \
+  --json
+```
+
+Result:
+
+- `status`: `pass`
+- `first_user_readiness`: 10 passed, 0 failed, 0 warnings
+- external repo readiness: `pass`
+- wrapper present: `false`, so no product support files were required
+- repository-native checks detected from `package.json`: `npm run lint`,
+  `npm run typecheck`, and `npm run test`
+
+The DrinkBetter run is the current proof that a private JavaScript/mobile repo
+can try Code Mower from PyPI, detect its native check surface, and preview setup
+without first adopting repo-local wrappers.
 
 The same release was also verified from TestPyPI before production PyPI publish
 using the same package spec and:
