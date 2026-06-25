@@ -213,8 +213,8 @@ repository using:
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.5.0b36 \
-  --repo-path /private/tmp/drinkbetter-mobile-code-mower-rehearsal \
-  --work-dir /tmp/code-mower-beta36-drinkbetter-rehearsal \
+  --repo-path "$REPO_PATH" \
+  --work-dir "$WORK_DIR" \
   --json
 ```
 
