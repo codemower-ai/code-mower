@@ -90,10 +90,10 @@ It has proved:
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
   to prove `code-mower==0.5.0b36` can detect and dry-run repository-native
   checks in an external-ish private repo without committing support files first.
-  The rehearsal passed with 10/10 first-user readiness, detected
-  `npm run lint`, `npm run typecheck`, and `npm run test` from `package.json`,
-  and reported only expected setup warnings for optional provider tokens and
-  unprobed GitHub auth; and
+  The rehearsal passed with 10/10 first-user readiness and 0 readiness
+  warnings, detected `npm run lint`, `npm run typecheck`, and `npm run test`
+  from `package.json`, and separately reported only expected setup diagnostics
+  for optional provider tokens and unprobed GitHub auth; and
 - a public PyPI package-install rehearsal from `code-mower==0.5.0b36` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
