@@ -40,26 +40,26 @@ history opens the repository. They should be able to confirm:
 
 ## Current Beta Baseline
 
-The current public-release baseline is `v0.5.0-beta.35` of the standalone
+The current public-release baseline is `v0.5.0-beta.36` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
-- public package installation from PyPI and TestPyPI as `code-mower==0.5.0b35`;
+- public package installation from PyPI and TestPyPI as `code-mower==0.5.0b36`;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
-  private reference/product repos, with beta.35 preserving the same client path
+  private reference/product repos, with beta.36 preserving the same client path
   and adding clearer provider/model provenance diagnostics;
 - production catch-up upload across those four dogfood repos using
   `repo-sync --mode catch-up`, with imported workflow history separated from
   reviewer/lens calibration evidence;
-- beta.35 local dogfood uploads from a stored dashboard-issued token, proving
+- beta.36 local dogfood uploads from a stored dashboard-issued token, proving
   local Codex sessions can contribute current metadata without exposing source,
   raw diffs, raw transcripts, auth output, or secrets;
-- beta.35 private-repo package-install rehearsal against
+- beta.36 private-repo package-install rehearsal against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app),
   including repository-native check detection and dry-run execution;
-- beta.35 calibration/value-report generation from the installed package plus
+- beta.36 calibration/value-report generation from the installed package plus
   sanitized report upload coverage for CodeMower.com;
 - metadata-only AI tool/model provenance in cloud bundles and dogfood events,
   with CodeMower.com distinguishing known provider/model/version signal from
@@ -67,6 +67,8 @@ package. It has proved:
 - CodeMower.com evidence/detail URLs for uploads and events, so dashboard rows
   can be inspected and exported without exposing source, raw diffs, transcripts,
   auth output, or secrets;
+- CodeMower.com planning-lineage drilldown for issue -> posted plan -> work
+  order -> pull request -> reviewer checks -> merge -> upload chains;
 - explicit catch-up provenance, so imported GitHub Actions history is useful
   for activity/backfill without being confused for calibrated reviewer-quality
   evidence;
@@ -167,7 +169,7 @@ It has not yet proved:
 ## Easy Mode Flow
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b35
+pipx install --python python3.12 code-mower==0.5.0b36
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --v05
@@ -176,7 +178,7 @@ code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b35 \
+  --package-spec code-mower==0.5.0b36 \
   --repo-path /path/to/repo \
   --json
 code-mower audit pr 123

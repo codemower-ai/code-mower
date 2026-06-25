@@ -14,7 +14,7 @@ environment before they are treated as shareable.
 schema-structuring phase inherited a repository check that only made sense from
 an editable source checkout. `v0.5.0-beta.8` fixed that by making the
 installed-package transport path explicit and then validating it from the public
-tag. `v0.5.0-beta.35` keeps that installed-package gate and carries the same
+tag. `v0.5.0-beta.36` keeps that installed-package gate and carries the same
 provenance discipline into stale-audit, catch-up, and dashboard trust work.
 
 Going forward, package-install rehearsal is release-gating, not optional polish.
@@ -29,6 +29,14 @@ CodeMower.com should never blur different kinds of evidence:
 
 The dashboard should label those categories separately and avoid presenting
 workflow history as reviewer-value evidence.
+
+`v0.5.0-beta.36` adds a dedicated authenticated lineage drilldown for the
+planning and execution chain: issue -> posted plan -> work order -> pull
+request -> reviewer checks -> merge -> upload. That page is intentionally a
+trust surface, not only a reporting surface: it shows which chain stages are
+present, which metadata class each upload belongs to, and what still needs
+instrumentation before CodeMower.com can claim stronger builder/reviewer
+benchmark conclusions.
 
 ## Dogfood Is Not Historical Backfill
 
