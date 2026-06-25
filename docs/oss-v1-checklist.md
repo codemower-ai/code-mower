@@ -40,26 +40,26 @@ history opens the repository. They should be able to confirm:
 
 ## Current Beta Baseline
 
-The current public-release baseline is `v0.5.0-beta.29` of the standalone
+The current public-release baseline is `v0.5.0-beta.34` of the standalone
 package. It has proved:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
-- public package installation from PyPI and TestPyPI as `code-mower==0.5.0b29`;
+- public package installation from PyPI and TestPyPI as `code-mower==0.5.0b34`;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
-  private reference/product repos, with beta.29 preserving the same client path
+  private reference/product repos, with beta.34 preserving the same client path
   and adding clearer provider/model provenance diagnostics;
 - production catch-up upload across those four dogfood repos using
   `repo-sync --mode catch-up`, with imported workflow history separated from
   reviewer/lens calibration evidence;
-- beta.29 local dogfood uploads from a stored dashboard-issued token, proving
+- beta.34 local dogfood uploads from a stored dashboard-issued token, proving
   local Codex sessions can contribute current metadata without exposing source,
   raw diffs, raw transcripts, auth output, or secrets;
-- beta.29 private-repo package-install rehearsal against
+- beta.34 private-repo package-install rehearsal against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app),
   including repository-native check detection and dry-run execution;
-- beta.29 calibration/value-report generation from the installed package plus
+- beta.34 calibration/value-report generation from the installed package plus
   sanitized report upload coverage for CodeMower.com;
 - metadata-only AI tool/model provenance in cloud bundles and dogfood events,
   with CodeMower.com distinguishing known provider/model/version signal from
@@ -167,7 +167,7 @@ It has not yet proved:
 ## Easy Mode Flow
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b29
+pipx install --python python3.12 code-mower==0.5.0b34
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --v05
@@ -176,7 +176,7 @@ code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b29 \
+  --package-spec code-mower==0.5.0b34 \
   --repo-path /path/to/repo \
   --json
 code-mower audit pr 123
@@ -233,7 +233,11 @@ v1.0 should ship in six ordered slices:
 7. **First builder-experiment scaffold.** Keep this harness-only for v1.0:
    record authoring run metadata and reports, but do not require autonomous
    orchestration or hosted source access.
-8. **Reusable merge-authority lane hygiene.** Ship stale-audit label clearing,
+8. **Planning and work-order scaffold.** Keep product requirements and
+   architecture notes in issues or local project-context docs, then generate a
+   work order as the builder contract. External context stays metadata-only by
+   default, and critique prompts stay local.
+9. **Reusable merge-authority lane hygiene.** Ship stale-audit label clearing,
    current-head comment validation, trusted-bot author controls, and direct
    redispatch behavior as reusable templates/commands instead of product-repo
    glue.
@@ -365,6 +369,14 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 ### Authoring Intelligence
 
 - Define `authoring_runs.jsonl`.
+- Generate local project-context docs for architecture, hosting, CI/CD, design,
+  quality bar, agent-team roles, and work-spec templates.
+- Record external product/context docs as local metadata-only manifests by
+  default, with bounded text previews only by explicit opt-in.
+- Generate issue-derived work orders that reviewers and builders can use as
+  the shared task contract.
+- Generate critique prompts for multiple agents to improve the work order
+  before implementation.
 - Render a first delivery report from manually supplied authoring-run entries.
 - Connect authoring runs to reviewer outcomes in value reports.
 - Normalize `run_role`/`purpose`, task contract identity, provider/tool/model,

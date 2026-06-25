@@ -146,7 +146,7 @@ Every cloud path should be explicit:
 
 - `cloud export`: local only
 - `cloud upload --dry-run`: no transfer, prints manifest
-- `cloud upload`: requires a team token and explicit confirmation
+- `cloud upload --yes`: requires a team token and explicit confirmation
 
 Support modes:
 
@@ -163,8 +163,8 @@ The v1.0 local bundle manifest uses:
 {
   "schema": "code_mower.cloudBenchmarkBundle.v1",
   "privacy_mode": "metadata_and_reports",
-  "upload_ready": false,
-  "upload_status": "local_export_only",
+  "upload_ready": true,
+  "upload_status": "ready_for_dry_run",
   "included_reports": [],
   "excluded_content": [
     "source_code",

@@ -14,7 +14,7 @@ from pathlib import Path
 if __package__ in {None, ""}:
     raise SystemExit(
         "code_mower.cli is a packaged entrypoint. Install Code Mower with "
-        "`pipx install code-mower==0.5.0b29`, or run source checkouts with "
+        "`pipx install code-mower==0.5.0b34`, or run source checkouts with "
         "`PYTHONPATH=src python -m code_mower.cli`."
     )
 
@@ -52,6 +52,7 @@ from . import prompts as code_mower_prompts
 from . import reviewer_metrics
 from . import saas_reviewer_labeler
 from . import trailer_comment_labeler
+from . import work_orders as code_mower_work_orders
 from .provider_registry import REFERENCE_PROVIDERS
 from .providers import build_provider_model_env_report
 
@@ -386,6 +387,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "checks": "Detect and run a repository's native lint/test/build surface.",
     "cloud": "Export or upload sanitized benchmark metadata.",
     "config": "Validate or inspect a Code Mower config.",
+    "context": "Record local external planning context manifests.",
     "context-packs": "Build selective surrounding-file context packs.",
     "coderabbit-cli": "Run a CodeRabbit CLI informational lane.",
     "codex-audit": "Run a Codex structured audit lane.",
@@ -400,12 +402,15 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "merge-plan": "Inspect merge-readiness signals and lane labels.",
     "next-steps": "Print the recommended next actions after setup.",
     "package": "Build or inspect package extraction artifacts.",
+    "plan": "Create local issue-derived planning artifacts.",
+    "project-context": "Create editable local project-context doctrine docs.",
     "prompts": "Inspect prompt/lens customization artifacts.",
     "providers": "List or inspect provider template definitions.",
     "reviewer-metrics": "Compute reviewer metrics and value reports.",
     "saas-reviewer-labeler": "Apply labels from hosted reviewer comments.",
     "telemetry": "Inspect benchmark telemetry/event helpers.",
     "trailer-comment-labeler": "Apply labels from structured audit trailers.",
+    "work-order": "Draft implementation work orders and builder experiment seeds.",
 }
 
 
@@ -418,10 +423,13 @@ FIRST_USER_COMMANDS = (
     "reviewer-metrics",
     "cloud",
     "config",
+    "project-context",
 )
 
 
 def _init_main(argv: list[str]) -> int:
+    if argv[:1] == ["project-context"]:
+        return code_mower_work_orders.project_context_main(["init", *argv[1:]])
     options_with_values = {"--profile", "--output-dir"}
     if (
         argv[:1] == ["auth"]
@@ -508,6 +516,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "checks": code_mower_checks.main,
     "cloud": code_mower_cloud.main,
     "config": _config_main,
+    "context": code_mower_work_orders.context_main,
     "context-packs": code_mower_context_packs.main,
     "coderabbit-cli": coderabbit_cli_audit_pr.main,
     "codex-audit": codex_audit_pr.main,
@@ -522,12 +531,15 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "merge-plan": code_mower_merge.main,
     "next-steps": code_mower_next_steps.main,
     "package": _package_main,
+    "plan": code_mower_work_orders.plan_main,
+    "project-context": code_mower_work_orders.project_context_main,
     "prompts": code_mower_prompts.main,
     "providers": _providers_main,
     "reviewer-metrics": reviewer_metrics.main,
     "saas-reviewer-labeler": saas_reviewer_labeler.main,
     "telemetry": code_mower_telemetry.main,
     "trailer-comment-labeler": trailer_comment_labeler.main,
+    "work-order": code_mower_work_orders.work_order_main,
 }
 
 

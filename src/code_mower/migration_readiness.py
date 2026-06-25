@@ -191,7 +191,7 @@ def first_user_readiness_scorecard(
                     isinstance(cloud_export_payload, dict)
                     and cloud_export_payload.get("mode") == "cloud-export"
                     and len(cloud_export_payload.get("included_reports") or ()) >= 3
-                    and cloud_export_payload.get("upload_ready") is False
+                    and cloud_export_payload.get("upload_ready") is True
                 )
                 else "fail"
             ),

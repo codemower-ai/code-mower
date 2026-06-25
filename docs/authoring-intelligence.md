@@ -136,6 +136,27 @@ code-mower builder-experiment report builder-experiment.json \
   --output builder-experiment-report.md
 ```
 
+The planning layer in [planning-work-orders.md](planning-work-orders.md) now
+adds the missing upstream contract:
+
+1. `code-mower project-context init` creates editable architecture, CI/CD,
+   hosting, design-system, quality-bar, and agent-team doctrine files.
+2. `code-mower context add --external ...` records external docs as
+   metadata-only local manifests by default.
+3. `code-mower plan from-github-issue owner/repo#123 --post` turns the GitHub
+   issue into a plan and posts a structured comment back to the issue timeline.
+   `code-mower plan from-issue ...` remains the private/offline drafting path.
+4. `code-mower work-order draft ...` creates an implementation contract with
+   role/lens sections.
+5. `code-mower work-order critique-plan ...` creates prompt packets for other
+   agents to improve the plan before implementation.
+6. `code-mower work-order builder-experiment ...` seeds a builder experiment
+   from that same contract.
+
+This keeps the authoring loop measurable without making Code Mower a mandatory
+agent orchestrator. The work order is the contract; the builder experiment is
+the measurement scaffold; the audit protocol remains the merge gate.
+
 Next implementation steps:
 
 1. Add a thin authoring-run capture wrapper that writes builder result JSON.

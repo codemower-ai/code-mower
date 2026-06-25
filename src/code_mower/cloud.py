@@ -669,6 +669,35 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Repositories: {result['repo_count']}")
                 print(f"Steps: {result['step_count']}")
                 print(f"Errors: {result['error_count']}")
+                summary = result.get("data_class_summary", {})
+                if isinstance(summary, dict):
+                    current = summary.get("current_dogfood", {})
+                    history = summary.get("imported_history", {})
+                    reviewer = summary.get("reviewer_evidence", {})
+                    print(
+                        "Current dogfood: "
+                        f"{current.get('steps', 0)} steps, "
+                        f"{current.get('events', 0)} events"
+                    )
+                    print(
+                        "Imported history: "
+                        f"{history.get('steps', 0)} steps, "
+                        f"{history.get('events', 0)} events "
+                        "(not calibration evidence)"
+                    )
+                    print(
+                        "Reviewer evidence: "
+                        f"{reviewer.get('steps', 0)} steps, "
+                        f"{reviewer.get('events', 0)} events"
+                    )
+                    guidance = (
+                        history.get("trust_guidance", {})
+                        if isinstance(history, dict)
+                        else {}
+                    )
+                    if guidance and history.get("events", 0):
+                        print(f"History use: {guidance.get('use_for', '')}")
+                        print(f"History next: {guidance.get('next_step', '')}")
             return 0 if result["error_count"] == 0 else 1
     except CloudBundleError as exc:
         print(f"error: {exc}", file=sys.stderr)

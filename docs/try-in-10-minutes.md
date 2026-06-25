@@ -16,11 +16,11 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b29
+pipx install --python python3.12 code-mower==0.5.0b34
 code-mower --version
 ```
 
-`0.5.0b29` is a beta release. To follow the newest beta line instead of
+`0.5.0b34` is a beta release. To follow the newest beta line instead of
 pinning this exact build:
 
 ```bash
@@ -135,14 +135,47 @@ Then run selected checks explicitly, for example:
 code-mower checks run --only lint,test --json
 ```
 
-## 7. Generate The Starter Value Report
+## 7. Optional: Plan One GitHub Issue Before Coding
+
+Use this when you want a GitHub issue to be the shared planning surface for
+local agents, cloud agents, and humans. The issue remains the source of truth;
+Code Mower writes local planning artifacts that can later connect builder and
+reviewer runs back to that issue on CodeMower.com.
+
+```bash
+code-mower plan from-github-issue OWNER/REPO#123 \
+  --output .code-mower/work-orders/feature-plan.md \
+  --post
+
+code-mower work-order draft \
+  --issue-plan .code-mower/work-orders/feature-plan.md \
+  --output .code-mower/work-orders/feature.md
+
+code-mower work-order attach-delivery \
+  .code-mower/work-orders/feature.cloud-event.json \
+  --pr OWNER/REPO#124 \
+  --from-github
+
+code-mower cloud export \
+  --event work_order=.code-mower/work-orders/feature.cloud-event.json \
+  --output-dir .code-mower/cloud-benchmark-bundle \
+  --repo-slug OWNER/REPO
+```
+
+The `work_order` cloud event is metadata only: repository, issue number/URL,
+role/lens names, review-lane names, Code Mower package provenance, and optional
+delivery fields such as PR URL, reviewer-check names/statuses, and merge SHA. It
+does not include source code, raw diffs, raw transcripts, stdout/stderr, auth
+output, secrets, or the issue body text.
+
+## 8. Generate The Starter Value Report
 
 If you want to prove the whole first-user path in one command, run the package
 install rehearsal instead:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b29 \
+  --package-spec code-mower==0.5.0b34 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -163,7 +196,7 @@ surface and dry-run it instead of trying product-wrapper parity:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b29 \
+  --package-spec code-mower==0.5.0b34 \
   --repo-path /path/to/repo \
   --python "$(command -v python3.12)" \
   --json

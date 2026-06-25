@@ -59,6 +59,7 @@ Supported event types include:
 - `value_report_snapshot`
 - `lane_policy_snapshot`
 - `provider_catalog_snapshot`
+- `work_order`
 - `workflow_run`
 
 Events may include provider/lens names, timing, cost, verdict, useful finding
@@ -73,6 +74,13 @@ must not be counted as useful findings, false positives, or lane-promotion
 support. Cloud bundle provenance summaries therefore keep both raw upload counts
 and benchmark-evidence counts: catalog snapshots still appear in raw inventory,
 but they are excluded from `benchmark_*` provenance coverage fields.
+
+`work_order` events are also operational metadata, not reviewer accuracy
+evidence. They connect a GitHub issue planning flow to later builder/reviewer
+runs by recording issue/work-order provenance, role lenses, review lanes, and
+optional delivery metadata: PR URL/number/state, reviewer-check names/statuses,
+merge SHA, and merged-at time. They must not include issue bodies, source code,
+raw diffs, transcripts, stdout/stderr, auth output, or secrets.
 
 Each event may also include a `tool` object using schema
 `code_mower.toolProvenance.v1`. This object is the benchmark-grade provenance

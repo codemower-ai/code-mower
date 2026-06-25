@@ -210,6 +210,8 @@ def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
         )
 
         assert result["mode"] == "cloud-export"
+        assert result["upload_ready"] is True
+        assert result["upload_status"] == "ready_for_dry_run"
         assert (root / "bundle" / BUNDLE_MANIFEST_FILENAME).is_file()
         upload = build_upload_payload(bundle_dir=root / "bundle")
         assert upload["upload_mode"] == "metadata_only"
@@ -221,6 +223,61 @@ def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
         assert upload["provenance"]["events_with_model_provenance"] == 1
         assert upload["provenance"]["events_with_tool_version_provenance"] == 1
         assert upload["provenance"]["tools"][0]["tool_name"] == "codex"
+
+
+def test_cloud_export_accepts_work_order_provenance_event() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        event = root / "work-order.cloud-event.json"
+        event.write_text(
+            json.dumps(
+                {
+                    "schema": EVENT_SCHEMA,
+                    "event_id": "work-order-1",
+                    "event_type": "work_order",
+                    "created_at": "2026-06-23T00:00:00Z",
+                    "repo_slug": "owner/repo",
+                    "source": "code-mower-work-order",
+                    "provider": "code-mower",
+                    "lens": "planning",
+                    "status": "drafted",
+                    "tool": {
+                        "role": "planner",
+                        "tool_name": "code-mower",
+                        "tool_version": "0.5.0-test",
+                        "provider": "code-mower",
+                        "model_source": "not_applicable",
+                        "version_source": "package_version",
+                        "integration": "work-order",
+                        "lens": "planning",
+                        "source": "code-mower-work-order",
+                    },
+                    "metrics": {"role_lens_count": 2, "review_lane_count": 1},
+                    "dimensions": {
+                        "source_type": "github_issue",
+                        "issue_repo": "owner/repo",
+                        "issue_number": "123",
+                        "issue_url": "https://github.com/owner/repo/issues/123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = build_cloud_bundle(
+            reports=[],
+            events=parse_event_args([f"work_order={event}"]),
+            output_dir=root / "bundle",
+            repo_slug="owner/repo",
+        )
+
+        assert result["upload_ready"] is True
+        assert result["upload_status"] == "ready_for_dry_run"
+        assert result["event_types"] == {"work_order": 1}
+        upload = build_upload_payload(bundle_dir=root / "bundle")
+        assert upload["events"][0]["event_type"] == "work_order"
+        assert upload["events"][0]["dimensions"]["issue_number"] == "123"
+        assert upload["provenance"]["tools"][0]["tool_name"] == "code-mower"
 
 
 def test_provider_catalog_snapshot_events_are_metadata_only(monkeypatch) -> None:
@@ -304,7 +361,7 @@ def test_provenance_summary_preserves_source_quality_fields() -> None:
                     "tool": {
                         "role": "reporter",
                         "tool_name": "code-mower",
-                        "tool_version": "0.5.0b29",
+                        "tool_version": "0.5.0b34",
                         "provider": "code-mower",
                         "model": "",
                         "model_source": "not_applicable",
@@ -620,6 +677,37 @@ def test_cloud_repo_sync_helpers_live_in_client_module() -> None:
     assert parse_repo_sync_spec("/tmp/repo") == ("", Path("/tmp/repo"))
     assert parse_repo_sync_spec("owner/repo=/tmp/repo") == ("owner/repo", Path("/tmp/repo"))
     assert repo_sync_output_name("Owner/Repo", Path("/tmp/repo"), 2) == "owner--repo-3"
+
+
+def test_cloud_repo_sync_data_class_summary_separates_sources() -> None:
+    summary = cloud_operations.build_repo_sync_data_class_summary(
+        [
+            {
+                "steps": [
+                    {
+                        "mode": "cloud-dogfood",
+                        "export": {"event_count": 16},
+                    },
+                    {
+                        "mode": "cloud-catch-up",
+                        "catch_up": {"event_count": 50},
+                    },
+                    {
+                        "mode": "cloud-reviewer-runs",
+                        "event_count": 7,
+                    },
+                ]
+            }
+        ]
+    )
+
+    assert summary["current_dogfood"]["steps"] == 1
+    assert summary["current_dogfood"]["events"] == 16
+    assert summary["imported_history"]["steps"] == 1
+    assert summary["imported_history"]["events"] == 50
+    assert summary["imported_history"]["trust_guidance"] == cloud_operations.CATCH_UP_TRUST_GUIDANCE
+    assert summary["reviewer_evidence"]["steps"] == 1
+    assert summary["reviewer_evidence"]["events"] == 7
 
 
 def test_cloud_py_keeps_legacy_operation_aliases() -> None:

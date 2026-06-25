@@ -14,11 +14,11 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b29
+pipx install --python python3.12 code-mower==0.5.0b34
 code-mower --version
 ```
 
-`0.5.0b29` is a beta release. If you want the newest prerelease instead of this
+`0.5.0b34` is a beta release. If you want the newest prerelease instead of this
 exact verified beta, use:
 
 ```bash
@@ -79,6 +79,47 @@ The prompt smoke is the real readiness check. If `claude auth status` says
 logged in but the prompt returns an auth error, follow
 [Troubleshooting](troubleshooting.md#claude-code-reports-logged-in-but-audits-fail).
 
+## Optional: Create Planning Context
+
+You do not need this for the first audit. Use it when a change needs product
+requirements, architecture constraints, or multiple-agent plan critique before
+implementation:
+
+```bash
+code-mower project-context init --project-name "My Product"
+code-mower context add --external ~/Downloads/product-requirements.md
+code-mower plan from-github-issue owner/repo#123 --post \
+  --output .code-mower/work-orders/feature-plan.md
+code-mower work-order draft \
+  --issue-plan .code-mower/work-orders/feature-plan.md \
+  --output .code-mower/work-orders/feature.md
+code-mower work-order attach-delivery \
+  .code-mower/work-orders/feature.cloud-event.json \
+  --pr owner/repo#124 \
+  --from-github
+code-mower cloud export \
+  --event work_order=.code-mower/work-orders/feature.cloud-event.json \
+  --output-dir .code-mower/cloud-benchmark-bundle \
+  --repo-slug owner/repo
+```
+
+The GitHub issue remains the source of truth, while the local plan file is a
+derived working copy. The work-order command writes a metadata-only
+`feature.cloud-event.json` sidecar so CodeMower.com can tie future
+builder/reviewer evidence back to the issue without receiving the issue body,
+source code, diffs, or transcripts. `attach-delivery` adds PR, reviewer-check,
+and merge identifiers only. For private/offline drafting:
+
+```bash
+code-mower plan from-issue --title "Feature" --body-file issue-body.md \
+  --output .code-mower/work-orders/feature-plan.md
+code-mower work-order draft \
+  --issue-plan .code-mower/work-orders/feature-plan.md \
+  --output .code-mower/work-orders/feature.md
+```
+
+Details: [Planning And Work Orders](planning-work-orders.md).
+
 Keep SaaS reviewers such as Gitar, Cursor BugBot, CodeRabbit, Qodo, Greptile,
 and Devin informational/manual until your own calibration data supports
 promotion.
@@ -112,7 +153,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b29 \
+  --package-spec code-mower==0.5.0b34 \
   --python "$(command -v python3.12)" \
   --json
 ```

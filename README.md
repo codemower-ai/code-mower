@@ -10,6 +10,8 @@ The short version:
   AI review tools;
 - run setup diagnostics before a lane can surprise you with spend, source
   exposure, or GitHub Actions churn;
+- turn issue text, external docs, and project doctrine into local work orders
+  before an agent starts coding;
 - generate local reviewer value reports from known-clean and known-blocked PRs;
   and
 - optionally share sanitized metadata with [CodeMower.com](https://codemower.com)
@@ -86,11 +88,11 @@ Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b29
+pipx install --python python3.12 code-mower==0.5.0b34
 code-mower --version
 ```
 
-`0.5.0b29` is a beta release. Until Code Mower publishes a stable `1.0`
+`0.5.0b34` is a beta release. Until Code Mower publishes a stable `1.0`
 line, use the explicit beta version above or allow prereleases with:
 
 ```bash
@@ -133,7 +135,43 @@ First-time command map: [docs/launch-command-surface.md](docs/launch-command-sur
 
 The current PyPI beta has been rehearsed end-to-end from a clean install:
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the latest 10/10 public-package readiness proof for `code-mower==0.5.0b29`.
+the latest 10/10 public-package readiness proof for `code-mower==0.5.0b34`.
+
+## Optional: Plan Before Coding
+
+For larger changes, use GitHub Issues and local work orders as the planning
+surface, then keep pull requests focused on code review and merge readiness:
+
+```bash
+code-mower project-context init --project-name "My Product"
+code-mower context add --external ~/Downloads/product-requirements.md
+code-mower plan from-github-issue OWNER/REPO#123 \
+  --output .code-mower/work-orders/billing-settings-plan.md
+code-mower work-order draft \
+  --issue-plan .code-mower/work-orders/billing-settings-plan.md \
+  --output .code-mower/work-orders/billing-settings.md
+```
+
+The GitHub issue remains the source of truth. The local plan and work order are
+derived working artifacts, and `work-order draft` also writes a metadata-only
+`*.cloud-event.json` sidecar that can tie later builder/reviewer evidence back
+to the issue on CodeMower.com. That sidecar excludes source, raw diffs, raw
+transcripts, stdout/stderr, auth output, secrets, and issue body text. External
+docs are recorded as metadata manifests unless you explicitly ask for bounded
+previews. See [docs/planning-work-orders.md](docs/planning-work-orders.md).
+
+After a PR exists, attach source-free delivery metadata to the same sidecar:
+
+```bash
+code-mower work-order attach-delivery \
+  .code-mower/work-orders/billing-settings.cloud-event.json \
+  --pr OWNER/REPO#124 \
+  --from-github
+```
+
+That lets CodeMower.com show `issue -> plan -> work order -> PR -> reviewer
+checks -> merge` lineage without receiving source, diffs, transcripts, or issue
+body text.
 
 ## Why Not Just Run Codex Or Claude Yourself?
 
@@ -238,9 +276,9 @@ best?" to "which AI builder plus reviewer loop ships best on this product?" See
 
 ## Installation Status
 
-The current public beta is `v0.5.0-beta.29` from
+The current public beta is `v0.5.0-beta.34` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), published
-as `code-mower==0.5.0b29` on [PyPI](https://pypi.org/project/code-mower/).
+as `code-mower==0.5.0b34` on [PyPI](https://pypi.org/project/code-mower/).
 GitHub releases remain the auditable source for tags, build artifacts, and
 release notes.
 
