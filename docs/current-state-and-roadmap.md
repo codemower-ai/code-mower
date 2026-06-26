@@ -94,6 +94,15 @@ It has proved:
   warnings, detected `npm run lint`, `npm run typecheck`, and `npm run test`
   from `package.json`, and separately reported only expected setup diagnostics
   for optional provider tokens and unprobed GitHub auth; and
+- report-snapshot provenance cleanup, so Code Mower-generated value-report and
+  lane-policy snapshot events carry Code Mower reporter provenance by default
+  instead of appearing as unknown-provider benchmark gaps; and
+- provider-vs-lens effect-report output cleanup, so `--output` writes a
+  human-readable report while `--json` remains structured stdout for automation;
+  and
+- a v0.5 friendly-user rollout plan that turns install, doctor, first report,
+  optional cloud dry-run/upload, and dashboard usefulness into explicit
+  acceptance criteria for the first 5-10 users; and
 - a public PyPI package-install rehearsal from `code-mower==0.5.0b36` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a

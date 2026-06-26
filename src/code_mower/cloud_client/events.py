@@ -294,6 +294,15 @@ def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
         normalized["dimensions"] = {}
     elif not isinstance(dimensions, dict):
         raise CloudBundleError("structured event dimensions must be an object")
+    if normalized.get("tool") is None and normalized["event_type"] in {
+        "lane_policy_snapshot",
+        "value_report_snapshot",
+    }:
+        normalized["tool"] = build_code_mower_tool_provenance(
+            source=normalized.get("source") or f"code-mower {normalized['event_type']}",
+            version=__version__,
+            role="reporter",
+        )
     tool = normalize_tool_provenance(normalized.get("tool"), event=normalized)
     normalized["tool"] = tool
     if not normalized["provider"] and tool.get("provider"):
