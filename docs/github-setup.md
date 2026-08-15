@@ -183,7 +183,8 @@ Private repositories consume GitHub Actions minutes for started jobs. Code
 Mower should therefore keep metadata workflows cheap:
 
 - avoid recurring cron sweeps for hosted or informational lanes
-- prefer explicit labels, trusted comments, or manual `workflow_dispatch`
+- prefer explicit labels, trusted comments, or manual bridge/stale workflow
+  dispatches
 - add job-level `if:` guards to every `issue_comment` labeler before checkout
 - require informational SaaS lanes to opt in with an existing lane label
 - keep branch-protection merge gates limited to promoted structured audit lanes

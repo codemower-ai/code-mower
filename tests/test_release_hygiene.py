@@ -971,6 +971,7 @@ exit 1
             self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", claude)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS", claude)
             self.assertNotIn("github.event.inputs.lane", claude)
+            self.assertNotIn("github.event.comment.user.type == 'Bot'", claude)
 
             codex_stale = output_dir.joinpath(
                 ".github/workflows/codex-clear-stale.yml"
@@ -988,6 +989,7 @@ exit 1
             self.assertIn("GITAR_AUDIT_LABEL_TOKEN", gitar)
             self.assertIn("GITAR_BOT_AUTHORS", gitar)
             self.assertNotIn("github.event.inputs.adapter", gitar)
+            self.assertNotIn("github.event.comment.user.type == 'Bot'", gitar)
 
     def test_init_apply_generates_devin_bridge_labeler_and_stale_workflow(self) -> None:
         devin_config = {
