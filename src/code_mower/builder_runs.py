@@ -185,7 +185,7 @@ def build_builder_run_event(
     branch: str = "",
     builder_id: str = "",
     run_url: str = "",
-    status: str = "pr-opened",
+    status: str = "",
     lens: str = "implementation",
     model: str = "",
     model_source: str = "",
@@ -238,6 +238,10 @@ def build_builder_run_event(
     clean_elapsed = _optional_nonnegative_float(elapsed_seconds, "--elapsed-seconds")
     clean_cost = _optional_nonnegative_float(cost_usd, "--cost-usd")
     clean_interventions = _optional_nonnegative_int(user_interventions, "--user-interventions")
+    requested_status = _text(status)
+    if requested_status == "pr-opened" and not (pr_url or pr_number):
+        raise ValueError("--status pr-opened requires --pr")
+    default_status = "pr-opened" if (pr_url or pr_number) else "observed"
 
     work_order_file = work_order.name if work_order is not None else ""
     event = {
@@ -261,7 +265,7 @@ def build_builder_run_event(
         "source": "code-mower-builder-record",
         "provider": provider,
         "lens": _text(lens),
-        "status": _text(status) or "observed",
+        "status": requested_status or default_status,
         "tool": {
             "role": "builder",
             "tool_name": provider,
@@ -344,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--branch", default="")
     record.add_argument("--builder-id", default="", help="Safe display id for the builder run.")
     record.add_argument("--run-url", default="", help="Safe hosted run URL, if available.")
-    record.add_argument("--status", default="pr-opened")
+    record.add_argument("--status", default="")
     record.add_argument("--lens", default="implementation")
     record.add_argument("--model", default="")
     record.add_argument("--model-source", default="")

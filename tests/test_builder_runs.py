@@ -106,6 +106,42 @@ def test_builder_record_requires_provenance_anchor() -> None:
     assert code == 1
 
 
+def test_builder_record_defaults_issue_only_status_to_observed() -> None:
+    event = builder_runs.build_builder_run_event(
+        provider="grok_bot",
+        issue="codemower-ai/code-mower#1",
+    )
+
+    assert event["status"] == "observed"
+    assert event["dimensions"]["issue_url"] == "https://github.com/codemower-ai/code-mower/issues/1"
+    assert event["dimensions"]["pr_url"] == ""
+
+
+def test_builder_record_rejects_pr_opened_status_without_pr() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "grok_bot",
+                    "--issue",
+                    "codemower-ai/code-mower#1",
+                    "--status",
+                    "pr-opened",
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 1
+        assert not output.exists()
+
+
 def test_builder_record_rejects_non_finite_float_metrics() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         output = Path(tmp) / "builder-run.cloud-event.json"
