@@ -152,6 +152,8 @@ adds the missing upstream contract:
    agents to improve the plan before implementation.
 6. `code-mower work-order builder-experiment ...` seeds a builder experiment
    from that same contract.
+7. `code-mower builder record ...` records source-free builder provenance after
+   a hosted or local builder opens a PR.
 
 This keeps the authoring loop measurable without making Code Mower a mandatory
 agent orchestrator. The work order is the contract; the builder experiment is
@@ -159,8 +161,10 @@ the measurement scaffold; the audit protocol remains the merge gate.
 
 Next implementation steps:
 
-1. Add a thin authoring-run capture wrapper that writes builder result JSON.
-2. Add cost fields for builder sessions where provider output exposes spend.
-3. Feed builder reports into the cloud benchmark bundle.
+1. Use `code-mower builder record` in dogfood runs for Grok Bot, Cursor Cloud
+   Agents, Devin, Codex, Claude, and other builders after they open a PR.
+2. Add deeper cost fields for builder sessions where provider output exposes
+   spend.
+3. Fold builder-run events into value reports and CodeMower.com lineage views.
 4. Compare builder plus reviewer loops by task class and context pack.
 5. Use verified results to choose repo defaults for high-velocity development.

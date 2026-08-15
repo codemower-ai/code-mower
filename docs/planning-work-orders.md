@@ -157,7 +157,35 @@ code-mower cloud export \
   --repo-slug owner/repo
 ```
 
-## 5. Generate Critique Prompts
+## 5. Record Builder Provenance
+
+After a hosted or manual builder opens a PR, record who authored the branch
+without storing source, diffs, prompts, transcripts, or issue bodies:
+
+```bash
+code-mower builder record \
+  --provider grok_bot \
+  --executor cursor_cloud_agent \
+  --work-order .code-mower/work-orders/billing-settings.md \
+  --pr owner/repo#124 \
+  --branch cursor/billing-settings \
+  --output .code-mower/builder-runs/billing-settings.cloud-event.json
+```
+
+Then include both sidecars in the cloud bundle:
+
+```bash
+code-mower cloud export \
+  --event work_order=.code-mower/work-orders/billing-settings.cloud-event.json \
+  --event builder_run=.code-mower/builder-runs/billing-settings.cloud-event.json \
+  --output-dir .code-mower/cloud-benchmark-bundle \
+  --repo-slug owner/repo
+```
+
+This is the first durable authoring-side link in the chain:
+`issue -> plan -> work order -> builder run -> PR -> reviewer checks -> merge`.
+
+## 6. Generate Critique Prompts
 
 Ask multiple agents to improve the plan before implementation:
 
@@ -173,7 +201,7 @@ This writes one prompt per reviewer under
 `.code-mower/work-orders/critique-prompts/`. The prompt asks for plan
 improvements, blockers, and questions, not code.
 
-## 6. Seed A Builder Experiment
+## 7. Seed A Builder Experiment
 
 When you want to measure authoring loops, seed a builder experiment from the
 same work order:
@@ -202,7 +230,8 @@ code-mower builder-experiment plan \
 This is planning and measurement scaffolding, not a full autonomous builder
 orchestrator. It does not:
 
-- execute agent sessions;
+- execute agent sessions, except for provider-specific tools that you run
+  outside this planning surface;
 - upload external docs;
 - decide merge readiness;
 - replace the normal Code Mower audit protocol.

@@ -343,15 +343,23 @@ v1.0 should be "easy mode with a path to power":
   programmers and reviewer lanes, not as a hosted service that must be adopted
   wholesale.
 
-GitLab, Bitbucket, ACP bridges, hosted builder harnesses, and fully automated
-authoring-run capture remain post-v1.0 work.
+GitLab, Bitbucket, ACP bridges, hosted builder harnesses that launch sessions,
+and fully automated authoring-run capture remain post-v1.0 work. v0.5 includes
+the first source-free builder provenance path via `code-mower builder record`:
+hosted builders can open a PR, then Code Mower records provider/executor,
+issue, work order, PR, branch, model/version hints, cost, latency, and
+intervention counts as metadata only.
 
 ## Builder And Orchestrator Direction
 
 Reviewer calibration is the current executable loop: compare reviewers and
 lenses against known-clean, known-blocked, and subtle-risk PRs. Builder-side
 experiments are the next major extension: compare which AI peer programmer plus
-review policy ships verified code fastest and cleanest.
+review policy ships verified code fastest and cleanest. The first supported
+posture is observation, not orchestration: Grok Bot, Cursor Cloud Agents, Devin,
+Claude, Codex, or another builder can create a branch/PR through their normal
+surface, then `code-mower builder record` captures the source-free delivery
+provenance.
 
 The roadmap should borrow the useful shape from multi-agent/orchestrator
 systems without adopting their full runtime:

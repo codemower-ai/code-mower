@@ -153,6 +153,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "antigravity-cli",
                 "blind-review",
                 "bootstrap",
+                "builder",
                 "builder-experiment",
                 "calibration",
                 "claude-audit",

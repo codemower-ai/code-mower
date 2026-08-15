@@ -21,7 +21,7 @@ Everything else is opt-in until calibrated on the user's codebase.
 | Local CLI | Codex, Claude Code, Antigravity CLI, Grok Build, Hermes CLI, Aider, CodeRabbit CLI | Yes, if local auth can read the repo | Usually sent to the provider behind the CLI unless provider is local-only | Codex/Claude default; others informational |
 | API/local model | Qwen, Gemma, DeepSeek, Grok-compatible endpoints | Yes | Sent to configured endpoint; local endpoints can keep code local | Informational calibration |
 | SaaS reviewer | Gitar, CodeRabbit hosted, Cursor BugBot, Greptile, Qodo | Yes, if GitHub App and plan allow | Provider sees PR diff/source context | Manual or informational until calibrated |
-| Hosted async | Devin, Jules | Yes, if app/API is authorized | Provider may clone or modify repo | Opt-in, paid, explicit trust boundary |
+| Hosted async builder | Devin, Jules, Cursor Cloud Agents, Grok Bot-orchestrated runs | Yes, if app/API is authorized | Provider may clone or modify repo | Opt-in, paid, explicit trust boundary; record as `builder_run` metadata first |
 | Protocol bridge | ACP-backed CLIs | Depends on underlying agent | Depends on underlying agent | Research only until runtime stabilizes |
 
 ## Lane Details
@@ -44,6 +44,31 @@ Everything else is opt-in until calibrated on the user's codebase.
 | `hermes_cli` | Hermes Agent | local runner | provider account | local checkout plus local auth | informational |
 | `coderabbit_cli` | CodeRabbit CLI | local runner | provider account | local checkout plus CLI auth | informational |
 | `acp_bridge` | ACP-compatible agent | local runner | provider-dependent | depends on agent | research |
+
+## Builder Providers
+
+Builder providers are authoring surfaces, not review approvals. Record them
+with `code-mower builder record` after they open a branch or pull request, then
+run the normal reviewer lanes on the PR head.
+
+| Builder id | Typical executor | Role | v0.5 posture |
+|---|---|---|---|
+| `grok_bot` | `cursor_cloud_agent`, local IDE, or manual PR authoring | hosted/manual builder-orchestrator | source-free `builder_run` metadata only; not merge-gating |
+| `cursor_cloud_agent` | Cursor Cloud Agents | hosted async builder/executor | source-free `builder_run` metadata only; not merge-gating |
+| `devin` | Devin session | hosted async builder/reviewer depending on configuration | explicit opt-in; use separate reviewer evidence for merge policy |
+
+Example:
+
+```bash
+code-mower builder record \
+  --provider grok_bot \
+  --executor cursor_cloud_agent \
+  --work-order .code-mower/work-orders/example.md \
+  --pr OWNER/REPO#124
+```
+
+See [builders-grok-cursor.md](builders-grok-cursor.md) for the recommended
+Grok Bot plus Cursor Cloud Agent flow.
 
 ## Google CLI Posture
 

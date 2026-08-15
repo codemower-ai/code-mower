@@ -169,9 +169,21 @@ code-mower work-order attach-delivery \
   --from-github
 ```
 
-That lets CodeMower.com show `issue -> plan -> work order -> PR -> reviewer
-checks -> merge` lineage without receiving source, diffs, transcripts, or issue
-body text.
+If a hosted builder such as Grok Bot or Cursor Cloud Agents produced the PR,
+record source-free builder provenance too:
+
+```bash
+code-mower builder record \
+  --provider grok_bot \
+  --executor cursor_cloud_agent \
+  --work-order .code-mower/work-orders/billing-settings.md \
+  --pr OWNER/REPO#124
+```
+
+That lets CodeMower.com show `issue -> plan -> work order -> builder run -> PR
+-> reviewer checks -> merge` lineage without receiving source, diffs,
+transcripts, prompts, or issue body text. See
+[docs/builders-grok-cursor.md](docs/builders-grok-cursor.md).
 
 ## Why Not Just Run Codex Or Claude Yourself?
 
@@ -272,7 +284,9 @@ engineer can:
 Future builder/orchestrator experiments extend the same loop from "who reviews
 best?" to "which AI builder plus reviewer loop ships best on this product?" See
 [docs/builder-experiments.md](docs/builder-experiments.md) and
-[docs/authoring-intelligence.md](docs/authoring-intelligence.md).
+[docs/authoring-intelligence.md](docs/authoring-intelligence.md). For hosted
+builder provenance, start with
+[docs/builders-grok-cursor.md](docs/builders-grok-cursor.md).
 
 ## Installation Status
 
