@@ -334,3 +334,22 @@ def test_builder_record_event_id_includes_work_order_repo_identity() -> None:
         assert first_event["repo_slug"] == "codemower-ai/code-mower"
         assert second_event["repo_slug"] == "jeffhuber/bridge-pro"
         assert first_event["event_id"] != second_event["event_id"]
+
+
+def test_builder_record_event_id_includes_builder_run_identity() -> None:
+    first = builder_runs.build_builder_run_event(
+        provider="grok_bot",
+        executor="cursor_cloud_agent",
+        pr="codemower-ai/code-mower#289",
+        builder_id="attempt-1",
+    )
+    second = builder_runs.build_builder_run_event(
+        provider="grok_bot",
+        executor="cursor_cloud_agent",
+        pr="codemower-ai/code-mower#289",
+        builder_id="attempt-2",
+    )
+
+    assert first["event_id"] != second["event_id"]
+    assert first["dimensions"]["builder_id"] == "attempt-1"
+    assert second["dimensions"]["builder_id"] == "attempt-2"

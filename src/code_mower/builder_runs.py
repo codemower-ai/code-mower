@@ -125,6 +125,7 @@ def _builder_run_event_id(
     *,
     provider: str,
     executor: str,
+    run_identity: str,
     repo_slug: str,
     issue_number: str,
     issue_url: str,
@@ -138,6 +139,7 @@ def _builder_run_event_id(
             "code-mower-builder-run",
             provider,
             executor,
+            run_identity,
             repo_slug,
             issue_number,
             issue_url,
@@ -242,6 +244,10 @@ def build_builder_run_event(
     if requested_status == "pr-opened" and not (pr_url or pr_number):
         raise ValueError("--status pr-opened requires --pr")
     default_status = "pr-opened" if (pr_url or pr_number) else "observed"
+    builder_id = _text(builder_id)
+    run_url = _text(run_url)
+    run_identity = builder_id or run_url or str(uuid.uuid4())
+    created_at_value = _text(created_at) or _utc_now()
 
     work_order_file = work_order.name if work_order is not None else ""
     event = {
@@ -249,6 +255,7 @@ def build_builder_run_event(
         "event_id": _builder_run_event_id(
             provider=provider,
             executor=executor,
+            run_identity=run_identity,
             repo_slug=effective_repo,
             issue_number=issue_number,
             issue_url=issue_url,
@@ -258,7 +265,7 @@ def build_builder_run_event(
             branch=branch,
         ),
         "event_type": "builder_run",
-        "created_at": _text(created_at) or _utc_now(),
+        "created_at": created_at_value,
         "repo_slug": effective_repo,
         "team_id": "",
         "install_id": "",
@@ -285,7 +292,7 @@ def build_builder_run_event(
         "dimensions": {
             "builder_provider": provider,
             "builder_executor": executor,
-            "builder_id": _text(builder_id),
+            "builder_id": builder_id,
             "issue_repo": issue_repo,
             "issue_number": issue_number,
             "issue_url": issue_url,
@@ -297,7 +304,7 @@ def build_builder_run_event(
             "pr_number": pr_number,
             "pr_url": pr_url,
             "branch": branch,
-            "builder_run_url": _text(run_url),
+            "builder_run_url": run_url,
             "review_policy": (
                 "builder provenance is authoring evidence; Code Mower reviewer "
                 "lanes still run after the PR exists"
