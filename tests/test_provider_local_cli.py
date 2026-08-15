@@ -5,6 +5,7 @@ from pathlib import Path
 
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 from code_mower import cli as code_mower_cli
+from code_mower import grok_build_audit_pr
 from code_mower.providers import build_provider_lane_tool_provenance
 from code_mower.providers.provenance import (
     build_code_mower_tool_provenance,
@@ -365,6 +366,41 @@ def test_provider_lane_tool_provenance_uses_available_alternate_command(
     assert detail["command_candidates"] == ["agy", "antigravity"]
     assert detail["command_found"] is True
     assert detail["version_known"] is True
+
+
+def test_grok_build_provenance_prefers_code_mower_model_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executable = _write_executable(
+        tmp_path / "grok",
+        "#!/bin/sh\nprintf 'grok 1.0.4\\n'\n",
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.delenv("GROK_MODEL", raising=False)
+    monkeypatch.setenv("CODE_MOWER_GROK_MODEL", "grok-4.6-build")
+
+    tool, detail = build_provider_lane_tool_provenance(
+        "grok_build",
+        REFERENCE_PROVIDERS["grok_build"],
+        source="unit-test",
+    )
+
+    assert tool["tool_name"] == "grok"
+    assert tool["tool_version"] == "grok 1.0.4"
+    assert tool["provider"] == "grok_build"
+    assert tool["model"] == "grok-4.6-build"
+    assert tool["model_source"] == "env"
+    assert detail["command_found"] is True
+    assert detail["version_known"] is True
+
+
+def test_grok_build_runner_prefers_code_mower_model_env(monkeypatch) -> None:
+    monkeypatch.setenv("GROK_MODEL", "generic-grok")
+    monkeypatch.setenv("XAI_MODEL", "xai-fallback")
+    monkeypatch.setenv("CODE_MOWER_GROK_MODEL", "grok-4.6-build")
+
+    assert grok_build_audit_pr.resolve_grok_model() == "grok-4.6-build"
 
 
 def test_provider_lane_tool_provenance_marks_hosted_model_as_vendor_hidden() -> None:

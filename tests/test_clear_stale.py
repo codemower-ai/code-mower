@@ -31,6 +31,14 @@ class ClearStaleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = load_lane_config("devin")
 
+    def test_grok_build_lane_config_loads(self) -> None:
+        config = load_lane_config("grok-build")
+
+        self.assertEqual(config.name, "grok_build")
+        self.assertEqual(config.needs_label, "needs-grok-audit")
+        self.assertEqual(config.done_label, "grok-audit-done")
+        self.assertEqual(config.blocked_label, "grok-audit-blocked")
+
     def test_no_terminal_labels_returns_no_decision(self) -> None:
         result = resolve_stale_clear_decision(
             issue_number=123,

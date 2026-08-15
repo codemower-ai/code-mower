@@ -444,6 +444,56 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "status": "optional CLI lane for local/on-demand review capture",
         },
     ),
+    "grok_build": ProviderLane(
+        lane_id="grok_build",
+        lane_type="audit",
+        driver="local_cli",
+        provider="grok_build",
+        labels=LaneLabels(
+            needs="needs-grok-audit",
+            done="grok-audit-done",
+            blocked="grok-audit-blocked",
+        ),
+        token_env=("GITHUB_TOKEN",),
+        result_sources=("trailer_comment",),
+        informational=True,
+        enabled_by_default=False,
+        trigger_policy="manual",
+        spend_policy="included",
+        provider_config={
+            "command": "grok",
+            "command_env": "GROK_BUILD_COMMAND",
+            "model_env": "GROK_MODEL",
+            "model_env_any": ("CODE_MOWER_GROK_MODEL", "XAI_MODEL"),
+            "prompt_lenses": ("base-audit",),
+            "doctor_probe_args": (
+                "-p",
+                "Reply with exactly: ok",
+                "--output-format",
+                "json",
+                "--permission-mode",
+                "plan",
+                "--disable-web-search",
+                "--no-memory",
+                "--max-turns",
+                "1",
+            ),
+            "doctor_probe_timeout_seconds": 60,
+            "doctor_probe_expect_json": True,
+            "doctor_probe_expect_json_field": "text",
+            "doctor_probe_expect_json_value": "ok",
+            "auth": (
+                "run `grok login --device-code` locally, or set XAI_API_KEY. "
+                "Real audit runs that inherit local OAuth require "
+                "GROK_BUILD_USE_AMBIENT_HOME=1 in trusted environments"
+            ),
+            "status": (
+                "informational Grok Build lane; not merge authority until "
+                "calibrated for blocker catch rate, false positives, cost, "
+                "and latency"
+            ),
+        },
+    ),
     "acp_bridge": ProviderLane(
         lane_id="acp_bridge",
         lane_type="audit",
