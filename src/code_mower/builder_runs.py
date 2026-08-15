@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 import uuid
@@ -38,6 +39,8 @@ def _safe_slug(value: Any, fallback: str = "builder-run") -> str:
 def _optional_nonnegative_float(value: float | None, name: str) -> float | None:
     if value is None:
         return None
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
     if value < 0:
         raise ValueError(f"{name} must be greater than or equal to zero")
     return value
@@ -179,6 +182,7 @@ def build_builder_run_event(
         raise ValueError("--provider is required")
 
     work_order_manifest = _load_work_order_manifest(work_order)
+    manifest_repo = _text(work_order_manifest.get("repo"))
     source = work_order_manifest.get("source")
     source = source if isinstance(source, Mapping) else {}
 
@@ -187,16 +191,22 @@ def build_builder_run_event(
     issue_number = _text(source.get("issue_number"))
     issue_url = _text(source.get("issue_url"))
     if issue_text:
-        issue_repo, issue_number, issue_url = _issue_url_from_ref(issue_text, repo=repo)
+        issue_repo, issue_number, issue_url = _issue_url_from_ref(
+            issue_text,
+            repo=repo or manifest_repo,
+        )
 
     pr_repo = ""
     pr_number = ""
     pr_url = ""
     pr_text = _text(pr)
     if pr_text:
-        pr_repo, pr_number, pr_url = _pr_url_from_ref(pr_text, repo=repo or issue_repo)
+        pr_repo, pr_number, pr_url = _pr_url_from_ref(
+            pr_text,
+            repo=repo or issue_repo or manifest_repo,
+        )
 
-    effective_repo = repo or pr_repo or issue_repo or _text(work_order_manifest.get("repo"))
+    effective_repo = repo or pr_repo or issue_repo or manifest_repo
     if not any((issue_url, issue_number, pr_url, pr_number, work_order)):
         raise ValueError("record at least one of --issue, --pr, or --work-order")
 
@@ -282,7 +292,10 @@ def write_builder_run_event(
     if output.exists() and not force:
         raise ValueError(f"{output} already exists; pass --force to overwrite")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(dict(event), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps(dict(event), allow_nan=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return output
 
 

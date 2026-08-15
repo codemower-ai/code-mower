@@ -104,3 +104,69 @@ def test_builder_record_requires_provenance_anchor() -> None:
         code = builder_runs.main(["record", "--provider", "grok_bot", "--json"])
 
     assert code == 1
+
+
+def test_builder_record_rejects_non_finite_float_metrics() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "grok_bot",
+                    "--issue",
+                    "codemower-ai/code-mower#1",
+                    "--elapsed-seconds",
+                    "nan",
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 1
+        assert not output.exists()
+
+
+def test_builder_record_uses_work_order_repo_for_numeric_pr_refs() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work_order = root / "repo-anchored.md"
+        work_order.write_text("# Work Order\n", encoding="utf-8")
+        work_order.with_suffix(".json").write_text(
+            json.dumps(
+                {
+                    "schema": "code_mower.workOrder.v1",
+                    "repo": "codemower-ai/code-mower",
+                }
+            ),
+            encoding="utf-8",
+        )
+        output = root / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "cursor_cloud_agent",
+                    "--work-order",
+                    str(work_order),
+                    "--pr",
+                    "289",
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 0
+        event = json.loads(output.read_text(encoding="utf-8"))
+        assert event["repo_slug"] == "codemower-ai/code-mower"
+        assert event["dimensions"]["pr_repo"] == "codemower-ai/code-mower"
+        assert event["dimensions"]["pr_number"] == "289"
+        assert event["dimensions"]["pr_url"] == "https://github.com/codemower-ai/code-mower/pull/289"
