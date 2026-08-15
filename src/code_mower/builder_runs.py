@@ -125,7 +125,10 @@ def _builder_run_event_id(
     *,
     provider: str,
     executor: str,
+    repo_slug: str,
+    issue_number: str,
     issue_url: str,
+    pr_number: str,
     pr_url: str,
     work_order_file: str,
     branch: str,
@@ -135,7 +138,10 @@ def _builder_run_event_id(
             "code-mower-builder-run",
             provider,
             executor,
+            repo_slug,
+            issue_number,
             issue_url,
+            pr_number,
             pr_url,
             work_order_file,
             branch,
@@ -225,7 +231,7 @@ def build_builder_run_event(
             repo=repo or issue_repo or manifest_repo,
         )
 
-    effective_repo = repo or pr_repo or issue_repo or manifest_repo
+    effective_repo = pr_repo or issue_repo or repo or manifest_repo
     if not any((issue_url, issue_number, pr_url, pr_number, work_order)):
         raise ValueError("record at least one of --issue, --pr, or --work-order")
 
@@ -239,7 +245,10 @@ def build_builder_run_event(
         "event_id": _builder_run_event_id(
             provider=provider,
             executor=executor,
+            repo_slug=effective_repo,
+            issue_number=issue_number,
             issue_url=issue_url,
+            pr_number=pr_number,
             pr_url=pr_url,
             work_order_file=work_order_file,
             branch=branch,

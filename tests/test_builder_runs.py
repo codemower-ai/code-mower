@@ -225,3 +225,76 @@ def test_builder_record_renders_host_prefixed_refs_without_github_dot_com_prefix
         assert event["repo_slug"] == "ghe.example.com/acme/widgets"
         assert event["dimensions"]["issue_url"] == "https://ghe.example.com/acme/widgets/issues/12"
         assert event["dimensions"]["pr_url"] == "https://ghe.example.com/acme/widgets/pull/13"
+
+
+def test_builder_record_prefers_explicit_pr_repo_over_numeric_context_repo() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "grok_bot",
+                    "--repo",
+                    "codemower-ai/code-mower",
+                    "--pr",
+                    "jeffhuber/bridge-pro#13",
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 0
+        event = json.loads(output.read_text(encoding="utf-8"))
+        assert event["repo_slug"] == "jeffhuber/bridge-pro"
+        assert event["dimensions"]["pr_repo"] == "jeffhuber/bridge-pro"
+
+
+def test_builder_record_event_id_includes_work_order_repo_identity() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first = root / "first" / "same-name.md"
+        second = root / "second" / "same-name.md"
+        first.parent.mkdir(parents=True)
+        second.parent.mkdir(parents=True)
+        first.write_text("# Work Order\n", encoding="utf-8")
+        second.write_text("# Work Order\n", encoding="utf-8")
+        for work_order, repo in (
+            (first, "codemower-ai/code-mower"),
+            (second, "jeffhuber/bridge-pro"),
+        ):
+            work_order.with_suffix(".json").write_text(
+                json.dumps(
+                    {
+                        "schema": "code_mower.workOrder.v1",
+                        "repo": repo,
+                        "source": {
+                            "type": "github_issue",
+                            "repo": repo,
+                            "issue_number": "12",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        first_event = builder_runs.build_builder_run_event(
+            provider="grok_bot",
+            executor="cursor_cloud_agent",
+            work_order=first,
+            branch="cursor/same-branch",
+        )
+        second_event = builder_runs.build_builder_run_event(
+            provider="grok_bot",
+            executor="cursor_cloud_agent",
+            work_order=second,
+            branch="cursor/same-branch",
+        )
+
+        assert first_event["repo_slug"] == "codemower-ai/code-mower"
+        assert second_event["repo_slug"] == "jeffhuber/bridge-pro"
+        assert first_event["event_id"] != second_event["event_id"]
