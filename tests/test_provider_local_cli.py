@@ -504,6 +504,28 @@ def test_grok_build_parser_prefers_last_verdict_json() -> None:
     assert parsed["findings"] == []
 
 
+def test_grok_build_parser_ignores_nested_verdict_json() -> None:
+    response_text = """
+    {
+      "verdict": "pass",
+      "summary": {
+        "verdict": "blocked",
+        "summary": "Nested diagnostic text should not win."
+      },
+      "findings": []
+    }
+    """
+
+    _, parsed = grok_build_audit_pr._response_text_from_grok_payload(
+        {"text": response_text},
+        "",
+    )
+
+    assert parsed is not None
+    assert parsed["verdict"] == "pass"
+    assert parsed["findings"] == []
+
+
 def test_provider_lane_tool_provenance_marks_hosted_model_as_vendor_hidden() -> None:
     lane = {
         "driver": "saas_event",

@@ -158,17 +158,21 @@ def _last_verdict_json_object(text: str) -> Mapping[str, Any] | None:
 
     decoder = json.JSONDecoder()
     candidates: list[Mapping[str, Any]] = []
-    for index, char in enumerate(text):
-        if char != "{":
+    index = 0
+    while index < len(text):
+        if text[index] != "{":
+            index += 1
             continue
         try:
-            payload, _ = decoder.raw_decode(text[index:])
+            payload, end = decoder.raw_decode(text[index:])
         except json.JSONDecodeError:
+            index += 1
             continue
-        if not isinstance(payload, Mapping):
-            continue
-        if "verdict" in payload and ("findings" in payload or "summary" in payload):
+        if isinstance(payload, Mapping) and "verdict" in payload and (
+            "findings" in payload or "summary" in payload
+        ):
             candidates.append(payload)
+        index += max(end, 1)
     return candidates[-1] if candidates else None
 
 
