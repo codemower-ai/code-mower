@@ -170,3 +170,33 @@ def test_builder_record_uses_work_order_repo_for_numeric_pr_refs() -> None:
         assert event["dimensions"]["pr_repo"] == "codemower-ai/code-mower"
         assert event["dimensions"]["pr_number"] == "289"
         assert event["dimensions"]["pr_url"] == "https://github.com/codemower-ai/code-mower/pull/289"
+
+
+def test_builder_record_renders_host_prefixed_refs_without_github_dot_com_prefix() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "cursor_cloud_agent",
+                    "--repo",
+                    "ghe.example.com/acme/widgets",
+                    "--issue",
+                    "12",
+                    "--pr",
+                    "13",
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 0
+        event = json.loads(output.read_text(encoding="utf-8"))
+        assert event["repo_slug"] == "ghe.example.com/acme/widgets"
+        assert event["dimensions"]["issue_url"] == "https://ghe.example.com/acme/widgets/issues/12"
+        assert event["dimensions"]["pr_url"] == "https://ghe.example.com/acme/widgets/pull/13"

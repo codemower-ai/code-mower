@@ -80,12 +80,29 @@ def _load_work_order_manifest(work_order: Path | None) -> dict[str, Any]:
     return manifest
 
 
+def _github_url(repo_slug: str, *, path: str, number: str) -> str:
+    parts = [part for part in repo_slug.strip().split("/") if part]
+    if len(parts) == 2:
+        host = "github.com"
+        repo_path = "/".join(parts)
+    elif len(parts) == 3 and "." in parts[0]:
+        host = parts[0]
+        repo_path = "/".join(parts[1:])
+    else:
+        return ""
+    return f"https://{host}/{repo_path}/{path}/{number}"
+
+
 def _pr_url_from_ref(pr_ref: str, *, repo: str) -> tuple[str, str, str]:
     if not pr_ref:
         return "", "", ""
     pr_repo, pr_number = parse_github_pr_ref(pr_ref, repo=repo)
     raw = pr_ref.strip()
-    pr_url = raw if raw.startswith(("http://", "https://")) else f"https://github.com/{pr_repo}/pull/{pr_number}"
+    pr_url = (
+        raw
+        if raw.startswith(("http://", "https://"))
+        else _github_url(pr_repo, path="pull", number=pr_number)
+    )
     return pr_repo, pr_number, pr_url
 
 
@@ -97,7 +114,7 @@ def _issue_url_from_ref(issue_ref: str, *, repo: str) -> tuple[str, str, str]:
     issue_url = (
         raw
         if raw.startswith(("http://", "https://"))
-        else f"https://github.com/{issue_repo}/issues/{issue_number}"
+        else _github_url(issue_repo, path="issues", number=issue_number)
     )
     return issue_repo, issue_number, issue_url
 
