@@ -148,7 +148,28 @@ def _response_text_from_grok_payload(
             parsed_response = raw_payload
     if parsed_response is None:
         parsed_response = gemini_cli_audit_pr.parse_response_json(response_text)
+    if parsed_response is None:
+        parsed_response = _last_verdict_json_object(response_text)
     return response_text, parsed_response
+
+
+def _last_verdict_json_object(text: str) -> Mapping[str, Any] | None:
+    """Recover the final verdict object from chatty multi-turn Grok output."""
+
+    decoder = json.JSONDecoder()
+    candidates: list[Mapping[str, Any]] = []
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        if "verdict" in payload and ("findings" in payload or "summary" in payload):
+            candidates.append(payload)
+    return candidates[-1] if candidates else None
 
 
 def run_grok_build_audit(
@@ -294,6 +315,11 @@ def run_grok_build_audit(
         completed.stdout,
     )
     verdict = gemini_cli_audit_pr._validate_verdict(parsed_response)
+    if verdict.get("parse_failed"):
+        verdict = {
+            **verdict,
+            "summary": "Grok Build response did not contain parseable verdict JSON.",
+        }
     if repo_path is None:
         head_after_meta = gemini_cli_audit_pr.fetch_pull_request(
             repo,

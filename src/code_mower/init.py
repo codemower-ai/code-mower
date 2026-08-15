@@ -202,6 +202,21 @@ def _authors_env_for_trailer_lane(trailer_lane: str) -> str:
     return explicit.get(normalized, f"{normalized}_BOT_AUTHORS")
 
 
+def _default_trailer_bot_authors(trailer_lane: str) -> str:
+    stem = trailer_lane.replace("_", "-")
+    return f"{stem}-audit-bot,{stem}-audit-bot[bot]"
+
+
+def _configured_bot_authors(lane: Mapping[str, Any]) -> str:
+    provider_config = lane.get("provider_config")
+    if not isinstance(provider_config, Mapping):
+        return ""
+    authors = provider_config.get("bot_authors", [])
+    if not isinstance(authors, list):
+        return ""
+    return ",".join(str(author).strip() for author in authors if str(author).strip())
+
+
 def _trailer_prefix_for_lane(trailer_lane: str) -> str:
     return f"{trailer_lane.replace('-', '_').upper()}_AUDIT_STATE"
 
@@ -240,6 +255,7 @@ def _workflow_entry_for_target(
             "package_copy_from": "templates/workflows/saas-reviewer-labeler.yml.j2",
             "adapter": adapter,
             "authors_env": f"{adapter.replace('-', '_').upper()}_BOT_AUTHORS",
+            "bot_authors": _configured_bot_authors(lane),
         }
     return {
         **common,
@@ -249,6 +265,7 @@ def _workflow_entry_for_target(
         "trailer_lane": trailer_lane,
         "trailer_prefix": _trailer_prefix_for_lane(trailer_lane),
         "authors_env": _authors_env_for_trailer_lane(trailer_lane),
+        "bot_authors": _default_trailer_bot_authors(trailer_lane),
     }
 
 
@@ -566,6 +583,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__ADAPTER__": str(entry.get("adapter") or ""),
         "__AUTHORS_ENV__": str(entry.get("authors_env") or ""),
         "__BLOCKED_LABEL__": str(entry.get("blocked_label") or ""),
+        "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
         "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
