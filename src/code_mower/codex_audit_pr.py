@@ -146,7 +146,7 @@ else:  # pragma: no cover - exercised after package extraction.
 
 # ----- Configuration / defaults -----
 
-DEFAULT_CODEX_CLI_PATH = "/Applications/Codex.app/Contents/Resources/codex"
+DEFAULT_CODEX_CLI_PATH = "codex"
 DEFAULT_CODEX_TIMEOUT = 900  # 15 min; Codex review can take 5-10 min on a large diff
 DEFAULT_BASE_REF = "origin/main"
 DEFAULT_REPOS = "owner/repo,owner/other-repo"

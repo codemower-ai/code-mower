@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence
 
 
-DEFAULT_CODEX_CLI_PATH = "/Applications/Codex.app/Contents/Resources/codex"
+DEFAULT_CODEX_CLI_PATH = "codex"
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 ENV_HELP = "Run: source tools/codex_audit_env.sh"
 
@@ -37,10 +38,18 @@ def resolve_required_setting(
     env: Mapping[str, str],
     env_name: str,
     label: str,
+    allow_path_lookup: bool = False,
 ) -> CheckResult:
     value = cli_value or env.get(env_name)
+    if not value and allow_path_lookup:
+        value = DEFAULT_CODEX_CLI_PATH
     if not value:
         return CheckResult(label, False, f"{env_name} is not set. {ENV_HELP}")
+    if allow_path_lookup and os.sep not in value and not (os.altsep and os.altsep in value):
+        resolved = shutil.which(value)
+        if not resolved:
+            return CheckResult(label, False, f"{env_name} command not found on PATH: {value}")
+        return CheckResult(label, True, resolved)
     path = Path(value)
     if not path.exists():
         return CheckResult(label, False, f"{env_name} does not exist: {value}")
@@ -164,8 +173,8 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--codex-cli-path",
-        default=os.environ.get("CODEX_CLI_PATH"),
-        help="Codex CLI path. Defaults to CODEX_CLI_PATH.",
+        default=os.environ.get("CODEX_CLI_PATH", DEFAULT_CODEX_CLI_PATH),
+        help="Codex CLI path or command. Defaults to CODEX_CLI_PATH or `codex` on PATH.",
     )
     parser.add_argument(
         "--github-url",
@@ -200,6 +209,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         env=env,
         env_name="CODEX_CLI_PATH",
         label="Codex CLI",
+        allow_path_lookup=True,
     )
     setup_results = [python_check, codex_check]
     if not all(result.ok for result in setup_results):
