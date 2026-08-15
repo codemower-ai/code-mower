@@ -149,12 +149,15 @@ Private GitHub repos can spend Actions minutes even on small metadata
 workflows. The v1.0 posture is:
 
 - no recurring cron for optional hosted reviewers
-- issue-comment labelers must have job-level prefilters before checkout
+- issue-comment labelers must have job-level trusted-author prefilters before
+  checkout
 - paid/manual lanes require an explicit lane label or manual trigger
 - informational lanes must not be branch-protection requirements
 - external apps may still spend provider credits or post comments according to
   their dashboards, but Code Mower should not spend Actions minutes parsing
   them unless the PR opted into that lane
+- generated labelers trust configured lane bot authors and, when `GITHUB_TOKEN`
+  is a supported posting token, `github-actions[bot]`
 
 ## Promotion Policy
 

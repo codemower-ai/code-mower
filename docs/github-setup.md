@@ -146,6 +146,12 @@ fallback needs:
 Do not store provider API keys in repository docs. Use environment variables,
 GitHub secrets, or provider-specific local auth stores.
 
+Generated issue-comment labelers are fail-closed. They only run for comments
+from the lane's configured audit bot authors plus `github-actions[bot]` when
+the lane supports `GITHUB_TOKEN` as a posting token. Add trusted hosted reviewer
+or integration accounts with repository variables such as
+`CLAUDE_AUDIT_BOT_AUTHORS`, `DEVIN_BOT_AUTHORS`, or `GITAR_BOT_AUTHORS`.
+
 ## Actions Billing And Spending Limits
 
 GitHub can report Actions as enabled while refusing to start every job because

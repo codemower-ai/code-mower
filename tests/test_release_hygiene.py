@@ -968,6 +968,7 @@ exit 1
             self.assertIn("tools/code_mower trailer-comment-labeler --lane", claude)
             self.assertIn("TRAILER_LANE: claude", claude)
             self.assertIn("claude-audit-bot[bot]", claude)
+            self.assertIn("github-actions[bot]", claude)
             self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", claude)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS", claude)
             self.assertNotIn("github.event.inputs.lane", claude)
@@ -986,6 +987,7 @@ exit 1
             self.assertIn("tools/code_mower saas-reviewer-labeler --adapter", gitar)
             self.assertIn("REVIEWER_ADAPTER: gitar", gitar)
             self.assertIn("gitar-bot[bot]", gitar)
+            self.assertIn("github-actions[bot]", gitar)
             self.assertIn("GITAR_AUDIT_LABEL_TOKEN", gitar)
             self.assertIn("GITAR_BOT_AUTHORS", gitar)
             self.assertNotIn("github.event.inputs.adapter", gitar)
@@ -1060,6 +1062,7 @@ exit 1
             self.assertIn("TRAILER_LANE: devin", labeler)
             self.assertIn("devin-ai-integration[bot]", labeler)
             self.assertNotIn("devin-audit-bot[bot]", labeler)
+            self.assertIn("github-actions[bot]", labeler)
             self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", labeler)
             self.assertIn("DEVIN_BOT_AUTHORS", labeler)
             self.assertNotIn("github.event.inputs.lane", labeler)
@@ -1070,6 +1073,16 @@ exit 1
             ).read_text(encoding="utf-8")
             self.assertIn("tools/code_mower clear-stale", stale)
             self.assertIn('default: "devin"', stale)
+
+    def test_shipped_saas_event_lanes_have_bot_authors(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        cfg = code_mower_config.load_config(config_path)
+        for lane_id, lane in cfg["lanes"].items():
+            if lane.get("driver") != "saas_event":
+                continue
+            provider_config = lane.get("provider_config")
+            self.assertIsInstance(provider_config, dict, lane_id)
+            self.assertTrue(provider_config.get("bot_authors"), lane_id)
 
     def test_init_apply_generates_product_support_wrappers(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"

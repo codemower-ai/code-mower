@@ -192,6 +192,22 @@ def _audit_token_env(lane: Mapping[str, Any]) -> str:
     return "CODE_MOWER_AUDIT_LABEL_TOKEN"
 
 
+def _token_env_names(lane: Mapping[str, Any]) -> tuple[str, ...]:
+    token_env = lane.get("token_env", [])
+    if isinstance(token_env, str):
+        return (token_env,)
+    if isinstance(token_env, list):
+        return tuple(str(name) for name in token_env)
+    return ()
+
+
+def _bot_author_csv(authors: str, lane: Mapping[str, Any]) -> str:
+    values = [author.strip() for author in authors.split(",") if author.strip()]
+    if "GITHUB_TOKEN" in _token_env_names(lane):
+        values.append("github-actions[bot]")
+    return ",".join(dict.fromkeys(values))
+
+
 def _authors_env_for_trailer_lane(trailer_lane: str) -> str:
     lane_config = _load_trailer_lane_config(trailer_lane)
     if lane_config is not None:
@@ -273,7 +289,7 @@ def _workflow_entry_for_target(
             "package_copy_from": "templates/workflows/saas-reviewer-labeler.yml.j2",
             "adapter": adapter,
             "authors_env": f"{adapter.replace('-', '_').upper()}_BOT_AUTHORS",
-            "bot_authors": _configured_bot_authors(lane),
+            "bot_authors": _bot_author_csv(_configured_bot_authors(lane), lane),
         }
     return {
         **common,
@@ -283,7 +299,7 @@ def _workflow_entry_for_target(
         "trailer_lane": trailer_lane,
         "trailer_prefix": _trailer_prefix_for_lane(trailer_lane),
         "authors_env": _authors_env_for_trailer_lane(trailer_lane),
-        "bot_authors": _default_trailer_bot_authors(trailer_lane),
+        "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
     }
 
 
