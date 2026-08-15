@@ -465,6 +465,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "command_env": "GROK_BUILD_COMMAND",
             "model_env": "GROK_MODEL",
             "model_env_any": ("CODE_MOWER_GROK_MODEL", "XAI_MODEL"),
+            "prompt_transport": "prompt_file",
             "prompt_lenses": ("base-audit",),
             "doctor_probe_args": (
                 "-p",

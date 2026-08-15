@@ -396,6 +396,7 @@ lanes:
       model_env_any:
         - CODE_MOWER_GROK_MODEL
         - XAI_MODEL
+      prompt_transport: prompt_file
       prompt_lenses:
         - base-audit
       doctor_probe_args:

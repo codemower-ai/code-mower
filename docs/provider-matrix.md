@@ -106,6 +106,8 @@ Recommended setup:
 - Code Mower labels: `needs-grok-audit`, `grok-audit-done`,
   `grok-audit-blocked`.
 - Code Mower command: `code-mower grok-build --repo OWNER/REPO --pr NUMBER`.
+- Real audits use Grok Build's headless `--prompt-file` transport so large PR
+  diffs do not have to pass through shell or argv limits.
 
 Keep Grok Build informational/manual until calibration shows it catches known
 blockers, stays quiet on known-clean controls, and reports acceptable latency

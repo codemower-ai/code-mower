@@ -250,6 +250,8 @@ def run_grok_build_audit(
             grok_api_key=grok_api_key,
             preserve_ambient_home=allow_ambient_home,
         )
+        # Grok Build supports `--prompt-file` in headless mode. Use it for real
+        # audits so large PR diffs do not have to travel through argv.
         grok_args = [
             command,
             "--prompt-file",
@@ -430,7 +432,6 @@ def main(argv: list[str] | None = None) -> int:
         GrokBuildUnsupportedError,
         OSError,
         ValueError,
-        subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
         urllib.error.URLError,
     ) as exc:
