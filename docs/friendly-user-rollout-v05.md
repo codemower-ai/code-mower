@@ -20,10 +20,10 @@ Use the current public beta unless a newer release is explicitly called out in
 the invite:
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b38
+pipx install --python python3.12 code-mower==0.5.0b39
 ```
 
-The beta.38 baseline has been rehearsed from PyPI and against a private
+The beta.39 baseline has been rehearsed from PyPI and against a private
 JavaScript/mobile repository without requiring committed support files.
 
 ## Invite Criteria

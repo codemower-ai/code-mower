@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 from pathlib import Path
 
 from code_mower.provider_registry import REFERENCE_PROVIDERS
@@ -401,6 +403,78 @@ def test_grok_build_runner_prefers_code_mower_model_env(monkeypatch) -> None:
     monkeypatch.setenv("CODE_MOWER_GROK_MODEL", "grok-4.6-build")
 
     assert grok_build_audit_pr.resolve_grok_model() == "grok-4.6-build"
+
+
+def test_grok_build_runner_uses_configurable_audit_turn_budget(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        grok_build_audit_pr.gemini_cli_audit_pr,
+        "fetch_pull_request",
+        lambda repo, pr_number, *, token: {"head": {"sha": "abc123"}},
+    )
+    monkeypatch.setattr(
+        grok_build_audit_pr.gemini_cli_audit_pr,
+        "fetch_local_checkout_diff",
+        lambda repo_path, *, base_ref: ("abc123", "diff --git a/a b/a\n"),
+    )
+    monkeypatch.setattr(
+        grok_build_audit_pr.gemini_cli_audit_pr,
+        "_local_head_sha",
+        lambda repo_path: "abc123",
+    )
+    monkeypatch.setattr(
+        grok_build_audit_pr.gemini_cli_audit_pr,
+        "build_prompt",
+        lambda **kwargs: ("review prompt", {}),
+    )
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps(
+                {
+                    "text": json.dumps(
+                        {
+                            "verdict": "pass",
+                            "summary": "No findings.",
+                            "findings": [],
+                        }
+                    )
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(grok_build_audit_pr.subprocess, "run", fake_run)
+
+    default_payload = grok_build_audit_pr.run_grok_build_audit(
+        repo="owner/repo",
+        pr_number=7,
+        github_token="token",
+        command="grok",
+        repo_path=tmp_path,
+        allow_ambient_home=True,
+    )
+    custom_payload = grok_build_audit_pr.run_grok_build_audit(
+        repo="owner/repo",
+        pr_number=7,
+        github_token="token",
+        command="grok",
+        repo_path=tmp_path,
+        allow_ambient_home=True,
+        grok_max_turns=8,
+    )
+
+    assert default_payload["diagnostics"]["grok_max_turns"] == 4
+    assert custom_payload["diagnostics"]["grok_max_turns"] == 8
+    assert calls[0][calls[0].index("--max-turns") + 1] == "4"
+    assert calls[1][calls[1].index("--max-turns") + 1] == "8"
 
 
 def test_provider_lane_tool_provenance_marks_hosted_model_as_vendor_hidden() -> None:

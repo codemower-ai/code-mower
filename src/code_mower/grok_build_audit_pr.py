@@ -39,6 +39,7 @@ DEFAULT_GROK_COMMAND = "grok"
 DEFAULT_GROK_MODE = "grok-build-audit"
 DEFAULT_GROK_OUTPUT_STEM = "grok-build"
 DEFAULT_GROK_DISPLAY_NAME = "Grok Build"
+DEFAULT_GROK_MAX_TURNS = 4
 DEFAULT_GROK_MODEL_ENV = "GROK_MODEL"
 CODE_MOWER_GROK_MODEL_ENV = "CODE_MOWER_GROK_MODEL"
 GROK_AMBIENT_HOME_ENV = "GROK_BUILD_USE_AMBIENT_HOME"
@@ -161,6 +162,7 @@ def run_grok_build_audit(
     prompt_dir: Path | None = None,
     max_diff_bytes: int = gemini_cli_audit_pr.DEFAULT_MAX_DIFF_BYTES,
     timeout_seconds: int = gemini_cli_audit_pr.DEFAULT_TIMEOUT_SECONDS,
+    grok_max_turns: int = DEFAULT_GROK_MAX_TURNS,
     output_dir: Path | None = None,
     grok_api_key: str | None = None,
     repo_path: Path | None = None,
@@ -234,6 +236,7 @@ def run_grok_build_audit(
     diagnostics["base_ref"] = base_ref if repo_path is not None else None
     diagnostics["cli_transport"] = "prompt_file"
     diagnostics["preserve_ambient_home"] = allow_ambient_home
+    diagnostics["grok_max_turns"] = max(1, grok_max_turns)
 
     started = time.monotonic()
     grok_model = resolve_grok_model()
@@ -263,7 +266,7 @@ def run_grok_build_audit(
             "--disable-web-search",
             "--no-memory",
             "--max-turns",
-            "1",
+            str(max(1, grok_max_turns)),
         ]
         if grok_model:
             grok_args.extend(["--model", grok_model])
@@ -381,6 +384,15 @@ def main(argv: list[str] | None = None) -> int:
         default=gemini_cli_audit_pr.DEFAULT_MAX_DIFF_BYTES,
     )
     parser.add_argument("--timeout", type=int, default=gemini_cli_audit_pr.DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--grok-max-turns",
+        type=int,
+        default=DEFAULT_GROK_MAX_TURNS,
+        help=(
+            "Maximum Grok Build agent turns for a PR audit. The smoke probe can "
+            "use one turn, but real audits need enough room to return verdict JSON."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
@@ -416,6 +428,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt_dir=args.prompt_dir,
             max_diff_bytes=args.max_diff_bytes,
             timeout_seconds=args.timeout,
+            grok_max_turns=args.grok_max_turns,
             output_dir=args.output_dir,
             grok_api_key=grok_api_key,
             repo_path=args.repo_path,
