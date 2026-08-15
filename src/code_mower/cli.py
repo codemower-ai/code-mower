@@ -23,6 +23,7 @@ from . import antigravity_cli_audit_pr
 from . import blind_review_coordinator
 from . import bootstrap as code_mower_bootstrap
 from . import builder_experiment as code_mower_builder_experiment
+from . import builder_runs as code_mower_builder_runs
 from . import checks as code_mower_checks
 from . import claude_audit_pr
 from . import claude_cli_bounce
@@ -380,6 +381,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "antigravity-cli": "Run an Antigravity/Gemini CLI structured audit lane.",
     "blind-review": "Coordinate hidden/blind review artifacts.",
     "bootstrap": "Bootstrap generated support files and workflow fixtures.",
+    "builder": "Record source-free builder run provenance.",
     "builder-experiment": "Capture builder-side experiment metadata.",
     "calibration": "Create corpora, dispositions, policy, and value reports.",
     "claude-audit": "Run a Claude structured audit lane.",
@@ -510,6 +512,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "antigravity-cli": antigravity_cli_audit_pr.main,
     "blind-review": blind_review_coordinator.main,
     "bootstrap": code_mower_bootstrap.main,
+    "builder": code_mower_builder_runs.main,
     "builder-experiment": code_mower_builder_experiment.main,
     "calibration": code_mower_calibration.main,
     "claude-audit": claude_audit_pr.main,

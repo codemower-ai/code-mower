@@ -54,6 +54,7 @@ capture reviewer and workflow facts without raw code artifacts.
 Supported event types include:
 
 - `dogfood_upload`
+- `builder_run`
 - `reviewer_run`
 - `calibration_run`
 - `value_report_snapshot`
@@ -81,6 +82,15 @@ runs by recording issue/work-order provenance, role lenses, review lanes, and
 optional delivery metadata: PR URL/number/state, reviewer-check names/statuses,
 merge SHA, and merged-at time. They must not include issue bodies, source code,
 raw diffs, transcripts, stdout/stderr, auth output, or secrets.
+
+`builder_run` events are authoring-side provenance, not reviewer approval. They
+record who/what produced a branch or PR from an issue/work-order contract:
+builder provider, executor surface, issue/PR identifiers, branch name, optional
+safe run URL, and optional coarse metrics such as elapsed time, cost, or human
+intervention count. They exist so CodeMower.com can connect
+`issue -> plan -> work order -> builder run -> PR -> reviewer checks -> merge`
+without receiving source, issue bodies, diffs, prompts, transcripts,
+stdout/stderr, auth output, or secrets.
 
 Each event may also include a `tool` object using schema
 `code_mower.toolProvenance.v1`. This object is the benchmark-grade provenance
