@@ -1058,10 +1058,12 @@ exit 1
             ).read_text(encoding="utf-8")
             self.assertIn("tools/code_mower trailer-comment-labeler --lane", labeler)
             self.assertIn("TRAILER_LANE: devin", labeler)
-            self.assertIn("devin-audit-bot[bot]", labeler)
+            self.assertIn("devin-ai-integration[bot]", labeler)
+            self.assertNotIn("devin-audit-bot[bot]", labeler)
             self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", labeler)
             self.assertIn("DEVIN_BOT_AUTHORS", labeler)
             self.assertNotIn("github.event.inputs.lane", labeler)
+            self.assertNotIn("github.event.comment.user.type == 'Bot'", labeler)
 
             stale = output_dir.joinpath(
                 ".github/workflows/devin-clear-stale.yml"

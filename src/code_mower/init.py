@@ -193,6 +193,9 @@ def _audit_token_env(lane: Mapping[str, Any]) -> str:
 
 
 def _authors_env_for_trailer_lane(trailer_lane: str) -> str:
+    lane_config = _load_trailer_lane_config(trailer_lane)
+    if lane_config is not None:
+        return lane_config.authors_env_var
     normalized = trailer_lane.replace("-", "_").upper()
     explicit = {
         "CLAUDE": "CLAUDE_AUDIT_BOT_AUTHORS",
@@ -202,7 +205,22 @@ def _authors_env_for_trailer_lane(trailer_lane: str) -> str:
     return explicit.get(normalized, f"{normalized}_BOT_AUTHORS")
 
 
+def _load_trailer_lane_config(trailer_lane: str) -> Any | None:
+    try:
+        if __package__ in {None, "", "tools"}:
+            from tools.lane_configs import load_lane_config
+        else:  # pragma: no cover - package import path covered by CLI tests.
+            from .lane_configs import load_lane_config
+
+        return load_lane_config(trailer_lane)
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return None
+
+
 def _default_trailer_bot_authors(trailer_lane: str) -> str:
+    lane_config = _load_trailer_lane_config(trailer_lane)
+    if lane_config is not None:
+        return ",".join(lane_config.default_authors)
     stem = trailer_lane.replace("_", "-")
     return f"{stem}-audit-bot,{stem}-audit-bot[bot]"
 
