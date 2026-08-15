@@ -399,7 +399,11 @@ lanes:
       prompt_transport: prompt_file
       prompt_lenses:
         - base-audit
-      required_env_truthy:
+      required_env_any:
+        - XAI_API_KEY
+        - GROK_DEPLOYMENT_KEY
+        - GROK_API_KEY
+      required_env_truthy_any:
         - GROK_BUILD_USE_AMBIENT_HOME
       doctor_probe_args:
         - -p

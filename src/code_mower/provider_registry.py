@@ -467,7 +467,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "model_env_any": ("GROK_MODEL", "XAI_MODEL"),
             "prompt_transport": "prompt_file",
             "prompt_lenses": ("base-audit",),
-            "required_env_truthy": ("GROK_BUILD_USE_AMBIENT_HOME",),
+            "required_env_any": ("XAI_API_KEY", "GROK_DEPLOYMENT_KEY", "GROK_API_KEY"),
+            "required_env_truthy_any": ("GROK_BUILD_USE_AMBIENT_HOME",),
             "doctor_probe_args": (
                 "-p",
                 "Reply with exactly: ok",
