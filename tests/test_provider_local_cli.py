@@ -477,6 +477,55 @@ def test_grok_build_runner_uses_configurable_audit_turn_budget(
     assert calls[1][calls[1].index("--max-turns") + 1] == "8"
 
 
+def test_grok_build_parser_prefers_last_verdict_json() -> None:
+    response_text = """
+    I found a possible issue first.
+    {
+      "verdict": "blocked",
+      "summary": "Intermediate thought.",
+      "findings": [{"severity": "P1", "title": "old", "file": "a", "line": 1, "detail": "old"}]
+    }
+
+    After reading the rest of the diff:
+    {
+      "verdict": "pass",
+      "summary": "Final answer.",
+      "findings": []
+    }
+    """
+
+    _, parsed = grok_build_audit_pr._response_text_from_grok_payload(
+        {"text": response_text},
+        "",
+    )
+
+    assert parsed is not None
+    assert parsed["verdict"] == "pass"
+    assert parsed["findings"] == []
+
+
+def test_grok_build_parser_ignores_nested_verdict_json() -> None:
+    response_text = """
+    {
+      "verdict": "pass",
+      "summary": {
+        "verdict": "blocked",
+        "summary": "Nested diagnostic text should not win."
+      },
+      "findings": []
+    }
+    """
+
+    _, parsed = grok_build_audit_pr._response_text_from_grok_payload(
+        {"text": response_text},
+        "",
+    )
+
+    assert parsed is not None
+    assert parsed["verdict"] == "pass"
+    assert parsed["findings"] == []
+
+
 def test_provider_lane_tool_provenance_marks_hosted_model_as_vendor_hidden() -> None:
     lane = {
         "driver": "saas_event",

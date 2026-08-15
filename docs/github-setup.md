@@ -146,6 +146,14 @@ fallback needs:
 Do not store provider API keys in repository docs. Use environment variables,
 GitHub secrets, or provider-specific local auth stores.
 
+Generated issue-comment labelers are fail-closed. They only run for comments
+from the lane's configured audit bot authors plus any authors you explicitly
+add with repository variables such as `CLAUDE_AUDIT_BOT_AUTHORS`,
+`DEVIN_BOT_AUTHORS`, or `GITAR_BOT_AUTHORS`. If you intentionally run an audit
+wrapper inside GitHub Actions and post its verdict with `GITHUB_TOKEN`, add
+`github-actions[bot]` to that lane's `*_BOT_AUTHORS` variable; Code Mower does
+not trust that shared bot identity by default.
+
 ## Actions Billing And Spending Limits
 
 GitHub can report Actions as enabled while refusing to start every job because
@@ -183,7 +191,8 @@ Private repositories consume GitHub Actions minutes for started jobs. Code
 Mower should therefore keep metadata workflows cheap:
 
 - avoid recurring cron sweeps for hosted or informational lanes
-- prefer explicit labels, trusted comments, or manual `workflow_dispatch`
+- prefer explicit labels, trusted comments, or manual bridge/stale workflow
+  dispatches
 - add job-level `if:` guards to every `issue_comment` labeler before checkout
 - require informational SaaS lanes to opt in with an existing lane label
 - keep branch-protection merge gates limited to promoted structured audit lanes

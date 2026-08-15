@@ -49,7 +49,7 @@ from scripts import privacy_scan
 
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_current_v05_prerelease(self) -> None:
-        self.assertEqual(__version__, "0.5.0b39")
+        self.assertEqual(__version__, "0.5.0b40")
 
     def test_release_workflow_verifies_downloaded_distributions_before_publish(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
@@ -204,7 +204,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn(
             (
                 "code-mower migration package-install-rehearsal --package-spec "
-                "code-mower==0.5.0b39 --json"
+                "code-mower==0.5.0b40 --json"
             ),
             help_text,
         )
@@ -868,6 +868,9 @@ exit 1
         ).read_text(encoding="utf-8")
         self.assertIn("tools/code_mower trailer-comment-labeler", trailer)
         self.assertIn("__TRAILER_LANE__", trailer)
+        self.assertIn("__BOT_AUTHORS__", trailer)
+        self.assertNotIn("workflow_dispatch:", trailer)
+        self.assertNotIn("github.event.inputs.lane", trailer)
         hosted = (
             ROOT / "templates/workflows/hosted-bridge.yml.j2"
         ).read_text(encoding="utf-8")
@@ -876,6 +879,9 @@ exit 1
             ROOT / "templates/workflows/saas-reviewer-labeler.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("tools/code_mower saas-reviewer-labeler", saas)
+        self.assertIn("__BOT_AUTHORS__", saas)
+        self.assertNotIn("workflow_dispatch:", saas)
+        self.assertNotIn("github.event.inputs.adapter", saas)
 
     def test_provider_catalog_wires_merge_authority_stale_hygiene(self) -> None:
         for relative_path in (
@@ -960,9 +966,12 @@ exit 1
                 ".github/workflows/claude-audit-labeler.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("tools/code_mower trailer-comment-labeler --lane", claude)
-            self.assertIn("TRAILER_LANE: ${{ github.event.inputs.lane || 'claude' }}", claude)
+            self.assertIn("TRAILER_LANE: claude", claude)
+            self.assertIn("claude-audit-bot[bot]", claude)
             self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", claude)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS", claude)
+            self.assertNotIn("github.event.inputs.lane", claude)
+            self.assertNotIn("github.event.comment.user.type == 'Bot'", claude)
 
             codex_stale = output_dir.joinpath(
                 ".github/workflows/codex-clear-stale.yml"
@@ -975,9 +984,18 @@ exit 1
                 ".github/workflows/gitar-audit-labeler.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("tools/code_mower saas-reviewer-labeler --adapter", gitar)
-            self.assertIn("REVIEWER_ADAPTER: ${{ github.event.inputs.adapter || 'gitar' }}", gitar)
+            self.assertIn("REVIEWER_ADAPTER: gitar", gitar)
+            self.assertIn("gitar-bot[bot]", gitar)
             self.assertIn("GITAR_AUDIT_LABEL_TOKEN", gitar)
             self.assertIn("GITAR_BOT_AUTHORS", gitar)
+            self.assertNotIn("github.event.inputs.adapter", gitar)
+            self.assertNotIn("github.event.comment.user.type == 'Bot'", gitar)
+            self.assertTrue(
+                any(
+                    "github-actions[bot] requires an explicit *_BOT_AUTHORS" in warning
+                    for warning in plan.data["warnings"]
+                )
+            )
 
     def test_init_apply_generates_devin_bridge_labeler_and_stale_workflow(self) -> None:
         devin_config = {
@@ -1045,15 +1063,29 @@ exit 1
                 ".github/workflows/devin-audit-labeler.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("tools/code_mower trailer-comment-labeler --lane", labeler)
-            self.assertIn("TRAILER_LANE: ${{ github.event.inputs.lane || 'devin' }}", labeler)
+            self.assertIn("TRAILER_LANE: devin", labeler)
+            self.assertIn("devin-ai-integration[bot]", labeler)
+            self.assertNotIn("devin-audit-bot[bot]", labeler)
             self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", labeler)
             self.assertIn("DEVIN_BOT_AUTHORS", labeler)
+            self.assertNotIn("github.event.inputs.lane", labeler)
+            self.assertNotIn("github.event.comment.user.type == 'Bot'", labeler)
 
             stale = output_dir.joinpath(
                 ".github/workflows/devin-clear-stale.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("tools/code_mower clear-stale", stale)
             self.assertIn('default: "devin"', stale)
+
+    def test_shipped_saas_event_lanes_have_bot_authors(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        cfg = code_mower_config.load_config(config_path)
+        for lane_id, lane in cfg["lanes"].items():
+            if lane.get("driver") != "saas_event":
+                continue
+            provider_config = lane.get("provider_config")
+            self.assertIsInstance(provider_config, dict, lane_id)
+            self.assertTrue(provider_config.get("bot_authors"), lane_id)
 
     def test_init_apply_generates_product_support_wrappers(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
@@ -1629,8 +1661,8 @@ printf '%s\\n' "${lane}"
                     fromlist=["current_alpha_package_spec"],
                 )
                 self.assertEqual(
-                    legacy_module.current_alpha_package_spec("0.5.0b39"),
-                    "code-mower==0.5.0b39",
+                    legacy_module.current_alpha_package_spec("0.5.0b40"),
+                    "code-mower==0.5.0b40",
                 )
             finally:
                 sys.path[:] = original_path
@@ -1667,7 +1699,7 @@ printf '%s\\n' "${lane}"
                     "-c",
                     (
                         "from tools import code_mower_package_content as c; "
-                        "print(c.current_alpha_package_spec('0.5.0b39'))"
+                        "print(c.current_alpha_package_spec('0.5.0b40'))"
                     ),
                 ],
                 cwd=tmp_path,
@@ -1680,7 +1712,7 @@ printf '%s\\n' "${lane}"
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             completed.stdout.strip(),
-            "code-mower==0.5.0b39",
+            "code-mower==0.5.0b40",
         )
 
     def test_package_rendering_legacy_fallback_stays_valid_yaml_subset(self) -> None:
@@ -1756,11 +1788,11 @@ printf '%s\\n' "${lane}"
                 (output_dir / "src/code_mower/cloud_client/dogfood.py").is_file()
             )
             self.assertIn(
-                'version = "0.5.0b39"',
+                'version = "0.5.0b40"',
                 (output_dir / "pyproject.toml").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                '__version__ = "0.5.0b39"',
+                '__version__ = "0.5.0b40"',
                 (output_dir / "src/code_mower/__init__.py").read_text(
                     encoding="utf-8"
                 ),
@@ -3295,7 +3327,7 @@ def main():
             {
                 "status": "pass",
                 "package_spec": "code-mower",
-                "version": "code-mower 0.5.0b39",
+                "version": "code-mower 0.5.0b40",
                 "work_dir": "/tmp/code-mower-rehearsal",
                 "toy_repo": "/tmp/code-mower-rehearsal/toy-repo",
                 "step_count": 1,
@@ -3407,7 +3439,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b39",
+                version="code-mower 0.5.0b40",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -3486,7 +3518,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b39",
+                version="code-mower 0.5.0b40",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -3548,7 +3580,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b39",
+                version="code-mower 0.5.0b40",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -3614,24 +3646,24 @@ def main():
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.39",
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.40",
                     base_dir=package,
                 ),
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.39",
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.40",
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "code-mower==0.5.0b39",
+                    "code-mower==0.5.0b40",
                     base_dir=package,
                 ),
-                "code-mower==0.5.0b39",
+                "code-mower==0.5.0b40",
             )
 
     def test_package_install_rehearsal_supports_index_aware_pip_install(self) -> None:
         self.assertEqual(
             code_mower_migration._pip_install_command(
                 Path("/tmp/venv/bin/python"),
-                "code-mower==0.5.0b39",
+                "code-mower==0.5.0b40",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
             ),
@@ -3644,7 +3676,7 @@ def main():
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
                 "https://pypi.org/simple/",
-                "code-mower==0.5.0b39",
+                "code-mower==0.5.0b40",
             ],
         )
 
@@ -3664,10 +3696,10 @@ def main():
         payload = release_readiness.render_release_readiness(ROOT)
 
         self.assertEqual(payload["status"], "pass")
-        self.assertEqual(payload["version"], "0.5.0b39")
-        self.assertEqual(payload["release_tag"], "v0.5.0-beta.39")
-        self.assertEqual(payload["alpha_tag"], "v0.5.0-beta.39")
-        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0b39")
+        self.assertEqual(payload["version"], "0.5.0b40")
+        self.assertEqual(payload["release_tag"], "v0.5.0-beta.40")
+        self.assertEqual(payload["alpha_tag"], "v0.5.0-beta.40")
+        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0b40")
         check_ids = {check["id"]: check for check in payload["checks"]}
         self.assertEqual(check_ids["package-version-consistency"]["status"], "pass")
         self.assertEqual(
@@ -3716,7 +3748,7 @@ def main():
         check_ids = {check["id"]: check for check in payload["checks"]}
         check = check_ids["materialized-package-version-consistency"]
         self.assertEqual(check["status"], "fail")
-        self.assertEqual(check["detail"]["source_version"], "0.5.0b39")
+        self.assertEqual(check["detail"]["source_version"], "0.5.0b40")
         self.assertEqual(check["detail"]["generated_init_version"], "0.0.0")
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
@@ -3796,20 +3828,20 @@ def main():
 
     def test_release_readiness_tag_derivation_supports_release_stages(self) -> None:
         self.assertEqual(
-            release_readiness._release_tag_for_version("0.5.0b39"),
-            "v0.5.0-beta.39",
+            release_readiness._release_tag_for_version("0.5.0b40"),
+            "v0.5.0-beta.40",
         )
         self.assertEqual(
-            code_mower_versioning.release_tag_for_version("0.5.0b39"),
-            "v0.5.0-beta.39",
+            code_mower_versioning.release_tag_for_version("0.5.0b40"),
+            "v0.5.0-beta.40",
         )
         self.assertEqual(
-            release_readiness._release_tag_for_version("0.5.0b39"),
-            "v0.5.0-beta.39",
+            release_readiness._release_tag_for_version("0.5.0b40"),
+            "v0.5.0-beta.40",
         )
         self.assertEqual(
-            code_mower_versioning.release_tag_for_version("0.5.0b39"),
-            "v0.5.0-beta.39",
+            code_mower_versioning.release_tag_for_version("0.5.0b40"),
+            "v0.5.0-beta.40",
         )
         self.assertEqual(
             release_readiness._release_tag_for_version("1.0.0rc1"),
@@ -3838,8 +3870,8 @@ def main():
             next_steps.current_alpha_package_spec(),
         )
         self.assertEqual(
-            code_mower_package_content.current_alpha_package_spec("0.5.0b39"),
-            "code-mower==0.5.0b39",
+            code_mower_package_content.current_alpha_package_spec("0.5.0b40"),
+            "code-mower==0.5.0b40",
         )
         self.assertNotIn(next_steps.current_public_tag(), package_content_text)
         self.assertNotIn("v0.0.0", package_content_text)
@@ -4011,7 +4043,7 @@ def main():
             step for step in plan["steps"] if step["id"] == "package-install-rehearsal"
         )
         self.assertIn("doctor --v05", doctor_step["command"])
-        self.assertIn("code-mower==0.5.0b39", package_step["command"])
+        self.assertIn("code-mower==0.5.0b40", package_step["command"])
         self.assertIn("current published PyPI prerelease", package_step["why"])
         self.assertIn("first_user_readiness", package_step["why"])
         self.assertEqual(

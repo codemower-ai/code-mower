@@ -112,6 +112,8 @@ lanes:
       - GREPTILE_AUDIT_LABEL_TOKEN
       - GITHUB_TOKEN
     provider_config:
+      # Required by generated issue-comment labeler prefilters. Keep SaaS
+      # reviewer bot authors explicit so unrelated bots cannot spoof labels.
       bot_authors:
         - greptile-apps[bot]
         - greptile-apps

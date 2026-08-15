@@ -192,7 +192,24 @@ def _audit_token_env(lane: Mapping[str, Any]) -> str:
     return "CODE_MOWER_AUDIT_LABEL_TOKEN"
 
 
+def _token_env_names(lane: Mapping[str, Any]) -> tuple[str, ...]:
+    token_env = lane.get("token_env", [])
+    if isinstance(token_env, str):
+        return (token_env,)
+    if isinstance(token_env, list):
+        return tuple(str(name) for name in token_env)
+    return ()
+
+
+def _bot_author_csv(authors: str, lane: Mapping[str, Any]) -> str:
+    values = [author.strip() for author in authors.split(",") if author.strip()]
+    return ",".join(dict.fromkeys(values))
+
+
 def _authors_env_for_trailer_lane(trailer_lane: str) -> str:
+    lane_config = _load_trailer_lane_config(trailer_lane)
+    if lane_config is not None:
+        return lane_config.authors_env_var
     normalized = trailer_lane.replace("-", "_").upper()
     explicit = {
         "CLAUDE": "CLAUDE_AUDIT_BOT_AUTHORS",
@@ -200,6 +217,36 @@ def _authors_env_for_trailer_lane(trailer_lane: str) -> str:
         "DEVIN": "DEVIN_BOT_AUTHORS",
     }
     return explicit.get(normalized, f"{normalized}_BOT_AUTHORS")
+
+
+def _load_trailer_lane_config(trailer_lane: str) -> Any | None:
+    try:
+        if __package__ in {None, "", "tools"}:
+            from tools.lane_configs import load_lane_config
+        else:  # pragma: no cover - package import path covered by CLI tests.
+            from .lane_configs import load_lane_config
+
+        return load_lane_config(trailer_lane)
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return None
+
+
+def _default_trailer_bot_authors(trailer_lane: str) -> str:
+    lane_config = _load_trailer_lane_config(trailer_lane)
+    if lane_config is not None:
+        return ",".join(lane_config.default_authors)
+    stem = trailer_lane.replace("_", "-")
+    return f"{stem}-audit-bot,{stem}-audit-bot[bot]"
+
+
+def _configured_bot_authors(lane: Mapping[str, Any]) -> str:
+    provider_config = lane.get("provider_config")
+    if not isinstance(provider_config, Mapping):
+        return ""
+    authors = provider_config.get("bot_authors", [])
+    if not isinstance(authors, list):
+        return ""
+    return ",".join(str(author).strip() for author in authors if str(author).strip())
 
 
 def _trailer_prefix_for_lane(trailer_lane: str) -> str:
@@ -240,6 +287,7 @@ def _workflow_entry_for_target(
             "package_copy_from": "templates/workflows/saas-reviewer-labeler.yml.j2",
             "adapter": adapter,
             "authors_env": f"{adapter.replace('-', '_').upper()}_BOT_AUTHORS",
+            "bot_authors": _bot_author_csv(_configured_bot_authors(lane), lane),
         }
     return {
         **common,
@@ -249,6 +297,7 @@ def _workflow_entry_for_target(
         "trailer_lane": trailer_lane,
         "trailer_prefix": _trailer_prefix_for_lane(trailer_lane),
         "authors_env": _authors_env_for_trailer_lane(trailer_lane),
+        "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
     }
 
 
@@ -335,6 +384,11 @@ def _lane_warnings(
         warnings.append(f"{lane_id}: opt-in lane selected by profile")
     if lane.get("trigger_policy") == "manual":
         warnings.append(f"{lane_id}: manual trigger policy; installer must not auto-dispatch")
+    if "GITHUB_TOKEN" in _token_env_names(lane):
+        warnings.append(
+            f"{lane_id}: GITHUB_TOKEN posting comments as github-actions[bot] requires "
+            "an explicit *_BOT_AUTHORS repository variable"
+        )
     if package_mode:
         driver = lane.get("driver")
         if driver in {"local_cli", "hosted_bridge", "api_model"}:
@@ -566,6 +620,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__ADAPTER__": str(entry.get("adapter") or ""),
         "__AUTHORS_ENV__": str(entry.get("authors_env") or ""),
         "__BLOCKED_LABEL__": str(entry.get("blocked_label") or ""),
+        "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
         "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
