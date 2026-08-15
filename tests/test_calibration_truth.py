@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 from code_mower import code_mower_calibration
+from code_mower import calibration as calibration_pkg
 
 
 class CalibrationTruthTests(unittest.TestCase):
@@ -79,6 +80,56 @@ class CalibrationTruthTests(unittest.TestCase):
         )
 
         self.assertEqual(record["model"], "a-model")
+
+    def test_grok_build_calibration_summary_becomes_reviewer_record(self) -> None:
+        [record] = code_mower_calibration._run_records_from_summary(
+            summary={
+                "mode": "grok-build-audit",
+                "repo": "owner/repo",
+                "pr_number": 1,
+                "model": "grok-4.6-build",
+                "verdict": {"verdict": "pass", "findings": []},
+            },
+            item={"repo": "owner/repo", "pr_number": 1, "head_sha": "a" * 40},
+            command_result={"summary_path": "/tmp/grok-build.summary.json", "returncode": 0},
+        )
+
+        self.assertEqual(record["reviewer"], "grok-build")
+        self.assertEqual(record["status"], "pass")
+        self.assertEqual(record["model"], "grok-4.6-build")
+
+    def test_grok_build_calibration_command_discovers_summary_and_historical_flags(
+        self,
+    ) -> None:
+        command = [
+            "code-mower",
+            "grok-build",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "1",
+            "--output-dir",
+            "/tmp/calibration/grok-build",
+            "--json",
+        ]
+
+        self.assertEqual(
+            code_mower_calibration._summary_path_for_command(command),
+            Path("/tmp/calibration/grok-build/grok-build.summary.json"),
+        )
+        self.assertIn("grok-build", calibration_pkg.CONTEXT_PACK_CLI_LANES)
+        materialized = code_mower_calibration._materialize_command(
+            command,
+            item={"repo": "owner/repo", "pr_number": 1, "head_sha": "a" * 40},
+            code_mower_command=("python", "-m", "code_mower.cli"),
+            repo_path_map={"owner/repo": "/tmp/pr-worktree"},
+            allow_historical_head=True,
+        )
+
+        self.assertIn("--repo-path", materialized)
+        self.assertIn("/tmp/pr-worktree", materialized)
+        self.assertIn("--allow-historical-head", materialized)
+        self.assertIn("--historical-calibration", materialized)
 
     def test_starter_value_report_matches_packaged_example(self) -> None:
         corpus = code_mower_calibration.load_corpus(

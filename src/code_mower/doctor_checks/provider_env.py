@@ -75,9 +75,15 @@ def check_required_env(lane_id: str, lane: Mapping[str, Any]) -> list[DoctorChec
         return []
     required = list(env_status.required)
     required_truthy = list(env_status.required_truthy)
+    required_any = list(env_status.required_any)
+    required_truthy_any = list(env_status.required_truthy_any)
     missing = list(env_status.missing)
     missing_truthy = list(env_status.missing_truthy)
-    if missing or missing_truthy:
+    if missing or missing_truthy or env_status.missing_any:
+        missing_parts = [*missing, *missing_truthy]
+        if env_status.missing_any:
+            any_group = [*required_any, *required_truthy_any]
+            missing_parts.append("one of: " + ", ".join(any_group))
         return [
             DoctorCheck(
                 name="env.required",
@@ -85,13 +91,16 @@ def check_required_env(lane_id: str, lane: Mapping[str, Any]) -> list[DoctorChec
                 lane=lane_id,
                 message=(
                     "missing required env vars: "
-                    + ", ".join([*missing, *missing_truthy])
+                    + ", ".join(missing_parts)
                 ),
                 detail={
                     "missing": missing,
                     "missing_truthy": missing_truthy,
+                    "missing_any": env_status.missing_any,
                     "required_env": required,
                     "required_env_truthy": required_truthy,
+                    "required_env_any": required_any,
+                    "required_env_truthy_any": required_truthy_any,
                 },
                 remediation=(
                     "Set the required env vars only when you accept the lane's "
@@ -108,6 +117,8 @@ def check_required_env(lane_id: str, lane: Mapping[str, Any]) -> list[DoctorChec
             detail={
                 "required_env": required,
                 "required_env_truthy": required_truthy,
+                "required_env_any": required_any,
+                "required_env_truthy_any": required_truthy_any,
             },
         )
     ]

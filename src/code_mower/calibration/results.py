@@ -165,10 +165,17 @@ def run_records_from_summary(
             return expected_finding_matches(expected_findings, findings)
         return 1
 
-    if mode in {"antigravity-cli-audit", "gemini-cli-audit", "hermes-cli-audit"}:
+    if mode in {
+        "antigravity-cli-audit",
+        "gemini-cli-audit",
+        "grok-build-audit",
+        "hermes-cli-audit",
+    }:
         default_reviewer = (
             "antigravity-cli"
             if mode == "antigravity-cli-audit"
+            else "grok-build"
+            if mode == "grok-build-audit"
             else "hermes-cli"
             if mode == "hermes-cli-audit"
             else "gemini-cli"

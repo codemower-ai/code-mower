@@ -4,6 +4,20 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.38
+
+This beta adds Grok Build as an optional Code Mower reviewer lane.
+
+### Added
+
+- `code-mower grok-build` runs Grok Build as an informational/manual PR audit
+  lane with structured verdict parsing and provider provenance capture.
+- `grok_build` provider templates, lane labels, doctor provenance checks, and
+  calibration planning support are now included in the packaged OSS defaults.
+- Provider setup docs now cover Grok Build local OAuth, xAI key alternatives,
+  model provenance env vars, and the trusted-local `GROK_BUILD_USE_AMBIENT_HOME`
+  opt-in.
+
 ## v0.5.0-beta.32
 
 This beta adds full issue-to-delivery lineage capture for the planning workflow.
