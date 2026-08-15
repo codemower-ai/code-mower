@@ -185,6 +185,15 @@ def _default_output_path(
     return DEFAULT_BUILDER_RUN_DIR / f"{filename}.cloud-event.json"
 
 
+def _validate_anchor_repositories(repositories: Mapping[str, str]) -> None:
+    present = {name: repo for name, repo in repositories.items() if repo}
+    unique_repos = sorted(set(present.values()))
+    if len(unique_repos) <= 1:
+        return
+    details = ", ".join(f"{name}={repo}" for name, repo in sorted(present.items()))
+    raise ValueError(f"repository mismatch between provenance anchors: {details}")
+
+
 def build_builder_run_event(
     *,
     provider: str,
@@ -241,6 +250,14 @@ def build_builder_run_event(
             pr_text,
             repo=repo or issue_repo or manifest_repo,
         )
+
+    _validate_anchor_repositories(
+        {
+            "issue": issue_repo,
+            "pull_request": pr_repo,
+            "work_order": manifest_repo,
+        }
+    )
 
     effective_repo = pr_repo or issue_repo or repo or manifest_repo
     if not any((issue_url, issue_number, pr_url, pr_number, work_order)):

@@ -316,6 +316,68 @@ def test_builder_record_prefers_explicit_pr_repo_over_numeric_context_repo() -> 
         assert event["dimensions"]["pr_repo"] == "jeffhuber/bridge-pro"
 
 
+def test_builder_record_rejects_mismatched_issue_and_pr_repositories() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "grok_bot",
+                    "--issue",
+                    "codemower-ai/code-mower#12",
+                    "--pr",
+                    "jeffhuber/bridge-pro#13",
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 1
+        assert not output.exists()
+
+
+def test_builder_record_rejects_mismatched_work_order_and_pr_repositories() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work_order = root / "repo-anchored.md"
+        work_order.write_text("# Work Order\n", encoding="utf-8")
+        work_order.with_suffix(".json").write_text(
+            json.dumps(
+                {
+                    "schema": "code_mower.workOrder.v1",
+                    "repo": "codemower-ai/code-mower",
+                }
+            ),
+            encoding="utf-8",
+        )
+        output = root / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "grok_bot",
+                    "--work-order",
+                    str(work_order),
+                    "--pr",
+                    "jeffhuber/bridge-pro#13",
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 1
+        assert not output.exists()
+
+
 def test_builder_record_event_id_includes_work_order_repo_identity() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
