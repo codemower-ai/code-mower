@@ -172,6 +172,31 @@ def test_builder_record_uses_work_order_repo_for_numeric_pr_refs() -> None:
         assert event["dimensions"]["pr_url"] == "https://github.com/codemower-ai/code-mower/pull/289"
 
 
+def test_builder_record_rejects_missing_work_order_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        missing_work_order = root / "missing.md"
+        output = root / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "grok_bot",
+                    "--work-order",
+                    str(missing_work_order),
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 1
+        assert not output.exists()
+
+
 def test_builder_record_renders_host_prefixed_refs_without_github_dot_com_prefix() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         output = Path(tmp) / "builder-run.cloud-event.json"

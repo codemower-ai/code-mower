@@ -71,6 +71,8 @@ def _work_order_manifest_path(work_order: Path) -> Path:
 def _load_work_order_manifest(work_order: Path | None) -> dict[str, Any]:
     if work_order is None:
         return {}
+    if not work_order.is_file():
+        raise ValueError(f"--work-order must be an existing file: {work_order}")
     manifest_path = _work_order_manifest_path(work_order)
     if not manifest_path.is_file():
         return {}
