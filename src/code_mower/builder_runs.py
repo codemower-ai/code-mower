@@ -245,6 +245,10 @@ def build_builder_run_event(
     effective_repo = pr_repo or issue_repo or repo or manifest_repo
     if not any((issue_url, issue_number, pr_url, pr_number, work_order)):
         raise ValueError("record at least one of --issue, --pr, or --work-order")
+    if not effective_repo:
+        raise ValueError(
+            "record repository identity via --repo, --issue, --pr, or a work-order manifest"
+        )
 
     clean_elapsed = _optional_nonnegative_float(elapsed_seconds, "--elapsed-seconds")
     clean_cost = _optional_nonnegative_float(cost_usd, "--cost-usd")

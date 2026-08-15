@@ -233,6 +233,32 @@ def test_builder_record_rejects_missing_work_order_path() -> None:
         assert not output.exists()
 
 
+def test_builder_record_rejects_work_order_without_repo_identity() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work_order = root / "unowned.md"
+        work_order.write_text("# Work Order\n", encoding="utf-8")
+        output = root / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "grok_bot",
+                    "--work-order",
+                    str(work_order),
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 1
+        assert not output.exists()
+
+
 def test_builder_record_renders_host_prefixed_refs_without_github_dot_com_prefix() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         output = Path(tmp) / "builder-run.cloud-event.json"
