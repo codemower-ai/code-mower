@@ -378,6 +378,43 @@ def test_builder_record_rejects_mismatched_work_order_and_pr_repositories() -> N
         assert not output.exists()
 
 
+def test_builder_record_rejects_mismatched_explicit_repo_and_work_order() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work_order = root / "repo-anchored.md"
+        work_order.write_text("# Work Order\n", encoding="utf-8")
+        work_order.with_suffix(".json").write_text(
+            json.dumps(
+                {
+                    "schema": "code_mower.workOrder.v1",
+                    "repo": "codemower-ai/code-mower",
+                }
+            ),
+            encoding="utf-8",
+        )
+        output = root / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "grok_bot",
+                    "--repo",
+                    "jeffhuber/bridge-pro",
+                    "--work-order",
+                    str(work_order),
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 1
+        assert not output.exists()
+
+
 def test_builder_record_event_id_includes_work_order_repo_identity() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

@@ -253,6 +253,7 @@ def build_builder_run_event(
 
     _validate_anchor_repositories(
         {
+            "repo": repo if repo and not (issue_repo or pr_repo) else "",
             "issue": issue_repo,
             "pull_request": pr_repo,
             "work_order": manifest_repo,
