@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-from contextlib import redirect_stdout
+from contextlib import chdir, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
@@ -353,3 +353,34 @@ def test_builder_record_event_id_includes_builder_run_identity() -> None:
     assert first["event_id"] != second["event_id"]
     assert first["dimensions"]["builder_id"] == "attempt-1"
     assert second["dimensions"]["builder_id"] == "attempt-2"
+
+
+def test_builder_record_default_output_path_includes_builder_run_identity() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        with chdir(root):
+            for builder_id in ("attempt-1", "attempt-2"):
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    code = builder_runs.main(
+                        [
+                            "record",
+                            "--provider",
+                            "grok_bot",
+                            "--executor",
+                            "cursor_cloud_agent",
+                            "--pr",
+                            "codemower-ai/code-mower#289",
+                            "--builder-id",
+                            builder_id,
+                            "--json",
+                        ]
+                    )
+                assert code == 0
+
+        outputs = sorted((root / ".code-mower" / "builder-runs").glob("*.json"))
+        assert [path.name for path in outputs] == [
+            "grok_bot-cursor_cloud_agent-pr-289-attempt-1.cloud-event.json",
+            "grok_bot-cursor_cloud_agent-pr-289-attempt-2.cloud-event.json",
+        ]

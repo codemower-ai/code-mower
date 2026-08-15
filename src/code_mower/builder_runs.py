@@ -156,6 +156,7 @@ def _default_output_path(
     *,
     provider: str,
     executor: str,
+    run_suffix: str,
     issue_number: str,
     pr_number: str,
     work_order: Path | None,
@@ -171,7 +172,15 @@ def _default_output_path(
         else branch
     )
     filename = "-".join(
-        filter(None, (_safe_slug(provider), _safe_slug(executor, ""), _safe_slug(anchor)))
+        filter(
+            None,
+            (
+                _safe_slug(provider),
+                _safe_slug(executor, ""),
+                _safe_slug(anchor),
+                _safe_slug(run_suffix, ""),
+            ),
+        )
     )
     return DEFAULT_BUILDER_RUN_DIR / f"{filename}.cloud-event.json"
 
@@ -398,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
             output = args.output or _default_output_path(
                 provider=args.provider,
                 executor=args.executor,
+                run_suffix=args.builder_id or event["event_id"][:12],
                 issue_number=event["dimensions"]["issue_number"],
                 pr_number=event["dimensions"]["pr_number"],
                 work_order=args.work_order,
