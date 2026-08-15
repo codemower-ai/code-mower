@@ -137,7 +137,12 @@ def materialize_command(
     lane_id = command_lane_id(command)
     repo = str(item.get("repo") or "")
     repo_path = repo_path_for_item(item, repo_path_map)
-    historical_local_cli_lanes = {"antigravity-cli", "gemini-cli", "hermes-cli"}
+    historical_local_cli_lanes = {
+        "antigravity-cli",
+        "gemini-cli",
+        "grok-build",
+        "hermes-cli",
+    }
     if lane_id in {"coderabbit-cli", "local-llm", *historical_local_cli_lanes}:
         existing_repo_path = option_value(materialized, "--repo-path")
         if repo_path:
@@ -169,6 +174,8 @@ def summary_path_for_command(command: Sequence[Any]) -> Path | None:
         return root / "antigravity-cli.summary.json"
     if lane_id == "gemini-cli":
         return root / "gemini-cli.summary.json"
+    if lane_id == "grok-build":
+        return root / "grok-build.summary.json"
     if lane_id == "hermes-cli":
         return root / "hermes-cli.summary.json"
     if lane_id == "coderabbit-cli":
