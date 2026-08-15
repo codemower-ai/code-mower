@@ -289,7 +289,7 @@ def test_builder_record_renders_host_prefixed_refs_without_github_dot_com_prefix
         assert event["dimensions"]["pr_url"] == "https://ghe.example.com/acme/widgets/pull/13"
 
 
-def test_builder_record_prefers_explicit_pr_repo_over_numeric_context_repo() -> None:
+def test_builder_record_rejects_explicit_repo_that_conflicts_with_full_pr_ref() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         output = Path(tmp) / "builder-run.cloud-event.json"
 
@@ -310,10 +310,33 @@ def test_builder_record_prefers_explicit_pr_repo_over_numeric_context_repo() -> 
                 ]
             )
 
-        assert code == 0
-        event = json.loads(output.read_text(encoding="utf-8"))
-        assert event["repo_slug"] == "jeffhuber/bridge-pro"
-        assert event["dimensions"]["pr_repo"] == "jeffhuber/bridge-pro"
+        assert code == 1
+        assert not output.exists()
+
+
+def test_builder_record_rejects_explicit_repo_that_conflicts_with_full_issue_ref() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "builder-run.cloud-event.json"
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "record",
+                    "--provider",
+                    "grok_bot",
+                    "--repo",
+                    "codemower-ai/code-mower",
+                    "--issue",
+                    "jeffhuber/bridge-pro#12",
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        assert code == 1
+        assert not output.exists()
 
 
 def test_builder_record_rejects_mismatched_issue_and_pr_repositories() -> None:
