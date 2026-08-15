@@ -463,10 +463,11 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         provider_config={
             "command": "grok",
             "command_env": "GROK_BUILD_COMMAND",
-            "model_env": "GROK_MODEL",
-            "model_env_any": ("CODE_MOWER_GROK_MODEL", "XAI_MODEL"),
+            "model_env": "CODE_MOWER_GROK_MODEL",
+            "model_env_any": ("GROK_MODEL", "XAI_MODEL"),
             "prompt_transport": "prompt_file",
             "prompt_lenses": ("base-audit",),
+            "required_env_truthy": ("GROK_BUILD_USE_AMBIENT_HOME",),
             "doctor_probe_args": (
                 "-p",
                 "Reply with exactly: ok",

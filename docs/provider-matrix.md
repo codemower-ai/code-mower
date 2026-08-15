@@ -103,6 +103,8 @@ Recommended setup:
   `GROK_BUILD_USE_AMBIENT_HOME=1` only in trusted local environments. Without
   an API key, Code Mower intentionally requires this opt-in before inheriting
   local Grok session state.
+- Doctor surfaces `GROK_BUILD_USE_AMBIENT_HOME` as a required trust opt-in for
+  this lane's live prompt probe.
 - Code Mower labels: `needs-grok-audit`, `grok-audit-done`,
   `grok-audit-blocked`.
 - Code Mower command: `code-mower grok-build --repo OWNER/REPO --pr NUMBER`.

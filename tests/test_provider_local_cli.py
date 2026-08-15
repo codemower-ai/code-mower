@@ -377,7 +377,7 @@ def test_grok_build_provenance_prefers_code_mower_model_env(
         "#!/bin/sh\nprintf 'grok 1.0.4\\n'\n",
     )
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    monkeypatch.delenv("GROK_MODEL", raising=False)
+    monkeypatch.setenv("GROK_MODEL", "generic-grok")
     monkeypatch.setenv("CODE_MOWER_GROK_MODEL", "grok-4.6-build")
 
     tool, detail = build_provider_lane_tool_provenance(
