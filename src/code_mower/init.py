@@ -203,8 +203,6 @@ def _token_env_names(lane: Mapping[str, Any]) -> tuple[str, ...]:
 
 def _bot_author_csv(authors: str, lane: Mapping[str, Any]) -> str:
     values = [author.strip() for author in authors.split(",") if author.strip()]
-    if "GITHUB_TOKEN" in _token_env_names(lane):
-        values.append("github-actions[bot]")
     return ",".join(dict.fromkeys(values))
 
 
@@ -386,6 +384,11 @@ def _lane_warnings(
         warnings.append(f"{lane_id}: opt-in lane selected by profile")
     if lane.get("trigger_policy") == "manual":
         warnings.append(f"{lane_id}: manual trigger policy; installer must not auto-dispatch")
+    if "GITHUB_TOKEN" in _token_env_names(lane):
+        warnings.append(
+            f"{lane_id}: GITHUB_TOKEN posting comments as github-actions[bot] requires "
+            "an explicit *_BOT_AUTHORS repository variable"
+        )
     if package_mode:
         driver = lane.get("driver")
         if driver in {"local_cli", "hosted_bridge", "api_model"}:

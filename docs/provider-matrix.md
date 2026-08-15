@@ -156,8 +156,9 @@ workflows. The v1.0 posture is:
 - external apps may still spend provider credits or post comments according to
   their dashboards, but Code Mower should not spend Actions minutes parsing
   them unless the PR opted into that lane
-- generated labelers trust configured lane bot authors and, when `GITHUB_TOKEN`
-  is a supported posting token, `github-actions[bot]`
+- generated labelers trust configured lane bot authors; `github-actions[bot]`
+  is trusted only when a repo explicitly adds it to the lane's `*_BOT_AUTHORS`
+  variable
 
 ## Promotion Policy
 
