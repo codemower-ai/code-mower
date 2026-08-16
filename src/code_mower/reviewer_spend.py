@@ -11,6 +11,7 @@ import datetime as dt
 import json
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -29,6 +30,8 @@ TOKEN_KEYS = {
     "reasoning_tokens",
 }
 COST_KEYS = {"cost_usd", "total_cost_usd", "usd"}
+LOCK_TIMEOUT_SECONDS = 30.0
+LOCK_POLL_SECONDS = 0.05
 
 
 def utc_now() -> str:
@@ -161,20 +164,48 @@ def build_spend_run(
 
 def append_spend_run(path: Path, run: Mapping[str, Any]) -> dict[str, Any]:
     destination = path.expanduser()
-    payload = load_spend_file(destination)
-    payload.setdefault("schema", SPEND_SCHEMA)
-    profiles = payload.get("profiles")
-    if profiles is not None and not isinstance(profiles, Mapping):
-        raise ValueError("reviewer spend profiles must be an object")
-    runs = payload.get("runs", [])
-    if not isinstance(runs, list):
-        raise ValueError("reviewer spend runs must be a list")
-    payload["runs"] = [*runs, dict(run)]
     destination.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = destination.with_name(f".{destination.name}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp_path.replace(destination)
-    return payload
+    lock_fd, lock_path = _acquire_spend_lock(destination)
+    try:
+        payload = load_spend_file(destination)
+        payload.setdefault("schema", SPEND_SCHEMA)
+        profiles = payload.get("profiles")
+        if profiles is not None and not isinstance(profiles, Mapping):
+            raise ValueError("reviewer spend profiles must be an object")
+        runs = payload.get("runs", [])
+        if not isinstance(runs, list):
+            raise ValueError("reviewer spend runs must be a list")
+        payload["runs"] = [*runs, dict(run)]
+        tmp_path = destination.with_name(
+            f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        )
+        tmp_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        tmp_path.replace(destination)
+        return payload
+    finally:
+        os.close(lock_fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _acquire_spend_lock(path: Path) -> tuple[int, Path]:
+    lock_path = path.with_name(f".{path.name}.lock")
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out waiting for reviewer spend lock {lock_path}") from exc
+            time.sleep(LOCK_POLL_SECONDS)
+            continue
+        os.write(fd, str(os.getpid()).encode("ascii"))
+        return fd, lock_path
 
 
 def provider_from_lane(lane: str) -> str:

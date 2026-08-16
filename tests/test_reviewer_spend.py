@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import threading
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -49,6 +52,42 @@ def test_reviewer_spend_append_preserves_profiles_and_exports_event() -> None:
         assert events[0]["metrics"]["cost_usd"] == 0.03
         assert events[0]["tool"]["model"] == "gpt-5"
         assert events[0]["dimensions"]["pr_number"] == "42"
+
+
+def test_reviewer_spend_append_waits_for_lock() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "reviewer-spend.json"
+        lock_path = path.with_name(f".{path.name}.lock")
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        result: list[dict[str, object]] = []
+
+        def append() -> None:
+            result.append(
+                reviewer_spend.append_spend_run(
+                    path,
+                    reviewer_spend.build_spend_run(
+                        lane="claude-audit",
+                        repo="owner/repo",
+                        pr_number=42,
+                        head_sha="abc123",
+                        model="sonnet",
+                        wall_seconds=1.0,
+                        verdict="PASS",
+                    ),
+                )
+            )
+
+        thread = threading.Thread(target=append)
+        thread.start()
+        time.sleep(0.15)
+        assert thread.is_alive()
+
+        os.close(fd)
+        lock_path.unlink()
+        thread.join(timeout=2)
+
+        assert not thread.is_alive()
+        assert len(result[0]["runs"]) == 1
 
 
 def test_usage_metrics_extracts_known_numbers_from_cli_json_only() -> None:
