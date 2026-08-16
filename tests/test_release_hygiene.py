@@ -1450,6 +1450,47 @@ fi
         self.assertIn("| codex | 1 | 12 | 34 | 0.0560 | pass |", completed.stdout)
         self.assertNotIn("body", completed.stdout.lower())
 
+    def test_init_add_repo_records_sibling_repo_targets(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        config, added_repos = code_mower_init.config_with_added_repositories(
+            code_mower_config.load_config(config_path),
+            ("owner/sibling-one", "owner/sibling-two"),
+        )
+        plan = code_mower_init.render_init_plan(
+            config,
+            package_mode=True,
+            package_command="code-mower",
+            add_repositories=added_repos,
+        )
+
+        self.assertEqual(added_repos, ("owner/sibling-one", "owner/sibling-two"))
+        self.assertIn("owner/sibling-one", plan.text)
+        self.assertIn("Additional repository targets from --add-repo", plan.text)
+        self.assertTrue(
+            any(
+                "--add-repo owner/sibling-one" in test
+                for test in plan.data["smoke_tests"]
+            )
+        )
+        self.assertEqual(
+            plan.data["additional_repositories"],
+            ["owner/sibling-one", "owner/sibling-two"],
+        )
+        self.assertIn(
+            "owner/sibling-two",
+            [repo["slug"] for repo in plan.data["repositories"]],
+        )
+
+    def test_init_add_repo_rejects_non_owner_repo_slug(self) -> None:
+        with self.assertRaisesRegex(
+            code_mower_config.ConfigError,
+            "OWNER/REPO",
+        ):
+            code_mower_init.config_with_added_repositories(
+                {"repositories": []},
+                ("not/a/slug",),
+            )
+
     def test_init_apply_generates_devin_bridge_labeler_and_stale_workflow(self) -> None:
         devin_config = {
             "version": 1,

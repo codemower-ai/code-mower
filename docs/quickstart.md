@@ -147,6 +147,24 @@ diagnostics, and optional cloud-token setup. It is equivalent to the versioned
 bootstrap job. For auth-specific doctor failures, see
 [Troubleshooting](troubleshooting.md).
 
+To extend the same lane/label/workflow setup to a sibling repository, run the
+same init command from that checkout and add the target repo slug to the
+rendered plan:
+
+```bash
+code-mower init ../control-repo/code-mower.yml \
+  --add-repo OWNER/SIBLING_REPO \
+  --profile recommended \
+  --apply \
+  --output-dir .code-mower.generated
+code-mower doctor ../control-repo/code-mower.yml --preflight --json
+```
+
+`doctor` reports whether the config is single-repo or multi-repo so CI-only
+sibling repos are easy to spot before they drift from the merge gate. For a
+permanent rollout, add the sibling slug to `repositories:` in the control
+config after reviewing the generated plan.
+
 ## 5. Rehearse The Package Install Path
 
 This proves Code Mower can be installed fresh and run the starter workflow in a

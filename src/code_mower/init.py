@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import shlex
 import sys
@@ -66,6 +67,7 @@ LOCAL_AUDIT_WRAPPERS = {
 DEFAULT_APPLY_OUTPUT_DIR = ".code-mower.generated"
 APPLY_MANIFEST_FILENAME = "code-mower-init-plan.json"
 APPLY_SUMMARY_FILES = ("labels.txt", "required-secrets.txt", "smoke-tests.sh")
+OWNER_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REFERENCE_PYTHON = ".code-mower-venv/bin/python"
 GEMINI_AUTH_FILE_ENV = "GEMINI_API_KEY_FILE"
 GEMINI_AUTH_ENV_NAMES = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
@@ -224,6 +226,57 @@ def _display_name(raw_name: str) -> str:
 def _workflow_name_for_target(target: str) -> str:
     stem = Path(target).stem.replace("-", " ")
     return stem[:1].upper() + stem[1:]
+
+
+def _normalize_repo_slug(value: str) -> str:
+    slug = value.strip().strip("/")
+    if not OWNER_REPO_RE.fullmatch(slug):
+        raise ConfigError("--add-repo expects an OWNER/REPO slug")
+    return slug
+
+
+def config_with_added_repositories(
+    config: Mapping[str, Any],
+    add_repos: list[str] | tuple[str, ...],
+) -> tuple[Mapping[str, Any], tuple[str, ...]]:
+    """Return a config copy with additional repository targets appended."""
+
+    if not add_repos:
+        return config, ()
+    repositories = list(config.get("repositories") or [])
+    existing_slugs = {
+        str(repo.get("slug") or "")
+        for repo in repositories
+        if isinstance(repo, Mapping)
+    }
+    added: list[str] = []
+    for raw_slug in add_repos:
+        slug = _normalize_repo_slug(raw_slug)
+        if slug in existing_slugs:
+            continue
+        repositories.append({"slug": slug, "default_branch": "main"})
+        existing_slugs.add(slug)
+        added.append(slug)
+    return {**dict(config), "repositories": repositories}, tuple(added)
+
+
+def _repository_entries(config: Mapping[str, Any]) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for repo in config.get("repositories") or []:
+        if not isinstance(repo, Mapping):
+            continue
+        slug = str(repo.get("slug") or "")
+        if not slug:
+            continue
+        entry = {
+            "slug": slug,
+            "default_branch": str(repo.get("default_branch") or "main"),
+        }
+        local_path_env = str(repo.get("local_path_env") or "")
+        if local_path_env:
+            entry["local_path_env"] = local_path_env
+        entries.append(entry)
+    return entries
 
 
 def _audit_token_env(lane: Mapping[str, Any]) -> str:
@@ -1046,6 +1099,7 @@ def render_init_plan(
     *,
     package_mode: bool | None = None,
     package_command: str | None = None,
+    add_repositories: tuple[str, ...] = (),
 ) -> RenderedPlan:
     issues = validate_config(config)
     if issues:
@@ -1072,6 +1126,10 @@ def render_init_plan(
         if package_mode
         else f"{REFERENCE_PYTHON} tools/code_mower"
     )
+    add_repo_args = " ".join(
+        f"--add-repo {shlex.quote(slug)}" for slug in add_repositories
+    )
+    add_repo_suffix = f" {add_repo_args}" if add_repo_args else ""
     smoke_tests: list[str] = [
         (
             f"{smoke_command_prefix} config validate {quoted_config_path}"
@@ -1079,9 +1137,11 @@ def render_init_plan(
             else f"{smoke_command_prefix}_config.py {quoted_config_path} --validate-only"
         ),
         (
-            f"{smoke_command_prefix} init {quoted_config_path} --profile {quoted_profile_id} --dry-run --json"
+            f"{smoke_command_prefix} init {quoted_config_path} --profile "
+            f"{quoted_profile_id}{add_repo_suffix} --dry-run --json"
             if package_mode
-            else f"{smoke_command_prefix}_init.py {quoted_config_path} --profile {quoted_profile_id} --dry-run --json"
+            else f"{smoke_command_prefix}_init.py {quoted_config_path} --profile "
+            f"{quoted_profile_id}{add_repo_suffix} --dry-run --json"
         ),
     ]
     warnings: list[str] = []
@@ -1267,6 +1327,8 @@ def render_init_plan(
         "workflows": workflows,
         "generated_files": generated_files,
         "required_secrets": sorted(required_secrets),
+        "repositories": _repository_entries(config),
+        "additional_repositories": list(add_repositories),
         "merge_authority_lanes": merge_authority_lanes,
         "informational_lanes": informational_lanes,
         "merge_authority_excludes_author": json.loads(author_exclusion_json)["enabled"],
@@ -1304,6 +1366,18 @@ def render_init_plan(
         f"- {entry['path']} [{entry['source']}]" for entry in data["generated_files"]
     )
 
+    lines.extend(["", "Configured repositories:"])
+    if data["repositories"]:
+        lines.extend(
+            f"- {repo['slug']} (default branch: {repo['default_branch']})"
+            for repo in data["repositories"]
+        )
+    else:
+        lines.append("- none")
+    if add_repositories:
+        lines.extend(["", "Additional repository targets from --add-repo:"])
+        lines.extend(f"- {slug}" for slug in add_repositories)
+
     lines.extend(["", "Required secrets/PAT fallbacks:"])
     if data["required_secrets"]:
         lines.extend(f"- {secret}" for secret in data["required_secrets"])
@@ -1339,6 +1413,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="render the init plan")
     parser.add_argument("--apply", action="store_true", help="write generated files to --output-dir")
     parser.add_argument(
+        "--add-repo",
+        action="append",
+        default=[],
+        metavar="OWNER/REPO",
+        help=(
+            "append a sibling repository target to the rendered plan without "
+            "editing code-mower.yml; repeat for multiple repos"
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         default=DEFAULT_APPLY_OUTPUT_DIR,
         help="safe output directory for --apply mode",
@@ -1362,10 +1446,15 @@ def main(argv: list[str] | None = None) -> int:
         rendered_config_path = (
             str(config_source) if config_source != Path(args.config) else args.config
         )
-        plan = render_init_plan(
+        config, added_repos = config_with_added_repositories(
             load_config(config_source),
+            tuple(args.add_repo),
+        )
+        plan = render_init_plan(
+            config,
             profile_id=args.profile,
             config_path=rendered_config_path,
+            add_repositories=added_repos,
         )
         apply_result = (
             apply_init_plan(plan, Path(args.output_dir))

@@ -18,6 +18,7 @@ from .common import (
     load_inputs,
 )
 from .github import check_github_setup
+from .github_config import check_repository_posture
 from .groups import GROUP_LABELS, doctor_check_group_id
 from .models import (
     STATUS_FAIL,
@@ -83,6 +84,7 @@ __all__ = [
     "check_cloud_token_surface",
     "check_github_auth_surface",
     "check_github_setup",
+    "check_repository_posture",
     "check_lane_runtime",
     "check_review_hygiene",
     "check_pytest",

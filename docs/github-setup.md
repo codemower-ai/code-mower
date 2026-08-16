@@ -63,6 +63,29 @@ The generated digest reads GitHub metadata only: labels, titles, PR state,
 assignees, timestamps, and optional local Code Mower spend/value files. It does
 not read source, diffs, transcripts, or issue bodies.
 
+## Multi-Repo Rollout
+
+When one Code Mower config controls several sibling repositories, keep the
+lanes and labels in the control config and render each sibling repo from that
+same file:
+
+```bash
+code-mower init ../control-repo/code-mower.yml \
+  --add-repo OWNER/SIBLING_REPO \
+  --profile recommended \
+  --apply \
+  --output-dir .code-mower.generated
+code-mower doctor ../control-repo/code-mower.yml --preflight --json
+```
+
+`--add-repo` does not edit `code-mower.yml`; it adds a reviewable target to the
+init manifest so the generated labeler, clear-stale, labels, and support files
+can be copied into the sibling repository. After review, add the sibling slug
+to `repositories:` in the control config. `doctor` reports the committed
+repository count and slugs even without `--github`, then `doctor --github`
+checks each configured repo's metadata, Actions settings, and branch
+protection.
+
 ## Recommended Public Repo Hardening
 
 For the public Code Mower source repo, and for any repository that wants to run
