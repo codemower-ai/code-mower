@@ -837,6 +837,7 @@ exit 1
             "audit-label-cleanup.yml.j2",
             "hosted-bridge.yml.j2",
             "local-cli-audit.yml.j2",
+            "self-hosted-local-audit.yml.j2",
             "saas-reviewer-labeler.yml.j2",
             "trailer-comment-labeler.yml.j2",
         )
@@ -954,6 +955,7 @@ exit 1
                 ".github/workflows/codex-audit-labeler.yml",
                 ".github/workflows/codex-clear-stale.yml",
                 ".github/workflows/gitar-audit-labeler.yml",
+                ".github/workflows/local-cli-audit.yml",
             }
             self.assertTrue(expected.isdisjoint(placeholder_files))
             for rel_path in expected:
@@ -980,6 +982,26 @@ exit 1
             self.assertIn("tools/code_mower clear-stale", codex_stale)
             self.assertIn('default: "codex"', codex_stale)
             self.assertIn("github.event.inputs.lane || 'codex'", codex_stale)
+
+            local_cli_audit = output_dir.joinpath(
+                ".github/workflows/local-cli-audit.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("pull_request:\n    types: [opened, synchronize, labeled]", local_cli_audit)
+            self.assertIn("runs-on: [self-hosted, macOS, code-mower-audit]", local_cli_audit)
+            self.assertIn("path: code-mower-support", local_cli_audit)
+            self.assertIn("path: pr-head", local_cli_audit)
+            self.assertIn("fetch-depth: 0", local_cli_audit)
+            self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", local_cli_audit)
+            self.assertIn("github.event.action != 'labeled'", local_cli_audit)
+            self.assertIn("needs-codex-audit", local_cli_audit)
+            self.assertIn("needs-claude-audit", local_cli_audit)
+            self.assertIn("CODEX_AUDIT_LABEL_TOKEN", local_cli_audit)
+            self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", local_cli_audit)
+            self.assertIn("tools/run_codex_audit_pr.sh", local_cli_audit)
+            self.assertIn("tools/run_claude_audit_pr.sh", local_cli_audit)
+            self.assertIn("--read-token-from-stdin", local_cli_audit)
+            self.assertIn("--repo-paths", local_cli_audit)
+            self.assertNotIn("__LOCAL_AUDIT_", local_cli_audit)
 
             gitar = output_dir.joinpath(
                 ".github/workflows/gitar-audit-labeler.yml"
@@ -1573,6 +1595,10 @@ printf '%s\\n' "${lane}"
         }
         self.assertIn(
             "src/code_mower/templates/workflows/review-clear-stale.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/self-hosted-local-audit.yml.j2",
             packaged_template_targets,
         )
 
