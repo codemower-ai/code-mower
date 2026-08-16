@@ -207,6 +207,10 @@ class AuditConfig:
     # Shared progress emitter for long-running audit phases. When unset,
     # audit_pr() installs the default Code Mower stderr emitter.
     progress: Optional[AuditProgress] = None
+    # Whether this lane is allowed to block the merge gate. Defaults to the
+    # reference provider catalog's Codex audit posture; pass --informational
+    # when replaying or calibrating a lane that is not a repository gate.
+    merge_authority: bool = True
 
 
 @dataclass
@@ -1122,9 +1126,11 @@ def format_comment(
     is_stale: bool = False,
     stale_end_sha: Optional[str] = None,
     is_unknown: bool = False,
+    merge_authority: bool = True,
 ) -> str:
     """Build the GitHub comment body with header, prose, and trailer."""
-    header = "## Codex audit (calibration phase — informational only)\n\n"
+    posture = "merge-authority lane" if merge_authority else "informational only"
+    header = f"## Codex audit ({posture})\n\n"
     header += f"Head SHA: `{head_sha}`\n"
     if is_stale:
         body = (
@@ -1284,7 +1290,10 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             comment_body = format_comment(
                 CodexVerdict(verdict="UNKNOWN",
                              prose="(force-push detected before worktree created)"),
-                head_sha_start, is_stale=True, stale_end_sha=head_sha_after,
+                head_sha_start,
+                is_stale=True,
+                stale_end_sha=head_sha_after,
+                merge_authority=config.merge_authority,
             )
             result = AuditResult(
                 repo=repo, pr_number=pr_number,
@@ -1382,8 +1391,13 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     is_stale = head_sha_start != head_sha_end
 
     if is_stale:
-        comment_body = format_comment(parsed, head_sha_start, is_stale=True,
-                                       stale_end_sha=head_sha_end)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            is_stale=True,
+            stale_end_sha=head_sha_end,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = "STALE"
         trailer = STALE_TRAILER
     elif parsed.verdict == "UNKNOWN":
@@ -1412,11 +1426,20 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 file=sys.stderr,
                 flush=True,
             )
-        comment_body = format_comment(parsed, head_sha_start, is_unknown=True)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            is_unknown=True,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
     else:
-        comment_body = format_comment(parsed, head_sha_start)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = parsed.verdict
         trailer = BLOCKED_TRAILER if parsed.verdict == "BLOCKED" else DONE_TRAILER
 
@@ -1557,6 +1580,20 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         or _env_flag("CODEX_AUDIT_NO_SPEND_CAPTURE"),
         help="do not append this audit run to reviewer-spend.json",
     )
+    posture_default = _env_flag_default("CODEX_AUDIT_MERGE_AUTHORITY", True)
+    ap.add_argument(
+        "--merge-authority",
+        dest="merge_authority",
+        action="store_true",
+        default=posture_default,
+        help="Render audit comments as merge-authority lane comments.",
+    )
+    ap.add_argument(
+        "--informational",
+        dest="merge_authority",
+        action="store_false",
+        help="Render audit comments as informational-only calibration comments.",
+    )
     return ap.parse_args(argv)
 
 
@@ -1567,6 +1604,13 @@ def _env_flag(name: str) -> bool:
         "yes",
         "on",
     }
+
+
+def _env_flag_default(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _extract_and_clear_github_token() -> Optional[str]:
@@ -1685,6 +1729,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         ignore_user_config=not args.use_user_config,
         venv_path=explicit_venv,
         disable_venv=disable_venv,
+        merge_authority=args.merge_authority,
     )
 
     audit_started = time.monotonic()

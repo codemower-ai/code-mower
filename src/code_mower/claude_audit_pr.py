@@ -157,6 +157,7 @@ class ClaudeAuditConfig:
     )
     prompt_dir: Optional[Path] = None
     progress: Optional[AuditProgress] = None
+    merge_authority: bool = True
 
 
 @dataclass
@@ -685,8 +686,10 @@ def format_comment(
     is_stale: bool = False,
     stale_end_sha: Optional[str] = None,
     is_unknown: bool = False,
+    merge_authority: bool = True,
 ) -> str:
-    header = "## Claude audit\n\n"
+    posture = "merge-authority lane" if merge_authority else "informational only"
+    header = f"## Claude audit ({posture})\n\n"
     header += f"Head SHA: `{head_sha}`\n"
     if is_stale:
         body = (
@@ -793,6 +796,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             head_sha_start,
             is_stale=True,
             stale_end_sha=exc.actual_sha,
+            merge_authority=config.merge_authority,
         )
         result = ClaudeAuditResult(
             repo=repo,
@@ -876,15 +880,30 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     is_stale = head_sha_start != head_sha_end
 
     if is_stale:
-        comment_body = format_comment(parsed, head_sha_start, is_stale=True, stale_end_sha=head_sha_end)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            is_stale=True,
+            stale_end_sha=head_sha_end,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = "STALE"
         trailer = STALE_TRAILER
     elif parsed.verdict == "UNKNOWN":
-        comment_body = format_comment(parsed, head_sha_start, is_unknown=True)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            is_unknown=True,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
     else:
-        comment_body = format_comment(parsed, head_sha_start)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = parsed.verdict
         trailer = BLOCKED_TRAILER if parsed.verdict == "BLOCKED" else DONE_TRAILER
 
@@ -936,6 +955,13 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_flag_default(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _resolve_github_token(read_from_stdin: bool) -> Optional[str]:
@@ -1016,6 +1042,20 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         or _env_flag("CLAUDE_AUDIT_NO_SPEND_CAPTURE"),
         help="do not append this audit run to reviewer-spend.json",
     )
+    posture_default = _env_flag_default("CLAUDE_AUDIT_MERGE_AUTHORITY", True)
+    ap.add_argument(
+        "--merge-authority",
+        dest="merge_authority",
+        action="store_true",
+        default=posture_default,
+        help="Render audit comments as merge-authority lane comments.",
+    )
+    ap.add_argument(
+        "--informational",
+        dest="merge_authority",
+        action="store_false",
+        help="Render audit comments as informational-only calibration comments.",
+    )
     return ap.parse_args(argv)
 
 
@@ -1070,6 +1110,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             allow_claude_owned=args.allow_claude_owned,
             prompt_lenses=code_mower_prompts.split_lenses(args.prompt_lenses),
             prompt_dir=args.prompt_dir,
+            merge_authority=args.merge_authority,
         )
         result = audit_pr(config, args.repo, args.pr)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
