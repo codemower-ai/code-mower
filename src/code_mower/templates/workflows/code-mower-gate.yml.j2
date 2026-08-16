@@ -93,10 +93,20 @@ jobs:
               if isinstance(page, list):
                   comments.extend(item for item in page if isinstance(item, dict))
 
-          def has_current_trailer(label):
+          def trusted_authors(lane):
+              raw = str(lane.get("bot_authors") or "")
+              return {item.strip() for item in raw.split(",") if item.strip()}
+
+          def has_current_trailer(lane, label):
+              authors = trusted_authors(lane)
+              if not authors:
+                  return False
               trailer_suffix = ": " + label + " -->"
               head_marker = "Head SHA: `" + head_sha + "`"
               for comment in reversed(comments):
+                  author = str(((comment.get("user") or {}).get("login")) or "")
+                  if author not in authors:
+                      continue
                   body = str(comment.get("body") or "")
                   if head_marker in body and trailer_suffix in body:
                       return True
@@ -106,7 +116,7 @@ jobs:
               str(lane.get("display_name") or lane.get("id") or lane.get("blocked"))
               for lane in lanes
               if str(lane.get("blocked") or "") in labels
-              and has_current_trailer(str(lane.get("blocked") or ""))
+              and has_current_trailer(lane, str(lane.get("blocked") or ""))
           ]
           builder_labels = [
               str(lane.get("builder_label") or "")
@@ -131,7 +141,7 @@ jobs:
                   str(lane.get("display_name") or lane.get("id") or lane.get("done"))
                   for lane in required
                   if str(lane.get("done") or "") not in labels
-                  or not has_current_trailer(str(lane.get("done") or ""))
+                  or not has_current_trailer(lane, str(lane.get("done") or ""))
               ]
               if not required:
                   if excluded_builder:

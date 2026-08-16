@@ -918,7 +918,7 @@ exit 1
         *,
         lanes: list[dict[str, str]],
         labels: set[str],
-        comments: list[str] | None = None,
+        comments: list[dict[str, object]] | None = None,
         head_sha: str = "a" * 40,
         pr_head_sha: str | None = None,
     ) -> dict[str, str]:
@@ -935,7 +935,7 @@ exit 1
             json.dump([{"name": label} for label in sorted(labels)], handle)
             labels_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
-            json.dump([[{"body": body} for body in comments or []]], handle)
+            json.dump([comments or []], handle)
             comments_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             json.dump({"head": {"sha": pr_head_sha or head_sha}}, handle)
@@ -986,6 +986,7 @@ exit 1
                     "done": "codex-audit-done",
                     "blocked": "codex-audit-blocked",
                     "builder_label": "builder:codex",
+                    "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
                 }
             ],
             labels={"builder:codex"},
@@ -1006,6 +1007,7 @@ exit 1
                     "done": "codex-audit-done",
                     "blocked": "codex-audit-blocked",
                     "builder_label": "builder:codex",
+                    "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
                 },
                 {
                     "id": "claude",
@@ -1013,12 +1015,16 @@ exit 1
                     "done": "claude-audit-done",
                     "blocked": "claude-audit-blocked",
                     "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
                 },
             ],
             labels={"builder:codex", "claude-audit-done"},
             comments=[
-                "Head SHA: `" + ("a" * 40) + "`\n"
-                "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
             ],
         )
 
@@ -1034,12 +1040,16 @@ exit 1
                     "done": "claude-audit-done",
                     "blocked": "claude-audit-blocked",
                     "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
                 }
             ],
             labels={"claude-audit-done"},
             comments=[
-                "Head SHA: `" + ("b" * 40) + "`\n"
-                "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+                {
+                    "body": "Head SHA: `" + ("b" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
             ],
         )
 
@@ -1055,12 +1065,16 @@ exit 1
                     "done": "claude-audit-done",
                     "blocked": "claude-audit-blocked",
                     "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
                 }
             ],
             labels={"claude-audit-done"},
             comments=[
-                "Head SHA: `" + ("a" * 40) + "`\n"
-                "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
             ],
             pr_head_sha="b" * 40,
         )
@@ -1070,6 +1084,31 @@ exit 1
             result["gate_description"],
             "workflow head_sha does not match PR head",
         )
+
+    def test_gate_decision_ignores_untrusted_trailer_comment(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "drive-by-commenter"},
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration

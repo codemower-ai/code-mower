@@ -233,7 +233,9 @@ matching `builder:<lane>` author label, publishes the `code-mower/gate` commit
 status, and calls GitHub's `enablePullRequestAutoMerge` when the status is
 green. A `*-done` or `*-blocked` label counts only when the matching terminal
 audit comment carries the same head SHA, so stale labels cannot win races
-against cleanup.
+against cleanup. The matching terminal comment must also come from the lane's
+configured bot authors, matching the trailer labeler's fail-closed author
+filter.
 Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
 call in the repository gate workflow.
 
