@@ -28,6 +28,38 @@ code-mower next-steps --profile recommended
 `doctor --github` reads repository metadata and reports setup risks. It should
 not create labels, comments, workflows, or provider reviews.
 
+## Owner Surface Templates
+
+`init --easy` emits two owner-surface templates:
+`.github/workflows/needs-owner-notify.yml` comments on issues or PRs labeled
+with `owner_surface.needs_owner_label`, and
+`.github/workflows/weekly-status.yml` refreshes a pinned status issue from
+`tools/status_report.py`.
+
+Configure the owner surface in `code-mower.yml` before enabling the weekly
+schedule:
+
+```yaml
+owner_surface:
+  owner_login: YOUR_GITHUB_LOGIN
+  needs_owner_label: needs-owner
+  gate_override_label: "gate:override"
+  status_issue: "123"
+  weekly_cron: "0 14 * * 1"
+  ready_label: "tier:R"
+```
+
+Create and pin the status issue with GitHub CLI:
+
+```bash
+gh issue create --title "Code Mower status" --label code-mower --body "Weekly Code Mower status will appear here."
+gh issue pin 123
+```
+
+The generated digest reads GitHub metadata only: labels, titles, PR state,
+assignees, timestamps, and optional local Code Mower spend/value files. It does
+not read source, diffs, transcripts, or issue bodies.
+
 ## Recommended Public Repo Hardening
 
 For the public Code Mower source repo, and for any repository that wants to run
