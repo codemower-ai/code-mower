@@ -66,12 +66,22 @@ class LaneConfig:
             flags=re.IGNORECASE,
         )
 
+    def default_comment_authors(self) -> frozenset[str]:
+        return _author_csv_set(",".join(self.default_authors))
+
+    def configured_comment_authors(self) -> frozenset[str]:
+        if not self.authors_env_var:
+            return frozenset()
+        return _author_csv_set(os.environ.get(self.authors_env_var) or "")
+
     def comment_authors(self) -> frozenset[str]:
-        if self.authors_env_var:
-            raw_authors = os.environ.get(self.authors_env_var) or ",".join(self.default_authors)
-        else:
-            raw_authors = ",".join(self.default_authors)
-        return frozenset(author.strip().lower() for author in raw_authors.split(",") if author.strip())
+        return self.default_comment_authors() | self.configured_comment_authors()
+
+    def is_default_comment_author(self, login: str) -> bool:
+        return login.strip().lower() in self.default_comment_authors()
+
+    def is_configured_comment_author(self, login: str) -> bool:
+        return login.strip().lower() in self.configured_comment_authors()
 
     def github_tokens_from_env(self) -> tuple[GitHubToken, ...]:
         tokens = []
@@ -83,6 +93,14 @@ class LaneConfig:
             tokens.append(GitHubToken(name, value))
             seen.add(value)
         return tuple(tokens)
+
+
+def _author_csv_set(raw_authors: str) -> frozenset[str]:
+    return frozenset(
+        author.strip().lower()
+        for author in raw_authors.split(",")
+        if author.strip()
+    )
 
 
 class GitHubRequestError(RuntimeError):

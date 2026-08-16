@@ -103,6 +103,7 @@ truth. They are additive and CodeMower.com must continue accepting beta.40
 uploads that omit them. They must not include plan text, issue body text,
 source code, raw diffs, prompts, transcripts, stdout/stderr, auth output, or
 secrets.
+
 Plan-context audit prompts only read manifest-listed documents/previews that
 resolve inside the repository root. Default manifests are read from the trusted
 base ref rather than mutable working-tree files; explicit manifest paths are
@@ -135,6 +136,14 @@ latency/cost/token numbers under `metrics`, PR/SHA/lane identifiers under
 `dimensions`, and model/tool identity under `tool`. CodeMower.com should accept
 uploads without these fields from beta.40 clients and treat missing spend rows
 as unknown, not zero measured spend.
+
+`reviewer_run` events may include per-lane audit comment attribution in
+`dimensions.audit_comment_lane_id`, `dimensions.audit_comment_identity_source`,
+and `dimensions.audit_comment_trailer_prefix`. When present,
+`audit_comment_identity_source=trailer` means the hidden audit-state trailer
+was the authoritative lane signal for that result. CodeMower.com must continue
+to treat beta.40 uploads that only include `dimensions.lane_id` as valid
+metadata-only reviewer evidence.
 
 Each event may also include a `tool` object using schema
 `code_mower.toolProvenance.v1`. This object is the benchmark-grade provenance

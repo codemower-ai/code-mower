@@ -88,6 +88,11 @@ def classify_audit_comment(body: str, config: LaneConfig) -> Optional[str]:
     return None
 
 
+def has_authoritative_trailer(body: str, config: LaneConfig) -> bool:
+    """Return whether the body carries this lane's explicit audit-state trailer."""
+    return bool(config.trailer_pattern().search(body))
+
+
 def _has_label_fallback(body: str, label: str) -> bool:
     escaped = re.escape(label)
     return bool(
@@ -123,6 +128,17 @@ def resolve_label_decision(
         return None, f"ignored comment author: {author}"
 
     body = comment.get("body") or ""
+    if (
+        config.is_configured_comment_author(author)
+        and not config.is_default_comment_author(author)
+        and not has_authoritative_trailer(body, config)
+    ):
+        return (
+            None,
+            f"configured author {author} comment is missing matching "
+            f"{config.trailer_prefix} trailer",
+        )
+
     status = classify_audit_comment(body, config)
     if status is None:
         return None, f"comment is not a final {config.display_name} audit result"
