@@ -1212,7 +1212,7 @@ exit 1
             local_cli_audit = output_dir.joinpath(
                 ".github/workflows/local-cli-audit.yml"
             ).read_text(encoding="utf-8")
-            self.assertIn("pull_request:\n    types: [opened, synchronize, labeled]", local_cli_audit)
+            self.assertIn("pull_request_target:\n    types: [opened, synchronize, labeled]", local_cli_audit)
             self.assertIn("runs-on: [self-hosted, macOS, code-mower-audit]", local_cli_audit)
             self.assertIn("path: code-mower-support", local_cli_audit)
             self.assertIn("path: pr-head", local_cli_audit)

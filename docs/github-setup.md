@@ -213,8 +213,9 @@ code.
 when the selected profile includes supported local CLI audit lanes such as Codex
 or Claude. The workflow runs on `[self-hosted, macOS, code-mower-audit]` for
 same-repository pull requests on `opened`, `synchronize`, and relevant `labeled`
-events. It checks out trusted support scripts from the default branch, checks
-out the PR head separately as audit context, and runs the repo-local
+events. It runs from the trusted base-branch workflow with
+`pull_request_target`, checks out trusted support scripts from the default
+branch, checks out the PR head separately as audit context, and runs the repo-local
 `tools/run_codex_audit_pr.sh` or `tools/run_claude_audit_pr.sh` wrapper for
 each present `needs-*-audit` label.
 
