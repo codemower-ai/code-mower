@@ -9,6 +9,21 @@ repositories:
     default_branch: main
     local_path_env: EXAMPLE_REPO_PATH
 
+merge_authority_excludes_author: true
+builder_identity:
+  labels:
+    builder:codex: codex
+    builder:claude: claude
+    builder:grok-bot: grok-bot
+  authors:
+    chatgpt-codex-connector[bot]: codex
+    claude[bot]: claude
+    grok-bot[bot]: grok-bot
+  trailers:
+    CODE_MOWER_BUILDER:codex: codex
+    CODE_MOWER_BUILDER:claude: claude
+    CODE_MOWER_BUILDER:grok-bot: grok-bot
+
 lanes:
   codex:
     type: audit

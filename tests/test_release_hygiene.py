@@ -921,6 +921,7 @@ exit 1
         comments: list[dict[str, object]] | None = None,
         head_sha: str = "a" * 40,
         pr_head_sha: str | None = None,
+        author_exclusion: dict[str, object] | None = None,
     ) -> dict[str, str]:
         template = (
             ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
@@ -948,6 +949,9 @@ exit 1
                     os.environ,
                     {
                         "CODE_MOWER_GATE_LANES_JSON": json.dumps(lanes),
+                        "CODE_MOWER_AUTHOR_EXCLUSION_JSON": json.dumps(
+                            author_exclusion or {"enabled": False}
+                        ),
                         "CODE_MOWER_OWNER_LABEL": "needs-owner",
                         "HEAD_SHA": head_sha,
                     },
@@ -985,11 +989,17 @@ exit 1
                     "display_name": "Codex",
                     "done": "codex-audit-done",
                     "blocked": "codex-audit-blocked",
+                    "author_lane": "codex",
                     "builder_label": "builder:codex",
                     "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
                 }
             ],
             labels={"builder:codex"},
+            author_exclusion={
+                "enabled": True,
+                "labels": {"builder:codex": "codex"},
+                "authors": {},
+            },
         )
 
         self.assertEqual(result["gate_state"], "failure")
@@ -1006,6 +1016,7 @@ exit 1
                     "display_name": "Codex",
                     "done": "codex-audit-done",
                     "blocked": "codex-audit-blocked",
+                    "author_lane": "codex",
                     "builder_label": "builder:codex",
                     "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
                 },
@@ -1014,11 +1025,17 @@ exit 1
                     "display_name": "Claude",
                     "done": "claude-audit-done",
                     "blocked": "claude-audit-blocked",
+                    "author_lane": "claude",
                     "builder_label": "builder:claude",
                     "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
                 },
             ],
             labels={"builder:codex", "claude-audit-done"},
+            author_exclusion={
+                "enabled": True,
+                "labels": {"builder:codex": "codex"},
+                "authors": {},
+            },
             comments=[
                 {
                     "body": "Head SHA: `" + ("a" * 40) + "`\n"

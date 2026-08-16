@@ -23,6 +23,8 @@ env:
   CODE_MOWER_GATE_CONTEXT: code-mower/gate
   CODE_MOWER_GATE_ENABLE_AUTO_MERGE: "true"
   CODE_MOWER_OWNER_LABEL: __OWNER_LABEL__
+  CODE_MOWER_AUTHOR_EXCLUSION_JSON: >-
+    __AUTHOR_EXCLUSION_JSON__
   CODE_MOWER_GATE_LANES_JSON: >-
     __GATE_LANES_JSON__
 
@@ -65,6 +67,7 @@ jobs:
 
           try:
               lanes = json.loads(os.environ.get("CODE_MOWER_GATE_LANES_JSON", "[]"))
+              exclusion = json.loads(os.environ.get("CODE_MOWER_AUTHOR_EXCLUSION_JSON", '{"enabled":false}'))
               with open(sys.argv[1], encoding="utf-8") as labels_handle:
                   labels_payload = json.load(labels_handle)
               with open(sys.argv[2], encoding="utf-8") as comments_handle:
@@ -88,10 +91,15 @@ jobs:
           }
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
           owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
+          pr_author = str(((pr_payload.get("user") or {}).get("login") or ""))
           comments = []
           for page in comments_payload:
               if isinstance(page, list):
                   comments.extend(item for item in page if isinstance(item, dict))
+
+          def mapping(section):
+              value = exclusion.get(section) if isinstance(exclusion, dict) else {}
+              return value if isinstance(value, dict) else {}
 
           def trusted_authors(lane):
               raw = str(lane.get("bot_authors") or "")
@@ -112,30 +120,36 @@ jobs:
                       return True
               return False
 
+          builder_matches = []
+          if isinstance(exclusion, dict) and exclusion.get("enabled"):
+              label_map = mapping("labels")
+              for label in labels:
+                  if label in label_map:
+                      builder_matches.append(str(label_map[label]))
+              author_map = {str(k).lower(): str(v) for k, v in mapping("authors").items()}
+              if pr_author.lower() in author_map:
+                  builder_matches.append(author_map[pr_author.lower()])
+          builder_matches = list(dict.fromkeys(builder_matches))
+
           blocked = [
               str(lane.get("display_name") or lane.get("id") or lane.get("blocked"))
               for lane in lanes
               if str(lane.get("blocked") or "") in labels
               and has_current_trailer(lane, str(lane.get("blocked") or ""))
           ]
-          builder_labels = [
-              str(lane.get("builder_label") or "")
-              for lane in lanes
-              if str(lane.get("builder_label") or "") in labels
-          ]
 
-          if len(builder_labels) > 1:
-              emit("failure", "conflicting Code Mower builder labels")
+          if len(builder_matches) > 1:
+              emit("failure", "conflicting Code Mower builder identity")
           elif blocked:
               emit("failure", "blocked audit: " + ", ".join(blocked))
           elif owner_label in labels:
               emit("pending", owner_label + ": waiting on owner")
           else:
-              excluded_builder = builder_labels[0] if builder_labels else ""
+              excluded_builder = builder_matches[0] if builder_matches else ""
               required = [
                   lane
                   for lane in lanes
-                  if str(lane.get("builder_label") or "") != excluded_builder
+                  if str(lane.get("author_lane") or lane.get("id") or "") != excluded_builder
               ]
               missing = [
                   str(lane.get("display_name") or lane.get("id") or lane.get("done"))
