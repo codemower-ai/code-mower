@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import importlib.util
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
+import textwrap
 import tomllib
 import unittest
 import urllib.error
@@ -836,6 +838,7 @@ exit 1
     def test_reviewer_workflow_templates_are_real_and_packaged(self) -> None:
         workflow_templates = (
             "audit-label-cleanup.yml.j2",
+            "code-mower-gate.yml.j2",
             "hosted-bridge.yml.j2",
             "local-cli-audit.yml.j2",
             "saas-reviewer-labeler.yml.j2",
@@ -910,6 +913,203 @@ exit 1
             self.assertEqual(providers["acp_bridge"]["review_hygiene"], {})
             self.assertEqual(providers["aider"]["review_hygiene"], {})
 
+    def _run_gate_template_decision(
+        self,
+        *,
+        lanes: list[dict[str, str]],
+        labels: set[str],
+        comments: list[dict[str, object]] | None = None,
+        head_sha: str = "a" * 40,
+        pr_head_sha: str | None = None,
+    ) -> dict[str, str]:
+        template = (
+            ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
+        ).read_text(encoding="utf-8")
+        script = template.split(
+            'python3 - "${labels_file}" "${comments_file}" "${pr_file}" <<\'PY\'\n',
+            1,
+        )[1].split("\n          PY", 1)[0]
+        script = textwrap.dedent(script)
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump([{"name": label} for label in sorted(labels)], handle)
+            labels_path = handle.name
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump([comments or []], handle)
+            comments_path = handle.name
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump({"head": {"sha": pr_head_sha or head_sha}}, handle)
+            pr_path = handle.name
+
+        stdout = StringIO()
+        try:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "CODE_MOWER_GATE_LANES_JSON": json.dumps(lanes),
+                        "CODE_MOWER_OWNER_LABEL": "needs-owner",
+                        "HEAD_SHA": head_sha,
+                    },
+                ),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["gate-decision", labels_path, comments_path, pr_path],
+                ),
+                redirect_stdout(stdout),
+            ):
+                try:
+                    exec(compile(script, "code-mower-gate.yml.j2", "exec"), {})
+                except SystemExit as exc:
+                    if exc.code not in (0, None):
+                        raise
+        finally:
+            Path(labels_path).unlink(missing_ok=True)
+            Path(comments_path).unlink(missing_ok=True)
+            Path(pr_path).unlink(missing_ok=True)
+
+        result: dict[str, str] = {}
+        for line in stdout.getvalue().splitlines():
+            key, value = line.split("=", 1)
+            result[key] = shlex.split(value)[0]
+        return result
+
+    def test_gate_decision_rejects_builder_exclusion_with_no_independent_lane(
+        self,
+    ) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "builder_label": "builder:codex",
+                    "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+                }
+            ],
+            labels={"builder:codex"},
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(
+            result["gate_description"],
+            "no independent Code Mower audit lane remains",
+        )
+
+    def test_gate_decision_allows_author_exclusion_with_peer_pass(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "builder_label": "builder:codex",
+                    "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+                },
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                },
+            ],
+            labels={"builder:codex", "claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_decision_requires_current_head_done_trailer(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("b" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
+    def test_gate_decision_rejects_dispatch_head_mismatch(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+            pr_head_sha="b" * 40,
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(
+            result["gate_description"],
+            "workflow head_sha does not match PR head",
+        )
+
+    def test_gate_decision_ignores_untrusted_trailer_comment(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "drive-by-commenter"},
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
 
@@ -959,6 +1159,7 @@ exit 1
                 ".github/workflows/audit-label-cleanup.yml",
                 ".github/workflows/claude-audit-labeler.yml",
                 ".github/workflows/claude-clear-stale.yml",
+                ".github/workflows/code-mower-gate.yml",
                 ".github/workflows/codex-audit-labeler.yml",
                 ".github/workflows/codex-clear-stale.yml",
                 ".github/workflows/gitar-audit-labeler.yml",
@@ -988,6 +1189,19 @@ exit 1
             self.assertIn("tools/code_mower clear-stale", codex_stale)
             self.assertIn('default: "codex"', codex_stale)
             self.assertIn("github.event.inputs.lane || 'codex'", codex_stale)
+
+            gate = output_dir.joinpath(
+                ".github/workflows/code-mower-gate.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("CODE_MOWER_GATE_CONTEXT: code-mower/gate", gate)
+            self.assertIn("CODE_MOWER_OWNER_LABEL: needs-owner", gate)
+            self.assertIn("codex-audit-done", gate)
+            self.assertIn("claude-audit-done", gate)
+            self.assertIn("builder:codex", gate)
+            self.assertIn("builder:claude", gate)
+            self.assertIn("enablePullRequestAutoMerge", gate)
+            self.assertIn("gh api -X POST", gate)
+            self.assertNotIn("__GATE_LANES_JSON__", gate)
 
             gitar = output_dir.joinpath(
                 ".github/workflows/gitar-audit-labeler.yml"

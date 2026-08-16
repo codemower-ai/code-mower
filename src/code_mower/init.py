@@ -126,6 +126,10 @@ PRODUCT_SUPPORT_FILES = (
     ),
 )
 
+GATE_WORKFLOW_PATH = ".github/workflows/code-mower-gate.yml"
+GATE_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-gate.yml.j2"
+DEFAULT_OWNER_LABEL = "needs-owner"
+
 
 @dataclass(frozen=True)
 class InitProfile:
@@ -298,6 +302,35 @@ def _workflow_entry_for_target(
         "trailer_prefix": _trailer_prefix_for_lane(trailer_lane),
         "authors_env": _authors_env_for_trailer_lane(trailer_lane),
         "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
+    }
+
+
+def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
+    labels = _labels_for(lane)
+    trailer_lane = _trailer_lane_name(lane_id, lane)
+    return {
+        "id": lane_id,
+        "display_name": _display_name(trailer_lane),
+        "done": str(labels["done"]),
+        "blocked": str(labels["blocked"]),
+        "builder_label": f"builder:{trailer_lane}",
+        "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
+    }
+
+
+def _gate_workflow_entry(selected_lanes: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
+    gate_lanes = [
+        _gate_lane_entry(lane_id, lane)
+        for lane_id, lane in selected_lanes.items()
+        if lane.get("merge_authority")
+    ]
+    return {
+        "path": GATE_WORKFLOW_PATH,
+        "source": "code-mower-gate-workflow-template",
+        "copy_from": GATE_WORKFLOW_TEMPLATE,
+        "package_copy_from": GATE_WORKFLOW_TEMPLATE,
+        "gate_lanes_json": json.dumps(gate_lanes, separators=(",", ":"), sort_keys=True),
+        "owner_label": DEFAULT_OWNER_LABEL,
     }
 
 
@@ -623,9 +656,11 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
         "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
+        "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
         "__LANE_ID__": str(entry.get("lane_id") or ""),
         "__NEEDS_LABEL__": str(entry.get("needs_label") or ""),
+        "__OWNER_LABEL__": str(entry.get("owner_label") or DEFAULT_OWNER_LABEL),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
         "__TRAILER_PREFIX__": str(entry.get("trailer_prefix") or ""),
         "__WORKFLOW_NAME__": str(entry.get("workflow_name") or "Code Mower labeler"),
@@ -638,6 +673,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
 def _workflow_template_needs_render(source: str) -> bool:
     return source in {
         "shared-cleanup-template",
+        "code-mower-gate-workflow-template",
         "hosted-bridge-workflow-template",
         "saas-reviewer-labeler-workflow-template",
         "trailer-comment-labeler-workflow-template",
@@ -865,6 +901,18 @@ def render_init_plan(
                 )
         smoke_tests.extend(_lane_smoke_tests(lane_id, lane, package_mode=package_mode))
         warnings.extend(_lane_warnings(lane_id, lane, package_mode=package_mode))
+
+    if merge_authority_lanes and GATE_WORKFLOW_PATH not in generated_paths:
+        workflow_targets.add(GATE_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "code-mower-gate",
+                "driver": "gate",
+                "target": GATE_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(GATE_WORKFLOW_PATH)
+        generated_files.append(_gate_workflow_entry(selected_lanes))
 
     cleanup_path = ".github/workflows/audit-label-cleanup.yml"
     if cleanup_path not in generated_paths:

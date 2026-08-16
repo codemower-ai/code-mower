@@ -224,6 +224,47 @@ The default v1.0 posture is:
 - Cursor BugBot, CodeRabbit CLI, Gemini/Antigravity, Hermes, local LLMs, Qodo,
   Greptile, Devin, and future hosted lanes require calibration before promotion.
 
+`code-mower init --easy --apply` emits `.github/workflows/code-mower-gate.yml`
+when the selected profile has merge-authority lanes. The gate is metadata-only:
+it reads PR labels and audit comments, validates the requested SHA against the
+PR's current head, treats `needs-owner` as pending, treats configured
+current-head `*-blocked` labels as failure, excludes the lane named by a
+matching `builder:<lane>` author label, publishes the `code-mower/gate` commit
+status, and calls GitHub's `enablePullRequestAutoMerge` when the status is
+green. A `*-done` or `*-blocked` label counts only when the matching terminal
+audit comment carries the same head SHA, so stale labels cannot win races
+against cleanup. The matching terminal comment must also come from the lane's
+configured bot authors, matching the trailer labeler's fail-closed author
+filter.
+Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
+call in the repository gate workflow.
+
+Branch protection should require `code-mower/gate` alongside normal CI before
+autonomous merge is trusted. Inspect the existing status-check protection first:
+
+```bash
+gh api repos/OWNER/REPO/branches/main/protection/required_status_checks
+```
+
+Then update the same endpoint with all existing required contexts plus
+`code-mower/gate`:
+
+```bash
+gh api -X PATCH repos/OWNER/REPO/branches/main/protection/required_status_checks \
+  -f strict=true \
+  -F contexts[]=EXISTING_REQUIRED_CONTEXT \
+  -F contexts[]=code-mower/gate
+```
+
+Repeat `-F contexts[]=...` for every existing required context returned by the
+inspection call.
+
+If the repository does not allow auto-merge yet, enable it explicitly:
+
+```bash
+gh api -X PATCH repos/OWNER/REPO -f allow_auto_merge=true
+```
+
 ## Stale Merge-Authority Labels
 
 Terminal merge-authority labels are head-bound. A label such as
@@ -295,6 +336,8 @@ Safe defaults:
 - Are recent Actions failures actually billing/spending-limit blocks?
 - Are recent Actions runs dominated by optional metadata/reviewer labelers?
 - Is default-branch protection inspectable?
+- Do merge-authority profiles require `code-mower/gate` in branch protection?
+- Does the repository allow auto-merge for the generated gate workflow?
 - Are private repositories being used with hosted/SaaS lanes?
 - Which provider apps or token fallbacks are likely needed?
 
