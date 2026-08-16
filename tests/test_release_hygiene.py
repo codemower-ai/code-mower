@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import importlib.util
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
+import textwrap
 import tomllib
 import unittest
 import urllib.error
@@ -910,6 +912,94 @@ exit 1
             )
             self.assertEqual(providers["acp_bridge"]["review_hygiene"], {})
             self.assertEqual(providers["aider"]["review_hygiene"], {})
+
+    def _run_gate_template_decision(
+        self,
+        *,
+        lanes: list[dict[str, str]],
+        labels: set[str],
+    ) -> dict[str, str]:
+        template = (
+            ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
+        ).read_text(encoding="utf-8")
+        script = template.split("python3 - \"${labels_file}\" <<'PY'\n", 1)[1].split(
+            "\n          PY",
+            1,
+        )[0]
+        script = textwrap.dedent(script)
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump([{"name": label} for label in sorted(labels)], handle)
+            labels_path = handle.name
+
+        stdout = StringIO()
+        try:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "CODE_MOWER_GATE_LANES_JSON": json.dumps(lanes),
+                        "CODE_MOWER_OWNER_LABEL": "needs-owner",
+                    },
+                ),
+                mock.patch.object(sys, "argv", ["gate-decision", labels_path]),
+                redirect_stdout(stdout),
+            ):
+                exec(compile(script, "code-mower-gate.yml.j2", "exec"), {})
+        finally:
+            Path(labels_path).unlink(missing_ok=True)
+
+        result: dict[str, str] = {}
+        for line in stdout.getvalue().splitlines():
+            key, value = line.split("=", 1)
+            result[key] = shlex.split(value)[0]
+        return result
+
+    def test_gate_decision_rejects_builder_exclusion_with_no_independent_lane(
+        self,
+    ) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "builder_label": "builder:codex",
+                }
+            ],
+            labels={"builder:codex"},
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(
+            result["gate_description"],
+            "no independent Code Mower audit lane remains",
+        )
+
+    def test_gate_decision_allows_author_exclusion_with_peer_pass(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "builder_label": "builder:codex",
+                },
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                },
+            ],
+            labels={"builder:codex", "claude-audit-done"},
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration

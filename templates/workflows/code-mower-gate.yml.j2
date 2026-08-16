@@ -62,7 +62,8 @@ jobs:
 
           try:
               lanes = json.loads(os.environ.get("CODE_MOWER_GATE_LANES_JSON", "[]"))
-              labels_payload = json.load(open(sys.argv[1], encoding="utf-8"))
+              with open(sys.argv[1], encoding="utf-8") as labels_handle:
+                  labels_payload = json.load(labels_handle)
           except Exception:
               emit("failure", "Code Mower gate config could not be parsed")
               raise SystemExit(0)
@@ -104,7 +105,12 @@ jobs:
                   for lane in required
                   if str(lane.get("done") or "") not in labels
               ]
-              if missing:
+              if not required:
+                  if excluded_builder:
+                      emit("failure", "no independent Code Mower audit lane remains")
+                  else:
+                      emit("failure", "no Code Mower merge-authority lanes configured")
+              elif missing:
                   emit("pending", "waiting for audit: " + ", ".join(missing))
               else:
                   emit("success", "Code Mower merge gate passed")
