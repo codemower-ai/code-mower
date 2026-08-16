@@ -205,7 +205,8 @@ class AuditConfig:
     # audit_pr() installs the default Code Mower stderr emitter.
     progress: Optional[AuditProgress] = None
     # Whether this lane is allowed to block the merge gate. Defaults to the
-    # packaged Codex lane posture; pass --informational for calibration-only use.
+    # reference provider catalog's Codex audit posture; pass --informational
+    # when replaying or calibrating a lane that is not a repository gate.
     merge_authority: bool = True
 
 

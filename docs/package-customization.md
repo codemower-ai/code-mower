@@ -439,9 +439,12 @@ tools/run_codex_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 tools/run_claude_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 ```
 
-Codex and Claude audit comments render as merge-authority lane comments by
-default. Pass `--informational`, or set `CODEX_AUDIT_MERGE_AUTHORITY=false` /
-`CLAUDE_AUDIT_MERGE_AUTHORITY=false`, for calibration-only runs.
+The reference provider catalog marks Codex and Claude audit lanes as
+merge-authority lanes, so their wrapper comments render that posture by default.
+Pass `--informational`, or set `CODEX_AUDIT_MERGE_AUTHORITY=false` /
+`CLAUDE_AUDIT_MERGE_AUTHORITY=false`, for calibration-only runs. The comment
+header is descriptive; a repository still opts into real gating through its
+configured labels, generated status workflow, and branch-protection rule.
 
 In mirror-removal mode, those shell wrappers should be thin compatibility
 shims around the standalone package:
