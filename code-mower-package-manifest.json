@@ -1105,6 +1105,11 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "templates/workflows/code-mower-gate.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "templates/workflows/audit-label-cleanup.yml.j2"
     },
     {
@@ -1136,6 +1141,11 @@
       "kind": "workflow",
       "source": "generated",
       "target": "src/code_mower/templates/workflows/hosted-bridge.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
     },
     {
       "kind": "workflow",

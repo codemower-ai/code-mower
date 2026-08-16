@@ -24,6 +24,7 @@ if __package__ and __package__.startswith("code_mower"):
         LabelDecision,
         GitHubRequestError,
         apply_label_decision,
+        author_exclusion_reason,
         fetch_pull_request,
         github_request_with_fallback,
         load_json,
@@ -38,6 +39,7 @@ else:
             LabelDecision,
             GitHubRequestError,
             apply_label_decision,
+            author_exclusion_reason,
             fetch_pull_request,
             github_request_with_fallback,
             load_json,
@@ -51,6 +53,7 @@ else:
             LabelDecision,
             GitHubRequestError,
             apply_label_decision,
+            author_exclusion_reason,
             fetch_pull_request,
             github_request_with_fallback,
             load_json,
@@ -208,6 +211,8 @@ def resolve_label_decision(
     event_type: Optional[str] = None,
     pr_number: Optional[int] = None,
     pr_labels: Optional[list[str]] = None,
+    pr_author: str = "",
+    pr_body: str = "",
     current_head_sha: Optional[str] = None,
     review_comments: Optional[list[dict[str, Any]]] = None,
     same_head_review_exists: bool = False,
@@ -218,17 +223,27 @@ def resolve_label_decision(
             event,
             adapter=adapter,
             pr_labels=pr_labels or [],
+            pr_author=pr_author,
+            pr_body=pr_body,
             current_head_sha=current_head_sha,
             review_comments=review_comments or [],
         )
     if event_type == "issue_comment":
-        return _resolve_issue_comment(event, adapter=adapter, pr_labels=pr_labels or [])
+        return _resolve_issue_comment(
+            event,
+            adapter=adapter,
+            pr_labels=pr_labels or [],
+            pr_author=pr_author,
+            pr_body=pr_body,
+        )
     if event_type == "check_run":
         return _resolve_check_run(
             event,
             adapter=adapter,
             pr_number=pr_number,
             pr_labels=pr_labels or [],
+            pr_author=pr_author,
+            pr_body=pr_body,
             current_head_sha=current_head_sha,
             same_head_review_exists=same_head_review_exists,
         )
@@ -240,6 +255,8 @@ def _resolve_pull_request_review(
     *,
     adapter: SaaSReviewerAdapter,
     pr_labels: list[str],
+    pr_author: str,
+    pr_body: str,
     current_head_sha: Optional[str],
     review_comments: list[dict[str, Any]],
 ) -> tuple[Optional[LabelDecision], str]:
@@ -261,6 +278,14 @@ def _resolve_pull_request_review(
             f"PR does not carry an opt-in {adapter.label_prefix} label; "
             f"add `{adapter.needs_label}` to opt in"
         )
+    exclusion = author_exclusion_reason(
+        lane_name=adapter.name,
+        labels=pr_labels,
+        author=pr_author,
+        text=pr_body,
+    )
+    if exclusion:
+        return None, exclusion
 
     reviewed_sha, needs_stale_check = adapter.extract_stale_head_info(event)
     if (
@@ -293,6 +318,8 @@ def _resolve_issue_comment(
     *,
     adapter: SaaSReviewerAdapter,
     pr_labels: list[str],
+    pr_author: str,
+    pr_body: str,
 ) -> tuple[Optional[LabelDecision], str]:
     if event.get("action") not in ("created", "edited"):
         return None, f"unsupported issue_comment action: {event.get('action')}"
@@ -315,6 +342,16 @@ def _resolve_issue_comment(
             f"PR does not carry an opt-in {adapter.label_prefix} label; "
             f"add `{adapter.needs_label}` to opt in"
         )
+    issue_author = pr_author or str(((issue.get("user") or {}).get("login") or ""))
+    issue_body = pr_body or str(issue.get("body") or "")
+    exclusion = author_exclusion_reason(
+        lane_name=adapter.name,
+        labels=pr_labels,
+        author=issue_author,
+        text=issue_body,
+    )
+    if exclusion:
+        return None, exclusion
 
     comment_body = comment.get("body") or ""
     status = adapter.classify_verdict(event, comment_body=comment_body)
@@ -333,6 +370,8 @@ def _resolve_check_run(
     adapter: SaaSReviewerAdapter,
     pr_number: Optional[int],
     pr_labels: list[str],
+    pr_author: str,
+    pr_body: str,
     current_head_sha: Optional[str],
     same_head_review_exists: bool,
 ) -> tuple[Optional[LabelDecision], str]:
@@ -355,6 +394,14 @@ def _resolve_check_run(
             f"PR does not carry an opt-in {adapter.label_prefix} label; "
             f"add `{adapter.needs_label}` to opt in"
         )
+    exclusion = author_exclusion_reason(
+        lane_name=adapter.name,
+        labels=pr_labels,
+        author=pr_author,
+        text=pr_body,
+    )
+    if exclusion:
+        return None, exclusion
 
     reviewed_sha = check_run.get("head_sha") or None
     if reviewed_sha and not current_head_sha:
@@ -561,20 +608,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     review_comments: list[dict[str, Any]] = []
     same_head_review_exists = False
     pr_number = _event_pr_number(event, adapter, event_type)
+    pr_author = ""
+    pr_body = ""
 
     if dry_run:
         if event_type == "pull_request_review":
             pull_request = event.get("pull_request") or {}
             pr_labels = [label.get("name", "") for label in pull_request.get("labels") or []]
+            pr_author = str(((pull_request.get("user") or {}).get("login") or ""))
+            pr_body = str(pull_request.get("body") or "")
             review_comments = event.get("_dry_run_review_comments") or []
         elif event_type == "issue_comment":
             issue = event.get("issue") or {}
             pr_labels = list(event.get("_dry_run_pr_labels") or [])
             if not pr_labels:
                 pr_labels = [label.get("name", "") for label in issue.get("labels") or []]
+            pr_author = str(((issue.get("user") or {}).get("login") or ""))
+            pr_body = str(issue.get("body") or "")
         elif event_type == "check_run":
             pr_number = int(event.get("_dry_run_pr_number") or pr_number or 0)
             pr_labels = list(event.get("_dry_run_pr_labels") or [])
+            pr_author = str(event.get("_dry_run_pr_author") or "")
+            pr_body = str(event.get("_dry_run_pr_body") or "")
             current_head_sha = event.get("_dry_run_current_head_sha")
             same_head_review_exists = bool(event.get("_dry_run_same_head_review_exists"))
     elif event_type == "check_run":
@@ -630,6 +685,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 label.get("name", "") for label in pr_current.get("labels") or []
             ]
             candidate_head = pr_current.get("head", {}).get("sha")
+            candidate_author = str(((pr_current.get("user") or {}).get("login") or ""))
+            candidate_body = str(pr_current.get("body") or "")
             if adapter.opt_in_required and not adapter.is_opted_in(candidate_labels):
                 _, reason = resolve_label_decision(
                     event,
@@ -637,6 +694,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     event_type=event_type,
                     pr_number=candidate_number,
                     pr_labels=candidate_labels,
+                    pr_author=candidate_author,
+                    pr_body=candidate_body,
                     current_head_sha=candidate_head,
                 )
                 print(f"skip: {reason}")
@@ -648,6 +707,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 event_type=event_type,
                 pr_number=candidate_number,
                 pr_labels=candidate_labels,
+                pr_author=candidate_author,
+                pr_body=candidate_body,
                 current_head_sha=candidate_head,
             )
             if decision is None:
@@ -689,6 +750,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif event_type == "pull_request_review" and pr_number:
         pr_current = fetch_pull_request(repo, pr_number, tokens=tokens)
         pr_labels = [label.get("name", "") for label in pr_current.get("labels") or []]
+        pr_author = str(((pr_current.get("user") or {}).get("login") or ""))
+        pr_body = str(pr_current.get("body") or "")
         current_head_sha = pr_current.get("head", {}).get("sha")
         if adapter.requires_review_comments:
             review = event.get("review") or {}
@@ -732,6 +795,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if "pull_request" in issue and adapter.is_review_author(author):
             pr_current = fetch_pull_request(repo, pr_number, tokens=tokens)
             pr_labels = [label.get("name", "") for label in pr_current.get("labels") or []]
+            pr_author = str(((pr_current.get("user") or {}).get("login") or ""))
+            pr_body = str(pr_current.get("body") or "")
     elif event_type == "issues" and pr_number and adapter.event_type == "issue_comment":
         if event.get("action") != "labeled":
             print(f"skip: unsupported issues action: {event.get('action')}")
@@ -749,6 +814,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
         pr_current = fetch_pull_request(repo, pr_number, tokens=tokens)
         pr_labels = [label.get("name", "") for label in pr_current.get("labels") or []]
+        pr_author = str(((pr_current.get("user") or {}).get("login") or ""))
+        pr_body = str(pr_current.get("body") or "")
         if adapter.opt_in_required and not adapter.is_opted_in(pr_labels):
             print(f"skip: PR does not carry an opt-in {adapter.label_prefix} label")
             return 0
@@ -774,6 +841,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 event_type=adapter.event_type,
                 pr_number=pr_number,
                 pr_labels=pr_labels,
+                pr_author=pr_author,
+                pr_body=pr_body,
                 current_head_sha=current_head_sha,
             )
             if decision is None:
@@ -789,6 +858,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         event_type=event_type,
         pr_number=pr_number,
         pr_labels=pr_labels,
+        pr_author=pr_author,
+        pr_body=pr_body,
         current_head_sha=current_head_sha,
         review_comments=review_comments,
         same_head_review_exists=same_head_review_exists,

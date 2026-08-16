@@ -19,7 +19,11 @@ from .github_actions_permissions import check_actions_permissions
 from .github_branch import check_branch_protection
 from .github_config import configured_repositories, selected_saas_or_hosted_lanes
 from .github_provider import check_private_repo_provider_surface
-from .github_repo import check_repo_metadata, check_repo_permissions
+from .github_repo import (
+    check_repo_auto_merge,
+    check_repo_metadata,
+    check_repo_permissions,
+)
 
 
 def check_github_setup(
@@ -70,6 +74,7 @@ def check_github_setup(
         return checks
 
     selected_saas_or_hosted = selected_saas_or_hosted_lanes(lanes)
+    has_merge_authority = any(bool(lane.get("merge_authority")) for _lane_id, lane in lanes)
     private_repos: list[str] = []
     unknown_visibility_repos: list[str] = []
     for repo in repos:
@@ -113,9 +118,16 @@ def check_github_setup(
                     slug=slug,
                     default_branch=metadata.default_branch,
                     http_timeout=http_timeout,
+                    required_status_context=(
+                        "code-mower/gate" if has_merge_authority else None
+                    ),
                 ),
             ]
         )
+        if has_merge_authority:
+            checks.append(
+                check_repo_auto_merge(slug=slug, repo_payload=metadata.payload)
+            )
 
     provider_check = check_private_repo_provider_surface(
         private_repos=private_repos,

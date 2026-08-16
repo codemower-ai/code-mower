@@ -21,6 +21,7 @@ ALLOWED_LANE_TYPES = {"audit", "review"}
 ALLOWED_DRIVERS = {"local_cli", "manual", "hosted_bridge", "saas_event", "api_model"}
 ALLOWED_EVENTS = {"issue_comment", "pull_request_review", "check_run"}
 ALLOWED_SPEND_POLICIES = {"none", "local", "included", "paid"}
+BUILDER_IDENTITY_SECTIONS = {"labels", "authors", "trailers"}
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 SAFE_WORKFLOW_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*\.ya?ml$")
 GENERATED_WORKFLOW_BY_DRIVER = {
@@ -388,6 +389,27 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
             seen_repos.add(slug)
 
     lanes = _as_mapping(config.get("lanes"), "lanes", issues)
+    if (
+        config.get("merge_authority_excludes_author") is not None
+        and not isinstance(config.get("merge_authority_excludes_author"), bool)
+    ):
+        issues.append(
+            ConfigIssue("merge_authority_excludes_author", "must be true or false")
+        )
+    builder_identity = config.get("builder_identity")
+    if builder_identity is not None:
+        identity_map = _as_mapping(builder_identity, "builder_identity", issues)
+        for section, values in identity_map.items():
+            section_path = f"builder_identity.{section}"
+            if section not in BUILDER_IDENTITY_SECTIONS:
+                issues.append(
+                    ConfigIssue(section_path, "must be labels, authors, or trailers")
+                )
+                continue
+            for key, lane_name in _as_mapping(values, section_path, issues).items():
+                _require_string(str(key), f"{section_path}.{key}", issues)
+                _require_identifier(lane_name, f"{section_path}.{key}", issues)
+
     all_labels: dict[str, str] = {}
     for lane_id, lane in lanes.items():
         path = f"lanes.{lane_id}"
