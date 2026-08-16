@@ -1090,6 +1090,11 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "templates/workflows/self-hosted-local-audit.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "templates/workflows/blind-review-artifacts-dry-run.yml.j2"
     },
     {
@@ -1126,6 +1131,11 @@
       "kind": "workflow",
       "source": "generated",
       "target": "src/code_mower/templates/workflows/local-cli-audit.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/self-hosted-local-audit.yml.j2"
     },
     {
       "kind": "workflow",

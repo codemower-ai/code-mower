@@ -54,6 +54,15 @@ WORKFLOW_TARGETS_BY_DRIVER = {
     "saas_event": (".github/workflows/{lane_stem}-labeler.yml",),
 }
 
+LOCAL_AUDIT_WORKFLOW_PATH = ".github/workflows/local-cli-audit.yml"
+LOCAL_AUDIT_WORKFLOW_SOURCE = "self-hosted-local-audit-workflow-template"
+LOCAL_AUDIT_WORKFLOW_TEMPLATE = "templates/workflows/self-hosted-local-audit.yml.j2"
+LOCAL_AUDIT_RUNNER_LABEL = "code-mower-audit"
+LOCAL_AUDIT_WRAPPERS = {
+    "claude": "tools/run_claude_audit_pr.sh",
+    "codex": "tools/run_codex_audit_pr.sh",
+}
+
 DEFAULT_APPLY_OUTPUT_DIR = ".code-mower.generated"
 APPLY_MANIFEST_FILENAME = "code-mower-init-plan.json"
 APPLY_SUMMARY_FILES = ("labels.txt", "required-secrets.txt", "smoke-tests.sh")
@@ -309,6 +318,67 @@ def _workflow_entry_for_target(
         "trailer_prefix": _trailer_prefix_for_lane(trailer_lane),
         "authors_env": _authors_env_for_trailer_lane(trailer_lane),
         "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
+    }
+
+
+def _local_audit_entries(
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, str], ...]:
+    entries: list[dict[str, str]] = []
+    for lane_id, lane in selected_lanes.items():
+        if lane.get("driver") != "local_cli":
+            continue
+        trailer_lane = _trailer_lane_name(lane_id, lane)
+        wrapper = LOCAL_AUDIT_WRAPPERS.get(trailer_lane.replace("_", "-"))
+        if wrapper is None:
+            continue
+        labels = _labels_for(lane)
+        entries.append(
+            {
+                "lane": trailer_lane,
+                "display_name": _display_name(trailer_lane),
+                "needs_label": str(labels["needs"]),
+                "token_env": _audit_token_env(lane),
+                "script": wrapper,
+            }
+        )
+    return tuple(entries)
+
+
+def _actions_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _local_audit_label_expression(entries: tuple[dict[str, str], ...], source: str) -> str:
+    label_path = "github.event.label.name" if source == "event" else "github.event.pull_request.labels.*.name"
+    if source == "event":
+        return " || ".join(
+            f"{label_path} == {_actions_string(entry['needs_label'])}" for entry in entries
+        )
+    return " || ".join(
+        "contains(join({label_path}, ','), {label})".format(
+            label_path=label_path,
+            label=_actions_string(entry["needs_label"]),
+        )
+        for entry in entries
+    )
+
+
+def _local_audit_workflow_entry(entries: tuple[dict[str, str], ...]) -> dict[str, str]:
+    token_envs = sorted({entry["token_env"] for entry in entries if entry["token_env"]})
+    token_assignments = "\n".join(
+        f"          {token_env}: ${{{{ secrets.{token_env} }}}}" for token_env in token_envs
+    )
+    return {
+        "path": LOCAL_AUDIT_WORKFLOW_PATH,
+        "source": LOCAL_AUDIT_WORKFLOW_SOURCE,
+        "copy_from": LOCAL_AUDIT_WORKFLOW_TEMPLATE,
+        "package_copy_from": LOCAL_AUDIT_WORKFLOW_TEMPLATE,
+        "local_audit_lanes_json": json.dumps(list(entries), sort_keys=True),
+        "local_audit_label_match": _local_audit_label_expression(entries, "event"),
+        "local_audit_label_contains": _local_audit_label_expression(entries, "pull_request"),
+        "local_audit_runner_label": LOCAL_AUDIT_RUNNER_LABEL,
+        "local_audit_token_env_assignments": token_assignments,
     }
 
 
@@ -717,6 +787,13 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
         "__LANE_ID__": str(entry.get("lane_id") or ""),
+        "__LOCAL_AUDIT_LABEL_CONTAINS__": str(entry.get("local_audit_label_contains") or ""),
+        "__LOCAL_AUDIT_LABEL_MATCH__": str(entry.get("local_audit_label_match") or ""),
+        "__LOCAL_AUDIT_LANES_JSON__": str(entry.get("local_audit_lanes_json") or "[]"),
+        "__LOCAL_AUDIT_RUNNER_LABEL__": str(entry.get("local_audit_runner_label") or ""),
+        "__LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__": str(
+            entry.get("local_audit_token_env_assignments") or ""
+        ),
         "__NEEDS_LABEL__": str(entry.get("needs_label") or ""),
         "__OWNER_LABEL__": str(entry.get("owner_label") or DEFAULT_OWNER_LABEL),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
@@ -733,6 +810,7 @@ def _workflow_template_needs_render(source: str) -> bool:
         "shared-cleanup-template",
         "code-mower-gate-workflow-template",
         "hosted-bridge-workflow-template",
+        "self-hosted-local-audit-workflow-template",
         "saas-reviewer-labeler-workflow-template",
         "trailer-comment-labeler-workflow-template",
     }
@@ -967,6 +1045,19 @@ def render_init_plan(
                 )
         smoke_tests.extend(_lane_smoke_tests(lane_id, lane, package_mode=package_mode))
         warnings.extend(_lane_warnings(lane_id, lane, package_mode=package_mode))
+
+    local_audit_entries = _local_audit_entries(selected_lanes)
+    if local_audit_entries and LOCAL_AUDIT_WORKFLOW_PATH not in generated_paths:
+        workflow_targets.add(LOCAL_AUDIT_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "local-cli-audits",
+                "driver": "local_cli",
+                "target": LOCAL_AUDIT_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(LOCAL_AUDIT_WORKFLOW_PATH)
+        generated_files.append(_local_audit_workflow_entry(local_audit_entries))
 
     if merge_authority_lanes and GATE_WORKFLOW_PATH not in generated_paths:
         workflow_targets.add(GATE_WORKFLOW_PATH)

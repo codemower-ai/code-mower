@@ -207,6 +207,40 @@ Gitar, Qodo, and Cursor BugBot labelers are passive: they do not trigger the
 hosted reviewer, and they skip unrelated issue comments before checking out
 code.
 
+## Self-Hosted Local CLI Audit Runner
+
+`code-mower init --easy --apply` emits `.github/workflows/local-cli-audit.yml`
+when the selected profile includes supported local CLI audit lanes such as Codex
+or Claude. The workflow runs on `[self-hosted, macOS, code-mower-audit]` for
+same-repository pull requests on `opened`, `synchronize`, and relevant `labeled`
+events. It runs from the trusted base-branch workflow with
+`pull_request_target`, checks out trusted support scripts from the default
+branch, checks out the PR head separately as audit context, and runs the repo-local
+`tools/run_codex_audit_pr.sh` or `tools/run_claude_audit_pr.sh` wrapper for
+each present `needs-*-audit` label.
+
+Runner setup recipe:
+
+1. Register a macOS self-hosted runner from repository settings, using the
+   architecture that matches the machine.
+2. Add the custom runner label `code-mower-audit` or edit the generated
+   workflow to use your chosen label.
+3. Start with `./run.sh` from the same macOS user account that owns provider
+   CLI logins. Install it as a service only after smoke tests pass.
+4. Ensure `gh`, `git`, `python3`, `codex`, and `claude` are on PATH. If they
+   live outside the default Homebrew/system paths, update
+   `CODE_MOWER_LOCAL_AUDIT_PATH` in the generated workflow.
+5. Verify local auth from that same account: `gh auth status`,
+   `codex --version`, `claude auth status`, and
+   `claude -p "Reply with exactly: ok" --output-format json`.
+6. Add optional posting-token secrets `CODEX_AUDIT_LABEL_TOKEN` and
+   `CLAUDE_AUDIT_LABEL_TOKEN`; the workflow falls back to `GITHUB_TOKEN` when
+   those secrets are absent.
+
+macOS Keychain access is user-session sensitive. If the runner later runs as a
+service or launch daemon, re-check provider CLI auth under that service account
+and unlock/configure the login keychain before trusting unattended audits.
+
 ## Branch Protection And Merge Authority
 
 Code Mower should not assume it can merge. A repository should make merge
