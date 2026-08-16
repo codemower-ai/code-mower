@@ -140,8 +140,13 @@ Use fine-grained tokens with the smallest useful permissions. A common labeler
 fallback needs:
 
 - Issues: read/write
-- Pull requests: read
+- Pull requests: write for label mutation on PR-backed issues
 - Contents: read only when a lane must fetch files through GitHub
+
+Generated labeler, hosted-requeue, clear-stale, and audit-label-cleanup
+workflows grant this permission to `GITHUB_TOKEN`; fine-grained PAT secrets are
+optional fallbacks for repositories that intentionally use separate
+credentials.
 
 Do not store provider API keys in repository docs. Use environment variables,
 GitHub secrets, or provider-specific local auth stores.
@@ -221,20 +226,24 @@ The default v1.0 posture is:
 
 `code-mower init --easy --apply` emits `.github/workflows/code-mower-gate.yml`
 when the selected profile has merge-authority lanes. The gate is metadata-only:
-it reads PR labels and configured builder identity markers, treats
-`needs-owner` as pending, treats configured `*-blocked` labels as failure,
-applies `merge_authority_excludes_author` from `code-mower.yml`, publishes the
-`code-mower/gate` commit status, and calls GitHub's
-`enablePullRequestAutoMerge` when the status is green.
+it reads PR labels, audit comments, and authenticated PR metadata; validates
+the requested SHA against the PR's current head; treats `needs-owner` as
+pending; treats configured current-head `*-blocked` labels as failure; applies
+`merge_authority_excludes_author` from `code-mower.yml`; publishes the
+`code-mower/gate` commit status; and calls GitHub's
+`enablePullRequestAutoMerge` when the status is green. A `*-done` or
+`*-blocked` label counts only when the matching terminal audit comment carries
+the same head SHA and comes from the lane's configured bot authors, so stale
+labels and forged comments cannot win races against cleanup.
 Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
 call in the repository gate workflow.
 
 The recommended three-builder pattern is:
 
-- Codex-built PRs carry `builder:codex` or a mapped Codex author/trailer, so
-  Claude audit gates them.
-- Claude-built PRs carry `builder:claude` or a mapped Claude author/trailer,
-  so Codex audit gates them.
+- Codex-built PRs carry `builder:codex` or are opened by a mapped Codex author,
+  so Claude audit gates them.
+- Claude-built PRs carry `builder:claude` or are opened by a mapped Claude
+  author, so Codex audit gates them.
 - Hosted-built PRs carry a third builder identity such as `builder:grok-bot`,
   so both Codex and Claude audit gates still apply.
 
@@ -250,11 +259,11 @@ builder_identity:
   authors:
     chatgpt-codex-connector[bot]: codex
     claude[bot]: claude
-  trailers:
-    CODE_MOWER_BUILDER:codex: codex
-    CODE_MOWER_BUILDER:claude: claude
-    CODE_MOWER_BUILDER:grok-bot: grok-bot
 ```
+
+PR-body trailer mappings remain configuration-valid for non-gating provenance
+experiments, but merge-authority author exclusion uses only labels and
+authenticated PR authors until trailer sources can be trusted.
 
 Branch protection should require `code-mower/gate` alongside normal CI before
 autonomous merge is trusted. Inspect the existing status-check protection first:

@@ -322,6 +322,7 @@ def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
         "done": str(labels["done"]),
         "blocked": str(labels["blocked"]),
         "builder_label": f"builder:{trailer_lane}",
+        "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
     }
 
 

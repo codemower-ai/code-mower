@@ -17,7 +17,7 @@ CURRENT_SHA = "a" * 40
 
 
 class BuilderIdentityTests(unittest.TestCase):
-    def test_identity_mapping_resolves_labels_authors_and_trailers(self) -> None:
+    def test_identity_mapping_resolves_labels_and_authors(self) -> None:
         mapping = {
             "enabled": True,
             "labels": {"builder:codex": "codex"},
@@ -32,7 +32,7 @@ class BuilderIdentityTests(unittest.TestCase):
             config=mapping,
         )
 
-        self.assertEqual(matches, ("codex", "claude", "grok-bot"))
+        self.assertEqual(matches, ("codex", "claude"))
         self.assertIn(
             "excluded",
             author_exclusion_reason(
@@ -43,6 +43,23 @@ class BuilderIdentityTests(unittest.TestCase):
                 config=mapping,
             ),
         )
+
+    def test_pr_body_trailer_does_not_create_builder_identity(self) -> None:
+        mapping = {
+            "enabled": True,
+            "labels": {},
+            "authors": {},
+            "trailers": {"CODE_MOWER_BUILDER:codex": "codex"},
+        }
+
+        matches = builder_identity_matches(
+            labels=[],
+            author="drive-by-user",
+            text="<!-- CODE_MOWER_BUILDER: codex -->",
+            config=mapping,
+        )
+
+        self.assertEqual(matches, ())
 
     def test_trailer_labeler_skips_author_lane_when_configured(self) -> None:
         body = "\n".join(

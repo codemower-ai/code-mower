@@ -133,7 +133,6 @@ def builder_identity_matches(
         key.lower(): value
         for key, value in _string_mapping(config.get("authors")).items()
     }
-    trailer_map = _string_mapping(config.get("trailers"))
     matches: list[str] = []
 
     for label in labels:
@@ -144,17 +143,6 @@ def builder_identity_matches(
     lane = author_map.get(author.lower())
     if lane:
         matches.append(lane)
-
-    for marker, lane in trailer_map.items():
-        marker_name, _, marker_value = marker.partition(":")
-        expected_value = marker_value.strip() or lane
-        pattern = re.compile(
-            rf"(?:<!--\s*)?{re.escape(marker_name.strip())}\s*:\s*"
-            rf"{re.escape(expected_value)}\b",
-            flags=re.IGNORECASE,
-        )
-        if pattern.search(text):
-            matches.append(lane)
 
     return tuple(dict.fromkeys(matches))
 
