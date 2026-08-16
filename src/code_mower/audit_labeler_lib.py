@@ -17,11 +17,12 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Pattern, Sequence
+from typing import Any, Dict, Mapping, Optional, Pattern, Sequence
 from urllib.parse import quote
 import re
 
 MIN_ABBREVIATED_SHA_LENGTH = 7
+AUTHOR_EXCLUSION_ENV = "CODE_MOWER_AUTHOR_EXCLUSION_JSON"
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,92 @@ class GitHubRequestError(RuntimeError):
 
 class IssueCommentPaginationLimitExceeded(RuntimeError):
     """Raised when issue comments exceed the configured safe pagination cap."""
+
+
+def _string_mapping(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(key): str(item)
+        for key, item in value.items()
+        if str(key) and str(item)
+    }
+
+
+def load_author_exclusion_config(raw: str | None = None) -> Mapping[str, Any]:
+    text = raw if raw is not None else os.environ.get(AUTHOR_EXCLUSION_ENV, "")
+    if not text:
+        return {"enabled": False}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {"enabled": False}
+    return parsed if isinstance(parsed, Mapping) else {"enabled": False}
+
+
+def builder_identity_matches(
+    *,
+    labels: Sequence[str],
+    author: str,
+    text: str,
+    config: Mapping[str, Any],
+) -> tuple[str, ...]:
+    if not bool(config.get("enabled")):
+        return ()
+    label_map = _string_mapping(config.get("labels"))
+    author_map = {
+        key.lower(): value
+        for key, value in _string_mapping(config.get("authors")).items()
+    }
+    trailer_map = _string_mapping(config.get("trailers"))
+    matches: list[str] = []
+
+    for label in labels:
+        lane = label_map.get(str(label))
+        if lane:
+            matches.append(lane)
+
+    lane = author_map.get(author.lower())
+    if lane:
+        matches.append(lane)
+
+    for marker, lane in trailer_map.items():
+        marker_name, _, marker_value = marker.partition(":")
+        expected_value = marker_value.strip() or lane
+        pattern = re.compile(
+            rf"(?:<!--\s*)?{re.escape(marker_name.strip())}\s*:\s*"
+            rf"{re.escape(expected_value)}\b",
+            flags=re.IGNORECASE,
+        )
+        if pattern.search(text):
+            matches.append(lane)
+
+    return tuple(dict.fromkeys(matches))
+
+
+def author_exclusion_reason(
+    *,
+    lane_name: str,
+    labels: Sequence[str],
+    author: str,
+    text: str,
+    config: Mapping[str, Any] | None = None,
+) -> str | None:
+    exclusion_config = config or load_author_exclusion_config()
+    matches = builder_identity_matches(
+        labels=labels,
+        author=author,
+        text=text,
+        config=exclusion_config,
+    )
+    if not matches:
+        return None
+    if len(set(matches)) > 1:
+        return "conflicting builder identity; skipping author-excluded label update"
+    builder_lane = matches[0]
+    if builder_lane == lane_name:
+        return f"{lane_name} lane excluded for builder-authored PR"
+    return None
 
 
 def load_json(path: Path) -> Dict[str, Any]:

@@ -221,12 +221,40 @@ The default v1.0 posture is:
 
 `code-mower init --easy --apply` emits `.github/workflows/code-mower-gate.yml`
 when the selected profile has merge-authority lanes. The gate is metadata-only:
-it reads PR labels, treats `needs-owner` as pending, treats configured
-`*-blocked` labels as failure, excludes the lane named by a matching
-`builder:<lane>` author label, publishes the `code-mower/gate` commit status,
-and calls GitHub's `enablePullRequestAutoMerge` when the status is green.
+it reads PR labels and configured builder identity markers, treats
+`needs-owner` as pending, treats configured `*-blocked` labels as failure,
+applies `merge_authority_excludes_author` from `code-mower.yml`, publishes the
+`code-mower/gate` commit status, and calls GitHub's
+`enablePullRequestAutoMerge` when the status is green.
 Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
 call in the repository gate workflow.
+
+The recommended three-builder pattern is:
+
+- Codex-built PRs carry `builder:codex` or a mapped Codex author/trailer, so
+  Claude audit gates them.
+- Claude-built PRs carry `builder:claude` or a mapped Claude author/trailer,
+  so Codex audit gates them.
+- Hosted-built PRs carry a third builder identity such as `builder:grok-bot`,
+  so both Codex and Claude audit gates still apply.
+
+Configure those identities in `code-mower.yml`:
+
+```yaml
+merge_authority_excludes_author: true
+builder_identity:
+  labels:
+    builder:codex: codex
+    builder:claude: claude
+    builder:grok-bot: grok-bot
+  authors:
+    chatgpt-codex-connector[bot]: codex
+    claude[bot]: claude
+  trailers:
+    CODE_MOWER_BUILDER:codex: codex
+    CODE_MOWER_BUILDER:claude: claude
+    CODE_MOWER_BUILDER:grok-bot: grok-bot
+```
 
 Branch protection should require `code-mower/gate` alongside normal CI before
 autonomous merge is trusted. Inspect the existing status-check protection first:

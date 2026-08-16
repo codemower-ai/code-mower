@@ -169,6 +169,10 @@ def _trailer_lane_name(lane_id: str, lane: Mapping[str, Any]) -> str:
     return str(lane.get("trailer_lane") or lane.get("lane_config") or lane_id)
 
 
+def _author_lane_name(lane_id: str, lane: Mapping[str, Any]) -> str:
+    return str(lane.get("author_lane") or _trailer_lane_name(lane_id, lane))
+
+
 def _lane_module_name(lane_id: str) -> str:
     return lane_id.replace("-", "_")
 
@@ -261,6 +265,8 @@ def _workflow_entry_for_target(
     lane_id: str,
     lane: Mapping[str, Any],
     target: str,
+    *,
+    author_exclusion_json: str = '{"enabled":false}',
 ) -> dict[str, str]:
     driver = str(lane.get("driver"))
     labels = _labels_for(lane)
@@ -274,6 +280,7 @@ def _workflow_entry_for_target(
         "done_label": str(labels["done"]),
         "blocked_label": str(labels["blocked"]),
         "label_token_env": _audit_token_env(lane),
+        "author_exclusion_json": author_exclusion_json,
     }
     if target.endswith("-bridge.yml"):
         return {
@@ -310,6 +317,7 @@ def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
     trailer_lane = _trailer_lane_name(lane_id, lane)
     return {
         "id": lane_id,
+        "author_lane": _author_lane_name(lane_id, lane),
         "display_name": _display_name(trailer_lane),
         "done": str(labels["done"]),
         "blocked": str(labels["blocked"]),
@@ -317,7 +325,53 @@ def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
-def _gate_workflow_entry(selected_lanes: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
+def _identity_section(raw_identity: Mapping[str, Any], section: str) -> dict[str, str]:
+    raw_section = raw_identity.get(section)
+    if not isinstance(raw_section, Mapping):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in raw_section.items()
+        if str(key) and str(value)
+    }
+
+
+def _author_exclusion_payload(
+    config: Mapping[str, Any],
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    raw_identity = config.get("builder_identity")
+    identity = raw_identity if isinstance(raw_identity, Mapping) else {}
+    payload = {
+        "enabled": bool(config.get("merge_authority_excludes_author", True)),
+        "labels": _identity_section(identity, "labels"),
+        "authors": _identity_section(identity, "authors"),
+        "trailers": _identity_section(identity, "trailers"),
+    }
+    for lane_id, lane in selected_lanes.items():
+        if lane.get("merge_authority"):
+            author_lane = _author_lane_name(lane_id, lane)
+            payload["labels"].setdefault(f"builder:{author_lane}", author_lane)
+    return payload
+
+
+def _author_exclusion_json(
+    config: Mapping[str, Any],
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+) -> str:
+    return json.dumps(
+        _author_exclusion_payload(config, selected_lanes),
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _gate_workflow_entry(
+    config: Mapping[str, Any],
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+    *,
+    author_exclusion_json: str,
+) -> dict[str, str]:
     gate_lanes = [
         _gate_lane_entry(lane_id, lane)
         for lane_id, lane in selected_lanes.items()
@@ -330,6 +384,7 @@ def _gate_workflow_entry(selected_lanes: Mapping[str, Mapping[str, Any]]) -> dic
         "package_copy_from": GATE_WORKFLOW_TEMPLATE,
         "gate_lanes_json": json.dumps(gate_lanes, separators=(",", ":"), sort_keys=True),
         "owner_label": DEFAULT_OWNER_LABEL,
+        "author_exclusion_json": author_exclusion_json,
     }
 
 
@@ -650,6 +705,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
     rendered = text.replace("{% raw %}", "").replace("{% endraw %}", "")
     replacements = {
         "__ADAPTER__": str(entry.get("adapter") or ""),
+        "__AUTHOR_EXCLUSION_JSON__": str(
+            entry.get("author_exclusion_json") or '{"enabled":false}'
+        ),
         "__AUTHORS_ENV__": str(entry.get("authors_env") or ""),
         "__BLOCKED_LABEL__": str(entry.get("blocked_label") or ""),
         "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
@@ -860,6 +918,7 @@ def render_init_plan(
     warnings: list[str] = []
     merge_authority_lanes: list[str] = []
     informational_lanes: list[str] = []
+    author_exclusion_json = _author_exclusion_json(config, selected_lanes)
 
     for lane_id, lane in selected_lanes.items():
         lane_labels = _labels_for(lane)
@@ -883,7 +942,14 @@ def render_init_plan(
             )
             if target not in generated_paths:
                 generated_paths.add(target)
-                generated_files.append(_workflow_entry_for_target(lane_id, lane, target))
+                generated_files.append(
+                    _workflow_entry_for_target(
+                        lane_id,
+                        lane,
+                        target,
+                        author_exclusion_json=author_exclusion_json,
+                    )
+                )
         if lane.get("driver") in {"local_cli", "hosted_bridge", "api_model"}:
             trailer_lane = _trailer_lane_name(lane_id, lane)
             trailer_module = _lane_module_name(trailer_lane)
@@ -911,7 +977,13 @@ def render_init_plan(
             }
         )
         generated_paths.add(GATE_WORKFLOW_PATH)
-        generated_files.append(_gate_workflow_entry(selected_lanes))
+        generated_files.append(
+            _gate_workflow_entry(
+                config,
+                selected_lanes,
+                author_exclusion_json=author_exclusion_json,
+            )
+        )
 
     cleanup_path = ".github/workflows/audit-label-cleanup.yml"
     if cleanup_path not in generated_paths:
@@ -987,6 +1059,7 @@ def render_init_plan(
         "required_secrets": sorted(required_secrets),
         "merge_authority_lanes": merge_authority_lanes,
         "informational_lanes": informational_lanes,
+        "merge_authority_excludes_author": json.loads(author_exclusion_json)["enabled"],
         "smoke_tests": smoke_tests,
         "warnings": warnings,
     }

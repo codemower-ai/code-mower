@@ -24,6 +24,8 @@ env:
   CODE_MOWER_GATE_CONTEXT: code-mower/gate
   CODE_MOWER_GATE_ENABLE_AUTO_MERGE: "true"
   CODE_MOWER_OWNER_LABEL: __OWNER_LABEL__
+  CODE_MOWER_AUTHOR_EXCLUSION_JSON: >-
+    __AUTHOR_EXCLUSION_JSON__
   CODE_MOWER_GATE_LANES_JSON: >-
     __GATE_LANES_JSON__
 
@@ -46,12 +48,15 @@ jobs:
           fi
 
           labels_file="$(mktemp)"
+          pr_file="$(mktemp)"
           gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" > "${labels_file}"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}"
 
           eval "$(
-            python3 - "${labels_file}" <<'PY'
+            python3 - "${labels_file}" "${pr_file}" <<'PY'
           import json
           import os
+          import re
           import shlex
           import sys
 
@@ -62,7 +67,9 @@ jobs:
 
           try:
               lanes = json.loads(os.environ.get("CODE_MOWER_GATE_LANES_JSON", "[]"))
+              exclusion = json.loads(os.environ.get("CODE_MOWER_AUTHOR_EXCLUSION_JSON", '{"enabled":false}'))
               labels_payload = json.load(open(sys.argv[1], encoding="utf-8"))
+              pr_payload = json.load(open(sys.argv[2], encoding="utf-8"))
           except Exception:
               emit("failure", "Code Mower gate config could not be parsed")
               raise SystemExit(0)
@@ -74,30 +81,48 @@ jobs:
           }
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
           owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
+          pr_author = str(((pr_payload.get("user") or {}).get("login") or ""))
+          pr_body = str(pr_payload.get("body") or "")
+
+          def mapping(section):
+              value = exclusion.get(section) if isinstance(exclusion, dict) else {}
+              return value if isinstance(value, dict) else {}
+
+          builder_matches = []
+          if isinstance(exclusion, dict) and exclusion.get("enabled"):
+              label_map = mapping("labels")
+              for label in labels:
+                  if label in label_map:
+                      builder_matches.append(str(label_map[label]))
+              author_map = {str(k).lower(): str(v) for k, v in mapping("authors").items()}
+              if pr_author.lower() in author_map:
+                  builder_matches.append(author_map[pr_author.lower()])
+              for marker, lane in mapping("trailers").items():
+                  marker_name, _, marker_value = str(marker).partition(":")
+                  expected_value = marker_value.strip() or str(lane)
+                  pattern = re.compile(r"(?:<!--\s*)?" + re.escape(marker_name.strip()) + r"\s*:\s*" + re.escape(expected_value) + r"\b", re.I)
+                  if pattern.search(pr_body):
+                      builder_matches.append(str(lane))
+          builder_matches = list(dict.fromkeys(builder_matches))
 
           blocked = [
               str(lane.get("display_name") or lane.get("id") or lane.get("blocked"))
               for lane in lanes
               if str(lane.get("blocked") or "") in labels
           ]
-          builder_labels = [
-              str(lane.get("builder_label") or "")
-              for lane in lanes
-              if str(lane.get("builder_label") or "") in labels
-          ]
 
-          if len(builder_labels) > 1:
-              emit("failure", "conflicting Code Mower builder labels")
+          if len(builder_matches) > 1:
+              emit("failure", "conflicting Code Mower builder identity")
           elif blocked:
               emit("failure", "blocked audit: " + ", ".join(blocked))
           elif owner_label in labels:
               emit("pending", owner_label + ": waiting on owner")
           else:
-              excluded_builder = builder_labels[0] if builder_labels else ""
+              excluded_builder = builder_matches[0] if builder_matches else ""
               required = [
                   lane
                   for lane in lanes
-                  if str(lane.get("builder_label") or "") != excluded_builder
+                  if str(lane.get("author_lane") or "") != excluded_builder
               ]
               missing = [
                   str(lane.get("display_name") or lane.get("id") or lane.get("done"))
