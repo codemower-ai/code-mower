@@ -1,4 +1,5 @@
 {
+  "schema": "code_mower.reviewerSpend.v1",
   "profiles": {
     "codex-audit": {
       "cost_usd": 0.0,
@@ -24,5 +25,6 @@
       "cost_usd": 0.0,
       "notes": "Local model run; track hardware or opportunity cost separately if useful."
     }
-  }
+  },
+  "runs": []
 }

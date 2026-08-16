@@ -83,6 +83,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 if __package__ in {None, "", "tools"}:
     try:
+        from tools import reviewer_spend
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.provider_runners import (
             clip_text as _clip_text,
@@ -103,6 +104,7 @@ if __package__ in {None, "", "tools"}:
             write_audit_verdict_artifact,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
+        import reviewer_spend  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from provider_runners import (  # type: ignore
             clip_text as _clip_text,
@@ -123,6 +125,7 @@ if __package__ in {None, "", "tools"}:
             write_audit_verdict_artifact,
         )
 else:  # pragma: no cover - exercised after package extraction.
+    from . import reviewer_spend
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .provider_runners import (
         clip_text as _clip_text,
@@ -1536,6 +1539,24 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "vars are also cleared as defense-in-depth."
         ),
     )
+    ap.add_argument(
+        "--spend-path",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "CODE_MOWER_REVIEWER_SPEND_PATH",
+                str(reviewer_spend.DEFAULT_SPEND_PATH),
+            )
+        ),
+        help="append metadata-only spend/latency for this audit run to this JSON file",
+    )
+    ap.add_argument(
+        "--no-spend-capture",
+        action="store_true",
+        default=_env_flag("CODE_MOWER_NO_SPEND_CAPTURE")
+        or _env_flag("CODEX_AUDIT_NO_SPEND_CAPTURE"),
+        help="do not append this audit run to reviewer-spend.json",
+    )
     return ap.parse_args(argv)
 
 
@@ -1666,6 +1687,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         disable_venv=disable_venv,
     )
 
+    audit_started = time.monotonic()
     try:
         result = audit_pr(config, args.repo, args.pr)
     except urllib.error.HTTPError as exc:
@@ -1690,6 +1712,25 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.dry_run:
         print(result.comment_body)
+    if not args.no_spend_capture:
+        try:
+            usage = reviewer_spend.extract_usage_metrics(result.codex_stderr)
+            spend_run = reviewer_spend.build_spend_run(
+                lane="codex-audit",
+                repo=result.repo,
+                pr_number=result.pr_number,
+                head_sha=result.head_sha_start,
+                model=reviewer_spend.model_from_env(
+                    ("CODE_MOWER_CODEX_MODEL", "CODEX_MODEL", "OPENAI_MODEL")
+                ),
+                wall_seconds=time.monotonic() - audit_started,
+                verdict=result.verdict,
+                usage=usage,
+            )
+            reviewer_spend.append_spend_run(args.spend_path, spend_run)
+            print(f"spend metadata appended to {args.spend_path}", file=sys.stderr)
+        except (OSError, ValueError) as exc:
+            print(f"warning: failed to append spend metadata: {exc}", file=sys.stderr)
 
     # Codex round 7 of #234 — P2: both STALE and UNKNOWN result in a
     # `needs-codex-audit` requeue comment. Automation using the exit

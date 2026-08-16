@@ -549,6 +549,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/reviewer_spend.py",
+      "target": "src/code_mower/reviewer_spend.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/provider_registry.py",
       "target": "src/code_mower/provider_registry.py"
     },

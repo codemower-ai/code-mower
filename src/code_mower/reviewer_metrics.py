@@ -15,12 +15,22 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(module_dir.parent))
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower import code_mower_telemetry
+        from code_mower import reviewer_spend
     else:
         from tools import code_mower_telemetry
+        try:
+            from tools import reviewer_spend
+        except ImportError:  # pragma: no cover - legacy direct script fallback.
+            import reviewer_spend  # type: ignore
 elif __package__ == "tools":
     from tools import code_mower_telemetry
+    try:
+        from tools import reviewer_spend
+    except ImportError:  # pragma: no cover - legacy direct script fallback.
+        import reviewer_spend  # type: ignore
 else:  # pragma: no cover - exercised after package extraction.
     from . import code_mower_telemetry
+    from . import reviewer_spend
 
 
 POSITIVE_DISPOSITIONS = {"true_positive", "useful"}
@@ -63,19 +73,44 @@ def _float(value: Any) -> float:
     return 0.0
 
 
-def _spend_by_profile(spend_payload: Mapping[str, Any] | None) -> dict[str, float]:
+def _spend_stats_by_profile(spend_payload: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
     if not spend_payload:
         return {}
-    raw_profiles = spend_payload.get("profiles", spend_payload)
+    if "profiles" in spend_payload:
+        raw_profiles = spend_payload["profiles"]
+    else:
+        raw_profiles = {
+            key: value
+            for key, value in spend_payload.items()
+            if key not in {"schema", "runs"}
+        }
     if not isinstance(raw_profiles, Mapping):
         raise ValueError("spend file must be a mapping or contain a profiles mapping")
-    spend: dict[str, float] = {}
+    spend: dict[str, dict[str, Any]] = {}
     for profile_id, value in raw_profiles.items():
         if isinstance(value, Mapping):
             cost = _float(value.get("cost_usd", value.get("usd")))
         else:
             cost = _float(value)
-        spend[str(profile_id)] = cost
+        spend[str(profile_id)] = {
+            "cost_usd": cost,
+            "runs": 0,
+            "wall_seconds_total": 0.0,
+        }
+    for run in reviewer_spend.spend_runs(spend_payload):
+        profile = str(run.get("lane") or "").strip()
+        if not profile:
+            continue
+        stats = spend.setdefault(
+            profile,
+            {"cost_usd": 0.0, "runs": 0, "wall_seconds_total": 0.0},
+        )
+        stats["runs"] += 1
+        stats["cost_usd"] += _float(run.get("cost_usd"))
+        stats["wall_seconds_total"] += _float(run.get("wall_seconds"))
+        for key in sorted(reviewer_spend.TOKEN_KEYS):
+            if key in run:
+                stats[key] = int(stats.get(key, 0) or 0) + int(run.get(key) or 0)
     return spend
 
 
@@ -91,7 +126,7 @@ def build_reviewer_metrics(
     spend: Mapping[str, Any] | None = None,
     event_summaries: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    spend_map = _spend_by_profile(spend)
+    spend_map = _spend_stats_by_profile(spend)
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     durations: dict[str, float] = defaultdict(float)
     runs: dict[str, int] = defaultdict(int)
@@ -208,15 +243,20 @@ def build_reviewer_metrics(
         known = true_positive + false_positive + useful + noise
         useful_total = true_positive + useful
         negative_total = false_positive + noise
-        cost_usd = spend_map.get(profile_id, 0.0)
-        run_count = runs.get(profile_id, 0)
-        duration_seconds = durations.get(profile_id, 0.0)
+        spend_stats = spend_map.get(profile_id, {})
+        cost_usd = _float(spend_stats.get("cost_usd"))
+        spend_run_count = int(spend_stats.get("runs") or 0)
+        run_count = runs.get(profile_id, 0) or spend_run_count
+        spend_duration = _float(spend_stats.get("wall_seconds_total"))
+        duration_seconds = spend_duration or durations.get(profile_id, 0.0)
         known_blocked_catches = known_blocked_caught_runs.get(profile_id, 0)
         profiles_out[profile_id] = {
             "profile_id": profile_id,
             "model": models.get(profile_id, ""),
             "runs": run_count,
+            "spend_run_count": spend_run_count,
             "duration_seconds_total": round(duration_seconds, 3),
+            "spend_wall_seconds_total": round(spend_duration, 3),
             "cost_usd": round(cost_usd, 4),
             "dispositions": dict(sorted(profile_counts.items())),
             "known_disposition_count": known,
@@ -273,6 +313,9 @@ def build_reviewer_metrics(
             ),
             "event_log": lane_events.get(profile_id, {}),
         }
+        for key in sorted(reviewer_spend.TOKEN_KEYS):
+            if key in spend_stats:
+                profiles_out[profile_id][key] = int(spend_stats.get(key) or 0)
 
     return {
         "mode": "reviewer-metrics",
