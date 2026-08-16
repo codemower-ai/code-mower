@@ -918,19 +918,28 @@ exit 1
         *,
         lanes: list[dict[str, str]],
         labels: set[str],
+        comments: list[str] | None = None,
+        head_sha: str = "a" * 40,
+        pr_head_sha: str | None = None,
     ) -> dict[str, str]:
         template = (
             ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
         ).read_text(encoding="utf-8")
-        script = template.split("python3 - \"${labels_file}\" <<'PY'\n", 1)[1].split(
-            "\n          PY",
+        script = template.split(
+            'python3 - "${labels_file}" "${comments_file}" "${pr_file}" <<\'PY\'\n',
             1,
-        )[0]
+        )[1].split("\n          PY", 1)[0]
         script = textwrap.dedent(script)
 
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             json.dump([{"name": label} for label in sorted(labels)], handle)
             labels_path = handle.name
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump([[{"body": body} for body in comments or []]], handle)
+            comments_path = handle.name
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump({"head": {"sha": pr_head_sha or head_sha}}, handle)
+            pr_path = handle.name
 
         stdout = StringIO()
         try:
@@ -940,14 +949,25 @@ exit 1
                     {
                         "CODE_MOWER_GATE_LANES_JSON": json.dumps(lanes),
                         "CODE_MOWER_OWNER_LABEL": "needs-owner",
+                        "HEAD_SHA": head_sha,
                     },
                 ),
-                mock.patch.object(sys, "argv", ["gate-decision", labels_path]),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["gate-decision", labels_path, comments_path, pr_path],
+                ),
                 redirect_stdout(stdout),
             ):
-                exec(compile(script, "code-mower-gate.yml.j2", "exec"), {})
+                try:
+                    exec(compile(script, "code-mower-gate.yml.j2", "exec"), {})
+                except SystemExit as exc:
+                    if exc.code not in (0, None):
+                        raise
         finally:
             Path(labels_path).unlink(missing_ok=True)
+            Path(comments_path).unlink(missing_ok=True)
+            Path(pr_path).unlink(missing_ok=True)
 
         result: dict[str, str] = {}
         for line in stdout.getvalue().splitlines():
@@ -996,10 +1016,60 @@ exit 1
                 },
             ],
             labels={"builder:codex", "claude-audit-done"},
+            comments=[
+                "Head SHA: `" + ("a" * 40) + "`\n"
+                "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+            ],
         )
 
         self.assertEqual(result["gate_state"], "success")
         self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_decision_requires_current_head_done_trailer(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                "Head SHA: `" + ("b" * 40) + "`\n"
+                "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
+    def test_gate_decision_rejects_dispatch_head_mismatch(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                "Head SHA: `" + ("a" * 40) + "`\n"
+                "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+            ],
+            pr_head_sha="b" * 40,
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(
+            result["gate_description"],
+            "workflow head_sha does not match PR head",
+        )
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration

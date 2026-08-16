@@ -14,7 +14,6 @@ on:
         required: true
 
 permissions:
-  contents: write
   issues: read
   pull-requests: write
   statuses: write
@@ -46,10 +45,14 @@ jobs:
           fi
 
           labels_file="$(mktemp)"
+          comments_file="$(mktemp)"
+          pr_file="$(mktemp)"
           gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" > "${labels_file}"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" > "${comments_file}"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}"
 
           eval "$(
-            python3 - "${labels_file}" <<'PY'
+            python3 - "${labels_file}" "${comments_file}" "${pr_file}" <<'PY'
           import json
           import os
           import shlex
@@ -64,8 +67,18 @@ jobs:
               lanes = json.loads(os.environ.get("CODE_MOWER_GATE_LANES_JSON", "[]"))
               with open(sys.argv[1], encoding="utf-8") as labels_handle:
                   labels_payload = json.load(labels_handle)
+              with open(sys.argv[2], encoding="utf-8") as comments_handle:
+                  comments_payload = json.load(comments_handle)
+              with open(sys.argv[3], encoding="utf-8") as pr_handle:
+                  pr_payload = json.load(pr_handle)
           except Exception:
               emit("failure", "Code Mower gate config could not be parsed")
+              raise SystemExit(0)
+
+          head_sha = os.environ.get("HEAD_SHA", "")
+          actual_head_sha = str(((pr_payload.get("head") or {}).get("sha")) or "")
+          if not head_sha or head_sha != actual_head_sha:
+              emit("failure", "workflow head_sha does not match PR head")
               raise SystemExit(0)
 
           labels = {
@@ -75,11 +88,25 @@ jobs:
           }
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
           owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
+          comments = []
+          for page in comments_payload:
+              if isinstance(page, list):
+                  comments.extend(item for item in page if isinstance(item, dict))
+
+          def has_current_trailer(label):
+              trailer_suffix = ": " + label + " -->"
+              head_marker = "Head SHA: `" + head_sha + "`"
+              for comment in reversed(comments):
+                  body = str(comment.get("body") or "")
+                  if head_marker in body and trailer_suffix in body:
+                      return True
+              return False
 
           blocked = [
               str(lane.get("display_name") or lane.get("id") or lane.get("blocked"))
               for lane in lanes
               if str(lane.get("blocked") or "") in labels
+              and has_current_trailer(str(lane.get("blocked") or ""))
           ]
           builder_labels = [
               str(lane.get("builder_label") or "")
@@ -104,6 +131,7 @@ jobs:
                   str(lane.get("display_name") or lane.get("id") or lane.get("done"))
                   for lane in required
                   if str(lane.get("done") or "") not in labels
+                  or not has_current_trailer(str(lane.get("done") or ""))
               ]
               if not required:
                   if excluded_builder:

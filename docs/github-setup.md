@@ -226,10 +226,14 @@ The default v1.0 posture is:
 
 `code-mower init --easy --apply` emits `.github/workflows/code-mower-gate.yml`
 when the selected profile has merge-authority lanes. The gate is metadata-only:
-it reads PR labels, treats `needs-owner` as pending, treats configured
-`*-blocked` labels as failure, excludes the lane named by a matching
-`builder:<lane>` author label, publishes the `code-mower/gate` commit status,
-and calls GitHub's `enablePullRequestAutoMerge` when the status is green.
+it reads PR labels and audit comments, validates the requested SHA against the
+PR's current head, treats `needs-owner` as pending, treats configured
+current-head `*-blocked` labels as failure, excludes the lane named by a
+matching `builder:<lane>` author label, publishes the `code-mower/gate` commit
+status, and calls GitHub's `enablePullRequestAutoMerge` when the status is
+green. A `*-done` or `*-blocked` label counts only when the matching terminal
+audit comment carries the same head SHA, so stale labels cannot win races
+against cleanup.
 Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
 call in the repository gate workflow.
 
