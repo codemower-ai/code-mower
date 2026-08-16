@@ -140,8 +140,13 @@ Use fine-grained tokens with the smallest useful permissions. A common labeler
 fallback needs:
 
 - Issues: read/write
-- Pull requests: read
+- Pull requests: write for label mutation on PR-backed issues
 - Contents: read only when a lane must fetch files through GitHub
+
+Generated labeler, hosted-requeue, clear-stale, and audit-label-cleanup
+workflows grant this permission to `GITHUB_TOKEN`; fine-grained PAT secrets are
+optional fallbacks for repositories that intentionally use separate
+credentials.
 
 Do not store provider API keys in repository docs. Use environment variables,
 GitHub secrets, or provider-specific local auth stores.
