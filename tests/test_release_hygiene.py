@@ -831,6 +831,7 @@ exit 1
         self.assertIn("cancel-in-progress: true", template)
         self.assertIn("No PR/head SHA available for stale-label cleanup", template)
         self.assertIn("{% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}", template)
+        self.assertIn("pull-requests: write", template)
 
     def test_reviewer_workflow_templates_are_real_and_packaged(self) -> None:
         workflow_templates = (
@@ -870,19 +871,26 @@ exit 1
         self.assertIn("tools/code_mower trailer-comment-labeler", trailer)
         self.assertIn("__TRAILER_LANE__", trailer)
         self.assertIn("__BOT_AUTHORS__", trailer)
+        self.assertIn("pull-requests: write", trailer)
         self.assertNotIn("workflow_dispatch:", trailer)
         self.assertNotIn("github.event.inputs.lane", trailer)
         hosted = (
             ROOT / "templates/workflows/hosted-bridge.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("gh issue edit", hosted)
+        self.assertIn("pull-requests: write", hosted)
         saas = (
             ROOT / "templates/workflows/saas-reviewer-labeler.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("tools/code_mower saas-reviewer-labeler", saas)
         self.assertIn("__BOT_AUTHORS__", saas)
+        self.assertIn("pull-requests: write", saas)
         self.assertNotIn("workflow_dispatch:", saas)
         self.assertNotIn("github.event.inputs.adapter", saas)
+        cleanup = (
+            ROOT / "templates/workflows/audit-label-cleanup.yml.j2"
+        ).read_text(encoding="utf-8")
+        self.assertIn("pull-requests: write", cleanup)
 
     def test_provider_catalog_wires_merge_authority_stale_hygiene(self) -> None:
         for relative_path in (
