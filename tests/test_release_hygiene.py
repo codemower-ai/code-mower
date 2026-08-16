@@ -835,6 +835,7 @@ exit 1
     def test_reviewer_workflow_templates_are_real_and_packaged(self) -> None:
         workflow_templates = (
             "audit-label-cleanup.yml.j2",
+            "code-mower-gate.yml.j2",
             "hosted-bridge.yml.j2",
             "local-cli-audit.yml.j2",
             "saas-reviewer-labeler.yml.j2",
@@ -951,6 +952,7 @@ exit 1
                 ".github/workflows/audit-label-cleanup.yml",
                 ".github/workflows/claude-audit-labeler.yml",
                 ".github/workflows/claude-clear-stale.yml",
+                ".github/workflows/code-mower-gate.yml",
                 ".github/workflows/codex-audit-labeler.yml",
                 ".github/workflows/codex-clear-stale.yml",
                 ".github/workflows/gitar-audit-labeler.yml",
@@ -980,6 +982,19 @@ exit 1
             self.assertIn("tools/code_mower clear-stale", codex_stale)
             self.assertIn('default: "codex"', codex_stale)
             self.assertIn("github.event.inputs.lane || 'codex'", codex_stale)
+
+            gate = output_dir.joinpath(
+                ".github/workflows/code-mower-gate.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("CODE_MOWER_GATE_CONTEXT: code-mower/gate", gate)
+            self.assertIn("CODE_MOWER_OWNER_LABEL: needs-owner", gate)
+            self.assertIn("codex-audit-done", gate)
+            self.assertIn("claude-audit-done", gate)
+            self.assertIn("builder:codex", gate)
+            self.assertIn("builder:claude", gate)
+            self.assertIn("enablePullRequestAutoMerge", gate)
+            self.assertIn("gh api -X POST", gate)
+            self.assertNotIn("__GATE_LANES_JSON__", gate)
 
             gitar = output_dir.joinpath(
                 ".github/workflows/gitar-audit-labeler.yml"

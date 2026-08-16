@@ -60,6 +60,7 @@ ACTIONS_COST_SAMPLE_DEFAULT = 100
 ACTIONS_COST_SAMPLE_MAX = 100
 ACTIONS_METADATA_WORKFLOW_MARKERS = (
     "audit-labeler",
+    "code-mower-gate",
     "labeler",
     "clear-stale",
     "audit-label-cleanup",
