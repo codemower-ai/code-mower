@@ -156,6 +156,46 @@ def test_codex_audit_main_appends_spend_metadata() -> None:
         assert payload["runs"][0]["total_tokens"] == 123
 
 
+def test_claude_audit_main_appends_spend_metadata() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        spend = root / "reviewer-spend.json"
+        result = claude_audit_pr.ClaudeAuditResult(
+            repo="owner/repo",
+            pr_number=42,
+            head_sha_start="abc123",
+            head_sha_end="abc123",
+            verdict="PASS",
+            trailer="<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+            comment_body="ok",
+            claude_stdout="",
+            claude_stderr=json.dumps({"usage": {"total_tokens": 456}}),
+        )
+
+        with (
+            mock.patch.object(claude_audit_pr, "_resolve_github_token", return_value="token"),
+            mock.patch.object(claude_audit_pr, "audit_pr", return_value=result),
+        ):
+            code = claude_audit_pr.main(
+                [
+                    "--repo",
+                    "owner/repo",
+                    "--pr",
+                    "42",
+                    "--repo-paths",
+                    f"owner/repo:{root}",
+                    "--spend-path",
+                    str(spend),
+                    "--dry-run",
+                ]
+            )
+
+        payload = reviewer_spend.load_spend_file(spend)
+        assert code == 0
+        assert payload["runs"][0]["lane"] == "claude-audit"
+        assert payload["runs"][0]["total_tokens"] == 456
+
+
 def test_claude_audit_main_respects_no_spend_capture() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
