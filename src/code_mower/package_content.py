@@ -300,7 +300,7 @@ permissions:
   actions: write
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: {% raw %}code-mower-clear-stale-${{ github.event.pull_request.number || github.event.inputs.pr || github.run_id }}{% endraw %}
