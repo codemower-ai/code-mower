@@ -92,6 +92,12 @@ intervention count. They exist so CodeMower.com can connect
 without receiving source, issue bodies, diffs, prompts, transcripts,
 stdout/stderr, auth output, or secrets.
 
+Auto-inferred `builder_run` events may add metadata-only dimensions such as
+`auto_inferred`, `builder_inference_confidence`, `builder_inference_signals`,
+and `pr_author`. The inference signals are marker names only, for example a bot
+author, branch prefix, or detected hosted-agent URL marker; the PR body text and
+footer text used for inference are not stored.
+
 Each event may also include a `tool` object using schema
 `code_mower.toolProvenance.v1`. This object is the benchmark-grade provenance
 surface for AI tool/version/model data:
