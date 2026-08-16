@@ -103,6 +103,7 @@ def build_reviewer_metrics(
     infra_error_runs: dict[str, int] = defaultdict(int)
     audit_input_insufficient_runs: dict[str, int] = defaultdict(int)
     run_statuses: dict[str, Counter[str]] = defaultdict(Counter)
+    automated_vs_manual: dict[str, Counter[str]] = defaultdict(Counter)
     review_classes: dict[str, set[str]] = defaultdict(set)
     context_packs: dict[str, set[str]] = defaultdict(set)
     useful_review_classes: dict[str, set[str]] = defaultdict(set)
@@ -146,6 +147,10 @@ def build_reviewer_metrics(
                 if isinstance(raw_run_statuses, Mapping):
                     for status, count in raw_run_statuses.items():
                         run_statuses[profile][str(status)] += int(count or 0)
+                raw_automated_vs_manual = stats.get("automated_vs_manual", {})
+                if isinstance(raw_automated_vs_manual, Mapping):
+                    for outcome, count in raw_automated_vs_manual.items():
+                        automated_vs_manual[profile][str(outcome)] += int(count or 0)
                 for review_class in stats.get("review_classes", []) or []:
                     text = str(review_class).strip()
                     if text:
@@ -231,6 +236,20 @@ def build_reviewer_metrics(
                 profile_id, 0
             ),
             "run_statuses": dict(sorted(run_statuses.get(profile_id, {}).items())),
+            "automated_vs_manual": dict(
+                sorted(automated_vs_manual.get(profile_id, {}).items())
+            ),
+            "auto_manual_match_runs": automated_vs_manual.get(profile_id, Counter())[
+                "match"
+            ],
+            "auto_manual_missed_blocker_runs": automated_vs_manual.get(
+                profile_id,
+                Counter(),
+            )["missed_blocker"],
+            "auto_manual_false_blocker_runs": automated_vs_manual.get(
+                profile_id,
+                Counter(),
+            )["false_blocker"],
             "review_classes": sorted(review_classes.get(profile_id, set())),
             "context_packs": sorted(context_packs.get(profile_id, set())),
             "useful_review_classes": sorted(
@@ -298,6 +317,14 @@ def _recommendations(profiles: Mapping[str, Mapping[str, Any]]) -> list[str]:
         if stats.get("known_blocked_missed_runs", 0):
             recommendations.append(
                 f"{profile_id}: missed known-blocked calibration runs; keep informational until catch rate improves."
+            )
+        if stats.get("auto_manual_missed_blocker_runs", 0):
+            recommendations.append(
+                f"{profile_id}: automated result missed manual blocker evidence; add plan-context coverage before promotion."
+            )
+        if stats.get("auto_manual_false_blocker_runs", 0):
+            recommendations.append(
+                f"{profile_id}: automated result blocked manual-pass evidence; keep human review in the loop."
             )
         if stats.get("audit_input_insufficient_runs", 0):
             recommendations.append(

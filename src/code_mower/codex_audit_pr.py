@@ -83,6 +83,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 if __package__ in {None, "", "tools"}:
     try:
+        from tools import plan_context as code_mower_plan_context
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.provider_runners import (
             clip_text as _clip_text,
@@ -103,6 +104,7 @@ if __package__ in {None, "", "tools"}:
             write_audit_verdict_artifact,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
+        import plan_context as code_mower_plan_context  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from provider_runners import (  # type: ignore
             clip_text as _clip_text,
@@ -123,6 +125,7 @@ if __package__ in {None, "", "tools"}:
             write_audit_verdict_artifact,
         )
 else:  # pragma: no cover - exercised after package extraction.
+    from . import plan_context as code_mower_plan_context
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .provider_runners import (
         clip_text as _clip_text,
@@ -204,6 +207,11 @@ class AuditConfig:
     # Shared progress emitter for long-running audit phases. When unset,
     # audit_pr() installs the default Code Mower stderr emitter.
     progress: Optional[AuditProgress] = None
+    include_plan_context: bool = True
+    project_context_manifest: Optional[Path] = None
+    external_context_manifest: Optional[Path] = None
+    max_plan_context_bytes: int = code_mower_plan_context.DEFAULT_MAX_TOTAL_BYTES
+    max_plan_context_file_bytes: int = code_mower_plan_context.DEFAULT_MAX_FILE_BYTES
 
 
 @dataclass
@@ -1001,6 +1009,7 @@ def _structured_verdict_prompt(review_text: str) -> str:
 def run_codex_review(
     config: AuditConfig,
     worktree_path: Path,
+    review_prompt: str = "",
 ) -> Tuple[str, str]:
     """Run the built-in Codex review from the PR worktree.
 
@@ -1030,6 +1039,8 @@ def run_codex_review(
         "--output-last-message",
         str(review_path),
     )
+    if review_prompt.strip():
+        command.append("-")
     try:
         result = run_subprocess_with_progress(
             command,
@@ -1037,6 +1048,7 @@ def run_codex_review(
             phase="codex-review",
             run=subprocess.run,
             cwd=str(worktree_path),
+            input=review_prompt if review_prompt.strip() else None,
             capture_output=True,
             text=True,
             timeout=config.timeout,
@@ -1332,8 +1344,28 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         raise
 
     try:
+        rendered_plan_context = None
+        if config.include_plan_context:
+            rendered_plan_context = code_mower_plan_context.render_plan_context(
+                repo_root=local_repo,
+                project_context_manifest=config.project_context_manifest,
+                external_context_manifest=config.external_context_manifest,
+                max_total_bytes=config.max_plan_context_bytes,
+                max_file_bytes=config.max_plan_context_file_bytes,
+            )
+            print(
+                "  plan context: "
+                f"{rendered_plan_context.included_documents} section(s), "
+                f"{rendered_plan_context.included_bytes} bytes",
+                file=sys.stderr,
+                flush=True,
+            )
         t0 = time.time()
-        review_text, review_stderr = run_codex_review(config, worktree_path)
+        review_text, review_stderr = run_codex_review(
+            config,
+            worktree_path,
+            rendered_plan_context.text if rendered_plan_context is not None else "",
+        )
         dt = time.time() - t0
         print(f"  codex review completed in {dt:.0f}s", file=sys.stderr, flush=True)
     finally:
@@ -1524,6 +1556,61 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         ),
     )
     ap.add_argument(
+        "--project-context-manifest",
+        type=Path,
+        default=(
+            os.environ.get("CODE_MOWER_PROJECT_CONTEXT_MANIFEST")
+            or os.environ.get("CODEX_AUDIT_PROJECT_CONTEXT_MANIFEST")
+            or None
+        ),
+        help=(
+            "Project-context manifest to inject into the plan-conformance "
+            "audit lens. Defaults to .code-mower/project-context/"
+            "project-context-manifest.json when present."
+        ),
+    )
+    ap.add_argument(
+        "--external-context-manifest",
+        type=Path,
+        default=(
+            os.environ.get("CODE_MOWER_EXTERNAL_CONTEXT_MANIFEST")
+            or os.environ.get("CODEX_AUDIT_EXTERNAL_CONTEXT_MANIFEST")
+            or None
+        ),
+        help=(
+            "External-context manifest whose preview files may be injected "
+            "into the plan-conformance audit lens."
+        ),
+    )
+    ap.add_argument(
+        "--max-plan-context-bytes",
+        type=int,
+        default=int(
+            os.environ.get(
+                "CODE_MOWER_MAX_PLAN_CONTEXT_BYTES",
+                code_mower_plan_context.DEFAULT_MAX_TOTAL_BYTES,
+            )
+        ),
+        help="Maximum total bytes of trusted plan context to include.",
+    )
+    ap.add_argument(
+        "--max-plan-context-file-bytes",
+        type=int,
+        default=int(
+            os.environ.get(
+                "CODE_MOWER_MAX_PLAN_CONTEXT_FILE_BYTES",
+                code_mower_plan_context.DEFAULT_MAX_FILE_BYTES,
+            )
+        ),
+        help="Maximum bytes from any single trusted plan-context file.",
+    )
+    ap.add_argument(
+        "--no-plan-context",
+        action="store_true",
+        default=_env_flag("CODE_MOWER_NO_PLAN_CONTEXT"),
+        help="Disable automatic plan-conformance context injection.",
+    )
+    ap.add_argument(
         "--read-token-from-stdin",
         action="store_true",
         help=(
@@ -1664,6 +1751,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         ignore_user_config=not args.use_user_config,
         venv_path=explicit_venv,
         disable_venv=disable_venv,
+        include_plan_context=not args.no_plan_context,
+        project_context_manifest=args.project_context_manifest,
+        external_context_manifest=args.external_context_manifest,
+        max_plan_context_bytes=args.max_plan_context_bytes,
+        max_plan_context_file_bytes=args.max_plan_context_file_bytes,
     )
 
     try:
@@ -1684,7 +1776,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

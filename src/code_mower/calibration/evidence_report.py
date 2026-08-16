@@ -5,12 +5,14 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from .evidence import USEFUL_EVIDENCE_DISPOSITIONS
+from .evidence import NEGATIVE_EVIDENCE_DISPOSITIONS
 from .run_results import normalize_disposition
 from .run_status import (
     RUN_STATUS_AUDIT_INPUT_INSUFFICIENT,
     RUN_STATUS_BLOCKED,
     RUN_STATUS_INFRA_ERROR,
     RUN_STATUS_PASS,
+    RUN_STATUS_UNKNOWN,
     normalize_run_status_category,
 )
 from .truth import truth_for_item
@@ -24,6 +26,42 @@ def _reviewer_id(record: Mapping[str, Any]) -> str:
         or "unknown-reviewer"
     ).strip()
     return reviewer or "unknown-reviewer"
+
+
+def _manual_outcome(
+    *,
+    known_clean: bool,
+    known_blocked: bool,
+    evidence_disposition: str,
+    expected_blocker_caught: bool,
+) -> str:
+    if known_clean or evidence_disposition in NEGATIVE_EVIDENCE_DISPOSITIONS:
+        return RUN_STATUS_PASS
+    if (
+        known_blocked
+        or evidence_disposition in USEFUL_EVIDENCE_DISPOSITIONS
+        or expected_blocker_caught
+    ):
+        return RUN_STATUS_BLOCKED
+    return RUN_STATUS_UNKNOWN
+
+
+def _automated_vs_manual(
+    *,
+    status_category: str,
+    manual_outcome: str,
+    known_blocked: bool,
+    expected_blocker_caught: bool,
+) -> str:
+    if status_category not in {RUN_STATUS_PASS, RUN_STATUS_BLOCKED}:
+        return "unknown"
+    if known_blocked and not expected_blocker_caught:
+        return "missed_blocker"
+    if manual_outcome == RUN_STATUS_BLOCKED:
+        return "match" if status_category == RUN_STATUS_BLOCKED else "missed_blocker"
+    if manual_outcome == RUN_STATUS_PASS:
+        return "match" if status_category == RUN_STATUS_PASS else "false_blocker"
+    return "unknown"
 
 
 def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
@@ -40,6 +78,7 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
     profile_audit_input_insufficient_run_keys: dict[str, set[tuple[Any, ...]]] = {}
     profile_infra_error_run_keys: dict[str, set[tuple[Any, ...]]] = {}
     profile_run_statuses: dict[str, dict[str, int]] = {}
+    profile_automated_vs_manual: dict[str, dict[str, int]] = {}
     profile_review_classes: dict[str, set[str]] = {}
     profile_context_packs: dict[str, set[str]] = {}
     profile_useful_review_classes: dict[str, set[str]] = {}
@@ -224,8 +263,30 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
                         "disposition": evidence_disposition,
                         "inferred": run_disposition == "unknown",
                         "notes": evidence_notes,
+                        "manual_outcome": _manual_outcome(
+                            known_clean=known_clean,
+                            known_blocked=known_blocked,
+                            evidence_disposition=evidence_disposition,
+                            expected_blocker_caught=expected_blocker_caught,
+                        ),
                     }
                 )
+            manual_outcome = _manual_outcome(
+                known_clean=known_clean,
+                known_blocked=known_blocked,
+                evidence_disposition=evidence_disposition,
+                expected_blocker_caught=expected_blocker_caught,
+            )
+            automated_vs_manual = _automated_vs_manual(
+                status_category=status_category,
+                manual_outcome=manual_outcome,
+                known_blocked=known_blocked,
+                expected_blocker_caught=expected_blocker_caught,
+            )
+            profile_automated_vs_manual.setdefault(reviewer, {})
+            profile_automated_vs_manual[reviewer][automated_vs_manual] = (
+                profile_automated_vs_manual[reviewer].get(automated_vs_manual, 0) + 1
+            )
             if known_blocked:
                 profile_known_blocked_run_keys.setdefault(reviewer, set()).add(
                     reviewer_run_key
@@ -264,6 +325,8 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
                     "finding_count": finding_count,
                     "expected_finding_matches": expected_finding_matches,
                     "expected_blocker_caught": expected_blocker_caught,
+                    "manual_outcome": manual_outcome,
+                    "automated_vs_manual": automated_vs_manual,
                     "disposition": evidence_disposition,
                     "duration_seconds": run.get("duration_seconds"),
                     "parse_status": str(run.get("parse_status") or ""),
@@ -299,6 +362,9 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
                 profile_audit_input_insufficient_run_keys.get(reviewer, set())
             ),
             "run_statuses": dict(sorted(profile_run_statuses.get(reviewer, {}).items())),
+            "automated_vs_manual": dict(
+                sorted(profile_automated_vs_manual.get(reviewer, {}).items())
+            ),
             "review_classes": sorted(profile_review_classes.get(reviewer, set())),
             "context_packs": sorted(profile_context_packs.get(reviewer, set())),
             "useful_review_classes": sorted(

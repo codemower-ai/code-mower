@@ -39,6 +39,12 @@ reviewer sees the same intended diff.
 When a corpus item includes `review_class` and `context_packs`, the generated
 policy report can recommend a narrow selective trigger instead of treating the
 lane as a general merge gate.
+`codex-audit` and `claude-audit` also apply the plan-conformance lens by
+default: if `.code-mower/project-context/project-context-manifest.json` or
+`.code-mower/context/external/external-context-manifest.json` exists, the
+wrappers inject bounded project-context docs and external previews into the
+trusted prompt context and ask "does this contradict the plan of record?"
+Use `--no-plan-context` only for debugging a context-free audit.
 When a corpus item includes `truth.expectation`, value reports use that
 first-class ground truth instead of inferring truth from `source` naming
 conventions. Prefer:
@@ -66,6 +72,9 @@ Use `reviewer_run_dispositions` to adjudicate folded run-results manifests when
 the useful evidence is "this reviewer caught the known blocker" rather than a
 specific finding string. The value report counts those dispositions toward
 useful-rate and known-blocked catch/miss metrics without duplicating the run.
+It also records automated-vs-manual outcomes (`match`, `missed_blocker`,
+`false_blocker`, or `unknown`) so reports can show when a fast automated pass
+missed a manual plan-of-record blocker.
 
 The generated policy is advisory. Repository-specific merge bars still require
 explicit configuration and the usual Code Mower audit protocol.

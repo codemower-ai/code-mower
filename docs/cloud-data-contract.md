@@ -92,6 +92,18 @@ intervention count. They exist so CodeMower.com can connect
 without receiving source, issue bodies, diffs, prompts, transcripts,
 stdout/stderr, auth output, or secrets.
 
+Calibration and value-report uploads may add optional automated-vs-manual
+metadata to reviewer summaries and `reviewer_run`-shaped rows:
+`manual_outcome` (`pass`, `blocked`, or `unknown`), `automated_vs_manual`
+(`match`, `missed_blocker`, `false_blocker`, or `unknown`), and aggregate
+profile counters such as `auto_manual_match_runs`,
+`auto_manual_missed_blocker_runs`, and `auto_manual_false_blocker_runs`. These
+fields compare automated reviewer status with manual/adjudicated calibration
+truth. They are additive and CodeMower.com must continue accepting beta.40
+uploads that omit them. They must not include plan text, issue body text,
+source code, raw diffs, prompts, transcripts, stdout/stderr, auth output, or
+secrets.
+
 Each event may also include a `tool` object using schema
 `code_mower.toolProvenance.v1`. This object is the benchmark-grade provenance
 surface for AI tool/version/model data:
