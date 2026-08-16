@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import shlex
 import subprocess
 import sys
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,6 +51,21 @@ MAKE_TARGETS: tuple[tuple[str, str], ...] = (
     ("make.test", "test"),
     ("make.build", "build"),
 )
+DEFAULT_PR_SIZE_BASE_REF = "origin/main"
+DEFAULT_MAX_PR_CHANGED_LINES = 300
+DEFAULT_NEAR_IDENTICAL_FILE_LIMIT = 20
+NEAR_IDENTICAL_TEXT_EXTENSIONS = {
+    ".css",
+    ".html",
+    ".json",
+    ".md",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -195,12 +213,81 @@ def _detect_make_checks(repo_path: Path) -> list[CheckSpec]:
     ]
 
 
-def detect_checks(repo_path: Path) -> list[CheckSpec]:
+def _is_git_worktree(repo_path: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=repo_path,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return completed.returncode == 0 and completed.stdout.strip() == "true"
+
+
+def _detect_pr_size_check(
+    repo_path: Path,
+    *,
+    base_ref: str,
+    max_changed_lines: int,
+    near_identical_file_limit: int,
+) -> list[CheckSpec]:
+    if not _is_git_worktree(repo_path):
+        return []
+    return [
+        CheckSpec(
+            id="code-mower.pr-size",
+            category="lint",
+            language="generic",
+            tool="code-mower",
+            command=(
+                sys.executable,
+                "-m",
+                "code_mower.checks",
+                "pr-size-lint",
+                "--repo-path",
+                str(repo_path.resolve()),
+                "--base-ref",
+                base_ref,
+                "--max-changed-lines",
+                str(max_changed_lines),
+                "--near-identical-file-limit",
+                str(near_identical_file_limit),
+            ),
+            source="git diff",
+            reason=(
+                "Git worktree detected; Code Mower can gate oversized PRs and "
+                "near-identical file batches."
+            ),
+        )
+    ]
+
+
+def detect_checks(
+    repo_path: Path,
+    *,
+    include_pr_size_lint: bool = True,
+    pr_size_base_ref: str = DEFAULT_PR_SIZE_BASE_REF,
+    max_pr_changed_lines: int = DEFAULT_MAX_PR_CHANGED_LINES,
+    near_identical_file_limit: int = DEFAULT_NEAR_IDENTICAL_FILE_LIMIT,
+) -> list[CheckSpec]:
     repo_path = repo_path.resolve()
     checks = [
         *_detect_node_checks(repo_path),
         *_detect_python_checks(repo_path),
         *_detect_make_checks(repo_path),
+        *(
+            _detect_pr_size_check(
+                repo_path,
+                base_ref=pr_size_base_ref,
+                max_changed_lines=max_pr_changed_lines,
+                near_identical_file_limit=near_identical_file_limit,
+            )
+            if include_pr_size_lint
+            else []
+        ),
     ]
     seen: set[str] = set()
     unique: list[CheckSpec] = []
@@ -210,6 +297,128 @@ def detect_checks(repo_path: Path) -> list[CheckSpec]:
         seen.add(check.id)
         unique.append(check)
     return unique
+
+
+def lint_pr_size(
+    repo_path: Path,
+    *,
+    base_ref: str = DEFAULT_PR_SIZE_BASE_REF,
+    max_changed_lines: int = DEFAULT_MAX_PR_CHANGED_LINES,
+    near_identical_file_limit: int = DEFAULT_NEAR_IDENTICAL_FILE_LIMIT,
+) -> dict[str, Any]:
+    if max_changed_lines < 1:
+        raise ValueError("--max-changed-lines must be at least 1")
+    if near_identical_file_limit < 2:
+        raise ValueError("--near-identical-file-limit must be at least 2")
+    repo_path = repo_path.resolve()
+    diff_range = f"{base_ref}...HEAD"
+    numstat = _run_git(repo_path, ["diff", "--numstat", "--find-renames", diff_range])
+    name_only = _run_git(repo_path, ["diff", "--name-only", "--find-renames", diff_range])
+    files = [line.strip() for line in name_only.splitlines() if line.strip()]
+    changed_lines = _changed_line_count(numstat)
+    near_identical = _near_identical_file_groups(repo_path, files)
+    findings: list[dict[str, Any]] = []
+    if changed_lines > max_changed_lines:
+        findings.append(
+            {
+                "id": "changed-lines",
+                "message": (
+                    f"{changed_lines} changed lines exceeds the "
+                    f"{max_changed_lines}-line PR-size budget"
+                ),
+                "observed": changed_lines,
+                "limit": max_changed_lines,
+            }
+        )
+    for group in near_identical:
+        if group["count"] > near_identical_file_limit:
+            findings.append(
+                {
+                    "id": "near-identical-files",
+                    "message": (
+                        f"{group['count']} near-identical files exceeds the "
+                        f"{near_identical_file_limit}-file batch budget"
+                    ),
+                    "observed": group["count"],
+                    "limit": near_identical_file_limit,
+                    "files": group["files"][:10],
+                }
+            )
+    return {
+        "mode": "code-mower-pr-size-lint",
+        "repo_path": str(repo_path),
+        "base_ref": base_ref,
+        "diff_range": diff_range,
+        "changed_lines": changed_lines,
+        "changed_file_count": len(files),
+        "max_changed_lines": max_changed_lines,
+        "near_identical_file_limit": near_identical_file_limit,
+        "near_identical_groups": near_identical[:5],
+        "finding_count": len(findings),
+        "findings": findings,
+        "status": "failed" if findings else "passed",
+    }
+
+
+def _run_git(repo_path: Path, args: list[str]) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip() or completed.stdout.strip()
+        raise ValueError(f"git {' '.join(args)} failed: {stderr}")
+    return completed.stdout
+
+
+def _changed_line_count(numstat: str) -> int:
+    total = 0
+    for line in numstat.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        total += _numstat_field(parts[0]) + _numstat_field(parts[1])
+    return total
+
+
+def _numstat_field(value: str) -> int:
+    return int(value) if value.isdigit() else 0
+
+
+def _near_identical_file_groups(repo_path: Path, files: list[str]) -> list[dict[str, Any]]:
+    groups: dict[str, list[str]] = defaultdict(list)
+    for file_name in files:
+        path = repo_path / file_name
+        if not path.is_file() or path.suffix.lower() not in NEAR_IDENTICAL_TEXT_EXTENSIONS:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        fingerprint = _near_identical_fingerprint(text)
+        if fingerprint:
+            groups[fingerprint].append(file_name)
+    return sorted(
+        (
+            {"count": len(names), "files": sorted(names)}
+            for names in groups.values()
+            if len(names) > 1
+        ),
+        key=lambda group: group["count"],
+        reverse=True,
+    )
+
+
+def _near_identical_fingerprint(text: str) -> str:
+    normalized = re.sub(r"(?m)^\s{0,3}#\s+work order:.*$", "# Work Order: <title>", text)
+    normalized = re.sub(r"\d+", "0", normalized.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if len(normalized) < 40:
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _command_text(command: tuple[str, ...]) -> str:
@@ -343,6 +552,20 @@ def _render_run_text(results: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_pr_size_text(result: dict[str, Any]) -> str:
+    lines = [
+        f"PR size lint: {result['status']}",
+        (
+            f"- changed lines: {result['changed_lines']} "
+            f"(limit {result['max_changed_lines']})"
+        ),
+        f"- changed files: {result['changed_file_count']}",
+    ]
+    for finding in result["findings"]:
+        lines.append(f"- {finding['id']}: {finding['message']}")
+    return "\n".join(lines) + "\n"
+
+
 def _json_payload(mode: str, repo_path: Path, checks: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "mode": mode,
@@ -358,6 +581,18 @@ def main(argv: list[str] | None = None) -> int:
 
     detect = subparsers.add_parser("detect")
     detect.add_argument("--repo-path", type=Path, default=Path.cwd())
+    detect.add_argument("--no-pr-size-lint", action="store_true")
+    detect.add_argument("--pr-size-base-ref", default=DEFAULT_PR_SIZE_BASE_REF)
+    detect.add_argument(
+        "--max-pr-changed-lines",
+        type=int,
+        default=DEFAULT_MAX_PR_CHANGED_LINES,
+    )
+    detect.add_argument(
+        "--near-identical-file-limit",
+        type=int,
+        default=DEFAULT_NEAR_IDENTICAL_FILE_LIMIT,
+    )
     detect.add_argument("--json", action="store_true")
 
     run = subparsers.add_parser("run")
@@ -366,16 +601,80 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--timeout", type=int, default=600)
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--include-output", action="store_true")
+    run.add_argument("--no-pr-size-lint", action="store_true")
+    run.add_argument("--pr-size-base-ref", default=DEFAULT_PR_SIZE_BASE_REF)
+    run.add_argument(
+        "--max-pr-changed-lines",
+        type=int,
+        default=DEFAULT_MAX_PR_CHANGED_LINES,
+    )
+    run.add_argument(
+        "--near-identical-file-limit",
+        type=int,
+        default=DEFAULT_NEAR_IDENTICAL_FILE_LIMIT,
+    )
     run.add_argument("--json", action="store_true")
+
+    pr_size = subparsers.add_parser("pr-size-lint")
+    pr_size.add_argument("--repo-path", type=Path, default=Path.cwd())
+    pr_size.add_argument("--base-ref", default=DEFAULT_PR_SIZE_BASE_REF)
+    pr_size.add_argument("--max-changed-lines", type=int, default=DEFAULT_MAX_PR_CHANGED_LINES)
+    pr_size.add_argument(
+        "--near-identical-file-limit",
+        type=int,
+        default=DEFAULT_NEAR_IDENTICAL_FILE_LIMIT,
+    )
+    pr_size.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
     repo_path = args.repo_path.resolve()
-    checks = detect_checks(repo_path)
+    if args.command == "pr-size-lint":
+        try:
+            result = lint_pr_size(
+                repo_path,
+                base_ref=args.base_ref,
+                max_changed_lines=args.max_changed_lines,
+                near_identical_file_limit=args.near_identical_file_limit,
+            )
+        except ValueError as exc:
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "mode": "code-mower-pr-size-lint",
+                            "repo_path": str(repo_path),
+                            "status": "failed",
+                            "error": str(exc),
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                print(f"PR size lint: failed\n- {exc}")
+            return 1
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(_render_pr_size_text(result), end="")
+        return 0 if result["status"] == "passed" else 1
+
+    checks = detect_checks(
+        repo_path,
+        include_pr_size_lint=not args.no_pr_size_lint,
+        pr_size_base_ref=args.pr_size_base_ref,
+        max_pr_changed_lines=args.max_pr_changed_lines,
+        near_identical_file_limit=args.near_identical_file_limit,
+    )
 
     if args.command == "detect":
         check_dicts = [check.as_dict() for check in checks]
         if args.json:
-            print(json.dumps(_json_payload("code-mower-checks-detect", repo_path, check_dicts), indent=2))
+            print(
+                json.dumps(
+                    _json_payload("code-mower-checks-detect", repo_path, check_dicts),
+                    indent=2,
+                )
+            )
         else:
             print(_render_detect_text(checks), end="")
         return 0

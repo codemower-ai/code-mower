@@ -689,6 +689,28 @@ class WorkOrderTests(unittest.TestCase):
                     output=Path(tmp) / "work-order.json",
                 )
 
+    def test_work_order_draft_rejects_pointer_only_stub_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "looks like a stub"):
+                work_orders.draft_work_order(
+                    title="Planning workflow",
+                    source_text="see ENGINEERING_PLAN section 5",
+                    output=Path(tmp) / "work-order.md",
+                )
+
+    def test_work_order_draft_rejects_oversized_batch_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            body = "\n".join(
+                f"- Implement task {index} with an acceptance test."
+                for index in range(work_orders.DEFAULT_MAX_WORK_ORDER_BATCH_ITEMS + 1)
+            )
+            with self.assertRaisesRegex(ValueError, "appears to describe"):
+                work_orders.draft_work_order(
+                    title="Planning workflow",
+                    source_text=body,
+                    output=Path(tmp) / "work-order.md",
+                )
+
     def test_work_order_draft_refuses_to_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "work-order.md"

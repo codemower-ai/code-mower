@@ -118,6 +118,10 @@ implementation, QA, security, operability, and devil's advocate review. These
 sections are deliberately prompts for thinking, not requirements to spawn a
 heavy multi-agent runtime.
 
+`work-order draft` refuses pointer-only stub bodies and bodies that look like
+more than 10 work orders by default. Use `--max-batch-items` only when a larger
+batch is intentional and still reviewable.
+
 `work-order draft` also writes a `*.cloud-event.json` sidecar next to the work
 order. That sidecar is metadata only: repository, issue number/URL, role lenses,
 review lanes, and Code Mower package provenance. It does not include the issue

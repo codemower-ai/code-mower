@@ -108,7 +108,8 @@ derived working copy. The work-order command writes a metadata-only
 `feature.cloud-event.json` sidecar so CodeMower.com can tie future
 builder/reviewer evidence back to the issue without receiving the issue body,
 source code, diffs, or transcripts. `attach-delivery` adds PR, reviewer-check,
-and merge identifiers only. For private/offline drafting:
+and merge identifiers only. `work-order draft` rejects pointer-only stubs and
+large accidental batches by default. For private/offline drafting:
 
 ```bash
 code-mower plan from-issue --title "Feature" --body-file issue-body.md \
