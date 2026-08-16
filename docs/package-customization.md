@@ -426,9 +426,22 @@ network hiccup or GitHub error interrupts posting, replay the saved artifact
 instead of rerunning the model:
 
 ```bash
+tools/run_codex_audit_pr.sh \
+  --repo owner/repo \
+  --pr 123 \
+  --repo-paths owner/repo:/path/to/repo
+tools/run_claude_audit_pr.sh \
+  --repo owner/repo \
+  --pr 123 \
+  --repo-paths owner/repo:/path/to/repo
+
 tools/run_codex_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 tools/run_claude_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 ```
+
+Codex and Claude audit comments render as merge-authority lane comments by
+default. Pass `--informational`, or set `CODEX_AUDIT_MERGE_AUTHORITY=false` /
+`CLAUDE_AUDIT_MERGE_AUTHORITY=false`, for calibration-only runs.
 
 In mirror-removal mode, those shell wrappers should be thin compatibility
 shims around the standalone package:
