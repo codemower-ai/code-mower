@@ -442,6 +442,9 @@ def _owner_surface_config(config: Mapping[str, Any]) -> dict[str, str]:
             rendered[key] = _csv_value(surface.get(key), default)
             continue
         value = surface.get(key, default)
+        if key == "gate_override_label" and key in surface and value is not None:
+            rendered[key] = str(value).strip()
+            continue
         rendered[key] = str(value).strip() if value is not None else default
         if not rendered[key]:
             rendered[key] = default
@@ -644,6 +647,8 @@ def _gate_workflow_entry(
     *,
     author_exclusion_json: str,
     owner_label: str = DEFAULT_OWNER_LABEL,
+    owner_login: str = "",
+    gate_override_label: str = "gate:override",
 ) -> dict[str, str]:
     gate_lanes = [
         _gate_lane_entry(lane_id, lane)
@@ -657,6 +662,8 @@ def _gate_workflow_entry(
         "package_copy_from": GATE_WORKFLOW_TEMPLATE,
         "gate_lanes_json": json.dumps(gate_lanes, separators=(",", ":"), sort_keys=True),
         "owner_label": owner_label,
+        "owner_login": owner_login,
+        "gate_override_label": gate_override_label,
         "author_exclusion_json": author_exclusion_json,
     }
 
@@ -973,6 +980,7 @@ def _render_stale_workflow_template(text: str, *, lane: str) -> str:
         .replace("{% endraw %}", "")
         .replace('default: "devin"', f'default: "{lane}"')
         .replace("github.event.inputs.lane || 'devin'", f"github.event.inputs.lane || '{lane}'")
+        .replace("code-mower-clear-stale-devin-", f"code-mower-clear-stale-{lane}-")
     )
 
 
@@ -980,6 +988,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
     """Render lightweight workflow placeholders without requiring Jinja."""
 
     rendered = text.replace("{% raw %}", "").replace("{% endraw %}", "")
+    gate_override_label = entry.get("gate_override_label", "gate:override")
+    if gate_override_label is None:
+        gate_override_label = "gate:override"
     replacements = {
         "__ADAPTER__": str(entry.get("adapter") or ""),
         "__AUTHOR_EXCLUSION_JSON__": str(
@@ -996,6 +1007,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
             entry.get("gate_health_max_wait_minutes") or "30"
         ),
         "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
+        "__GATE_OVERRIDE_LABEL_JSON__": json.dumps(str(gate_override_label)),
         "__GITHUB_ACTIONS_WORKFLOWS__": str(entry.get("github_actions_workflows") or ""),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
         "__LANE_ID__": str(entry.get("lane_id") or ""),
@@ -1020,6 +1032,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__OWNER_LABEL__": json.dumps(
             str(entry.get("owner_label") or DEFAULT_OWNER_LABEL)
         ),
+        "__OWNER_LOGIN_JSON__": json.dumps(str(entry.get("owner_login") or "")),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
         "__TRAILER_PREFIX__": str(entry.get("trailer_prefix") or ""),
         "__WEEKLY_STATUS_CRON__": str(entry.get("weekly_status_cron") or ""),
@@ -1323,6 +1336,8 @@ def render_init_plan(
                 selected_lanes,
                 author_exclusion_json=author_exclusion_json,
                 owner_label=owner_surface["needs_owner_label"],
+                owner_login=owner_surface["owner_login"],
+                gate_override_label=owner_surface["gate_override_label"],
             )
         )
 

@@ -40,6 +40,10 @@ without replacing existing assignees, and
 audit labels, local audit runs, or the self-hosted runner stall.
 For fork PRs where GitHub grants a read-only token, owner notify emits a
 workflow warning instead of failing the run.
+The generated merge gate treats `owner_surface.gate_override_label` as an
+owner-only escape hatch: the label succeeds the gate only when the configured
+owner applied it; a non-owner-applied override fails the gate. Set
+`gate_override_label` to an empty string to disable the override path entirely.
 
 Configure the owner surface in `code-mower.yml` before enabling the weekly
 schedule:
@@ -333,6 +337,9 @@ it invokes `tools/run_codex_audit_pr.sh` and
 from the authenticated macOS account. Do not rely on `@codex` issue mentions
 to dispatch local audit lanes; those mentions are not a dependable Actions
 trigger.
+Generated clear-stale workflows include the lane id in their concurrency group
+so Codex and Claude stale-label cleanup cannot cancel each other on the same PR
+push.
 
 If `CODE_MOWER_CLOUD_TOKEN` is configured, the generated workflow also uploads
 metadata-only reviewer evidence after every audit attempt. It sends saved

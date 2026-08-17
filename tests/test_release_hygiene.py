@@ -1006,18 +1006,20 @@ exit 1
         lanes: list[dict[str, str]],
         labels: set[str],
         comments: list[dict[str, object]] | None = None,
+        events: list[dict[str, object]] | None = None,
         head_sha: str = "a" * 40,
         pr_head_sha: str | None = None,
         pr_number: int = 7,
         actions_runs: dict[str, dict[str, object]] | None = None,
         commit_pull_requests: dict[str, list[dict[str, object]]] | None = None,
         author_exclusion: dict[str, object] | None = None,
+        owner_login: str = "owner",
     ) -> dict[str, str]:
         template = (
             ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
         ).read_text(encoding="utf-8")
         script = template.split(
-            'python3 - "${labels_file}" "${comments_file}" "${pr_file}" <<\'PY\'\n',
+            'python3 - "${labels_file}" "${comments_file}" "${events_file}" "${pr_file}" <<\'PY\'\n',
             1,
         )[1].split("\n          PY", 1)[0]
         script = textwrap.dedent(script)
@@ -1028,6 +1030,9 @@ exit 1
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             json.dump([comments or []], handle)
             comments_path = handle.name
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump([events or []], handle)
+            events_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             json.dump({"number": pr_number, "head": {"sha": pr_head_sha or head_sha}}, handle)
             pr_path = handle.name
@@ -1071,6 +1076,8 @@ exit 1
                             author_exclusion or {"enabled": False}
                         ),
                         "CODE_MOWER_OWNER_LABEL": "needs-owner",
+                        "CODE_MOWER_OWNER_LOGIN": owner_login,
+                        "CODE_MOWER_GATE_OVERRIDE_LABEL": "gate:override",
                         "GITHUB_REPOSITORY": "owner/repo",
                         "GH_TOKEN": "test-token",
                         "HEAD_SHA": head_sha,
@@ -1080,7 +1087,7 @@ exit 1
                 mock.patch.object(
                     sys,
                     "argv",
-                    ["gate-decision", labels_path, comments_path, pr_path],
+                    ["gate-decision", labels_path, comments_path, events_path, pr_path],
                 ),
                 action_patch,
                 redirect_stdout(stdout),
@@ -1093,6 +1100,7 @@ exit 1
         finally:
             Path(labels_path).unlink(missing_ok=True)
             Path(comments_path).unlink(missing_ok=True)
+            Path(events_path).unlink(missing_ok=True)
             Path(pr_path).unlink(missing_ok=True)
 
         result: dict[str, str] = {}
@@ -1397,6 +1405,64 @@ exit 1
         self.assertEqual(result["gate_state"], "success")
         self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
 
+    def test_gate_decision_allows_owner_applied_gate_override(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"gate:override", "claude-audit-blocked"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+            events=[
+                {
+                    "event": "labeled",
+                    "label": {"name": "gate:override"},
+                    "actor": {"login": "owner"},
+                }
+            ],
+            owner_login="Owner",
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "owner gate override")
+
+    def test_gate_decision_rejects_non_owner_gate_override(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"gate:override"},
+            events=[
+                {
+                    "event": "labeled",
+                    "label": {"name": "gate:override"},
+                    "actor": {"login": "contributor"},
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(result["gate_description"], "gate:override was not owner-applied")
+
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
 
@@ -1483,6 +1549,14 @@ exit 1
             self.assertIn("tools/code_mower clear-stale", codex_stale)
             self.assertIn('default: "codex"', codex_stale)
             self.assertIn("github.event.inputs.lane || 'codex'", codex_stale)
+            self.assertIn("code-mower-clear-stale-codex-${{", codex_stale)
+            self.assertNotIn("code-mower-clear-stale-${{", codex_stale)
+
+            claude_stale = output_dir.joinpath(
+                ".github/workflows/claude-clear-stale.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("code-mower-clear-stale-claude-${{", claude_stale)
+            self.assertNotIn("code-mower-clear-stale-${{", claude_stale)
 
             local_cli_audit = output_dir.joinpath(
                 ".github/workflows/local-cli-audit.yml"
@@ -1559,6 +1633,11 @@ exit 1
             self.assertIn("github_actions_comment_attested", gate)
             self.assertIn("github_actions_workflows", gate)
             self.assertIn(".github/workflows/local-cli-audit.yml", gate)
+            self.assertIn("CODE_MOWER_GATE_OVERRIDE_LABEL", gate)
+            self.assertIn("issues/${PR_NUMBER}/events?per_page=100", gate)
+            self.assertIn("gate:override", gate)
+            self.assertIn("was not owner-applied", gate)
+            self.assertIn("owner gate override", gate)
             self.assertNotIn("__GATE_LANES_JSON__", gate)
 
             gate_health = output_dir.joinpath(
@@ -1697,6 +1776,9 @@ exit 1
                 ".github/workflows/code-mower-gate.yml"
             ).read_text(encoding="utf-8")
             self.assertIn('CODE_MOWER_OWNER_LABEL: "needs-jeff"', gate)
+            self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
+            self.assertIn('CODE_MOWER_GATE_OVERRIDE_LABEL: "gate:override"', gate)
+            self.assertIn("override_actor != override_owner", gate)
             self.assertNotIn('CODE_MOWER_OWNER_LABEL: "needs-owner"', gate)
 
             config["owner_surface"]["needs_owner_label"] = "needs: jeff # owner"
@@ -1714,6 +1796,37 @@ exit 1
             self.assertEqual(
                 parsed_gate["env"]["CODE_MOWER_OWNER_LABEL"],
                 "needs: jeff # owner",
+            )
+            self.assertEqual(
+                parsed_gate["env"]["CODE_MOWER_OWNER_LOGIN"],
+                "jeffhuber",
+            )
+            self.assertEqual(
+                parsed_gate["env"]["CODE_MOWER_GATE_OVERRIDE_LABEL"],
+                "gate:override",
+            )
+
+            config["owner_surface"]["gate_override_label"] = ""
+            disabled_override_plan = code_mower_init.render_init_plan(
+                config,
+                package_mode=True,
+                package_command="code-mower",
+            )
+            self.assertNotIn("gate:override", disabled_override_plan.data["labels"])
+            disabled_override_output_dir = (
+                Path(tmp) / ".code-mower.generated-disabled-override"
+            )
+            code_mower_init.apply_init_plan(
+                disabled_override_plan,
+                disabled_override_output_dir,
+            )
+            disabled_override_gate = disabled_override_output_dir.joinpath(
+                ".github/workflows/code-mower-gate.yml"
+            ).read_text(encoding="utf-8")
+            parsed_disabled_override_gate = yaml.safe_load(disabled_override_gate)
+            self.assertEqual(
+                parsed_disabled_override_gate["env"]["CODE_MOWER_GATE_OVERRIDE_LABEL"],
+                "",
             )
 
             status_report = output_dir.joinpath("tools/status_report.py")
@@ -2088,7 +2201,7 @@ fi
             self.assertIn("tools/code_mower clear-stale", stale_text)
             self.assertIn("--dispatch-workflow", stale_text)
             self.assertIn("github.event.pull_request.head.sha", stale_text)
-            self.assertIn("code-mower-clear-stale-", stale_text)
+            self.assertIn("code-mower-clear-stale-devin-${{", stale_text)
             self.assertIn("cancel-in-progress: true", stale_text)
             self.assertIn("No PR/head SHA available for stale-label cleanup", stale_text)
             self.assertIn('default: "devin"', stale_text)
@@ -2126,6 +2239,7 @@ fi
             ).read_text(encoding="utf-8")
             self.assertIn('default: "custom"', custom_text)
             self.assertIn("github.event.inputs.lane || 'custom'", custom_text)
+            self.assertIn("code-mower-clear-stale-custom-${{", custom_text)
             self.assertNotIn("{% raw %}", custom_text)
 
             disabled_hygiene_config = {
