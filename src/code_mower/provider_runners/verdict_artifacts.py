@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -173,6 +174,7 @@ def write_audit_verdict_artifact(
     trailer: str,
     comment_body: str,
     quarantine_reason: str | None = None,
+    duration_seconds: float | None = None,
 ) -> Path | None:
     """Persist the rendered audit comment before posting to GitHub."""
 
@@ -197,6 +199,10 @@ def write_audit_verdict_artifact(
         "created_at": now.isoformat().replace("+00:00", "Z"),
         "posted_comment_url": None,
     }
+    if duration_seconds is not None:
+        duration_value = float(duration_seconds)
+        if math.isfinite(duration_value) and duration_value >= 0:
+            payload["duration_seconds"] = round(duration_value, 3)
     if quarantine_reason:
         payload["quarantined"] = True
         payload["quarantine_reason"] = quarantine_reason

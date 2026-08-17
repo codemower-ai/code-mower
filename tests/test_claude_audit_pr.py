@@ -166,6 +166,8 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 artifact["posted_comment_url"],
                 "https://github.test/comment/1",
             )
+            self.assertIn("duration_seconds", artifact)
+            self.assertGreaterEqual(artifact["duration_seconds"], 0)
 
             sidecar = result.verdict_artifact_path.with_suffix(".claude-raw-output.json")
             payload = json.loads(sidecar.read_text(encoding="utf-8"))

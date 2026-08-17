@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -121,6 +122,19 @@ def _artifact_severity_counts(payload: Mapping[str, Any]) -> tuple[dict[str, int
     return comment_counts, "unavailable"
 
 
+def _artifact_duration_seconds(payload: Mapping[str, Any]) -> float | None:
+    raw = payload.get("duration_seconds")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return round(value, 3)
+
+
 def _normal_artifact_verdict(value: Any) -> str:
     verdict = str(value or "").strip().lower()
     if verdict in PASS_VERDICTS:
@@ -205,6 +219,17 @@ def reviewer_run_event_from_verdict_artifact(
         head = str(payload.get("head_sha_end") or payload.get("head_sha_start") or "")
         dimensions["head_sha"] = head
         dimensions["head_sha_short"] = head[:12]
+    metrics: dict[str, Any] = {
+        "finding_count": finding_count,
+        "p0_count": severities["p0"],
+        "p1_count": severities["p1"],
+        "p2_count": severities["p2"],
+        "p3_count": severities["p3"],
+    }
+    duration_seconds = _artifact_duration_seconds(payload)
+    if duration_seconds is not None:
+        metrics["duration_seconds_total"] = duration_seconds
+        dimensions["duration_source"] = "verdict_artifact"
     return {
         "schema": BENCHMARK_EVENT_SCHEMA,
         "event_type": "reviewer_run",
@@ -215,13 +240,7 @@ def reviewer_run_event_from_verdict_artifact(
         "provider": _lane_provider(lane_id),
         "lens": "base",
         "status": status,
-        "metrics": {
-            "finding_count": finding_count,
-            "p0_count": severities["p0"],
-            "p1_count": severities["p1"],
-            "p2_count": severities["p2"],
-            "p3_count": severities["p3"],
-        },
+        "metrics": metrics,
         "dimensions": dimensions,
     }
 
