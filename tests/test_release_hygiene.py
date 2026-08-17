@@ -1675,6 +1675,8 @@ exit 1
             self.assertIn("tools/run_claude_audit_pr.sh", local_cli_audit)
             self.assertIn("--read-token-from-stdin", local_cli_audit)
             self.assertIn("--repo-paths", local_cli_audit)
+            self.assertIn("PR_HEAD_PATH was checked out and verified", local_cli_audit)
+            self.assertIn("skips the private pull/N/head", local_cli_audit)
             self.assertIn("Upload Code Mower audit metadata", local_cli_audit)
             self.assertIn("always() &&", local_cli_audit)
             self.assertIn("secrets.CODE_MOWER_CLOUD_TOKEN", local_cli_audit)
