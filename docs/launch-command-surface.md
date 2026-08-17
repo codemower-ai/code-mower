@@ -14,6 +14,7 @@ session.
 | `code-mower --version` | Confirm install. | no | no |
 | `code-mower init --easy` | Preview generated setup. | no | no |
 | `code-mower init --easy --apply --output-dir .code-mower.generated` | Write reviewable generated setup files. | yes, local only | no |
+| `code-mower init code-mower.yml --add-repo OWNER/REPO --apply` | Render the same lane/label/workflow setup for a sibling repo target. | yes, local only | no |
 | `code-mower project-context init --project-name "My Product"` | Create editable local project doctrine docs. | yes, local only | no |
 | `code-mower context add --external path/to/doc.md` | Record external planning context as a metadata-only local manifest. | yes, local only | no |
 | `code-mower plan from-github-issue owner/repo#123 --post` | Turn a GitHub issue into a plan and post a structured plan comment back to the issue. | optional local output | GitHub |

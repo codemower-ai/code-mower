@@ -11,6 +11,7 @@ from code_mower.doctor_checks.github_actions_failures import (
 )
 from code_mower.doctor_checks.github_branch import check_branch_protection
 from code_mower.doctor_checks.github_config import (
+    check_repository_posture,
     configured_repositories,
     selected_saas_or_hosted_lanes,
 )
@@ -42,6 +43,26 @@ class GitHubDoctorCheckTests(unittest.TestCase):
             ]
         )
         self.assertEqual(lanes, ["gitar", "devin"])
+
+    def test_repository_posture_reports_multi_repo_config(self) -> None:
+        check = check_repository_posture(
+            {
+                "repositories": [
+                    {"slug": "owner/base", "default_branch": "main"},
+                    {
+                        "slug": "owner/sibling",
+                        "default_branch": "main",
+                        "local_path_env": "SIBLING_REPO_PATH",
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(check.status, "pass")
+        self.assertIn("multi-repo posture", check.message)
+        self.assertEqual(check.detail["repo_count"], 2)
+        self.assertEqual(check.detail["repositories"], ["owner/base", "owner/sibling"])
+        self.assertEqual(check.detail["local_path_env_count"], 1)
 
     def test_private_repo_provider_check_warns_for_hosted_lanes(self) -> None:
         check = check_private_repo_provider_surface(
