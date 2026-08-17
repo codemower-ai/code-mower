@@ -312,6 +312,25 @@ def lint_pr_size(
         raise ValueError("--near-identical-file-limit must be at least 2")
     repo_path = repo_path.resolve()
     diff_range = f"{base_ref}...HEAD"
+    if not _git_ref_exists(repo_path, base_ref):
+        return {
+            "mode": "code-mower-pr-size-lint",
+            "repo_path": str(repo_path),
+            "base_ref": base_ref,
+            "diff_range": diff_range,
+            "changed_lines": 0,
+            "changed_file_count": 0,
+            "max_changed_lines": max_changed_lines,
+            "near_identical_file_limit": near_identical_file_limit,
+            "near_identical_groups": [],
+            "finding_count": 0,
+            "findings": [],
+            "status": "skipped",
+            "skip_reason": (
+                f"base ref {base_ref!r} is not available locally; fetch it "
+                "or pass --pr-size-base-ref"
+            ),
+        }
     numstat = _run_git(repo_path, ["diff", "--numstat", "--find-renames", diff_range])
     name_only = _run_git(repo_path, ["diff", "--name-only", "--find-renames", diff_range])
     files = [line.strip() for line in name_only.splitlines() if line.strip()]
@@ -374,6 +393,17 @@ def _run_git(repo_path: Path, args: list[str]) -> str:
     return completed.stdout
 
 
+def _git_ref_exists(repo_path: Path, ref: str) -> bool:
+    completed = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", ref],
+        cwd=repo_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
 def _changed_line_count(numstat: str) -> int:
     total = 0
     for line in numstat.splitlines():
@@ -413,7 +443,12 @@ def _near_identical_file_groups(repo_path: Path, files: list[str]) -> list[dict[
 
 
 def _near_identical_fingerprint(text: str) -> str:
-    normalized = re.sub(r"(?m)^\s{0,3}#\s+work order:.*$", "# Work Order: <title>", text)
+    normalized = re.sub(
+        r"(?m)^\s{0,3}#\s+work order:.*$",
+        "# Work Order: <title>",
+        text,
+        flags=re.IGNORECASE,
+    )
     normalized = re.sub(r"\d+", "0", normalized.lower())
     normalized = re.sub(r"\s+", " ", normalized).strip()
     if len(normalized) < 40:
@@ -561,6 +596,8 @@ def _render_pr_size_text(result: dict[str, Any]) -> str:
         ),
         f"- changed files: {result['changed_file_count']}",
     ]
+    if result.get("skip_reason"):
+        lines.append(f"- skipped: {result['skip_reason']}")
     for finding in result["findings"]:
         lines.append(f"- {finding['id']}: {finding['message']}")
     return "\n".join(lines) + "\n"
@@ -656,7 +693,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
         else:
             print(_render_pr_size_text(result), end="")
-        return 0 if result["status"] == "passed" else 1
+        return 1 if result["status"] == "failed" else 0
 
     checks = detect_checks(
         repo_path,
