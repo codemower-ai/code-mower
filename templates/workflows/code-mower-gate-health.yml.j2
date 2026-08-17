@@ -33,6 +33,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check out Code Mower support files from default branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: {% raw %}${{ github.event.repository.default_branch }}{% endraw %}
+          persist-credentials: false
+
       - name: Check Code Mower gate health
         env:
           GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
@@ -42,11 +48,16 @@ jobs:
           python3 - <<'PY'
           import json
           import os
-          import re
           import subprocess
           import urllib.parse
           from datetime import datetime, timezone
 
+          try:
+              from tools.audit_labeler_lib import GitHubToken, github_actions_comment_attested
+          except ImportError:  # pragma: no cover - unit-test/package fallback
+              from code_mower.audit_labeler_lib import GitHubToken, github_actions_comment_attested
+
+          # github_actions_comment_attested verifies the hidden CODE_MOWER_AUDIT_RUN marker.
           REPO = os.environ["REPO"]
           NEEDS_OWNER_LABEL = os.environ.get("NEEDS_OWNER_LABEL", "needs-owner")
           OWNER_LOGIN = os.environ.get("OWNER_LOGIN", "")
@@ -56,6 +67,7 @@ jobs:
           LOCAL_AUDIT_WORKFLOW = os.environ.get("CODE_MOWER_LOCAL_AUDIT_WORKFLOW", "")
           OWNER_PLACEHOLDERS = {"", "TODO_OWNER_LOGIN"}
           STATUS_PLACEHOLDERS = {"", "TODO_STATUS_ISSUE"}
+          GITHUB_TOKENS = (GitHubToken("GH_TOKEN", os.environ.get("GH_TOKEN", "")),)
 
           def gh_json(endpoint, token=""):
               env = os.environ.copy()
@@ -127,43 +139,9 @@ jobs:
               raw = str(lane.get("bot_authors") or "")
               return {item.strip() for item in raw.split(",") if item.strip()}
 
-          actions_run_re = re.compile(r"<!--\s*CODE_MOWER_AUDIT_RUN:\s*run_id=([0-9]+)\s*-->")
-          actions_run_cache = {}
-
           def trusted_github_actions_workflows(lane):
               raw = str(lane.get("github_actions_workflows") or "")
               return {item.strip() for item in raw.split(",") if item.strip()}
-
-          def actions_run(run_id):
-              if run_id not in actions_run_cache:
-                  try:
-                      actions_run_cache[run_id] = gh_json(f"repos/{REPO}/actions/runs/{run_id}")
-                  except subprocess.CalledProcessError:
-                      actions_run_cache[run_id] = {}
-              return actions_run_cache[run_id]
-
-          def github_actions_comment_attested(lane, body, number, head_sha):
-              workflows = trusted_github_actions_workflows(lane)
-              if not workflows:
-                  return False
-              match = actions_run_re.search(body)
-              if match is None:
-                  return False
-              run = actions_run(match.group(1))
-              path = str(run.get("path") or "")
-              if not path or not any(path == item or path.endswith("/" + item) for item in workflows):
-                  return False
-              if str(run.get("event") or "") != "pull_request_target":
-                  return False
-              pull_requests = run.get("pull_requests") or []
-              if isinstance(pull_requests, list) and pull_requests:
-                  for item in pull_requests:
-                      if str(item.get("number") or "") != str(number):
-                          continue
-                      pr_head = str(((item.get("head") or {}).get("sha")) or "")
-                      return not pr_head or pr_head == head_sha
-                  return False
-              return True
 
           def trusted_comment_author(lane, author, body, number, head_sha):
               authors = trusted_authors(lane)
@@ -171,7 +149,14 @@ jobs:
                   return False
               if author != "github-actions[bot]":
                   return True
-              return github_actions_comment_attested(lane, body, number, head_sha)
+              return github_actions_comment_attested(
+                  repo=REPO,
+                  body=body,
+                  issue_number=int(number),
+                  head_sha=head_sha,
+                  workflow_paths=trusted_github_actions_workflows(lane),
+                  tokens=GITHUB_TOKENS,
+              )
 
           def has_head_bound_terminal(number, lane, head_sha):
               head_marker = "Head SHA: `" + head_sha + "`"

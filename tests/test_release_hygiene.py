@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 from code_mower import __version__
+from code_mower import audit_labeler_lib
 from code_mower import audit_progress
 from code_mower import calibration as calibration_pkg
 from code_mower import cloud as code_mower_cloud
@@ -894,6 +895,7 @@ exit 1
         self.assertIn("tools/code_mower trailer-comment-labeler", trailer)
         self.assertIn("__TRAILER_LANE__", trailer)
         self.assertIn("__BOT_AUTHORS__", trailer)
+        self.assertIn("CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS", trailer)
         self.assertIn("pull-requests: write", trailer)
         self.assertIn("vars.__AUTHORS_ENV__", trailer)
         self.assertIn(
@@ -906,7 +908,10 @@ exit 1
             ROOT / "templates/workflows/code-mower-gate.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("actions: read", gate_template)
+        self.assertIn("contents: read", gate_template)
+        self.assertIn("Check out Code Mower support files", gate_template)
         self.assertIn("CODE_MOWER_AUDIT_RUN", gate_template)
+        self.assertIn("github_actions_comment_attested", gate_template)
         self.assertIn("github_actions_workflows", gate_template)
         hosted = (
             ROOT / "templates/workflows/hosted-bridge.yml.j2"
@@ -1087,6 +1092,7 @@ exit 1
         pr_head_sha: str | None = None,
         pr_number: int = 7,
         actions_runs: dict[str, dict[str, object]] | None = None,
+        commit_pull_requests: dict[str, list[dict[str, object]]] | None = None,
         author_exclusion: dict[str, object] | None = None,
     ) -> dict[str, str]:
         template = (
@@ -1111,15 +1117,32 @@ exit 1
         stdout = StringIO()
         action_patch = nullcontext()
         if actions_runs is not None:
-            def fake_check_output(args: list[str], text: bool = True) -> str:
-                endpoint = args[-1]
-                prefix = "repos/owner/repo/actions/runs/"
-                if endpoint.startswith(prefix):
-                    run_id = endpoint.removeprefix(prefix)
-                    return json.dumps(actions_runs.get(run_id) or {})
-                raise AssertionError(f"unexpected gh api endpoint: {endpoint}")
+            def fake_github_request(
+                method: str,
+                path: str,
+                *,
+                tokens: object,
+                body: object = None,
+                allow_missing: bool = False,
+            ) -> object:
+                del body, allow_missing, tokens
+                if method != "GET":
+                    raise AssertionError(f"unexpected GitHub method: {method}")
+                run_prefix = "/repos/owner/repo/actions/runs/"
+                if path.startswith(run_prefix):
+                    run_id = path.removeprefix(run_prefix)
+                    return actions_runs.get(run_id) or {}
+                commit_prefix = "/repos/owner/repo/commits/"
+                if path.startswith(commit_prefix) and path.endswith("/pulls?per_page=100"):
+                    head = path.removeprefix(commit_prefix).removesuffix("/pulls?per_page=100")
+                    return (commit_pull_requests or {}).get(head) or []
+                raise AssertionError(f"unexpected gh api endpoint: {path}")
 
-            action_patch = mock.patch.object(subprocess, "check_output", fake_check_output)
+            action_patch = mock.patch.object(
+                audit_labeler_lib,
+                "github_request_with_fallback",
+                fake_github_request,
+            )
         try:
             with (
                 mock.patch.dict(
@@ -1131,6 +1154,7 @@ exit 1
                         ),
                         "CODE_MOWER_OWNER_LABEL": "needs-owner",
                         "GITHUB_REPOSITORY": "owner/repo",
+                        "GH_TOKEN": "test-token",
                         "HEAD_SHA": head_sha,
                         "PR_NUMBER": str(pr_number),
                     },
@@ -1373,6 +1397,88 @@ exit 1
         self.assertEqual(result["gate_state"], "success")
         self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
 
+    def test_gate_decision_rejects_empty_run_prs_without_commit_fallback(self) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "github-actions[bot]"},
+                }
+            ],
+            head_sha=head_sha,
+            actions_runs={
+                "12345": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "head_sha": head_sha,
+                    "pull_requests": [],
+                }
+            },
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
+    def test_gate_decision_accepts_empty_run_prs_with_commit_fallback(self) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "github-actions[bot]"},
+                }
+            ],
+            head_sha=head_sha,
+            actions_runs={
+                "12345": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "head_sha": head_sha,
+                    "pull_requests": [],
+                }
+            },
+            commit_pull_requests={
+                head_sha: [
+                    {
+                        "number": 7,
+                        "head": {"sha": head_sha},
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
 
@@ -1446,6 +1552,7 @@ exit 1
             self.assertIn("claude-audit-bot[bot]", claude)
             self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", claude)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS", claude)
+            self.assertIn('CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml"', claude)
             self.assertNotIn("github.event.inputs.lane", claude)
             self.assertNotIn("github.event.comment.user.type == 'Bot'", claude)
 
@@ -1505,6 +1612,7 @@ exit 1
                 ".github/workflows/code-mower-gate.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("CODE_MOWER_GATE_CONTEXT: code-mower/gate", gate)
+            self.assertIn("Check out Code Mower support files", gate)
             self.assertIn("CODE_MOWER_OWNER_LABEL: needs-owner", gate)
             self.assertIn("codex-audit-done", gate)
             self.assertIn("claude-audit-done", gate)
@@ -1513,6 +1621,7 @@ exit 1
             self.assertIn("enablePullRequestAutoMerge", gate)
             self.assertIn("gh api -X POST", gate)
             self.assertIn("CODE_MOWER_AUDIT_RUN", gate)
+            self.assertIn("github_actions_comment_attested", gate)
             self.assertIn("github_actions_workflows", gate)
             self.assertIn(".github/workflows/local-cli-audit.yml", gate)
             self.assertNotIn("__GATE_LANES_JSON__", gate)
@@ -1530,6 +1639,7 @@ exit 1
             self.assertIn("actions/runners", gate_health)
             self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", gate_health)
             self.assertIn("CODE_MOWER_AUDIT_RUN", gate_health)
+            self.assertIn("github_actions_comment_attested", gate_health)
             self.assertIn("github_actions_workflows", gate_health)
             self.assertNotIn("__GATE_HEALTH", gate_health)
 
@@ -1876,6 +1986,8 @@ fi
             self.assertNotIn("devin-audit-bot[bot]", labeler)
             self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", labeler)
             self.assertIn("DEVIN_BOT_AUTHORS", labeler)
+            self.assertIn("CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS", labeler)
+            self.assertNotIn("__GITHUB_ACTIONS_WORKFLOWS__", labeler)
             self.assertNotIn("github.event.inputs.lane", labeler)
             self.assertNotIn("github.event.comment.user.type == 'Bot'", labeler)
 

@@ -224,9 +224,11 @@ post authoritative verdicts.
 
 For merge-gating Codex and Claude lanes, `github-actions[bot]` comments also
 need the hidden `CODE_MOWER_AUDIT_RUN` marker emitted by the wrappers inside
-GitHub Actions. The generated gate verifies that marker against a
-`local-cli-audit.yml` run for the same PR and head before accepting the
-terminal trailer. Use lane-specific posting tokens or remove
+GitHub Actions. The generated labeler and gate verify that marker against a
+trusted `local-cli-audit.yml` run for the same PR and head before accepting the
+terminal trailer. If GitHub omits the run's `pull_requests` array, Code Mower
+resolves the run head SHA through the commit-to-PRs API; without that match,
+the shared-bot comment is ignored. Use lane-specific posting tokens or remove
 `github-actions[bot]` from the lane authors when a repository wants a stricter
 separation between Actions jobs and merge-gating audit verdicts.
 

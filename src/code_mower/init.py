@@ -412,6 +412,7 @@ def _workflow_entry_for_target(
         "trailer_prefix": _trailer_prefix_for_lane(trailer_lane),
         "authors_env": _authors_env_for_trailer_lane(trailer_lane),
         "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
+        "github_actions_workflows": LOCAL_AUDIT_WORKFLOW_PATH if driver == "local_cli" else "",
     }
 
 
@@ -981,6 +982,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
             entry.get("gate_health_max_wait_minutes") or "30"
         ),
         "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
+        "__GITHUB_ACTIONS_WORKFLOWS__": str(entry.get("github_actions_workflows") or ""),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
         "__LANE_ID__": str(entry.get("lane_id") or ""),
         "__LOCAL_AUDIT_LABEL_CONTAINS__": str(entry.get("local_audit_label_contains") or ""),

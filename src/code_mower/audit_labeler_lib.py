@@ -17,12 +17,16 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Pattern, Sequence
+from typing import Any, Callable, Dict, Mapping, Optional, Pattern, Sequence
 from urllib.parse import quote
 import re
 
 MIN_ABBREVIATED_SHA_LENGTH = 7
 AUTHOR_EXCLUSION_ENV = "CODE_MOWER_AUTHOR_EXCLUSION_JSON"
+ACTIONS_RUN_MARKER_RE = re.compile(
+    r"<!--\s*CODE_MOWER_AUDIT_RUN:\s*run_id=([0-9]+)\s*-->"
+)
+TRUSTED_ACTIONS_AUDIT_EVENTS = frozenset({"pull_request_target"})
 
 
 @dataclass(frozen=True)
@@ -289,6 +293,130 @@ def github_request_with_fallback(
     if last_error is not None:
         raise last_error
     raise RuntimeError(f"no GitHub tokens available for {method} {path}")
+
+
+def parse_csv_set(raw: str) -> frozenset[str]:
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+
+
+def parse_audit_run_id(body: str) -> str:
+    match = ACTIONS_RUN_MARKER_RE.search(body)
+    return match.group(1) if match else ""
+
+
+def workflow_path_matches(path: str, trusted_workflows: Sequence[str]) -> bool:
+    if not path:
+        return False
+    return any(path == item or path.endswith("/" + item) for item in trusted_workflows)
+
+
+def _pr_item_matches_head(
+    item: Mapping[str, Any],
+    *,
+    issue_number: int,
+    head_sha: str,
+    fallback_head_sha: str = "",
+) -> bool:
+    if str(item.get("number") or "") != str(issue_number):
+        return False
+    pr_head = str(((item.get("head") or {}).get("sha")) or "")
+    if pr_head:
+        return sha_matches(pr_head, head_sha)
+    return bool(fallback_head_sha) and sha_matches(fallback_head_sha, head_sha)
+
+
+def fetch_actions_run(
+    repo: str,
+    run_id: str,
+    *,
+    tokens: Sequence[GitHubToken],
+) -> dict[str, Any]:
+    response = github_request_with_fallback(
+        "GET",
+        f"/repos/{repo}/actions/runs/{run_id}",
+        tokens=tokens,
+    )
+    return response if isinstance(response, dict) else {}
+
+
+def fetch_pull_requests_for_commit(
+    repo: str,
+    head_sha: str,
+    *,
+    tokens: Sequence[GitHubToken],
+) -> list[dict[str, Any]]:
+    response = github_request_with_fallback(
+        "GET",
+        f"/repos/{repo}/commits/{head_sha}/pulls?per_page=100",
+        tokens=tokens,
+    )
+    return response if isinstance(response, list) else []
+
+
+def github_actions_comment_attested(
+    *,
+    repo: str,
+    body: str,
+    issue_number: int,
+    head_sha: str,
+    workflow_paths: Sequence[str],
+    tokens: Sequence[GitHubToken],
+    actions_run_lookup: Optional[Callable[[str], Mapping[str, Any]]] = None,
+    commit_pull_requests_lookup: Optional[Callable[[str], Sequence[Mapping[str, Any]]]] = None,
+) -> bool:
+    """Return whether a github-actions[bot] audit comment is tied to this PR head."""
+    trusted_workflows = tuple(parse_csv_set(",".join(workflow_paths)))
+    token_list = tuple(token for token in tokens if token.value)
+    run_id = parse_audit_run_id(body)
+    if not trusted_workflows or not token_list or not run_id or not head_sha:
+        return False
+    try:
+        if actions_run_lookup is None:
+            run = fetch_actions_run(repo, run_id, tokens=token_list)
+        else:
+            run = dict(actions_run_lookup(run_id))
+    except Exception:
+        return False
+
+    path = str(run.get("path") or "")
+    if not workflow_path_matches(path, trusted_workflows):
+        return False
+    if str(run.get("event") or "") not in TRUSTED_ACTIONS_AUDIT_EVENTS:
+        return False
+
+    run_head_sha = str(run.get("head_sha") or "")
+    pull_requests = run.get("pull_requests")
+    if isinstance(pull_requests, list) and pull_requests:
+        return any(
+            isinstance(item, Mapping)
+            and _pr_item_matches_head(
+                item,
+                issue_number=issue_number,
+                head_sha=head_sha,
+                fallback_head_sha=run_head_sha,
+            )
+            for item in pull_requests
+        )
+    if not run_head_sha or not sha_matches(run_head_sha, head_sha):
+        return False
+
+    try:
+        if commit_pull_requests_lookup is None:
+            associated_prs = fetch_pull_requests_for_commit(repo, run_head_sha, tokens=token_list)
+        else:
+            associated_prs = commit_pull_requests_lookup(run_head_sha)
+    except Exception:
+        return False
+    return any(
+        isinstance(item, Mapping)
+        and _pr_item_matches_head(
+            item,
+            issue_number=issue_number,
+            head_sha=head_sha,
+            fallback_head_sha=run_head_sha,
+        )
+        for item in associated_prs
+    )
 
 
 def fetch_pull_request(

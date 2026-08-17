@@ -14,17 +14,20 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 if __package__ and __package__.startswith("code_mower"):
     from .audit_labeler_lib import (
         LaneConfig,
+        GitHubToken,
         LabelDecision,
         apply_label_decision,
         author_exclusion_reason,
         extract_reviewed_sha,
         fetch_pull_request,
+        github_actions_comment_attested,
         load_json,
+        parse_csv_set,
         sha_matches_reviewed_head,
     )
     from .lane_configs import load_lane_config
@@ -32,24 +35,30 @@ else:
     try:
         from tools.audit_labeler_lib import (
             LaneConfig,
+            GitHubToken,
             LabelDecision,
             apply_label_decision,
             author_exclusion_reason,
             extract_reviewed_sha,
             fetch_pull_request,
+            github_actions_comment_attested,
             load_json,
+            parse_csv_set,
             sha_matches_reviewed_head,
         )
         from tools.lane_configs import load_lane_config
     except ImportError:  # pragma: no cover - direct `python tools/foo.py` execution
         from audit_labeler_lib import (
             LaneConfig,
+            GitHubToken,
             LabelDecision,
             apply_label_decision,
             author_exclusion_reason,
             extract_reviewed_sha,
             fetch_pull_request,
+            github_actions_comment_attested,
             load_json,
+            parse_csv_set,
             sha_matches_reviewed_head,
         )
         from lane_configs import load_lane_config
@@ -114,6 +123,11 @@ def resolve_label_decision(
     *,
     current_head_sha: Optional[str],
     config: LaneConfig,
+    repo: str = "",
+    tokens: Sequence[GitHubToken] = (),
+    github_actions_workflows: Sequence[str] = (),
+    actions_run_lookup: Optional[Callable[[str], Mapping[str, Any]]] = None,
+    commit_pull_requests_lookup: Optional[Callable[[str], Sequence[Mapping[str, Any]]]] = None,
 ) -> tuple[Optional[LabelDecision], str]:
     if event.get("action") != "created":
         return None, f"unsupported action: {event.get('action')}"
@@ -128,6 +142,19 @@ def resolve_label_decision(
         return None, f"ignored comment author: {author}"
 
     body = comment.get("body") or ""
+    issue_number = int(issue["number"])
+    if author.lower() == "github-actions[bot]" and not github_actions_comment_attested(
+        repo=repo,
+        body=body,
+        issue_number=issue_number,
+        head_sha=current_head_sha or "",
+        workflow_paths=github_actions_workflows,
+        tokens=tokens,
+        actions_run_lookup=actions_run_lookup,
+        commit_pull_requests_lookup=commit_pull_requests_lookup,
+    ):
+        return None, "github-actions[bot] audit comment is not run-attested"
+
     if (
         config.is_configured_comment_author(author)
         and not config.is_default_comment_author(author)
@@ -143,7 +170,6 @@ def resolve_label_decision(
     if status is None:
         return None, f"comment is not a final {config.display_name} audit result"
 
-    issue_number = int(issue["number"])
     issue_labels = [
         str(label.get("name") or "")
         for label in issue.get("labels") or []
@@ -220,7 +246,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if issue_number and "pull_request" in issue:
             current_head_sha = fetch_pull_request(repo, issue_number, tokens=tokens)["head"]["sha"]
 
-    decision, reason = resolve_label_decision(event, current_head_sha=current_head_sha, config=config)
+    github_actions_workflows = tuple(
+        parse_csv_set(os.environ.get("CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS") or "")
+    )
+    decision, reason = resolve_label_decision(
+        event,
+        current_head_sha=current_head_sha,
+        config=config,
+        repo=repo,
+        tokens=tokens,
+        github_actions_workflows=github_actions_workflows,
+    )
     if decision is None:
         print(f"skip: {reason}")
         return 0
