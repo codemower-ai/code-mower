@@ -16,6 +16,27 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _git(repo_path: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repo_path,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+
+def _init_git_repo(repo_path: Path) -> None:
+    _git(repo_path, "init")
+    _git(repo_path, "config", "user.email", "test@example.com")
+    _git(repo_path, "config", "user.name", "Test User")
+    _write(repo_path / "README.md", "# Test\n")
+    _git(repo_path, "add", "README.md")
+    _git(repo_path, "commit", "-m", "base")
+    _git(repo_path, "branch", "-M", "main")
+    _git(repo_path, "checkout", "-b", "feature")
+
+
 def test_detect_node_checks_uses_lockfile_package_manager(tmp_path: Path) -> None:
     _write(
         tmp_path / "package.json",
@@ -91,6 +112,81 @@ def test_cli_detect_json(tmp_path: Path) -> None:
     assert payload["mode"] == "code-mower-checks-detect"
     assert payload["check_count"] == 1
     assert payload["checks"][0]["id"] == "node.lint"
+
+
+def test_detect_checks_includes_pr_size_lint_for_git_worktrees(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+
+    detected = {check.id: check for check in checks.detect_checks(tmp_path)}
+
+    assert "code-mower.pr-size" in detected
+    assert "--max-changed-lines" in detected["code-mower.pr-size"].command
+
+
+def test_pr_size_lint_fails_when_changed_lines_exceed_limit(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    _write(tmp_path / "large.txt", "\n".join(f"line {index}" for index in range(12)))
+    _git(tmp_path, "add", "large.txt")
+    _git(tmp_path, "commit", "-m", "large change")
+
+    result = checks.lint_pr_size(tmp_path, base_ref="main", max_changed_lines=10)
+
+    assert result["status"] == "failed"
+    assert result["changed_lines"] == 12
+    assert result["findings"][0]["id"] == "changed-lines"
+
+
+def test_pr_size_lint_skips_when_base_ref_is_missing(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    _write(tmp_path / "change.txt", "small change\n")
+    _git(tmp_path, "add", "change.txt")
+    _git(tmp_path, "commit", "-m", "small change")
+
+    result = checks.lint_pr_size(tmp_path, base_ref="origin/main")
+
+    assert result["status"] == "skipped"
+    assert "origin/main" in result["skip_reason"]
+
+
+def test_pr_size_lint_flags_many_near_identical_files(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    body = "\n\n## Objective\n\nsee ENGINEERING_PLAN section 5 for implementation.\n"
+    for index in range(4):
+        _write(tmp_path / f"work-order-{index}.md", f"# Work Order: Task {index}{body}")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "many stub work orders")
+
+    result = checks.lint_pr_size(
+        tmp_path,
+        base_ref="main",
+        max_changed_lines=1000,
+        near_identical_file_limit=3,
+    )
+
+    assert result["status"] == "failed"
+    assert result["findings"][0]["id"] == "near-identical-files"
+    assert result["findings"][0]["observed"] == 4
+
+
+def test_pr_size_lint_groups_work_orders_with_descriptive_titles(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    body = "\n\n## Objective\n\nsee ENGINEERING_PLAN section 5 for implementation.\n"
+    for title in ("Fix login bug", "Fix signup bug", "Fix logout bug", "Fix reset bug"):
+        slug = title.lower().replace(" ", "-")
+        _write(tmp_path / f"{slug}.md", f"# Work Order: {title}{body}")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "many descriptive stub work orders")
+
+    result = checks.lint_pr_size(
+        tmp_path,
+        base_ref="main",
+        max_changed_lines=1000,
+        near_identical_file_limit=3,
+    )
+
+    assert result["status"] == "failed"
+    assert result["findings"][0]["id"] == "near-identical-files"
+    assert result["findings"][0]["observed"] == 4
 
 
 def test_run_timeout_decodes_byte_output_for_json() -> None:

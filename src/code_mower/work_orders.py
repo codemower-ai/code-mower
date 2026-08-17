@@ -169,6 +169,7 @@ DEFAULT_ROLE_LENSES = (
     "devils-advocate",
 )
 DEFAULT_REVIEW_LANES = ("codex-audit", "claude-audit", "gitar")
+DEFAULT_MAX_WORK_ORDER_BATCH_ITEMS = 10
 REVIEWER_CHECK_KEYWORDS = (
     "audit",
     "review",
@@ -183,6 +184,29 @@ REVIEWER_CHECK_KEYWORDS = (
     "hermes",
     "qwen",
     "gemma",
+)
+WORK_ORDER_ACTION_RE = re.compile(
+    r"\b(add|build|cap|change|create|delete|document|fix|implement|limit|move|"
+    r"record|refactor|reject|remove|rename|replace|ship|support|update|validate|"
+    r"wire)\b",
+    re.IGNORECASE,
+)
+WORK_ORDER_ACCEPTANCE_RE = re.compile(
+    r"\b(acceptance|assert|criteria|must|pass(?:es)?|test|verify)\b",
+    re.IGNORECASE,
+)
+WORK_ORDER_STUB_REFERENCE_RE = re.compile(
+    r"^\s*(?:see|refer to|per|as described in)\b",
+    re.IGNORECASE,
+)
+WORK_ORDER_BATCH_HEADING_RE = re.compile(
+    r"^\s{0,3}#{1,4}\s+(?:work[- ]?order|task|issue|\d+[.) :-])\b",
+    re.IGNORECASE,
+)
+WORK_ORDER_BATCH_LIST_RE = re.compile(
+    r"^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?"
+    r"(?:work[- ]?order|task|issue|add|build|create|fix|implement|refactor|update)\b",
+    re.IGNORECASE,
 )
 
 
@@ -1172,6 +1196,51 @@ def attach_delivery_to_work_order_event(
     return response
 
 
+def estimate_work_order_batch_items(source_text: str) -> int:
+    """Return a conservative estimate of how many work orders the body asks for."""
+    lines = source_text.splitlines()
+    heading_count = sum(1 for line in lines if WORK_ORDER_BATCH_HEADING_RE.search(line))
+    list_count = sum(1 for line in lines if WORK_ORDER_BATCH_LIST_RE.search(line))
+    return max(1, heading_count, list_count)
+
+
+def validate_work_order_source_text(
+    source_text: str,
+    *,
+    max_batch_items: int = DEFAULT_MAX_WORK_ORDER_BATCH_ITEMS,
+) -> int:
+    if max_batch_items < 1:
+        raise ValueError("--max-batch-items must be at least 1")
+    stripped = source_text.strip()
+    if not stripped:
+        raise ValueError("work-order draft body is empty; add task detail before drafting")
+    batch_items = estimate_work_order_batch_items(stripped)
+    if batch_items > max_batch_items:
+        raise ValueError(
+            "work-order draft appears to describe "
+            f"{batch_items} tasks; split it into <= {max_batch_items} work orders "
+            "or raise --max-batch-items intentionally"
+        )
+    if _is_stub_work_order_body(stripped):
+        raise ValueError(
+            "work-order draft body looks like a stub; include concrete task detail "
+            "or acceptance evidence instead of a pointer-only body"
+        )
+    return batch_items
+
+
+def _is_stub_work_order_body(source_text: str) -> bool:
+    text = re.sub(r"[`*_>#\[\]():/]+", " ", source_text)
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]*", text)
+    if WORK_ORDER_STUB_REFERENCE_RE.search(source_text) and len(words) < 12:
+        return True
+    if re.fullmatch(r"\s*(?:todo|tbd|stub|placeholder)\s*[:.]?\s*", text, re.IGNORECASE):
+        return True
+    has_task_detail = bool(WORK_ORDER_ACTION_RE.search(text))
+    has_acceptance = bool(WORK_ORDER_ACCEPTANCE_RE.search(text))
+    return len(words) < 4 and not has_task_detail and not has_acceptance
+
+
 def render_work_order(
     *,
     title: str,
@@ -1255,8 +1324,13 @@ def draft_work_order(
     source: Mapping[str, Any] | None = None,
     output: Path | None = None,
     force: bool = False,
+    max_batch_items: int = DEFAULT_MAX_WORK_ORDER_BATCH_ITEMS,
 ) -> dict[str, Any]:
     title = title.strip() or _extract_heading_title(source_text, "Untitled work order")
+    batch_items = validate_work_order_source_text(
+        source_text,
+        max_batch_items=max_batch_items,
+    )
     output = output or (DEFAULT_WORK_ORDER_DIR / f"{_safe_slug(title)}.md")
     if output.suffix.lower() == ".json":
         raise ValueError("work-order draft --output must be a Markdown path, not .json")
@@ -1291,6 +1365,8 @@ def draft_work_order(
         "context_manifest": str(context_manifest) if context_manifest else "",
         "role_lenses": list(effective_role_lenses),
         "review_lanes": list(effective_review_lanes),
+        "max_batch_items": max_batch_items,
+        "batch_item_estimate": batch_items,
         "source": source_metadata,
         "cloud_event_path": str(cloud_event_path),
     }
@@ -1584,6 +1660,12 @@ def work_order_main(argv: list[str] | None = None) -> int:
     draft_parser.add_argument("--role-lens", action="append", default=[])
     draft_parser.add_argument("--review-lane", action="append", default=[])
     draft_parser.add_argument("--output", type=Path)
+    draft_parser.add_argument(
+        "--max-batch-items",
+        type=int,
+        default=DEFAULT_MAX_WORK_ORDER_BATCH_ITEMS,
+        help="Refuse draft bodies that appear to contain more than this many work orders.",
+    )
     draft_parser.add_argument("--force", action="store_true")
     draft_parser.add_argument("--json", action="store_true")
 
@@ -1656,6 +1738,7 @@ def work_order_main(argv: list[str] | None = None) -> int:
                 source=source,
                 output=args.output,
                 force=args.force,
+                max_batch_items=args.max_batch_items,
             )
             text = (
                 f"Code Mower work order\nOutput: {payload.get('output_path')}\n"
