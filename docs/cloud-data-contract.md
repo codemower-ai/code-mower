@@ -146,6 +146,9 @@ spend rows still become `reviewer_run` events, work-order sidecars remain
 automated events remain valid. The workflow uses trusted default-branch support
 files and must not upload source, diffs, prompts, transcripts, stdout/stderr,
 issue body text, or secrets.
+Fixture-shaped or quarantined audit verdict artifacts are excluded from
+`reviewer_run` export and upload so local wrapper tests cannot become dashboard
+or calibration evidence.
 
 `reviewer_run` events may include per-lane audit comment attribution in
 `dimensions.audit_comment_lane_id`, `dimensions.audit_comment_identity_source`,

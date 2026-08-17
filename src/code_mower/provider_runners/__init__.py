@@ -36,6 +36,11 @@ from .pr_worktree import (
 from .repo_paths import parse_repo_paths
 from .text_schema import clip_text, one_line, require_exact_keys
 from .verdict_artifacts import (
+    audit_runtime_quarantine_reason,
+    fixture_verdict_comment_reason,
+    is_fixture_structured_verdict,
+    is_fixture_verdict_artifact,
+    is_fixture_verdict_comment,
     load_audit_verdict_artifact,
     repost_audit_verdict_artifact,
     write_audit_verdict_artifact,
@@ -59,11 +64,16 @@ __all__ = [
     "fetch_pr_head_sha_or_raise",
     "fetch_pr_head_sha_unless_local_matches",
     "fetch_pr_head_unless_local_matches",
+    "fixture_verdict_comment_reason",
+    "is_fixture_verdict_artifact",
+    "is_fixture_verdict_comment",
+    "is_fixture_structured_verdict",
     "local_checkout_matches_head",
     "load_audit_verdict_artifact",
     "local_head_sha",
     "limit_comment_body",
     "MAX_GITHUB_COMMENT_CHARS",
+    "audit_runtime_quarantine_reason",
     "clip_text",
     "DEFAULT_HOME_ENV_KEYS",
     "one_line",

@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from .corpus import parse_int
 from .identity import safe_slug
 from .run_status import RUN_STATUS_BLOCKED, RUN_STATUS_PASS, RUN_STATUS_UNKNOWN
+from ..provider_runners import is_fixture_verdict_comment
 
 AUTO_DISCOVERY_SCHEMA = "code_mower.calibrationAutoDiscover.v1"
 TRUTH_EXPECTATION_UNKNOWN = "unknown"
@@ -146,6 +147,8 @@ def _audit_runs_from_comments(comments: Sequence[Any]) -> list[dict[str, Any]]:
             continue
         body = str(comment.get("body") or "")
         if not body:
+            continue
+        if is_fixture_verdict_comment(body):
             continue
         for match in AUDIT_STATE_RE.finditer(body):
             state = match.group("state")

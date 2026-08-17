@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from code_mower import cloud as code_mower_cloud
 from code_mower import code_mower_telemetry, reviewer_metrics
+from code_mower.provider_runners import write_audit_verdict_artifact
 
 
 class ReviewerMetricsCoreTests(unittest.TestCase):
@@ -172,6 +173,35 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             self.assertNotIn("comment_body", serialized)
             self.assertNotIn("abcdef0123456789", serialized)
             self.assertNotIn("Findings:", serialized)
+
+    def test_verdict_artifacts_export_skips_fixture_shaped_cache_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_artifact(root, pr_number=41)
+            self._write_artifact(
+                root,
+                pr_number=42,
+                lane_id="claude-audit",
+                comment_body=(
+                    "## Claude audit (merge-authority lane)\n\n"
+                    "Head SHA: `abcdef0`\n"
+                    "Findings: P0=0, P1=1, P2=0, P3=0 "
+                    "(blocker policy: any P0/P1/P2 -> BLOCKED)\n\n"
+                    "Claude Audit: BLOCKED\n\n"
+                    "Summary:\n\n"
+                    "test\n\n"
+                    "Findings:\n\n"
+                    "- [P1] test -- `a.py:1`\n"
+                    "  test\n\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->\n"
+                ),
+                trailer="<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->",
+            )
+
+            events = code_mower_telemetry.export_reviewer_run_events_from_verdicts(root)
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["dimensions"]["pr_number"], 41)
 
     def test_verdict_artifact_export_can_opt_into_git_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -333,6 +363,69 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
                 os.environ.pop(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV, None)
             else:
                 os.environ[code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV] = old_value
+
+    def test_default_verdict_artifact_dir_honors_xdg_cache_home(self) -> None:
+        old_artifact_dir = os.environ.get(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV)
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        try:
+            os.environ.pop(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV, None)
+            os.environ["XDG_CACHE_HOME"] = "/tmp/code-mower-cache-test"
+
+            path = code_mower_telemetry.default_verdict_artifact_dir()
+
+            self.assertEqual(
+                path,
+                Path("/tmp/code-mower-cache-test/code-mower-audits/verdicts"),
+            )
+        finally:
+            if old_artifact_dir is None:
+                os.environ.pop(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV, None)
+            else:
+                os.environ[code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV] = (
+                    old_artifact_dir
+                )
+            if old_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = old_xdg
+
+    def test_quarantine_dir_defaults_next_to_pinned_verdict_dir(self) -> None:
+        old_artifact_dir = os.environ.get(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV)
+        old_quarantine_dir = os.environ.get("CODE_MOWER_VERDICT_QUARANTINE_DIR")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                verdict_dir = Path(tmp) / "state" / "verdicts"
+                os.environ[code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV] = str(verdict_dir)
+                os.environ.pop("CODE_MOWER_VERDICT_QUARANTINE_DIR", None)
+
+                path = write_audit_verdict_artifact(
+                    lane_id="claude-audit",
+                    repo="owner/repo",
+                    pr_number=42,
+                    head_sha_start="a" * 40,
+                    head_sha_end="a" * 40,
+                    verdict="UNKNOWN",
+                    trailer="<!-- CLAUDE_AUDIT_STATE: needs-claude-audit -->",
+                    comment_body="requeued",
+                    quarantine_reason="fixture-shaped audit verdict comment",
+                )
+
+                self.assertIsNotNone(path)
+                assert path is not None
+                self.assertTrue(
+                    path.is_relative_to(Path(tmp) / "state" / "quarantine" / "verdicts")
+                )
+        finally:
+            if old_artifact_dir is None:
+                os.environ.pop(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV, None)
+            else:
+                os.environ[code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV] = (
+                    old_artifact_dir
+                )
+            if old_quarantine_dir is None:
+                os.environ.pop("CODE_MOWER_VERDICT_QUARANTINE_DIR", None)
+            else:
+                os.environ["CODE_MOWER_VERDICT_QUARANTINE_DIR"] = old_quarantine_dir
 
     def test_cloud_reviewer_runs_builds_dry_run_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

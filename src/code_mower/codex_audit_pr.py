@@ -89,11 +89,13 @@ if __package__ in {None, "", "tools"}:
         from tools import reviewer_spend
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.provider_runners import (
+            audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
             clip_text as _clip_text,
             fetch_pull_request,
             fetch_base_ref as _shared_fetch_base_ref,
             fetch_pr_head as _shared_fetch_pr_head,
             fetch_pr_head_unless_local_matches as _shared_fetch_pr_head_unless_local_matches,
+            is_fixture_structured_verdict as _is_fixture_structured_verdict,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
@@ -112,11 +114,13 @@ if __package__ in {None, "", "tools"}:
         import reviewer_spend  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from provider_runners import (  # type: ignore
+            audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
             clip_text as _clip_text,
             fetch_pull_request,
             fetch_base_ref as _shared_fetch_base_ref,
             fetch_pr_head as _shared_fetch_pr_head,
             fetch_pr_head_unless_local_matches as _shared_fetch_pr_head_unless_local_matches,
+            is_fixture_structured_verdict as _is_fixture_structured_verdict,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
@@ -135,12 +139,14 @@ else:  # pragma: no cover - exercised after package extraction.
     from . import reviewer_spend
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .provider_runners import (
+        audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
         clip_text as _clip_text,
         create_temp_worktree as _shared_create_temp_worktree,
         fetch_base_ref as _shared_fetch_base_ref,
         fetch_pull_request,
         fetch_pr_head as _shared_fetch_pr_head,
         fetch_pr_head_unless_local_matches as _shared_fetch_pr_head_unless_local_matches,
+        is_fixture_structured_verdict as _is_fixture_structured_verdict,
         limit_comment_body,
         one_line as _one_line,
         parse_repo_paths as _parse_repo_paths,
@@ -240,6 +246,7 @@ class CodexVerdict:
     # (e.g. verdict=pass but P2 findings are present). This is not
     # rendered into the public PR comment; audit_pr() logs it to stderr.
     mismatch_note: str = ""
+    quarantine_reason: str = ""
 
     @property
     def blocker_count(self) -> int:
@@ -258,6 +265,7 @@ class CodexVerdict:
             "blocker_count": self.blocker_count,
             "findings": self.findings,
             "mismatch_note": self.mismatch_note,
+            "quarantine_reason": self.quarantine_reason,
         }
 
 
@@ -311,6 +319,23 @@ STALE_TRAILER = "<!-- CODEX_AUDIT_STATE: needs-codex-audit -->"
 DONE_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
 BLOCKED_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
 AUDIT_RUN_TRAILER_PREFIX = "<!-- CODE_MOWER_AUDIT_RUN:"
+
+
+def _quarantine_is_test_only(reason: Optional[str]) -> bool:
+    return reason == "PYTEST_CURRENT_TEST is set"
+
+
+def _comment_with_runtime_quarantine_note(comment_body: str, reason: str) -> str:
+    note = (
+        "\nRuntime quarantine: local verdict artifact was quarantined because "
+        f"{reason}. Posting UNKNOWN so the lane requeues visibly.\n"
+    )
+    marker = f"\n\n{STALE_TRAILER}"
+    if marker in comment_body:
+        body = comment_body.replace(marker, note + "\n" + STALE_TRAILER, 1)
+    else:
+        body = comment_body.rstrip() + note + "\n" + STALE_TRAILER + "\n"
+    return limit_comment_body(body, STALE_TRAILER, provider_name="Codex")
 
 
 # ----- Structured verdict validation -----
@@ -446,6 +471,20 @@ def parse_structured_codex_verdict(data: Any) -> CodexVerdict:
             rendered_findings.append(raw_finding)
 
     blocker_count = p_counts[0] + p_counts[1] + p_counts[2]
+    if _is_fixture_structured_verdict(summary, raw_findings):
+        return CodexVerdict(
+            verdict="UNKNOWN",
+            prose=(
+                "(structured Codex verdict is unusable: fixture-shaped structured "
+                "verdict; requeue and retry)"
+            ),
+            p0_count=p_counts[0],
+            p1_count=p_counts[1],
+            p2_count=p_counts[2],
+            p3_count=p_counts[3],
+            findings=finding_lines,
+            quarantine_reason="fixture-shaped structured verdict",
+        )
     if blocker_count > 0:
         verdict = "BLOCKED"
         mismatch_note = (
@@ -1367,6 +1406,9 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 comment_body=comment_body, codex_stdout="", codex_stderr="",
             )
             if not config.dry_run:
+                quarantine_reason = _audit_runtime_quarantine_reason(
+                    comment_body=comment_body,
+                )
                 artifact_path = write_audit_verdict_artifact(
                     lane_id="codex-audit",
                     repo=repo,
@@ -1376,6 +1418,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                     verdict=result.verdict,
                     trailer=result.trailer,
                     comment_body=comment_body,
+                    quarantine_reason=quarantine_reason,
                 )
                 result.verdict_artifact_path = artifact_path
                 if artifact_path is not None:
@@ -1395,9 +1438,27 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 # comment. See generated product-support wrapper
                 # finish_lock handling for the wrapper-side history and
                 # the general silent-success/silent-failure lesson.
-                posted = post_pr_comment(repo, pr_number, comment_body,
-                                          token=config.github_token)
-                result.posted_comment_url = posted.get("html_url")
+                if quarantine_reason:
+                    print(
+                        "  runtime guard quarantined verdict artifact: "
+                        f"{quarantine_reason}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                if quarantine_reason and _quarantine_is_test_only(quarantine_reason):
+                    print("  skipped GitHub post for pytest-only quarantine", file=sys.stderr, flush=True)
+                else:
+                    if quarantine_reason:
+                        result.verdict = "UNKNOWN"
+                        result.trailer = STALE_TRAILER
+                        comment_body = _comment_with_runtime_quarantine_note(
+                            comment_body,
+                            quarantine_reason,
+                        )
+                        result.comment_body = comment_body
+                    posted = post_pr_comment(repo, pr_number, comment_body,
+                                              token=config.github_token)
+                    result.posted_comment_url = posted.get("html_url")
             config.progress.emit(
                 "audit",
                 status="finish",
@@ -1547,6 +1608,12 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     )
 
     if not config.dry_run:
+        quarantine_reason = _audit_runtime_quarantine_reason(
+            comment_body=comment_body,
+            fixture_reason=(
+                parsed.quarantine_reason if parsed.verdict == "UNKNOWN" else None
+            ),
+        )
         artifact_path = write_audit_verdict_artifact(
             lane_id="codex-audit",
             repo=repo,
@@ -1556,6 +1623,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             verdict=result_verdict,
             trailer=trailer,
             comment_body=comment_body,
+            quarantine_reason=quarantine_reason,
         )
         result.verdict_artifact_path = artifact_path
         if artifact_path is not None:
@@ -1568,16 +1636,34 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         # at the STALE-handler call site. tl;dr: post_pr_comment() raising
         # is the only signal the wrapper's finish_lock has that posting
         # failed. Do not catch the exception here.
-        posted = post_pr_comment(repo, pr_number, comment_body,
-                                  token=config.github_token)
-        result.posted_comment_url = posted.get("html_url")
-        print(f"posted {repo}#{pr_number} verdict={result_verdict} "
-              f"url={result.posted_comment_url}", file=sys.stderr)
+        if quarantine_reason:
+            print(
+                "  runtime guard quarantined verdict artifact: "
+                f"{quarantine_reason}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if quarantine_reason and _quarantine_is_test_only(quarantine_reason):
+            print("  skipped GitHub post for pytest-only quarantine", file=sys.stderr, flush=True)
+        else:
+            if quarantine_reason:
+                result.verdict = "UNKNOWN"
+                result.trailer = STALE_TRAILER
+                comment_body = _comment_with_runtime_quarantine_note(
+                    comment_body,
+                    quarantine_reason,
+                )
+                result.comment_body = comment_body
+            posted = post_pr_comment(repo, pr_number, comment_body,
+                                      token=config.github_token)
+            result.posted_comment_url = posted.get("html_url")
+            print(f"posted {repo}#{pr_number} verdict={result_verdict} "
+                  f"url={result.posted_comment_url}", file=sys.stderr)
 
     config.progress.emit(
         "audit",
         status="finish",
-        detail=f"{repo}#{pr_number} verdict={result_verdict}",
+        detail=f"{repo}#{pr_number} verdict={result.verdict}",
     )
     return result
 
