@@ -247,6 +247,7 @@ code-mower cloud export \
   --report reviewer-metrics=reviewer-metrics.json \
   --report lane-policy=lane-policy.json \
   --report value-report=reviewer-value-report.md \
+  --spend .code-mower.generated/reviewer-spend.json \
   --output-dir .code-mower/cloud-benchmark-bundle \
   --anonymous \
   --json

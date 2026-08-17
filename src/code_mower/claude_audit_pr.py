@@ -27,6 +27,8 @@ from typing import Any, Dict, List, Optional, Tuple
 if __package__ in {None, "", "tools"}:
     try:
         from tools import code_mower_prompts
+        from tools import plan_context as code_mower_plan_context
+        from tools import reviewer_spend
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.claude_cli_environment import clean_claude_cli_env, env_flag
         from tools.provider_runners import (
@@ -50,6 +52,8 @@ if __package__ in {None, "", "tools"}:
             import code_mower_prompts  # type: ignore
         except ImportError:
             import prompts as code_mower_prompts  # type: ignore
+        import plan_context as code_mower_plan_context  # type: ignore
+        import reviewer_spend  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from claude_cli_environment import clean_claude_cli_env, env_flag  # type: ignore
         from provider_runners import (  # type: ignore
@@ -70,6 +74,8 @@ if __package__ in {None, "", "tools"}:
         )
 else:  # pragma: no cover - exercised after package extraction.
     from . import prompts as code_mower_prompts
+    from . import plan_context as code_mower_plan_context
+    from . import reviewer_spend
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .claude_cli_environment import clean_claude_cli_env, env_flag
     from .provider_runners import (
@@ -154,6 +160,12 @@ class ClaudeAuditConfig:
     )
     prompt_dir: Optional[Path] = None
     progress: Optional[AuditProgress] = None
+    include_plan_context: bool = True
+    project_context_manifest: Optional[Path] = None
+    external_context_manifest: Optional[Path] = None
+    max_plan_context_bytes: int = code_mower_plan_context.DEFAULT_MAX_TOTAL_BYTES
+    max_plan_context_file_bytes: int = code_mower_plan_context.DEFAULT_MAX_FILE_BYTES
+    merge_authority: bool = True
 
 
 @dataclass
@@ -510,6 +522,7 @@ def _review_prompt(
     was_truncated: bool,
     diff_diagnostics: str = "",
     review_doctrine: str = "",
+    plan_context_text: str = "",
 ) -> str:
     safe_branch_name = _one_line(branch_name, 200)
     safe_title = _one_line(title, 500)
@@ -534,6 +547,14 @@ def _review_prompt(
             f"{review_doctrine.rstrip()}\n"
             "----- END TRUSTED REVIEW DOCTRINE -----\n"
         )
+    plan_context_block = ""
+    if plan_context_text.strip():
+        plan_context_block = (
+            "\nTrusted Code Mower plan-of-record context:\n"
+            "----- BEGIN TRUSTED PLAN CONTEXT -----\n"
+            f"{plan_context_text.rstrip()}\n"
+            "----- END TRUSTED PLAN CONTEXT -----\n"
+        )
     return f"""You are Claude Audit, an automated code-review lane.
 
 Review this pull request diff for correctness blockers. Do not execute code.
@@ -548,6 +569,7 @@ Claude-authored PR, report that limitation instead of self-approving.
 
 Return only the structured JSON object required by the provided schema.
 {doctrine_block}
+{plan_context_block}
 
 Repository: {repo}
 Pull request: #{pr_number}
@@ -682,8 +704,10 @@ def format_comment(
     is_stale: bool = False,
     stale_end_sha: Optional[str] = None,
     is_unknown: bool = False,
+    merge_authority: bool = True,
 ) -> str:
-    header = "## Claude audit\n\n"
+    posture = "merge-authority lane" if merge_authority else "informational only"
+    header = f"## Claude audit ({posture})\n\n"
     header += f"Head SHA: `{head_sha}`\n"
     if is_stale:
         body = (
@@ -790,6 +814,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             head_sha_start,
             is_stale=True,
             stale_end_sha=exc.actual_sha,
+            merge_authority=config.merge_authority,
         )
         result = ClaudeAuditResult(
             repo=repo,
@@ -840,6 +865,23 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
         file=sys.stderr,
         flush=True,
     )
+    rendered_plan_context = None
+    if config.include_plan_context:
+        rendered_plan_context = code_mower_plan_context.render_plan_context(
+            repo_root=local_repo,
+            project_context_manifest=config.project_context_manifest,
+            external_context_manifest=config.external_context_manifest,
+            max_total_bytes=config.max_plan_context_bytes,
+            max_file_bytes=config.max_plan_context_file_bytes,
+            trusted_git_ref=config.base_ref,
+        )
+        print(
+            "  plan context: "
+            f"{rendered_plan_context.included_documents} section(s), "
+            f"{rendered_plan_context.included_bytes} bytes",
+            file=sys.stderr,
+            flush=True,
+        )
 
     prompt = _review_prompt(
         repo=repo,
@@ -859,6 +901,9 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             repo_root=local_repo,
             missing_ok=True,
         ),
+        plan_context_text=(
+            rendered_plan_context.text if rendered_plan_context is not None else ""
+        ),
     )
 
     t0 = time.time()
@@ -873,15 +918,30 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     is_stale = head_sha_start != head_sha_end
 
     if is_stale:
-        comment_body = format_comment(parsed, head_sha_start, is_stale=True, stale_end_sha=head_sha_end)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            is_stale=True,
+            stale_end_sha=head_sha_end,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = "STALE"
         trailer = STALE_TRAILER
     elif parsed.verdict == "UNKNOWN":
-        comment_body = format_comment(parsed, head_sha_start, is_unknown=True)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            is_unknown=True,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
     else:
-        comment_body = format_comment(parsed, head_sha_start)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = parsed.verdict
         trailer = BLOCKED_TRAILER if parsed.verdict == "BLOCKED" else DONE_TRAILER
 
@@ -933,6 +993,13 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_flag_default(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _resolve_github_token(read_from_stdin: bool) -> Optional[str]:
@@ -992,9 +1059,96 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         ),
         help="Directory containing Code Mower review lens markdown files.",
     )
+    ap.add_argument(
+        "--project-context-manifest",
+        type=Path,
+        default=(
+            os.environ.get("CODE_MOWER_PROJECT_CONTEXT_MANIFEST")
+            or os.environ.get("CLAUDE_AUDIT_PROJECT_CONTEXT_MANIFEST")
+            or None
+        ),
+        help=(
+            "Project-context manifest to inject into the plan-conformance "
+            "audit lens. Defaults to .code-mower/project-context/"
+            "project-context-manifest.json when present."
+        ),
+    )
+    ap.add_argument(
+        "--external-context-manifest",
+        type=Path,
+        default=(
+            os.environ.get("CODE_MOWER_EXTERNAL_CONTEXT_MANIFEST")
+            or os.environ.get("CLAUDE_AUDIT_EXTERNAL_CONTEXT_MANIFEST")
+            or None
+        ),
+        help=(
+            "External-context manifest whose preview files may be injected "
+            "into the plan-conformance audit lens."
+        ),
+    )
+    ap.add_argument(
+        "--max-plan-context-bytes",
+        type=int,
+        default=int(
+            os.environ.get(
+                "CODE_MOWER_MAX_PLAN_CONTEXT_BYTES",
+                code_mower_plan_context.DEFAULT_MAX_TOTAL_BYTES,
+            )
+        ),
+        help="Maximum total bytes of trusted plan context to include.",
+    )
+    ap.add_argument(
+        "--max-plan-context-file-bytes",
+        type=int,
+        default=int(
+            os.environ.get(
+                "CODE_MOWER_MAX_PLAN_CONTEXT_FILE_BYTES",
+                code_mower_plan_context.DEFAULT_MAX_FILE_BYTES,
+            )
+        ),
+        help="Maximum bytes from any single trusted plan-context file.",
+    )
+    ap.add_argument(
+        "--no-plan-context",
+        action="store_true",
+        default=_env_flag("CODE_MOWER_NO_PLAN_CONTEXT"),
+        help="Disable automatic plan-conformance context injection.",
+    )
     ap.add_argument("--allow-claude-owned", action="store_true", default=_env_flag("CLAUDE_AUDIT_ALLOW_CLAUDE_OWNED"))
     ap.add_argument("--dry-run", action="store_true", default=_env_flag("CLAUDE_AUDIT_DRY_RUN"))
     ap.add_argument("--read-token-from-stdin", action="store_true")
+    ap.add_argument(
+        "--spend-path",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "CODE_MOWER_REVIEWER_SPEND_PATH",
+                str(reviewer_spend.DEFAULT_SPEND_PATH),
+            )
+        ),
+        help="append metadata-only spend/latency for this audit run to this JSON file",
+    )
+    ap.add_argument(
+        "--no-spend-capture",
+        action="store_true",
+        default=_env_flag("CODE_MOWER_NO_SPEND_CAPTURE")
+        or _env_flag("CLAUDE_AUDIT_NO_SPEND_CAPTURE"),
+        help="do not append this audit run to reviewer-spend.json",
+    )
+    posture_default = _env_flag_default("CLAUDE_AUDIT_MERGE_AUTHORITY", True)
+    ap.add_argument(
+        "--merge-authority",
+        dest="merge_authority",
+        action="store_true",
+        default=posture_default,
+        help="Render audit comments as merge-authority lane comments.",
+    )
+    ap.add_argument(
+        "--informational",
+        dest="merge_authority",
+        action="store_false",
+        help="Render audit comments as informational-only calibration comments.",
+    )
     return ap.parse_args(argv)
 
 
@@ -1032,6 +1186,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("error: --repo-paths or CLAUDE_AUDIT_REPO_PATHS is required", file=sys.stderr)
         return 1
 
+    audit_started = time.monotonic()
     try:
         repo_paths = _parse_repo_paths(args.repo_paths)
         config = ClaudeAuditConfig(
@@ -1048,6 +1203,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             allow_claude_owned=args.allow_claude_owned,
             prompt_lenses=code_mower_prompts.split_lenses(args.prompt_lenses),
             prompt_dir=args.prompt_dir,
+            include_plan_context=not args.no_plan_context,
+            project_context_manifest=args.project_context_manifest,
+            external_context_manifest=args.external_context_manifest,
+            max_plan_context_bytes=args.max_plan_context_bytes,
+            max_plan_context_file_bytes=args.max_plan_context_file_bytes,
+            merge_authority=args.merge_authority,
         )
         result = audit_pr(config, args.repo, args.pr)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
@@ -1056,6 +1217,26 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if config.dry_run:
         print(result.comment_body)
+    if not args.no_spend_capture:
+        try:
+            usage = reviewer_spend.extract_usage_metrics(
+                result.claude_stdout,
+                result.claude_stderr,
+            )
+            spend_run = reviewer_spend.build_spend_run(
+                lane="claude-audit",
+                repo=result.repo,
+                pr_number=result.pr_number,
+                head_sha=result.head_sha_start,
+                model=config.model,
+                wall_seconds=time.monotonic() - audit_started,
+                verdict=result.verdict,
+                usage=usage,
+            )
+            reviewer_spend.append_spend_run(args.spend_path, spend_run)
+            print(f"spend metadata appended to {args.spend_path}", file=sys.stderr)
+        except (OSError, ValueError) as exc:
+            print(f"warning: failed to append spend metadata: {exc}", file=sys.stderr)
     return 2 if result.verdict in {"STALE", "UNKNOWN"} else 0
 
 

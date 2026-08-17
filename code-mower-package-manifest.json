@@ -33,6 +33,11 @@
       "target": "src/code_mower/builder_experiment.py"
     },
     {
+      "kind": "core",
+      "source": "src/code_mower/plan_context.py",
+      "target": "src/code_mower/plan_context.py"
+    },
+    {
       "kind": "tooling",
       "source": "requirements/requirements.txt",
       "target": "requirements/requirements.txt"
@@ -549,6 +554,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/reviewer_spend.py",
+      "target": "src/code_mower/reviewer_spend.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/provider_registry.py",
       "target": "src/code_mower/provider_registry.py"
     },
@@ -801,6 +811,11 @@
       "kind": "prompt",
       "source": "src/code_mower/templates/lane_prompts/package-runtime.md",
       "target": "src/code_mower/templates/lane_prompts/package-runtime.md"
+    },
+    {
+      "kind": "prompt",
+      "source": "src/code_mower/templates/lane_prompts/plan-conformance.md",
+      "target": "src/code_mower/templates/lane_prompts/plan-conformance.md"
     },
     {
       "kind": "prompt",
@@ -1090,12 +1105,27 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "templates/workflows/self-hosted-local-audit.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "templates/workflows/blind-review-artifacts-dry-run.yml.j2"
     },
     {
       "kind": "workflow",
       "source": "generated",
       "target": "templates/workflows/hosted-bridge.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/builder-provenance.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/code-mower-gate.yml.j2"
     },
     {
       "kind": "workflow",
@@ -1125,7 +1155,22 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "src/code_mower/templates/workflows/self-hosted-local-audit.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "src/code_mower/templates/workflows/hosted-bridge.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/builder-provenance.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
     },
     {
       "kind": "workflow",

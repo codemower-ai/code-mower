@@ -60,6 +60,7 @@ if __package__ in {None, ""}:
         write_setup_env_file,
     )
     from code_mower import code_mower_telemetry
+    from code_mower import reviewer_spend
 else:  # pragma: no cover - exercised after package extraction.
     from .cloud_client import (
         BUNDLE_MANIFEST_FILENAME,
@@ -109,6 +110,7 @@ else:  # pragma: no cover - exercised after package extraction.
         write_setup_env_file,
     )
     from . import code_mower_telemetry
+    from . import reviewer_spend
 
 
 DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
@@ -180,6 +182,28 @@ def _parse_report_args(values: list[str]) -> list[tuple[Path, str]]:
     return reports
 
 
+def _spend_events(
+    paths: list[Path],
+    *,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for path in paths:
+        events.extend(
+            reviewer_spend.spend_runs_to_events(
+                reviewer_spend.load_spend_file(path),
+                repo_slug=repo_slug,
+                team_id=team_id,
+                install_id=install_id,
+                source=source,
+            )
+        )
+    return events
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower cloud")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -239,6 +263,13 @@ def main(argv: list[str] | None = None) -> int:
             "include structured benchmark events from JSON/JSONL; event types: "
             + ", ".join(sorted(SAFE_EVENT_TYPES))
         ),
+    )
+    export.add_argument(
+        "--spend",
+        action="append",
+        default=[],
+        type=Path,
+        help="include reviewer-spend.json run rows as metadata-only reviewer_run events",
     )
     export.add_argument("--output-dir", type=Path, default=Path(DEFAULT_OUTPUT_DIR))
     export.add_argument("--repo-slug", default="")
@@ -308,6 +339,15 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="EVENT_TYPE=PATH",
         help="include additional structured benchmark events from JSON/JSONL",
+    )
+    dogfood.add_argument(
+        "--spend",
+        type=Path,
+        default=None,
+        help=(
+            "reviewer spend ledger to include; defaults to "
+            ".code-mower/reviewer-spend.json when present"
+        ),
     )
     dogfood.add_argument(
         "--endpoint",
@@ -474,9 +514,19 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Load it with: {result['shell']}")
             return 0
         if args.command == "export":
+            events = [
+                *_parse_event_args(args.event),
+                *_spend_events(
+                    args.spend,
+                    repo_slug=args.repo_slug,
+                    team_id=args.team_id,
+                    install_id=args.install_id,
+                    source="code-mower cloud export --spend",
+                ),
+            ]
             payload = build_cloud_bundle(
                 reports=_parse_report_args(args.report),
-                events=_parse_event_args(args.event),
+                events=events,
                 output_dir=args.output_dir,
                 repo_slug=args.repo_slug,
                 team_id=args.team_id,
@@ -556,6 +606,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=args.output_dir,
                 reports=_parse_report_args(args.report),
                 events=_parse_event_args(args.event),
+                spend_path=args.spend,
                 repo_slug=args.repo_slug,
                 team_id=args.team_id,
                 install_id=args.install_id,

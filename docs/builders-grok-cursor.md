@@ -40,6 +40,23 @@ code-mower builder record \
   --output .code-mower/builder-runs/example.cloud-event.json
 ```
 
+For hosted PRs with recognizable metadata, `auto-record` can write the same
+sidecar from a GitHub `pull_request` event payload or `gh pr view --json`
+output. It recognizes safe markers such as Cursor agent links, the
+`chatgpt-codex-connector` author, `claude[bot]`, and `cursor/`, `codex/`, or
+`claude/` branch prefixes, but it does not store the PR body text:
+
+```bash
+code-mower builder auto-record \
+  --pr-json "$GITHUB_EVENT_PATH" \
+  --repo "$GITHUB_REPOSITORY" \
+  --output .code-mower/builder-runs/pr-124.cloud-event.json \
+  --force
+```
+
+The bundled `templates/workflows/builder-provenance.yml.j2` workflow runs this
+on pull requests and uploads the generated sidecar as a workflow artifact.
+
 Then attach delivery/reviewer/merge metadata to the work-order event as normal:
 
 ```bash

@@ -176,6 +176,11 @@ code-mower builder record \
   --output .code-mower/builder-runs/billing-settings.cloud-event.json
 ```
 
+Use `code-mower builder auto-record --pr-json "$GITHUB_EVENT_PATH"` from the
+bundled builder-provenance workflow when the PR carries hosted-builder markers
+such as Cursor agent links, `chatgpt-codex-connector`, `claude[bot]`, or
+builder branch prefixes.
+
 Then include both sidecars in the cloud bundle:
 
 ```bash
