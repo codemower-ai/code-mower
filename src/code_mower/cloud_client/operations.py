@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import code_mower_telemetry
+from .. import reviewer_spend
 from .bundle import MAX_EVENT_COUNT
 from .doctor import run_cloud_doctor
 from .dogfood import build_dogfood_dry_run_preview, build_dogfood_plan, default_dogfood_reports
@@ -91,6 +92,7 @@ def dogfood_upload(
     output_dir: Path,
     reports: list[tuple[Path, str]],
     events: list[dict[str, Any]],
+    spend_path: Path | None,
     repo_slug: str,
     team_id: str,
     install_id: str,
@@ -110,13 +112,23 @@ def dogfood_upload(
     resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
     resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
     resolved_reports = reports or default_dogfood_reports(repo_path)
+    resolved_spend_path = spend_path or repo_path / reviewer_spend.DEFAULT_SPEND_PATH
+    spend_events: list[dict[str, Any]] = []
+    if resolved_spend_path.is_file():
+        spend_events = reviewer_spend.spend_runs_to_events(
+            reviewer_spend.load_spend_file(resolved_spend_path),
+            repo_slug=detected_repo_slug,
+            team_id=resolved_team_id,
+            install_id=resolved_install_id,
+            source="code-mower cloud dogfood spend",
+        )
     dogfood_plan = build_dogfood_plan(
         repo_slug=detected_repo_slug,
         team_id=resolved_team_id,
         install_id=resolved_install_id,
         source=source,
         reports=resolved_reports,
-        events=events,
+        events=[*events, *spend_events],
     )
     provider_catalog_events = build_provider_catalog_snapshot_events(
         repo_slug=detected_repo_slug,
@@ -131,6 +143,7 @@ def dogfood_upload(
             plan=dogfood_plan,
         ),
         *provider_catalog_events,
+        *spend_events,
         *events,
     ]
     export_result = build_cloud_bundle(
@@ -505,6 +518,7 @@ def repo_sync_upload(
                         output_dir=repo_output_dir / "dogfood",
                         reports=[],
                         events=[],
+                        spend_path=None,
                         repo_slug=repo_slug,
                         team_id=team_id,
                         install_id=install_id,

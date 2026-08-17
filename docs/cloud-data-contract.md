@@ -92,6 +92,50 @@ intervention count. They exist so CodeMower.com can connect
 without receiving source, issue bodies, diffs, prompts, transcripts,
 stdout/stderr, auth output, or secrets.
 
+Calibration and value-report uploads may add optional automated-vs-manual
+metadata to reviewer summaries and `reviewer_run`-shaped rows:
+`manual_outcome` (`pass`, `blocked`, or `unknown`), `automated_vs_manual`
+(`match`, `missed_blocker`, `false_blocker`, or `unknown`), and aggregate
+profile counters such as `auto_manual_match_runs`,
+`auto_manual_missed_blocker_runs`, and `auto_manual_false_blocker_runs`. These
+fields compare automated reviewer status with manual/adjudicated calibration
+truth. They are additive and CodeMower.com must continue accepting beta.40
+uploads that omit them. They must not include plan text, issue body text,
+source code, raw diffs, prompts, transcripts, stdout/stderr, auth output, or
+secrets.
+Plan-context audit prompts only read manifest-listed documents/previews that
+resolve inside the repository root. Default manifests are read from the trusted
+base ref rather than mutable working-tree files; explicit manifest paths are
+operator-pinned. The Codex wrapper only sends a supplemental stdin prompt when
+at least one context section is rendered.
+
+Auto-inferred `builder_run` events may add metadata-only dimensions such as
+`auto_inferred`, `builder_inference_confidence`, `builder_inference_signals`,
+and `pr_author`. The inference signals are marker names only, for example a bot
+author, branch prefix, or detected hosted-agent URL marker; the PR body text and
+footer text used for inference are not stored.
+Cursor inference only accepts Cursor agent/background-agent URLs or explicit
+Cursor-agent footer markers; generic `cursor.com` links are ignored.
+When metadata signals disagree, the highest-priority provider signal wins and
+provider-specific run URLs are emitted only for that winning provider.
+
+Audit CLIs may also append local spend rows to `reviewer-spend.json` using
+schema `code_mower.reviewerSpend.v1`. The file remains backward-compatible with
+beta.40 aggregate files that only contain `profiles`; new clients add an
+append-only `runs` list. Each run may include `run_id`, `created_at`, `lane`,
+`repo`, `pr_number`, `head_sha`, `model`, `wall_seconds`, `verdict`,
+`cost_usd`, and token counters such as `input_tokens`, `output_tokens`,
+`total_tokens`, cached-input counters, or `reasoning_tokens`. These are
+metadata-only fields. The ledger must not contain source, diffs, prompts,
+transcripts, stdout/stderr, issue bodies, auth output, or secrets.
+
+`code-mower cloud export --spend reviewer-spend.json` and dogfood uploads
+convert spend `runs` into `reviewer_run` events. The derived event places
+latency/cost/token numbers under `metrics`, PR/SHA/lane identifiers under
+`dimensions`, and model/tool identity under `tool`. CodeMower.com should accept
+uploads without these fields from beta.40 clients and treat missing spend rows
+as unknown, not zero measured spend.
+
 Each event may also include a `tool` object using schema
 `code_mower.toolProvenance.v1`. This object is the benchmark-grade provenance
 surface for AI tool/version/model data:

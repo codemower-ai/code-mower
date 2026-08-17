@@ -54,6 +54,15 @@ WORKFLOW_TARGETS_BY_DRIVER = {
     "saas_event": (".github/workflows/{lane_stem}-labeler.yml",),
 }
 
+LOCAL_AUDIT_WORKFLOW_PATH = ".github/workflows/local-cli-audit.yml"
+LOCAL_AUDIT_WORKFLOW_SOURCE = "self-hosted-local-audit-workflow-template"
+LOCAL_AUDIT_WORKFLOW_TEMPLATE = "templates/workflows/self-hosted-local-audit.yml.j2"
+LOCAL_AUDIT_RUNNER_LABEL = "code-mower-audit"
+LOCAL_AUDIT_WRAPPERS = {
+    "claude": "tools/run_claude_audit_pr.sh",
+    "codex": "tools/run_codex_audit_pr.sh",
+}
+
 DEFAULT_APPLY_OUTPUT_DIR = ".code-mower.generated"
 APPLY_MANIFEST_FILENAME = "code-mower-init-plan.json"
 APPLY_SUMMARY_FILES = ("labels.txt", "required-secrets.txt", "smoke-tests.sh")
@@ -157,6 +166,10 @@ OWNER_SURFACE_WORKFLOW_FILES = (
     ),
 )
 
+GATE_WORKFLOW_PATH = ".github/workflows/code-mower-gate.yml"
+GATE_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-gate.yml.j2"
+DEFAULT_OWNER_LABEL = "needs-owner"
+
 
 @dataclass(frozen=True)
 class InitProfile:
@@ -194,6 +207,10 @@ def _workflow_targets(lane_id: str, lane: Mapping[str, Any]) -> tuple[str, ...]:
 
 def _trailer_lane_name(lane_id: str, lane: Mapping[str, Any]) -> str:
     return str(lane.get("trailer_lane") or lane.get("lane_config") or lane_id)
+
+
+def _author_lane_name(lane_id: str, lane: Mapping[str, Any]) -> str:
+    return str(lane.get("author_lane") or _trailer_lane_name(lane_id, lane))
 
 
 def _lane_module_name(lane_id: str) -> str:
@@ -288,6 +305,8 @@ def _workflow_entry_for_target(
     lane_id: str,
     lane: Mapping[str, Any],
     target: str,
+    *,
+    author_exclusion_json: str = '{"enabled":false}',
 ) -> dict[str, str]:
     driver = str(lane.get("driver"))
     labels = _labels_for(lane)
@@ -301,6 +320,7 @@ def _workflow_entry_for_target(
         "done_label": str(labels["done"]),
         "blocked_label": str(labels["blocked"]),
         "label_token_env": _audit_token_env(lane),
+        "author_exclusion_json": author_exclusion_json,
     }
     if target.endswith("-bridge.yml"):
         return {
@@ -375,6 +395,144 @@ def _owner_surface_workflow_entry(
         "phase_labels": owner_surface["phase_labels"],
         "reviewer_spend_path": owner_surface["reviewer_spend_path"],
         "reviewer_value_report_path": owner_surface["reviewer_value_report_path"],
+    }
+
+
+def _local_audit_entries(
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, str], ...]:
+    entries: list[dict[str, str]] = []
+    for lane_id, lane in selected_lanes.items():
+        if lane.get("driver") != "local_cli":
+            continue
+        trailer_lane = _trailer_lane_name(lane_id, lane)
+        wrapper = LOCAL_AUDIT_WRAPPERS.get(trailer_lane.replace("_", "-"))
+        if wrapper is None:
+            continue
+        labels = _labels_for(lane)
+        entries.append(
+            {
+                "lane": trailer_lane,
+                "display_name": _display_name(trailer_lane),
+                "needs_label": str(labels["needs"]),
+                "token_env": _audit_token_env(lane),
+                "script": wrapper,
+            }
+        )
+    return tuple(entries)
+
+
+def _actions_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _local_audit_label_expression(entries: tuple[dict[str, str], ...], source: str) -> str:
+    label_path = "github.event.label.name" if source == "event" else "github.event.pull_request.labels.*.name"
+    if source == "event":
+        return " || ".join(
+            f"{label_path} == {_actions_string(entry['needs_label'])}" for entry in entries
+        )
+    return " || ".join(
+        "contains(join({label_path}, ','), {label})".format(
+            label_path=label_path,
+            label=_actions_string(entry["needs_label"]),
+        )
+        for entry in entries
+    )
+
+
+def _local_audit_workflow_entry(entries: tuple[dict[str, str], ...]) -> dict[str, str]:
+    token_envs = sorted({entry["token_env"] for entry in entries if entry["token_env"]})
+    token_assignments = "\n".join(
+        f"          {token_env}: ${{{{ secrets.{token_env} }}}}" for token_env in token_envs
+    )
+    return {
+        "path": LOCAL_AUDIT_WORKFLOW_PATH,
+        "source": LOCAL_AUDIT_WORKFLOW_SOURCE,
+        "copy_from": LOCAL_AUDIT_WORKFLOW_TEMPLATE,
+        "package_copy_from": LOCAL_AUDIT_WORKFLOW_TEMPLATE,
+        "local_audit_lanes_json": json.dumps(list(entries), sort_keys=True),
+        "local_audit_label_match": _local_audit_label_expression(entries, "event"),
+        "local_audit_label_contains": _local_audit_label_expression(entries, "pull_request"),
+        "local_audit_runner_label": LOCAL_AUDIT_RUNNER_LABEL,
+        "local_audit_token_env_assignments": token_assignments,
+    }
+
+
+def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
+    labels = _labels_for(lane)
+    trailer_lane = _trailer_lane_name(lane_id, lane)
+    return {
+        "id": lane_id,
+        "author_lane": _author_lane_name(lane_id, lane),
+        "display_name": _display_name(trailer_lane),
+        "done": str(labels["done"]),
+        "blocked": str(labels["blocked"]),
+        "builder_label": f"builder:{trailer_lane}",
+        "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
+    }
+
+
+def _identity_section(raw_identity: Mapping[str, Any], section: str) -> dict[str, str]:
+    raw_section = raw_identity.get(section)
+    if not isinstance(raw_section, Mapping):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in raw_section.items()
+        if str(key) and str(value)
+    }
+
+
+def _author_exclusion_payload(
+    config: Mapping[str, Any],
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    raw_identity = config.get("builder_identity")
+    identity = raw_identity if isinstance(raw_identity, Mapping) else {}
+    payload = {
+        "enabled": bool(config.get("merge_authority_excludes_author", True)),
+        "labels": _identity_section(identity, "labels"),
+        "authors": _identity_section(identity, "authors"),
+        "trailers": _identity_section(identity, "trailers"),
+    }
+    for lane_id, lane in selected_lanes.items():
+        if lane.get("merge_authority"):
+            author_lane = _author_lane_name(lane_id, lane)
+            payload["labels"].setdefault(f"builder:{author_lane}", author_lane)
+    return payload
+
+
+def _author_exclusion_json(
+    config: Mapping[str, Any],
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+) -> str:
+    return json.dumps(
+        _author_exclusion_payload(config, selected_lanes),
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _gate_workflow_entry(
+    config: Mapping[str, Any],
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+    *,
+    author_exclusion_json: str,
+) -> dict[str, str]:
+    gate_lanes = [
+        _gate_lane_entry(lane_id, lane)
+        for lane_id, lane in selected_lanes.items()
+        if lane.get("merge_authority")
+    ]
+    return {
+        "path": GATE_WORKFLOW_PATH,
+        "source": "code-mower-gate-workflow-template",
+        "copy_from": GATE_WORKFLOW_TEMPLATE,
+        "package_copy_from": GATE_WORKFLOW_TEMPLATE,
+        "gate_lanes_json": json.dumps(gate_lanes, separators=(",", ":"), sort_keys=True),
+        "owner_label": DEFAULT_OWNER_LABEL,
+        "author_exclusion_json": author_exclusion_json,
     }
 
 
@@ -695,13 +853,24 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
     rendered = text.replace("{% raw %}", "").replace("{% endraw %}", "")
     replacements = {
         "__ADAPTER__": str(entry.get("adapter") or ""),
+        "__AUTHOR_EXCLUSION_JSON__": str(
+            entry.get("author_exclusion_json") or '{"enabled":false}'
+        ),
         "__AUTHORS_ENV__": str(entry.get("authors_env") or ""),
         "__BLOCKED_LABEL__": str(entry.get("blocked_label") or ""),
         "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
         "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
+        "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
         "__LANE_ID__": str(entry.get("lane_id") or ""),
+        "__LOCAL_AUDIT_LABEL_CONTAINS__": str(entry.get("local_audit_label_contains") or ""),
+        "__LOCAL_AUDIT_LABEL_MATCH__": str(entry.get("local_audit_label_match") or ""),
+        "__LOCAL_AUDIT_LANES_JSON__": str(entry.get("local_audit_lanes_json") or "[]"),
+        "__LOCAL_AUDIT_RUNNER_LABEL__": str(entry.get("local_audit_runner_label") or ""),
+        "__LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__": str(
+            entry.get("local_audit_token_env_assignments") or ""
+        ),
         "__NEEDS_LABEL__": str(entry.get("needs_label") or ""),
         "__NEEDS_OWNER_LABEL__": str(entry.get("needs_owner_label") or ""),
         "__OWNER_LOGIN__": str(entry.get("owner_login") or ""),
@@ -713,6 +882,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
             entry.get("reviewer_value_report_path") or ""
         ),
         "__STATUS_ISSUE__": str(entry.get("status_issue") or ""),
+        "__OWNER_LABEL__": str(entry.get("owner_label") or DEFAULT_OWNER_LABEL),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
         "__TRAILER_PREFIX__": str(entry.get("trailer_prefix") or ""),
         "__WEEKLY_STATUS_CRON__": str(entry.get("weekly_status_cron") or ""),
@@ -726,8 +896,10 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
 def _workflow_template_needs_render(source: str) -> bool:
     return source in {
         "shared-cleanup-template",
+        "code-mower-gate-workflow-template",
         "hosted-bridge-workflow-template",
         "owner-notify-workflow-template",
+        "self-hosted-local-audit-workflow-template",
         "saas-reviewer-labeler-workflow-template",
         "trailer-comment-labeler-workflow-template",
         "weekly-status-workflow-template",
@@ -916,6 +1088,7 @@ def render_init_plan(
     merge_authority_lanes: list[str] = []
     informational_lanes: list[str] = []
     owner_surface = _owner_surface_config(config)
+    author_exclusion_json = _author_exclusion_json(config, selected_lanes)
 
     for lane_id, lane in selected_lanes.items():
         lane_labels = _labels_for(lane)
@@ -939,7 +1112,14 @@ def render_init_plan(
             )
             if target not in generated_paths:
                 generated_paths.add(target)
-                generated_files.append(_workflow_entry_for_target(lane_id, lane, target))
+                generated_files.append(
+                    _workflow_entry_for_target(
+                        lane_id,
+                        lane,
+                        target,
+                        author_exclusion_json=author_exclusion_json,
+                    )
+                )
         if lane.get("driver") in {"local_cli", "hosted_bridge", "api_model"}:
             trailer_lane = _trailer_lane_name(lane_id, lane)
             trailer_module = _lane_module_name(trailer_lane)
@@ -963,6 +1143,37 @@ def render_init_plan(
     ):
         if label:
             labels.append(label)
+
+    local_audit_entries = _local_audit_entries(selected_lanes)
+    if local_audit_entries and LOCAL_AUDIT_WORKFLOW_PATH not in generated_paths:
+        workflow_targets.add(LOCAL_AUDIT_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "local-cli-audits",
+                "driver": "local_cli",
+                "target": LOCAL_AUDIT_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(LOCAL_AUDIT_WORKFLOW_PATH)
+        generated_files.append(_local_audit_workflow_entry(local_audit_entries))
+
+    if merge_authority_lanes and GATE_WORKFLOW_PATH not in generated_paths:
+        workflow_targets.add(GATE_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "code-mower-gate",
+                "driver": "gate",
+                "target": GATE_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(GATE_WORKFLOW_PATH)
+        generated_files.append(
+            _gate_workflow_entry(
+                config,
+                selected_lanes,
+                author_exclusion_json=author_exclusion_json,
+            )
+        )
 
     cleanup_path = ".github/workflows/audit-label-cleanup.yml"
     if cleanup_path not in generated_paths:
@@ -1058,6 +1269,7 @@ def render_init_plan(
         "required_secrets": sorted(required_secrets),
         "merge_authority_lanes": merge_authority_lanes,
         "informational_lanes": informational_lanes,
+        "merge_authority_excludes_author": json.loads(author_exclusion_json)["enabled"],
         "smoke_tests": smoke_tests,
         "warnings": warnings,
     }

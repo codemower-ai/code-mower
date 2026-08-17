@@ -107,6 +107,10 @@ code-mower doctor --preflight
 code-mower checks detect --json
 ```
 
+In Git worktrees, `checks detect` also offers `code-mower.pr-size`, a local
+PR-size lint that defaults to 300 changed lines and flags large batches of
+near-identical files.
+
 When those look sane, write the generated setup to a reviewable folder and
 produce the starter local report:
 

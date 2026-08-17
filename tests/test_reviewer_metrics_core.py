@@ -52,7 +52,20 @@ class ReviewerMetricsCoreTests(unittest.TestCase):
 
         metrics = reviewer_metrics.build_reviewer_metrics(
             [report],
-            spend={"profiles": {"codex-audit": {"cost_usd": 1.25}}},
+            spend={
+                "profiles": {"codex-audit": {"cost_usd": 1.0}},
+                "runs": [
+                    {
+                        "lane": "codex-audit",
+                        "repo": "owner/repo",
+                        "pr_number": 42,
+                        "head_sha": "abc123",
+                        "wall_seconds": 50.0,
+                        "cost_usd": 0.25,
+                        "total_tokens": 900,
+                    }
+                ],
+            },
             event_summaries=[event_summary],
         )
 
@@ -63,7 +76,10 @@ class ReviewerMetricsCoreTests(unittest.TestCase):
         self.assertEqual(profile["precision"], 0.5)
         self.assertEqual(profile["useful_rate"], 0.6667)
         self.assertEqual(profile["cost_per_useful_finding"], 0.625)
-        self.assertEqual(profile["seconds_per_run"], 15.0)
+        self.assertEqual(profile["spend_run_count"], 1)
+        self.assertEqual(profile["spend_wall_seconds_total"], 50.0)
+        self.assertEqual(profile["seconds_per_run"], 25.0)
+        self.assertEqual(profile["total_tokens"], 900)
         self.assertEqual(profile["event_log"]["blocked"], 1)
         self.assertEqual(profile["event_log"]["observed_pr_count"], 2)
 

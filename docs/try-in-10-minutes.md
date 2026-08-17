@@ -131,6 +131,13 @@ contract: TypeScript applications should still run their package-manager
 lint/test/build scripts, while Python projects should run Ruff/pytest when
 configured.
 
+In Git worktrees, detection also includes the local `code-mower.pr-size` lint.
+It defaults to a 300 changed-line budget and a near-identical-file batch guard;
+tune it with `--max-pr-changed-lines`, `--pr-size-base-ref`, and
+`--near-identical-file-limit`. If the configured base ref is not fetched
+locally, the PR-size lint reports `skipped` instead of failing the whole check
+run.
+
 Use `checks run --dry-run` first to review commands before executing them.
 Then run selected checks explicitly, for example:
 
@@ -245,6 +252,7 @@ code-mower cloud export \
   --report reviewer-metrics=reviewer-metrics.json \
   --report lane-policy=lane-policy.json \
   --report value-report=reviewer-value-report.md \
+  --spend .code-mower.generated/reviewer-spend.json \
   --output-dir .code-mower/cloud-benchmark-bundle \
   --anonymous \
   --json
