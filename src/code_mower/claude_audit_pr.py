@@ -38,6 +38,7 @@ if __package__ in {None, "", "tools"}:
             fetch_base_ref_sha as _shared_fetch_base_ref_sha,
             fetch_pr_head_sha as _shared_fetch_pr_head_sha,
             fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
+            is_fixture_structured_verdict as _is_fixture_structured_verdict,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
@@ -65,6 +66,7 @@ if __package__ in {None, "", "tools"}:
             fetch_base_ref_sha as _shared_fetch_base_ref_sha,
             fetch_pr_head_sha as _shared_fetch_pr_head_sha,
             fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
+            is_fixture_structured_verdict as _is_fixture_structured_verdict,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
@@ -90,6 +92,7 @@ else:  # pragma: no cover - exercised after package extraction.
         fetch_pull_request,
         fetch_pr_head_sha as _shared_fetch_pr_head_sha,
         fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
+        is_fixture_structured_verdict as _is_fixture_structured_verdict,
         limit_comment_body,
         one_line as _one_line,
         parse_repo_paths as _parse_repo_paths,
@@ -448,11 +451,9 @@ def _apply_claude_verdict_guardrails(
     return _unknown_structured_verdict(reason), reason
 
 
-def _fixture_guardrail_quarantine_reason(reason: Optional[str]) -> Optional[str]:
-    if not reason:
-        return None
-    if "schema placeholder" in reason or "matched a schema placeholder" in reason:
-        return f"fixture-shaped structured verdict rejected by guardrail: {reason}"
+def _fixture_structured_quarantine_reason(parsed: ClaudeVerdict) -> Optional[str]:
+    if _is_fixture_structured_verdict(parsed.summary, list(parsed.findings)):
+        return "fixture-shaped structured verdict rejected by guardrail"
     return None
 
 
@@ -1112,7 +1113,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     claude_stdout = ""
     claude_stderr = ""
     attempt_prompt = prompt
-    final_guardrail_reason: Optional[str] = None
+    final_fixture_reason: Optional[str] = None
     t0 = time.time()
     for attempt in range(1, MAX_CLAUDE_AUDIT_ATTEMPTS + 1):
         parsed_candidate, attempt_stdout, attempt_stderr = run_claude_audit(
@@ -1125,7 +1126,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             parsed_candidate,
             diff_context.changed_files,
         )
-        final_guardrail_reason = guardrail_reason
+        final_fixture_reason = _fixture_structured_quarantine_reason(parsed_candidate)
         raw_output_attempts.append(
             {
                 "attempt": attempt,
@@ -1206,11 +1207,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     if not config.dry_run:
         quarantine_reason = _audit_runtime_quarantine_reason(
             comment_body=comment_body,
-            fixture_reason=(
-                _fixture_guardrail_quarantine_reason(final_guardrail_reason)
-                if parsed.verdict == "UNKNOWN"
-                else None
-            ),
+            fixture_reason=final_fixture_reason if parsed.verdict == "UNKNOWN" else None,
         )
         artifact_path = write_audit_verdict_artifact(
             lane_id="claude-audit",

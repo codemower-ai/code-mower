@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 import socket
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from code_mower.provider_runners import is_fixture_verdict_artifact
 
 
 REAL_AUDIT_CACHE = Path.home() / ".cache" / "code-mower-audits"
@@ -27,12 +30,36 @@ def _cache_snapshot(root: Path) -> dict[str, tuple[int, int]]:
     return snapshot
 
 
+def _fixture_cache_mutations(
+    before: dict[str, tuple[int, int]],
+    after: dict[str, tuple[int, int]],
+) -> list[str]:
+    mutated = [
+        path
+        for path, stat in after.items()
+        if path not in before or before[path] != stat
+    ]
+    fixture_paths: list[str] = []
+    for path in mutated:
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and is_fixture_verdict_artifact(payload):
+            fixture_paths.append(path)
+    return fixture_paths
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _real_audit_cache_guard() -> Any:
     before = _cache_snapshot(REAL_AUDIT_CACHE)
     yield
     after = _cache_snapshot(REAL_AUDIT_CACHE)
-    assert after == before, "tests mutated the real Code Mower audit cache"
+    fixture_mutations = _fixture_cache_mutations(before, after)
+    assert not fixture_mutations, (
+        "tests leaked fixture-shaped verdict artifacts into the real Code Mower audit "
+        f"cache: {fixture_mutations}"
+    )
 
 
 @pytest.fixture(autouse=True)

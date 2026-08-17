@@ -15,6 +15,7 @@ class CodexAuditPrTests(unittest.TestCase):
         *,
         tmp_path: Path,
         pytest_current_test: str,
+        parsed: cap.CodexVerdict | None = None,
     ) -> tuple[cap.AuditResult, mock.Mock]:
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -22,7 +23,7 @@ class CodexAuditPrTests(unittest.TestCase):
         worktree.mkdir()
         head_sha = "d" * 40
         pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
-        parsed = cap.CodexVerdict(
+        parsed = parsed or cap.CodexVerdict(
             verdict="PASS",
             prose="Summary:\n\nNo merge-blocking regressions found.\n\nFindings: none.",
         )
@@ -58,6 +59,7 @@ class CodexAuditPrTests(unittest.TestCase):
                 "run_codex_verdict_structuring",
                 return_value=(parsed, '{"structured_output":"pass"}', ""),
             ),
+            mock.patch.object(cap, "dump_cli_failure", return_value=tmp_path / "cli.log"),
             mock.patch.object(
                 cap,
                 "post_pr_comment",
@@ -98,6 +100,42 @@ class CodexAuditPrTests(unittest.TestCase):
             artifact = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
             self.assertTrue(artifact["quarantined"])
             self.assertIn("PYTEST_CURRENT_TEST", artifact["quarantine_reason"])
+
+    def test_codex_audit_fixture_verdict_quarantines_as_unknown(self) -> None:
+        fixture = cap.parse_structured_codex_verdict(
+            {
+                "schema": cap.CODEX_AUDIT_SCHEMA_ID,
+                "verdict": "blocked",
+                "summary": "test",
+                "findings": [
+                    {
+                        "severity": "P1",
+                        "title": "test",
+                        "file": "a.py",
+                        "line": 1,
+                        "detail": "test",
+                    }
+                ],
+            }
+        )
+        self.assertEqual(fixture.verdict, "UNKNOWN")
+        self.assertEqual(fixture.quarantine_reason, "fixture-shaped structured verdict")
+        with tempfile.TemporaryDirectory() as tmp:
+            result, post_comment = self._run_mocked_audit(
+                tmp_path=Path(tmp),
+                pytest_current_test="",
+                parsed=fixture,
+            )
+
+            self.assertEqual(result.verdict, "UNKNOWN")
+            self.assertIsNone(result.posted_comment_url)
+            post_comment.assert_not_called()
+            self.assertIsNotNone(result.verdict_artifact_path)
+            assert result.verdict_artifact_path is not None
+            self.assertIn("quarantine", str(result.verdict_artifact_path))
+            artifact = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
+            self.assertTrue(artifact["quarantined"])
+            self.assertIn("fixture-shaped structured verdict", artifact["quarantine_reason"])
 
 
 if __name__ == "__main__":

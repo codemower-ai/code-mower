@@ -38,6 +38,7 @@ from .text_schema import clip_text, one_line, require_exact_keys
 from .verdict_artifacts import (
     audit_runtime_quarantine_reason,
     fixture_verdict_comment_reason,
+    is_fixture_structured_verdict,
     is_fixture_verdict_artifact,
     is_fixture_verdict_comment,
     load_audit_verdict_artifact,
@@ -66,6 +67,7 @@ __all__ = [
     "fixture_verdict_comment_reason",
     "is_fixture_verdict_artifact",
     "is_fixture_verdict_comment",
+    "is_fixture_structured_verdict",
     "local_checkout_matches_head",
     "load_audit_verdict_artifact",
     "local_head_sha",

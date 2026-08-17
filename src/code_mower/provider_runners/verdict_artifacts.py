@@ -105,6 +105,8 @@ def fixture_verdict_comment_reason(comment_body: str) -> str | None:
     """Return a reason when a rendered audit comment is clearly test output."""
 
     summary = _summary_first_line(comment_body)
+    if not _is_fixture_text(summary):
+        return None
     findings = list(FINDING_LINE_RE.finditer(comment_body))
     if not findings:
         return None
@@ -115,9 +117,7 @@ def fixture_verdict_comment_reason(comment_body: str) -> str | None:
     ]
     if len(fixture_findings) != len(findings):
         return None
-    if _is_fixture_text(summary) or len(findings) <= 2:
-        return "fixture-shaped audit verdict comment"
-    return None
+    return "fixture-shaped audit verdict comment"
 
 
 def is_fixture_verdict_comment(comment_body: str) -> bool:
@@ -133,6 +133,22 @@ def is_fixture_verdict_artifact(payload: dict[str, Any]) -> bool:
     return is_fixture_verdict_comment(comment_body)
 
 
+def is_fixture_structured_verdict(
+    summary: Any,
+    findings: Any,
+) -> bool:
+    if not _is_fixture_text(summary) or not isinstance(findings, list) or not findings:
+        return False
+    for finding in findings:
+        if not isinstance(finding, dict):
+            return False
+        if not _is_fixture_text(finding.get("title")):
+            return False
+        if not _is_fixture_path(finding.get("file")):
+            return False
+    return True
+
+
 def audit_runtime_quarantine_reason(
     *,
     comment_body: str,
@@ -143,10 +159,6 @@ def audit_runtime_quarantine_reason(
         reasons.append("PYTEST_CURRENT_TEST is set")
     if fixture_reason:
         reasons.append(fixture_reason)
-    else:
-        comment_reason = fixture_verdict_comment_reason(comment_body)
-        if comment_reason:
-            reasons.append(comment_reason)
     return "; ".join(reasons) if reasons else None
 
 

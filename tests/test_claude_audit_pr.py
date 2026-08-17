@@ -251,12 +251,12 @@ class ClaudeAuditPrTests(unittest.TestCase):
             head_sha = "c" * 40
             pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
             placeholder = cap.parse_structured_claude_verdict(
-                _payload(summary="test", findings=[_finding(title="test")])
+                _payload(summary="test", findings=[_finding(title="test", file="a.py")])
             )
             diff_context = cap.DiffContext(
-                "src/app.py | 1 +",
-                "diff --git a/src/app.py b/src/app.py",
-                ("src/app.py",),
+                "a.py | 1 +",
+                "diff --git a/a.py b/a.py",
+                ("a.py",),
                 False,
                 1_000,
                 1_000,

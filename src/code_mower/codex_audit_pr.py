@@ -95,6 +95,7 @@ if __package__ in {None, "", "tools"}:
             fetch_base_ref as _shared_fetch_base_ref,
             fetch_pr_head as _shared_fetch_pr_head,
             fetch_pr_head_unless_local_matches as _shared_fetch_pr_head_unless_local_matches,
+            is_fixture_structured_verdict as _is_fixture_structured_verdict,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
@@ -119,6 +120,7 @@ if __package__ in {None, "", "tools"}:
             fetch_base_ref as _shared_fetch_base_ref,
             fetch_pr_head as _shared_fetch_pr_head,
             fetch_pr_head_unless_local_matches as _shared_fetch_pr_head_unless_local_matches,
+            is_fixture_structured_verdict as _is_fixture_structured_verdict,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
@@ -144,6 +146,7 @@ else:  # pragma: no cover - exercised after package extraction.
         fetch_pull_request,
         fetch_pr_head as _shared_fetch_pr_head,
         fetch_pr_head_unless_local_matches as _shared_fetch_pr_head_unless_local_matches,
+        is_fixture_structured_verdict as _is_fixture_structured_verdict,
         limit_comment_body,
         one_line as _one_line,
         parse_repo_paths as _parse_repo_paths,
@@ -243,6 +246,7 @@ class CodexVerdict:
     # (e.g. verdict=pass but P2 findings are present). This is not
     # rendered into the public PR comment; audit_pr() logs it to stderr.
     mismatch_note: str = ""
+    quarantine_reason: str = ""
 
     @property
     def blocker_count(self) -> int:
@@ -261,6 +265,7 @@ class CodexVerdict:
             "blocker_count": self.blocker_count,
             "findings": self.findings,
             "mismatch_note": self.mismatch_note,
+            "quarantine_reason": self.quarantine_reason,
         }
 
 
@@ -453,6 +458,20 @@ def parse_structured_codex_verdict(data: Any) -> CodexVerdict:
             rendered_findings.append(raw_finding)
 
     blocker_count = p_counts[0] + p_counts[1] + p_counts[2]
+    if blocker_count > 0 and _is_fixture_structured_verdict(summary, raw_findings):
+        return CodexVerdict(
+            verdict="UNKNOWN",
+            prose=(
+                "(structured Codex verdict is unusable: fixture-shaped structured "
+                "verdict; requeue and retry)"
+            ),
+            p0_count=p_counts[0],
+            p1_count=p_counts[1],
+            p2_count=p_counts[2],
+            p3_count=p_counts[3],
+            findings=finding_lines,
+            quarantine_reason="fixture-shaped structured verdict",
+        )
     if blocker_count > 0:
         verdict = "BLOCKED"
         mismatch_note = (
@@ -1571,6 +1590,9 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     if not config.dry_run:
         quarantine_reason = _audit_runtime_quarantine_reason(
             comment_body=comment_body,
+            fixture_reason=(
+                parsed.quarantine_reason if parsed.verdict == "UNKNOWN" else None
+            ),
         )
         artifact_path = write_audit_verdict_artifact(
             lane_id="codex-audit",
