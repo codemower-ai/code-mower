@@ -945,6 +945,8 @@ exit 1
         self.assertIn("cloud reviewer-runs", local_audit)
         self.assertIn("cloud dogfood", local_audit)
         self.assertIn("--event \"work_order=${event_file}\"", local_audit)
+        self.assertIn('${event_args[@]+"${event_args[@]}"}', local_audit)
+        self.assertNotIn('"${event_args[@]}" || upload_failed=1', local_audit)
         gate_health = (
             ROOT / "templates/workflows/code-mower-gate-health.yml.j2"
         ).read_text(encoding="utf-8")
