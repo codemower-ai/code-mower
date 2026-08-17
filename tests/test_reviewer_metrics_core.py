@@ -167,6 +167,8 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             self.assertEqual(event["metrics"]["p1_count"], 1)
             self.assertEqual(event["metrics"]["p2_count"], 2)
             self.assertEqual(event["metrics"]["duration_seconds_total"], 12.346)
+            self.assertEqual(event["metrics"]["duration_seconds"], 12.346)
+            self.assertEqual(event["metrics"]["wall_seconds"], 12.346)
             self.assertEqual(event["dimensions"]["lane_id"], "codex-audit")
             self.assertEqual(event["dimensions"]["duration_source"], "verdict_artifact")
             self.assertEqual(event["dimensions"]["audit_comment_lane_id"], "codex-audit")
