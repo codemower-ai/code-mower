@@ -112,6 +112,11 @@ MAX_SUMMARY_CHARS = 4_000
 MAX_FINDING_TITLE_CHARS = 300
 MAX_FINDING_FILE_CHARS = 500
 MAX_FINDING_DETAIL_CHARS = 4_000
+MAX_CLAUDE_AUDIT_ATTEMPTS = 2
+MIN_BLOCKED_VERDICT_PROSE_CHARS = 80
+SCHEMA_PLACEHOLDER_TEXT = frozenset({"test", "example", "placeholder"})
+CLAUDE_RAW_OUTPUT_SCHEMA = "code_mower.claudeAuditRawOutput.v1"
+BLOCKER_SEVERITIES = frozenset({"P0", "P1", "P2"})
 
 STALE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: needs-claude-audit -->"
 DONE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
@@ -181,6 +186,8 @@ class ClaudeVerdict:
     p2_count: int = 0
     p3_count: int = 0
     mismatch_note: str = ""
+    summary: str = ""
+    findings: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
 
     @property
     def blocker_count(self) -> int:
@@ -207,6 +214,7 @@ class ClaudeAuditResult:
 class DiffContext:
     stat: str
     diff: str
+    changed_files: Tuple[str, ...]
     was_truncated: bool
     requested_max_bytes: int
     hard_limit_bytes: int
@@ -337,7 +345,7 @@ def parse_structured_claude_verdict(data: Any) -> ClaudeVerdict:
 
         p_counts[int(severity[1])] += 1
         if len(rendered_findings) < MAX_RENDERED_FINDINGS:
-            rendered_findings.append(raw_finding)
+            rendered_findings.append(dict(raw_finding))
 
     blocker_count = p_counts[0] + p_counts[1] + p_counts[2]
     if blocker_count > 0:
@@ -362,7 +370,137 @@ def parse_structured_claude_verdict(data: Any) -> ClaudeVerdict:
         p2_count=p_counts[2],
         p3_count=p_counts[3],
         mismatch_note=mismatch_note,
+        summary=summary,
+        findings=tuple(dict(finding) for finding in raw_findings),
     )
+
+
+def _placeholder_equal(value: object) -> bool:
+    return str(value or "").strip().lower() in SCHEMA_PLACEHOLDER_TEXT
+
+
+def _normalize_diff_path(value: object) -> str:
+    path = str(value or "").strip().replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    if path.startswith(("a/", "b/")):
+        path = path[2:]
+    return path
+
+
+def _diff_file_matches(file_path: str, allowed_files: set[str]) -> bool:
+    if file_path in allowed_files:
+        return True
+    suffix_matches = [
+        path
+        for path in allowed_files
+        if path.endswith(f"/{file_path}") or file_path.endswith(f"/{path}")
+    ]
+    return len(suffix_matches) == 1
+
+
+def _claude_verdict_guardrail_reason(
+    parsed: ClaudeVerdict,
+    changed_files: Tuple[str, ...],
+) -> Optional[str]:
+    if parsed.verdict == "UNKNOWN":
+        return None
+
+    if _placeholder_equal(parsed.summary):
+        return "structured verdict summary matched a schema placeholder value"
+
+    allowed_files = {_normalize_diff_path(path) for path in changed_files}
+    allowed_files.discard("")
+    for idx, finding in enumerate(parsed.findings):
+        where = f"findings[{idx}]"
+        if _placeholder_equal(finding.get("title")):
+            return f"{where}.title matched a schema placeholder value"
+        if _placeholder_equal(finding.get("detail")):
+            return f"{where}.detail matched a schema placeholder value"
+
+        file_path = _normalize_diff_path(finding.get("file"))
+        severity = str(finding.get("severity") or "")
+        if (
+            severity in BLOCKER_SEVERITIES
+            and (not file_path or not _diff_file_matches(file_path, allowed_files))
+        ):
+            return f"{where}.file {file_path!r} is not present in the PR diff"
+
+    if (
+        parsed.verdict == "BLOCKED"
+        and len(parsed.prose.strip()) < MIN_BLOCKED_VERDICT_PROSE_CHARS
+    ):
+        return "structured blocked verdict body is too short to be credible"
+
+    return None
+
+
+def _apply_claude_verdict_guardrails(
+    parsed: ClaudeVerdict,
+    changed_files: Tuple[str, ...],
+) -> Tuple[ClaudeVerdict, Optional[str]]:
+    reason = _claude_verdict_guardrail_reason(parsed, changed_files)
+    if reason is None:
+        return parsed, None
+    return _unknown_structured_verdict(reason), reason
+
+
+def _write_claude_raw_output_sidecar(
+    artifact_path: Optional[Path],
+    attempts: List[Dict[str, Any]],
+) -> None:
+    if artifact_path is None:
+        return
+    sidecar_path = artifact_path.with_suffix(".claude-raw-output.json")
+    payload = {"schema": CLAUDE_RAW_OUTPUT_SCHEMA, "attempts": attempts}
+    try:
+        text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        sidecar_path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"warning: failed to write Claude raw output sidecar {sidecar_path}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _guardrail_retry_prompt(
+    prompt: str,
+    reason: str,
+    changed_files: Tuple[str, ...],
+) -> str:
+    files = "\n".join(f"- {path}" for path in changed_files[:50])
+    if len(changed_files) > 50:
+        files += f"\n- ... {len(changed_files) - 50} additional file(s) omitted"
+    return (
+        f"{prompt.rstrip()}\n\n"
+        "Trusted wrapper retry instruction:\n"
+        f"The previous structured verdict was rejected: {reason}. "
+        "Return a fresh JSON verdict only. Do not use placeholder values such "
+        "as 'test', 'example', or 'placeholder'. P0/P1/P2 findings must cite a "
+        "file from the PR diff, using the repository-relative path or a unique "
+        "suffix. PR diff files:\n"
+        f"{files}\n"
+    )
+
+
+def _record_posted_comment_url(
+    artifact_path: Optional[Path],
+    posted_comment_url: Optional[str],
+) -> None:
+    if artifact_path is None or not posted_comment_url:
+        return
+    try:
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return
+        payload["posted_comment_url"] = posted_comment_url
+        text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        artifact_path.write_text(text, encoding="utf-8")
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"warning: failed to update audit verdict artifact {artifact_path}: {exc}",
+            file=sys.stderr,
+        )
 
 
 def _claude_env() -> Dict[str, str]:
@@ -505,6 +643,13 @@ def _build_diff_context(
         raise FetchedHeadMismatch(expected_head_sha, fetched_head_ref)
     diff_range = f"{fetched_base_ref}...{fetched_head_ref}"
     stat = _run_git(local_repo, ["diff", "--stat", "--find-renames", diff_range])
+    changed_files_text = _run_git(
+        local_repo,
+        ["-c", "core.quotePath=false", "diff", "--name-only", "--find-renames", diff_range],
+    )
+    changed_files = tuple(
+        line.strip() for line in changed_files_text.splitlines() if line.strip()
+    )
     included_diff, full_diff_bytes, was_truncated = _run_git_limited(
         local_repo,
         ["diff", "--find-renames", "--unified=80", diff_range],
@@ -518,6 +663,7 @@ def _build_diff_context(
     return DiffContext(
         stat=stat,
         diff=included_diff,
+        changed_files=changed_files,
         was_truncated=was_truncated,
         requested_max_bytes=max_diff_bytes,
         hard_limit_bytes=hard_limit,
@@ -869,6 +1015,10 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                 )
             posted = post_pr_comment(repo, pr_number, comment_body, token=config.github_token)
             result.posted_comment_url = posted.get("html_url")
+            _record_posted_comment_url(
+                result.verdict_artifact_path,
+                result.posted_comment_url,
+            )
             print(
                 f"posted {repo}#{pr_number} verdict=STALE "
                 f"url={result.posted_comment_url}",
@@ -927,8 +1077,46 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
         ),
     )
 
+    raw_output_attempts: List[Dict[str, Any]] = []
+    parsed = _unknown_structured_verdict("Claude audit did not run")
+    claude_stdout = ""
+    claude_stderr = ""
+    attempt_prompt = prompt
     t0 = time.time()
-    parsed, claude_stdout, claude_stderr = run_claude_audit(config, prompt)
+    for attempt in range(1, MAX_CLAUDE_AUDIT_ATTEMPTS + 1):
+        parsed_candidate, attempt_stdout, attempt_stderr = run_claude_audit(
+            config,
+            attempt_prompt,
+        )
+        claude_stdout = attempt_stdout
+        claude_stderr = attempt_stderr
+        parsed, guardrail_reason = _apply_claude_verdict_guardrails(
+            parsed_candidate,
+            diff_context.changed_files,
+        )
+        raw_output_attempts.append(
+            {
+                "attempt": attempt,
+                "stdout": attempt_stdout,
+                "stderr": attempt_stderr,
+                "verdict": parsed_candidate.verdict,
+                "guardrail_rejection": guardrail_reason,
+            }
+        )
+        if guardrail_reason and attempt < MAX_CLAUDE_AUDIT_ATTEMPTS:
+            print(
+                "  structured-verdict guardrail rejected Claude output: "
+                f"{guardrail_reason}; retrying once",
+                file=sys.stderr,
+                flush=True,
+            )
+            attempt_prompt = _guardrail_retry_prompt(
+                prompt,
+                guardrail_reason,
+                diff_context.changed_files,
+            )
+            continue
+        break
     dt = time.time() - t0
     print(f"  claude audit completed in {dt:.0f}s", file=sys.stderr, flush=True)
     if parsed.mismatch_note:
@@ -1001,8 +1189,13 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                 file=sys.stderr,
                 flush=True,
             )
+            _write_claude_raw_output_sidecar(artifact_path, raw_output_attempts)
         posted = post_pr_comment(repo, pr_number, comment_body, token=config.github_token)
         result.posted_comment_url = posted.get("html_url")
+        _record_posted_comment_url(
+            result.verdict_artifact_path,
+            result.posted_comment_url,
+        )
         print(
             f"posted {repo}#{pr_number} verdict={result_verdict} "
             f"url={result.posted_comment_url}",
