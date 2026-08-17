@@ -4,6 +4,30 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.42
+
+This beta lands the post-beta.41 gate hardening from epic #302 so hosted
+builders and local reviewer lanes can keep Code Mower as a trusted merge gate.
+
+### Added
+
+- Local audit workflows can auto-ingest verdict, spend, and work-order metadata
+  when `CODE_MOWER_CLOUD_TOKEN` is configured, while preserving the existing
+  metadata-only cloud data contract (#330, #331).
+- `cloud reviewer-runs` now supports incremental offset uploads for local audit
+  artifacts (#330, #331).
+- Generated local audit workflows include the gate-health support path learned
+  from self-hosted runner dogfood (#317, #318).
+
+### Changed
+
+- Audit-run attestation now fails closed for `github-actions[bot]` results and
+  is shared by the gate, gate-health, and labeler paths (#332, #333, #334,
+  #335).
+- Local PR audit dispatch skips the PR-head fetch when the checkout is already
+  at the requested head SHA (#315, #316).
+- Release automation uses the updated PyPI publish action dependency (#285).
+
 ## v0.5.0-beta.41
 
 This beta lands the Code Mower dogfood improvements from epic #302 so Bridge

@@ -142,10 +142,10 @@ Generated self-hosted local audit workflows may automatically call
 team configures `CODE_MOWER_CLOUD_TOKEN`. This is an upload-path change, not an
 event-shape change: verdict artifacts still become `reviewer_run` events,
 spend rows still become `reviewer_run` events, work-order sidecars remain
-`work_order` events, and beta.40/beta.41 uploads that omit these automated
-events remain valid. The workflow uses trusted default-branch support files and
-must not upload source, diffs, prompts, transcripts, stdout/stderr, issue body
-text, or secrets.
+`work_order` events, and beta.40/beta.41/beta.42 uploads that omit these
+automated events remain valid. The workflow uses trusted default-branch support
+files and must not upload source, diffs, prompts, transcripts, stdout/stderr,
+issue body text, or secrets.
 
 `reviewer_run` events may include per-lane audit comment attribution in
 `dimensions.audit_comment_lane_id`, `dimensions.audit_comment_identity_source`,
