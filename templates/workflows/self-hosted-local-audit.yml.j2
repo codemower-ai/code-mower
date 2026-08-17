@@ -168,6 +168,9 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
             fi
 
             echo "Running ${display_name} local CLI audit for PR #${PR_NUMBER}"
+            # PR_HEAD_PATH was checked out and verified at PR_HEAD_SHA above.
+            # Code Mower's PR-head fetch helper skips the private pull/N/head
+            # fetch when --repo-paths already points at that exact head.
             printf '%s\n' "${token}" | "${wrapper}" \
               --read-token-from-stdin \
               --repo "${GITHUB_REPOSITORY}" \
