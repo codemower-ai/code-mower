@@ -22,7 +22,12 @@ BENCHMARK_EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 DEFAULT_BUILDER_RUN_DIR = Path(".code-mower/builder-runs")
 SAFE_SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 CURSOR_AGENT_URL_RE = re.compile(
-    r"https?://(?:www\.)?cursor\.com/[^\s<>)\"']+",
+    r"https?://(?:www\.)?cursor\.com/(?:agents|background-agent)/[^\s<>)\"']+",
+    re.IGNORECASE,
+)
+CURSOR_AGENT_FOOTER_RE = re.compile(
+    r"\b(?:cursor\s+(?:background\s+)?agent|view\s+cursor\s+agent\s+run|"
+    r"(?:generated|authored|opened)\s+by\s+cursor)\b",
     re.IGNORECASE,
 )
 AUTHOR_INFERENCE_RULES = {
@@ -196,7 +201,7 @@ def infer_builder_from_pr(metadata: PullRequestMetadata) -> BuilderInference | N
         signals.append("cursor_agent_url")
         if candidate is None:
             candidate = ("cursor_cloud_agent", "cursor_cloud_agent", "high")
-    elif "cursor" in metadata.body.lower() and "agent" in metadata.body.lower():
+    elif CURSOR_AGENT_FOOTER_RE.search(metadata.body):
         signals.append("cursor_agent_footer")
         if candidate is None:
             candidate = ("cursor_cloud_agent", "cursor_cloud_agent", "medium")

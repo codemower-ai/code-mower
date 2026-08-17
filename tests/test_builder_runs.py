@@ -630,6 +630,89 @@ def test_builder_auto_record_infers_cursor_agent_link_without_storing_body() -> 
         assert "Do not store this body text" not in event_text
 
 
+def test_builder_auto_record_skips_generic_cursor_links() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        pr_json = root / "event.json"
+        output = root / "builder-run.cloud-event.json"
+        _write_pr_event(
+            pr_json,
+            body="See https://cursor.com/pricing for developer tooling notes.",
+        )
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "auto-record",
+                    "--pr-json",
+                    str(pr_json),
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert code == 0
+        assert payload["status"] == "skipped"
+        assert not output.exists()
+
+
+def test_builder_auto_record_skips_incidental_cursor_agent_words() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        pr_json = root / "event.json"
+        output = root / "builder-run.cloud-event.json"
+        _write_pr_event(
+            pr_json,
+            body="This human PR compares Cursor setup with an unrelated release agent.",
+        )
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = builder_runs.main(
+                [
+                    "auto-record",
+                    "--pr-json",
+                    str(pr_json),
+                    "--output",
+                    str(output),
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        assert code == 0
+        assert payload["status"] == "skipped"
+        assert not output.exists()
+
+
+def test_builder_auto_record_accepts_cursor_agent_footer_marker() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        pr_json = root / "event.json"
+        output = root / "builder-run.cloud-event.json"
+        _write_pr_event(pr_json, body="Cursor agent completed this change.")
+
+        code = builder_runs.main(
+            [
+                "auto-record",
+                "--pr-json",
+                str(pr_json),
+                "--output",
+                str(output),
+                "--json",
+            ]
+        )
+
+        event = json.loads(output.read_text(encoding="utf-8"))
+        assert code == 0
+        assert event["provider"] == "cursor_cloud_agent"
+        assert event["dimensions"]["builder_inference_confidence"] == "medium"
+        assert "cursor_agent_footer" in event["dimensions"]["builder_inference_signals"]
+
+
 def test_builder_auto_record_infers_claude_bot_author() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
