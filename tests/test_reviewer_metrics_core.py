@@ -107,6 +107,7 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
         head_sha: str = "abcdef0123456789abcdef0123456789abcdef01",
         comment_body: str | None = None,
         trailer: str = "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->",
+        duration_seconds: float | None = None,
     ) -> Path:
         artifact_dir = (
             root
@@ -122,20 +123,23 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
                 "Findings: P0=0, P1=1, P2=2, P3=3 "
                 "(blocker policy: any P0/P1/P2 -> BLOCKED)"
             )
+        payload = {
+            "schema": code_mower_telemetry.VERDICT_ARTIFACT_SCHEMA,
+            "repo": repo,
+            "pr_number": pr_number,
+            "lane_id": lane_id,
+            "verdict": verdict,
+            "created_at": created_at,
+            "head_sha_start": head_sha,
+            "head_sha_end": head_sha,
+            "comment_body": body,
+            "trailer": trailer,
+        }
+        if duration_seconds is not None:
+            payload["duration_seconds"] = duration_seconds
         path.write_text(
             json.dumps(
-                {
-                    "schema": code_mower_telemetry.VERDICT_ARTIFACT_SCHEMA,
-                    "repo": repo,
-                    "pr_number": pr_number,
-                    "lane_id": lane_id,
-                    "verdict": verdict,
-                    "created_at": created_at,
-                    "head_sha_start": head_sha,
-                    "head_sha_end": head_sha,
-                    "comment_body": body,
-                    "trailer": trailer,
-                },
+                payload,
                 sort_keys=True,
             ),
             encoding="utf-8",
@@ -145,7 +149,7 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
     def test_verdict_artifacts_export_metadata_only_reviewer_run_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self._write_artifact(root)
+            self._write_artifact(root, duration_seconds=12.3456)
 
             events = code_mower_telemetry.export_reviewer_run_events_from_verdicts(root)
 
@@ -160,7 +164,9 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             self.assertEqual(event["metrics"]["finding_count"], 6)
             self.assertEqual(event["metrics"]["p1_count"], 1)
             self.assertEqual(event["metrics"]["p2_count"], 2)
+            self.assertEqual(event["metrics"]["duration_seconds_total"], 12.346)
             self.assertEqual(event["dimensions"]["lane_id"], "codex-audit")
+            self.assertEqual(event["dimensions"]["duration_source"], "verdict_artifact")
             self.assertEqual(event["dimensions"]["audit_comment_lane_id"], "codex-audit")
             self.assertEqual(event["dimensions"]["audit_comment_identity_source"], "trailer")
             self.assertEqual(

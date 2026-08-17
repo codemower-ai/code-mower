@@ -83,6 +83,8 @@ class CodexAuditPrTests(unittest.TestCase):
             assert result.verdict_artifact_path is not None
             artifact = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
             self.assertNotIn("quarantined", artifact)
+            self.assertIn("duration_seconds", artifact)
+            self.assertGreaterEqual(artifact["duration_seconds"], 0)
 
     def test_codex_audit_pytest_runtime_quarantines_without_posting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

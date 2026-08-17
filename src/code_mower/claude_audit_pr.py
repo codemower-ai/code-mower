@@ -946,6 +946,7 @@ def format_comment(
 
 
 def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAuditResult:
+    audit_started = time.monotonic()
     local_repo = config.repo_paths.get(repo)
     if local_repo is None:
         raise ValueError(
@@ -1038,6 +1039,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                 trailer=result.trailer,
                 comment_body=comment_body,
                 quarantine_reason=quarantine_reason,
+                duration_seconds=time.monotonic() - audit_started,
             )
             result.verdict_artifact_path = artifact_path
             if artifact_path is not None:
@@ -1239,6 +1241,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             trailer=trailer,
             comment_body=comment_body,
             quarantine_reason=quarantine_reason,
+            duration_seconds=time.monotonic() - audit_started,
         )
         result.verdict_artifact_path = artifact_path
         if artifact_path is not None:

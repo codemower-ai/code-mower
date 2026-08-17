@@ -1294,6 +1294,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     """End-to-end audit of one PR. Creates a temporary worktree at the PR
     head, runs Codex review, structures its verdict, formats + posts a
     comment."""
+    audit_started = time.monotonic()
     local_repo = config.repo_paths.get(repo)
     if local_repo is None:
         raise ValueError(
@@ -1419,6 +1420,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                     trailer=result.trailer,
                     comment_body=comment_body,
                     quarantine_reason=quarantine_reason,
+                    duration_seconds=time.monotonic() - audit_started,
                 )
                 result.verdict_artifact_path = artifact_path
                 if artifact_path is not None:
@@ -1624,6 +1626,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             trailer=trailer,
             comment_body=comment_body,
             quarantine_reason=quarantine_reason,
+            duration_seconds=time.monotonic() - audit_started,
         )
         result.verdict_artifact_path = artifact_path
         if artifact_path is not None:
