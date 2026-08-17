@@ -65,6 +65,48 @@ class ProviderRequiredEnvStatusTests(unittest.TestCase):
         self.assertEqual(check.detail["required_env"], ["PRESENT_TOKEN"])
         self.assertEqual(check.detail["required_env_truthy"], ["FEATURE_ON"])
 
+    def test_required_env_any_or_truthy_allows_key_or_trust_flag(self) -> None:
+        lane = {
+            "provider_config": {
+                "required_env_any": ["XAI_API_KEY", "GROK_DEPLOYMENT_KEY"],
+                "required_env_truthy_any": ["GROK_BUILD_USE_AMBIENT_HOME"],
+            }
+        }
+
+        with patch.dict(os.environ, {"XAI_API_KEY": "xai-key"}, clear=True):
+            status = provider_required_env_status(lane)
+            [check] = check_required_env("grok-build", lane)
+
+        self.assertTrue(status.all_present)
+        self.assertFalse(status.missing_any)
+        self.assertEqual(check.status, "pass")
+
+        with patch.dict(
+            os.environ,
+            {"GROK_BUILD_USE_AMBIENT_HOME": "1"},
+            clear=True,
+        ):
+            status = provider_required_env_status(lane)
+            [check] = check_required_env("grok-build", lane)
+
+        self.assertTrue(status.all_present)
+        self.assertFalse(status.missing_any)
+        self.assertEqual(check.status, "pass")
+
+        with patch.dict(os.environ, {"GROK_BUILD_USE_AMBIENT_HOME": "0"}, clear=True):
+            status = provider_required_env_status(lane)
+            [check] = check_required_env("grok-build", lane)
+
+        self.assertFalse(status.all_present)
+        self.assertTrue(status.missing_any)
+        self.assertEqual(check.status, "warn")
+        self.assertIn("one of:", check.message)
+        self.assertEqual(check.detail["required_env_any"], ["XAI_API_KEY", "GROK_DEPLOYMENT_KEY"])
+        self.assertEqual(
+            check.detail["required_env_truthy_any"],
+            ["GROK_BUILD_USE_AMBIENT_HOME"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

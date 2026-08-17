@@ -18,10 +18,10 @@ Everything else is opt-in until calibrated on the user's codebase.
 
 | Class | Examples | Private repo support | Source exposure | v1.0 posture |
 |---|---|---|---|---|
-| Local CLI | Codex, Claude Code, Antigravity CLI, Hermes CLI, Aider, CodeRabbit CLI | Yes, if local auth can read the repo | Usually sent to the provider behind the CLI unless provider is local-only | Codex/Claude default; others informational |
+| Local CLI | Codex, Claude Code, Antigravity CLI, Grok Build, Hermes CLI, Aider, CodeRabbit CLI | Yes, if local auth can read the repo | Usually sent to the provider behind the CLI unless provider is local-only | Codex/Claude default; others informational |
 | API/local model | Qwen, Gemma, DeepSeek, Grok-compatible endpoints | Yes | Sent to configured endpoint; local endpoints can keep code local | Informational calibration |
 | SaaS reviewer | Gitar, CodeRabbit hosted, Cursor BugBot, Greptile, Qodo | Yes, if GitHub App and plan allow | Provider sees PR diff/source context | Manual or informational until calibrated |
-| Hosted async | Devin, Jules | Yes, if app/API is authorized | Provider may clone or modify repo | Opt-in, paid, explicit trust boundary |
+| Hosted async builder | Devin, Jules, Cursor Cloud Agents, Grok Bot-orchestrated runs | Yes, if app/API is authorized | Provider may clone or modify repo | Opt-in, paid, explicit trust boundary; record as `builder_run` metadata first |
 | Protocol bridge | ACP-backed CLIs | Depends on underlying agent | Depends on underlying agent | Research only until runtime stabilizes |
 
 ## Lane Details
@@ -40,9 +40,35 @@ Everything else is opt-in until calibrated on the user's codebase.
 | `aider` | Aider CLI | local runner | local/provider account | local checkout plus model auth | informational |
 | `gemini_cli` | Gemini CLI compatibility | local runner | provider account | local checkout plus API/auth | legacy informational |
 | `antigravity_cli` | Antigravity CLI | local runner | provider account | local checkout plus local auth | informational |
+| `grok_build` | Grok Build | local runner | provider account | local checkout plus local auth or xAI API key | informational |
 | `hermes_cli` | Hermes Agent | local runner | provider account | local checkout plus local auth | informational |
 | `coderabbit_cli` | CodeRabbit CLI | local runner | provider account | local checkout plus CLI auth | informational |
 | `acp_bridge` | ACP-compatible agent | local runner | provider-dependent | depends on agent | research |
+
+## Builder Providers
+
+Builder providers are authoring surfaces, not review approvals. Record them
+with `code-mower builder record` after they open a branch or pull request, then
+run the normal reviewer lanes on the PR head.
+
+| Builder id | Typical executor | Role | v0.5 posture |
+|---|---|---|---|
+| `grok_bot` | `cursor_cloud_agent`, local IDE, or manual PR authoring | hosted/manual builder-orchestrator | source-free `builder_run` metadata only; not merge-gating |
+| `cursor_cloud_agent` | Cursor Cloud Agents | hosted async builder/executor | source-free `builder_run` metadata only; not merge-gating |
+| `devin` | Devin session | hosted async builder/reviewer depending on configuration | explicit opt-in; use separate reviewer evidence for merge policy |
+
+Example:
+
+```bash
+code-mower builder record \
+  --provider grok_bot \
+  --executor cursor_cloud_agent \
+  --work-order .code-mower/work-orders/example.md \
+  --pr OWNER/REPO#124
+```
+
+See [builders-grok-cursor.md](builders-grok-cursor.md) for the recommended
+Grok Bot plus Cursor Cloud Agent flow.
 
 ## Google CLI Posture
 
@@ -70,6 +96,7 @@ one lane from accidentally inheriting another lane's model label.
 | Claude audit | `CLAUDE_AUDIT_MODEL` | none | Mirrors the structured audit wrapper model. |
 | Gemini CLI | `CODE_MOWER_GEMINI_MODEL` | `GEMINI_MODEL`, `GOOGLE_GENAI_MODEL` | Legacy compatibility lane; prefer Antigravity for new Google CLI work. |
 | Antigravity CLI | `CODE_MOWER_ANTIGRAVITY_MODEL` | `ANTIGRAVITY_MODEL` | Deliberately does not inherit Gemini model env vars. |
+| Grok Build | `CODE_MOWER_GROK_MODEL` | `GROK_MODEL`, `XAI_MODEL` | Use the Grok Build or xAI model id you want benchmarked, for example `grok-4.6-build`. |
 | Hermes CLI | `CODE_MOWER_HERMES_MODEL` | `HERMES_INFERENCE_MODEL`, `HERMES_MODEL` | Use the deployed inference model id. |
 | Aider | `CODE_MOWER_AIDER_MODEL` | `AIDER_MODEL`, `AIDER_CHAT_MODEL` | Informational until calibrated. |
 | CodeRabbit CLI | `CODE_MOWER_CODERABBIT_MODEL` | `CODERABBIT_MODEL` | Informational/manual lane. |
@@ -86,6 +113,36 @@ You can generate the same setup plan from the installed package:
 code-mower providers provenance-env
 code-mower providers provenance-env --provider antigravity_cli --shell
 ```
+
+## Grok Build Policy
+
+Grok Build is an optional local CLI lane. It is useful for early peer-review and
+calibration experiments, but it is not merge-gating in v1.0.
+
+Recommended setup:
+
+- Install/authenticate the CLI with `grok login --device-code`, or set
+  `XAI_API_KEY`.
+- Set `CODE_MOWER_GROK_MODEL` to the model label you want benchmarked.
+- For real audit runs that use local OAuth, set
+  `GROK_BUILD_USE_AMBIENT_HOME=1` only in trusted local environments. Without
+  an API key, Code Mower intentionally requires this opt-in before inheriting
+  local Grok session state.
+- Doctor accepts either an API key (`XAI_API_KEY`, `GROK_DEPLOYMENT_KEY`, or
+  `GROK_API_KEY`) or `GROK_BUILD_USE_AMBIENT_HOME=1` for local OAuth. The
+  ambient-home path is an explicit trust opt-in; API-key runs do not need it.
+- Code Mower labels: `needs-grok-audit`, `grok-audit-done`,
+  `grok-audit-blocked`.
+- Code Mower command: `code-mower grok-build --repo OWNER/REPO --pr NUMBER`.
+- Real audits use Grok Build's headless `--prompt-file` transport so large PR
+  diffs do not have to pass through shell or argv limits.
+- Real audits default to `--grok-max-turns 4`; use a lower value for cheap
+  smoke runs or a higher value if Grok exits before returning structured
+  verdict JSON.
+
+Keep Grok Build informational/manual until calibration shows it catches known
+blockers, stays quiet on known-clean controls, and reports acceptable latency
+and cost.
 
 ## Cursor BugBot Policy
 
@@ -117,12 +174,16 @@ Private GitHub repos can spend Actions minutes even on small metadata
 workflows. The v1.0 posture is:
 
 - no recurring cron for optional hosted reviewers
-- issue-comment labelers must have job-level prefilters before checkout
+- issue-comment labelers must have job-level trusted-author prefilters before
+  checkout
 - paid/manual lanes require an explicit lane label or manual trigger
 - informational lanes must not be branch-protection requirements
 - external apps may still spend provider credits or post comments according to
   their dashboards, but Code Mower should not spend Actions minutes parsing
   them unless the PR opted into that lane
+- generated labelers trust configured lane bot authors; `github-actions[bot]`
+  is trusted only when a repo explicitly adds it to the lane's `*_BOT_AUTHORS`
+  variable
 
 ## Promotion Policy
 

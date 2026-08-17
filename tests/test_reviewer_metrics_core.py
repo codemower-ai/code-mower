@@ -52,7 +52,20 @@ class ReviewerMetricsCoreTests(unittest.TestCase):
 
         metrics = reviewer_metrics.build_reviewer_metrics(
             [report],
-            spend={"profiles": {"codex-audit": {"cost_usd": 1.25}}},
+            spend={
+                "profiles": {"codex-audit": {"cost_usd": 1.0}},
+                "runs": [
+                    {
+                        "lane": "codex-audit",
+                        "repo": "owner/repo",
+                        "pr_number": 42,
+                        "head_sha": "abc123",
+                        "wall_seconds": 50.0,
+                        "cost_usd": 0.25,
+                        "total_tokens": 900,
+                    }
+                ],
+            },
             event_summaries=[event_summary],
         )
 
@@ -63,7 +76,10 @@ class ReviewerMetricsCoreTests(unittest.TestCase):
         self.assertEqual(profile["precision"], 0.5)
         self.assertEqual(profile["useful_rate"], 0.6667)
         self.assertEqual(profile["cost_per_useful_finding"], 0.625)
-        self.assertEqual(profile["seconds_per_run"], 15.0)
+        self.assertEqual(profile["spend_run_count"], 1)
+        self.assertEqual(profile["spend_wall_seconds_total"], 50.0)
+        self.assertEqual(profile["seconds_per_run"], 25.0)
+        self.assertEqual(profile["total_tokens"], 900)
         self.assertEqual(profile["event_log"]["blocked"], 1)
         self.assertEqual(profile["event_log"]["observed_pr_count"], 2)
 
@@ -89,6 +105,7 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
         created_at: str = "2026-06-15T12:00:00Z",
         head_sha: str = "abcdef0123456789abcdef0123456789abcdef01",
         comment_body: str | None = None,
+        trailer: str = "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->",
     ) -> Path:
         artifact_dir = (
             root
@@ -116,6 +133,7 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
                     "head_sha_start": head_sha,
                     "head_sha_end": head_sha,
                     "comment_body": body,
+                    "trailer": trailer,
                 },
                 sort_keys=True,
             ),
@@ -142,6 +160,12 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             self.assertEqual(event["metrics"]["p1_count"], 1)
             self.assertEqual(event["metrics"]["p2_count"], 2)
             self.assertEqual(event["dimensions"]["lane_id"], "codex-audit")
+            self.assertEqual(event["dimensions"]["audit_comment_lane_id"], "codex-audit")
+            self.assertEqual(event["dimensions"]["audit_comment_identity_source"], "trailer")
+            self.assertEqual(
+                event["dimensions"]["audit_comment_trailer_prefix"],
+                "CODEX_AUDIT_STATE",
+            )
             self.assertEqual(event["dimensions"]["pr_number"], 42)
             self.assertFalse(event["dimensions"]["git_ref_included"])
             serialized = json.dumps(event, sort_keys=True)

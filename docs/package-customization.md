@@ -205,6 +205,11 @@ tools/code_mower clear-stale --lane devin --repo owner/repo --pr 123 --json
 tools/code_mower bootstrap --print-python
 ```
 
+For trailer-comment lanes, authors added through `*_BOT_AUTHORS` must post the
+lane's matching hidden `*_AUDIT_STATE` trailer. This lets one operator or
+shared machine user run several local audit lanes without the labeler or cloud
+metadata confusing the lane identity.
+
 If the standalone Code Mower source repository is still private and the product
 repo's GitHub Actions jobs do not have authenticated standalone checkout,
 workflow entrypoints should temporarily use the explicit local fallback:
@@ -275,7 +280,7 @@ run:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b37 \
+  --package-spec code-mower==0.5.0b40 \
   --repo-path /path/to/product-repo \
   --json
 ```
@@ -426,9 +431,25 @@ network hiccup or GitHub error interrupts posting, replay the saved artifact
 instead of rerunning the model:
 
 ```bash
+tools/run_codex_audit_pr.sh \
+  --repo owner/repo \
+  --pr 123 \
+  --repo-paths owner/repo:/path/to/repo
+tools/run_claude_audit_pr.sh \
+  --repo owner/repo \
+  --pr 123 \
+  --repo-paths owner/repo:/path/to/repo
+
 tools/run_codex_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 tools/run_claude_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 ```
+
+The reference provider catalog marks Codex and Claude audit lanes as
+merge-authority lanes, so their wrapper comments render that posture by default.
+Pass `--informational`, or set `CODEX_AUDIT_MERGE_AUTHORITY=false` /
+`CLAUDE_AUDIT_MERGE_AUTHORITY=false`, for calibration-only runs. The comment
+header is descriptive; a repository still opts into real gating through its
+configured labels, generated status workflow, and branch-protection rule.
 
 In mirror-removal mode, those shell wrappers should be thin compatibility
 shims around the standalone package:

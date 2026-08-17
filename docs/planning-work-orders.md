@@ -118,6 +118,10 @@ implementation, QA, security, operability, and devil's advocate review. These
 sections are deliberately prompts for thinking, not requirements to spawn a
 heavy multi-agent runtime.
 
+`work-order draft` refuses pointer-only stub bodies and bodies that look like
+more than 10 work orders by default. Use `--max-batch-items` only when a larger
+batch is intentional and still reviewable.
+
 `work-order draft` also writes a `*.cloud-event.json` sidecar next to the work
 order. That sidecar is metadata only: repository, issue number/URL, role lenses,
 review lanes, and Code Mower package provenance. It does not include the issue
@@ -157,7 +161,40 @@ code-mower cloud export \
   --repo-slug owner/repo
 ```
 
-## 5. Generate Critique Prompts
+## 5. Record Builder Provenance
+
+After a hosted or manual builder opens a PR, record who authored the branch
+without storing source, diffs, prompts, transcripts, or issue bodies:
+
+```bash
+code-mower builder record \
+  --provider grok_bot \
+  --executor cursor_cloud_agent \
+  --work-order .code-mower/work-orders/billing-settings.md \
+  --pr owner/repo#124 \
+  --branch cursor/billing-settings \
+  --output .code-mower/builder-runs/billing-settings.cloud-event.json
+```
+
+Use `code-mower builder auto-record --pr-json "$GITHUB_EVENT_PATH"` from the
+bundled builder-provenance workflow when the PR carries hosted-builder markers
+such as Cursor agent links, `chatgpt-codex-connector`, `claude[bot]`, or
+builder branch prefixes.
+
+Then include both sidecars in the cloud bundle:
+
+```bash
+code-mower cloud export \
+  --event work_order=.code-mower/work-orders/billing-settings.cloud-event.json \
+  --event builder_run=.code-mower/builder-runs/billing-settings.cloud-event.json \
+  --output-dir .code-mower/cloud-benchmark-bundle \
+  --repo-slug owner/repo
+```
+
+This is the first durable authoring-side link in the chain:
+`issue -> plan -> work order -> builder run -> PR -> reviewer checks -> merge`.
+
+## 6. Generate Critique Prompts
 
 Ask multiple agents to improve the plan before implementation:
 
@@ -173,7 +210,7 @@ This writes one prompt per reviewer under
 `.code-mower/work-orders/critique-prompts/`. The prompt asks for plan
 improvements, blockers, and questions, not code.
 
-## 6. Seed A Builder Experiment
+## 7. Seed A Builder Experiment
 
 When you want to measure authoring loops, seed a builder experiment from the
 same work order:
@@ -202,7 +239,8 @@ code-mower builder-experiment plan \
 This is planning and measurement scaffolding, not a full autonomous builder
 orchestrator. It does not:
 
-- execute agent sessions;
+- execute agent sessions, except for provider-specific tools that you run
+  outside this planning surface;
 - upload external docs;
 - decide merge readiness;
 - replace the normal Code Mower audit protocol.

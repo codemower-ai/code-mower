@@ -21,6 +21,7 @@ if __package__ and __package__.startswith("code_mower"):
         LaneConfig,
         LabelDecision,
         apply_label_decision,
+        author_exclusion_reason,
         extract_reviewed_sha,
         fetch_pull_request,
         load_json,
@@ -33,6 +34,7 @@ else:
             LaneConfig,
             LabelDecision,
             apply_label_decision,
+            author_exclusion_reason,
             extract_reviewed_sha,
             fetch_pull_request,
             load_json,
@@ -44,6 +46,7 @@ else:
             LaneConfig,
             LabelDecision,
             apply_label_decision,
+            author_exclusion_reason,
             extract_reviewed_sha,
             fetch_pull_request,
             load_json,
@@ -85,6 +88,11 @@ def classify_audit_comment(body: str, config: LaneConfig) -> Optional[str]:
     return None
 
 
+def has_authoritative_trailer(body: str, config: LaneConfig) -> bool:
+    """Return whether the body carries this lane's explicit audit-state trailer."""
+    return bool(config.trailer_pattern().search(body))
+
+
 def _has_label_fallback(body: str, label: str) -> bool:
     escaped = re.escape(label)
     return bool(
@@ -120,11 +128,37 @@ def resolve_label_decision(
         return None, f"ignored comment author: {author}"
 
     body = comment.get("body") or ""
+    if (
+        config.is_configured_comment_author(author)
+        and not config.is_default_comment_author(author)
+        and not has_authoritative_trailer(body, config)
+    ):
+        return (
+            None,
+            f"configured author {author} comment is missing matching "
+            f"{config.trailer_prefix} trailer",
+        )
+
     status = classify_audit_comment(body, config)
     if status is None:
         return None, f"comment is not a final {config.display_name} audit result"
 
     issue_number = int(issue["number"])
+    issue_labels = [
+        str(label.get("name") or "")
+        for label in issue.get("labels") or []
+        if isinstance(label, dict) and str(label.get("name") or "")
+    ]
+    issue_author = str(((issue.get("user") or {}).get("login") or ""))
+    exclusion = author_exclusion_reason(
+        lane_name=config.name,
+        labels=issue_labels,
+        author=issue_author,
+        text=str(issue.get("body") or ""),
+    )
+    if exclusion:
+        return None, exclusion
+
     reviewed_sha = extract_reviewed_sha(body)
     if status != "needs" and not reviewed_sha:
         return None, "audit result is missing Head SHA"

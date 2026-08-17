@@ -1,0 +1,54 @@
+# Code Mower workflow template: notify a human owner on decision labels.
+name: Code Mower owner notify
+
+on:
+  issues:
+    types: [labeled]
+  pull_request:
+    types: [labeled]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NEEDS_OWNER_LABEL: "__NEEDS_OWNER_LABEL__"
+  GATE_OVERRIDE_LABEL: "__GATE_OVERRIDE_LABEL__"
+  OWNER_LOGIN: "__OWNER_LOGIN__"
+
+jobs:
+  notify:
+    if: >-
+      github.event.label.name == '__NEEDS_OWNER_LABEL__' ||
+      github.event.label.name == '__GATE_OVERRIDE_LABEL__'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Assign owner and mention
+        env:
+          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+          REPO: {% raw %}${{ github.repository }}{% endraw %}
+          NUM: {% raw %}${{ github.event.issue.number || github.event.pull_request.number }}{% endraw %}
+          LABEL: {% raw %}${{ github.event.label.name }}{% endraw %}
+          ACTOR: {% raw %}${{ github.actor }}{% endraw %}
+          KIND: {% raw %}${{ github.event_name == 'issues' && 'issue' || 'pull request' }}{% endraw %}
+        run: |
+          set -euo pipefail
+
+          mention="repository owner"
+          if [ -n "${OWNER_LOGIN:-}" ] && [ "${OWNER_LOGIN}" != "TODO_OWNER_LOGIN" ]; then
+            gh api -X POST "repos/${REPO}/issues/${NUM}/assignees" \
+              -f "assignees[]=${OWNER_LOGIN}" || \
+              echo "::warning::Could not assign ${OWNER_LOGIN} on #${NUM}; token may be read-only."
+            mention="@${OWNER_LOGIN}"
+          fi
+
+          if [ "${LABEL}" = "${NEEDS_OWNER_LABEL}" ]; then
+            body="${mention} - decision or physical step needed on this ${KIND} (labeled by ${ACTOR}). Builders are blocked on it; reply here or remove the label when resolved."
+          else
+            body="${mention} - ${GATE_OVERRIDE_LABEL} was applied by ${ACTOR}. Only the owner should override a gate; log the reason in this thread."
+          fi
+          gh api -X POST "repos/${REPO}/issues/${NUM}/comments" \
+            -f "body=${body}" || \
+            echo "::warning::Could not comment on #${NUM}; token may be read-only."

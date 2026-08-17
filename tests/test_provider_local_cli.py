@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 from pathlib import Path
 
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 from code_mower import cli as code_mower_cli
+from code_mower import grok_build_audit_pr
 from code_mower.providers import build_provider_lane_tool_provenance
 from code_mower.providers.provenance import (
     build_code_mower_tool_provenance,
@@ -365,6 +368,162 @@ def test_provider_lane_tool_provenance_uses_available_alternate_command(
     assert detail["command_candidates"] == ["agy", "antigravity"]
     assert detail["command_found"] is True
     assert detail["version_known"] is True
+
+
+def test_grok_build_provenance_prefers_code_mower_model_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executable = _write_executable(
+        tmp_path / "grok",
+        "#!/bin/sh\nprintf 'grok 1.0.4\\n'\n",
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setenv("GROK_MODEL", "generic-grok")
+    monkeypatch.setenv("CODE_MOWER_GROK_MODEL", "grok-4.6-build")
+
+    tool, detail = build_provider_lane_tool_provenance(
+        "grok_build",
+        REFERENCE_PROVIDERS["grok_build"],
+        source="unit-test",
+    )
+
+    assert tool["tool_name"] == "grok"
+    assert tool["tool_version"] == "grok 1.0.4"
+    assert tool["provider"] == "grok_build"
+    assert tool["model"] == "grok-4.6-build"
+    assert tool["model_source"] == "env"
+    assert detail["command_found"] is True
+    assert detail["version_known"] is True
+
+
+def test_grok_build_runner_prefers_code_mower_model_env(monkeypatch) -> None:
+    monkeypatch.setenv("GROK_MODEL", "generic-grok")
+    monkeypatch.setenv("XAI_MODEL", "xai-fallback")
+    monkeypatch.setenv("CODE_MOWER_GROK_MODEL", "grok-4.6-build")
+
+    assert grok_build_audit_pr.resolve_grok_model() == "grok-4.6-build"
+
+
+def test_grok_build_runner_uses_configurable_audit_turn_budget(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        grok_build_audit_pr.gemini_cli_audit_pr,
+        "fetch_pull_request",
+        lambda repo, pr_number, *, token: {"head": {"sha": "abc123"}},
+    )
+    monkeypatch.setattr(
+        grok_build_audit_pr.gemini_cli_audit_pr,
+        "fetch_local_checkout_diff",
+        lambda repo_path, *, base_ref: ("abc123", "diff --git a/a b/a\n"),
+    )
+    monkeypatch.setattr(
+        grok_build_audit_pr.gemini_cli_audit_pr,
+        "_local_head_sha",
+        lambda repo_path: "abc123",
+    )
+    monkeypatch.setattr(
+        grok_build_audit_pr.gemini_cli_audit_pr,
+        "build_prompt",
+        lambda **kwargs: ("review prompt", {}),
+    )
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps(
+                {
+                    "text": json.dumps(
+                        {
+                            "verdict": "pass",
+                            "summary": "No findings.",
+                            "findings": [],
+                        }
+                    )
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(grok_build_audit_pr.subprocess, "run", fake_run)
+
+    default_payload = grok_build_audit_pr.run_grok_build_audit(
+        repo="owner/repo",
+        pr_number=7,
+        github_token="token",
+        command="grok",
+        repo_path=tmp_path,
+        allow_ambient_home=True,
+    )
+    custom_payload = grok_build_audit_pr.run_grok_build_audit(
+        repo="owner/repo",
+        pr_number=7,
+        github_token="token",
+        command="grok",
+        repo_path=tmp_path,
+        allow_ambient_home=True,
+        grok_max_turns=8,
+    )
+
+    assert default_payload["diagnostics"]["grok_max_turns"] == 4
+    assert custom_payload["diagnostics"]["grok_max_turns"] == 8
+    assert calls[0][calls[0].index("--max-turns") + 1] == "4"
+    assert calls[1][calls[1].index("--max-turns") + 1] == "8"
+
+
+def test_grok_build_parser_prefers_last_verdict_json() -> None:
+    response_text = """
+    I found a possible issue first.
+    {
+      "verdict": "blocked",
+      "summary": "Intermediate thought.",
+      "findings": [{"severity": "P1", "title": "old", "file": "a", "line": 1, "detail": "old"}]
+    }
+
+    After reading the rest of the diff:
+    {
+      "verdict": "pass",
+      "summary": "Final answer.",
+      "findings": []
+    }
+    """
+
+    _, parsed = grok_build_audit_pr._response_text_from_grok_payload(
+        {"text": response_text},
+        "",
+    )
+
+    assert parsed is not None
+    assert parsed["verdict"] == "pass"
+    assert parsed["findings"] == []
+
+
+def test_grok_build_parser_ignores_nested_verdict_json() -> None:
+    response_text = """
+    {
+      "verdict": "pass",
+      "summary": {
+        "verdict": "blocked",
+        "summary": "Nested diagnostic text should not win."
+      },
+      "findings": []
+    }
+    """
+
+    _, parsed = grok_build_audit_pr._response_text_from_grok_payload(
+        {"text": response_text},
+        "",
+    )
+
+    assert parsed is not None
+    assert parsed["verdict"] == "pass"
+    assert parsed["findings"] == []
 
 
 def test_provider_lane_tool_provenance_marks_hosted_model_as_vendor_hidden() -> None:

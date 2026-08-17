@@ -1,0 +1,205 @@
+# Code Mower workflow template: publish a single merge-gate commit status.
+name: Code Mower gate
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number"
+        required: true
+      head_sha:
+        description: "Pull request head SHA"
+        required: true
+
+permissions:
+  issues: read
+  pull-requests: write
+  statuses: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_GATE_CONTEXT: code-mower/gate
+  CODE_MOWER_GATE_ENABLE_AUTO_MERGE: "true"
+  CODE_MOWER_OWNER_LABEL: __OWNER_LABEL__
+  CODE_MOWER_AUTHOR_EXCLUSION_JSON: >-
+    __AUTHOR_EXCLUSION_JSON__
+  CODE_MOWER_GATE_LANES_JSON: >-
+    __GATE_LANES_JSON__
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Publish Code Mower gate status
+        env:
+          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+          PR_NUMBER: {% raw %}${{ github.event.pull_request.number || github.event.inputs.pr_number }}{% endraw %}
+          HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha || github.event.inputs.head_sha }}{% endraw %}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${PR_NUMBER:-}" ] || [ -z "${HEAD_SHA:-}" ]; then
+            echo "::notice::No PR number/head SHA available for Code Mower gate."
+            exit 0
+          fi
+
+          labels_file="$(mktemp)"
+          comments_file="$(mktemp)"
+          pr_file="$(mktemp)"
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" > "${labels_file}"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" > "${comments_file}"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}"
+
+          eval "$(
+            python3 - "${labels_file}" "${comments_file}" "${pr_file}" <<'PY'
+          import json
+          import os
+          import shlex
+          import sys
+
+          def emit(state, description):
+              description = str(description).replace("\n", " ")[:140]
+              print("gate_state=" + shlex.quote(state))
+              print("gate_description=" + shlex.quote(description))
+
+          try:
+              lanes = json.loads(os.environ.get("CODE_MOWER_GATE_LANES_JSON", "[]"))
+              exclusion = json.loads(os.environ.get("CODE_MOWER_AUTHOR_EXCLUSION_JSON", '{"enabled":false}'))
+              with open(sys.argv[1], encoding="utf-8") as labels_handle:
+                  labels_payload = json.load(labels_handle)
+              with open(sys.argv[2], encoding="utf-8") as comments_handle:
+                  comments_payload = json.load(comments_handle)
+              with open(sys.argv[3], encoding="utf-8") as pr_handle:
+                  pr_payload = json.load(pr_handle)
+          except Exception:
+              emit("failure", "Code Mower gate config could not be parsed")
+              raise SystemExit(0)
+
+          head_sha = os.environ.get("HEAD_SHA", "")
+          actual_head_sha = str(((pr_payload.get("head") or {}).get("sha")) or "")
+          if not head_sha or head_sha != actual_head_sha:
+              emit("failure", "workflow head_sha does not match PR head")
+              raise SystemExit(0)
+
+          labels = {
+              str(item.get("name") or "")
+              for item in labels_payload
+              if isinstance(item, dict)
+          }
+          lanes = [lane for lane in lanes if isinstance(lane, dict)]
+          owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
+          pr_author = str(((pr_payload.get("user") or {}).get("login") or ""))
+          comments = []
+          for page in comments_payload:
+              if isinstance(page, list):
+                  comments.extend(item for item in page if isinstance(item, dict))
+
+          def mapping(section):
+              value = exclusion.get(section) if isinstance(exclusion, dict) else {}
+              return value if isinstance(value, dict) else {}
+
+          def trusted_authors(lane):
+              raw = str(lane.get("bot_authors") or "")
+              return {item.strip() for item in raw.split(",") if item.strip()}
+
+          def has_current_trailer(lane, label):
+              authors = trusted_authors(lane)
+              if not authors:
+                  return False
+              trailer_suffix = ": " + label + " -->"
+              head_marker = "Head SHA: `" + head_sha + "`"
+              for comment in reversed(comments):
+                  author = str(((comment.get("user") or {}).get("login")) or "")
+                  if author not in authors:
+                      continue
+                  body = str(comment.get("body") or "")
+                  if head_marker in body and trailer_suffix in body:
+                      return True
+              return False
+
+          builder_matches = []
+          if isinstance(exclusion, dict) and exclusion.get("enabled"):
+              label_map = mapping("labels")
+              for label in labels:
+                  if label in label_map:
+                      builder_matches.append(str(label_map[label]))
+              author_map = {str(k).lower(): str(v) for k, v in mapping("authors").items()}
+              if pr_author.lower() in author_map:
+                  builder_matches.append(author_map[pr_author.lower()])
+          builder_matches = list(dict.fromkeys(builder_matches))
+
+          blocked = [
+              str(lane.get("display_name") or lane.get("id") or lane.get("blocked"))
+              for lane in lanes
+              if str(lane.get("blocked") or "") in labels
+              and has_current_trailer(lane, str(lane.get("blocked") or ""))
+          ]
+
+          if len(builder_matches) > 1:
+              emit("failure", "conflicting Code Mower builder identity")
+          elif blocked:
+              emit("failure", "blocked audit: " + ", ".join(blocked))
+          elif owner_label in labels:
+              emit("pending", owner_label + ": waiting on owner")
+          else:
+              excluded_builder = builder_matches[0] if builder_matches else ""
+              required = [
+                  lane
+                  for lane in lanes
+                  if str(lane.get("author_lane") or lane.get("id") or "") != excluded_builder
+              ]
+              missing = [
+                  str(lane.get("display_name") or lane.get("id") or lane.get("done"))
+                  for lane in required
+                  if str(lane.get("done") or "") not in labels
+                  or not has_current_trailer(lane, str(lane.get("done") or ""))
+              ]
+              if not required:
+                  if excluded_builder:
+                      emit("failure", "no independent Code Mower audit lane remains")
+                  else:
+                      emit("failure", "no Code Mower merge-authority lanes configured")
+              elif missing:
+                  emit("pending", "waiting for audit: " + ", ".join(missing))
+              else:
+                  emit("success", "Code Mower merge gate passed")
+          PY
+          )"
+
+          target_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f state="${gate_state}" \
+            -f context="${CODE_MOWER_GATE_CONTEXT}" \
+            -f description="${gate_description}" \
+            -f target_url="${target_url}" >/dev/null
+
+          echo "Code Mower gate: ${gate_state} - ${gate_description}"
+
+          if [ "${gate_state}" != "success" ] || [ "${CODE_MOWER_GATE_ENABLE_AUTO_MERGE}" != "true" ]; then
+            exit 0
+          fi
+
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          pr_node_id="$(
+            gh api graphql \
+              -f owner="${owner}" \
+              -f name="${repo}" \
+              -F number="${PR_NUMBER}" \
+              -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id}}}' \
+              --jq '.data.repository.pullRequest.id // ""' 2>/dev/null || true
+          )"
+
+          if [ -z "${pr_node_id}" ]; then
+            echo "::notice::Could not resolve PR node id for auto-merge."
+            exit 0
+          fi
+
+          gh api graphql \
+            -f pullRequestId="${pr_node_id}" \
+            -f query='mutation($pullRequestId:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:SQUASH}){pullRequest{id}}}' >/dev/null || {
+              echo "::notice::Code Mower gate is green, but GitHub could not enable auto-merge. Confirm allow_auto_merge and token permissions."
+            }

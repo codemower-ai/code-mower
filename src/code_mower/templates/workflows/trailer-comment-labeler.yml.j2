@@ -4,39 +4,43 @@ name: __WORKFLOW_NAME__
 on:
   issue_comment:
     types: [created]
-  workflow_dispatch:
-    inputs:
-      lane:
-        description: "Trailer-comment lane to classify"
-        required: false
-        default: "__TRAILER_LANE__"
 
 permissions:
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_AUTHOR_EXCLUSION_JSON: >-
+    __AUTHOR_EXCLUSION_JSON__
 
 jobs:
   label:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
       (
         github.event_name == 'issue_comment' &&
         github.event.issue.pull_request &&
         (
-          contains(github.event.comment.body, '__TRAILER_PREFIX__') ||
-          contains(github.event.comment.body, '__DISPLAY_NAME__ Audit') ||
-          contains(github.event.comment.body, 'HEAD_CHANGED_DURING_REVIEW') ||
-          contains(github.event.comment.body, 'Label state:') ||
-          contains(github.event.comment.body, 'Intended label state:') ||
-          contains(github.event.comment.body, 'Expected labels:') ||
-          contains(github.event.comment.body, 'Intended labels:') ||
-          contains(github.event.comment.body, '__NEEDS_LABEL__') ||
-          contains(github.event.comment.body, '__DONE_LABEL__') ||
-          contains(github.event.comment.body, '__BLOCKED_LABEL__')
+          (
+            contains(',__BOT_AUTHORS__,', format(',{0},', github.event.comment.user.login)) &&
+            (
+              contains(github.event.comment.body, '__TRAILER_PREFIX__') ||
+              contains(github.event.comment.body, '__DISPLAY_NAME__ Audit') ||
+              contains(github.event.comment.body, 'HEAD_CHANGED_DURING_REVIEW') ||
+              contains(github.event.comment.body, 'Label state:') ||
+              contains(github.event.comment.body, 'Intended label state:') ||
+              contains(github.event.comment.body, 'Expected labels:') ||
+              contains(github.event.comment.body, 'Intended labels:') ||
+              contains(github.event.comment.body, '__NEEDS_LABEL__') ||
+              contains(github.event.comment.body, '__DONE_LABEL__') ||
+              contains(github.event.comment.body, '__BLOCKED_LABEL__')
+            )
+          ) ||
+          (
+            contains(format(',{0},', vars.__AUTHORS_ENV__), format(',{0},', github.event.comment.user.login)) &&
+            contains(github.event.comment.body, '__TRAILER_PREFIX__')
+          )
         )
       )
     runs-on: ubuntu-latest
@@ -53,5 +57,5 @@ jobs:
           GITHUB_TOKEN: {% raw %}${{ github.token }}{% endraw %}
           __LABEL_TOKEN_ENV__: {% raw %}${{ secrets.__LABEL_TOKEN_ENV__ }}{% endraw %}
           __AUTHORS_ENV__: {% raw %}${{ vars.__AUTHORS_ENV__ }}{% endraw %}
-          TRAILER_LANE: {% raw %}${{ github.event.inputs.lane || '__TRAILER_LANE__' }}{% endraw %}
+          TRAILER_LANE: __TRAILER_LANE__
         run: tools/code_mower trailer-comment-labeler --lane "${TRAILER_LANE}"
