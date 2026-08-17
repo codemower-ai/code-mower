@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import importlib.util
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
+import textwrap
 import tomllib
 import unittest
 import urllib.error
@@ -49,7 +51,7 @@ from scripts import privacy_scan
 
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_current_v05_prerelease(self) -> None:
-        self.assertEqual(__version__, "0.5.0b37")
+        self.assertEqual(__version__, "0.5.0b40")
 
     def test_release_workflow_verifies_downloaded_distributions_before_publish(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
@@ -153,6 +155,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "antigravity-cli",
                 "blind-review",
                 "bootstrap",
+                "builder",
                 "builder-experiment",
                 "calibration",
                 "claude-audit",
@@ -169,6 +172,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "codex-audit-schema-smoke",
                 "doctor",
                 "gemini-cli",
+                "grok-build",
                 "hermes-cli",
                 "init",
                 "local-llm",
@@ -203,7 +207,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn(
             (
                 "code-mower migration package-install-rehearsal --package-spec "
-                "code-mower==0.5.0b37 --json"
+                "code-mower==0.5.0b40 --json"
             ),
             help_text,
         )
@@ -283,7 +287,11 @@ class ReleaseHygieneTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     command,
                     0,
-                    stdout="--base\n--output-last-message\n",
+                    stdout=(
+                        "Usage: codex exec review [OPTIONS] [PROMPT]\n"
+                        "If `-` is used, read from stdin\n"
+                        "--base\n--output-last-message\n"
+                    ),
                     stderr="",
                 )
             raise AssertionError(f"unexpected command: {command}")
@@ -501,6 +509,17 @@ class ReleaseHygieneTests(unittest.TestCase):
             )
         )
 
+    def test_doctor_github_config_imports_models_from_canonical_module(self) -> None:
+        source = (
+            ROOT / "src/code_mower/doctor_checks/github_config.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "from .models import DoctorCheck, STATUS_PASS, STATUS_WARN",
+            source,
+        )
+        self.assertNotIn("from .common import DoctorCheck", source)
+
     def test_calibration_arm_catalog_is_packaged_and_explicit_lens_aware(self) -> None:
         arm_ids = {arm["arm_id"] for arm in calibration_pkg.default_arms()}
 
@@ -508,7 +527,13 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("antigravity-doctrine-lens-fanout", arm_ids)
         self.assertEqual(
             calibration_pkg.DEFAULT_CLI_LANES,
-            ("gemini_cli", "antigravity_cli", "hermes_cli", "coderabbit_cli"),
+            (
+                "gemini_cli",
+                "antigravity_cli",
+                "hermes_cli",
+                "coderabbit_cli",
+                "grok_build",
+            ),
         )
         package_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}
         self.assertIn("src/code_mower/calibration/arms.py", package_targets)
@@ -823,12 +848,15 @@ exit 1
         self.assertIn("cancel-in-progress: true", template)
         self.assertIn("No PR/head SHA available for stale-label cleanup", template)
         self.assertIn("{% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}", template)
+        self.assertIn("pull-requests: write", template)
 
     def test_reviewer_workflow_templates_are_real_and_packaged(self) -> None:
         workflow_templates = (
             "audit-label-cleanup.yml.j2",
+            "code-mower-gate.yml.j2",
             "hosted-bridge.yml.j2",
             "local-cli-audit.yml.j2",
+            "self-hosted-local-audit.yml.j2",
             "saas-reviewer-labeler.yml.j2",
             "trailer-comment-labeler.yml.j2",
         )
@@ -861,14 +889,46 @@ exit 1
         ).read_text(encoding="utf-8")
         self.assertIn("tools/code_mower trailer-comment-labeler", trailer)
         self.assertIn("__TRAILER_LANE__", trailer)
+        self.assertIn("__BOT_AUTHORS__", trailer)
+        self.assertIn("pull-requests: write", trailer)
+        self.assertIn("vars.__AUTHORS_ENV__", trailer)
+        self.assertIn(
+            "contains(github.event.comment.body, '__TRAILER_PREFIX__')",
+            trailer,
+        )
+        self.assertNotIn("workflow_dispatch:", trailer)
+        self.assertNotIn("github.event.inputs.lane", trailer)
         hosted = (
             ROOT / "templates/workflows/hosted-bridge.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("gh issue edit", hosted)
+        self.assertIn("pull-requests: write", hosted)
         saas = (
             ROOT / "templates/workflows/saas-reviewer-labeler.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("tools/code_mower saas-reviewer-labeler", saas)
+        self.assertIn("__BOT_AUTHORS__", saas)
+        self.assertIn("pull-requests: write", saas)
+        self.assertNotIn("workflow_dispatch:", saas)
+        self.assertNotIn("github.event.inputs.adapter", saas)
+        cleanup = (
+            ROOT / "templates/workflows/audit-label-cleanup.yml.j2"
+        ).read_text(encoding="utf-8")
+        self.assertIn("pull-requests: write", cleanup)
+
+    def test_local_audit_label_expression_uses_exact_label_membership(self) -> None:
+        entries = ({"needs_label": "needs-codex-audit"},)
+
+        expression = code_mower_init._local_audit_label_expression(
+            entries,
+            "pull_request",
+        )
+
+        self.assertIn(
+            "contains(github.event.pull_request.labels.*.name, 'needs-codex-audit')",
+            expression,
+        )
+        self.assertNotIn("join(", expression)
 
     def test_provider_catalog_wires_merge_authority_stale_hygiene(self) -> None:
         for relative_path in (
@@ -887,6 +947,220 @@ exit 1
             )
             self.assertEqual(providers["acp_bridge"]["review_hygiene"], {})
             self.assertEqual(providers["aider"]["review_hygiene"], {})
+
+    def _run_gate_template_decision(
+        self,
+        *,
+        lanes: list[dict[str, str]],
+        labels: set[str],
+        comments: list[dict[str, object]] | None = None,
+        head_sha: str = "a" * 40,
+        pr_head_sha: str | None = None,
+        author_exclusion: dict[str, object] | None = None,
+    ) -> dict[str, str]:
+        template = (
+            ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
+        ).read_text(encoding="utf-8")
+        script = template.split(
+            'python3 - "${labels_file}" "${comments_file}" "${pr_file}" <<\'PY\'\n',
+            1,
+        )[1].split("\n          PY", 1)[0]
+        script = textwrap.dedent(script)
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump([{"name": label} for label in sorted(labels)], handle)
+            labels_path = handle.name
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump([comments or []], handle)
+            comments_path = handle.name
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump({"head": {"sha": pr_head_sha or head_sha}}, handle)
+            pr_path = handle.name
+
+        stdout = StringIO()
+        try:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "CODE_MOWER_GATE_LANES_JSON": json.dumps(lanes),
+                        "CODE_MOWER_AUTHOR_EXCLUSION_JSON": json.dumps(
+                            author_exclusion or {"enabled": False}
+                        ),
+                        "CODE_MOWER_OWNER_LABEL": "needs-owner",
+                        "HEAD_SHA": head_sha,
+                    },
+                ),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["gate-decision", labels_path, comments_path, pr_path],
+                ),
+                redirect_stdout(stdout),
+            ):
+                try:
+                    exec(compile(script, "code-mower-gate.yml.j2", "exec"), {})
+                except SystemExit as exc:
+                    if exc.code not in (0, None):
+                        raise
+        finally:
+            Path(labels_path).unlink(missing_ok=True)
+            Path(comments_path).unlink(missing_ok=True)
+            Path(pr_path).unlink(missing_ok=True)
+
+        result: dict[str, str] = {}
+        for line in stdout.getvalue().splitlines():
+            key, value = line.split("=", 1)
+            result[key] = shlex.split(value)[0]
+        return result
+
+    def test_gate_decision_rejects_builder_exclusion_with_no_independent_lane(
+        self,
+    ) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "author_lane": "codex",
+                    "builder_label": "builder:codex",
+                    "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+                }
+            ],
+            labels={"builder:codex"},
+            author_exclusion={
+                "enabled": True,
+                "labels": {"builder:codex": "codex"},
+                "authors": {},
+            },
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(
+            result["gate_description"],
+            "no independent Code Mower audit lane remains",
+        )
+
+    def test_gate_decision_allows_author_exclusion_with_peer_pass(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "author_lane": "codex",
+                    "builder_label": "builder:codex",
+                    "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+                },
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "author_lane": "claude",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                },
+            ],
+            labels={"builder:codex", "claude-audit-done"},
+            author_exclusion={
+                "enabled": True,
+                "labels": {"builder:codex": "codex"},
+                "authors": {},
+            },
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_decision_requires_current_head_done_trailer(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("b" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
+    def test_gate_decision_rejects_dispatch_head_mismatch(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+            pr_head_sha="b" * 40,
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(
+            result["gate_description"],
+            "workflow head_sha does not match PR head",
+        )
+
+    def test_gate_decision_ignores_untrusted_trailer_comment(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "drive-by-commenter"},
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
 
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
@@ -937,9 +1211,11 @@ exit 1
                 ".github/workflows/audit-label-cleanup.yml",
                 ".github/workflows/claude-audit-labeler.yml",
                 ".github/workflows/claude-clear-stale.yml",
+                ".github/workflows/code-mower-gate.yml",
                 ".github/workflows/codex-audit-labeler.yml",
                 ".github/workflows/codex-clear-stale.yml",
                 ".github/workflows/gitar-audit-labeler.yml",
+                ".github/workflows/local-cli-audit.yml",
             }
             self.assertTrue(expected.isdisjoint(placeholder_files))
             for rel_path in expected:
@@ -953,9 +1229,12 @@ exit 1
                 ".github/workflows/claude-audit-labeler.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("tools/code_mower trailer-comment-labeler --lane", claude)
-            self.assertIn("TRAILER_LANE: ${{ github.event.inputs.lane || 'claude' }}", claude)
+            self.assertIn("TRAILER_LANE: claude", claude)
+            self.assertIn("claude-audit-bot[bot]", claude)
             self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", claude)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS", claude)
+            self.assertNotIn("github.event.inputs.lane", claude)
+            self.assertNotIn("github.event.comment.user.type == 'Bot'", claude)
 
             codex_stale = output_dir.joinpath(
                 ".github/workflows/codex-clear-stale.yml"
@@ -964,13 +1243,264 @@ exit 1
             self.assertIn('default: "codex"', codex_stale)
             self.assertIn("github.event.inputs.lane || 'codex'", codex_stale)
 
+            local_cli_audit = output_dir.joinpath(
+                ".github/workflows/local-cli-audit.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("pull_request_target:\n    types: [opened, synchronize, labeled]", local_cli_audit)
+            self.assertIn("runs-on: [self-hosted, macOS, code-mower-audit]", local_cli_audit)
+            self.assertIn("path: code-mower-support", local_cli_audit)
+            self.assertIn("path: pr-head", local_cli_audit)
+            self.assertIn("fetch-depth: 0", local_cli_audit)
+            self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", local_cli_audit)
+            self.assertIn("github.event.action != 'labeled'", local_cli_audit)
+            self.assertIn("needs-codex-audit", local_cli_audit)
+            self.assertIn("needs-claude-audit", local_cli_audit)
+            self.assertIn("CODEX_AUDIT_LABEL_TOKEN", local_cli_audit)
+            self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", local_cli_audit)
+            self.assertIn("tools/run_codex_audit_pr.sh", local_cli_audit)
+            self.assertIn("tools/run_claude_audit_pr.sh", local_cli_audit)
+            self.assertIn("--read-token-from-stdin", local_cli_audit)
+            self.assertIn("--repo-paths", local_cli_audit)
+            self.assertNotIn("__LOCAL_AUDIT_", local_cli_audit)
+
+            gate = output_dir.joinpath(
+                ".github/workflows/code-mower-gate.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("CODE_MOWER_GATE_CONTEXT: code-mower/gate", gate)
+            self.assertIn("CODE_MOWER_OWNER_LABEL: needs-owner", gate)
+            self.assertIn("codex-audit-done", gate)
+            self.assertIn("claude-audit-done", gate)
+            self.assertIn("builder:codex", gate)
+            self.assertIn("builder:claude", gate)
+            self.assertIn("enablePullRequestAutoMerge", gate)
+            self.assertIn("gh api -X POST", gate)
+            self.assertNotIn("__GATE_LANES_JSON__", gate)
+
             gitar = output_dir.joinpath(
                 ".github/workflows/gitar-audit-labeler.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("tools/code_mower saas-reviewer-labeler --adapter", gitar)
-            self.assertIn("REVIEWER_ADAPTER: ${{ github.event.inputs.adapter || 'gitar' }}", gitar)
+            self.assertIn("REVIEWER_ADAPTER: gitar", gitar)
+            self.assertIn("gitar-bot[bot]", gitar)
             self.assertIn("GITAR_AUDIT_LABEL_TOKEN", gitar)
             self.assertIn("GITAR_BOT_AUTHORS", gitar)
+            self.assertNotIn("github.event.inputs.adapter", gitar)
+            self.assertNotIn("github.event.comment.user.type == 'Bot'", gitar)
+            self.assertTrue(
+                any(
+                    "github-actions[bot] requires an explicit *_BOT_AUTHORS" in warning
+                    for warning in plan.data["warnings"]
+                )
+            )
+
+    def test_init_apply_generates_owner_surface_templates(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        config = dict(code_mower_config.load_config(config_path))
+        config["owner_surface"] = {
+            "owner_login": "jeffhuber",
+            "needs_owner_label": "needs-jeff",
+            "gate_override_label": "gate:override",
+            "status_issue": "6",
+            "weekly_cron": "15 12 * * 1",
+            "ready_label": "tier:R",
+            "phase_labels": ["phase:0", "phase:1"],
+            "reviewer_spend_path": ".code-mower/reviewer-spend.json",
+            "reviewer_value_report_path": ".code-mower/reviewer-value-report.md",
+        }
+        plan = code_mower_init.render_init_plan(
+            config,
+            package_mode=True,
+            package_command="code-mower",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / ".code-mower.generated"
+            result = code_mower_init.apply_init_plan(plan, output_dir)
+            generated = {
+                ".github/workflows/needs-owner-notify.yml",
+                ".github/workflows/weekly-status.yml",
+                "tools/status_report.py",
+            }
+            written = {
+                str(Path(path).relative_to(output_dir))
+                for path in result["written_files"]
+                if Path(path).is_relative_to(output_dir)
+            }
+            placeholder_files = {
+                str(Path(path).relative_to(output_dir))
+                for path in result["placeholder_files"]
+                if Path(path).is_relative_to(output_dir)
+            }
+            self.assertTrue(generated.issubset(written))
+            self.assertTrue(generated.isdisjoint(placeholder_files))
+            self.assertIn("needs-jeff", plan.data["labels"])
+            self.assertIn("gate:override", plan.data["labels"])
+
+            notify = output_dir.joinpath(
+                ".github/workflows/needs-owner-notify.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', notify)
+            self.assertIn('OWNER_LOGIN: "jeffhuber"', notify)
+            self.assertIn("github.event.label.name == 'needs-jeff'", notify)
+            self.assertIn(
+                'gh api -X POST "repos/${REPO}/issues/${NUM}/assignees"',
+                notify,
+            )
+            self.assertIn(
+                'gh api -X POST "repos/${REPO}/issues/${NUM}/comments"',
+                notify,
+            )
+            self.assertNotIn('gh api -X PATCH "repos/${REPO}/issues/${NUM}"', notify)
+            self.assertNotIn("gh issue comment", notify)
+            self.assertNotIn("__NEEDS_OWNER_LABEL__", notify)
+            self.assertNotIn("{% raw %}", notify)
+
+            weekly = output_dir.joinpath(
+                ".github/workflows/weekly-status.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn('cron: "15 12 * * 1"', weekly)
+            self.assertIn('STATUS_ISSUE: "6"', weekly)
+            self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', weekly)
+            self.assertIn('PHASE_LABELS: "phase:0,phase:1"', weekly)
+            self.assertIn("python3 tools/status_report.py", weekly)
+            self.assertIn(
+                "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
+                weekly,
+            )
+            self.assertIn(
+                "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405",
+                weekly,
+            )
+            self.assertNotIn("actions/checkout@v6", weekly)
+            self.assertNotIn("actions/setup-python@v6", weekly)
+            self.assertNotIn('STATUS_ISSUE: "TODO_STATUS_ISSUE"', weekly)
+            self.assertNotIn("{% raw %}", weekly)
+
+            status_report = output_dir.joinpath("tools/status_report.py")
+            self.assertTrue(status_report.stat().st_mode & 0o111)
+            self.assertIn(
+                "metadata only",
+                status_report.read_text(encoding="utf-8"),
+            )
+            subprocess.run(
+                [sys.executable, "-m", "py_compile", str(status_report)],
+                check=True,
+                text=True,
+            )
+
+    def test_status_report_template_summarizes_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_gh = root / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="$1 $2"
+state=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--state" ]; then state="$2"; fi
+  shift || true
+done
+if [ "$cmd" = "issue list" ] && [ "$state" = "open" ]; then
+  printf '%s\\n' '[{"number":1,"title":"Needs owner","labels":[{"name":"needs-jeff"},{"name":"phase:0"}],"assignees":[]},{"number":2,"title":"Ready","labels":[{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]}]'
+elif [ "$cmd" = "issue list" ] && [ "$state" = "closed" ]; then
+  printf '%s\\n' '[{"number":4,"title":"Done","labels":[{"name":"phase:0"}],"closedAt":"2099-01-01T00:00:00Z","assignees":[]}]'
+elif [ "$cmd" = "pr list" ] && [ "$state" = "open" ]; then
+  printf '%s\\n' '[{"number":3,"title":"Builder PR","labels":[{"name":"builder:codex"},{"name":"needs-codex-audit"},{"name":"needs-jeff"}],"author":{"login":"builder"},"isDraft":false}]'
+elif [ "$cmd" = "pr list" ] && [ "$state" = "merged" ]; then
+  printf '%s\\n' '[]'
+else
+  printf '%s\\n' '[]'
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            spend_dir = root / ".code-mower"
+            spend_dir.mkdir()
+            (spend_dir / "reviewer-spend.json").write_text(
+                json.dumps(
+                    {
+                        "runs": [
+                            {
+                                "lane": "codex",
+                                "wall_seconds": 12,
+                                "tokens": {"total": 34},
+                                "cost_usd": 0.056,
+                                "verdict": "pass",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "src/code_mower/templates/product-support/status_report.py"),
+                ],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
+                    "REPO": "owner/repo",
+                    "NEEDS_OWNER_LABEL": "needs-jeff",
+                    "READY_LABEL": "tier:R",
+                    "PHASE_LABELS": "phase:0",
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+        self.assertIn("## Needs Owner (needs-jeff)", completed.stdout)
+        self.assertIn("- issue #1 Needs owner", completed.stdout)
+        self.assertIn("- PR #3 Builder PR", completed.stdout)
+        self.assertIn("codex:pending", completed.stdout)
+        self.assertIn("| codex | 1 | 12 | 34 | 0.0560 | pass |", completed.stdout)
+        self.assertNotIn("body", completed.stdout.lower())
+
+    def test_init_add_repo_records_sibling_repo_targets(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        config, added_repos = code_mower_init.config_with_added_repositories(
+            code_mower_config.load_config(config_path),
+            ("owner/sibling-one", "owner/sibling-two"),
+        )
+        plan = code_mower_init.render_init_plan(
+            config,
+            package_mode=True,
+            package_command="code-mower",
+            add_repositories=added_repos,
+        )
+
+        self.assertEqual(added_repos, ("owner/sibling-one", "owner/sibling-two"))
+        self.assertIn("owner/sibling-one", plan.text)
+        self.assertIn("Additional repository targets from --add-repo", plan.text)
+        self.assertTrue(
+            any(
+                "--add-repo owner/sibling-one" in test
+                for test in plan.data["smoke_tests"]
+            )
+        )
+        self.assertEqual(
+            plan.data["additional_repositories"],
+            ["owner/sibling-one", "owner/sibling-two"],
+        )
+        self.assertIn(
+            "owner/sibling-two",
+            [repo["slug"] for repo in plan.data["repositories"]],
+        )
+
+    def test_init_add_repo_rejects_non_owner_repo_slug(self) -> None:
+        with self.assertRaisesRegex(
+            code_mower_config.ConfigError,
+            "OWNER/REPO",
+        ):
+            code_mower_init.config_with_added_repositories(
+                {"repositories": []},
+                ("not/a/slug",),
+            )
 
     def test_init_apply_generates_devin_bridge_labeler_and_stale_workflow(self) -> None:
         devin_config = {
@@ -1038,15 +1568,29 @@ exit 1
                 ".github/workflows/devin-audit-labeler.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("tools/code_mower trailer-comment-labeler --lane", labeler)
-            self.assertIn("TRAILER_LANE: ${{ github.event.inputs.lane || 'devin' }}", labeler)
+            self.assertIn("TRAILER_LANE: devin", labeler)
+            self.assertIn("devin-ai-integration[bot]", labeler)
+            self.assertNotIn("devin-audit-bot[bot]", labeler)
             self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", labeler)
             self.assertIn("DEVIN_BOT_AUTHORS", labeler)
+            self.assertNotIn("github.event.inputs.lane", labeler)
+            self.assertNotIn("github.event.comment.user.type == 'Bot'", labeler)
 
             stale = output_dir.joinpath(
                 ".github/workflows/devin-clear-stale.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("tools/code_mower clear-stale", stale)
             self.assertIn('default: "devin"', stale)
+
+    def test_shipped_saas_event_lanes_have_bot_authors(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        cfg = code_mower_config.load_config(config_path)
+        for lane_id, lane in cfg["lanes"].items():
+            if lane.get("driver") != "saas_event":
+                continue
+            provider_config = lane.get("provider_config")
+            self.assertIsInstance(provider_config, dict, lane_id)
+            self.assertTrue(provider_config.get("bot_authors"), lane_id)
 
     def test_init_apply_generates_product_support_wrappers(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
@@ -1068,6 +1612,7 @@ exit 1
                 "tools/run_codex_audit_pr.sh",
                 "tools/run_claude_audit_pr.sh",
                 "tools/safe_gh_comment.py",
+                "tools/status_report.py",
             }
             written = {
                 str(Path(path).relative_to(output_dir))
@@ -1525,6 +2070,7 @@ printf '%s\\n' "${lane}"
             "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
             "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
             "src/code_mower/templates/product-support/safe_gh_comment.py",
+            "src/code_mower/templates/product-support/status_report.py",
         ):
             self.assertIn(source, packaged_sources)
 
@@ -1533,6 +2079,18 @@ printf '%s\\n' "${lane}"
         }
         self.assertIn(
             "src/code_mower/templates/workflows/review-clear-stale.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/needs-owner-notify.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/weekly-status.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/self-hosted-local-audit.yml.j2",
             packaged_template_targets,
         )
 
@@ -1622,8 +2180,8 @@ printf '%s\\n' "${lane}"
                     fromlist=["current_alpha_package_spec"],
                 )
                 self.assertEqual(
-                    legacy_module.current_alpha_package_spec("0.5.0b37"),
-                    "code-mower==0.5.0b37",
+                    legacy_module.current_alpha_package_spec("0.5.0b40"),
+                    "code-mower==0.5.0b40",
                 )
             finally:
                 sys.path[:] = original_path
@@ -1660,7 +2218,7 @@ printf '%s\\n' "${lane}"
                     "-c",
                     (
                         "from tools import code_mower_package_content as c; "
-                        "print(c.current_alpha_package_spec('0.5.0b37'))"
+                        "print(c.current_alpha_package_spec('0.5.0b40'))"
                     ),
                 ],
                 cwd=tmp_path,
@@ -1673,7 +2231,7 @@ printf '%s\\n' "${lane}"
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             completed.stdout.strip(),
-            "code-mower==0.5.0b37",
+            "code-mower==0.5.0b40",
         )
 
     def test_package_rendering_legacy_fallback_stays_valid_yaml_subset(self) -> None:
@@ -1749,11 +2307,11 @@ printf '%s\\n' "${lane}"
                 (output_dir / "src/code_mower/cloud_client/dogfood.py").is_file()
             )
             self.assertIn(
-                'version = "0.5.0b37"',
+                'version = "0.5.0b40"',
                 (output_dir / "pyproject.toml").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                '__version__ = "0.5.0b37"',
+                '__version__ = "0.5.0b40"',
                 (output_dir / "src/code_mower/__init__.py").read_text(
                     encoding="utf-8"
                 ),
@@ -2666,6 +3224,7 @@ def main():
                     output_dir=root / ".code-mower/cloud-benchmark-bundle",
                     reports=[],
                     events=[],
+                    spend_path=None,
                     repo_slug="owner/repo",
                     team_id="team",
                     install_id="install",
@@ -3288,7 +3847,7 @@ def main():
             {
                 "status": "pass",
                 "package_spec": "code-mower",
-                "version": "code-mower 0.5.0b37",
+                "version": "code-mower 0.5.0b40",
                 "work_dir": "/tmp/code-mower-rehearsal",
                 "toy_repo": "/tmp/code-mower-rehearsal/toy-repo",
                 "step_count": 1,
@@ -3400,7 +3959,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b37",
+                version="code-mower 0.5.0b40",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -3479,7 +4038,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b37",
+                version="code-mower 0.5.0b40",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -3541,7 +4100,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b37",
+                version="code-mower 0.5.0b40",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -3607,24 +4166,24 @@ def main():
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.37",
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.40",
                     base_dir=package,
                 ),
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.37",
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.40",
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "code-mower==0.5.0b37",
+                    "code-mower==0.5.0b40",
                     base_dir=package,
                 ),
-                "code-mower==0.5.0b37",
+                "code-mower==0.5.0b40",
             )
 
     def test_package_install_rehearsal_supports_index_aware_pip_install(self) -> None:
         self.assertEqual(
             code_mower_migration._pip_install_command(
                 Path("/tmp/venv/bin/python"),
-                "code-mower==0.5.0b37",
+                "code-mower==0.5.0b40",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
             ),
@@ -3637,7 +4196,7 @@ def main():
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
                 "https://pypi.org/simple/",
-                "code-mower==0.5.0b37",
+                "code-mower==0.5.0b40",
             ],
         )
 
@@ -3657,10 +4216,10 @@ def main():
         payload = release_readiness.render_release_readiness(ROOT)
 
         self.assertEqual(payload["status"], "pass")
-        self.assertEqual(payload["version"], "0.5.0b37")
-        self.assertEqual(payload["release_tag"], "v0.5.0-beta.37")
-        self.assertEqual(payload["alpha_tag"], "v0.5.0-beta.37")
-        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0b37")
+        self.assertEqual(payload["version"], "0.5.0b40")
+        self.assertEqual(payload["release_tag"], "v0.5.0-beta.40")
+        self.assertEqual(payload["alpha_tag"], "v0.5.0-beta.40")
+        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0b40")
         check_ids = {check["id"]: check for check in payload["checks"]}
         self.assertEqual(check_ids["package-version-consistency"]["status"], "pass")
         self.assertEqual(
@@ -3709,7 +4268,7 @@ def main():
         check_ids = {check["id"]: check for check in payload["checks"]}
         check = check_ids["materialized-package-version-consistency"]
         self.assertEqual(check["status"], "fail")
-        self.assertEqual(check["detail"]["source_version"], "0.5.0b37")
+        self.assertEqual(check["detail"]["source_version"], "0.5.0b40")
         self.assertEqual(check["detail"]["generated_init_version"], "0.0.0")
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
@@ -3789,20 +4348,20 @@ def main():
 
     def test_release_readiness_tag_derivation_supports_release_stages(self) -> None:
         self.assertEqual(
-            release_readiness._release_tag_for_version("0.5.0b37"),
-            "v0.5.0-beta.37",
+            release_readiness._release_tag_for_version("0.5.0b40"),
+            "v0.5.0-beta.40",
         )
         self.assertEqual(
-            code_mower_versioning.release_tag_for_version("0.5.0b37"),
-            "v0.5.0-beta.37",
+            code_mower_versioning.release_tag_for_version("0.5.0b40"),
+            "v0.5.0-beta.40",
         )
         self.assertEqual(
-            release_readiness._release_tag_for_version("0.5.0b37"),
-            "v0.5.0-beta.37",
+            release_readiness._release_tag_for_version("0.5.0b40"),
+            "v0.5.0-beta.40",
         )
         self.assertEqual(
-            code_mower_versioning.release_tag_for_version("0.5.0b37"),
-            "v0.5.0-beta.37",
+            code_mower_versioning.release_tag_for_version("0.5.0b40"),
+            "v0.5.0-beta.40",
         )
         self.assertEqual(
             release_readiness._release_tag_for_version("1.0.0rc1"),
@@ -3831,8 +4390,8 @@ def main():
             next_steps.current_alpha_package_spec(),
         )
         self.assertEqual(
-            code_mower_package_content.current_alpha_package_spec("0.5.0b37"),
-            "code-mower==0.5.0b37",
+            code_mower_package_content.current_alpha_package_spec("0.5.0b40"),
+            "code-mower==0.5.0b40",
         )
         self.assertNotIn(next_steps.current_public_tag(), package_content_text)
         self.assertNotIn("v0.0.0", package_content_text)
@@ -4004,7 +4563,7 @@ def main():
             step for step in plan["steps"] if step["id"] == "package-install-rehearsal"
         )
         self.assertIn("doctor --v05", doctor_step["command"])
-        self.assertIn("code-mower==0.5.0b37", package_step["command"])
+        self.assertIn("code-mower==0.5.0b40", package_step["command"])
         self.assertIn("current published PyPI prerelease", package_step["why"])
         self.assertIn("first_user_readiness", package_step["why"])
         self.assertEqual(

@@ -4,6 +4,35 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.39
+
+This beta hardens the Grok Build reviewer lane after the first Bridge Pro
+dogfood run showed that one-turn headless audits can stop before returning
+structured verdict JSON.
+
+### Changed
+
+- `code-mower grok-build` now uses a configurable PR-audit turn budget with a
+  default of four turns instead of hardcoding a one-turn run.
+- The runner records the selected Grok turn budget in diagnostics so
+  CodeMower.com and local artifacts can explain parse/turn-budget failures.
+- A regression test now verifies the default and custom Grok turn budget passed
+  to the local CLI.
+
+## v0.5.0-beta.38
+
+This beta adds Grok Build as an optional Code Mower reviewer lane.
+
+### Added
+
+- `code-mower grok-build` runs Grok Build as an informational/manual PR audit
+  lane with structured verdict parsing and provider provenance capture.
+- `grok_build` provider templates, lane labels, doctor provenance checks, and
+  calibration planning support are now included in the packaged OSS defaults.
+- Provider setup docs now cover Grok Build local OAuth, xAI key alternatives,
+  model provenance env vars, and the trusted-local `GROK_BUILD_USE_AMBIENT_HOME`
+  opt-in.
+
 ## v0.5.0-beta.32
 
 This beta adds full issue-to-delivery lineage capture for the planning workflow.

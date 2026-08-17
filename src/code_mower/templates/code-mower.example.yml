@@ -9,6 +9,38 @@ repositories:
     default_branch: main
     local_path_env: EXAMPLE_REPO_PATH
 
+owner_surface:
+  owner_login: TODO_OWNER_LOGIN
+  needs_owner_label: needs-owner
+  gate_override_label: "gate:override"
+  status_issue: TODO_STATUS_ISSUE
+  weekly_cron: "0 14 * * 1"
+  ready_label: "tier:R"
+  phase_labels:
+    - "phase:0"
+    - "phase:1"
+    - "phase:2"
+    - "phase:3"
+    - "phase:4"
+    - "phase:5"
+  reviewer_spend_path: .code-mower/reviewer-spend.json
+  reviewer_value_report_path: .code-mower/reviewer-value-report.md
+
+merge_authority_excludes_author: true
+builder_identity:
+  labels:
+    builder:codex: codex
+    builder:claude: claude
+    builder:grok-bot: grok-bot
+  authors:
+    chatgpt-codex-connector[bot]: codex
+    claude[bot]: claude
+    grok-bot[bot]: grok-bot
+  trailers:
+    CODE_MOWER_BUILDER:codex: codex
+    CODE_MOWER_BUILDER:claude: claude
+    CODE_MOWER_BUILDER:grok-bot: grok-bot
+
 lanes:
   codex:
     type: audit
@@ -112,6 +144,8 @@ lanes:
       - GREPTILE_AUDIT_LABEL_TOKEN
       - GITHUB_TOKEN
     provider_config:
+      # Required by generated issue-comment labeler prefilters. Keep SaaS
+      # reviewer bot authors explicit so unrelated bots cannot spoof labels.
       bot_authors:
         - greptile-apps[bot]
         - greptile-apps
@@ -375,6 +409,54 @@ lanes:
         - CODERABBIT_MODEL
       status: optional CLI lane for local/on-demand review capture
 
+  grok_build:
+    type: audit
+    driver: local_cli
+    provider: grok_build
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: included
+    labels:
+      needs: needs-grok-audit
+      done: grok-audit-done
+      blocked: grok-audit-blocked
+    token_env:
+      - GITHUB_TOKEN
+    provider_config:
+      command: grok
+      command_env: GROK_BUILD_COMMAND
+      model_env: CODE_MOWER_GROK_MODEL
+      model_env_any:
+        - GROK_MODEL
+        - XAI_MODEL
+      prompt_transport: prompt_file
+      prompt_lenses:
+        - base-audit
+      required_env_any:
+        - XAI_API_KEY
+        - GROK_DEPLOYMENT_KEY
+        - GROK_API_KEY
+      required_env_truthy_any:
+        - GROK_BUILD_USE_AMBIENT_HOME
+      doctor_probe_args:
+        - -p
+        - "Reply with exactly: ok"
+        - --output-format
+        - json
+        - --permission-mode
+        - plan
+        - --disable-web-search
+        - --no-memory
+        - --max-turns
+        - "1"
+      doctor_probe_timeout_seconds: 60
+      doctor_probe_expect_json: true
+      doctor_probe_expect_json_field: text
+      doctor_probe_expect_json_value: ok
+      auth: run `grok login --device-code` locally, or set XAI_API_KEY. Real audit runs that inherit local OAuth require GROK_BUILD_USE_AMBIENT_HOME=1 in trusted environments
+      status: informational Grok Build lane; not merge authority until calibrated for blocker catch rate, false positives, cost, and latency
+
   acp_bridge:
     type: audit
     driver: local_cli
@@ -430,10 +512,11 @@ profiles:
       - aider
 
   third_peer:
-    description: Optional third local CLI reviewer calibration profile; Google and Hermes CLI lanes stay informational until catch rate and false positives are measured.
+    description: Optional third local CLI reviewer calibration profile; Google, Grok, and Hermes CLI lanes stay informational until catch rate and false positives are measured.
     lanes:
       - antigravity_cli
       - gemini_cli
+      - grok_build
       - hermes_cli
 
   cli_research:
@@ -441,6 +524,7 @@ profiles:
     lanes:
       - antigravity_cli
       - gemini_cli
+      - grok_build
       - hermes_cli
       - coderabbit_cli
       - acp_bridge

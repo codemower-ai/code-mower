@@ -16,7 +16,12 @@ else:  # pragma: no cover - import shape depends on package layout.
     from .. import code_mower_context_packs
 
 
-CONTEXT_PACK_CLI_LANES = {"antigravity-cli", "gemini-cli", "hermes-cli"}
+CONTEXT_PACK_CLI_LANES = {
+    "antigravity-cli",
+    "gemini-cli",
+    "grok-build",
+    "hermes-cli",
+}
 
 
 def repo_roots_from_path_map(repo_path_map: Mapping[str, str]) -> dict[str, Path]:

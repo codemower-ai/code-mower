@@ -227,7 +227,12 @@ def build_pilot_plan(
                             for lens in reviewer.get("lenses", ["base-audit"])
                             if str(lens).strip()
                         ] or ["base-audit"]
-                        if lane_id in {"antigravity_cli", "gemini_cli", "hermes_cli"}:
+                        if lane_id in {
+                            "antigravity_cli",
+                            "gemini_cli",
+                            "grok_build",
+                            "hermes_cli",
+                        }:
                             output_leaf = _local_cli_output_leaf(
                                 lane_slug=lane_slug,
                                 lane_id=lane_id,

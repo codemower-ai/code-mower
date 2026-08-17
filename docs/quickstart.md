@@ -14,11 +14,11 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b37
+pipx install --python python3.12 code-mower==0.5.0b40
 code-mower --version
 ```
 
-`0.5.0b37` is a beta release. If you want the newest prerelease instead of this
+`0.5.0b40` is a beta release. If you want the newest prerelease instead of this
 exact verified beta, use:
 
 ```bash
@@ -108,7 +108,8 @@ derived working copy. The work-order command writes a metadata-only
 `feature.cloud-event.json` sidecar so CodeMower.com can tie future
 builder/reviewer evidence back to the issue without receiving the issue body,
 source code, diffs, or transcripts. `attach-delivery` adds PR, reviewer-check,
-and merge identifiers only. For private/offline drafting:
+and merge identifiers only. `work-order draft` rejects pointer-only stubs and
+large accidental batches by default. For private/offline drafting:
 
 ```bash
 code-mower plan from-issue --title "Feature" --body-file issue-body.md \
@@ -136,13 +137,33 @@ code-mower next-steps --profile recommended --repo OWNER/REPO
 ```
 
 `init --easy` is non-mutating by default. `--apply` writes a generated tree for
-review; it does not edit live workflows or trigger paid providers.
+review; it does not edit live workflows or trigger paid providers. The
+generated tree includes owner-surface templates for a configurable
+`needs-owner` escalation label and a weekly pinned-issue status digest.
 `doctor --preflight` is the recommended early-adopter preset for GitHub auth,
 Python/runtime checks, provider CLI probes, private-repo caveats, Actions cost
 diagnostics, and optional cloud-token setup. It is equivalent to the versioned
 `doctor --v05` preset. Use `--strict` only when warnings should fail a
 bootstrap job. For auth-specific doctor failures, see
 [Troubleshooting](troubleshooting.md).
+
+To extend the same lane/label/workflow setup to a sibling repository, run the
+same init command from that checkout and add the target repo slug to the
+rendered plan:
+
+```bash
+code-mower init ../control-repo/code-mower.yml \
+  --add-repo OWNER/SIBLING_REPO \
+  --profile recommended \
+  --apply \
+  --output-dir .code-mower.generated
+code-mower doctor ../control-repo/code-mower.yml --preflight --json
+```
+
+`doctor` reports whether the config is single-repo or multi-repo so CI-only
+sibling repos are easy to spot before they drift from the merge gate. For a
+permanent rollout, add the sibling slug to `repositories:` in the control
+config after reviewing the generated plan.
 
 ## 5. Rehearse The Package Install Path
 
@@ -153,7 +174,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b37 \
+  --package-spec code-mower==0.5.0b40 \
   --python "$(command -v python3.12)" \
   --json
 ```

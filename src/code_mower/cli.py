@@ -14,7 +14,7 @@ from pathlib import Path
 if __package__ in {None, ""}:
     raise SystemExit(
         "code_mower.cli is a packaged entrypoint. Install Code Mower with "
-        "`pipx install code-mower==0.5.0b37`, or run source checkouts with "
+        "`pipx install code-mower==0.5.0b40`, or run source checkouts with "
         "`PYTHONPATH=src python -m code_mower.cli`."
     )
 
@@ -23,6 +23,7 @@ from . import antigravity_cli_audit_pr
 from . import blind_review_coordinator
 from . import bootstrap as code_mower_bootstrap
 from . import builder_experiment as code_mower_builder_experiment
+from . import builder_runs as code_mower_builder_runs
 from . import checks as code_mower_checks
 from . import claude_audit_pr
 from . import claude_cli_bounce
@@ -39,6 +40,7 @@ from . import code_mower_telemetry
 from . import config as code_mower_config
 from . import doctor as code_mower_doctor
 from . import gemini_cli_audit_pr
+from . import grok_build_audit_pr
 from . import hermes_cli_audit_pr
 from . import init as code_mower_init
 from . import local_llm_audit_pr
@@ -379,6 +381,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "antigravity-cli": "Run an Antigravity/Gemini CLI structured audit lane.",
     "blind-review": "Coordinate hidden/blind review artifacts.",
     "bootstrap": "Bootstrap generated support files and workflow fixtures.",
+    "builder": "Record source-free builder run provenance.",
     "builder-experiment": "Capture builder-side experiment metadata.",
     "calibration": "Create corpora, dispositions, policy, and value reports.",
     "claude-audit": "Run a Claude structured audit lane.",
@@ -395,6 +398,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "codex-audit-schema-smoke": "Smoke-test Codex audit schema parsing.",
     "doctor": "Check runtime, GitHub, providers, privacy, and cloud setup.",
     "gemini-cli": "Run a Gemini CLI structured audit lane.",
+    "grok-build": "Run a Grok Build informational audit lane.",
     "hermes-cli": "Run a Hermes CLI structured audit lane.",
     "init": "Render safe easy-mode setup output.",
     "local-llm": "Probe and run local OpenAI-compatible model lanes.",
@@ -508,6 +512,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "antigravity-cli": antigravity_cli_audit_pr.main,
     "blind-review": blind_review_coordinator.main,
     "bootstrap": code_mower_bootstrap.main,
+    "builder": code_mower_builder_runs.main,
     "builder-experiment": code_mower_builder_experiment.main,
     "calibration": code_mower_calibration.main,
     "claude-audit": claude_audit_pr.main,
@@ -524,6 +529,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "codex-audit-schema-smoke": codex_audit_schema_smoke.main,
     "doctor": code_mower_doctor.main,
     "gemini-cli": gemini_cli_audit_pr.main,
+    "grok-build": grok_build_audit_pr.main,
     "hermes-cli": hermes_cli_audit_pr.main,
     "init": _init_main,
     "local-llm": _local_llm_main,

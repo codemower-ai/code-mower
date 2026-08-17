@@ -37,7 +37,15 @@ else:  # pragma: no cover - exercised after package extraction.
     from .. import secrets as code_mower_secrets
 
 
-SUPPORTED_TOKEN_FILE_ENV_NAMES = frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"})
+SUPPORTED_TOKEN_FILE_ENV_NAMES = frozenset(
+    {
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GROK_API_KEY",
+        "GROK_DEPLOYMENT_KEY",
+        "XAI_API_KEY",
+    }
+)
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 ACTIONS_BILLING_BLOCK_PATTERNS = (
     "recent account payments have failed",
@@ -52,6 +60,7 @@ ACTIONS_COST_SAMPLE_DEFAULT = 100
 ACTIONS_COST_SAMPLE_MAX = 100
 ACTIONS_METADATA_WORKFLOW_MARKERS = (
     "audit-labeler",
+    "code-mower-gate",
     "labeler",
     "clear-stale",
     "audit-label-cleanup",
@@ -121,6 +130,11 @@ def token_remediation(
             parts.append(
                 "set GEMINI_API_KEY or GOOGLE_API_KEY, or run "
                 "`code-mower init auth gemini` and export GEMINI_API_KEY_FILE"
+            )
+        elif set(names) & {"XAI_API_KEY", "GROK_DEPLOYMENT_KEY", "GROK_API_KEY"}:
+            parts.append(
+                "run `grok login --device-code` locally, or set XAI_API_KEY "
+                "or GROK_DEPLOYMENT_KEY before enabling the Grok Build lane"
             )
         else:
             parts.append("set one of " + join_names(names))

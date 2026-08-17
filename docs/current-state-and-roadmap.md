@@ -22,8 +22,8 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.37`, published on
-PyPI as `code-mower==0.5.0b37`. It is intended to be installed from the package
+The current verified public beta baseline is `v0.5.0-beta.40`, published on
+PyPI as `code-mower==0.5.0b40`. It is intended to be installed from the package
 index for friendly-user pilots, with GitHub tag/source installs kept as a
 fallback and development path. Beta.37 is the current baseline after the
 provider/model provenance, planning-lineage, and public-package rehearsal push:
@@ -61,7 +61,7 @@ It has proved:
   prints the same plan near the header so support tooling and first-time users
   can see exactly which optional GitHub/cloud stages ran;
 - Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
-  private reference/product repos, with beta.37 preserving that client path for
+  private reference/product repos, with beta.39 preserving that client path for
   the next rollout; and
 - metadata-only AI tool/model provenance in cloud bundles and structured
   events, so dashboards can distinguish known provider/model/version signal
@@ -83,12 +83,12 @@ It has proved:
   the OSS repo, hosted service repo, and two private reference/product repos,
   with imported history flagged as `history_only: true` and
   `calibration_evidence: false`; and
-- a package-installed beta.37 calibration/value-report pipeline target that
+- a package-installed beta.39 calibration/value-report pipeline target that
   keeps reviewer metrics, lane policy, value-report artifacts, and sanitized
   report upload in the release rehearsal path; and
-- a beta.37 private-repo install rehearsal target against
+- a beta.39 private-repo install rehearsal target against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
-  to prove `code-mower==0.5.0b37` can detect and dry-run repository-native
+  to prove `code-mower==0.5.0b40` can detect and dry-run repository-native
   checks in an external-ish private repo without committing support files first.
   The rehearsal passed with 10/10 first-user readiness and 0 readiness
   warnings, detected `npm run lint`, `npm run typecheck`, and `npm run test`
@@ -103,7 +103,7 @@ It has proved:
 - a v0.5 friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- a public PyPI package-install rehearsal from `code-mower==0.5.0b37` with a
+- a public PyPI package-install rehearsal from `code-mower==0.5.0b40` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout; and
@@ -118,7 +118,7 @@ It has proved:
   metadata, while historical imports must be run explicitly through
   `code-mower cloud catch-up` or `repo-sync --mode catch-up` and are displayed
   as imported history rather than calibrated reviewer evidence; and
-- a local Codex dogfood proof using a dashboard-issued token: beta.37 uploaded
+- a local Codex dogfood proof using a dashboard-issued token: beta.39 uploaded
   current metadata for Code Mower OSS, CodeMower.com, and two private
   reference/product repos, preserving metadata-only payloads and surfacing
   provider/model provenance gaps without blocking operational uploads; and
@@ -343,15 +343,23 @@ v1.0 should be "easy mode with a path to power":
   programmers and reviewer lanes, not as a hosted service that must be adopted
   wholesale.
 
-GitLab, Bitbucket, ACP bridges, hosted builder harnesses, and fully automated
-authoring-run capture remain post-v1.0 work.
+GitLab, Bitbucket, ACP bridges, hosted builder harnesses that launch sessions,
+and fully automated authoring-run capture remain post-v1.0 work. v0.5 includes
+the first source-free builder provenance path via `code-mower builder record`:
+hosted builders can open a PR, then Code Mower records provider/executor,
+issue, work order, PR, branch, model/version hints, cost, latency, and
+intervention counts as metadata only.
 
 ## Builder And Orchestrator Direction
 
 Reviewer calibration is the current executable loop: compare reviewers and
 lenses against known-clean, known-blocked, and subtle-risk PRs. Builder-side
 experiments are the next major extension: compare which AI peer programmer plus
-review policy ships verified code fastest and cleanest.
+review policy ships verified code fastest and cleanest. The first supported
+posture is observation, not orchestration: Grok Bot, Cursor Cloud Agents, Devin,
+Claude, Codex, or another builder can create a branch/PR through their normal
+surface, then `code-mower builder record` captures the source-free delivery
+provenance.
 
 The roadmap should borrow the useful shape from multi-agent/orchestrator
 systems without adopting their full runtime:

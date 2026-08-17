@@ -245,6 +245,18 @@ code-mower providers provenance-env
 code-mower providers provenance-env --provider gemini_cli --shell
 ```
 
+For Grok Build runs, prefer an explicit model label before exporting benchmark
+evidence:
+
+```bash
+export CODE_MOWER_GROK_MODEL="grok-4.6-build"
+code-mower providers provenance-env --provider grok_build --shell
+```
+
+If you authenticate Grok Build through local OAuth rather than `XAI_API_KEY`,
+real audit runs require `GROK_BUILD_USE_AMBIENT_HOME=1` in a trusted local
+environment so Code Mower does not silently inherit session state.
+
 The helper reports whether model env vars are set without printing their values,
 and it shows whether local CLI version probes are available. The `--shell`
 output uses `TODO_MODEL_NAME` placeholders so it is safe to paste into support

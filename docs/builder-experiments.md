@@ -155,6 +155,21 @@ code-mower builder-experiment report builder-experiment.json \
   --output builder-experiment-report.md
 ```
 
+If the run happened through a hosted builder such as Grok Bot or Cursor Cloud
+Agents, record the PR-side provenance as a cloud-safe event after the builder
+opens the PR:
+
+```bash
+code-mower builder record \
+  --provider grok_bot \
+  --executor cursor_cloud_agent \
+  --work-order .code-mower/work-orders/feature.md \
+  --pr owner/repo#123
+```
+
+Use this event as delivery provenance, not as a reviewer approval. The normal
+Code Mower audit lanes still decide whether the PR is merge-ready.
+
 ## Guardrails
 
 - Use a fresh worktree for every builder run.

@@ -16,11 +16,11 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b37
+pipx install --python python3.12 code-mower==0.5.0b40
 code-mower --version
 ```
 
-`0.5.0b37` is a beta release. To follow the newest beta line instead of
+`0.5.0b40` is a beta release. To follow the newest beta line instead of
 pinning this exact build:
 
 ```bash
@@ -45,7 +45,10 @@ code-mower init --easy --apply --output-dir .code-mower.generated
 ```
 
 The generated tree is reviewable output. It does not mutate live workflows,
-create labels, trigger reviewers, or upload data.
+create labels, trigger reviewers, or upload data. It includes owner-surface
+templates for the configurable `needs-owner` escalation label and a weekly
+pinned-issue status digest; see [GitHub Setup](github-setup.md) before enabling
+the scheduled workflow.
 
 ## 4. Run The Preflight Doctor
 
@@ -128,6 +131,13 @@ contract: TypeScript applications should still run their package-manager
 lint/test/build scripts, while Python projects should run Ruff/pytest when
 configured.
 
+In Git worktrees, detection also includes the local `code-mower.pr-size` lint.
+It defaults to a 300 changed-line budget and a near-identical-file batch guard;
+tune it with `--max-pr-changed-lines`, `--pr-size-base-ref`, and
+`--near-identical-file-limit`. If the configured base ref is not fetched
+locally, the PR-size lint reports `skipped` instead of failing the whole check
+run.
+
 Use `checks run --dry-run` first to review commands before executing them.
 Then run selected checks explicitly, for example:
 
@@ -175,7 +185,7 @@ install rehearsal instead:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b37 \
+  --package-spec code-mower==0.5.0b40 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -196,7 +206,7 @@ surface and dry-run it instead of trying product-wrapper parity:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b37 \
+  --package-spec code-mower==0.5.0b40 \
   --repo-path /path/to/repo \
   --python "$(command -v python3.12)" \
   --json
@@ -242,6 +252,7 @@ code-mower cloud export \
   --report reviewer-metrics=reviewer-metrics.json \
   --report lane-policy=lane-policy.json \
   --report value-report=reviewer-value-report.md \
+  --spend .code-mower.generated/reviewer-spend.json \
   --output-dir .code-mower/cloud-benchmark-bundle \
   --anonymous \
   --json

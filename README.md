@@ -88,11 +88,11 @@ Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b37
+pipx install --python python3.12 code-mower==0.5.0b40
 code-mower --version
 ```
 
-`0.5.0b37` is a beta release. Until Code Mower publishes a stable `1.0`
+`0.5.0b40` is a beta release. Until Code Mower publishes a stable `1.0`
 line, use the explicit beta version above or allow prereleases with:
 
 ```bash
@@ -107,6 +107,10 @@ code-mower doctor --preflight
 code-mower checks detect --json
 ```
 
+In Git worktrees, `checks detect` also offers `code-mower.pr-size`, a local
+PR-size lint that defaults to 300 changed lines and flags large batches of
+near-identical files.
+
 When those look sane, write the generated setup to a reviewable folder and
 produce the starter local report:
 
@@ -116,8 +120,9 @@ code-mower calibration value-report .code-mower.generated/calibration-corpus.jso
   --output .code-mower/reviewer-value-report.md
 ```
 
-The generated starter corpus proves the command path. To bootstrap a draft from
-your repository history:
+The generated setup also includes the configurable owner escalation and weekly
+status digest templates. The generated starter corpus proves the command path.
+To bootstrap a draft from your repository history:
 
 ```bash
 code-mower calibration auto-discover \
@@ -135,7 +140,7 @@ First-time command map: [docs/launch-command-surface.md](docs/launch-command-sur
 
 The current PyPI beta has been rehearsed end-to-end from a clean install:
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the latest 10/10 public-package readiness proof for `code-mower==0.5.0b37`.
+the latest 10/10 public-package readiness proof for `code-mower==0.5.0b40`.
 
 ## Optional: Plan Before Coding
 
@@ -169,9 +174,21 @@ code-mower work-order attach-delivery \
   --from-github
 ```
 
-That lets CodeMower.com show `issue -> plan -> work order -> PR -> reviewer
-checks -> merge` lineage without receiving source, diffs, transcripts, or issue
-body text.
+If a hosted builder such as Grok Bot or Cursor Cloud Agents produced the PR,
+record source-free builder provenance too:
+
+```bash
+code-mower builder record \
+  --provider grok_bot \
+  --executor cursor_cloud_agent \
+  --work-order .code-mower/work-orders/billing-settings.md \
+  --pr OWNER/REPO#124
+```
+
+That lets CodeMower.com show `issue -> plan -> work order -> builder run -> PR
+-> reviewer checks -> merge` lineage without receiving source, diffs,
+transcripts, prompts, or issue body text. See
+[docs/builders-grok-cursor.md](docs/builders-grok-cursor.md).
 
 ## Why Not Just Run Codex Or Claude Yourself?
 
@@ -272,13 +289,15 @@ engineer can:
 Future builder/orchestrator experiments extend the same loop from "who reviews
 best?" to "which AI builder plus reviewer loop ships best on this product?" See
 [docs/builder-experiments.md](docs/builder-experiments.md) and
-[docs/authoring-intelligence.md](docs/authoring-intelligence.md).
+[docs/authoring-intelligence.md](docs/authoring-intelligence.md). For hosted
+builder provenance, start with
+[docs/builders-grok-cursor.md](docs/builders-grok-cursor.md).
 
 ## Installation Status
 
-The current public beta is `v0.5.0-beta.37` from
+The current public beta is `v0.5.0-beta.40` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), published
-as `code-mower==0.5.0b37` on [PyPI](https://pypi.org/project/code-mower/).
+as `code-mower==0.5.0b40` on [PyPI](https://pypi.org/project/code-mower/).
 GitHub releases remain the auditable source for tags, build artifacts, and
 release notes.
 

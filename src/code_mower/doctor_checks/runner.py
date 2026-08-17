@@ -10,6 +10,7 @@ from code_mower import config as code_mower_config
 from .cloud import check_cloud_token_surface
 from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
 from .github import check_github_setup
+from .github_config import check_repository_posture
 from .models import STATUS_FAIL, STATUS_PASS, DoctorCheck, DoctorReport
 from .providers import check_lane_runtime, effective_lane, provider_template_coverage, selected_lanes
 from .registry import DoctorCheckStage, build_doctor_run_plan
@@ -128,6 +129,7 @@ def run_doctor(
             detail={"lanes": list(lanes)},
         )
     )
+    checks.append(check_repository_posture(config))
     checks.append(provider_template_coverage(lanes, templates))
     checks.extend(
         _global_runtime_checks(

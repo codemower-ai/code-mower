@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import shlex
 import sys
@@ -54,9 +55,19 @@ WORKFLOW_TARGETS_BY_DRIVER = {
     "saas_event": (".github/workflows/{lane_stem}-labeler.yml",),
 }
 
+LOCAL_AUDIT_WORKFLOW_PATH = ".github/workflows/local-cli-audit.yml"
+LOCAL_AUDIT_WORKFLOW_SOURCE = "self-hosted-local-audit-workflow-template"
+LOCAL_AUDIT_WORKFLOW_TEMPLATE = "templates/workflows/self-hosted-local-audit.yml.j2"
+LOCAL_AUDIT_RUNNER_LABEL = "code-mower-audit"
+LOCAL_AUDIT_WRAPPERS = {
+    "claude": "tools/run_claude_audit_pr.sh",
+    "codex": "tools/run_codex_audit_pr.sh",
+}
+
 DEFAULT_APPLY_OUTPUT_DIR = ".code-mower.generated"
 APPLY_MANIFEST_FILENAME = "code-mower-init-plan.json"
 APPLY_SUMMARY_FILES = ("labels.txt", "required-secrets.txt", "smoke-tests.sh")
+OWNER_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REFERENCE_PYTHON = ".code-mower-venv/bin/python"
 GEMINI_AUTH_FILE_ENV = "GEMINI_API_KEY_FILE"
 GEMINI_AUTH_ENV_NAMES = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
@@ -124,7 +135,42 @@ PRODUCT_SUPPORT_FILES = (
         "product-support-helper",
         "0755",
     ),
+    (
+        "tools/status_report.py",
+        "templates/product-support/status_report.py",
+        "product-support-status-report",
+        "0755",
+    ),
 )
+
+OWNER_SURFACE_DEFAULTS = {
+    "owner_login": "TODO_OWNER_LOGIN",
+    "needs_owner_label": "needs-owner",
+    "gate_override_label": "gate:override",
+    "status_issue": "TODO_STATUS_ISSUE",
+    "weekly_cron": "0 14 * * 1",
+    "ready_label": "tier:R",
+    "phase_labels": "phase:0,phase:1,phase:2,phase:3,phase:4,phase:5",
+    "reviewer_spend_path": ".code-mower/reviewer-spend.json",
+    "reviewer_value_report_path": ".code-mower/reviewer-value-report.md",
+}
+
+OWNER_SURFACE_WORKFLOW_FILES = (
+    (
+        ".github/workflows/needs-owner-notify.yml",
+        "templates/workflows/needs-owner-notify.yml.j2",
+        "owner-notify-workflow-template",
+    ),
+    (
+        ".github/workflows/weekly-status.yml",
+        "templates/workflows/weekly-status.yml.j2",
+        "weekly-status-workflow-template",
+    ),
+)
+
+GATE_WORKFLOW_PATH = ".github/workflows/code-mower-gate.yml"
+GATE_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-gate.yml.j2"
+DEFAULT_OWNER_LABEL = "needs-owner"
 
 
 @dataclass(frozen=True)
@@ -165,6 +211,10 @@ def _trailer_lane_name(lane_id: str, lane: Mapping[str, Any]) -> str:
     return str(lane.get("trailer_lane") or lane.get("lane_config") or lane_id)
 
 
+def _author_lane_name(lane_id: str, lane: Mapping[str, Any]) -> str:
+    return str(lane.get("author_lane") or _trailer_lane_name(lane_id, lane))
+
+
 def _lane_module_name(lane_id: str) -> str:
     return lane_id.replace("-", "_")
 
@@ -176,6 +226,57 @@ def _display_name(raw_name: str) -> str:
 def _workflow_name_for_target(target: str) -> str:
     stem = Path(target).stem.replace("-", " ")
     return stem[:1].upper() + stem[1:]
+
+
+def _normalize_repo_slug(value: str) -> str:
+    slug = value.strip().strip("/")
+    if not OWNER_REPO_RE.fullmatch(slug):
+        raise ConfigError("--add-repo expects an OWNER/REPO slug")
+    return slug
+
+
+def config_with_added_repositories(
+    config: Mapping[str, Any],
+    add_repos: list[str] | tuple[str, ...],
+) -> tuple[Mapping[str, Any], tuple[str, ...]]:
+    """Return a config copy with additional repository targets appended."""
+
+    if not add_repos:
+        return config, ()
+    repositories = list(config.get("repositories") or [])
+    existing_slugs = {
+        str(repo.get("slug") or "")
+        for repo in repositories
+        if isinstance(repo, Mapping)
+    }
+    added: list[str] = []
+    for raw_slug in add_repos:
+        slug = _normalize_repo_slug(raw_slug)
+        if slug in existing_slugs:
+            continue
+        repositories.append({"slug": slug, "default_branch": "main"})
+        existing_slugs.add(slug)
+        added.append(slug)
+    return {**dict(config), "repositories": repositories}, tuple(added)
+
+
+def _repository_entries(config: Mapping[str, Any]) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for repo in config.get("repositories") or []:
+        if not isinstance(repo, Mapping):
+            continue
+        slug = str(repo.get("slug") or "")
+        if not slug:
+            continue
+        entry = {
+            "slug": slug,
+            "default_branch": str(repo.get("default_branch") or "main"),
+        }
+        local_path_env = str(repo.get("local_path_env") or "")
+        if local_path_env:
+            entry["local_path_env"] = local_path_env
+        entries.append(entry)
+    return entries
 
 
 def _audit_token_env(lane: Mapping[str, Any]) -> str:
@@ -192,7 +293,24 @@ def _audit_token_env(lane: Mapping[str, Any]) -> str:
     return "CODE_MOWER_AUDIT_LABEL_TOKEN"
 
 
+def _token_env_names(lane: Mapping[str, Any]) -> tuple[str, ...]:
+    token_env = lane.get("token_env", [])
+    if isinstance(token_env, str):
+        return (token_env,)
+    if isinstance(token_env, list):
+        return tuple(str(name) for name in token_env)
+    return ()
+
+
+def _bot_author_csv(authors: str, lane: Mapping[str, Any]) -> str:
+    values = [author.strip() for author in authors.split(",") if author.strip()]
+    return ",".join(dict.fromkeys(values))
+
+
 def _authors_env_for_trailer_lane(trailer_lane: str) -> str:
+    lane_config = _load_trailer_lane_config(trailer_lane)
+    if lane_config is not None:
+        return lane_config.authors_env_var
     normalized = trailer_lane.replace("-", "_").upper()
     explicit = {
         "CLAUDE": "CLAUDE_AUDIT_BOT_AUTHORS",
@@ -200,6 +318,36 @@ def _authors_env_for_trailer_lane(trailer_lane: str) -> str:
         "DEVIN": "DEVIN_BOT_AUTHORS",
     }
     return explicit.get(normalized, f"{normalized}_BOT_AUTHORS")
+
+
+def _load_trailer_lane_config(trailer_lane: str) -> Any | None:
+    try:
+        if __package__ in {None, "", "tools"}:
+            from tools.lane_configs import load_lane_config
+        else:  # pragma: no cover - package import path covered by CLI tests.
+            from .lane_configs import load_lane_config
+
+        return load_lane_config(trailer_lane)
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return None
+
+
+def _default_trailer_bot_authors(trailer_lane: str) -> str:
+    lane_config = _load_trailer_lane_config(trailer_lane)
+    if lane_config is not None:
+        return ",".join(lane_config.default_authors)
+    stem = trailer_lane.replace("_", "-")
+    return f"{stem}-audit-bot,{stem}-audit-bot[bot]"
+
+
+def _configured_bot_authors(lane: Mapping[str, Any]) -> str:
+    provider_config = lane.get("provider_config")
+    if not isinstance(provider_config, Mapping):
+        return ""
+    authors = provider_config.get("bot_authors", [])
+    if not isinstance(authors, list):
+        return ""
+    return ",".join(str(author).strip() for author in authors if str(author).strip())
 
 
 def _trailer_prefix_for_lane(trailer_lane: str) -> str:
@@ -210,6 +358,8 @@ def _workflow_entry_for_target(
     lane_id: str,
     lane: Mapping[str, Any],
     target: str,
+    *,
+    author_exclusion_json: str = '{"enabled":false}',
 ) -> dict[str, str]:
     driver = str(lane.get("driver"))
     labels = _labels_for(lane)
@@ -223,6 +373,7 @@ def _workflow_entry_for_target(
         "done_label": str(labels["done"]),
         "blocked_label": str(labels["blocked"]),
         "label_token_env": _audit_token_env(lane),
+        "author_exclusion_json": author_exclusion_json,
     }
     if target.endswith("-bridge.yml"):
         return {
@@ -240,6 +391,7 @@ def _workflow_entry_for_target(
             "package_copy_from": "templates/workflows/saas-reviewer-labeler.yml.j2",
             "adapter": adapter,
             "authors_env": f"{adapter.replace('-', '_').upper()}_BOT_AUTHORS",
+            "bot_authors": _bot_author_csv(_configured_bot_authors(lane), lane),
         }
     return {
         **common,
@@ -249,6 +401,191 @@ def _workflow_entry_for_target(
         "trailer_lane": trailer_lane,
         "trailer_prefix": _trailer_prefix_for_lane(trailer_lane),
         "authors_env": _authors_env_for_trailer_lane(trailer_lane),
+        "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
+    }
+
+
+def _csv_value(value: Any, default: str) -> str:
+    if isinstance(value, list):
+        return ",".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
+
+
+def _owner_surface_config(config: Mapping[str, Any]) -> dict[str, str]:
+    raw = config.get("owner_surface")
+    surface = raw if isinstance(raw, Mapping) else {}
+    rendered: dict[str, str] = {}
+    for key, default in OWNER_SURFACE_DEFAULTS.items():
+        if key == "phase_labels":
+            rendered[key] = _csv_value(surface.get(key), default)
+            continue
+        value = surface.get(key, default)
+        rendered[key] = str(value).strip() if value is not None else default
+        if not rendered[key]:
+            rendered[key] = default
+    return rendered
+
+
+def _owner_surface_workflow_entry(
+    path: str,
+    copy_from: str,
+    source_name: str,
+    owner_surface: Mapping[str, str],
+) -> dict[str, str]:
+    return {
+        "path": path,
+        "source": source_name,
+        "copy_from": copy_from,
+        "package_copy_from": copy_from,
+        "owner_login": owner_surface["owner_login"],
+        "needs_owner_label": owner_surface["needs_owner_label"],
+        "gate_override_label": owner_surface["gate_override_label"],
+        "status_issue": owner_surface["status_issue"],
+        "weekly_status_cron": owner_surface["weekly_cron"],
+        "ready_label": owner_surface["ready_label"],
+        "phase_labels": owner_surface["phase_labels"],
+        "reviewer_spend_path": owner_surface["reviewer_spend_path"],
+        "reviewer_value_report_path": owner_surface["reviewer_value_report_path"],
+    }
+
+
+def _local_audit_entries(
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, str], ...]:
+    entries: list[dict[str, str]] = []
+    for lane_id, lane in selected_lanes.items():
+        if lane.get("driver") != "local_cli":
+            continue
+        trailer_lane = _trailer_lane_name(lane_id, lane)
+        wrapper = LOCAL_AUDIT_WRAPPERS.get(trailer_lane.replace("_", "-"))
+        if wrapper is None:
+            continue
+        labels = _labels_for(lane)
+        entries.append(
+            {
+                "lane": trailer_lane,
+                "display_name": _display_name(trailer_lane),
+                "needs_label": str(labels["needs"]),
+                "token_env": _audit_token_env(lane),
+                "script": wrapper,
+            }
+        )
+    return tuple(entries)
+
+
+def _actions_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _local_audit_label_expression(entries: tuple[dict[str, str], ...], source: str) -> str:
+    label_path = "github.event.label.name" if source == "event" else "github.event.pull_request.labels.*.name"
+    if source == "event":
+        return " || ".join(
+            f"{label_path} == {_actions_string(entry['needs_label'])}" for entry in entries
+        )
+    return " || ".join(
+        "contains({label_path}, {label})".format(
+            label_path=label_path,
+            label=_actions_string(entry["needs_label"]),
+        )
+        for entry in entries
+    )
+
+
+def _local_audit_workflow_entry(entries: tuple[dict[str, str], ...]) -> dict[str, str]:
+    token_envs = sorted({entry["token_env"] for entry in entries if entry["token_env"]})
+    token_assignments = "\n".join(
+        f"          {token_env}: ${{{{ secrets.{token_env} }}}}" for token_env in token_envs
+    )
+    return {
+        "path": LOCAL_AUDIT_WORKFLOW_PATH,
+        "source": LOCAL_AUDIT_WORKFLOW_SOURCE,
+        "copy_from": LOCAL_AUDIT_WORKFLOW_TEMPLATE,
+        "package_copy_from": LOCAL_AUDIT_WORKFLOW_TEMPLATE,
+        "local_audit_lanes_json": json.dumps(list(entries), sort_keys=True),
+        "local_audit_label_match": _local_audit_label_expression(entries, "event"),
+        "local_audit_label_contains": _local_audit_label_expression(entries, "pull_request"),
+        "local_audit_runner_label": LOCAL_AUDIT_RUNNER_LABEL,
+        "local_audit_token_env_assignments": token_assignments,
+    }
+
+
+def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
+    labels = _labels_for(lane)
+    trailer_lane = _trailer_lane_name(lane_id, lane)
+    return {
+        "id": lane_id,
+        "author_lane": _author_lane_name(lane_id, lane),
+        "display_name": _display_name(trailer_lane),
+        "done": str(labels["done"]),
+        "blocked": str(labels["blocked"]),
+        "builder_label": f"builder:{trailer_lane}",
+        "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
+    }
+
+
+def _identity_section(raw_identity: Mapping[str, Any], section: str) -> dict[str, str]:
+    raw_section = raw_identity.get(section)
+    if not isinstance(raw_section, Mapping):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in raw_section.items()
+        if str(key) and str(value)
+    }
+
+
+def _author_exclusion_payload(
+    config: Mapping[str, Any],
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    raw_identity = config.get("builder_identity")
+    identity = raw_identity if isinstance(raw_identity, Mapping) else {}
+    payload = {
+        "enabled": bool(config.get("merge_authority_excludes_author", True)),
+        "labels": _identity_section(identity, "labels"),
+        "authors": _identity_section(identity, "authors"),
+        "trailers": _identity_section(identity, "trailers"),
+    }
+    for lane_id, lane in selected_lanes.items():
+        if lane.get("merge_authority"):
+            author_lane = _author_lane_name(lane_id, lane)
+            payload["labels"].setdefault(f"builder:{author_lane}", author_lane)
+    return payload
+
+
+def _author_exclusion_json(
+    config: Mapping[str, Any],
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+) -> str:
+    return json.dumps(
+        _author_exclusion_payload(config, selected_lanes),
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _gate_workflow_entry(
+    config: Mapping[str, Any],
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+    *,
+    author_exclusion_json: str,
+) -> dict[str, str]:
+    gate_lanes = [
+        _gate_lane_entry(lane_id, lane)
+        for lane_id, lane in selected_lanes.items()
+        if lane.get("merge_authority")
+    ]
+    return {
+        "path": GATE_WORKFLOW_PATH,
+        "source": "code-mower-gate-workflow-template",
+        "copy_from": GATE_WORKFLOW_TEMPLATE,
+        "package_copy_from": GATE_WORKFLOW_TEMPLATE,
+        "gate_lanes_json": json.dumps(gate_lanes, separators=(",", ":"), sort_keys=True),
+        "owner_label": DEFAULT_OWNER_LABEL,
+        "author_exclusion_json": author_exclusion_json,
     }
 
 
@@ -335,6 +672,11 @@ def _lane_warnings(
         warnings.append(f"{lane_id}: opt-in lane selected by profile")
     if lane.get("trigger_policy") == "manual":
         warnings.append(f"{lane_id}: manual trigger policy; installer must not auto-dispatch")
+    if "GITHUB_TOKEN" in _token_env_names(lane):
+        warnings.append(
+            f"{lane_id}: GITHUB_TOKEN posting comments as github-actions[bot] requires "
+            "an explicit *_BOT_AUTHORS repository variable"
+        )
     if package_mode:
         driver = lane.get("driver")
         if driver in {"local_cli", "hosted_bridge", "api_model"}:
@@ -564,15 +906,39 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
     rendered = text.replace("{% raw %}", "").replace("{% endraw %}", "")
     replacements = {
         "__ADAPTER__": str(entry.get("adapter") or ""),
+        "__AUTHOR_EXCLUSION_JSON__": str(
+            entry.get("author_exclusion_json") or '{"enabled":false}'
+        ),
         "__AUTHORS_ENV__": str(entry.get("authors_env") or ""),
         "__BLOCKED_LABEL__": str(entry.get("blocked_label") or ""),
+        "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
         "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
+        "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
         "__LANE_ID__": str(entry.get("lane_id") or ""),
+        "__LOCAL_AUDIT_LABEL_CONTAINS__": str(entry.get("local_audit_label_contains") or ""),
+        "__LOCAL_AUDIT_LABEL_MATCH__": str(entry.get("local_audit_label_match") or ""),
+        "__LOCAL_AUDIT_LANES_JSON__": str(entry.get("local_audit_lanes_json") or "[]"),
+        "__LOCAL_AUDIT_RUNNER_LABEL__": str(entry.get("local_audit_runner_label") or ""),
+        "__LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__": str(
+            entry.get("local_audit_token_env_assignments") or ""
+        ),
         "__NEEDS_LABEL__": str(entry.get("needs_label") or ""),
+        "__NEEDS_OWNER_LABEL__": str(entry.get("needs_owner_label") or ""),
+        "__OWNER_LOGIN__": str(entry.get("owner_login") or ""),
+        "__GATE_OVERRIDE_LABEL__": str(entry.get("gate_override_label") or ""),
+        "__PHASE_LABELS__": str(entry.get("phase_labels") or ""),
+        "__READY_LABEL__": str(entry.get("ready_label") or ""),
+        "__REVIEWER_SPEND_PATH__": str(entry.get("reviewer_spend_path") or ""),
+        "__REVIEWER_VALUE_REPORT_PATH__": str(
+            entry.get("reviewer_value_report_path") or ""
+        ),
+        "__STATUS_ISSUE__": str(entry.get("status_issue") or ""),
+        "__OWNER_LABEL__": str(entry.get("owner_label") or DEFAULT_OWNER_LABEL),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
         "__TRAILER_PREFIX__": str(entry.get("trailer_prefix") or ""),
+        "__WEEKLY_STATUS_CRON__": str(entry.get("weekly_status_cron") or ""),
         "__WORKFLOW_NAME__": str(entry.get("workflow_name") or "Code Mower labeler"),
     }
     for placeholder, value in replacements.items():
@@ -583,9 +949,13 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
 def _workflow_template_needs_render(source: str) -> bool:
     return source in {
         "shared-cleanup-template",
+        "code-mower-gate-workflow-template",
         "hosted-bridge-workflow-template",
+        "owner-notify-workflow-template",
+        "self-hosted-local-audit-workflow-template",
         "saas-reviewer-labeler-workflow-template",
         "trailer-comment-labeler-workflow-template",
+        "weekly-status-workflow-template",
     }
 
 
@@ -729,6 +1099,7 @@ def render_init_plan(
     *,
     package_mode: bool | None = None,
     package_command: str | None = None,
+    add_repositories: tuple[str, ...] = (),
 ) -> RenderedPlan:
     issues = validate_config(config)
     if issues:
@@ -755,6 +1126,10 @@ def render_init_plan(
         if package_mode
         else f"{REFERENCE_PYTHON} tools/code_mower"
     )
+    add_repo_args = " ".join(
+        f"--add-repo {shlex.quote(slug)}" for slug in add_repositories
+    )
+    add_repo_suffix = f" {add_repo_args}" if add_repo_args else ""
     smoke_tests: list[str] = [
         (
             f"{smoke_command_prefix} config validate {quoted_config_path}"
@@ -762,14 +1137,18 @@ def render_init_plan(
             else f"{smoke_command_prefix}_config.py {quoted_config_path} --validate-only"
         ),
         (
-            f"{smoke_command_prefix} init {quoted_config_path} --profile {quoted_profile_id} --dry-run --json"
+            f"{smoke_command_prefix} init {quoted_config_path} --profile "
+            f"{quoted_profile_id}{add_repo_suffix} --dry-run --json"
             if package_mode
-            else f"{smoke_command_prefix}_init.py {quoted_config_path} --profile {quoted_profile_id} --dry-run --json"
+            else f"{smoke_command_prefix}_init.py {quoted_config_path} --profile "
+            f"{quoted_profile_id}{add_repo_suffix} --dry-run --json"
         ),
     ]
     warnings: list[str] = []
     merge_authority_lanes: list[str] = []
     informational_lanes: list[str] = []
+    owner_surface = _owner_surface_config(config)
+    author_exclusion_json = _author_exclusion_json(config, selected_lanes)
 
     for lane_id, lane in selected_lanes.items():
         lane_labels = _labels_for(lane)
@@ -793,7 +1172,14 @@ def render_init_plan(
             )
             if target not in generated_paths:
                 generated_paths.add(target)
-                generated_files.append(_workflow_entry_for_target(lane_id, lane, target))
+                generated_files.append(
+                    _workflow_entry_for_target(
+                        lane_id,
+                        lane,
+                        target,
+                        author_exclusion_json=author_exclusion_json,
+                    )
+                )
         if lane.get("driver") in {"local_cli", "hosted_bridge", "api_model"}:
             trailer_lane = _trailer_lane_name(lane_id, lane)
             trailer_module = _lane_module_name(trailer_lane)
@@ -810,6 +1196,44 @@ def render_init_plan(
                 )
         smoke_tests.extend(_lane_smoke_tests(lane_id, lane, package_mode=package_mode))
         warnings.extend(_lane_warnings(lane_id, lane, package_mode=package_mode))
+
+    for label in (
+        owner_surface["needs_owner_label"],
+        owner_surface["gate_override_label"],
+    ):
+        if label:
+            labels.append(label)
+
+    local_audit_entries = _local_audit_entries(selected_lanes)
+    if local_audit_entries and LOCAL_AUDIT_WORKFLOW_PATH not in generated_paths:
+        workflow_targets.add(LOCAL_AUDIT_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "local-cli-audits",
+                "driver": "local_cli",
+                "target": LOCAL_AUDIT_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(LOCAL_AUDIT_WORKFLOW_PATH)
+        generated_files.append(_local_audit_workflow_entry(local_audit_entries))
+
+    if merge_authority_lanes and GATE_WORKFLOW_PATH not in generated_paths:
+        workflow_targets.add(GATE_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "code-mower-gate",
+                "driver": "gate",
+                "target": GATE_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(GATE_WORKFLOW_PATH)
+        generated_files.append(
+            _gate_workflow_entry(
+                config,
+                selected_lanes,
+                author_exclusion_json=author_exclusion_json,
+            )
+        )
 
     cleanup_path = ".github/workflows/audit-label-cleanup.yml"
     if cleanup_path not in generated_paths:
@@ -839,6 +1263,14 @@ def render_init_plan(
                     "stale_lane": _trailer_lane_name(lane_id, lane),
                 }
             )
+    for target, copy_from, source_name in OWNER_SURFACE_WORKFLOW_FILES:
+        if target in generated_paths:
+            warnings.append(f"owner surface workflow target {target} collides")
+            continue
+        generated_paths.add(target)
+        generated_files.append(
+            _owner_surface_workflow_entry(target, copy_from, source_name, owner_surface)
+        )
     for target, copy_from, package_copy_from, source_name in STARTER_DATA_FILES:
         if target in generated_paths:
             warnings.append(f"starter data target {target} collides with another generated file")
@@ -866,10 +1298,22 @@ def render_init_plan(
                 "mode": mode,
             }
         )
+    smoke_tests.append(
+        "python3 -m py_compile "
+        '"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/status_report.py"'
+    )
 
     if not merge_authority_lanes:
         warnings.append(
             f"{profile.profile_id}: profile has no merge-authority lanes; keep informational only"
+        )
+    if owner_surface["owner_login"] == OWNER_SURFACE_DEFAULTS["owner_login"]:
+        warnings.append(
+            "owner_surface.owner_login is unset; notify workflow will mention repository owner without assignment"
+        )
+    if owner_surface["status_issue"] == OWNER_SURFACE_DEFAULTS["status_issue"]:
+        warnings.append(
+            "owner_surface.status_issue is unset; weekly status workflow will skip until configured"
         )
 
     data = {
@@ -883,8 +1327,11 @@ def render_init_plan(
         "workflows": workflows,
         "generated_files": generated_files,
         "required_secrets": sorted(required_secrets),
+        "repositories": _repository_entries(config),
+        "additional_repositories": list(add_repositories),
         "merge_authority_lanes": merge_authority_lanes,
         "informational_lanes": informational_lanes,
+        "merge_authority_excludes_author": json.loads(author_exclusion_json)["enabled"],
         "smoke_tests": smoke_tests,
         "warnings": warnings,
     }
@@ -918,6 +1365,18 @@ def render_init_plan(
     lines.extend(
         f"- {entry['path']} [{entry['source']}]" for entry in data["generated_files"]
     )
+
+    lines.extend(["", "Configured repositories:"])
+    if data["repositories"]:
+        lines.extend(
+            f"- {repo['slug']} (default branch: {repo['default_branch']})"
+            for repo in data["repositories"]
+        )
+    else:
+        lines.append("- none")
+    if add_repositories:
+        lines.extend(["", "Additional repository targets from --add-repo:"])
+        lines.extend(f"- {slug}" for slug in add_repositories)
 
     lines.extend(["", "Required secrets/PAT fallbacks:"])
     if data["required_secrets"]:
@@ -954,6 +1413,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="render the init plan")
     parser.add_argument("--apply", action="store_true", help="write generated files to --output-dir")
     parser.add_argument(
+        "--add-repo",
+        action="append",
+        default=[],
+        metavar="OWNER/REPO",
+        help=(
+            "append a sibling repository target to the rendered plan without "
+            "editing code-mower.yml; repeat for multiple repos"
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         default=DEFAULT_APPLY_OUTPUT_DIR,
         help="safe output directory for --apply mode",
@@ -977,10 +1446,15 @@ def main(argv: list[str] | None = None) -> int:
         rendered_config_path = (
             str(config_source) if config_source != Path(args.config) else args.config
         )
-        plan = render_init_plan(
+        config, added_repos = config_with_added_repositories(
             load_config(config_source),
+            tuple(args.add_repo),
+        )
+        plan = render_init_plan(
+            config,
             profile_id=args.profile,
             config_path=rendered_config_path,
+            add_repositories=added_repos,
         )
         apply_result = (
             apply_init_plan(plan, Path(args.output_dir))

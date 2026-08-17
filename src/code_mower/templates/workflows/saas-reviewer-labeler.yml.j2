@@ -10,29 +10,25 @@ on:
     types: [submitted, edited]
   check_run:
     types: [completed]
-  workflow_dispatch:
-    inputs:
-      adapter:
-        description: "SaaS reviewer adapter to classify"
-        required: false
-        default: "__ADAPTER__"
 
 permissions:
   contents: read
   checks: read
   issues: write
-  pull-requests: read
+  pull-requests: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_AUTHOR_EXCLUSION_JSON: >-
+    __AUTHOR_EXCLUSION_JSON__
 
 jobs:
   label:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
       (
         github.event_name == 'issue_comment' &&
-        github.event.issue.pull_request
+        github.event.issue.pull_request &&
+        contains(format(',__BOT_AUTHORS__,{0},', vars.__AUTHORS_ENV__), format(',{0},', github.event.comment.user.login))
       ) ||
       (
         github.event_name == 'issues' &&
@@ -54,5 +50,5 @@ jobs:
           GITHUB_TOKEN: {% raw %}${{ github.token }}{% endraw %}
           __LABEL_TOKEN_ENV__: {% raw %}${{ secrets.__LABEL_TOKEN_ENV__ }}{% endraw %}
           __AUTHORS_ENV__: {% raw %}${{ vars.__AUTHORS_ENV__ }}{% endraw %}
-          REVIEWER_ADAPTER: {% raw %}${{ github.event.inputs.adapter || '__ADAPTER__' }}{% endraw %}
+          REVIEWER_ADAPTER: __ADAPTER__
         run: tools/code_mower saas-reviewer-labeler --adapter "${REVIEWER_ADAPTER}"

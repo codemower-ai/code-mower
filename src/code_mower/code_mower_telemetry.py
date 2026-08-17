@@ -33,6 +33,10 @@ BENCHMARK_EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 VERDICT_ARTIFACT_DIR_ENV = "CODE_MOWER_VERDICT_ARTIFACT_DIR"
 DEFAULT_VERDICT_ARTIFACT_DIR = Path.home() / ".cache" / "code-mower-audits" / "verdicts"
 SEVERITY_RE = re.compile(r"\b(P[0-3])=(\d+)\b")
+AUDIT_TRAILER_RE = re.compile(
+    r"<!--\s*(?P<prefix>[A-Z0-9_]+_AUDIT_STATE)\s*:\s*(?P<label>[a-z0-9_.-]+)\s*-->",
+    flags=re.IGNORECASE,
+)
 
 
 def default_verdict_artifact_dir() -> Path:
@@ -120,6 +124,22 @@ def _normal_artifact_verdict(value: Any) -> str:
     return verdict or "unknown"
 
 
+def _audit_comment_identity(payload: Mapping[str, Any], lane_id: str) -> dict[str, str]:
+    trailer = str(payload.get("trailer") or payload.get("comment_body") or "")
+    match = AUDIT_TRAILER_RE.search(trailer)
+    if not match:
+        return {
+            "audit_comment_lane_id": lane_id,
+            "audit_comment_identity_source": "lane_id",
+            "audit_comment_trailer_prefix": "",
+        }
+    return {
+        "audit_comment_lane_id": lane_id,
+        "audit_comment_identity_source": "trailer",
+        "audit_comment_trailer_prefix": match.group("prefix").upper(),
+    }
+
+
 def _verdict_event_id(payload: Mapping[str, Any], path: Path) -> str:
     # Keep event IDs stable without encoding private git refs. Git refs are only
     # exported when the operator explicitly passes --include-git-ref.
@@ -173,6 +193,7 @@ def reviewer_run_event_from_verdict_artifact(
         "artifact_source": "local-verdict-cache",
         "git_ref_included": include_git_ref,
         "severity_count_source": severity_source,
+        **_audit_comment_identity(payload, lane_id),
     }
     if include_git_ref:
         head = str(payload.get("head_sha_end") or payload.get("head_sha_start") or "")

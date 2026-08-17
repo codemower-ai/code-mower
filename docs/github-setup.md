@@ -28,6 +28,64 @@ code-mower next-steps --profile recommended
 `doctor --github` reads repository metadata and reports setup risks. It should
 not create labels, comments, workflows, or provider reviews.
 
+## Owner Surface Templates
+
+`init --easy` emits two owner-surface templates:
+`.github/workflows/needs-owner-notify.yml` comments on issues or PRs labeled
+with `owner_surface.needs_owner_label`, adds the configured owner as an assignee
+without replacing existing assignees, and
+`.github/workflows/weekly-status.yml` refreshes a pinned status issue from
+`tools/status_report.py`.
+For fork PRs where GitHub grants a read-only token, owner notify emits a
+workflow warning instead of failing the run.
+
+Configure the owner surface in `code-mower.yml` before enabling the weekly
+schedule:
+
+```yaml
+owner_surface:
+  owner_login: YOUR_GITHUB_LOGIN
+  needs_owner_label: needs-owner
+  gate_override_label: "gate:override"
+  status_issue: "123"
+  weekly_cron: "0 14 * * 1"
+  ready_label: "tier:R"
+```
+
+Create and pin the status issue with GitHub CLI:
+
+```bash
+gh issue create --title "Code Mower status" --label code-mower --body "Weekly Code Mower status will appear here."
+gh issue pin 123
+```
+
+The generated digest reads GitHub metadata only: labels, titles, PR state,
+assignees, timestamps, and optional local Code Mower spend/value files. It does
+not read source, diffs, transcripts, or issue bodies.
+
+## Multi-Repo Rollout
+
+When one Code Mower config controls several sibling repositories, keep the
+lanes and labels in the control config and render each sibling repo from that
+same file:
+
+```bash
+code-mower init ../control-repo/code-mower.yml \
+  --add-repo OWNER/SIBLING_REPO \
+  --profile recommended \
+  --apply \
+  --output-dir .code-mower.generated
+code-mower doctor ../control-repo/code-mower.yml --preflight --json
+```
+
+`--add-repo` does not edit `code-mower.yml`; it adds a reviewable target to the
+init manifest so the generated labeler, clear-stale, labels, and support files
+can be copied into the sibling repository. After review, add the sibling slug
+to `repositories:` in the control config. `doctor` reports the committed
+repository count and slugs even without `--github`, then `doctor --github`
+checks each configured repo's metadata, Actions settings, and branch
+protection.
+
 ## Recommended Public Repo Hardening
 
 For the public Code Mower source repo, and for any repository that wants to run
@@ -140,11 +198,29 @@ Use fine-grained tokens with the smallest useful permissions. A common labeler
 fallback needs:
 
 - Issues: read/write
-- Pull requests: read
+- Pull requests: write for label mutation on PR-backed issues
 - Contents: read only when a lane must fetch files through GitHub
+
+Generated labeler, hosted-requeue, clear-stale, and audit-label-cleanup
+workflows grant this permission to `GITHUB_TOKEN`; fine-grained PAT secrets are
+optional fallbacks for repositories that intentionally use separate
+credentials.
 
 Do not store provider API keys in repository docs. Use environment variables,
 GitHub secrets, or provider-specific local auth stores.
+
+Generated issue-comment labelers are fail-closed. They only run for comments
+from the lane's configured audit bot authors plus any authors you explicitly
+add with repository variables such as `CLAUDE_AUDIT_BOT_AUTHORS`,
+`DEVIN_BOT_AUTHORS`, or `GITAR_BOT_AUTHORS`. If you intentionally run an audit
+wrapper inside GitHub Actions and post its verdict with `GITHUB_TOKEN`, add
+`github-actions[bot]` to that lane's `*_BOT_AUTHORS` variable; Code Mower does
+not trust that shared bot identity by default.
+
+When one operator or shared machine user posts multiple local-lane comments,
+each configured-author comment must carry the matching hidden
+`*_AUDIT_STATE` trailer. The trailer, not the shared GitHub login, is the
+authoritative lane signal for labeler prefilters and cloud reviewer metadata.
 
 ## Actions Billing And Spending Limits
 
@@ -183,7 +259,8 @@ Private repositories consume GitHub Actions minutes for started jobs. Code
 Mower should therefore keep metadata workflows cheap:
 
 - avoid recurring cron sweeps for hosted or informational lanes
-- prefer explicit labels, trusted comments, or manual `workflow_dispatch`
+- prefer explicit labels, trusted comments, or manual bridge/stale workflow
+  dispatches
 - add job-level `if:` guards to every `issue_comment` labeler before checkout
 - require informational SaaS lanes to opt in with an existing lane label
 - keep branch-protection merge gates limited to promoted structured audit lanes
@@ -192,6 +269,40 @@ The reference Devin bridge is event-driven plus manual dispatch only. The
 Gitar, Qodo, and Cursor BugBot labelers are passive: they do not trigger the
 hosted reviewer, and they skip unrelated issue comments before checking out
 code.
+
+## Self-Hosted Local CLI Audit Runner
+
+`code-mower init --easy --apply` emits `.github/workflows/local-cli-audit.yml`
+when the selected profile includes supported local CLI audit lanes such as Codex
+or Claude. The workflow runs on `[self-hosted, macOS, code-mower-audit]` for
+same-repository pull requests on `opened`, `synchronize`, and relevant `labeled`
+events. It runs from the trusted base-branch workflow with
+`pull_request_target`, checks out trusted support scripts from the default
+branch, checks out the PR head separately as audit context, and runs the repo-local
+`tools/run_codex_audit_pr.sh` or `tools/run_claude_audit_pr.sh` wrapper for
+each present `needs-*-audit` label.
+
+Runner setup recipe:
+
+1. Register a macOS self-hosted runner from repository settings, using the
+   architecture that matches the machine.
+2. Add the custom runner label `code-mower-audit` or edit the generated
+   workflow to use your chosen label.
+3. Start with `./run.sh` from the same macOS user account that owns provider
+   CLI logins. Install it as a service only after smoke tests pass.
+4. Ensure `gh`, `git`, `python3`, `codex`, and `claude` are on PATH. If they
+   live outside the default Homebrew/system paths, update
+   `CODE_MOWER_LOCAL_AUDIT_PATH` in the generated workflow.
+5. Verify local auth from that same account: `gh auth status`,
+   `codex --version`, `claude auth status`, and
+   `claude -p "Reply with exactly: ok" --output-format json`.
+6. Add optional posting-token secrets `CODEX_AUDIT_LABEL_TOKEN` and
+   `CLAUDE_AUDIT_LABEL_TOKEN`; the workflow falls back to `GITHUB_TOKEN` when
+   those secrets are absent.
+
+macOS Keychain access is user-session sensitive. If the runner later runs as a
+service or launch daemon, re-check provider CLI auth under that service account
+and unlock/configure the login keychain before trusting unattended audits.
 
 ## Branch Protection And Merge Authority
 
@@ -209,6 +320,73 @@ The default v1.0 posture is:
 - Gitar and other SaaS reviewers start informational.
 - Cursor BugBot, CodeRabbit CLI, Gemini/Antigravity, Hermes, local LLMs, Qodo,
   Greptile, Devin, and future hosted lanes require calibration before promotion.
+
+`code-mower init --easy --apply` emits `.github/workflows/code-mower-gate.yml`
+when the selected profile has merge-authority lanes. The gate is metadata-only:
+it reads PR labels, audit comments, and authenticated PR metadata; validates
+the requested SHA against the PR's current head; treats `needs-owner` as
+pending; treats configured current-head `*-blocked` labels as failure; applies
+`merge_authority_excludes_author` from `code-mower.yml`; publishes the
+`code-mower/gate` commit status; and calls GitHub's
+`enablePullRequestAutoMerge` when the status is green. A `*-done` or
+`*-blocked` label counts only when the matching terminal audit comment carries
+the same head SHA and comes from the lane's configured bot authors, so stale
+labels and forged comments cannot win races against cleanup.
+Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
+call in the repository gate workflow.
+
+The recommended three-builder pattern is:
+
+- Codex-built PRs carry `builder:codex` or are opened by a mapped Codex author,
+  so Claude audit gates them.
+- Claude-built PRs carry `builder:claude` or are opened by a mapped Claude
+  author, so Codex audit gates them.
+- Hosted-built PRs carry a third builder identity such as `builder:grok-bot`,
+  so both Codex and Claude audit gates still apply.
+
+Configure those identities in `code-mower.yml`:
+
+```yaml
+merge_authority_excludes_author: true
+builder_identity:
+  labels:
+    builder:codex: codex
+    builder:claude: claude
+    builder:grok-bot: grok-bot
+  authors:
+    chatgpt-codex-connector[bot]: codex
+    claude[bot]: claude
+```
+
+PR-body trailer mappings remain configuration-valid for non-gating provenance
+experiments, but merge-authority author exclusion uses only labels and
+authenticated PR authors until trailer sources can be trusted.
+
+Branch protection should require `code-mower/gate` alongside normal CI before
+autonomous merge is trusted. Inspect the existing status-check protection first:
+
+```bash
+gh api repos/OWNER/REPO/branches/main/protection/required_status_checks
+```
+
+Then update the same endpoint with all existing required contexts plus
+`code-mower/gate`:
+
+```bash
+gh api -X PATCH repos/OWNER/REPO/branches/main/protection/required_status_checks \
+  -f strict=true \
+  -F contexts[]=EXISTING_REQUIRED_CONTEXT \
+  -F contexts[]=code-mower/gate
+```
+
+Repeat `-F contexts[]=...` for every existing required context returned by the
+inspection call.
+
+If the repository does not allow auto-merge yet, enable it explicitly:
+
+```bash
+gh api -X PATCH repos/OWNER/REPO -f allow_auto_merge=true
+```
 
 ## Stale Merge-Authority Labels
 
@@ -281,6 +459,8 @@ Safe defaults:
 - Are recent Actions failures actually billing/spending-limit blocks?
 - Are recent Actions runs dominated by optional metadata/reviewer labelers?
 - Is default-branch protection inspectable?
+- Do merge-authority profiles require `code-mower/gate` in branch protection?
+- Does the repository allow auto-merge for the generated gate workflow?
 - Are private repositories being used with hosted/SaaS lanes?
 - Which provider apps or token fallbacks are likely needed?
 

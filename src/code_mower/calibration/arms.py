@@ -9,7 +9,13 @@ DEFAULT_LOCAL_LLM_PROFILES = (
     "qwen3-coder-next-lmstudio",
     "gemma4-ollama",
 )
-DEFAULT_CLI_LANES = ("gemini_cli", "antigravity_cli", "hermes_cli", "coderabbit_cli")
+DEFAULT_CLI_LANES = (
+    "gemini_cli",
+    "antigravity_cli",
+    "hermes_cli",
+    "coderabbit_cli",
+    "grok_build",
+)
 
 
 def default_arms() -> list[dict[str, Any]]:
