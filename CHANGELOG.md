@@ -4,6 +4,25 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.44
+
+This beta fixes the fixture-verdict leak found during the beta.43 release gate
+before downstream Bridge Pro pins move again.
+
+### Changed
+
+- Codex and Claude audit wrappers now isolate pytest/runtime fixture output:
+  pytest-only quarantines never post to GitHub, while non-test structured
+  fixture verdicts post a visible `UNKNOWN` requeue trailer and keep their
+  local artifacts quarantined (#339, #341).
+- Reviewer-run export and calibration auto-discovery now ignore fixture-shaped
+  or quarantined verdict artifacts/comments so test output cannot become cloud
+  dashboard or calibration evidence (#339, #341).
+- Test runs now isolate `HOME`, `XDG_CACHE_HOME`, audit artifact directories,
+  GitHub tokens, and non-local network access; the real audit cache guard fails
+  on fixture-shaped mutations without tripping over concurrent legitimate
+  runner audits on the shared machine (#339, #341).
+
 ## v0.5.0-beta.43
 
 This beta fixes a Claude audit merge-gate safety issue found while dogfooding
