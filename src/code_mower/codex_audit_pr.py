@@ -83,6 +83,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 if __package__ in {None, "", "tools"}:
     try:
+        from tools import reviewer_spend
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.provider_runners import (
             clip_text as _clip_text,
@@ -103,6 +104,7 @@ if __package__ in {None, "", "tools"}:
             write_audit_verdict_artifact,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
+        import reviewer_spend  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from provider_runners import (  # type: ignore
             clip_text as _clip_text,
@@ -123,6 +125,7 @@ if __package__ in {None, "", "tools"}:
             write_audit_verdict_artifact,
         )
 else:  # pragma: no cover - exercised after package extraction.
+    from . import reviewer_spend
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .provider_runners import (
         clip_text as _clip_text,
@@ -204,6 +207,10 @@ class AuditConfig:
     # Shared progress emitter for long-running audit phases. When unset,
     # audit_pr() installs the default Code Mower stderr emitter.
     progress: Optional[AuditProgress] = None
+    # Whether this lane is allowed to block the merge gate. Defaults to the
+    # reference provider catalog's Codex audit posture; pass --informational
+    # when replaying or calibrating a lane that is not a repository gate.
+    merge_authority: bool = True
 
 
 @dataclass
@@ -1119,9 +1126,11 @@ def format_comment(
     is_stale: bool = False,
     stale_end_sha: Optional[str] = None,
     is_unknown: bool = False,
+    merge_authority: bool = True,
 ) -> str:
     """Build the GitHub comment body with header, prose, and trailer."""
-    header = "## Codex audit (calibration phase — informational only)\n\n"
+    posture = "merge-authority lane" if merge_authority else "informational only"
+    header = f"## Codex audit ({posture})\n\n"
     header += f"Head SHA: `{head_sha}`\n"
     if is_stale:
         body = (
@@ -1281,7 +1290,10 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             comment_body = format_comment(
                 CodexVerdict(verdict="UNKNOWN",
                              prose="(force-push detected before worktree created)"),
-                head_sha_start, is_stale=True, stale_end_sha=head_sha_after,
+                head_sha_start,
+                is_stale=True,
+                stale_end_sha=head_sha_after,
+                merge_authority=config.merge_authority,
             )
             result = AuditResult(
                 repo=repo, pr_number=pr_number,
@@ -1379,8 +1391,13 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     is_stale = head_sha_start != head_sha_end
 
     if is_stale:
-        comment_body = format_comment(parsed, head_sha_start, is_stale=True,
-                                       stale_end_sha=head_sha_end)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            is_stale=True,
+            stale_end_sha=head_sha_end,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = "STALE"
         trailer = STALE_TRAILER
     elif parsed.verdict == "UNKNOWN":
@@ -1409,11 +1426,20 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 file=sys.stderr,
                 flush=True,
             )
-        comment_body = format_comment(parsed, head_sha_start, is_unknown=True)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            is_unknown=True,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
     else:
-        comment_body = format_comment(parsed, head_sha_start)
+        comment_body = format_comment(
+            parsed,
+            head_sha_start,
+            merge_authority=config.merge_authority,
+        )
         result_verdict = parsed.verdict
         trailer = BLOCKED_TRAILER if parsed.verdict == "BLOCKED" else DONE_TRAILER
 
@@ -1536,6 +1562,38 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "vars are also cleared as defense-in-depth."
         ),
     )
+    ap.add_argument(
+        "--spend-path",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "CODE_MOWER_REVIEWER_SPEND_PATH",
+                str(reviewer_spend.DEFAULT_SPEND_PATH),
+            )
+        ),
+        help="append metadata-only spend/latency for this audit run to this JSON file",
+    )
+    ap.add_argument(
+        "--no-spend-capture",
+        action="store_true",
+        default=_env_flag("CODE_MOWER_NO_SPEND_CAPTURE")
+        or _env_flag("CODEX_AUDIT_NO_SPEND_CAPTURE"),
+        help="do not append this audit run to reviewer-spend.json",
+    )
+    posture_default = _env_flag_default("CODEX_AUDIT_MERGE_AUTHORITY", True)
+    ap.add_argument(
+        "--merge-authority",
+        dest="merge_authority",
+        action="store_true",
+        default=posture_default,
+        help="Render audit comments as merge-authority lane comments.",
+    )
+    ap.add_argument(
+        "--informational",
+        dest="merge_authority",
+        action="store_false",
+        help="Render audit comments as informational-only calibration comments.",
+    )
     return ap.parse_args(argv)
 
 
@@ -1546,6 +1604,13 @@ def _env_flag(name: str) -> bool:
         "yes",
         "on",
     }
+
+
+def _env_flag_default(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _extract_and_clear_github_token() -> Optional[str]:
@@ -1664,8 +1729,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         ignore_user_config=not args.use_user_config,
         venv_path=explicit_venv,
         disable_venv=disable_venv,
+        merge_authority=args.merge_authority,
     )
 
+    audit_started = time.monotonic()
     try:
         result = audit_pr(config, args.repo, args.pr)
     except urllib.error.HTTPError as exc:
@@ -1690,6 +1757,25 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.dry_run:
         print(result.comment_body)
+    if not args.no_spend_capture:
+        try:
+            usage = reviewer_spend.extract_usage_metrics(result.codex_stderr)
+            spend_run = reviewer_spend.build_spend_run(
+                lane="codex-audit",
+                repo=result.repo,
+                pr_number=result.pr_number,
+                head_sha=result.head_sha_start,
+                model=reviewer_spend.model_from_env(
+                    ("CODE_MOWER_CODEX_MODEL", "CODEX_MODEL", "OPENAI_MODEL")
+                ),
+                wall_seconds=time.monotonic() - audit_started,
+                verdict=result.verdict,
+                usage=usage,
+            )
+            reviewer_spend.append_spend_run(args.spend_path, spend_run)
+            print(f"spend metadata appended to {args.spend_path}", file=sys.stderr)
+        except (OSError, ValueError) as exc:
+            print(f"warning: failed to append spend metadata: {exc}", file=sys.stderr)
 
     # Codex round 7 of #234 — P2: both STALE and UNKNOWN result in a
     # `needs-codex-audit` requeue comment. Automation using the exit

@@ -15,7 +15,10 @@ from code_mower.doctor_checks.github_config import (
     selected_saas_or_hosted_lanes,
 )
 from code_mower.doctor_checks.github_provider import check_private_repo_provider_surface
-from code_mower.doctor_checks.github_repo import check_repo_permissions
+from code_mower.doctor_checks.github_repo import (
+    check_repo_auto_merge,
+    check_repo_permissions,
+)
 
 
 class GitHubDoctorCheckTests(unittest.TestCase):
@@ -185,6 +188,59 @@ class GitHubDoctorCheckTests(unittest.TestCase):
 
         self.assertEqual(check.status, "pass")
         self.assertEqual(check.detail["required_status_check_count"], 2)
+
+    def test_branch_protection_warns_when_gate_status_is_not_required(self) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.github_branch._github_api_json",
+            return_value=(
+                {"required_status_checks": {"contexts": ["ci", "package"]}},
+                {},
+            ),
+        ):
+            check = check_branch_protection(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                default_branch="main",
+                http_timeout=1,
+                required_status_context="code-mower/gate",
+            )
+
+        self.assertEqual(check.status, "warn")
+        self.assertIn("code-mower/gate", check.message)
+        self.assertEqual(check.detail["required_status_context"], "code-mower/gate")
+
+    def test_branch_protection_accepts_gate_status_from_checks_array(self) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.github_branch._github_api_json",
+            return_value=(
+                {
+                    "required_status_checks": {
+                        "contexts": ["ci"],
+                        "checks": [{"context": "code-mower/gate"}],
+                    }
+                },
+                {},
+            ),
+        ):
+            check = check_branch_protection(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                default_branch="main",
+                http_timeout=1,
+                required_status_context="code-mower/gate",
+            )
+
+        self.assertEqual(check.status, "pass")
+        self.assertIn("code-mower/gate", check.detail["required_status_contexts"])
+
+    def test_repo_auto_merge_warns_when_disabled(self) -> None:
+        check = check_repo_auto_merge(
+            slug="owner/repo",
+            repo_payload={"allow_auto_merge": False},
+        )
+
+        self.assertEqual(check.status, "warn")
+        self.assertIn("allow_auto_merge=true", check.remediation)
 
 
 if __name__ == "__main__":
