@@ -896,6 +896,7 @@ exit 1
         self.assertIn("__TRAILER_LANE__", trailer)
         self.assertIn("__BOT_AUTHORS__", trailer)
         self.assertIn("CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS", trailer)
+        self.assertIn("actions: read", trailer)
         self.assertIn("pull-requests: write", trailer)
         self.assertIn("vars.__AUTHORS_ENV__", trailer)
         self.assertIn(
@@ -1554,6 +1555,7 @@ exit 1
             self.assertIn("claude-audit-bot[bot]", claude)
             self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", claude)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS", claude)
+            self.assertIn("actions: read", claude)
             self.assertIn('CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml"', claude)
             self.assertNotIn("github.event.inputs.lane", claude)
             self.assertNotIn("github.event.comment.user.type == 'Bot'", claude)
