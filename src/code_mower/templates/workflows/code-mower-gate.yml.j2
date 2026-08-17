@@ -25,6 +25,8 @@ env:
   CODE_MOWER_GATE_CONTEXT: code-mower/gate
   CODE_MOWER_GATE_ENABLE_AUTO_MERGE: "true"
   CODE_MOWER_OWNER_LABEL: __OWNER_LABEL__
+  CODE_MOWER_OWNER_LOGIN: __OWNER_LOGIN_JSON__
+  CODE_MOWER_GATE_OVERRIDE_LABEL: __GATE_OVERRIDE_LABEL_JSON__
   CODE_MOWER_AUTHOR_EXCLUSION_JSON: >-
     __AUTHOR_EXCLUSION_JSON__
   CODE_MOWER_GATE_LANES_JSON: >-
@@ -56,13 +58,15 @@ jobs:
 
           labels_file="$(mktemp)"
           comments_file="$(mktemp)"
+          events_file="$(mktemp)"
           pr_file="$(mktemp)"
           gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" > "${labels_file}"
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" > "${comments_file}"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/events?per_page=100" > "${events_file}"
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}"
 
           eval "$(
-            python3 - "${labels_file}" "${comments_file}" "${pr_file}" <<'PY'
+            python3 - "${labels_file}" "${comments_file}" "${events_file}" "${pr_file}" <<'PY'
           import json
           import os
           import shlex
@@ -86,7 +90,9 @@ jobs:
                   labels_payload = json.load(labels_handle)
               with open(sys.argv[2], encoding="utf-8") as comments_handle:
                   comments_payload = json.load(comments_handle)
-              with open(sys.argv[3], encoding="utf-8") as pr_handle:
+              with open(sys.argv[3], encoding="utf-8") as events_handle:
+                  events_payload = json.load(events_handle)
+              with open(sys.argv[4], encoding="utf-8") as pr_handle:
                   pr_payload = json.load(pr_handle)
           except Exception:
               emit("failure", "Code Mower gate config could not be parsed")
@@ -105,6 +111,15 @@ jobs:
           }
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
           owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
+          gate_override_label = os.environ.get("CODE_MOWER_GATE_OVERRIDE_LABEL", "gate:override")
+          owner_login = os.environ.get("CODE_MOWER_OWNER_LOGIN", "").strip()
+          repo_owner = os.environ["GITHUB_REPOSITORY"].split("/", 1)[0]
+          configured_override_owner = (
+              owner_login
+              if owner_login and owner_login.lower() != "todo_owner_login"
+              else repo_owner
+          )
+          override_owner = configured_override_owner.lower()
           pr_number = str(pr_payload.get("number") or os.environ.get("PR_NUMBER") or "")
           pr_author = str(((pr_payload.get("user") or {}).get("login") or ""))
           github_tokens = (GitHubToken("GH_TOKEN", os.environ.get("GH_TOKEN", "")),)
@@ -112,6 +127,10 @@ jobs:
           for page in comments_payload:
               if isinstance(page, list):
                   comments.extend(item for item in page if isinstance(item, dict))
+          events = []
+          for page in events_payload:
+              if isinstance(page, list):
+                  events.extend(item for item in page if isinstance(item, dict))
 
           def mapping(section):
               value = exclusion.get(section) if isinstance(exclusion, dict) else {}
@@ -170,12 +189,25 @@ jobs:
               and has_current_trailer(lane, str(lane.get("blocked") or ""))
           ]
 
+          override_actor = ""
+          if gate_override_label:
+              for event in events:
+                  if event.get("event") != "labeled":
+                      continue
+                  if str(((event.get("label") or {}).get("name")) or "") != gate_override_label:
+                      continue
+                  override_actor = str(((event.get("actor") or {}).get("login")) or "").lower()
+
           if len(builder_matches) > 1:
               emit("failure", "conflicting Code Mower builder identity")
-          elif blocked:
-              emit("failure", "blocked audit: " + ", ".join(blocked))
           elif owner_label in labels:
               emit("pending", owner_label + ": waiting on owner")
+          elif gate_override_label and gate_override_label in labels and override_actor != override_owner:
+              emit("failure", gate_override_label + " was not owner-applied")
+          elif gate_override_label and gate_override_label in labels:
+              emit("success", "owner gate override")
+          elif blocked:
+              emit("failure", "blocked audit: " + ", ".join(blocked))
           else:
               excluded_builder = builder_matches[0] if builder_matches else ""
               required = [
