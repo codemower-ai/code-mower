@@ -57,7 +57,7 @@ daemon analogous to local_llm_audit_bridge.py):
 Exit codes (CLI mode):
     0  comment posted (or dry-run printed)
     1  generic error (config, network, Codex CLI failure)
-    2  stale head SHA detected mid-review (caller may requeue)
+    2  UNKNOWN verdict emitted (caller should requeue and investigate)
 
 Trailer protocol (mirrors Devin/local LLM):
     <!-- CODEX_AUDIT_STATE: codex-audit-done -->     (verdict was PASS)
@@ -2052,14 +2052,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         except (OSError, ValueError) as exc:
             print(f"warning: failed to append spend metadata: {exc}", file=sys.stderr)
 
-    # Codex round 7 of #234 — P2: both STALE and UNKNOWN result in a
-    # `needs-codex-audit` requeue comment. Automation using the exit
-    # code to decide whether to retry must see exit 2 for BOTH cases;
-    # otherwise UNKNOWN looks like a successful audit even though the
-    # comment requests re-review.
-    if result.verdict in ("STALE", "UNKNOWN"):
-        return 2
-    return 0
+    return _audit_exit_code(result.verdict)
+
+
+def _audit_exit_code(verdict: str) -> int:
+    # UNKNOWN still means the lane produced no trustworthy verdict and should
+    # fail loudly. STALE means a newer head superseded this run after the wrapper
+    # posted a requeue note, so returning success avoids alarm-grade noise while
+    # the newer head's audit becomes authoritative.
+    return 2 if verdict == "UNKNOWN" else 0
 
 
 if __name__ == "__main__":

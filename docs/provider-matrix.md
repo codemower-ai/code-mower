@@ -181,12 +181,10 @@ workflows. The v1.0 posture is:
 - external apps may still spend provider credits or post comments according to
   their dashboards, but Code Mower should not spend Actions minutes parsing
   them unless the PR opted into that lane
-- generated labelers trust configured lane bot authors; the built-in Codex and
-  Claude local audit lanes also trust `github-actions[bot]` so the generated
-  self-hosted runner workflow can post verdicts with `GITHUB_TOKEN`, while the
-  labeler and merge gate require those shared-bot comments to carry a
-  comment-id/body-digest-bound audit-run marker attested by a trusted
-  `local-cli-audit.yml` workflow run for the same PR/head
+- generated labelers trust configured lane bot authors; local audit runner
+  comments should use `CODEX_AUDIT_LABEL_TOKEN` or `CLAUDE_AUDIT_LABEL_TOKEN`
+  because GitHub does not fire `issue_comment` labeler workflows for comments
+  created by the built-in `GITHUB_TOKEN`
 
 ## Promotion Policy
 

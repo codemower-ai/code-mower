@@ -319,6 +319,96 @@ class ClaudeAuditPrTests(unittest.TestCase):
             self.assertTrue(artifact["quarantined"])
             self.assertIn("fixture-shaped structured verdict", artifact["quarantine_reason"])
 
+    def test_claude_cli_failure_reason_sanitizes_login_json(self) -> None:
+        raw = json.dumps(
+            {
+                "is_error": True,
+                "result": "Not logged in · Please run /login",
+                "terminal_reason": "api_error",
+                "api_error_status": 401,
+            }
+        )
+
+        self.assertEqual(cap._claude_cli_failure_reason(raw, ""), "Claude CLI: Not logged in")
+
+    def test_claude_unknown_captures_cli_failure_and_comments_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            head_sha = "d" * 40
+            pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+            diff_context = cap.DiffContext(
+                "src/app.py | 1 +",
+                "diff --git a/src/app.py b/src/app.py",
+                ("src/app.py",),
+                False,
+                1_000,
+                1_000,
+                40,
+                40,
+            )
+            cli_json = json.dumps(
+                {
+                    "is_error": True,
+                    "result": "Not logged in · Please run /login",
+                    "terminal_reason": "auth",
+                    "api_error_status": 401,
+                }
+            )
+            config = cap.ClaudeAuditConfig(
+                "token",
+                {"owner/repo": repo},
+                include_plan_context=False,
+            )
+
+            with (
+                mock.patch.dict(
+                    "os.environ",
+                    {
+                        "PYTEST_CURRENT_TEST": "",
+                        "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                        "GITHUB_RUN_ID": "",
+                    },
+                ),
+                mock.patch.object(cap, "DEFAULT_CLAUDE_CLI_FAILURE_DIR", tmp_path / "failures"),
+                mock.patch.object(
+                    cap,
+                    "fetch_pull_request",
+                    side_effect=[pr_payload, pr_payload],
+                ),
+                mock.patch.object(cap, "_build_diff_context", return_value=diff_context),
+                mock.patch.object(
+                    cap.code_mower_prompts,
+                    "load_review_prompt",
+                    return_value="",
+                ),
+                mock.patch.object(
+                    cap,
+                    "run_claude_audit",
+                    return_value=(cap._unknown_structured_verdict("Claude CLI exited 1"), cli_json, ""),
+                ),
+                mock.patch.object(
+                    cap,
+                    "post_pr_comment",
+                    return_value={"html_url": "https://github.test/comment/1"},
+                ),
+            ):
+                result = cap.audit_pr(config, "owner/repo", 42)
+
+            self.assertEqual(result.verdict, "UNKNOWN")
+            self.assertIn("Claude CLI: Not logged in", result.comment_body)
+            dumps = list((tmp_path / "failures").glob("*_claude.log"))
+            self.assertEqual(len(dumps), 1)
+            dump_text = dumps[0].read_text(encoding="utf-8")
+            self.assertIn("# claude_api_error_status: 401", dump_text)
+            self.assertIn("Not logged in", dump_text)
+
+    def test_audit_exit_code_keeps_stale_neutral_and_unknown_loud(self) -> None:
+        self.assertEqual(cap._audit_exit_code("STALE"), 0)
+        self.assertEqual(cap._audit_exit_code("PASS"), 0)
+        self.assertEqual(cap._audit_exit_code("UNKNOWN"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

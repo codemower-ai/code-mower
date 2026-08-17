@@ -199,6 +199,11 @@ class CodexAuditPrTests(unittest.TestCase):
             r"comment_id=67890 body_sha256=[0-9a-f]{64} -->",
         )
 
+    def test_audit_exit_code_keeps_stale_neutral_and_unknown_loud(self) -> None:
+        self.assertEqual(cap._audit_exit_code("STALE"), 0)
+        self.assertEqual(cap._audit_exit_code("PASS"), 0)
+        self.assertEqual(cap._audit_exit_code("UNKNOWN"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

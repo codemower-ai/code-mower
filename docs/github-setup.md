@@ -322,16 +322,20 @@ Runner setup recipe:
 4. If the runner runs as a service or launch daemon, set `USER`, `LOGNAME`,
    `SHELL`, and `LANG` in the runner `.env` file. The generated workflow checks
    those variables before checkout because missing launchd environment breaks
-   local CLI and keychain auth in non-obvious ways.
+   local CLI and keychain auth in non-obvious ways. After editing `.env`, fully
+   recycle the runner listener; `svc.sh stop/start` may leave the old listener
+   process alive with the previous environment.
 5. Ensure `gh`, `git`, `python3`, `codex`, and `claude` are on PATH. If they
    live outside the default Homebrew/system paths, update
    `CODE_MOWER_LOCAL_AUDIT_PATH` in the generated workflow.
 6. Verify local auth from that same account: `gh auth status`,
    `codex --version`, `claude auth status`, and
    `claude -p "Reply with exactly: ok" --output-format json`.
-7. Add optional posting-token secrets `CODEX_AUDIT_LABEL_TOKEN` and
-   `CLAUDE_AUDIT_LABEL_TOKEN`; the workflow falls back to `GITHUB_TOKEN` when
-   those secrets are absent.
+7. Add posting-token secrets `CODEX_AUDIT_LABEL_TOKEN` and
+   `CLAUDE_AUDIT_LABEL_TOKEN`. The workflow can post with `GITHUB_TOKEN`, but
+   GitHub does not fire `issue_comment` workflows for comments created by the
+   built-in token, so runner lanes need PAT/App posting tokens for trailer
+   labelers to flip `needs-*-audit` to done or blocked.
 
 The generated workflow grants `pull-requests: write`, uses job-level
 concurrency keyed by PR and head SHA without `cancel-in-progress`, and wipes
@@ -364,9 +368,13 @@ for normal runner-dispatched audits. If a custom workflow intentionally passes
 a checkout that is not at the PR head, keep credentials on that checkout or
 fetch the PR head before invoking the wrapper.
 
-macOS Keychain access is user-session sensitive. If the runner later runs as a
-service or launch daemon, re-check provider CLI auth under that service account
-and unlock/configure the login keychain before trusting unattended audits.
+macOS Keychain access is user-session sensitive. If `svc.sh install` writes
+`SessionCreate=true` into `~/Library/LaunchAgents/actions.runner.*.plist`, the
+runner starts in a new security session and Claude Code cannot read the login
+keychain. `code-mower doctor --preflight` warns on that plist shape; remove the
+`SessionCreate` key, unload/reload the LaunchAgent or fully recycle the runner
+listener, then rerun the Claude prompt smoke from a runner job before trusting
+unattended audits.
 
 ## Gate Health Alarm
 
@@ -386,6 +394,13 @@ It detects these metadata-only conditions:
   without a trusted terminal verdict comment bound to the PR head SHA
 - the latest completed local CLI audit check on the PR head failed, timed out,
   or required action, unless a newer audit check is still pending
+- the latest trusted comments for one lane are repeatedly UNKNOWN; STALE
+  requeues are counted separately because a moved head should be superseded by
+  the newer head's audit. The generated default is 3 and can be changed with
+  `CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_THRESHOLD`; the streak comment history
+  defaults to 168 hours via
+  `CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_HISTORY_HOURS`, including up to 100
+  recently closed PRs via `CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_CLOSED_PR_LIMIT`
 - no self-hosted runner with the configured local audit runner label is online
 - GitHub runner inventory cannot be inspected with the configured token
 

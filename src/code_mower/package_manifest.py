@@ -438,6 +438,7 @@ PACKAGE_FILES = (
     ("tools/CODE_MOWER_COMMERCIAL_BOUNDARY.md", "docs/commercial-boundary.md", "doc"),
     ("tools/CODE_MOWER_PUBLIC_RELEASE_CHECKLIST.md", "docs/public-release-checklist.md", "doc"),
     ("tools/CODE_MOWER_GITHUB_SETUP.md", "docs/github-setup.md", "doc"),
+    ("docs/local-audit-runner.md", "docs/local-audit-runner.md", "doc"),
     ("docs/troubleshooting.md", "docs/troubleshooting.md", "doc"),
     (
         "tools/CODE_MOWER_MIRROR_REMOVAL_RUNBOOK.md",
