@@ -119,7 +119,10 @@ class ClaudeAuditPrTests(unittest.TestCase):
             with (
                 mock.patch.dict(
                     "os.environ",
-                    {"CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts")},
+                    {
+                        "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                        "PYTEST_CURRENT_TEST": "",
+                    },
                 ),
                 mock.patch.object(
                     cap,
@@ -169,6 +172,76 @@ class ClaudeAuditPrTests(unittest.TestCase):
             self.assertEqual(payload["schema"], cap.CLAUDE_RAW_OUTPUT_SCHEMA)
             self.assertTrue(payload["attempts"][0]["guardrail_rejection"])
             self.assertIsNone(payload["attempts"][1]["guardrail_rejection"])
+
+    def test_claude_audit_pytest_runtime_quarantines_without_posting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            head_sha = "b" * 40
+            pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+            clean = cap.parse_structured_claude_verdict(
+                {
+                    "schema": cap.CLAUDE_AUDIT_SCHEMA_ID,
+                    "verdict": "pass",
+                    "summary": "No merge-blocking regressions found in this review.",
+                    "findings": [],
+                }
+            )
+            diff_context = cap.DiffContext(
+                "src/app.py | 1 +",
+                "diff --git a/src/app.py b/src/app.py",
+                ("src/app.py",),
+                False,
+                1_000,
+                1_000,
+                40,
+                40,
+            )
+            config = cap.ClaudeAuditConfig(
+                "token",
+                {"owner/repo": repo},
+                include_plan_context=False,
+            )
+
+            with (
+                mock.patch.dict(
+                    "os.environ",
+                    {
+                        "PYTEST_CURRENT_TEST": "tests/test_live_guard.py::test_guard",
+                        "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                        "CODE_MOWER_VERDICT_QUARANTINE_DIR": str(tmp_path / "quarantine"),
+                    },
+                ),
+                mock.patch.object(
+                    cap,
+                    "fetch_pull_request",
+                    side_effect=[pr_payload, pr_payload],
+                ),
+                mock.patch.object(cap, "_build_diff_context", return_value=diff_context),
+                mock.patch.object(
+                    cap.code_mower_prompts,
+                    "load_review_prompt",
+                    return_value="",
+                ),
+                mock.patch.object(
+                    cap,
+                    "run_claude_audit",
+                    return_value=(clean, '{"structured_output":"pass"}', ""),
+                ),
+                mock.patch.object(cap, "post_pr_comment") as post_comment,
+            ):
+                result = cap.audit_pr(config, "owner/repo", 42)
+
+            self.assertEqual(result.verdict, "PASS")
+            post_comment.assert_not_called()
+            self.assertIsNone(result.posted_comment_url)
+            self.assertIsNotNone(result.verdict_artifact_path)
+            assert result.verdict_artifact_path is not None
+            self.assertIn("quarantine", str(result.verdict_artifact_path))
+            artifact = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
+            self.assertTrue(artifact["quarantined"])
+            self.assertIn("PYTEST_CURRENT_TEST", artifact["quarantine_reason"])
 
 
 if __name__ == "__main__":

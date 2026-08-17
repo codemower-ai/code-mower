@@ -561,6 +561,54 @@ class CalibrationTruthTests(unittest.TestCase):
         self.assertEqual(clean["head_sha"], final_head)
         self.assertEqual(clean["truth"]["expectation"], "known_clean")
 
+    def test_auto_discover_ignores_fixture_shaped_audit_comments(self) -> None:
+        final_head = "d" * 40
+        payload = code_mower_calibration.build_auto_discovered_corpus(
+            repo="owner/repo",
+            last_n=1,
+            pull_requests=[
+                {
+                    "number": 16,
+                    "title": "Merged despite leaked test verdict",
+                    "headRefOid": final_head,
+                    "baseRefName": "main",
+                    "changedFiles": 3,
+                    "comments": [
+                        {
+                            "body": (
+                                "## Claude audit (merge-authority lane)\n\n"
+                                "Head SHA: `1111111`\n"
+                                "Findings: P0=0, P1=1, P2=0, P3=0 "
+                                "(blocker policy: any P0/P1/P2 -> BLOCKED)\n\n"
+                                "Claude Audit: BLOCKED\n\n"
+                                "Summary:\n\n"
+                                "test\n\n"
+                                "Findings:\n\n"
+                                "- [P1] test -- `a.py:1`\n"
+                                "  test\n\n"
+                                "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->\n"
+                            )
+                        },
+                        {
+                            "body": (
+                                f"Head SHA: `{final_head}`\n"
+                                "Findings: P0=0, P1=0, P2=0, P3=0\n"
+                                "<!-- CODEX_AUDIT_STATE: codex-audit-done -->\n"
+                            )
+                        },
+                    ],
+                    "reviews": [],
+                },
+            ],
+        )
+
+        self.assertEqual(len(payload["corpus"]), 1)
+        clean = payload["corpus"][0]
+        self.assertEqual(clean["source"], "auto-discovered-merged-clean")
+        self.assertEqual(clean["head_sha"], final_head)
+        self.assertEqual(clean["truth"]["expectation"], "known_clean")
+        self.assertEqual(clean["auto_discovery"]["audit_blocked_runs"], 0)
+
     def test_auto_discover_review_signal_only_keeps_unknown_disposition(self) -> None:
         payload = code_mower_calibration.build_auto_discovered_corpus(
             repo="owner/repo",

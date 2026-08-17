@@ -32,6 +32,7 @@ if __package__ in {None, "", "tools"}:
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.claude_cli_environment import clean_claude_cli_env, env_flag
         from tools.provider_runners import (
+            audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
             clip_text as _clip_text,
             fetch_pull_request,
             fetch_base_ref_sha as _shared_fetch_base_ref_sha,
@@ -58,6 +59,7 @@ if __package__ in {None, "", "tools"}:
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from claude_cli_environment import clean_claude_cli_env, env_flag  # type: ignore
         from provider_runners import (  # type: ignore
+            audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
             clip_text as _clip_text,
             fetch_pull_request,
             fetch_base_ref_sha as _shared_fetch_base_ref_sha,
@@ -82,6 +84,7 @@ else:  # pragma: no cover - exercised after package extraction.
     from .claude_cli_environment import clean_claude_cli_env, env_flag
     from .provider_runners import (
         FetchedHeadMismatch,
+        audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
         clip_text as _clip_text,
         fetch_base_ref_sha as _shared_fetch_base_ref_sha,
         fetch_pull_request,
@@ -443,6 +446,14 @@ def _apply_claude_verdict_guardrails(
     if reason is None:
         return parsed, None
     return _unknown_structured_verdict(reason), reason
+
+
+def _fixture_guardrail_quarantine_reason(reason: Optional[str]) -> Optional[str]:
+    if not reason:
+        return None
+    if "schema placeholder" in reason or "matched a schema placeholder" in reason:
+        return f"fixture-shaped structured verdict rejected by guardrail: {reason}"
+    return None
 
 
 def _write_claude_raw_output_sidecar(
@@ -996,6 +1007,9 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             parsed=parsed,
         )
         if not config.dry_run:
+            quarantine_reason = _audit_runtime_quarantine_reason(
+                comment_body=comment_body,
+            )
             artifact_path = write_audit_verdict_artifact(
                 lane_id="claude-audit",
                 repo=repo,
@@ -1005,6 +1019,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                 verdict=result.verdict,
                 trailer=result.trailer,
                 comment_body=comment_body,
+                quarantine_reason=quarantine_reason,
             )
             result.verdict_artifact_path = artifact_path
             if artifact_path is not None:
@@ -1013,17 +1028,25 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                     file=sys.stderr,
                     flush=True,
                 )
-            posted = post_pr_comment(repo, pr_number, comment_body, token=config.github_token)
-            result.posted_comment_url = posted.get("html_url")
-            _record_posted_comment_url(
-                result.verdict_artifact_path,
-                result.posted_comment_url,
-            )
-            print(
-                f"posted {repo}#{pr_number} verdict=STALE "
-                f"url={result.posted_comment_url}",
-                file=sys.stderr,
-            )
+            if quarantine_reason:
+                print(
+                    "  runtime guard quarantined verdict artifact and skipped "
+                    f"GitHub post: {quarantine_reason}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                posted = post_pr_comment(repo, pr_number, comment_body, token=config.github_token)
+                result.posted_comment_url = posted.get("html_url")
+                _record_posted_comment_url(
+                    result.verdict_artifact_path,
+                    result.posted_comment_url,
+                )
+                print(
+                    f"posted {repo}#{pr_number} verdict=STALE "
+                    f"url={result.posted_comment_url}",
+                    file=sys.stderr,
+                )
         config.progress.emit(
             "audit",
             status="finish",
@@ -1082,6 +1105,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     claude_stdout = ""
     claude_stderr = ""
     attempt_prompt = prompt
+    final_guardrail_reason: Optional[str] = None
     t0 = time.time()
     for attempt in range(1, MAX_CLAUDE_AUDIT_ATTEMPTS + 1):
         parsed_candidate, attempt_stdout, attempt_stderr = run_claude_audit(
@@ -1094,6 +1118,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             parsed_candidate,
             diff_context.changed_files,
         )
+        final_guardrail_reason = guardrail_reason
         raw_output_attempts.append(
             {
                 "attempt": attempt,
@@ -1172,6 +1197,14 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     )
 
     if not config.dry_run:
+        quarantine_reason = _audit_runtime_quarantine_reason(
+            comment_body=comment_body,
+            fixture_reason=(
+                _fixture_guardrail_quarantine_reason(final_guardrail_reason)
+                if parsed.verdict == "UNKNOWN"
+                else None
+            ),
+        )
         artifact_path = write_audit_verdict_artifact(
             lane_id="claude-audit",
             repo=repo,
@@ -1181,6 +1214,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             verdict=result_verdict,
             trailer=trailer,
             comment_body=comment_body,
+            quarantine_reason=quarantine_reason,
         )
         result.verdict_artifact_path = artifact_path
         if artifact_path is not None:
@@ -1190,17 +1224,25 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                 flush=True,
             )
             _write_claude_raw_output_sidecar(artifact_path, raw_output_attempts)
-        posted = post_pr_comment(repo, pr_number, comment_body, token=config.github_token)
-        result.posted_comment_url = posted.get("html_url")
-        _record_posted_comment_url(
-            result.verdict_artifact_path,
-            result.posted_comment_url,
-        )
-        print(
-            f"posted {repo}#{pr_number} verdict={result_verdict} "
-            f"url={result.posted_comment_url}",
-            file=sys.stderr,
-        )
+        if quarantine_reason:
+            print(
+                "  runtime guard quarantined verdict artifact and skipped "
+                f"GitHub post: {quarantine_reason}",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            posted = post_pr_comment(repo, pr_number, comment_body, token=config.github_token)
+            result.posted_comment_url = posted.get("html_url")
+            _record_posted_comment_url(
+                result.verdict_artifact_path,
+                result.posted_comment_url,
+            )
+            print(
+                f"posted {repo}#{pr_number} verdict={result_verdict} "
+                f"url={result.posted_comment_url}",
+                file=sys.stderr,
+            )
     config.progress.emit(
         "audit",
         status="finish",

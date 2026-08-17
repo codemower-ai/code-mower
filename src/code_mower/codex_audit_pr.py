@@ -89,6 +89,7 @@ if __package__ in {None, "", "tools"}:
         from tools import reviewer_spend
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.provider_runners import (
+            audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
             clip_text as _clip_text,
             fetch_pull_request,
             fetch_base_ref as _shared_fetch_base_ref,
@@ -112,6 +113,7 @@ if __package__ in {None, "", "tools"}:
         import reviewer_spend  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from provider_runners import (  # type: ignore
+            audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
             clip_text as _clip_text,
             fetch_pull_request,
             fetch_base_ref as _shared_fetch_base_ref,
@@ -135,6 +137,7 @@ else:  # pragma: no cover - exercised after package extraction.
     from . import reviewer_spend
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .provider_runners import (
+        audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
         clip_text as _clip_text,
         create_temp_worktree as _shared_create_temp_worktree,
         fetch_base_ref as _shared_fetch_base_ref,
@@ -1367,6 +1370,9 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 comment_body=comment_body, codex_stdout="", codex_stderr="",
             )
             if not config.dry_run:
+                quarantine_reason = _audit_runtime_quarantine_reason(
+                    comment_body=comment_body,
+                )
                 artifact_path = write_audit_verdict_artifact(
                     lane_id="codex-audit",
                     repo=repo,
@@ -1376,6 +1382,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                     verdict=result.verdict,
                     trailer=result.trailer,
                     comment_body=comment_body,
+                    quarantine_reason=quarantine_reason,
                 )
                 result.verdict_artifact_path = artifact_path
                 if artifact_path is not None:
@@ -1395,9 +1402,17 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 # comment. See generated product-support wrapper
                 # finish_lock handling for the wrapper-side history and
                 # the general silent-success/silent-failure lesson.
-                posted = post_pr_comment(repo, pr_number, comment_body,
-                                          token=config.github_token)
-                result.posted_comment_url = posted.get("html_url")
+                if quarantine_reason:
+                    print(
+                        "  runtime guard quarantined verdict artifact and "
+                        f"skipped GitHub post: {quarantine_reason}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                else:
+                    posted = post_pr_comment(repo, pr_number, comment_body,
+                                              token=config.github_token)
+                    result.posted_comment_url = posted.get("html_url")
             config.progress.emit(
                 "audit",
                 status="finish",
@@ -1547,6 +1562,9 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     )
 
     if not config.dry_run:
+        quarantine_reason = _audit_runtime_quarantine_reason(
+            comment_body=comment_body,
+        )
         artifact_path = write_audit_verdict_artifact(
             lane_id="codex-audit",
             repo=repo,
@@ -1556,6 +1574,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             verdict=result_verdict,
             trailer=trailer,
             comment_body=comment_body,
+            quarantine_reason=quarantine_reason,
         )
         result.verdict_artifact_path = artifact_path
         if artifact_path is not None:
@@ -1568,11 +1587,19 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         # at the STALE-handler call site. tl;dr: post_pr_comment() raising
         # is the only signal the wrapper's finish_lock has that posting
         # failed. Do not catch the exception here.
-        posted = post_pr_comment(repo, pr_number, comment_body,
-                                  token=config.github_token)
-        result.posted_comment_url = posted.get("html_url")
-        print(f"posted {repo}#{pr_number} verdict={result_verdict} "
-              f"url={result.posted_comment_url}", file=sys.stderr)
+        if quarantine_reason:
+            print(
+                "  runtime guard quarantined verdict artifact and skipped "
+                f"GitHub post: {quarantine_reason}",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            posted = post_pr_comment(repo, pr_number, comment_body,
+                                      token=config.github_token)
+            result.posted_comment_url = posted.get("html_url")
+            print(f"posted {repo}#{pr_number} verdict={result_verdict} "
+                  f"url={result.posted_comment_url}", file=sys.stderr)
 
     config.progress.emit(
         "audit",

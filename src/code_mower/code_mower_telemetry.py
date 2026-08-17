@@ -18,12 +18,16 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(module_dir.parent))
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower import audit_handoff_log
+        from code_mower.provider_runners import is_fixture_verdict_artifact
     else:
         from tools import audit_handoff_log
+        from tools.provider_runners import is_fixture_verdict_artifact
 elif __package__ == "tools":
     from tools import audit_handoff_log
+    from tools.provider_runners import is_fixture_verdict_artifact
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_handoff_log
+    from .provider_runners import is_fixture_verdict_artifact
 
 
 PASS_VERDICTS = {"completed", "done", "pass", "passed", "success", "succeeded"}
@@ -31,7 +35,6 @@ BLOCKED_VERDICTS = {"block", "blocked", "fail", "failed", "failure"}
 VERDICT_ARTIFACT_SCHEMA = "code_mower.auditVerdictArtifact.v1"
 BENCHMARK_EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 VERDICT_ARTIFACT_DIR_ENV = "CODE_MOWER_VERDICT_ARTIFACT_DIR"
-DEFAULT_VERDICT_ARTIFACT_DIR = Path.home() / ".cache" / "code-mower-audits" / "verdicts"
 SEVERITY_RE = re.compile(r"\b(P[0-3])=(\d+)\b")
 AUDIT_TRAILER_RE = re.compile(
     r"<!--\s*(?P<prefix>[A-Z0-9_]+_AUDIT_STATE)\s*:\s*(?P<label>[a-z0-9_.-]+)\s*-->",
@@ -43,7 +46,10 @@ def default_verdict_artifact_dir() -> Path:
     configured = os.environ.get(VERDICT_ARTIFACT_DIR_ENV, "").strip()
     if configured:
         return Path(configured).expanduser()
-    return DEFAULT_VERDICT_ARTIFACT_DIR
+    cache_home = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if cache_home:
+        return Path(cache_home).expanduser() / "code-mower-audits" / "verdicts"
+    return Path.home() / ".cache" / "code-mower-audits" / "verdicts"
 
 
 def _normalize_repo_slug(value: str) -> str:
@@ -248,6 +254,8 @@ def export_reviewer_run_events_from_verdicts(
         if not isinstance(payload, dict):
             raise ValueError(f"{path}: verdict artifact must be a JSON object")
         if payload.get("schema") != VERDICT_ARTIFACT_SCHEMA:
+            continue
+        if is_fixture_verdict_artifact(payload):
             continue
         artifact_repo = _normalize_repo_slug(
             str(payload.get("repo") or _repo_slug_from_artifact_path(path))

@@ -457,6 +457,10 @@ retries Claude once after those guardrails fire; a second unusable result posts
 `UNKNOWN` with the requeue trailer instead of a merge-gating blocked label. When
 an artifact is saved, the wrapper also saves a local-only raw CLI output sidecar
 and backfills `posted_comment_url` after a successful GitHub comment POST.
+Both Codex and Claude audit wrappers quarantine fixture-shaped verdict comments
+or pytest runtime output instead of posting them, and reviewer-run export /
+calibration auto-discovery ignore the same fixture-shaped artifacts/comments.
+Use a scratch PR in a scratch repo for end-to-end audit-wrapper verification.
 
 In mirror-removal mode, those shell wrappers should be thin compatibility
 shims around the standalone package:
