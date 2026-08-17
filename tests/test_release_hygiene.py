@@ -90,7 +90,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("    environment: testpypi\n", testpypi_job)
         self.assertIn("repository-url: https://test.pypi.org/legacy/", testpypi_job)
         self.assertIn(
-            "uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b",
+            "uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
             testpypi_job,
         )
         production_job = workflow.split("  publish-pypi:\n", 1)[1]
@@ -4465,7 +4465,7 @@ def main():
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         workflow_without_publish = workflow.replace(
             "      - name: Publish to PyPI\n"
-            "        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b\n",
+            "        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33\n",
             "      - name: Publish to PyPI\n"
             "        run: echo skipped\n",
         )
