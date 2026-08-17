@@ -123,6 +123,27 @@ class BuilderIdentityTests(unittest.TestCase):
         self.assertEqual(payload["authors"]["claude[bot]"], "claude")
         self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:claude"], "claude")
 
+    def test_author_exclusion_defaults_include_informational_audit_builders(self) -> None:
+        payload = code_mower_init._author_exclusion_payload(
+            {"merge_authority_excludes_author": True},
+            {
+                "codex": {
+                    "type": "audit",
+                    "driver": "local_cli",
+                    "merge_authority": True,
+                },
+                "grok_build": {
+                    "type": "audit",
+                    "driver": "local_cli",
+                    "merge_authority": False,
+                    "author_lane": "grok-bot",
+                },
+            },
+        )
+
+        self.assertEqual(payload["labels"]["builder:codex"], "codex")
+        self.assertEqual(payload["labels"]["builder:grok-bot"], "grok-bot")
+
     def test_config_validation_rejects_malformed_builder_identity(self) -> None:
         cfg = dict(
             code_mower_config.load_config(

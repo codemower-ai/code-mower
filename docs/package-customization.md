@@ -211,7 +211,8 @@ tools/code_mower bootstrap --print-python
 For trailer-comment lanes, authors added through `*_BOT_AUTHORS` must post the
 lane's matching hidden `*_AUDIT_STATE` trailer. This lets one operator or
 shared machine user run several local audit lanes without the labeler or cloud
-metadata confusing the lane identity.
+metadata confusing the lane identity; generated gate and gate-health workflows
+read those same repository variables at runtime.
 
 If the standalone Code Mower source repository is still private and the product
 repo's GitHub Actions jobs do not have authenticated standalone checkout,
@@ -446,6 +447,10 @@ tools/run_claude_audit_pr.sh \
 tools/run_codex_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 tools/run_claude_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
 ```
+
+When reposting a workflow-authored verdict artifact, Code Mower rebinds any
+`CODE_MOWER_AUDIT_RUN` marker to the newly created GitHub comment id and final
+body digest before the generated labeler or gate can trust the terminal trailer.
 
 The reference provider catalog marks Codex and Claude audit lanes as
 merge-authority lanes, so their wrapper comments render that posture by default.

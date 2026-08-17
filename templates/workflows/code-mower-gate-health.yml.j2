@@ -43,6 +43,7 @@ jobs:
       - name: Check Code Mower gate health
         env:
           GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+__GATE_HEALTH_AUTHOR_ENV_ASSIGNMENTS__
         run: |
           set -euo pipefail
           tools/code_mower gate-health \

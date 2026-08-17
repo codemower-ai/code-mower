@@ -72,6 +72,7 @@ def has_head_bound_terminal(
             lane=lane,
             author=author,
             body=body,
+            comment_id=comment.get("id"),
             number=number,
             head_sha=head_sha,
             tokens=tokens,
@@ -84,7 +85,9 @@ def has_head_bound_terminal(
 
 def trusted_authors(lane: dict[str, Any]) -> set[str]:
     raw = str(lane.get("bot_authors") or "")
-    return {item.strip() for item in raw.split(",") if item.strip()}
+    env_raw = os.environ.get(str(lane.get("authors_env") or ""), "")
+    merged = raw + "," + env_raw
+    return {item.strip().lower() for item in merged.split(",") if item.strip()}
 
 
 def trusted_github_actions_workflows(lane: dict[str, Any]) -> set[str]:
@@ -98,6 +101,7 @@ def trusted_comment_author(
     lane: dict[str, Any],
     author: str,
     body: str,
+    comment_id: object,
     number: int,
     head_sha: str,
     tokens: Sequence[GitHubToken],
@@ -105,13 +109,15 @@ def trusted_comment_author(
     authors = trusted_authors(lane)
     if not authors:
         return False
-    if author not in authors:
+    author_login = author.strip().lower()
+    if author_login not in authors:
         return False
-    if author != "github-actions[bot]":
+    if author_login != "github-actions[bot]":
         return True
     return github_actions_comment_attested(
         repo=repo,
         body=body,
+        comment_id=comment_id,
         issue_number=int(number),
         head_sha=head_sha,
         workflow_paths=trusted_github_actions_workflows(lane),

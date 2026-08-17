@@ -118,3 +118,18 @@ def post_pr_comment(
         token=token,
         body={"body": body},
     )
+
+
+def edit_pr_comment(
+    repo: str,
+    comment_id: int | str,
+    body: str,
+    *,
+    token: str,
+) -> dict[str, Any]:
+    return _gh_request(
+        "PATCH",
+        f"/repos/{repo}/issues/comments/{comment_id}",
+        token=token,
+        body={"body": body},
+    )

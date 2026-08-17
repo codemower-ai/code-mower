@@ -275,9 +275,8 @@ jobs:
         return (
             r"""# Code Mower workflow template: clear stale terminal audit labels on new commits.
 #
-# Defaults to the Devin lane because hosted/paid lanes are the most likely to
-# need explicit re-dispatch. Change CLEAR_STALE_LANE or generate one workflow
-# per merge-authority lane.
+# Init renders one workflow per trailer-comment lane so stale terminal labels
+# requeue independently.
 name: Code Mower Clear Stale Audits
 
 on:
@@ -303,7 +302,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: {% raw %}code-mower-clear-stale-${{ github.event.pull_request.number || github.event.inputs.pr || github.run_id }}{% endraw %}
+  group: {% raw %}code-mower-clear-stale-devin-${{ github.event.pull_request.number || github.event.inputs.pr || github.run_id }}{% endraw %}
   cancel-in-progress: true
 
 jobs:

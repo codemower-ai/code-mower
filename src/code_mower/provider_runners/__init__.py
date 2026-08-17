@@ -5,7 +5,11 @@ This package holds common process/auth helpers used by Codex, Claude,
 Gemini/Antigravity, Hermes, and local reviewer lanes.
 """
 
-from .comments import MAX_GITHUB_COMMENT_CHARS, limit_comment_body
+from .comments import (
+    MAX_GITHUB_COMMENT_CHARS,
+    bind_actions_run_comment_id,
+    limit_comment_body,
+)
 from .git import fetch_local_checkout_diff, local_head_sha, run_git
 from .github_auth import (
     pop_github_token_env,
@@ -13,6 +17,7 @@ from .github_auth import (
     resolve_github_token_from_stdin_or_env,
 )
 from .github_pr import (
+    edit_pr_comment,
     fetch_pull_request,
     fetch_pull_request_diff,
     fetch_pull_request_files,
@@ -55,6 +60,7 @@ __all__ = [
     "fetch_pull_request",
     "fetch_pull_request_diff",
     "fetch_pull_request_files",
+    "edit_pr_comment",
     "FetchedHeadMismatch",
     "fetch_base_ref",
     "fetch_base_ref_sha",
@@ -74,6 +80,7 @@ __all__ = [
     "limit_comment_body",
     "MAX_GITHUB_COMMENT_CHARS",
     "audit_runtime_quarantine_reason",
+    "bind_actions_run_comment_id",
     "clip_text",
     "DEFAULT_HOME_ENV_KEYS",
     "one_line",

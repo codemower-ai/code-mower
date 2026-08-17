@@ -899,6 +899,7 @@ exit 1
         self.assertIn("CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS", trailer)
         self.assertIn("actions: write", trailer)
         self.assertIn("pull-requests: write", trailer)
+        self.assertIn("types: [created, edited]", trailer)
         self.assertIn("gh workflow run code-mower-gate.yml", trailer)
         self.assertIn('gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"', trailer)
         self.assertIn("vars.__AUTHORS_ENV__", trailer)
@@ -913,10 +914,14 @@ exit 1
         ).read_text(encoding="utf-8")
         self.assertIn("actions: read", gate_template)
         self.assertIn("contents: read", gate_template)
+        self.assertIn("issues: write", gate_template)
         self.assertIn("Check out Code Mower support files", gate_template)
         self.assertIn("CODE_MOWER_AUDIT_RUN", gate_template)
+        self.assertIn("comment_id", gate_template)
+        self.assertIn("body_sha256", gate_template)
         self.assertIn("github_actions_comment_attested", gate_template)
         self.assertIn("github_actions_workflows", gate_template)
+        self.assertIn("Clear stale Code Mower gate override", gate_template)
         hosted = (
             ROOT / "templates/workflows/hosted-bridge.yml.j2"
         ).read_text(encoding="utf-8")
@@ -1016,6 +1021,7 @@ exit 1
         commit_pull_requests: dict[str, list[dict[str, object]]] | None = None,
         author_exclusion: dict[str, object] | None = None,
         owner_login: str = "owner",
+        env: dict[str, str] | None = None,
     ) -> dict[str, str]:
         template = (
             ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
@@ -1084,6 +1090,7 @@ exit 1
                         "GH_TOKEN": "test-token",
                         "HEAD_SHA": head_sha,
                         "PR_NUMBER": str(pr_number),
+                        **(env or {}),
                     },
                 ),
                 mock.patch.object(
@@ -1110,6 +1117,9 @@ exit 1
             key, value = line.split("=", 1)
             result[key] = shlex.split(value)[0]
         return result
+
+    def _bound_actions_body(self, body: str, *, comment_id: int = 1234) -> str:
+        return provider_runners.bind_actions_run_comment_id(body, comment_id)
 
     def test_gate_decision_rejects_builder_exclusion_with_no_independent_lane(
         self,
@@ -1175,6 +1185,33 @@ exit 1
                     "user": {"login": "claude-audit-bot"},
                 }
             ],
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_decision_accepts_configured_lane_author_env(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                    "authors_env": "CLAUDE_AUDIT_BOT_AUTHORS",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "jeffhuber"},
+                }
+            ],
+            env={"CLAUDE_AUDIT_BOT_AUTHORS": "jeffhuber,github-actions[bot]"},
         )
 
         self.assertEqual(result["gate_state"], "success")
@@ -1302,6 +1339,7 @@ exit 1
                 {
                     "body": "Head SHA: `" + ("a" * 40) + "`\n"
                     "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "id": 1234,
                     "user": {"login": "github-actions[bot]"},
                 }
             ],
@@ -1327,9 +1365,12 @@ exit 1
             labels={"claude-audit-done"},
             comments=[
                 {
-                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
-                    "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
-                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "body": self._bound_actions_body(
+                        "Head SHA: `" + ("a" * 40) + "`\n"
+                        "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+                        "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+                    ),
+                    "id": 1234,
                     "user": {"login": "github-actions[bot]"},
                 }
             ],
@@ -1350,6 +1391,94 @@ exit 1
         self.assertEqual(result["gate_state"], "success")
         self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
 
+    def test_gate_decision_rejects_replayed_github_actions_comment(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": self._bound_actions_body(
+                        "Head SHA: `" + ("a" * 40) + "`\n"
+                        "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+                        "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+                    ),
+                    "id": 9876,
+                    "user": {"login": "github-actions[bot]"},
+                }
+            ],
+            actions_runs={
+                "12345": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "pull_requests": [
+                        {
+                            "number": 7,
+                            "head": {"sha": "a" * 40},
+                        }
+                    ],
+                }
+            },
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
+    def test_gate_decision_rejects_tampered_github_actions_comment_body(self) -> None:
+        bound_body = self._bound_actions_body(
+            "Head SHA: `" + ("a" * 40) + "`\n"
+            "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+            "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->"
+        )
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": bound_body.replace(
+                        "claude-audit-blocked",
+                        "claude-audit-done",
+                    ),
+                    "id": 1234,
+                    "user": {"login": "github-actions[bot]"},
+                }
+            ],
+            actions_runs={
+                "12345": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "pull_requests": [
+                        {
+                            "number": 7,
+                            "head": {"sha": "a" * 40},
+                        }
+                    ],
+                }
+            },
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
     def test_gate_decision_rejects_empty_run_prs_without_commit_fallback(self) -> None:
         head_sha = "a" * 40
         result = self._run_gate_template_decision(
@@ -1367,9 +1496,12 @@ exit 1
             labels={"claude-audit-done"},
             comments=[
                 {
-                    "body": "Head SHA: `" + head_sha + "`\n"
-                    "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
-                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "body": self._bound_actions_body(
+                        "Head SHA: `" + head_sha + "`\n"
+                        "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+                        "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+                    ),
+                    "id": 1234,
                     "user": {"login": "github-actions[bot]"},
                 }
             ],
@@ -1404,9 +1536,12 @@ exit 1
             labels={"claude-audit-done"},
             comments=[
                 {
-                    "body": "Head SHA: `" + head_sha + "`\n"
-                    "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
-                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "body": self._bound_actions_body(
+                        "Head SHA: `" + head_sha + "`\n"
+                        "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+                        "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+                    ),
+                    "id": 1234,
                     "user": {"login": "github-actions[bot]"},
                 }
             ],
@@ -1506,6 +1641,78 @@ exit 1
         self.assertEqual(
             result["gate_description"],
             "gate:override is stale for current head",
+        )
+
+    def test_gate_decision_rejects_override_before_current_head_commit(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"gate:override", "claude-audit-blocked"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+            events=[
+                {
+                    "event": "labeled",
+                    "label": {"name": "gate:override"},
+                    "actor": {"login": "owner"},
+                },
+                {
+                    "event": "committed",
+                    "sha": "a" * 40,
+                },
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(
+            result["gate_description"],
+            "gate:override is stale for current head",
+        )
+
+    def test_gate_decision_fails_when_stale_override_clear_failed(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"gate:override"},
+            events=[
+                {
+                    "event": "committed",
+                    "sha": "a" * 40,
+                },
+                {
+                    "event": "labeled",
+                    "label": {"name": "gate:override"},
+                    "actor": {"login": "owner"},
+                },
+            ],
+            env={"CODE_MOWER_GATE_OVERRIDE_CLEAR_FAILED": "true"},
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(
+            result["gate_description"],
+            "gate:override could not be cleared after head change",
         )
 
     def test_gate_decision_rejects_non_owner_gate_override(self) -> None:
@@ -1623,6 +1830,7 @@ exit 1
             codex_stale = output_dir.joinpath(
                 ".github/workflows/codex-clear-stale.yml"
             ).read_text(encoding="utf-8")
+            self.assertIn("name: Code Mower Codex Clear Stale Audits", codex_stale)
             self.assertIn("tools/code_mower clear-stale", codex_stale)
             self.assertIn('default: "codex"', codex_stale)
             self.assertIn("github.event.inputs.lane || 'codex'", codex_stale)
@@ -1632,6 +1840,7 @@ exit 1
             claude_stale = output_dir.joinpath(
                 ".github/workflows/claude-clear-stale.yml"
             ).read_text(encoding="utf-8")
+            self.assertIn("name: Code Mower Claude Clear Stale Audits", claude_stale)
             self.assertIn("code-mower-clear-stale-claude-${{", claude_stale)
             self.assertNotIn("code-mower-clear-stale-${{", claude_stale)
 
@@ -1719,8 +1928,13 @@ exit 1
             self.assertIn("enablePullRequestAutoMerge", gate)
             self.assertIn("gh api -X POST", gate)
             self.assertIn("CODE_MOWER_AUDIT_RUN", gate)
+            self.assertIn("comment_id", gate)
+            self.assertIn("body_sha256", gate)
+            self.assertIn("Clear stale Code Mower gate override", gate)
             self.assertIn("github_actions_comment_attested", gate)
             self.assertIn("github_actions_workflows", gate)
+            self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS: ${{ vars.CLAUDE_AUDIT_BOT_AUTHORS || '' }}", gate)
+            self.assertIn("CODEX_BOT_AUTHORS: ${{ vars.CODEX_BOT_AUTHORS || '' }}", gate)
             self.assertIn(".github/workflows/local-cli-audit.yml", gate)
             self.assertIn("CODE_MOWER_GATE_OVERRIDE_LABEL", gate)
             self.assertIn("issues/${PR_NUMBER}/timeline?per_page=100", gate)
@@ -1739,6 +1953,8 @@ exit 1
             self.assertIn("needs-codex-audit", gate_health)
             self.assertIn("needs-claude-audit", gate_health)
             self.assertIn("github-actions[bot]", gate_health)
+            self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS: ${{ vars.CLAUDE_AUDIT_BOT_AUTHORS || '' }}", gate_health)
+            self.assertIn("CODEX_BOT_AUTHORS: ${{ vars.CODEX_BOT_AUTHORS || '' }}", gate_health)
             self.assertIn("tools/code_mower gate-health", gate_health)
             self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", gate_health)
             self.assertIn("github_actions_workflows", gate_health)
@@ -1870,6 +2086,7 @@ exit 1
             self.assertIn("tools/code_mower gate-health", gate_health)
             self.assertIn("needs-codex-audit", gate_health)
             self.assertIn("github-actions[bot]", gate_health)
+            self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS: ${{ vars.CLAUDE_AUDIT_BOT_AUTHORS || '' }}", gate_health)
             self.assertNotIn("__GATE_HEALTH", gate_health)
 
             gate = output_dir.joinpath(
@@ -1879,6 +2096,8 @@ exit 1
             self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
             self.assertIn('CODE_MOWER_GATE_OVERRIDE_LABEL: "gate:override"', gate)
             self.assertIn("override_actor != override_owner", gate)
+            self.assertIn("Clear stale Code Mower gate override", gate)
+            self.assertIn("CODE_MOWER_GATE_OVERRIDE_CLEAR_FAILED=true", gate)
             self.assertNotIn('CODE_MOWER_OWNER_LABEL: "needs-owner"', gate)
 
             config["owner_surface"]["needs_owner_label"] = "needs: jeff # owner"
@@ -2345,6 +2564,7 @@ fi
             self.assertIn(str(stale_workflow), stale_apply["written_files"])
             self.assertNotIn(str(stale_workflow), stale_apply["placeholder_files"])
             stale_text = stale_workflow.read_text(encoding="utf-8")
+            self.assertIn("name: Code Mower Devin Clear Stale Audits", stale_text)
             self.assertIn("tools/code_mower clear-stale", stale_text)
             self.assertIn("--dispatch-workflow", stale_text)
             self.assertIn("github.event.pull_request.head.sha", stale_text)
@@ -2384,6 +2604,7 @@ fi
             custom_text = (
                 custom_generated / ".github/workflows/custom-clear-stale.yml"
             ).read_text(encoding="utf-8")
+            self.assertIn("name: Code Mower Custom Clear Stale Audits", custom_text)
             self.assertIn('default: "custom"', custom_text)
             self.assertIn("github.event.inputs.lane || 'custom'", custom_text)
             self.assertIn("code-mower-clear-stale-custom-${{", custom_text)
