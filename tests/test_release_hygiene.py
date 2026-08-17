@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import importlib.util
 import os
 import shlex
@@ -12,10 +13,12 @@ import tomllib
 import unittest
 import urllib.error
 from argparse import Namespace
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -853,6 +856,7 @@ exit 1
     def test_reviewer_workflow_templates_are_real_and_packaged(self) -> None:
         workflow_templates = (
             "audit-label-cleanup.yml.j2",
+            "code-mower-gate-health.yml.j2",
             "code-mower-gate.yml.j2",
             "hosted-bridge.yml.j2",
             "local-cli-audit.yml.j2",
@@ -898,6 +902,12 @@ exit 1
         )
         self.assertNotIn("workflow_dispatch:", trailer)
         self.assertNotIn("github.event.inputs.lane", trailer)
+        gate_template = (
+            ROOT / "templates/workflows/code-mower-gate.yml.j2"
+        ).read_text(encoding="utf-8")
+        self.assertIn("actions: read", gate_template)
+        self.assertIn("CODE_MOWER_AUDIT_RUN", gate_template)
+        self.assertIn("github_actions_workflows", gate_template)
         hosted = (
             ROOT / "templates/workflows/hosted-bridge.yml.j2"
         ).read_text(encoding="utf-8")
@@ -915,6 +925,26 @@ exit 1
             ROOT / "templates/workflows/audit-label-cleanup.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("pull-requests: write", cleanup)
+        local_audit = (
+            ROOT / "templates/workflows/self-hosted-local-audit.yml.j2"
+        ).read_text(encoding="utf-8")
+        self.assertIn("pull-requests: write", local_audit)
+        self.assertIn("Verify local runner environment", local_audit)
+        self.assertIn("for name in USER LOGNAME SHELL LANG", local_audit)
+        self.assertIn("Reset pull request checkout path", local_audit)
+        self.assertIn("${{ github.workflow }}-${{ github.event.pull_request.number }}", local_audit)
+        self.assertNotIn("cancel-in-progress", local_audit)
+        gate_health = (
+            ROOT / "templates/workflows/code-mower-gate-health.yml.j2"
+        ).read_text(encoding="utf-8")
+        self.assertIn("CODE_MOWER_GATE_HEALTH_LANES_JSON", gate_health)
+        self.assertIn("issues/{number}/events", gate_health)
+        self.assertIn("actions/workflows/{workflow_id}/runs", gate_health)
+        self.assertIn("actions/runners", gate_health)
+        self.assertIn("needs:{number}:{needs_label}:{head_sha}", gate_health)
+        self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", gate_health)
+        self.assertIn("runner-check-unavailable", gate_health)
+        self.assertIn("Could not inspect self-hosted runners", gate_health)
 
     def test_local_audit_label_expression_uses_exact_label_membership(self) -> None:
         entries = ({"needs_label": "needs-codex-audit"},)
@@ -929,6 +959,99 @@ exit 1
             expression,
         )
         self.assertNotIn("join(", expression)
+
+    def test_gate_health_template_alerts_stale_needs_label(self) -> None:
+        template = (
+            ROOT / "src/code_mower/templates/workflows/code-mower-gate-health.yml.j2"
+        ).read_text(encoding="utf-8")
+        script = template.split("python3 - <<'PY'\n", 1)[1].split(
+            "\n          PY",
+            1,
+        )[0]
+        script = textwrap.dedent(script)
+        calls: list[list[str]] = []
+        head_sha = "a" * 40
+
+        def fake_check_output(
+            args: list[str],
+            env: dict[str, str] | None = None,
+            text: bool = True,
+        ) -> str:
+            self.assertEqual(args[:2], ["gh", "api"])
+            endpoint = args[-1]
+            if "--slurp" in args:
+                if endpoint.endswith("/pulls?state=open&per_page=100"):
+                    return json.dumps(
+                        [
+                            [
+                                {
+                                    "number": 12,
+                                    "head": {"sha": head_sha},
+                                    "labels": [{"name": "needs-codex-audit"}],
+                                    "updated_at": "2000-01-01T00:00:00Z",
+                                }
+                            ]
+                        ]
+                    )
+                if endpoint.endswith("/issues/12/events?per_page=100"):
+                    return json.dumps(
+                        [
+                            [
+                                {
+                                    "event": "labeled",
+                                    "label": {"name": "needs-codex-audit"},
+                                    "created_at": "2000-01-01T00:00:00Z",
+                                }
+                            ]
+                        ]
+                    )
+                if endpoint.endswith("/issues/12/comments?per_page=100"):
+                    return json.dumps([[]])
+            if endpoint.endswith("/actions/workflows/local-cli-audit.yml/runs?per_page=5"):
+                return json.dumps({"workflow_runs": []})
+            if endpoint.endswith("/actions/runners?per_page=100"):
+                raise subprocess.CalledProcessError(1, args)
+            raise AssertionError(f"unexpected gh api endpoint: {endpoint}")
+
+        def fake_run(args: list[str], check: bool = True, text: bool = True) -> subprocess.CompletedProcess[str]:
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0)
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "REPO": "owner/repo",
+                    "CODE_MOWER_GATE_HEALTH_LANES_JSON": json.dumps(
+                        [
+                            {
+                                "needs": "needs-codex-audit",
+                                "done": "codex-audit-done",
+                                "blocked": "codex-audit-blocked",
+                                "bot_authors": "github-actions[bot]",
+                            }
+                        ]
+                    ),
+                    "CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES": "30",
+                    "CODE_MOWER_LOCAL_AUDIT_WORKFLOW": "local-cli-audit.yml",
+                    "CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL": "code-mower-audit",
+                    "CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN": "",
+                    "NEEDS_OWNER_LABEL": "needs-owner",
+                    "OWNER_LOGIN": "jeffhuber",
+                    "STATUS_ISSUE": "302",
+                },
+            ),
+            mock.patch.object(subprocess, "check_output", fake_check_output),
+            mock.patch.object(subprocess, "run", fake_run),
+            redirect_stdout(StringIO()),
+        ):
+            exec(compile(script, "code-mower-gate-health.yml.j2", "exec"), {})
+
+        joined_calls = "\n".join(" ".join(call) for call in calls)
+        self.assertIn("issue edit 12 --repo owner/repo --add-label needs-owner", joined_calls)
+        self.assertIn("repos/owner/repo/issues/12/assignees", joined_calls)
+        self.assertIn("needs:12:needs-codex-audit:" + head_sha, joined_calls)
+        self.assertIn("runner-check-unavailable:code-mower-audit", joined_calls)
 
     def test_provider_catalog_wires_merge_authority_stale_hygiene(self) -> None:
         for relative_path in (
@@ -956,6 +1079,8 @@ exit 1
         comments: list[dict[str, object]] | None = None,
         head_sha: str = "a" * 40,
         pr_head_sha: str | None = None,
+        pr_number: int = 7,
+        actions_runs: dict[str, dict[str, object]] | None = None,
         author_exclusion: dict[str, object] | None = None,
     ) -> dict[str, str]:
         template = (
@@ -974,10 +1099,21 @@ exit 1
             json.dump([comments or []], handle)
             comments_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
-            json.dump({"head": {"sha": pr_head_sha or head_sha}}, handle)
+            json.dump({"number": pr_number, "head": {"sha": pr_head_sha or head_sha}}, handle)
             pr_path = handle.name
 
         stdout = StringIO()
+        action_patch = nullcontext()
+        if actions_runs is not None:
+            def fake_check_output(args: list[str], text: bool = True) -> str:
+                endpoint = args[-1]
+                prefix = "repos/owner/repo/actions/runs/"
+                if endpoint.startswith(prefix):
+                    run_id = endpoint.removeprefix(prefix)
+                    return json.dumps(actions_runs.get(run_id) or {})
+                raise AssertionError(f"unexpected gh api endpoint: {endpoint}")
+
+            action_patch = mock.patch.object(subprocess, "check_output", fake_check_output)
         try:
             with (
                 mock.patch.dict(
@@ -988,7 +1124,9 @@ exit 1
                             author_exclusion or {"enabled": False}
                         ),
                         "CODE_MOWER_OWNER_LABEL": "needs-owner",
+                        "GITHUB_REPOSITORY": "owner/repo",
                         "HEAD_SHA": head_sha,
+                        "PR_NUMBER": str(pr_number),
                     },
                 ),
                 mock.patch.object(
@@ -996,6 +1134,7 @@ exit 1
                     "argv",
                     ["gate-decision", labels_path, comments_path, pr_path],
                 ),
+                action_patch,
                 redirect_stdout(stdout),
             ):
                 try:
@@ -1162,6 +1301,72 @@ exit 1
         self.assertEqual(result["gate_state"], "pending")
         self.assertEqual(result["gate_description"], "waiting for audit: Claude")
 
+    def test_gate_decision_rejects_unattested_github_actions_comment(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "github-actions[bot]"},
+                }
+            ],
+            actions_runs={},
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
+    def test_gate_decision_accepts_attested_github_actions_comment(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "github-actions[bot]"},
+                }
+            ],
+            actions_runs={
+                "12345": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "pull_requests": [
+                        {
+                            "number": 7,
+                            "head": {"sha": "a" * 40},
+                        }
+                    ],
+                }
+            },
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
     def test_mirror_removal_plan_reports_product_support_files(self) -> None:
         from code_mower import migration
 
@@ -1198,6 +1403,7 @@ exit 1
             package_mode=True,
             package_command="code-mower",
         )
+        self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", plan.data["required_secrets"])
 
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / ".code-mower.generated"
@@ -1211,6 +1417,7 @@ exit 1
                 ".github/workflows/audit-label-cleanup.yml",
                 ".github/workflows/claude-audit-labeler.yml",
                 ".github/workflows/claude-clear-stale.yml",
+                ".github/workflows/code-mower-gate-health.yml",
                 ".github/workflows/code-mower-gate.yml",
                 ".github/workflows/codex-audit-labeler.yml",
                 ".github/workflows/codex-clear-stale.yml",
@@ -1248,6 +1455,13 @@ exit 1
             ).read_text(encoding="utf-8")
             self.assertIn("pull_request_target:\n    types: [opened, synchronize, labeled]", local_cli_audit)
             self.assertIn("runs-on: [self-hosted, macOS, code-mower-audit]", local_cli_audit)
+            self.assertIn("pull-requests: write", local_cli_audit)
+            self.assertIn("Verify local runner environment", local_cli_audit)
+            self.assertIn("for name in USER LOGNAME SHELL LANG", local_cli_audit)
+            self.assertIn("Reset pull request checkout path", local_cli_audit)
+            self.assertIn("rm -rf \"${PR_HEAD_PATH}\"", local_cli_audit)
+            self.assertIn("concurrency:\n      group:", local_cli_audit)
+            self.assertNotIn("cancel-in-progress", local_cli_audit)
             self.assertIn("path: code-mower-support", local_cli_audit)
             self.assertIn("path: pr-head", local_cli_audit)
             self.assertIn("fetch-depth: 0", local_cli_audit)
@@ -1262,6 +1476,15 @@ exit 1
             self.assertIn("--read-token-from-stdin", local_cli_audit)
             self.assertIn("--repo-paths", local_cli_audit)
             self.assertNotIn("__LOCAL_AUDIT_", local_cli_audit)
+            parsed_local_cli = yaml.safe_load(local_cli_audit)
+            self.assertIn(
+                "github.event.pull_request.head.repo.full_name == github.repository",
+                parsed_local_cli["jobs"]["audit"]["if"],
+            )
+            self.assertIn(
+                "${{ github.event.pull_request.head.sha }}",
+                parsed_local_cli["jobs"]["audit"]["concurrency"]["group"],
+            )
 
             gate = output_dir.joinpath(
                 ".github/workflows/code-mower-gate.yml"
@@ -1274,7 +1497,26 @@ exit 1
             self.assertIn("builder:claude", gate)
             self.assertIn("enablePullRequestAutoMerge", gate)
             self.assertIn("gh api -X POST", gate)
+            self.assertIn("CODE_MOWER_AUDIT_RUN", gate)
+            self.assertIn("github_actions_workflows", gate)
+            self.assertIn(".github/workflows/local-cli-audit.yml", gate)
             self.assertNotIn("__GATE_LANES_JSON__", gate)
+
+            gate_health = output_dir.joinpath(
+                ".github/workflows/code-mower-gate-health.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("CODE_MOWER_GATE_HEALTH_LANES_JSON", gate_health)
+            self.assertIn("CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES", gate_health)
+            self.assertIn('NEEDS_OWNER_LABEL: "needs-owner"', gate_health)
+            self.assertIn("needs-codex-audit", gate_health)
+            self.assertIn("needs-claude-audit", gate_health)
+            self.assertIn("github-actions[bot]", gate_health)
+            self.assertIn("local-cli-audit.yml", gate_health)
+            self.assertIn("actions/runners", gate_health)
+            self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", gate_health)
+            self.assertIn("CODE_MOWER_AUDIT_RUN", gate_health)
+            self.assertIn("github_actions_workflows", gate_health)
+            self.assertNotIn("__GATE_HEALTH", gate_health)
 
             gitar = output_dir.joinpath(
                 ".github/workflows/gitar-audit-labeler.yml"
@@ -1317,6 +1559,7 @@ exit 1
             output_dir = Path(tmp) / ".code-mower.generated"
             result = code_mower_init.apply_init_plan(plan, output_dir)
             generated = {
+                ".github/workflows/code-mower-gate-health.yml",
                 ".github/workflows/needs-owner-notify.yml",
                 ".github/workflows/weekly-status.yml",
                 "tools/status_report.py",
@@ -1376,6 +1619,17 @@ exit 1
             self.assertNotIn('STATUS_ISSUE: "TODO_STATUS_ISSUE"', weekly)
             self.assertNotIn("{% raw %}", weekly)
 
+            gate_health = output_dir.joinpath(
+                ".github/workflows/code-mower-gate-health.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', gate_health)
+            self.assertIn('OWNER_LOGIN: "jeffhuber"', gate_health)
+            self.assertIn('STATUS_ISSUE: "6"', gate_health)
+            self.assertIn('cron: "*/15 * * * *"', gate_health)
+            self.assertIn("needs-codex-audit", gate_health)
+            self.assertIn("github-actions[bot]", gate_health)
+            self.assertNotIn("__GATE_HEALTH", gate_health)
+
             status_report = output_dir.joinpath("tools/status_report.py")
             self.assertTrue(status_report.stat().st_mode & 0o111)
             self.assertIn(
@@ -1387,6 +1641,40 @@ exit 1
                 check=True,
                 text=True,
             )
+
+    def test_gate_health_skips_runner_check_without_local_cli_lanes(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        config = copy.deepcopy(code_mower_config.load_config(config_path))
+        config["profiles"]["hosted-only-audit"] = {
+            "description": "Hosted audit lane without a local runner.",
+            "lanes": ["gitar"],
+        }
+        plan = code_mower_init.render_init_plan(
+            config,
+            profile_id="hosted-only-audit",
+            package_mode=True,
+            package_command="code-mower",
+        )
+        self.assertNotIn(
+            "CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN",
+            plan.data["required_secrets"],
+        )
+        gate_health_entry = next(
+            entry
+            for entry in plan.data["generated_files"]
+            if entry["path"] == ".github/workflows/code-mower-gate-health.yml"
+        )
+        self.assertEqual(gate_health_entry["local_audit_runner_label"], "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / ".code-mower.generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+            gate_health = output_dir.joinpath(
+                ".github/workflows/code-mower-gate-health.yml"
+            ).read_text(encoding="utf-8")
+
+        self.assertIn('CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL: ""', gate_health)
+        self.assertIn("needs-gitar-audit", gate_health)
 
     def test_status_report_template_summarizes_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2091,6 +2379,10 @@ printf '%s\\n' "${lane}"
         )
         self.assertIn(
             "src/code_mower/templates/workflows/self-hosted-local-audit.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/code-mower-gate-health.yml.j2",
             packaged_template_targets,
         )
 

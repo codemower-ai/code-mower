@@ -30,12 +30,14 @@ not create labels, comments, workflows, or provider reviews.
 
 ## Owner Surface Templates
 
-`init --easy` emits two owner-surface templates:
+`init --easy` emits owner-surface templates:
 `.github/workflows/needs-owner-notify.yml` comments on issues or PRs labeled
 with `owner_surface.needs_owner_label`, adds the configured owner as an assignee
 without replacing existing assignees, and
 `.github/workflows/weekly-status.yml` refreshes a pinned status issue from
-`tools/status_report.py`.
+`tools/status_report.py`. Repositories with audit lanes also receive
+`.github/workflows/code-mower-gate-health.yml`, which alerts the owner when
+audit labels, local audit runs, or the self-hosted runner stall.
 For fork PRs where GitHub grants a read-only token, owner notify emits a
 workflow warning instead of failing the run.
 
@@ -49,6 +51,8 @@ owner_surface:
   gate_override_label: "gate:override"
   status_issue: "123"
   weekly_cron: "0 14 * * 1"
+  gate_health_cron: "*/15 * * * *"
+  gate_health_max_wait_minutes: "30"
   ready_label: "tier:R"
 ```
 
@@ -212,10 +216,19 @@ GitHub secrets, or provider-specific local auth stores.
 Generated issue-comment labelers are fail-closed. They only run for comments
 from the lane's configured audit bot authors plus any authors you explicitly
 add with repository variables such as `CLAUDE_AUDIT_BOT_AUTHORS`,
-`DEVIN_BOT_AUTHORS`, or `GITAR_BOT_AUTHORS`. If you intentionally run an audit
-wrapper inside GitHub Actions and post its verdict with `GITHUB_TOKEN`, add
-`github-actions[bot]` to that lane's `*_BOT_AUTHORS` variable; Code Mower does
-not trust that shared bot identity by default.
+`DEVIN_BOT_AUTHORS`, or `GITAR_BOT_AUTHORS`. The built-in Codex and Claude
+local audit lanes trust `github-actions[bot]` by default so
+`local-cli-audit.yml` can post verdicts with `GITHUB_TOKEN`; custom and SaaS
+lanes should add that shared bot identity only when their workflow is meant to
+post authoritative verdicts.
+
+For merge-gating Codex and Claude lanes, `github-actions[bot]` comments also
+need the hidden `CODE_MOWER_AUDIT_RUN` marker emitted by the wrappers inside
+GitHub Actions. The generated gate verifies that marker against a
+`local-cli-audit.yml` run for the same PR and head before accepting the
+terminal trailer. Use lane-specific posting tokens or remove
+`github-actions[bot]` from the lane authors when a repository wants a stricter
+separation between Actions jobs and merge-gating audit verdicts.
 
 When one operator or shared machine user posts multiple local-lane comments,
 each configured-author comment must carry the matching hidden
@@ -287,18 +300,33 @@ Runner setup recipe:
 1. Register a macOS self-hosted runner from repository settings, using the
    architecture that matches the machine.
 2. Add the custom runner label `code-mower-audit` or edit the generated
-   workflow to use your chosen label.
+   workflow and `owner_surface` docs to use your chosen label. The generated
+   workflow's `runs-on` is `[self-hosted, macOS, code-mower-audit]`.
 3. Start with `./run.sh` from the same macOS user account that owns provider
    CLI logins. Install it as a service only after smoke tests pass.
-4. Ensure `gh`, `git`, `python3`, `codex`, and `claude` are on PATH. If they
+4. If the runner runs as a service or launch daemon, set `USER`, `LOGNAME`,
+   `SHELL`, and `LANG` in the runner `.env` file. The generated workflow checks
+   those variables before checkout because missing launchd environment breaks
+   local CLI and keychain auth in non-obvious ways.
+5. Ensure `gh`, `git`, `python3`, `codex`, and `claude` are on PATH. If they
    live outside the default Homebrew/system paths, update
    `CODE_MOWER_LOCAL_AUDIT_PATH` in the generated workflow.
-5. Verify local auth from that same account: `gh auth status`,
+6. Verify local auth from that same account: `gh auth status`,
    `codex --version`, `claude auth status`, and
    `claude -p "Reply with exactly: ok" --output-format json`.
-6. Add optional posting-token secrets `CODEX_AUDIT_LABEL_TOKEN` and
+7. Add optional posting-token secrets `CODEX_AUDIT_LABEL_TOKEN` and
    `CLAUDE_AUDIT_LABEL_TOKEN`; the workflow falls back to `GITHUB_TOKEN` when
    those secrets are absent.
+
+The generated workflow grants `pull-requests: write`, uses job-level
+concurrency keyed by PR and head SHA without `cancel-in-progress`, and wipes
+the `pr-head` workspace before every checkout so one run cannot inherit another
+run's worktree. Use the runner workflow as the dispatch mechanism for local
+lanes: it invokes `tools/run_codex_audit_pr.sh` and
+`tools/run_claude_audit_pr.sh`, which in turn run `codex exec` or `claude -p`
+from the authenticated macOS account. Do not rely on `@codex` issue mentions
+to dispatch local audit lanes; those mentions are not a dependable Actions
+trigger.
 
 The audit wrappers verify the GitHub API head SHA first, then skip the
 `pull/N/head` fetch when the `--repo-paths` checkout is already at that SHA.
@@ -310,6 +338,36 @@ fetch the PR head before invoking the wrapper.
 macOS Keychain access is user-session sensitive. If the runner later runs as a
 service or launch daemon, re-check provider CLI auth under that service account
 and unlock/configure the login keychain before trusting unattended audits.
+
+## Gate Health Alarm
+
+`code-mower init --easy --apply` emits
+`.github/workflows/code-mower-gate-health.yml` when the selected profile has
+audit lanes. The workflow runs on `owner_surface.gate_health_cron` and can also
+be launched with `workflow_dispatch` plus a temporary `max_wait_minutes`
+override.
+
+The gate-health alarm adds `owner_surface.needs_owner_label`, assigns
+`owner_surface.owner_login` when configured, and comments once per incident
+when any of these metadata-only conditions hold:
+
+- a configured `needs-*-audit` label stays present longer than the threshold
+  without a trusted terminal verdict comment bound to the PR head SHA
+- the generated `local-cli-audit.yml` workflow has a failed, timed-out,
+  canceled, or action-required latest run
+- no self-hosted runner with the configured local audit runner label is online
+- GitHub runner inventory cannot be inspected with the configured token
+
+The alarm only reads labels, label events, verdict comments, Actions run
+metadata, PR head SHAs, and runner status. It does not read source, diffs,
+transcripts, logs, or issue body text.
+
+GitHub's default `GITHUB_TOKEN` cannot be granted repository Administration
+permission through workflow `permissions`. To enable the runner-online check,
+store `CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN` as a fine-grained PAT or GitHub App
+installation token with repository Administration read access. Without that
+token, the workflow still alerts the owner that runner inventory could not be
+checked.
 
 ## Branch Protection And Merge Authority
 

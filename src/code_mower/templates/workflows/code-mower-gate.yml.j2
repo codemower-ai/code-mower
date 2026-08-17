@@ -14,6 +14,7 @@ on:
         required: true
 
 permissions:
+  actions: read
   issues: read
   pull-requests: write
   statuses: write
@@ -57,7 +58,9 @@ jobs:
             python3 - "${labels_file}" "${comments_file}" "${pr_file}" <<'PY'
           import json
           import os
+          import re
           import shlex
+          import subprocess
           import sys
 
           def emit(state, description):
@@ -91,6 +94,7 @@ jobs:
           }
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
           owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
+          pr_number = str(pr_payload.get("number") or os.environ.get("PR_NUMBER") or "")
           pr_author = str(((pr_payload.get("user") or {}).get("login") or ""))
           comments = []
           for page in comments_payload:
@@ -105,17 +109,64 @@ jobs:
               raw = str(lane.get("bot_authors") or "")
               return {item.strip() for item in raw.split(",") if item.strip()}
 
-          def has_current_trailer(lane, label):
-              authors = trusted_authors(lane)
-              if not authors:
+          actions_run_re = re.compile(r"<!--\s*CODE_MOWER_AUDIT_RUN:\s*run_id=([0-9]+)\s*-->")
+          actions_run_cache = {}
+
+          def trusted_github_actions_workflows(lane):
+              raw = str(lane.get("github_actions_workflows") or "")
+              return {item.strip() for item in raw.split(",") if item.strip()}
+
+          def actions_run(run_id):
+              if run_id not in actions_run_cache:
+                  try:
+                      output = subprocess.check_output(
+                          ["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}"],
+                          text=True,
+                      )
+                      actions_run_cache[run_id] = json.loads(output)
+                  except (subprocess.CalledProcessError, json.JSONDecodeError):
+                      actions_run_cache[run_id] = {}
+              return actions_run_cache[run_id]
+
+          def github_actions_comment_attested(lane, body):
+              workflows = trusted_github_actions_workflows(lane)
+              if not workflows:
                   return False
+              match = actions_run_re.search(body)
+              if match is None:
+                  return False
+              run = actions_run(match.group(1))
+              path = str(run.get("path") or "")
+              if not path or not any(path == item or path.endswith("/" + item) for item in workflows):
+                  return False
+              if str(run.get("event") or "") != "pull_request_target":
+                  return False
+              pull_requests = run.get("pull_requests") or []
+              if isinstance(pull_requests, list) and pull_requests:
+                  for item in pull_requests:
+                      if str(item.get("number") or "") != pr_number:
+                          continue
+                      pr_head = str(((item.get("head") or {}).get("sha")) or "")
+                      return not pr_head or pr_head == head_sha
+                  return False
+              return True
+
+          def trusted_comment_author(lane, author, body):
+              authors = trusted_authors(lane)
+              if author not in authors:
+                  return False
+              if author != "github-actions[bot]":
+                  return True
+              return github_actions_comment_attested(lane, body)
+
+          def has_current_trailer(lane, label):
               trailer_suffix = ": " + label + " -->"
               head_marker = "Head SHA: `" + head_sha + "`"
               for comment in reversed(comments):
                   author = str(((comment.get("user") or {}).get("login")) or "")
-                  if author not in authors:
-                      continue
                   body = str(comment.get("body") or "")
+                  if not trusted_comment_author(lane, author, body):
+                      continue
                   if head_marker in body and trailer_suffix in body:
                       return True
               return False

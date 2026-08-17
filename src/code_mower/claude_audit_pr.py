@@ -116,6 +116,7 @@ MAX_FINDING_DETAIL_CHARS = 4_000
 STALE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: needs-claude-audit -->"
 DONE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
 BLOCKED_TRAILER = "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->"
+AUDIT_RUN_TRAILER_PREFIX = "<!-- CODE_MOWER_AUDIT_RUN:"
 
 
 CLAUDE_VERDICT_SCHEMA: Dict[str, Any] = {
@@ -722,10 +723,13 @@ def format_comment(
     stale_end_sha: Optional[str] = None,
     is_unknown: bool = False,
     merge_authority: bool = True,
+    actions_run_id: Optional[str] = None,
 ) -> str:
     posture = "merge-authority lane" if merge_authority else "informational only"
     header = f"## Claude audit ({posture})\n\n"
     header += f"Head SHA: `{head_sha}`\n"
+    if actions_run_id:
+        header += f"{AUDIT_RUN_TRAILER_PREFIX} run_id={actions_run_id} -->\n"
     if is_stale:
         body = (
             header
@@ -933,6 +937,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     pr_meta_after = fetch_pull_request(repo, pr_number, token=config.github_token)
     head_sha_end = pr_meta_after["head"]["sha"]
     is_stale = head_sha_start != head_sha_end
+    actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
 
     if is_stale:
         comment_body = format_comment(
@@ -941,6 +946,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             is_stale=True,
             stale_end_sha=head_sha_end,
             merge_authority=config.merge_authority,
+            actions_run_id=actions_run_id,
         )
         result_verdict = "STALE"
         trailer = STALE_TRAILER
@@ -950,6 +956,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             head_sha_start,
             is_unknown=True,
             merge_authority=config.merge_authority,
+            actions_run_id=actions_run_id,
         )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
@@ -958,6 +965,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             parsed,
             head_sha_start,
             merge_authority=config.merge_authority,
+            actions_run_id=actions_run_id,
         )
         result_verdict = parsed.verdict
         trailer = BLOCKED_TRAILER if parsed.verdict == "BLOCKED" else DONE_TRAILER

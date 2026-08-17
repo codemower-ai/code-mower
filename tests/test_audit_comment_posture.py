@@ -42,6 +42,21 @@ class AuditCommentPostureTests(unittest.TestCase):
         self.assertIn("## Claude audit (informational only)", comment)
         self.assertIn("Claude Audit: BLOCKED", comment)
 
+    def test_actions_run_marker_can_be_rendered_for_workflow_comments(self) -> None:
+        codex_comment = format_codex_comment(
+            CodexVerdict(verdict="PASS", prose="Findings: none."),
+            "a" * 40,
+            actions_run_id="12345",
+        )
+        claude_comment = format_claude_comment(
+            ClaudeVerdict(verdict="PASS", prose="Findings: none."),
+            "b" * 40,
+            actions_run_id="67890",
+        )
+
+        self.assertIn("<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->", codex_comment)
+        self.assertIn("<!-- CODE_MOWER_AUDIT_RUN: run_id=67890 -->", claude_comment)
+
     def test_cli_posture_defaults_can_be_overridden(self) -> None:
         with patch.dict("os.environ", {"CODEX_AUDIT_MERGE_AUTHORITY": "false"}):
             self.assertFalse(parse_codex_args([]).merge_authority)
