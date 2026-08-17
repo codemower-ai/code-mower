@@ -20,6 +20,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_requirements.txt", "requirements/requirements.txt", "tooling"),
     ("tools/code_mower_calibration.py", "src/code_mower/code_mower_calibration.py", "core"),
     ("src/code_mower/checks.py", "src/code_mower/checks.py", "core"),
+    ("src/code_mower/gate_health.py", "src/code_mower/gate_health.py", "core"),
     ("src/code_mower/calibration/__init__.py", "src/code_mower/calibration/__init__.py", "core"),
     ("src/code_mower/calibration/auto_discovery.py", "src/code_mower/calibration/auto_discovery.py", "core"),
     ("src/code_mower/calibration/arms.py", "src/code_mower/calibration/arms.py", "core"),

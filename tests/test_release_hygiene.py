@@ -176,6 +176,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "codex-audit-schema-smoke",
                 "doctor",
                 "gemini-cli",
+                "gate-health",
                 "grok-build",
                 "hermes-cli",
                 "init",
@@ -952,13 +953,10 @@ exit 1
             ROOT / "templates/workflows/code-mower-gate-health.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("CODE_MOWER_GATE_HEALTH_LANES_JSON", gate_health)
-        self.assertIn("issues/{number}/events", gate_health)
-        self.assertIn("actions/workflows/{workflow_id}/runs", gate_health)
-        self.assertIn("actions/runners", gate_health)
-        self.assertIn("needs:{number}:{needs_label}:{head_sha}", gate_health)
+        self.assertIn("tools/code_mower gate-health", gate_health)
+        self.assertIn("--status-issue", gate_health)
+        self.assertIn("--runner-label", gate_health)
         self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", gate_health)
-        self.assertIn("runner-check-unavailable", gate_health)
-        self.assertIn("Could not inspect self-hosted runners", gate_health)
 
     def test_local_audit_label_expression_uses_exact_label_membership(self) -> None:
         entries = ({"needs_label": "needs-codex-audit"},)
@@ -974,98 +972,15 @@ exit 1
         )
         self.assertNotIn("join(", expression)
 
-    def test_gate_health_template_alerts_stale_needs_label(self) -> None:
+    def test_gate_health_template_invokes_packaged_command(self) -> None:
         template = (
             ROOT / "src/code_mower/templates/workflows/code-mower-gate-health.yml.j2"
         ).read_text(encoding="utf-8")
-        script = template.split("python3 - <<'PY'\n", 1)[1].split(
-            "\n          PY",
-            1,
-        )[0]
-        script = textwrap.dedent(script)
-        calls: list[list[str]] = []
-        head_sha = "a" * 40
-
-        def fake_check_output(
-            args: list[str],
-            env: dict[str, str] | None = None,
-            text: bool = True,
-        ) -> str:
-            self.assertEqual(args[:2], ["gh", "api"])
-            endpoint = args[-1]
-            if "--slurp" in args:
-                if endpoint.endswith("/pulls?state=open&per_page=100"):
-                    return json.dumps(
-                        [
-                            [
-                                {
-                                    "number": 12,
-                                    "head": {"sha": head_sha},
-                                    "labels": [{"name": "needs-codex-audit"}],
-                                    "updated_at": "2000-01-01T00:00:00Z",
-                                }
-                            ]
-                        ]
-                    )
-                if endpoint.endswith("/issues/12/events?per_page=100"):
-                    return json.dumps(
-                        [
-                            [
-                                {
-                                    "event": "labeled",
-                                    "label": {"name": "needs-codex-audit"},
-                                    "created_at": "2000-01-01T00:00:00Z",
-                                }
-                            ]
-                        ]
-                    )
-                if endpoint.endswith("/issues/12/comments?per_page=100"):
-                    return json.dumps([[]])
-            if endpoint.endswith("/actions/workflows/local-cli-audit.yml/runs?per_page=5"):
-                return json.dumps({"workflow_runs": []})
-            if endpoint.endswith("/actions/runners?per_page=100"):
-                raise subprocess.CalledProcessError(1, args)
-            raise AssertionError(f"unexpected gh api endpoint: {endpoint}")
-
-        def fake_run(args: list[str], check: bool = True, text: bool = True) -> subprocess.CompletedProcess[str]:
-            calls.append(args)
-            return subprocess.CompletedProcess(args, 0)
-
-        with (
-            mock.patch.dict(
-                os.environ,
-                {
-                    "REPO": "owner/repo",
-                    "CODE_MOWER_GATE_HEALTH_LANES_JSON": json.dumps(
-                        [
-                            {
-                                "needs": "needs-codex-audit",
-                                "done": "codex-audit-done",
-                                "blocked": "codex-audit-blocked",
-                                "bot_authors": "github-actions[bot]",
-                            }
-                        ]
-                    ),
-                    "CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES": "30",
-                    "CODE_MOWER_LOCAL_AUDIT_WORKFLOW": "local-cli-audit.yml",
-                    "CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL": "code-mower-audit",
-                    "CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN": "",
-                    "NEEDS_OWNER_LABEL": "needs-owner",
-                    "OWNER_LOGIN": "jeffhuber",
-                    "STATUS_ISSUE": "302",
-                },
-            ),
-            mock.patch.object(subprocess, "check_output", fake_check_output),
-            mock.patch.object(subprocess, "run", fake_run),
-            redirect_stdout(StringIO()),
-        ):
-            exec(compile(script, "code-mower-gate-health.yml.j2", "exec"), {})
-
-        joined_calls = "\n".join(" ".join(call) for call in calls)
-        self.assertIn("issue edit 12 --repo owner/repo --add-label needs-owner", joined_calls)
-        self.assertIn("repos/owner/repo/issues/12/assignees", joined_calls)
-        self.assertIn("needs:12:needs-codex-audit:" + head_sha, joined_calls)
-        self.assertIn("runner-check-unavailable:code-mower-audit", joined_calls)
+        self.assertIn("tools/code_mower gate-health", template)
+        self.assertIn("--repo \"{% raw %}${{ github.repository }}{% endraw %}\"", template)
+        self.assertIn("--status-issue \"${STATUS_ISSUE}\"", template)
+        self.assertIn("--runner-label \"${CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL}\"", template)
+        self.assertNotIn("python3 - <<'PY'", template)
 
     def test_provider_catalog_wires_merge_authority_stale_hygiene(self) -> None:
         for relative_path in (
@@ -1639,11 +1554,8 @@ exit 1
             self.assertIn("needs-codex-audit", gate_health)
             self.assertIn("needs-claude-audit", gate_health)
             self.assertIn("github-actions[bot]", gate_health)
-            self.assertIn("local-cli-audit.yml", gate_health)
-            self.assertIn("actions/runners", gate_health)
+            self.assertIn("tools/code_mower gate-health", gate_health)
             self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", gate_health)
-            self.assertIn("CODE_MOWER_AUDIT_RUN", gate_health)
-            self.assertIn("github_actions_comment_attested", gate_health)
             self.assertIn("github_actions_workflows", gate_health)
             self.assertNotIn("__GATE_HEALTH", gate_health)
 
@@ -1673,6 +1585,9 @@ exit 1
             "gate_override_label": "gate:override",
             "status_issue": "6",
             "weekly_cron": "15 12 * * 1",
+            "gate_health_cron": "*/15 * * * *",
+            "gate_health_max_wait_minutes": "45",
+            "local_audit_runner_label": "bridge-pro-audit",
             "ready_label": "tier:R",
             "phase_labels": ["phase:0", "phase:1"],
             "reviewer_spend_path": ".code-mower/reviewer-spend.json",
@@ -1755,6 +1670,9 @@ exit 1
             self.assertIn('OWNER_LOGIN: "jeffhuber"', gate_health)
             self.assertIn('STATUS_ISSUE: "6"', gate_health)
             self.assertIn('cron: "*/15 * * * *"', gate_health)
+            self.assertIn('CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES: ${{ github.event.inputs.max_wait_minutes || \'45\' }}', gate_health)
+            self.assertIn('CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL: "bridge-pro-audit"', gate_health)
+            self.assertIn("tools/code_mower gate-health", gate_health)
             self.assertIn("needs-codex-audit", gate_health)
             self.assertIn("github-actions[bot]", gate_health)
             self.assertNotIn("__GATE_HEALTH", gate_health)

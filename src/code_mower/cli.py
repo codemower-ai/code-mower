@@ -40,6 +40,7 @@ from . import code_mower_telemetry
 from . import config as code_mower_config
 from . import doctor as code_mower_doctor
 from . import gemini_cli_audit_pr
+from . import gate_health as code_mower_gate_health
 from . import grok_build_audit_pr
 from . import hermes_cli_audit_pr
 from . import init as code_mower_init
@@ -398,6 +399,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "codex-audit-schema-smoke": "Smoke-test Codex audit schema parsing.",
     "doctor": "Check runtime, GitHub, providers, privacy, and cloud setup.",
     "gemini-cli": "Run a Gemini CLI structured audit lane.",
+    "gate-health": "Alert when audit gate infrastructure stalls.",
     "grok-build": "Run a Grok Build informational audit lane.",
     "hermes-cli": "Run a Hermes CLI structured audit lane.",
     "init": "Render safe easy-mode setup output.",
@@ -529,6 +531,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "codex-audit-schema-smoke": codex_audit_schema_smoke.main,
     "doctor": code_mower_doctor.main,
     "gemini-cli": gemini_cli_audit_pr.main,
+    "gate-health": code_mower_gate_health.main,
     "grok-build": grok_build_audit_pr.main,
     "hermes-cli": hermes_cli_audit_pr.main,
     "init": _init_main,
