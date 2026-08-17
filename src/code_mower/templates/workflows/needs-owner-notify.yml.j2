@@ -38,7 +38,9 @@ jobs:
 
           mention="repository owner"
           if [ -n "${OWNER_LOGIN:-}" ] && [ "${OWNER_LOGIN}" != "TODO_OWNER_LOGIN" ]; then
-            gh issue edit "${NUM}" --repo "${REPO}" --add-assignee "${OWNER_LOGIN}" || true
+            gh api -X PATCH "repos/${REPO}/issues/${NUM}" \
+              -f "assignees[]=${OWNER_LOGIN}" || \
+              echo "::warning::Could not assign ${OWNER_LOGIN} on #${NUM}; token may be read-only."
             mention="@${OWNER_LOGIN}"
           fi
 
@@ -47,5 +49,6 @@ jobs:
           else
             body="${mention} - ${GATE_OVERRIDE_LABEL} was applied by ${ACTOR}. Only the owner should override a gate; log the reason in this thread."
           fi
-          printf '%s\n' "${body}" > /tmp/code-mower-owner-notify.md
-          gh issue comment "${NUM}" --repo "${REPO}" --body-file /tmp/code-mower-owner-notify.md
+          gh api -X POST "repos/${REPO}/issues/${NUM}/comments" \
+            -f "body=${body}" || \
+            echo "::warning::Could not comment on #${NUM}; token may be read-only."

@@ -35,6 +35,8 @@ not create labels, comments, workflows, or provider reviews.
 with `owner_surface.needs_owner_label`, and
 `.github/workflows/weekly-status.yml` refreshes a pinned status issue from
 `tools/status_report.py`.
+For fork PRs where GitHub grants a read-only token, owner notify emits a
+workflow warning instead of failing the run.
 
 Configure the owner surface in `code-mower.yml` before enabling the weekly
 schedule:

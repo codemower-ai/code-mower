@@ -900,6 +900,20 @@ exit 1
         ).read_text(encoding="utf-8")
         self.assertIn("pull-requests: write", cleanup)
 
+    def test_local_audit_label_expression_uses_exact_label_membership(self) -> None:
+        entries = ({"needs_label": "needs-codex-audit"},)
+
+        expression = code_mower_init._local_audit_label_expression(
+            entries,
+            "pull_request",
+        )
+
+        self.assertIn(
+            "contains(github.event.pull_request.labels.*.name, 'needs-codex-audit')",
+            expression,
+        )
+        self.assertNotIn("join(", expression)
+
     def test_provider_catalog_wires_merge_authority_stale_hygiene(self) -> None:
         for relative_path in (
             "templates/providers.yml",
@@ -1312,6 +1326,12 @@ exit 1
             self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', notify)
             self.assertIn('OWNER_LOGIN: "jeffhuber"', notify)
             self.assertIn("github.event.label.name == 'needs-jeff'", notify)
+            self.assertIn('gh api -X PATCH "repos/${REPO}/issues/${NUM}"', notify)
+            self.assertIn(
+                'gh api -X POST "repos/${REPO}/issues/${NUM}/comments"',
+                notify,
+            )
+            self.assertNotIn("gh issue comment", notify)
             self.assertNotIn("__NEEDS_OWNER_LABEL__", notify)
             self.assertNotIn("{% raw %}", notify)
 

@@ -433,7 +433,7 @@ def _local_audit_label_expression(entries: tuple[dict[str, str], ...], source: s
             f"{label_path} == {_actions_string(entry['needs_label'])}" for entry in entries
         )
     return " || ".join(
-        "contains(join({label_path}, ','), {label})".format(
+        "contains({label_path}, {label})".format(
             label_path=label_path,
             label=_actions_string(entry["needs_label"]),
         )
