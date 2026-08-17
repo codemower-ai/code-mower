@@ -103,6 +103,9 @@ truth. They are additive and CodeMower.com must continue accepting beta.40
 uploads that omit them. They must not include plan text, issue body text,
 source code, raw diffs, prompts, transcripts, stdout/stderr, auth output, or
 secrets.
+Plan-context audit prompts only read manifest-listed documents/previews that
+resolve inside the repository root, and the Codex wrapper only sends a
+supplemental stdin prompt when at least one context section is rendered.
 
 Auto-inferred `builder_run` events may add metadata-only dimensions such as
 `auto_inferred`, `builder_inference_confidence`, `builder_inference_signals`,

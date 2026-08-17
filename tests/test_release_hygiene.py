@@ -287,7 +287,11 @@ class ReleaseHygieneTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     command,
                     0,
-                    stdout="--base\n--output-last-message\n",
+                    stdout=(
+                        "Usage: codex exec review [OPTIONS] [PROMPT]\n"
+                        "If `-` is used, read from stdin\n"
+                        "--base\n--output-last-message\n"
+                    ),
                     stderr="",
                 )
             raise AssertionError(f"unexpected command: {command}")

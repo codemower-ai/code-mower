@@ -51,10 +51,23 @@ def _load_json(path: Path) -> Mapping[str, Any]:
 
 
 def _resolve_path(repo_root: Path, value: Any) -> Path:
+    root = repo_root.expanduser().resolve()
+    raw_text = str(value or "").strip()
+    raw = Path(raw_text).expanduser()
+    candidate = raw if raw.is_absolute() else root / raw
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"plan context path escapes repo root: {raw_text}") from exc
+    return resolved
+
+
+def _resolve_manifest_path(repo_root: Path, value: Any) -> Path:
     raw = Path(str(value or "")).expanduser()
     if raw.is_absolute():
-        return raw
-    return repo_root / raw
+        return raw.resolve()
+    return (repo_root / raw).resolve()
 
 
 def _read_bounded_text(path: Path, max_bytes: int) -> tuple[str, int, bool]:
@@ -111,7 +124,10 @@ def _project_context_sections(
 ) -> tuple[list[str], int, list[str]]:
     if not manifest_path.is_file():
         return [], used_bytes, []
-    manifest = _load_json(manifest_path)
+    try:
+        manifest = _load_json(manifest_path)
+    except ValueError as exc:
+        return [], used_bytes, [str(exc)]
     sections: list[str] = []
     warnings: list[str] = []
     for document in manifest.get("documents", []) or []:
@@ -121,7 +137,11 @@ def _project_context_sections(
         if budget <= 0:
             warnings.append("plan context total byte budget exhausted")
             break
-        path = _resolve_path(repo_root, document.get("path"))
+        try:
+            path = _resolve_path(repo_root, document.get("path"))
+        except ValueError as exc:
+            warnings.append(str(exc))
+            continue
         if not path.is_file():
             warnings.append(f"missing project context document: {path}")
             continue
@@ -151,7 +171,10 @@ def _external_context_sections(
 ) -> tuple[list[str], int, list[str]]:
     if not manifest_path.is_file():
         return [], used_bytes, []
-    manifest = _load_json(manifest_path)
+    try:
+        manifest = _load_json(manifest_path)
+    except ValueError as exc:
+        return [], used_bytes, [str(exc)]
     sections: list[str] = []
     warnings: list[str] = []
     for entry in manifest.get("entries", []) or []:
@@ -174,7 +197,11 @@ def _external_context_sections(
         if budget <= 0:
             warnings.append("plan context total byte budget exhausted")
             break
-        preview_path = _resolve_path(repo_root, entry.get("text_preview_path"))
+        try:
+            preview_path = _resolve_path(repo_root, entry.get("text_preview_path"))
+        except ValueError as exc:
+            warnings.append(str(exc))
+            continue
         if not preview_path.is_file():
             warnings.append(f"missing external context preview: {preview_path}")
             continue
@@ -225,7 +252,7 @@ def render_plan_context(
     ):
         project_sections, used_bytes, project_warnings = _project_context_sections(
             repo_root,
-            _resolve_path(repo_root, manifest_path),
+            _resolve_manifest_path(repo_root, manifest_path),
             max_total_bytes=max_total_bytes,
             max_file_bytes=max_file_bytes,
             used_bytes=used_bytes,
@@ -239,7 +266,7 @@ def render_plan_context(
     ):
         external_sections, used_bytes, external_warnings = _external_context_sections(
             repo_root,
-            _resolve_path(repo_root, manifest_path),
+            _resolve_manifest_path(repo_root, manifest_path),
             max_total_bytes=max_total_bytes,
             max_file_bytes=max_file_bytes,
             used_bytes=used_bytes,

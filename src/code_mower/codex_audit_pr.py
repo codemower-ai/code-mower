@@ -971,6 +971,8 @@ def preflight_codex_cli(config: AuditConfig) -> str:
     for flag in ("--base", "--output-last-message"):
         if flag not in review_text:
             missing.append(f"codex exec review {flag}")
+    if "[PROMPT]" not in review_text or "read from stdin" not in review_text.lower():
+        missing.append("codex exec review stdin prompt")
     if missing:
         raise RuntimeError(
             "Codex CLI is missing required structured-audit capability: "
@@ -1071,6 +1073,14 @@ def run_codex_review(
         return _read_last_message_file(review_path, result.stdout), result.stderr
     finally:
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
+
+
+def _codex_review_plan_prompt(rendered_plan_context: Any) -> str:
+    if rendered_plan_context is None:
+        return ""
+    if getattr(rendered_plan_context, "included_documents", 0) <= 0:
+        return ""
+    return str(getattr(rendered_plan_context, "text", ""))
 
 
 def run_codex_verdict_structuring(
@@ -1376,7 +1386,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         review_text, review_stderr = run_codex_review(
             config,
             worktree_path,
-            rendered_plan_context.text if rendered_plan_context is not None else "",
+            _codex_review_plan_prompt(rendered_plan_context),
         )
         dt = time.time() - t0
         print(f"  codex review completed in {dt:.0f}s", file=sys.stderr, flush=True)
