@@ -509,6 +509,17 @@ class ReleaseHygieneTests(unittest.TestCase):
             )
         )
 
+    def test_doctor_github_config_imports_models_from_canonical_module(self) -> None:
+        source = (
+            ROOT / "src/code_mower/doctor_checks/github_config.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "from .models import DoctorCheck, STATUS_PASS, STATUS_WARN",
+            source,
+        )
+        self.assertNotIn("from .common import DoctorCheck", source)
+
     def test_calibration_arm_catalog_is_packaged_and_explicit_lens_aware(self) -> None:
         arm_ids = {arm["arm_id"] for arm in calibration_pkg.default_arms()}
 

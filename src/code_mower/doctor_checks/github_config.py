@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from .common import DoctorCheck, STATUS_PASS, STATUS_WARN, as_sequence
+from .common import as_sequence
+from .models import DoctorCheck, STATUS_PASS, STATUS_WARN
 
 
 def configured_repositories(config: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
