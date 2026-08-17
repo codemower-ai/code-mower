@@ -328,6 +328,14 @@ from the authenticated macOS account. Do not rely on `@codex` issue mentions
 to dispatch local audit lanes; those mentions are not a dependable Actions
 trigger.
 
+If `CODE_MOWER_CLOUD_TOKEN` is configured, the generated workflow also uploads
+metadata-only reviewer evidence after every audit attempt. It sends saved
+verdict artifacts with `code-mower cloud reviewer-runs`, spend rows captured in
+a runner-temp `reviewer-spend.json` with `cloud dogfood --spend`, and trusted
+default-branch work-order `*.cloud-event.json` sidecars. The upload step runs
+with `if: always()`, skips successfully when the token is absent, and must not
+block merge authority if the cloud service is unavailable.
+
 The audit wrappers verify the GitHub API head SHA first, then skip the
 `pull/N/head` fetch when the `--repo-paths` checkout is already at that SHA.
 That makes the generated `persist-credentials: false` PR-head checkout viable

@@ -40,6 +40,7 @@ jobs:
       PR_HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha }}{% endraw %}
       PR_HEAD_PATH: {% raw %}${{ github.workspace }}/pr-head{% endraw %}
       SUPPORT_PATH: {% raw %}${{ github.workspace }}/code-mower-support{% endraw %}
+      CODE_MOWER_REVIEWER_SPEND_PATH: {% raw %}${{ runner.temp }}/code-mower-reviewer-spend.json{% endraw %}
     steps:
       - name: Verify local runner environment
         run: |
@@ -157,4 +158,57 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
 
           if [ "${ran}" -eq 0 ]; then
             echo "No supported local CLI audit labels are present."
+          fi
+
+      - name: Upload Code Mower audit metadata
+        if: always()
+        env:
+          CODE_MOWER_CLOUD_TOKEN: {% raw %}${{ secrets.CODE_MOWER_CLOUD_TOKEN }}{% endraw %}
+          CODE_MOWER_CLOUD_TEAM_ID: {% raw %}${{ vars.CODE_MOWER_CLOUD_TEAM_ID }}{% endraw %}
+          CODE_MOWER_INSTALL_ID: {% raw %}${{ vars.CODE_MOWER_INSTALL_ID }}{% endraw %}
+        run: |
+          set -euo pipefail
+          export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
+
+          if [ -z "${CODE_MOWER_CLOUD_TOKEN:-}" ]; then
+            echo "::notice::CODE_MOWER_CLOUD_TOKEN is not configured; skipping audit metadata upload."
+            exit 0
+          fi
+
+          install_id="${CODE_MOWER_INSTALL_ID:-github-actions-local-cli-audit}"
+          repo_cache_slug="${GITHUB_REPOSITORY//\//__}"
+          verdict_dir="${HOME}/.cache/code-mower-audits/verdicts/${repo_cache_slug}/pr-${PR_NUMBER}"
+          upload_failed=0
+
+          "${SUPPORT_PATH}/tools/code_mower" cloud reviewer-runs \
+            --repo-path "${SUPPORT_PATH}" \
+            --repo-slug "${GITHUB_REPOSITORY}" \
+            --verdicts "${verdict_dir}" \
+            --output-dir "${RUNNER_TEMP}/code-mower-reviewer-runs" \
+            --install-id "${install_id}" \
+            --include-git-ref \
+            --yes \
+            --json || upload_failed=1
+
+          event_args=()
+          work_order_dir="${SUPPORT_PATH}/.code-mower/work-orders"
+          if [ -d "${work_order_dir}" ]; then
+            while IFS= read -r -d '' event_file; do
+              event_args+=(--event "work_order=${event_file}")
+            done < <(find "${work_order_dir}" -type f -name '*.cloud-event.json' -print0)
+          fi
+
+          "${SUPPORT_PATH}/tools/code_mower" cloud dogfood \
+            --repo-path "${SUPPORT_PATH}" \
+            --repo-slug "${GITHUB_REPOSITORY}" \
+            --source local-cli-audit \
+            --spend "${CODE_MOWER_REVIEWER_SPEND_PATH}" \
+            --output-dir "${RUNNER_TEMP}/code-mower-dogfood" \
+            --install-id "${install_id}" \
+            --yes \
+            --json \
+            "${event_args[@]}" || upload_failed=1
+
+          if [ "${upload_failed}" -ne 0 ]; then
+            echo "::warning::Code Mower audit metadata upload failed; audit verdict remains authoritative."
           fi

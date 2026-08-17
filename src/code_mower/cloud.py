@@ -419,6 +419,12 @@ def main(argv: list[str] | None = None) -> int:
         help=f"number of verdict artifacts to include; max {MAX_EVENT_COUNT}",
     )
     reviewer_runs.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="skip this many newest matching verdict artifacts before applying --limit",
+    )
+    reviewer_runs.add_argument(
         "--include-git-ref",
         action="store_true",
         help="include verdict head SHA metadata",
@@ -674,6 +680,7 @@ def main(argv: list[str] | None = None) -> int:
                 team_id=args.team_id,
                 install_id=args.install_id,
                 limit=args.limit,
+                offset=args.offset,
                 endpoint=args.endpoint,
                 token_env=args.token_env,
                 yes=args.yes,

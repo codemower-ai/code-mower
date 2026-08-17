@@ -452,6 +452,9 @@ code-mower cloud reviewer-runs --repo-slug owner/repo --yes --json
 Use `--verdicts` to point at a non-default artifact directory and
 `--include-git-ref` only after deciding that head SHA metadata is acceptable for
 your team.
+For directories with more than the 500-event bundle cap, repeat the command
+with `--offset 500`, `--offset 1000`, and so on until the dry run reports no
+events.
 
 The lower-level export path remains available when you want to inspect or edit
 the JSONL before bundling:
@@ -472,6 +475,12 @@ code-mower cloud upload .code-mower/reviewer-run-bundle --dry-run --json
 
 Use historical reviewer export once when onboarding a machine or repo, then rely
 on normal dogfood/current-run uploads for ongoing data.
+
+Generated self-hosted `local-cli-audit.yml` workflows do that ongoing
+reviewer-run upload automatically when `CODE_MOWER_CLOUD_TOKEN` is available:
+each run uploads current PR verdict artifacts, runner-temp spend rows, and
+trusted default-branch work-order sidecars. Without the token, the workflow
+prints a notice and leaves the audit result unchanged.
 
 ## Multi-Repo Operator Sync
 

@@ -315,6 +315,7 @@ def reviewer_runs_upload(
     team_id: str,
     install_id: str,
     limit: int,
+    offset: int = 0,
     endpoint: str,
     token_env: str,
     yes: bool,
@@ -323,6 +324,8 @@ def reviewer_runs_upload(
 ) -> dict[str, Any]:
     if limit < 1 or limit > MAX_EVENT_COUNT:
         raise CloudBundleError(f"--limit must be between 1 and {MAX_EVENT_COUNT}")
+    if offset < 0:
+        raise CloudBundleError("--offset must be non-negative")
     repo_path = repo_path.expanduser().resolve()
     detected_repo_slug = repo_slug or detect_repo_slug(repo_path)
     if not detected_repo_slug:
@@ -336,6 +339,7 @@ def reviewer_runs_upload(
             verdicts,
             repo=detected_repo_slug,
             limit=limit,
+            offset=offset,
             include_git_ref=include_git_ref,
         )
     except ValueError as exc:
@@ -348,6 +352,7 @@ def reviewer_runs_upload(
             "event_count": 0,
             "verdicts": str(verdicts.expanduser()),
             "git_ref_included": include_git_ref,
+            "offset": offset,
         }
     export_result = build_cloud_bundle(
         reports=[],
@@ -370,6 +375,7 @@ def reviewer_runs_upload(
             "status": "doctor_failed",
             "repo_slug": detected_repo_slug,
             "event_count": len(events),
+            "offset": offset,
             "export": export_result,
             "doctor": doctor_result,
         }
@@ -380,6 +386,7 @@ def reviewer_runs_upload(
             "status": "dry_run",
             "repo_slug": detected_repo_slug,
             "event_count": len(events),
+            "offset": offset,
             "export": export_result,
             "doctor": doctor_result,
             "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
@@ -394,6 +401,7 @@ def reviewer_runs_upload(
         "status": "uploaded",
         "repo_slug": detected_repo_slug,
         "event_count": len(events),
+        "offset": offset,
         "export": export_result,
         "doctor": doctor_result,
         "upload": post_upload_payload(

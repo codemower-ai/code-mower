@@ -189,6 +189,22 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
                 "abcdef0123456789abcdef0123456789abcdef01",
             )
 
+    def test_verdict_artifact_export_supports_offset_for_backfill_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_artifact(root, pr_number=41, created_at="2026-06-15T12:00:00Z")
+            self._write_artifact(root, pr_number=42, created_at="2026-06-15T13:00:00Z")
+            self._write_artifact(root, pr_number=43, created_at="2026-06-15T14:00:00Z")
+
+            events = code_mower_telemetry.export_reviewer_run_events_from_verdicts(
+                root,
+                limit=1,
+                offset=1,
+            )
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["dimensions"]["pr_number"], 42)
+
     def test_verdict_event_id_does_not_depend_on_head_sha_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -345,6 +361,37 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             self.assertEqual(result["event_count"], 1)
             self.assertEqual(result["export"]["event_count"], 1)
             self.assertEqual(result["upload"]["event_count"], 1)
+
+    def test_cloud_reviewer_runs_offset_chunks_bundle_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            verdicts = root / "verdicts"
+            self._write_artifact(verdicts, pr_number=41, created_at="2026-06-15T12:00:00Z")
+            self._write_artifact(verdicts, pr_number=42, created_at="2026-06-15T13:00:00Z")
+            self._write_artifact(verdicts, pr_number=43, created_at="2026-06-15T14:00:00Z")
+            output_dir = root / "bundle"
+
+            result = code_mower_cloud._reviewer_runs_upload(
+                repo_path=root,
+                verdicts=verdicts,
+                output_dir=output_dir,
+                repo_slug="owner/repo",
+                team_id="team-test",
+                install_id="install-test",
+                limit=1,
+                offset=1,
+                endpoint="https://codemower.com/api/ingest",
+                token_env="MISSING_TOKEN_FOR_TEST",
+                yes=False,
+                timeout=1,
+                include_git_ref=False,
+            )
+
+            payload = code_mower_cloud.build_upload_payload(bundle_dir=output_dir)
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(result["offset"], 1)
+            self.assertEqual(payload["events"][0]["dimensions"]["pr_number"], 42)
 
     def test_cloud_reviewer_runs_reports_no_events_without_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
