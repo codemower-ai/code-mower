@@ -54,6 +54,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/gate_health.py",
+      "target": "src/code_mower/gate_health.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/calibration/__init__.py",
       "target": "src/code_mower/calibration/__init__.py"
     },

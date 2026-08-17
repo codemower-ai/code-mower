@@ -153,6 +153,7 @@ OWNER_SURFACE_DEFAULTS = {
     "weekly_cron": "0 14 * * 1",
     "gate_health_cron": "*/15 * * * *",
     "gate_health_max_wait_minutes": "30",
+    "local_audit_runner_label": LOCAL_AUDIT_RUNNER_LABEL,
     "ready_label": "tier:R",
     "phase_labels": "phase:0,phase:1,phase:2,phase:3,phase:4,phase:5",
     "reviewer_spend_path": ".code-mower/reviewer-spend.json",
@@ -505,7 +506,11 @@ def _local_audit_label_expression(entries: tuple[dict[str, str], ...], source: s
     )
 
 
-def _local_audit_workflow_entry(entries: tuple[dict[str, str], ...]) -> dict[str, str]:
+def _local_audit_workflow_entry(
+    entries: tuple[dict[str, str], ...],
+    *,
+    local_audit_runner_label: str = LOCAL_AUDIT_RUNNER_LABEL,
+) -> dict[str, str]:
     token_envs = sorted({entry["token_env"] for entry in entries if entry["token_env"]})
     token_assignments = "\n".join(
         f"          {token_env}: ${{{{ secrets.{token_env} }}}}" for token_env in token_envs
@@ -518,7 +523,7 @@ def _local_audit_workflow_entry(entries: tuple[dict[str, str], ...]) -> dict[str
         "local_audit_lanes_json": json.dumps(list(entries), sort_keys=True),
         "local_audit_label_match": _local_audit_label_expression(entries, "event"),
         "local_audit_label_contains": _local_audit_label_expression(entries, "pull_request"),
-        "local_audit_runner_label": LOCAL_AUDIT_RUNNER_LABEL,
+        "local_audit_runner_label": local_audit_runner_label,
         "local_audit_token_env_assignments": token_assignments,
     }
 
@@ -561,7 +566,7 @@ def _gate_health_workflow_entry(
         ),
         "gate_health_cron": owner_surface["gate_health_cron"],
         "gate_health_max_wait_minutes": owner_surface["gate_health_max_wait_minutes"],
-        "local_audit_runner_label": LOCAL_AUDIT_RUNNER_LABEL if include_local_audit_runner else "",
+        "local_audit_runner_label": owner_surface["local_audit_runner_label"] if include_local_audit_runner else "",
         "needs_owner_label": owner_surface["needs_owner_label"],
         "owner_login": owner_surface["owner_login"],
         "status_issue": owner_surface["status_issue"],
@@ -1284,7 +1289,12 @@ def render_init_plan(
             }
         )
         generated_paths.add(LOCAL_AUDIT_WORKFLOW_PATH)
-        generated_files.append(_local_audit_workflow_entry(local_audit_entries))
+        generated_files.append(
+            _local_audit_workflow_entry(
+                local_audit_entries,
+                local_audit_runner_label=owner_surface["local_audit_runner_label"],
+            )
+        )
 
     if merge_authority_lanes and GATE_WORKFLOW_PATH not in generated_paths:
         workflow_targets.add(GATE_WORKFLOW_PATH)

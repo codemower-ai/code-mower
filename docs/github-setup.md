@@ -53,6 +53,7 @@ owner_surface:
   weekly_cron: "0 14 * * 1"
   gate_health_cron: "*/15 * * * *"
   gate_health_max_wait_minutes: "30"
+  local_audit_runner_label: code-mower-audit
   ready_label: "tier:R"
 ```
 
@@ -301,9 +302,10 @@ Runner setup recipe:
 
 1. Register a macOS self-hosted runner from repository settings, using the
    architecture that matches the machine.
-2. Add the custom runner label `code-mower-audit` or edit the generated
-   workflow and `owner_surface` docs to use your chosen label. The generated
-   workflow's `runs-on` is `[self-hosted, macOS, code-mower-audit]`.
+2. Add the custom runner label from `owner_surface.local_audit_runner_label`
+   (default `code-mower-audit`). The generated workflow's `runs-on` uses that
+   label, so product repos can set values such as `bridge-pro-audit` and keep
+   regeneration clean.
 3. Start with `./run.sh` from the same macOS user account that owns provider
    CLI logins. Install it as a service only after smoke tests pass.
 4. If the runner runs as a service or launch daemon, set `USER`, `LOGNAME`,
@@ -357,14 +359,16 @@ audit lanes. The workflow runs on `owner_surface.gate_health_cron` and can also
 be launched with `workflow_dispatch` plus a temporary `max_wait_minutes`
 override.
 
-The gate-health alarm adds `owner_surface.needs_owner_label`, assigns
-`owner_surface.owner_login` when configured, and comments once per incident
-when any of these metadata-only conditions hold:
+The gate-health workflow calls `tools/code_mower gate-health`, which uses the
+pinned standalone package rather than embedded workflow Python. The alarm
+comments once per incident on `owner_surface.status_issue`, chunks large alert
+batches, and adds `gate-stalled` to PRs whose current head has waited too long.
+It detects these metadata-only conditions:
 
 - a configured `needs-*-audit` label stays present longer than the threshold
   without a trusted terminal verdict comment bound to the PR head SHA
-- the generated `local-cli-audit.yml` workflow has a failed, timed-out,
-  canceled, or action-required latest run
+- the latest completed local CLI audit check on the PR head failed, timed out,
+  or required action, unless a newer audit check is still pending
 - no self-hosted runner with the configured local audit runner label is online
 - GitHub runner inventory cannot be inspected with the configured token
 

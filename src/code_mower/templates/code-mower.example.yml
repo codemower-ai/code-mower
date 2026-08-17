@@ -15,6 +15,9 @@ owner_surface:
   gate_override_label: "gate:override"
   status_issue: TODO_STATUS_ISSUE
   weekly_cron: "0 14 * * 1"
+  gate_health_cron: "*/15 * * * *"
+  gate_health_max_wait_minutes: "30"
+  local_audit_runner_label: code-mower-audit
   ready_label: "tier:R"
   phase_labels:
     - "phase:0"
