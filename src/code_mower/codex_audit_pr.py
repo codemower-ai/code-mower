@@ -471,7 +471,7 @@ def parse_structured_codex_verdict(data: Any) -> CodexVerdict:
             rendered_findings.append(raw_finding)
 
     blocker_count = p_counts[0] + p_counts[1] + p_counts[2]
-    if blocker_count > 0 and _is_fixture_structured_verdict(summary, raw_findings):
+    if _is_fixture_structured_verdict(summary, raw_findings):
         return CodexVerdict(
             verdict="UNKNOWN",
             prose=(

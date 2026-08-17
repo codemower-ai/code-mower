@@ -101,6 +101,28 @@ class CodexAuditPrTests(unittest.TestCase):
             self.assertTrue(artifact["quarantined"])
             self.assertIn("PYTEST_CURRENT_TEST", artifact["quarantine_reason"])
 
+    def test_codex_structured_fixture_pass_quarantines(self) -> None:
+        fixture = cap.parse_structured_codex_verdict(
+            {
+                "schema": cap.CODEX_AUDIT_SCHEMA_ID,
+                "verdict": "pass",
+                "summary": "test",
+                "findings": [
+                    {
+                        "severity": "P3",
+                        "title": "test",
+                        "file": "a.py",
+                        "line": 1,
+                        "detail": "test",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(fixture.verdict, "UNKNOWN")
+        self.assertEqual(fixture.p3_count, 1)
+        self.assertEqual(fixture.quarantine_reason, "fixture-shaped structured verdict")
+
     def test_codex_audit_fixture_verdict_quarantines_as_unknown(self) -> None:
         fixture = cap.parse_structured_codex_verdict(
             {
