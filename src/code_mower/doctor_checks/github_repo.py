@@ -118,3 +118,34 @@ def check_repo_permissions(*, slug: str, repo_payload: Mapping[str, Any]) -> Doc
             "documented by the provider matrix."
         ),
     )
+
+
+def check_repo_auto_merge(*, slug: str, repo_payload: Mapping[str, Any]) -> DoctorCheck:
+    if "allow_auto_merge" not in repo_payload:
+        return DoctorCheck(
+            name="github.repo.auto_merge",
+            status=STATUS_WARN,
+            message=f"{slug} metadata did not include auto-merge posture",
+            detail={"repo": slug},
+            remediation=(
+                "Verify repository auto-merge manually before relying on the "
+                "generated Code Mower gate to call enablePullRequestAutoMerge."
+            ),
+        )
+
+    allow_auto_merge = bool(repo_payload.get("allow_auto_merge"))
+    return DoctorCheck(
+        name="github.repo.auto_merge",
+        status=STATUS_PASS if allow_auto_merge else STATUS_WARN,
+        message=(
+            f"{slug} has auto-merge enabled"
+            if allow_auto_merge
+            else f"{slug} does not allow auto-merge"
+        ),
+        detail={"repo": slug, "allow_auto_merge": allow_auto_merge},
+        remediation=(
+            None
+            if allow_auto_merge
+            else f"Enable repository auto-merge with `gh api -X PATCH repos/{slug} -f allow_auto_merge=true`."
+        ),
+    )

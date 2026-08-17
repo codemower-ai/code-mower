@@ -1,0 +1,142 @@
+# Code Mower workflow template: dispatch local CLI audits on a self-hosted runner.
+#
+# The workflow checks out trusted support scripts from the default branch and
+# the pull request head as separate read-only audit context. It only runs for
+# same-repository pull requests because local provider CLIs execute on the
+# runner user's machine.
+name: Code Mower Local CLI Audits
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, labeled]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: {% raw %}code-mower-local-cli-audit-${{ github.event.pull_request.number }}{% endraw %}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_LOCAL_AUDIT_PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+jobs:
+  audit:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.action != 'labeled' ||
+        (__LOCAL_AUDIT_LABEL_MATCH__)
+      ) &&
+      (
+        (__LOCAL_AUDIT_LABEL_MATCH__) ||
+        (__LOCAL_AUDIT_LABEL_CONTAINS__)
+      )
+    runs-on: [self-hosted, macOS, __LOCAL_AUDIT_RUNNER_LABEL__]
+    timeout-minutes: 90
+    env:
+      PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
+      PR_HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha }}{% endraw %}
+      PR_HEAD_PATH: {% raw %}${{ github.workspace }}/pr-head{% endraw %}
+      SUPPORT_PATH: {% raw %}${{ github.workspace }}/code-mower-support{% endraw %}
+    steps:
+      - name: Check out trusted Code Mower support files from default branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: {% raw %}${{ github.event.repository.default_branch }}{% endraw %}
+          path: code-mower-support
+          persist-credentials: false
+
+      - name: Check out pull request head
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: {% raw %}${{ github.event.pull_request.head.sha }}{% endraw %}
+          path: pr-head
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify pull request checkout
+        run: |
+          set -euo pipefail
+          actual_head="$(git -C "${PR_HEAD_PATH}" rev-parse HEAD)"
+          if [ "${actual_head}" != "${PR_HEAD_SHA}" ]; then
+            echo "::error::PR checkout resolved ${actual_head}, expected ${PR_HEAD_SHA}"
+            exit 1
+          fi
+
+      - name: Run matching local CLI audits
+        env:
+          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+          GITHUB_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+__LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
+          CODE_MOWER_LOCAL_AUDIT_LANES_JSON: >-
+            __LOCAL_AUDIT_LANES_JSON__
+        run: |
+          set -euo pipefail
+          export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
+
+          labels_file="${RUNNER_TEMP}/code-mower-local-audit-labels.txt"
+          gh pr view "${PR_NUMBER}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json labels \
+            --jq '.labels[].name' > "${labels_file}"
+
+          has_label() {
+            grep -Fxq "$1" "${labels_file}"
+          }
+
+          lanes_file="${RUNNER_TEMP}/code-mower-local-audit-lanes.tsv"
+          python3 - <<'PY' > "${lanes_file}"
+          import json
+          import os
+
+          for lane in json.loads(os.environ["CODE_MOWER_LOCAL_AUDIT_LANES_JSON"]):
+              print(
+                  "\t".join(
+                      [
+                          lane["lane"],
+                          lane["display_name"],
+                          lane["needs_label"],
+                          lane["token_env"],
+                          lane["script"],
+                      ]
+                  )
+              )
+          PY
+
+          ran=0
+          while IFS=$'\t' read -r lane display_name needs_label token_env script; do
+            if ! has_label "${needs_label}"; then
+              continue
+            fi
+
+            wrapper="${SUPPORT_PATH}/${script}"
+            if [ ! -x "${wrapper}" ]; then
+              echo "::error::Missing executable audit wrapper: ${script}"
+              exit 1
+            fi
+
+            token="${!token_env:-}"
+            if [ -z "${token}" ]; then
+              token="${GITHUB_TOKEN:-}"
+            fi
+            if [ -z "${token}" ]; then
+              echo "::error::No GitHub token available for ${display_name} audit"
+              exit 1
+            fi
+
+            echo "Running ${display_name} local CLI audit for PR #${PR_NUMBER}"
+            printf '%s\n' "${token}" | "${wrapper}" \
+              --read-token-from-stdin \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pr "${PR_NUMBER}" \
+              --repo-paths "${GITHUB_REPOSITORY}:${PR_HEAD_PATH}"
+            ran=$((ran + 1))
+          done < "${lanes_file}"
+
+          if [ "${ran}" -eq 0 ]; then
+            echo "No supported local CLI audit labels are present."
+          fi

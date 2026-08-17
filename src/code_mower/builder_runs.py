@@ -8,9 +8,11 @@ import math
 import re
 import sys
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from code_mower import __version__
 from code_mower.work_orders import parse_github_issue_ref, parse_github_pr_ref
@@ -19,6 +21,55 @@ from code_mower.work_orders import parse_github_issue_ref, parse_github_pr_ref
 BENCHMARK_EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 DEFAULT_BUILDER_RUN_DIR = Path(".code-mower/builder-runs")
 SAFE_SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+CURSOR_AGENT_URL_RE = re.compile(
+    r"https?://(?:www\.)?cursor\.com/(?:agents|background-agent)/[^\s<>)\"']+",
+    re.IGNORECASE,
+)
+CURSOR_AGENT_FOOTER_RE = re.compile(
+    r"\b(?:cursor\s+(?:background\s+)?agent|view\s+cursor\s+agent\s+run|"
+    r"(?:generated|authored|opened)\s+by\s+cursor)\b",
+    re.IGNORECASE,
+)
+AUTHOR_INFERENCE_RULES = {
+    "chatgpt-codex-connector": ("codex", "chatgpt-codex-connector"),
+    "chatgpt-codex-connector[bot]": ("codex", "chatgpt-codex-connector"),
+    "openai-codex[bot]": ("codex", "chatgpt-codex-connector"),
+    "codex[bot]": ("codex", "chatgpt-codex-connector"),
+    "claude[bot]": ("claude", "claude_code_action"),
+    "claude-bot": ("claude", "claude_code_action"),
+    "cursor[bot]": ("cursor_cloud_agent", "cursor_cloud_agent"),
+    "cursor": ("cursor_cloud_agent", "cursor_cloud_agent"),
+}
+BRANCH_PREFIX_INFERENCE_RULES = (
+    ("cursor/", "cursor_cloud_agent", "cursor_cloud_agent"),
+    ("cursor-", "cursor_cloud_agent", "cursor_cloud_agent"),
+    ("codex/", "codex", "chatgpt-codex-connector"),
+    ("codex-", "codex", "chatgpt-codex-connector"),
+    ("chatgpt-codex/", "codex", "chatgpt-codex-connector"),
+    ("chatgpt-codex-", "codex", "chatgpt-codex-connector"),
+    ("claude/", "claude", "claude_code_action"),
+    ("claude-", "claude", "claude_code_action"),
+)
+
+
+@dataclass(frozen=True)
+class PullRequestMetadata:
+    repo: str
+    number: str
+    url: str
+    author: str
+    branch: str
+    body: str
+
+
+@dataclass(frozen=True)
+class BuilderInference:
+    provider: str
+    executor: str
+    builder_id: str
+    run_url: str
+    confidence: str
+    signals: tuple[str, ...]
 
 
 def _utc_now() -> str:
@@ -27,6 +78,10 @@ def _utc_now() -> str:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _record(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _safe_slug(value: Any, fallback: str = "builder-run") -> str:
@@ -62,6 +117,160 @@ def _load_json_object(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"{path} must contain a JSON object")
     return payload
+
+
+def _nested_text(payload: Mapping[str, Any], *path: str) -> str:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, Mapping):
+            return ""
+        current = current.get(key)
+    return _text(current)
+
+
+def _repo_from_pr_payload(
+    payload: Mapping[str, Any],
+    pr: Mapping[str, Any],
+    repo: str,
+) -> str:
+    return (
+        _text(repo)
+        or _nested_text(payload, "repository", "full_name")
+        or _nested_text(pr, "base", "repo", "full_name")
+        or _nested_text(pr, "head", "repo", "full_name")
+    )
+
+
+def _author_from_pr_payload(pr: Mapping[str, Any]) -> str:
+    return (
+        _nested_text(pr, "user", "login")
+        or _nested_text(pr, "author", "login")
+        or _nested_text(pr, "author", "name")
+        or _nested_text(pr, "author", "email")
+    )
+
+
+def _branch_from_pr_payload(pr: Mapping[str, Any]) -> str:
+    return (
+        _nested_text(pr, "head", "ref")
+        or _text(pr.get("headRefName"))
+        or _text(pr.get("head_ref"))
+        or _text(pr.get("branch"))
+    )
+
+
+def load_pull_request_metadata(path: Path, *, repo: str = "") -> PullRequestMetadata:
+    payload = _load_json_object(path)
+    pr = _record(payload.get("pull_request")) or payload
+    number = _text(pr.get("number")) or _text(payload.get("number"))
+    url = _text(pr.get("html_url")) or _text(pr.get("url"))
+    return PullRequestMetadata(
+        repo=_repo_from_pr_payload(payload, pr, repo),
+        number=number,
+        url=url,
+        author=_author_from_pr_payload(pr),
+        branch=_branch_from_pr_payload(pr),
+        body=_text(pr.get("body")),
+    )
+
+
+def _cursor_agent_url(body: str) -> str:
+    match = CURSOR_AGENT_URL_RE.search(body)
+    return match.group(0).rstrip(".,") if match else ""
+
+
+def _builder_id_from_url(url: str) -> str:
+    path = urlparse(url).path.strip("/")
+    if not path:
+        return ""
+    return path.split("/")[-1]
+
+
+def infer_builder_from_pr(metadata: PullRequestMetadata) -> BuilderInference | None:
+    signals: list[str] = []
+    candidate: tuple[str, str, str] | None = None
+
+    author = metadata.author.lower()
+    if author in AUTHOR_INFERENCE_RULES:
+        provider, executor = AUTHOR_INFERENCE_RULES[author]
+        candidate = (provider, executor, "high")
+        signals.append(f"author:{metadata.author}")
+
+    cursor_url = _cursor_agent_url(metadata.body)
+    if cursor_url:
+        signals.append("cursor_agent_url")
+        if candidate is None:
+            candidate = ("cursor_cloud_agent", "cursor_cloud_agent", "high")
+    elif CURSOR_AGENT_FOOTER_RE.search(metadata.body):
+        signals.append("cursor_agent_footer")
+        if candidate is None:
+            candidate = ("cursor_cloud_agent", "cursor_cloud_agent", "medium")
+
+    branch = metadata.branch.lower()
+    for prefix, provider, executor in BRANCH_PREFIX_INFERENCE_RULES:
+        if branch.startswith(prefix):
+            signals.append(f"branch_prefix:{prefix}")
+            if candidate is None:
+                candidate = (provider, executor, "medium")
+            break
+
+    if candidate is None:
+        return None
+
+    provider, executor, confidence = candidate
+    provider_run_url = cursor_url if provider == "cursor_cloud_agent" else ""
+    builder_id = _builder_id_from_url(provider_run_url) or "-".join(
+        part
+        for part in (
+            _safe_slug(provider, ""),
+            _safe_slug(metadata.repo, ""),
+            f"pr-{_safe_slug(metadata.number, '')}" if metadata.number else "",
+        )
+        if part
+    )
+    return BuilderInference(
+        provider=provider,
+        executor=executor,
+        builder_id=builder_id,
+        run_url=provider_run_url,
+        confidence=confidence,
+        signals=tuple(dict.fromkeys(signals)),
+    )
+
+
+def build_auto_builder_run_event(
+    metadata: PullRequestMetadata,
+    *,
+    created_at: str = "",
+    lens: str = "implementation",
+    status: str = "pr-opened",
+) -> tuple[dict[str, Any] | None, BuilderInference | None]:
+    inference = infer_builder_from_pr(metadata)
+    if inference is None:
+        return None, None
+    pr_ref = metadata.url or (
+        f"{metadata.repo}#{metadata.number}" if metadata.repo and metadata.number else ""
+    )
+    event = build_builder_run_event(
+        provider=inference.provider,
+        executor=inference.executor,
+        pr=pr_ref,
+        repo=metadata.repo,
+        branch=metadata.branch,
+        builder_id=inference.builder_id,
+        run_url=inference.run_url,
+        status=status,
+        lens=lens,
+        integration="hosted_async_builder",
+        created_at=created_at,
+    )
+    event["source"] = "code-mower-builder-auto-record"
+    event["tool"]["source"] = "code-mower-builder-auto-record"
+    event["dimensions"]["auto_inferred"] = True
+    event["dimensions"]["builder_inference_confidence"] = inference.confidence
+    event["dimensions"]["builder_inference_signals"] = list(inference.signals)
+    event["dimensions"]["pr_author"] = metadata.author
+    return event, inference
 
 
 def _work_order_manifest_path(work_order: Path) -> Path:
@@ -400,6 +609,24 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--output", type=Path)
     record.add_argument("--force", action="store_true")
     record.add_argument("--json", action="store_true")
+
+    auto_record = subparsers.add_parser(
+        "auto-record",
+        help="Infer builder provenance from pull_request metadata and write a builder_run event.",
+    )
+    auto_record.add_argument(
+        "--pr-json",
+        type=Path,
+        required=True,
+        help="GitHub pull_request event JSON or `gh pr view --json ...` output.",
+    )
+    auto_record.add_argument("--repo", default="", help="owner/repo fallback for PR metadata.")
+    auto_record.add_argument("--status", default="pr-opened")
+    auto_record.add_argument("--lens", default="implementation")
+    auto_record.add_argument("--created-at", default="")
+    auto_record.add_argument("--output", type=Path)
+    auto_record.add_argument("--force", action="store_true")
+    auto_record.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -459,6 +686,60 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"PR: {event['dimensions']['pr_url']}")
                 if event["dimensions"]["issue_url"]:
                     print(f"Issue: {event['dimensions']['issue_url']}")
+            return 0
+        if args.command == "auto-record":
+            metadata = load_pull_request_metadata(args.pr_json, repo=args.repo)
+            event, inference = build_auto_builder_run_event(
+                metadata,
+                created_at=args.created_at,
+                lens=args.lens,
+                status=args.status,
+            )
+            if event is None or inference is None:
+                payload = {
+                    "mode": "builder-auto-record",
+                    "status": "skipped",
+                    "reason": "no_supported_builder_markers",
+                    "repo_slug": metadata.repo,
+                    "pr_number": metadata.number,
+                    "branch": metadata.branch,
+                }
+                if args.json:
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                else:
+                    print("No supported builder markers found; skipped builder_run sidecar.")
+                return 0
+            output = args.output or _default_output_path(
+                provider=inference.provider,
+                executor=inference.executor,
+                run_suffix="auto",
+                issue_number="",
+                pr_number=event["dimensions"]["pr_number"],
+                work_order=None,
+                branch=metadata.branch,
+            )
+            output_path = write_builder_run_event(event, output, force=args.force)
+            payload = {
+                "mode": "builder-auto-record",
+                "status": "recorded",
+                "event_path": str(output_path),
+                "event_type": event["event_type"],
+                "provider": event["provider"],
+                "executor": event["dimensions"]["builder_executor"],
+                "repo_slug": event["repo_slug"],
+                "pr_url": event["dimensions"]["pr_url"],
+                "branch": event["dimensions"]["branch"],
+                "confidence": inference.confidence,
+                "signals": list(inference.signals),
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print("Code Mower builder run metadata")
+                print(f"Event: {output_path}")
+                print(f"Provider: {event['provider']}")
+                print(f"Executor: {event['dimensions']['builder_executor']}")
+                print(f"PR: {event['dimensions']['pr_url']}")
             return 0
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
