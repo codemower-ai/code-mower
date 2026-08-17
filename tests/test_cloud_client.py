@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 import code_mower.cloud_client.operations as cloud_operations
@@ -223,6 +225,59 @@ def test_cloud_export_builds_metadata_only_bundle_from_client_module() -> None:
         assert upload["provenance"]["events_with_model_provenance"] == 1
         assert upload["provenance"]["events_with_tool_version_provenance"] == 1
         assert upload["provenance"]["tools"][0]["tool_name"] == "codex"
+
+
+def test_cloud_export_spend_flag_emits_reviewer_run_event() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        spend = root / "reviewer-spend.json"
+        spend.write_text(
+            json.dumps(
+                {
+                    "schema": "code_mower.reviewerSpend.v1",
+                    "runs": [
+                        {
+                            "run_id": "spend-run-1",
+                            "created_at": "2026-08-16T12:00:00Z",
+                            "lane": "claude-audit",
+                            "repo": "owner/repo",
+                            "pr_number": 7,
+                            "head_sha": "def456",
+                            "model": "sonnet",
+                            "wall_seconds": 9.0,
+                            "verdict": "BLOCKED",
+                            "input_tokens": 22,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        output_dir = root / "bundle"
+        stdout = StringIO()
+
+        with redirect_stdout(stdout):
+            code = cloud_cli.main(
+                [
+                    "export",
+                    "--spend",
+                    str(spend),
+                    "--output-dir",
+                    str(output_dir),
+                    "--repo-slug",
+                    "owner/repo",
+                    "--json",
+                ]
+            )
+
+        assert code == 0
+        payload = build_upload_payload(bundle_dir=output_dir)
+        event = payload["events"][0]
+        assert event["event_type"] == "reviewer_run"
+        assert event["provider"] == "claude"
+        assert event["metrics"]["wall_seconds"] == 9.0
+        assert event["metrics"]["input_tokens"] == 22
+        assert event["dimensions"]["head_sha"] == "def456"
 
 
 def test_cloud_export_defaults_value_report_snapshot_to_code_mower_provenance() -> None:
@@ -458,6 +513,30 @@ def test_dogfood_dry_run_preserves_version_probe(monkeypatch, tmp_path: Path) ->
         check=True,
         capture_output=True,
     )
+    spend_dir = tmp_path / ".code-mower"
+    spend_dir.mkdir()
+    (spend_dir / "reviewer-spend.json").write_text(
+        json.dumps(
+            {
+                "schema": "code_mower.reviewerSpend.v1",
+                "runs": [
+                    {
+                        "run_id": "spend-run-1",
+                        "created_at": "2026-08-16T12:00:00Z",
+                        "lane": "codex-audit",
+                        "repo": "owner/repo",
+                        "pr_number": 42,
+                        "head_sha": "abc123",
+                        "model": "gpt-5",
+                        "wall_seconds": 7.5,
+                        "verdict": "PASS",
+                        "total_tokens": 1000,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     calls: list[bool] = []
 
     def fake_catalog_events(**kwargs):
@@ -474,6 +553,7 @@ def test_dogfood_dry_run_preserves_version_probe(monkeypatch, tmp_path: Path) ->
         output_dir=tmp_path / ".code-mower/cloud-dogfood-bundle",
         reports=[],
         events=[],
+        spend_path=None,
         repo_slug="owner/repo",
         team_id="team",
         install_id="install",
@@ -487,6 +567,13 @@ def test_dogfood_dry_run_preserves_version_probe(monkeypatch, tmp_path: Path) ->
 
     assert result["status"] == "dry_run"
     assert calls == [True]
+    assert result["export"]["event_types"]["reviewer_run"] == 1
+    assert result["upload"]["event_types"]["reviewer_run"] == 1
+    payload = build_upload_payload(bundle_dir=tmp_path / ".code-mower/cloud-dogfood-bundle")
+    reviewer_event = next(event for event in payload["events"] if event["event_type"] == "reviewer_run")
+    assert reviewer_event["metrics"]["wall_seconds"] == 7.5
+    assert reviewer_event["metrics"]["total_tokens"] == 1000
+    assert reviewer_event["dimensions"]["head_sha"] == "abc123"
 
 
 def test_cloud_doctor_runs_from_client_module() -> None:

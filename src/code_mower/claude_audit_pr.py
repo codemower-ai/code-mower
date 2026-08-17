@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 if __package__ in {None, "", "tools"}:
     try:
         from tools import code_mower_prompts
+        from tools import reviewer_spend
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.claude_cli_environment import clean_claude_cli_env, env_flag
         from tools.provider_runners import (
@@ -50,6 +51,7 @@ if __package__ in {None, "", "tools"}:
             import code_mower_prompts  # type: ignore
         except ImportError:
             import prompts as code_mower_prompts  # type: ignore
+        import reviewer_spend  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from claude_cli_environment import clean_claude_cli_env, env_flag  # type: ignore
         from provider_runners import (  # type: ignore
@@ -70,6 +72,7 @@ if __package__ in {None, "", "tools"}:
         )
 else:  # pragma: no cover - exercised after package extraction.
     from . import prompts as code_mower_prompts
+    from . import reviewer_spend
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .claude_cli_environment import clean_claude_cli_env, env_flag
     from .provider_runners import (
@@ -1021,6 +1024,24 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--allow-claude-owned", action="store_true", default=_env_flag("CLAUDE_AUDIT_ALLOW_CLAUDE_OWNED"))
     ap.add_argument("--dry-run", action="store_true", default=_env_flag("CLAUDE_AUDIT_DRY_RUN"))
     ap.add_argument("--read-token-from-stdin", action="store_true")
+    ap.add_argument(
+        "--spend-path",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "CODE_MOWER_REVIEWER_SPEND_PATH",
+                str(reviewer_spend.DEFAULT_SPEND_PATH),
+            )
+        ),
+        help="append metadata-only spend/latency for this audit run to this JSON file",
+    )
+    ap.add_argument(
+        "--no-spend-capture",
+        action="store_true",
+        default=_env_flag("CODE_MOWER_NO_SPEND_CAPTURE")
+        or _env_flag("CLAUDE_AUDIT_NO_SPEND_CAPTURE"),
+        help="do not append this audit run to reviewer-spend.json",
+    )
     posture_default = _env_flag_default("CLAUDE_AUDIT_MERGE_AUTHORITY", True)
     ap.add_argument(
         "--merge-authority",
@@ -1072,6 +1093,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("error: --repo-paths or CLAUDE_AUDIT_REPO_PATHS is required", file=sys.stderr)
         return 1
 
+    audit_started = time.monotonic()
     try:
         repo_paths = _parse_repo_paths(args.repo_paths)
         config = ClaudeAuditConfig(
@@ -1097,6 +1119,26 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if config.dry_run:
         print(result.comment_body)
+    if not args.no_spend_capture:
+        try:
+            usage = reviewer_spend.extract_usage_metrics(
+                result.claude_stdout,
+                result.claude_stderr,
+            )
+            spend_run = reviewer_spend.build_spend_run(
+                lane="claude-audit",
+                repo=result.repo,
+                pr_number=result.pr_number,
+                head_sha=result.head_sha_start,
+                model=config.model,
+                wall_seconds=time.monotonic() - audit_started,
+                verdict=result.verdict,
+                usage=usage,
+            )
+            reviewer_spend.append_spend_run(args.spend_path, spend_run)
+            print(f"spend metadata appended to {args.spend_path}", file=sys.stderr)
+        except (OSError, ValueError) as exc:
+            print(f"warning: failed to append spend metadata: {exc}", file=sys.stderr)
     return 2 if result.verdict in {"STALE", "UNKNOWN"} else 0
 
 

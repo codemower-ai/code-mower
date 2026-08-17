@@ -2971,6 +2971,7 @@ def main():
                     output_dir=root / ".code-mower/cloud-benchmark-bundle",
                     reports=[],
                     events=[],
+                    spend_path=None,
                     repo_slug="owner/repo",
                     team_id="team",
                     install_id="install",

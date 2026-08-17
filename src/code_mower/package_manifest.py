@@ -227,6 +227,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_secrets.py", "src/code_mower/secrets.py", "core"),
     ("tools/code_mower_telemetry.py", "src/code_mower/code_mower_telemetry.py", "core"),
     ("tools/reviewer_metrics.py", "src/code_mower/reviewer_metrics.py", "core"),
+    ("src/code_mower/reviewer_spend.py", "src/code_mower/reviewer_spend.py", "core"),
     ("tools/provider_registry.py", "src/code_mower/provider_registry.py", "core"),
     ("tools/blind_review_coordinator.py", "src/code_mower/blind_review_coordinator.py", "core"),
     ("tools/blind_review_artifacts.py", "src/code_mower/blind_review_artifacts.py", "core"),
