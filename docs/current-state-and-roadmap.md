@@ -22,8 +22,8 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.44`, published on
-PyPI as `code-mower==0.5.0b44`. It is intended to be installed from the package
+The current verified public beta baseline is `v0.5.0-beta.45`, published on
+PyPI as `code-mower==0.5.0b45`. It is intended to be installed from the package
 index for friendly-user pilots, with GitHub tag/source installs kept as a
 fallback and development path. Beta.37 is the current baseline after the
 provider/model provenance, planning-lineage, and public-package rehearsal push:
@@ -88,7 +88,7 @@ It has proved:
   report upload in the release rehearsal path; and
 - a beta.39 private-repo install rehearsal target against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
-  to prove `code-mower==0.5.0b44` can detect and dry-run repository-native
+  to prove `code-mower==0.5.0b45` can detect and dry-run repository-native
   checks in an external-ish private repo without committing support files first.
   The rehearsal passed with 10/10 first-user readiness and 0 readiness
   warnings, detected `npm run lint`, `npm run typecheck`, and `npm run test`
@@ -103,7 +103,7 @@ It has proved:
 - a v0.5 friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- a public PyPI package-install rehearsal from `code-mower==0.5.0b44` with a
+- a public PyPI package-install rehearsal from `code-mower==0.5.0b45` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout; and

@@ -4,6 +4,19 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.45
+
+This beta carries the audit-duration telemetry needed by product repos that use
+Code Mower as a merge gate and upload reviewer-run evidence to CodeMower.com.
+
+### Changed
+
+- Codex and Claude audit verdict artifacts now include bounded
+  `duration_seconds` metadata for current-head PASS/BLOCKED/UNKNOWN/STALE runs.
+- Cloud reviewer-run export maps verdict artifact durations into
+  `duration_seconds_total`, so CodeMower.com can report lane latency without
+  storing review bodies, diffs, or transcripts.
+
 ## v0.5.0-beta.44
 
 This beta fixes the fixture-verdict leak found during the beta.43 release gate
