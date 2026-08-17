@@ -36,6 +36,7 @@ if __package__ in {None, "", "tools"}:
             fetch_pull_request,
             fetch_base_ref_sha as _shared_fetch_base_ref_sha,
             fetch_pr_head_sha as _shared_fetch_pr_head_sha,
+            fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
@@ -61,6 +62,7 @@ if __package__ in {None, "", "tools"}:
             fetch_pull_request,
             fetch_base_ref_sha as _shared_fetch_base_ref_sha,
             fetch_pr_head_sha as _shared_fetch_pr_head_sha,
+            fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
@@ -84,6 +86,7 @@ else:  # pragma: no cover - exercised after package extraction.
         fetch_base_ref_sha as _shared_fetch_base_ref_sha,
         fetch_pull_request,
         fetch_pr_head_sha as _shared_fetch_pr_head_sha,
+        fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
         limit_comment_body,
         one_line as _one_line,
         parse_repo_paths as _parse_repo_paths,
@@ -387,7 +390,17 @@ def _fetch_base_sha_for_diff(local_repo: Path, base_ref: str) -> str:
     return _shared_fetch_base_ref_sha(local_repo, base_ref)
 
 
-def _fetch_pr_head_sha_for_diff(local_repo: Path, pr_number: int) -> str:
+def _fetch_pr_head_sha_for_diff(
+    local_repo: Path,
+    pr_number: int,
+    expected_head_sha: str | None = None,
+) -> str:
+    if expected_head_sha:
+        return _shared_fetch_pr_head_sha_unless_local_matches(
+            local_repo,
+            pr_number,
+            expected_head_sha=expected_head_sha,
+        )
     return _shared_fetch_pr_head_sha(local_repo, pr_number)
 
 
@@ -482,7 +495,11 @@ def _build_diff_context(
         )
 
     fetched_base_ref = _fetch_base_sha_for_diff(local_repo, base_ref)
-    fetched_head_ref = _fetch_pr_head_sha_for_diff(local_repo, pr_number)
+    fetched_head_ref = _fetch_pr_head_sha_for_diff(
+        local_repo,
+        pr_number,
+        expected_head_sha=expected_head_sha,
+    )
     if fetched_head_ref.lower() != expected_head_sha.lower():
         raise FetchedHeadMismatch(expected_head_sha, fetched_head_ref)
     diff_range = f"{fetched_base_ref}...{fetched_head_ref}"

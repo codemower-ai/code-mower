@@ -300,6 +300,13 @@ Runner setup recipe:
    `CLAUDE_AUDIT_LABEL_TOKEN`; the workflow falls back to `GITHUB_TOKEN` when
    those secrets are absent.
 
+The audit wrappers verify the GitHub API head SHA first, then skip the
+`pull/N/head` fetch when the `--repo-paths` checkout is already at that SHA.
+That makes the generated `persist-credentials: false` PR-head checkout viable
+for normal runner-dispatched audits. If a custom workflow intentionally passes
+a checkout that is not at the PR head, keep credentials on that checkout or
+fetch the PR head before invoking the wrapper.
+
 macOS Keychain access is user-session sensitive. If the runner later runs as a
 service or launch daemon, re-check provider CLI auth under that service account
 and unlock/configure the login keychain before trusting unattended audits.

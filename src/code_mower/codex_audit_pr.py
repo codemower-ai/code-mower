@@ -17,8 +17,10 @@ Pipeline per audit:
      `CODEX_AUDIT_REPO_PATHS` (the CLI requires a real git checkout for
      the built-in review).
   2. Fetch the PR head SHA via the GitHub API.
-  3. `git fetch origin pull/<N>/head` + create a temporary worktree at
-     the head SHA (detached, so we don't pollute branch namespace).
+  3. Ensure the PR head commit is locally available: skip the PR-head fetch
+     when the configured checkout already matches the GitHub API head SHA,
+     otherwise `git fetch origin pull/<N>/head`; then create a temporary
+     worktree at the head SHA (detached, so we don't pollute branch namespace).
   4. Run `codex exec --ignore-user-config --sandbox read-only review
      --base origin/main` from that worktree, capturing the final review
      prose via `--output-last-message`.
@@ -91,6 +93,7 @@ if __package__ in {None, "", "tools"}:
             fetch_pull_request,
             fetch_base_ref as _shared_fetch_base_ref,
             fetch_pr_head as _shared_fetch_pr_head,
+            fetch_pr_head_unless_local_matches as _shared_fetch_pr_head_unless_local_matches,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
@@ -113,6 +116,7 @@ if __package__ in {None, "", "tools"}:
             fetch_pull_request,
             fetch_base_ref as _shared_fetch_base_ref,
             fetch_pr_head as _shared_fetch_pr_head,
+            fetch_pr_head_unless_local_matches as _shared_fetch_pr_head_unless_local_matches,
             limit_comment_body,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
@@ -136,6 +140,7 @@ else:  # pragma: no cover - exercised after package extraction.
         fetch_base_ref as _shared_fetch_base_ref,
         fetch_pull_request,
         fetch_pr_head as _shared_fetch_pr_head,
+        fetch_pr_head_unless_local_matches as _shared_fetch_pr_head_unless_local_matches,
         limit_comment_body,
         one_line as _one_line,
         parse_repo_paths as _parse_repo_paths,
@@ -654,8 +659,19 @@ def _remove_worktree(local_repo: Path, worktree_path: Path) -> None:
     _shared_remove_worktree(local_repo, worktree_path)
 
 
-def _fetch_pr_head(local_repo: Path, pr_number: int) -> None:
+def _fetch_pr_head(
+    local_repo: Path,
+    pr_number: int,
+    expected_head_sha: str | None = None,
+) -> None:
     """Ensure the PR's head commit is locally available."""
+    if expected_head_sha:
+        _shared_fetch_pr_head_unless_local_matches(
+            local_repo,
+            pr_number,
+            expected_head_sha=expected_head_sha,
+        )
+        return
     _shared_fetch_pr_head(local_repo, pr_number)
 
 
@@ -1293,7 +1309,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
 
     # Ensure both the PR head AND the base ref are locally fetched
     # before running the review. Stale base = wrong diff = wrong review.
-    _fetch_pr_head(local_repo, pr_number)
+    _fetch_pr_head(local_repo, pr_number, head_sha_start)
     _fetch_base_ref(local_repo, config.base_ref)
     review_context_summary = "review context diagnostics unavailable"
     try:

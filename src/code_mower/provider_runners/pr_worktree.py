@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Sequence
 
-from .git import run_git
+from .git import local_head_sha, run_git
 
 
 class FetchedHeadMismatch(RuntimeError):
@@ -86,6 +86,27 @@ def fetch_pr_head(repo_path: Path, pr_number: int, *, remote: str = "origin") ->
     run_git(repo_path, ["fetch", remote, f"pull/{pr_number}/head"])
 
 
+def local_checkout_matches_head(repo_path: Path, expected_head_sha: str) -> bool:
+    """Return whether ``repo_path`` is already checked out at ``expected_head_sha``."""
+
+    return local_head_sha(repo_path).lower() == expected_head_sha.lower()
+
+
+def fetch_pr_head_unless_local_matches(
+    repo_path: Path,
+    pr_number: int,
+    *,
+    expected_head_sha: str,
+    remote: str = "origin",
+) -> str:
+    """Fetch ``pull/<pr_number>/head`` unless the checkout is already at the head."""
+
+    if local_checkout_matches_head(repo_path, expected_head_sha):
+        return expected_head_sha
+    fetch_pr_head(repo_path, pr_number, remote=remote)
+    return run_git_text(repo_path, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]).strip()
+
+
 def fetch_pr_head_sha(repo_path: Path, pr_number: int, *, remote: str = "origin") -> str:
     """Fetch a PR head into a temporary ref and return its commit SHA."""
 
@@ -100,6 +121,20 @@ def fetch_pr_head_sha(repo_path: Path, pr_number: int, *, remote: str = "origin"
         ).strip()
     finally:
         run_git(repo_path, ["update-ref", "-d", local_ref], check=False)
+
+
+def fetch_pr_head_sha_unless_local_matches(
+    repo_path: Path,
+    pr_number: int,
+    *,
+    expected_head_sha: str,
+    remote: str = "origin",
+) -> str:
+    """Resolve the PR head, skipping remote fetch when local HEAD is already exact."""
+
+    if local_checkout_matches_head(repo_path, expected_head_sha):
+        return expected_head_sha
+    return fetch_pr_head_sha(repo_path, pr_number, remote=remote)
 
 
 def fetch_pr_head_sha_or_raise(

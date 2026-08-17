@@ -12,6 +12,8 @@ from code_mower.provider_runners.pr_worktree import (
     fetch_pr_head,
     fetch_pr_head_sha,
     fetch_pr_head_sha_or_raise,
+    fetch_pr_head_sha_unless_local_matches,
+    fetch_pr_head_unless_local_matches,
     remove_worktree,
     run_git_text,
 )
@@ -83,6 +85,62 @@ class ProviderRunnersPrWorktreeTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.expected_sha, "0" * 40)
         self.assertEqual(raised.exception.actual_sha, pr_sha)
+
+    def test_fetch_pr_head_sha_unless_local_matches_skips_remote_fetch(self) -> None:
+        _remote, checkout, _base_sha, pr_sha = self._make_remote_and_checkout()
+        subprocess.run(
+            [
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                str(checkout.parent / "missing.git"),
+            ],
+            cwd=checkout,
+            check=True,
+        )
+
+        fetched_head = fetch_pr_head_sha_unless_local_matches(
+            checkout,
+            7,
+            expected_head_sha=pr_sha,
+        )
+
+        self.assertEqual(fetched_head, pr_sha)
+
+    def test_fetch_pr_head_unless_local_matches_skips_legacy_fetch(self) -> None:
+        _remote, checkout, _base_sha, pr_sha = self._make_remote_and_checkout()
+        subprocess.run(
+            [
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                str(checkout.parent / "missing.git"),
+            ],
+            cwd=checkout,
+            check=True,
+        )
+
+        fetched_head = fetch_pr_head_unless_local_matches(
+            checkout,
+            7,
+            expected_head_sha=pr_sha,
+        )
+
+        self.assertEqual(fetched_head, pr_sha)
+
+    def test_fetch_pr_head_sha_unless_local_matches_fetches_mismatch(self) -> None:
+        _remote, checkout, _base_sha, pr_sha = self._make_remote_and_checkout()
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=checkout, check=True)
+
+        fetched_head = fetch_pr_head_sha_unless_local_matches(
+            checkout,
+            7,
+            expected_head_sha=pr_sha,
+        )
+
+        self.assertEqual(fetched_head, pr_sha)
 
     def test_fetch_helpers_keep_legacy_fetch_api_available(self) -> None:
         _remote, checkout, _base_sha, _pr_sha = self._make_remote_and_checkout()
