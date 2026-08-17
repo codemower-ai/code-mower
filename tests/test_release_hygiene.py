@@ -880,6 +880,11 @@ exit 1
         self.assertIn("__TRAILER_LANE__", trailer)
         self.assertIn("__BOT_AUTHORS__", trailer)
         self.assertIn("pull-requests: write", trailer)
+        self.assertIn("vars.__AUTHORS_ENV__", trailer)
+        self.assertIn(
+            "contains(github.event.comment.body, '__TRAILER_PREFIX__')",
+            trailer,
+        )
         self.assertNotIn("workflow_dispatch:", trailer)
         self.assertNotIn("github.event.inputs.lane", trailer)
         hosted = (

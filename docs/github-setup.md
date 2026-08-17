@@ -194,6 +194,11 @@ wrapper inside GitHub Actions and post its verdict with `GITHUB_TOKEN`, add
 `github-actions[bot]` to that lane's `*_BOT_AUTHORS` variable; Code Mower does
 not trust that shared bot identity by default.
 
+When one operator or shared machine user posts multiple local-lane comments,
+each configured-author comment must carry the matching hidden
+`*_AUDIT_STATE` trailer. The trailer, not the shared GitHub login, is the
+authoritative lane signal for labeler prefilters and cloud reviewer metadata.
+
 ## Actions Billing And Spending Limits
 
 GitHub can report Actions as enabled while refusing to start every job because

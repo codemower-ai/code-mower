@@ -205,6 +205,11 @@ tools/code_mower clear-stale --lane devin --repo owner/repo --pr 123 --json
 tools/code_mower bootstrap --print-python
 ```
 
+For trailer-comment lanes, authors added through `*_BOT_AUTHORS` must post the
+lane's matching hidden `*_AUDIT_STATE` trailer. This lets one operator or
+shared machine user run several local audit lanes without the labeler or cloud
+metadata confusing the lane identity.
+
 If the standalone Code Mower source repository is still private and the product
 repo's GitHub Actions jobs do not have authenticated standalone checkout,
 workflow entrypoints should temporarily use the explicit local fallback:
