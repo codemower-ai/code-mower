@@ -216,6 +216,58 @@ class CalibrationTruthTests(unittest.TestCase):
         self.assertEqual(stats["useful_findings"], 1)
         self.assertEqual(report["evidence"]["run_disposition_count"], 1)
 
+    def test_value_report_records_automated_vs_manual_gap(self) -> None:
+        corpus = self._load_corpus(
+            {
+                "version": 1,
+                "name": "plan-context-gap",
+                "corpus": [
+                    {
+                        "repo": "owner/repo",
+                        "pr_number": 10,
+                        "head_sha": "a" * 40,
+                        "review_class": "docs-design",
+                        "context_packs": ["operating-model"],
+                        "truth": {"expectation": "known_blocked"},
+                        "reviewer_runs": [
+                            {
+                                "reviewer": "claude-audit",
+                                "status": "pass",
+                                "finding_count": 0,
+                            }
+                        ],
+                    },
+                    {
+                        "repo": "owner/repo",
+                        "pr_number": 11,
+                        "head_sha": "b" * 40,
+                        "truth": {"expectation": "known_clean"},
+                        "reviewer_runs": [
+                            {
+                                "reviewer": "claude-audit",
+                                "status": "blocked",
+                                "finding_count": 1,
+                            }
+                        ],
+                    },
+                ],
+            }
+        )
+
+        report = code_mower_calibration.build_value_report(corpus)
+        stats = report["metrics"]["profiles"]["claude-audit"]
+        runs = report["evidence"]["reviewer_runs"]
+
+        self.assertEqual(
+            stats["automated_vs_manual"],
+            {"false_blocker": 1, "missed_blocker": 1},
+        )
+        self.assertEqual(stats["auto_manual_missed_blocker_runs"], 1)
+        self.assertEqual(stats["auto_manual_false_blocker_runs"], 1)
+        self.assertEqual(runs[0]["manual_outcome"], "blocked")
+        self.assertEqual(runs[0]["automated_vs_manual"], "missed_blocker")
+        self.assertIn("0/1/1", code_mower_calibration.render_value_report_text(report))
+
     def test_disposition_rules_apply_to_folded_run_results(self) -> None:
         corpus = self._load_corpus(
             {

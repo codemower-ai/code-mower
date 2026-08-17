@@ -33,6 +33,11 @@
       "target": "src/code_mower/builder_experiment.py"
     },
     {
+      "kind": "core",
+      "source": "src/code_mower/plan_context.py",
+      "target": "src/code_mower/plan_context.py"
+    },
+    {
       "kind": "tooling",
       "source": "requirements/requirements.txt",
       "target": "requirements/requirements.txt"
@@ -806,6 +811,11 @@
       "kind": "prompt",
       "source": "src/code_mower/templates/lane_prompts/package-runtime.md",
       "target": "src/code_mower/templates/lane_prompts/package-runtime.md"
+    },
+    {
+      "kind": "prompt",
+      "source": "src/code_mower/templates/lane_prompts/plan-conformance.md",
+      "target": "src/code_mower/templates/lane_prompts/plan-conformance.md"
     },
     {
       "kind": "prompt",

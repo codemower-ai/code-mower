@@ -16,6 +16,7 @@ PACKAGE_FILES = (
     ("src/code_mower/builder_runs.py", "src/code_mower/builder_runs.py", "core"),
     ("tools/code_mower_builder_experiment.py", "src/code_mower/builder_experiment.py", "core"),
     ("src/code_mower/work_orders.py", "src/code_mower/work_orders.py", "core"),
+    ("src/code_mower/plan_context.py", "src/code_mower/plan_context.py", "core"),
     ("tools/code_mower_requirements.txt", "requirements/requirements.txt", "tooling"),
     ("tools/code_mower_calibration.py", "src/code_mower/code_mower_calibration.py", "core"),
     ("src/code_mower/checks.py", "src/code_mower/checks.py", "core"),
@@ -349,6 +350,7 @@ PACKAGE_FILES = (
     ),
     ("tools/lane_prompts/operability.md", "src/code_mower/templates/lane_prompts/operability.md", "prompt"),
     ("tools/lane_prompts/package-runtime.md", "src/code_mower/templates/lane_prompts/package-runtime.md", "prompt"),
+    ("tools/lane_prompts/plan-conformance.md", "src/code_mower/templates/lane_prompts/plan-conformance.md", "prompt"),
     (
         "tools/lane_prompts/security-threat-model.md",
         "src/code_mower/templates/lane_prompts/security-threat-model.md",
