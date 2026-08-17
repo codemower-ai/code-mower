@@ -4,6 +4,24 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.43
+
+This beta fixes a Claude audit merge-gate safety issue found while dogfooding
+the beta.42 local-audit uploads.
+
+### Changed
+
+- Claude audit now rejects schema-placeholder structured verdicts, blocker
+  findings that cite files outside the PR diff, and implausibly short blocked
+  verdict bodies before a result can become a label-bearing comment (#338,
+  #340).
+- Guardrail rejections retry Claude once with a corrective trusted instruction;
+  a second unusable result becomes `UNKNOWN` with the requeue trailer instead of
+  a merge-gating blocked label (#338, #340).
+- Saved Claude verdict artifacts now get a local-only raw CLI output sidecar and
+  backfill `posted_comment_url` after a successful GitHub comment POST (#338,
+  #340).
+
 ## v0.5.0-beta.42
 
 This beta lands the post-beta.41 gate hardening from epic #302 so hosted
