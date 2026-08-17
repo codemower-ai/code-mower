@@ -32,7 +32,8 @@ not create labels, comments, workflows, or provider reviews.
 
 `init --easy` emits two owner-surface templates:
 `.github/workflows/needs-owner-notify.yml` comments on issues or PRs labeled
-with `owner_surface.needs_owner_label`, and
+with `owner_surface.needs_owner_label`, adds the configured owner as an assignee
+without replacing existing assignees, and
 `.github/workflows/weekly-status.yml` refreshes a pinned status issue from
 `tools/status_report.py`.
 For fork PRs where GitHub grants a read-only token, owner notify emits a

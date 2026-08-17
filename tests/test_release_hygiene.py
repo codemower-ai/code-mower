@@ -1326,11 +1326,15 @@ exit 1
             self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', notify)
             self.assertIn('OWNER_LOGIN: "jeffhuber"', notify)
             self.assertIn("github.event.label.name == 'needs-jeff'", notify)
-            self.assertIn('gh api -X PATCH "repos/${REPO}/issues/${NUM}"', notify)
+            self.assertIn(
+                'gh api -X POST "repos/${REPO}/issues/${NUM}/assignees"',
+                notify,
+            )
             self.assertIn(
                 'gh api -X POST "repos/${REPO}/issues/${NUM}/comments"',
                 notify,
             )
+            self.assertNotIn('gh api -X PATCH "repos/${REPO}/issues/${NUM}"', notify)
             self.assertNotIn("gh issue comment", notify)
             self.assertNotIn("__NEEDS_OWNER_LABEL__", notify)
             self.assertNotIn("{% raw %}", notify)
@@ -1343,6 +1347,16 @@ exit 1
             self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', weekly)
             self.assertIn('PHASE_LABELS: "phase:0,phase:1"', weekly)
             self.assertIn("python3 tools/status_report.py", weekly)
+            self.assertIn(
+                "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
+                weekly,
+            )
+            self.assertIn(
+                "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405",
+                weekly,
+            )
+            self.assertNotIn("actions/checkout@v6", weekly)
+            self.assertNotIn("actions/setup-python@v6", weekly)
             self.assertNotIn('STATUS_ISSUE: "TODO_STATUS_ISSUE"', weekly)
             self.assertNotIn("{% raw %}", weekly)
 

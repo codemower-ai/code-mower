@@ -38,7 +38,7 @@ jobs:
 
           mention="repository owner"
           if [ -n "${OWNER_LOGIN:-}" ] && [ "${OWNER_LOGIN}" != "TODO_OWNER_LOGIN" ]; then
-            gh api -X PATCH "repos/${REPO}/issues/${NUM}" \
+            gh api -X POST "repos/${REPO}/issues/${NUM}/assignees" \
               -f "assignees[]=${OWNER_LOGIN}" || \
               echo "::warning::Could not assign ${OWNER_LOGIN} on #${NUM}; token may be read-only."
             mention="@${OWNER_LOGIN}"
