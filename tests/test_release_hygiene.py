@@ -1532,7 +1532,7 @@ exit 1
             ).read_text(encoding="utf-8")
             self.assertIn("CODE_MOWER_GATE_CONTEXT: code-mower/gate", gate)
             self.assertIn("Check out Code Mower support files", gate)
-            self.assertIn("CODE_MOWER_OWNER_LABEL: needs-owner", gate)
+            self.assertIn('CODE_MOWER_OWNER_LABEL: "needs-owner"', gate)
             self.assertIn("codex-audit-done", gate)
             self.assertIn("claude-audit-done", gate)
             self.assertIn("builder:codex", gate)
@@ -1676,6 +1676,29 @@ exit 1
             self.assertIn("needs-codex-audit", gate_health)
             self.assertIn("github-actions[bot]", gate_health)
             self.assertNotIn("__GATE_HEALTH", gate_health)
+
+            gate = output_dir.joinpath(
+                ".github/workflows/code-mower-gate.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn('CODE_MOWER_OWNER_LABEL: "needs-jeff"', gate)
+            self.assertNotIn('CODE_MOWER_OWNER_LABEL: "needs-owner"', gate)
+
+            config["owner_surface"]["needs_owner_label"] = "needs: jeff # owner"
+            special_plan = code_mower_init.render_init_plan(
+                config,
+                package_mode=True,
+                package_command="code-mower",
+            )
+            special_output_dir = Path(tmp) / ".code-mower.generated-special"
+            code_mower_init.apply_init_plan(special_plan, special_output_dir)
+            special_gate = special_output_dir.joinpath(
+                ".github/workflows/code-mower-gate.yml"
+            ).read_text(encoding="utf-8")
+            parsed_gate = yaml.safe_load(special_gate)
+            self.assertEqual(
+                parsed_gate["env"]["CODE_MOWER_OWNER_LABEL"],
+                "needs: jeff # owner",
+            )
 
             status_report = output_dir.joinpath("tools/status_report.py")
             self.assertTrue(status_report.stat().st_mode & 0o111)

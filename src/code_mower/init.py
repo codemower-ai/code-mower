@@ -635,6 +635,7 @@ def _gate_workflow_entry(
     selected_lanes: Mapping[str, Mapping[str, Any]],
     *,
     author_exclusion_json: str,
+    owner_label: str = DEFAULT_OWNER_LABEL,
 ) -> dict[str, str]:
     gate_lanes = [
         _gate_lane_entry(lane_id, lane)
@@ -647,7 +648,7 @@ def _gate_workflow_entry(
         "copy_from": GATE_WORKFLOW_TEMPLATE,
         "package_copy_from": GATE_WORKFLOW_TEMPLATE,
         "gate_lanes_json": json.dumps(gate_lanes, separators=(",", ":"), sort_keys=True),
-        "owner_label": DEFAULT_OWNER_LABEL,
+        "owner_label": owner_label,
         "author_exclusion_json": author_exclusion_json,
     }
 
@@ -1008,7 +1009,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
             entry.get("reviewer_value_report_path") or ""
         ),
         "__STATUS_ISSUE__": str(entry.get("status_issue") or ""),
-        "__OWNER_LABEL__": str(entry.get("owner_label") or DEFAULT_OWNER_LABEL),
+        "__OWNER_LABEL__": json.dumps(
+            str(entry.get("owner_label") or DEFAULT_OWNER_LABEL)
+        ),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
         "__TRAILER_PREFIX__": str(entry.get("trailer_prefix") or ""),
         "__WEEKLY_STATUS_CRON__": str(entry.get("weekly_status_cron") or ""),
@@ -1311,6 +1314,7 @@ def render_init_plan(
                 config,
                 selected_lanes,
                 author_exclusion_json=author_exclusion_json,
+                owner_label=owner_surface["needs_owner_label"],
             )
         )
 
