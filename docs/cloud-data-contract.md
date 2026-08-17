@@ -143,9 +143,11 @@ team configures `CODE_MOWER_CLOUD_TOKEN`. This is an upload-path change, not an
 event-shape change: verdict artifacts still become `reviewer_run` events,
 spend rows still become `reviewer_run` events, work-order sidecars remain
 `work_order` events, and beta.40 through beta.46 uploads that omit these
-automated events remain valid. The workflow uses trusted default-branch support
-files and must not upload source, diffs, prompts, transcripts, stdout/stderr,
-issue body text, or secrets.
+automated events remain valid. When a verdict artifact records audit runtime,
+the exported reviewer-run metrics include the legacy `duration_seconds_total`
+and dashboard-compatible `duration_seconds` and `wall_seconds` aliases. The
+workflow uses trusted default-branch support files and must not upload source,
+diffs, prompts, transcripts, stdout/stderr, issue body text, or secrets.
 Fixture-shaped or quarantined audit verdict artifacts are excluded from
 `reviewer_run` export and upload so local wrapper tests cannot become dashboard
 or calibration evidence.

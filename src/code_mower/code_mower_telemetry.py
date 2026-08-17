@@ -229,6 +229,8 @@ def reviewer_run_event_from_verdict_artifact(
     duration_seconds = _artifact_duration_seconds(payload)
     if duration_seconds is not None:
         metrics["duration_seconds_total"] = duration_seconds
+        metrics["duration_seconds"] = duration_seconds
+        metrics["wall_seconds"] = duration_seconds
         dimensions["duration_source"] = "verdict_artifact"
     return {
         "schema": BENCHMARK_EVENT_SCHEMA,
