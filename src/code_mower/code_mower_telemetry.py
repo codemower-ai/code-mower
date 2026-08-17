@@ -233,8 +233,11 @@ def export_reviewer_run_events_from_verdicts(
     *,
     repo: str = "",
     limit: int = 0,
+    offset: int = 0,
     include_git_ref: bool = False,
 ) -> list[dict[str, Any]]:
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
     repo_filter = _normalize_repo_slug(repo) if repo else ""
     events: list[dict[str, Any]] = []
     for path in _iter_verdict_artifact_paths(root.expanduser()):
@@ -262,7 +265,8 @@ def export_reviewer_run_events_from_verdicts(
         key=lambda event: (str(event.get("created_at") or ""), str(event.get("event_id") or "")),
         reverse=True,
     )
-    return events[:limit] if limit else events
+    selected = events[offset:] if offset else events
+    return selected[:limit] if limit else selected
 
 
 def load_jsonl_events(path: Path) -> list[dict[str, Any]]:
