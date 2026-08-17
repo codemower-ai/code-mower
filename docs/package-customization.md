@@ -15,6 +15,9 @@ Use lenses for review doctrine, not PR content. Good lenses describe what to
 catch, what to ignore, severity policy, and when to return a terse clean pass.
 They should not mention external inspiration sources, private conversation
 threads, or one-off implementation history.
+The default `base-audit` lens also reminds reviewers to check the base tree or
+surrounding checkout context before claiming an unchanged referenced file is
+missing.
 
 Recommended package overrides:
 
