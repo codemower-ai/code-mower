@@ -1651,6 +1651,16 @@ exit 1
             self.assertIn("CODE_MOWER_CLOUD_TOKEN is not configured", local_cli_audit)
             self.assertIn("cloud reviewer-runs", local_cli_audit)
             self.assertIn("cloud dogfood", local_cli_audit)
+            self.assertIn(
+                '"${SUPPORT_PATH}/tools/code_mower" cloud reviewer-runs \\\n'
+                '            --repo-path "${PR_HEAD_PATH}"',
+                local_cli_audit,
+            )
+            self.assertIn(
+                '"${SUPPORT_PATH}/tools/code_mower" cloud dogfood \\\n'
+                '            --repo-path "${SUPPORT_PATH}"',
+                local_cli_audit,
+            )
             self.assertIn("--spend \"${CODE_MOWER_REVIEWER_SPEND_PATH}\"", local_cli_audit)
             self.assertIn("--event \"work_order=${event_file}\"", local_cli_audit)
             self.assertNotIn("__LOCAL_AUDIT_", local_cli_audit)
