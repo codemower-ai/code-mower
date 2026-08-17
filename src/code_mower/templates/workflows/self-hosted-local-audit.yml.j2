@@ -204,7 +204,7 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
           upload_failed=0
 
           "${SUPPORT_PATH}/tools/code_mower" cloud reviewer-runs \
-            --repo-path "${SUPPORT_PATH}" \
+            --repo-path "${PR_HEAD_PATH}" \
             --repo-slug "${GITHUB_REPOSITORY}" \
             --verdicts "${verdict_dir}" \
             --output-dir "${RUNNER_TEMP}/code-mower-reviewer-runs" \
