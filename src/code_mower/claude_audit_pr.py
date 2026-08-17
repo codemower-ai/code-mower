@@ -873,6 +873,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             external_context_manifest=config.external_context_manifest,
             max_total_bytes=config.max_plan_context_bytes,
             max_file_bytes=config.max_plan_context_file_bytes,
+            trusted_git_ref=config.base_ref,
         )
         print(
             "  plan context: "

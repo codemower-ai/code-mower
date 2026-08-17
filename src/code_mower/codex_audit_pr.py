@@ -971,8 +971,6 @@ def preflight_codex_cli(config: AuditConfig) -> str:
     for flag in ("--base", "--output-last-message"):
         if flag not in review_text:
             missing.append(f"codex exec review {flag}")
-    if "[PROMPT]" not in review_text or "read from stdin" not in review_text.lower():
-        missing.append("codex exec review stdin prompt")
     if missing:
         raise RuntimeError(
             "Codex CLI is missing required structured-audit capability: "
@@ -994,6 +992,30 @@ def _codex_exec_command(
         command.append("--skip-git-repo-check")
     command.extend(args)
     return command
+
+
+def _require_codex_review_stdin_prompt_support(config: AuditConfig) -> None:
+    env = _build_subprocess_env(None)
+    review_help = subprocess.run(
+        [config.codex_cli_path, "exec", "review", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    if review_help.returncode != 0:
+        raise subprocess.CalledProcessError(
+            review_help.returncode,
+            [config.codex_cli_path, "exec", "review", "--help"],
+            output=review_help.stdout,
+            stderr=review_help.stderr,
+        )
+    review_text = review_help.stdout + review_help.stderr
+    if "[PROMPT]" not in review_text or "read from stdin" not in review_text.lower():
+        raise RuntimeError(
+            "Codex CLI is missing required structured-audit capability: "
+            "codex exec review stdin prompt"
+        )
 
 
 def _structured_verdict_prompt(review_text: str) -> str:
@@ -1049,6 +1071,7 @@ def run_codex_review(
         str(review_path),
     )
     if review_prompt.strip():
+        _require_codex_review_stdin_prompt_support(config)
         command.append("-")
     try:
         result = run_subprocess_with_progress(
@@ -1374,6 +1397,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 external_context_manifest=config.external_context_manifest,
                 max_total_bytes=config.max_plan_context_bytes,
                 max_file_bytes=config.max_plan_context_file_bytes,
+                trusted_git_ref=config.base_ref,
             )
             print(
                 "  plan context: "

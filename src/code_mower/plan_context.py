@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -70,9 +71,63 @@ def _resolve_manifest_path(repo_root: Path, value: Any) -> Path:
     return (repo_root / raw).resolve()
 
 
+def _repo_relative_path(repo_root: Path, value: Any) -> Path:
+    return _resolve_path(repo_root, value).relative_to(repo_root.expanduser().resolve())
+
+
+def _git_show_bytes(repo_root: Path, trusted_git_ref: str, path: Path) -> bytes | None:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "show",
+            f"{trusted_git_ref}:{path.as_posix()}",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def _load_git_json(repo_root: Path, trusted_git_ref: str, path: Path) -> Mapping[str, Any] | None:
+    data = _git_show_bytes(repo_root, trusted_git_ref, path)
+    if data is None:
+        return None
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"unable to read plan context manifest {trusted_git_ref}:{path.as_posix()}: {exc}"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError(
+            "plan context manifest must be a JSON object: "
+            f"{trusted_git_ref}:{path.as_posix()}"
+        )
+    return payload
+
+
 def _read_bounded_text(path: Path, max_bytes: int) -> tuple[str, int, bool]:
     with path.open("rb") as handle:
         data = handle.read(max_bytes + 1)
+    truncated = len(data) > max_bytes
+    if truncated:
+        data = data[:max_bytes]
+    return data.decode("utf-8", errors="replace"), len(data), truncated
+
+
+def _read_git_bounded_text(
+    repo_root: Path,
+    trusted_git_ref: str,
+    path: Path,
+    max_bytes: int,
+) -> tuple[str, int, bool] | None:
+    data = _git_show_bytes(repo_root, trusted_git_ref, path)
+    if data is None:
+        return None
     truncated = len(data) > max_bytes
     if truncated:
         data = data[:max_bytes]
@@ -114,6 +169,29 @@ def _section(
     )
 
 
+def _section_from_text(
+    *,
+    title: str,
+    display_path: str,
+    text: str,
+    truncated: bool,
+) -> str:
+    truncation = "\n[truncated]\n" if truncated else ""
+    return (
+        "\n".join(
+            [
+                f"## {title}",
+                f"Path: {display_path}",
+                "",
+                "```",
+                text.rstrip(),
+                "```",
+                truncation.rstrip(),
+            ]
+        ).rstrip()
+    )
+
+
 def _project_context_sections(
     repo_root: Path,
     manifest_path: Path,
@@ -121,13 +199,23 @@ def _project_context_sections(
     max_total_bytes: int,
     max_file_bytes: int,
     used_bytes: int,
+    trusted_git_ref: str | None = None,
+    manifest_repo_path: Path | None = None,
 ) -> tuple[list[str], int, list[str]]:
-    if not manifest_path.is_file():
-        return [], used_bytes, []
-    try:
-        manifest = _load_json(manifest_path)
-    except ValueError as exc:
-        return [], used_bytes, [str(exc)]
+    if trusted_git_ref and manifest_repo_path is not None:
+        try:
+            manifest = _load_git_json(repo_root, trusted_git_ref, manifest_repo_path)
+        except ValueError as exc:
+            return [], used_bytes, [str(exc)]
+        if manifest is None:
+            return [], used_bytes, []
+    else:
+        if not manifest_path.is_file():
+            return [], used_bytes, []
+        try:
+            manifest = _load_json(manifest_path)
+        except ValueError as exc:
+            return [], used_bytes, [str(exc)]
     sections: list[str] = []
     warnings: list[str] = []
     for document in manifest.get("documents", []) or []:
@@ -138,24 +226,44 @@ def _project_context_sections(
             warnings.append("plan context total byte budget exhausted")
             break
         try:
-            path = _resolve_path(repo_root, document.get("path"))
+            relative_path = _repo_relative_path(repo_root, document.get("path"))
         except ValueError as exc:
             warnings.append(str(exc))
             continue
-        if not path.is_file():
-            warnings.append(f"missing project context document: {path}")
-            continue
-        title = str(document.get("title") or path.name)
-        try:
-            rendered, byte_count, _display = _section(
-                title=title,
-                path=path,
-                repo_root=repo_root,
-                max_bytes=budget,
+        title = str(document.get("title") or relative_path.name)
+        display_path = relative_path.as_posix()
+        if trusted_git_ref:
+            git_text = _read_git_bounded_text(
+                repo_root,
+                trusted_git_ref,
+                relative_path,
+                budget,
             )
-        except OSError as exc:
-            warnings.append(f"unable to read project context document {path}: {exc}")
-            continue
+            if git_text is None:
+                warnings.append(f"missing project context document: {trusted_git_ref}:{display_path}")
+                continue
+            text, byte_count, truncated = git_text
+            rendered = _section_from_text(
+                title=title,
+                display_path=display_path,
+                text=text,
+                truncated=truncated,
+            )
+        else:
+            path = repo_root / relative_path
+            if not path.is_file():
+                warnings.append(f"missing project context document: {path}")
+                continue
+            try:
+                rendered, byte_count, _display = _section(
+                    title=title,
+                    path=path,
+                    repo_root=repo_root,
+                    max_bytes=budget,
+                )
+            except OSError as exc:
+                warnings.append(f"unable to read project context document {path}: {exc}")
+                continue
         sections.append(rendered)
         used_bytes += byte_count
     return sections, used_bytes, warnings
@@ -168,13 +276,23 @@ def _external_context_sections(
     max_total_bytes: int,
     max_file_bytes: int,
     used_bytes: int,
+    trusted_git_ref: str | None = None,
+    manifest_repo_path: Path | None = None,
 ) -> tuple[list[str], int, list[str]]:
-    if not manifest_path.is_file():
-        return [], used_bytes, []
-    try:
-        manifest = _load_json(manifest_path)
-    except ValueError as exc:
-        return [], used_bytes, [str(exc)]
+    if trusted_git_ref and manifest_repo_path is not None:
+        try:
+            manifest = _load_git_json(repo_root, trusted_git_ref, manifest_repo_path)
+        except ValueError as exc:
+            return [], used_bytes, [str(exc)]
+        if manifest is None:
+            return [], used_bytes, []
+    else:
+        if not manifest_path.is_file():
+            return [], used_bytes, []
+        try:
+            manifest = _load_json(manifest_path)
+        except ValueError as exc:
+            return [], used_bytes, [str(exc)]
     sections: list[str] = []
     warnings: list[str] = []
     for entry in manifest.get("entries", []) or []:
@@ -198,23 +316,47 @@ def _external_context_sections(
             warnings.append("plan context total byte budget exhausted")
             break
         try:
-            preview_path = _resolve_path(repo_root, entry.get("text_preview_path"))
+            relative_path = _repo_relative_path(repo_root, entry.get("text_preview_path"))
         except ValueError as exc:
             warnings.append(str(exc))
             continue
-        if not preview_path.is_file():
-            warnings.append(f"missing external context preview: {preview_path}")
-            continue
-        try:
-            rendered, byte_count, _display = _section(
-                title=f"External Context: {filename}",
-                path=preview_path,
-                repo_root=repo_root,
-                max_bytes=budget,
+        display_path = relative_path.as_posix()
+        if trusted_git_ref:
+            git_text = _read_git_bounded_text(
+                repo_root,
+                trusted_git_ref,
+                relative_path,
+                budget,
             )
-        except OSError as exc:
-            warnings.append(f"unable to read external context preview {preview_path}: {exc}")
-            continue
+            if git_text is None:
+                warnings.append(
+                    f"missing external context preview: {trusted_git_ref}:{display_path}"
+                )
+                continue
+            text, byte_count, truncated = git_text
+            rendered = _section_from_text(
+                title=f"External Context: {filename}",
+                display_path=display_path,
+                text=text,
+                truncated=truncated,
+            )
+        else:
+            preview_path = repo_root / relative_path
+            if not preview_path.is_file():
+                warnings.append(f"missing external context preview: {preview_path}")
+                continue
+            try:
+                rendered, byte_count, _display = _section(
+                    title=f"External Context: {filename}",
+                    path=preview_path,
+                    repo_root=repo_root,
+                    max_bytes=budget,
+                )
+            except OSError as exc:
+                warnings.append(
+                    f"unable to read external context preview {preview_path}: {exc}"
+                )
+                continue
         sections.append(rendered)
         used_bytes += byte_count
     return sections, used_bytes, warnings
@@ -233,6 +375,7 @@ def render_plan_context(
     external_context_manifest: Path | None = None,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    trusted_git_ref: str | None = None,
 ) -> RenderedPlanContext:
     """Render trusted local planning context for a reviewer prompt."""
 
@@ -248,28 +391,34 @@ def render_plan_context(
 
     for manifest_path in _manifest_candidates(
         project_context_manifest,
-        repo_root / DEFAULT_PROJECT_CONTEXT_MANIFEST,
+        DEFAULT_PROJECT_CONTEXT_MANIFEST,
     ):
+        use_git_ref = trusted_git_ref if project_context_manifest is None else None
         project_sections, used_bytes, project_warnings = _project_context_sections(
             repo_root,
             _resolve_manifest_path(repo_root, manifest_path),
             max_total_bytes=max_total_bytes,
             max_file_bytes=max_file_bytes,
             used_bytes=used_bytes,
+            trusted_git_ref=use_git_ref,
+            manifest_repo_path=Path(manifest_path) if use_git_ref else None,
         )
         sections.extend(project_sections)
         warnings.extend(project_warnings)
 
     for manifest_path in _manifest_candidates(
         external_context_manifest,
-        repo_root / DEFAULT_EXTERNAL_CONTEXT_MANIFEST,
+        DEFAULT_EXTERNAL_CONTEXT_MANIFEST,
     ):
+        use_git_ref = trusted_git_ref if external_context_manifest is None else None
         external_sections, used_bytes, external_warnings = _external_context_sections(
             repo_root,
             _resolve_manifest_path(repo_root, manifest_path),
             max_total_bytes=max_total_bytes,
             max_file_bytes=max_file_bytes,
             used_bytes=used_bytes,
+            trusted_git_ref=use_git_ref,
+            manifest_repo_path=Path(manifest_path) if use_git_ref else None,
         )
         sections.extend(external_sections)
         warnings.extend(external_warnings)

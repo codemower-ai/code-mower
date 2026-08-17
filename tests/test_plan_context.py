@@ -120,6 +120,11 @@ class PlanContextTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     codex_audit_pr,
+                    "_require_codex_review_stdin_prompt_support",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    codex_audit_pr,
                     "_read_last_message_file",
                     return_value="review text",
                 ),
@@ -143,18 +148,8 @@ class PlanContextTests(unittest.TestCase):
 
         self.assertEqual(codex_audit_pr._codex_review_plan_prompt(rendered), "")
 
-    def test_codex_preflight_requires_review_stdin_prompt_support(self) -> None:
+    def test_codex_review_requires_stdin_prompt_support_only_when_prompt_is_used(self) -> None:
         def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if command == ["codex", "--version"]:
-                return subprocess.CompletedProcess(command, 0, stdout="codex 0.140.0\n", stderr="")
-            if command == ["codex", "exec", "--help"]:
-                return subprocess.CompletedProcess(
-                    command,
-                    0,
-                    stdout="--ignore-user-config\n--output-schema\n--output-last-message\n"
-                    "--skip-git-repo-check\n",
-                    stderr="",
-                )
             if command == ["codex", "exec", "review", "--help"]:
                 return subprocess.CompletedProcess(
                     command,
@@ -164,7 +159,11 @@ class PlanContextTests(unittest.TestCase):
                 )
             raise AssertionError(f"unexpected command: {command}")
 
-        config = codex_audit_pr.AuditConfig(github_token="", repo_paths={})
+        config = codex_audit_pr.AuditConfig(
+            github_token="",
+            repo_paths={},
+            codex_cli_path="codex",
+        )
         with (
             mock.patch.object(
                 codex_audit_pr,
@@ -174,7 +173,51 @@ class PlanContextTests(unittest.TestCase):
             mock.patch.object(codex_audit_pr.subprocess, "run", side_effect=fake_run),
         ):
             with self.assertRaisesRegex(RuntimeError, "stdin prompt"):
-                codex_audit_pr.preflight_codex_cli(config)
+                codex_audit_pr.run_codex_review(config, Path.cwd(), "Plan context")
+
+    def test_renderer_reads_default_context_from_trusted_git_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            project_dir = root / ".code-mower" / "project-context"
+            project_dir.mkdir(parents=True)
+            architecture = project_dir / "architecture.md"
+            architecture.write_text("committed plan\n", encoding="utf-8")
+            (project_dir / "project-context-manifest.json").write_text(
+                (
+                    "{"
+                    '"documents": ['
+                    '{"path": ".code-mower/project-context/architecture.md", '
+                    '"title": "Architecture"}'
+                    "]}"
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Code Mower",
+                    "-c",
+                    "user.email=code-mower@example.com",
+                    "commit",
+                    "-m",
+                    "add plan context",
+                ],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            architecture.write_text("mutable working tree plan\n", encoding="utf-8")
+
+            rendered = plan_context.render_plan_context(
+                repo_root=root,
+                trusted_git_ref="HEAD",
+            )
+
+            self.assertIn("committed plan", rendered.text)
+            self.assertNotIn("mutable working tree plan", rendered.text)
 
     def test_claude_prompt_marks_plan_context_as_trusted(self) -> None:
         prompt = claude_audit_pr._review_prompt(
