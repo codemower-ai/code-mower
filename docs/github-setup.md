@@ -414,6 +414,9 @@ pending; treats configured current-head `*-blocked` labels as failure; applies
 `*-blocked` label counts only when the matching terminal audit comment carries
 the same head SHA and comes from the lane's configured bot authors, so stale
 labels and forged comments cannot win races against cleanup.
+The generated product-support files include `tools/audit_labeler_lib.py`, which
+the gate uses for GitHub Actions audit-comment attestation without uploading
+source, diffs, or transcripts.
 Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
 call in the repository gate workflow.
 

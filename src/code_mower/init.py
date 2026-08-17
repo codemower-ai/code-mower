@@ -132,6 +132,14 @@ PRODUCT_SUPPORT_FILES = (
         "0755",
     ),
     (
+        # Copy the packaged helper module so product-repo gate workflows can
+        # import tools.audit_labeler_lib without a separate package install.
+        "tools/audit_labeler_lib.py",
+        "audit_labeler_lib.py",
+        "product-support-helper",
+        "0644",
+    ),
+    (
         "tools/safe_gh_comment.py",
         "templates/product-support/safe_gh_comment.py",
         "product-support-helper",
