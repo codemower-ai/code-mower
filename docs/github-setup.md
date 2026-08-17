@@ -325,8 +325,10 @@ Runner setup recipe:
 The generated workflow grants `pull-requests: write`, uses job-level
 concurrency keyed by PR and head SHA without `cancel-in-progress`, and wipes
 the `pr-head` workspace before every checkout so one run cannot inherit another
-run's worktree. Use the runner workflow as the dispatch mechanism for local
-lanes: it invokes `tools/run_codex_audit_pr.sh` and
+run's worktree. After checkout, it re-reads the PR head SHA and exits cleanly
+without running or uploading audits when a newer commit has superseded the
+queued run. Use the runner workflow as the dispatch mechanism for local lanes:
+it invokes `tools/run_codex_audit_pr.sh` and
 `tools/run_claude_audit_pr.sh`, which in turn run `codex exec` or `claude -p`
 from the authenticated macOS account. Do not rely on `@codex` issue mentions
 to dispatch local audit lanes; those mentions are not a dependable Actions
@@ -337,8 +339,9 @@ metadata-only reviewer evidence after every audit attempt. It sends saved
 verdict artifacts with `code-mower cloud reviewer-runs`, spend rows captured in
 a runner-temp `reviewer-spend.json` with `cloud dogfood --spend`, and trusted
 default-branch work-order `*.cloud-event.json` sidecars. The upload step runs
-with `if: always()`, skips successfully when the token is absent, and must not
-block merge authority if the cloud service is unavailable.
+with `if: always()` for non-superseded audit attempts, skips successfully when
+the token is absent, and must not block merge authority if the cloud service is
+unavailable.
 
 The audit wrappers verify the GitHub API head SHA first, then skip the
 `pull/N/head` fetch when the `--repo-paths` checkout is already at that SHA.

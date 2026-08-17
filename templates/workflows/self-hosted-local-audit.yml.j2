@@ -78,15 +78,35 @@ jobs:
           persist-credentials: false
 
       - name: Verify pull request checkout
+        id: verify_pr_head
+        env:
+          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
         run: |
           set -euo pipefail
+          export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
           actual_head="$(git -C "${PR_HEAD_PATH}" rev-parse HEAD)"
           if [ "${actual_head}" != "${PR_HEAD_SHA}" ]; then
             echo "::error::PR checkout resolved ${actual_head}, expected ${PR_HEAD_SHA}"
             exit 1
           fi
+          if ! current_head="$(
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+              --jq '.head.sha'
+          )"; then
+            echo "::warning::Unable to verify current PR head via gh api; continuing with checkout head ${PR_HEAD_SHA}."
+            current_head="${PR_HEAD_SHA}"
+          fi
+          if [ "${current_head}" != "${PR_HEAD_SHA}" ]; then
+            echo "::notice::PR #${PR_NUMBER} head moved to ${current_head}; this run for ${PR_HEAD_SHA} is superseded."
+            echo "superseded=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "superseded=false" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Run matching local CLI audits
+        if: >-
+          steps.verify_pr_head.conclusion == 'success' &&
+          steps.verify_pr_head.outputs.superseded != 'true'
         env:
           GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
           GITHUB_TOKEN: {% raw %}${{ github.token }}{% endraw %}
@@ -161,7 +181,10 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
           fi
 
       - name: Upload Code Mower audit metadata
-        if: always()
+        if: >-
+          always() &&
+          steps.verify_pr_head.conclusion == 'success' &&
+          steps.verify_pr_head.outputs.superseded != 'true'
         env:
           CODE_MOWER_CLOUD_TOKEN: {% raw %}${{ secrets.CODE_MOWER_CLOUD_TOKEN }}{% endraw %}
           CODE_MOWER_CLOUD_TEAM_ID: {% raw %}${{ vars.CODE_MOWER_CLOUD_TEAM_ID }}{% endraw %}

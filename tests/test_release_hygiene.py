@@ -1498,6 +1498,20 @@ exit 1
             self.assertIn("path: code-mower-support", local_cli_audit)
             self.assertIn("path: pr-head", local_cli_audit)
             self.assertIn("fetch-depth: 0", local_cli_audit)
+            self.assertIn("id: verify_pr_head", local_cli_audit)
+            self.assertIn('export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"', local_cli_audit)
+            self.assertIn("if ! current_head=", local_cli_audit)
+            self.assertIn('gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"', local_cli_audit)
+            self.assertIn("Unable to verify current PR head via gh api", local_cli_audit)
+            self.assertIn('echo "superseded=true" >> "${GITHUB_OUTPUT}"', local_cli_audit)
+            self.assertIn(
+                "steps.verify_pr_head.outputs.superseded != 'true'",
+                local_cli_audit,
+            )
+            self.assertIn(
+                "steps.verify_pr_head.conclusion == 'success'",
+                local_cli_audit,
+            )
             self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", local_cli_audit)
             self.assertIn("github.event.action != 'labeled'", local_cli_audit)
             self.assertIn("needs-codex-audit", local_cli_audit)
@@ -1509,7 +1523,7 @@ exit 1
             self.assertIn("--read-token-from-stdin", local_cli_audit)
             self.assertIn("--repo-paths", local_cli_audit)
             self.assertIn("Upload Code Mower audit metadata", local_cli_audit)
-            self.assertIn("if: always()", local_cli_audit)
+            self.assertIn("always() &&", local_cli_audit)
             self.assertIn("secrets.CODE_MOWER_CLOUD_TOKEN", local_cli_audit)
             self.assertIn("CODE_MOWER_CLOUD_TOKEN is not configured", local_cli_audit)
             self.assertIn("cloud reviewer-runs", local_cli_audit)
