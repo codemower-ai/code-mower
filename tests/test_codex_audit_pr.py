@@ -39,6 +39,7 @@ class CodexAuditPrTests(unittest.TestCase):
                 {
                     "PYTEST_CURRENT_TEST": pytest_current_test,
                     "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                    "GITHUB_RUN_ID": "",
                 },
             ),
             mock.patch.object(cap, "fetch_pull_request", side_effect=[pr_payload, pr_payload]),
@@ -162,6 +163,41 @@ class CodexAuditPrTests(unittest.TestCase):
             artifact = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
             self.assertTrue(artifact["quarantined"])
             self.assertIn("fixture-shaped structured verdict", artifact["quarantine_reason"])
+
+    def test_workflow_audit_comment_is_edited_with_bound_marker(self) -> None:
+        body = (
+            "## Codex audit\n"
+            "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+            "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
+        )
+        with (
+            mock.patch.object(
+                cap,
+                "post_pr_comment",
+                return_value={"id": 67890, "html_url": "https://github.test/comment/1"},
+            ) as post_comment,
+            mock.patch.object(
+                cap,
+                "edit_pr_comment",
+                return_value={"id": 67890, "html_url": "https://github.test/comment/1"},
+            ) as edit_comment,
+        ):
+            posted, bound_body = cap._post_audit_comment(
+                "owner/repo",
+                42,
+                body,
+                token="token",
+                actions_run_id="12345",
+            )
+
+        self.assertEqual(posted["html_url"], "https://github.test/comment/1")
+        post_comment.assert_called_once()
+        edit_comment.assert_called_once()
+        self.assertRegex(
+            bound_body,
+            r"<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 "
+            r"comment_id=67890 body_sha256=[0-9a-f]{64} -->",
+        )
 
 
 if __name__ == "__main__":

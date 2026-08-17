@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .github_pr import post_pr_comment
+from .comments import AUDIT_RUN_TRAILER_RE, bind_actions_run_comment_id
+from .github_pr import edit_pr_comment, post_pr_comment
 
 VERDICT_ARTIFACT_SCHEMA = "code_mower.auditVerdictArtifact.v1"
 VERDICT_ARTIFACT_DIR_ENV = "CODE_MOWER_VERDICT_ARTIFACT_DIR"
@@ -239,9 +240,16 @@ def repost_audit_verdict_artifact(path: Path, *, token: str) -> dict[str, Any]:
     artifact = load_audit_verdict_artifact(path)
     if is_fixture_verdict_artifact(artifact):
         raise ValueError("refusing to repost quarantined or fixture-shaped verdict artifact")
-    return post_pr_comment(
-        str(artifact["repo"]),
+    repo = str(artifact["repo"])
+    body = str(artifact["comment_body"])
+    posted = post_pr_comment(
+        repo,
         int(artifact["pr_number"]),
-        str(artifact["comment_body"]),
+        body,
         token=token,
     )
+    if not AUDIT_RUN_TRAILER_RE.search(body):
+        return posted
+    bound_body = bind_actions_run_comment_id(body, posted.get("id"))
+    edited = edit_pr_comment(repo, posted["id"], bound_body, token=token)
+    return edited if isinstance(edited, dict) else posted

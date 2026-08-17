@@ -129,7 +129,7 @@ def resolve_label_decision(
     actions_run_lookup: Optional[Callable[[str], Mapping[str, Any]]] = None,
     commit_pull_requests_lookup: Optional[Callable[[str], Sequence[Mapping[str, Any]]]] = None,
 ) -> tuple[Optional[LabelDecision], str]:
-    if event.get("action") != "created":
+    if event.get("action") not in {"created", "edited"}:
         return None, f"unsupported action: {event.get('action')}"
 
     issue = event.get("issue") or {}
@@ -146,6 +146,7 @@ def resolve_label_decision(
     if author.lower() == "github-actions[bot]" and not github_actions_comment_attested(
         repo=repo,
         body=body,
+        comment_id=comment.get("id"),
         issue_number=issue_number,
         head_sha=current_head_sha or "",
         workflow_paths=github_actions_workflows,

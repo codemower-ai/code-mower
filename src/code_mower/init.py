@@ -12,7 +12,7 @@ import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -333,6 +333,13 @@ def _authors_env_for_trailer_lane(trailer_lane: str) -> str:
     return explicit.get(normalized, f"{normalized}_BOT_AUTHORS")
 
 
+def _authors_env_for_lane(lane_id: str, lane: Mapping[str, Any]) -> str:
+    if lane.get("driver") == "saas_event":
+        adapter = str(lane.get("adapter") or lane.get("provider") or lane_id)
+        return f"{adapter.replace('-', '_').upper()}_BOT_AUTHORS"
+    return _authors_env_for_trailer_lane(_trailer_lane_name(lane_id, lane))
+
+
 def _load_trailer_lane_config(trailer_lane: str) -> Any | None:
     try:
         if __package__ in {None, "", "tools"}:
@@ -539,6 +546,14 @@ def _local_audit_workflow_entry(
     }
 
 
+def _var_env_assignments(names: Sequence[str], *, indent: str = "          ") -> str:
+    unique = sorted({str(name).strip() for name in names if str(name).strip()})
+    return "\n".join(
+        f"{indent}{name}: ${{{{ vars.{name} || '' }}}}"
+        for name in unique
+    )
+
+
 def _gate_health_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
     labels = _labels_for(lane)
     trailer_lane = _trailer_lane_name(lane_id, lane)
@@ -550,6 +565,7 @@ def _gate_health_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, 
         "done": str(labels["done"]),
         "blocked": str(labels["blocked"]),
         "bot_authors": _bot_author_csv(_default_bot_authors_for_lane(lane_id, lane), lane),
+        "authors_env": _authors_env_for_lane(lane_id, lane),
         "github_actions_workflows": github_actions_workflows,
     }
 
@@ -575,6 +591,9 @@ def _gate_health_workflow_entry(
             separators=(",", ":"),
             sort_keys=True,
         ),
+        "gate_health_author_env_assignments": _var_env_assignments(
+            [lane.get("authors_env", "") for lane in audit_lanes]
+        ),
         "gate_health_cron": owner_surface["gate_health_cron"],
         "gate_health_max_wait_minutes": owner_surface["gate_health_max_wait_minutes"],
         "local_audit_runner_label": owner_surface["local_audit_runner_label"] if include_local_audit_runner else "",
@@ -596,6 +615,7 @@ def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
         "blocked": str(labels["blocked"]),
         "builder_label": f"builder:{trailer_lane}",
         "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
+        "authors_env": _authors_env_for_lane(lane_id, lane),
         "github_actions_workflows": github_actions_workflows,
     }
 
@@ -624,7 +644,7 @@ def _author_exclusion_payload(
         "trailers": _identity_section(identity, "trailers"),
     }
     for lane_id, lane in selected_lanes.items():
-        if lane.get("merge_authority"):
+        if lane.get("type") == "audit":
             author_lane = _author_lane_name(lane_id, lane)
             payload["labels"].setdefault(f"builder:{author_lane}", author_lane)
     return payload
@@ -661,6 +681,9 @@ def _gate_workflow_entry(
         "copy_from": GATE_WORKFLOW_TEMPLATE,
         "package_copy_from": GATE_WORKFLOW_TEMPLATE,
         "gate_lanes_json": json.dumps(gate_lanes, separators=(",", ":"), sort_keys=True),
+        "gate_author_env_assignments": _var_env_assignments(
+            [lane.get("authors_env", "") for lane in gate_lanes]
+        ),
         "owner_label": owner_label,
         "owner_login": owner_login,
         "gate_override_label": gate_override_label,
@@ -975,9 +998,14 @@ def _placeholder_text(path: str, source: str) -> str:
 def _render_stale_workflow_template(text: str, *, lane: str) -> str:
     """Render the shared stale-label workflow without requiring Jinja at runtime."""
 
+    display_name = _display_name(lane)
     return (
         text.replace("{% raw %}", "")
         .replace("{% endraw %}", "")
+        .replace(
+            "name: Code Mower Clear Stale Audits",
+            f"name: Code Mower {display_name} Clear Stale Audits",
+        )
         .replace('default: "devin"', f'default: "{lane}"')
         .replace("github.event.inputs.lane || 'devin'", f"github.event.inputs.lane || '{lane}'")
         .replace("code-mower-clear-stale-devin-", f"code-mower-clear-stale-{lane}-")
@@ -1003,8 +1031,14 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
         "__GATE_HEALTH_CRON__": str(entry.get("gate_health_cron") or ""),
         "__GATE_HEALTH_LANES_JSON__": str(entry.get("gate_health_lanes_json") or "[]"),
+        "__GATE_HEALTH_AUTHOR_ENV_ASSIGNMENTS__": str(
+            entry.get("gate_health_author_env_assignments") or ""
+        ),
         "__GATE_HEALTH_MAX_WAIT_MINUTES__": str(
             entry.get("gate_health_max_wait_minutes") or "30"
+        ),
+        "__GATE_AUTHOR_ENV_ASSIGNMENTS__": str(
+            entry.get("gate_author_env_assignments") or ""
         ),
         "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
         "__GATE_OVERRIDE_LABEL_JSON__": json.dumps(str(gate_override_label)),

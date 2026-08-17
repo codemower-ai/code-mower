@@ -33,7 +33,9 @@ if __package__ in {None, "", "tools"}:
         from tools.claude_cli_environment import clean_claude_cli_env, env_flag
         from tools.provider_runners import (
             audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
+            bind_actions_run_comment_id,
             clip_text as _clip_text,
+            edit_pr_comment,
             fetch_pull_request,
             fetch_base_ref_sha as _shared_fetch_base_ref_sha,
             fetch_pr_head_sha as _shared_fetch_pr_head_sha,
@@ -61,7 +63,9 @@ if __package__ in {None, "", "tools"}:
         from claude_cli_environment import clean_claude_cli_env, env_flag  # type: ignore
         from provider_runners import (  # type: ignore
             audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
+            bind_actions_run_comment_id,
             clip_text as _clip_text,
+            edit_pr_comment,
             fetch_pull_request,
             fetch_base_ref_sha as _shared_fetch_base_ref_sha,
             fetch_pr_head_sha as _shared_fetch_pr_head_sha,
@@ -87,7 +91,9 @@ else:  # pragma: no cover - exercised after package extraction.
     from .provider_runners import (
         FetchedHeadMismatch,
         audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
+        bind_actions_run_comment_id,
         clip_text as _clip_text,
+        edit_pr_comment,
         fetch_base_ref_sha as _shared_fetch_base_ref_sha,
         fetch_pull_request,
         fetch_pr_head_sha as _shared_fetch_pr_head_sha,
@@ -128,6 +134,22 @@ STALE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: needs-claude-audit -->"
 DONE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
 BLOCKED_TRAILER = "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->"
 AUDIT_RUN_TRAILER_PREFIX = "<!-- CODE_MOWER_AUDIT_RUN:"
+
+
+def _post_audit_comment(
+    repo: str,
+    pr_number: int,
+    body: str,
+    *,
+    token: str,
+    actions_run_id: Optional[str],
+) -> tuple[dict[str, Any], str]:
+    posted = post_pr_comment(repo, pr_number, body, token=token)
+    if not actions_run_id:
+        return posted, body
+    bound_body = bind_actions_run_comment_id(body, posted.get("id"))
+    edited = edit_pr_comment(repo, posted["id"], bound_body, token=token)
+    return edited if isinstance(edited, dict) else posted, bound_body
 
 
 CLAUDE_VERDICT_SCHEMA: Dict[str, Any] = {
@@ -996,6 +1018,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             config.max_diff_hard_limit_bytes,
         )
     except FetchedHeadMismatch as exc:
+        actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
         print(
             f"  force-push race: fetched head {exc.actual_sha[:8]} does not "
             f"match recorded head {exc.expected_sha[:8]}; emitting STALE",
@@ -1012,6 +1035,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             is_stale=True,
             stale_end_sha=exc.actual_sha,
             merge_authority=config.merge_authority,
+            actions_run_id=actions_run_id,
         )
         result = ClaudeAuditResult(
             repo=repo,
@@ -1066,7 +1090,14 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                         quarantine_reason,
                     )
                     result.comment_body = comment_body
-                posted = post_pr_comment(repo, pr_number, comment_body, token=config.github_token)
+                posted, comment_body = _post_audit_comment(
+                    repo,
+                    pr_number,
+                    comment_body,
+                    token=config.github_token,
+                    actions_run_id=actions_run_id,
+                )
+                result.comment_body = comment_body
                 result.posted_comment_url = posted.get("html_url")
                 _record_posted_comment_url(
                     result.verdict_artifact_path,
@@ -1269,7 +1300,14 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                     quarantine_reason,
                 )
                 result.comment_body = comment_body
-            posted = post_pr_comment(repo, pr_number, comment_body, token=config.github_token)
+            posted, comment_body = _post_audit_comment(
+                repo,
+                pr_number,
+                comment_body,
+                token=config.github_token,
+                actions_run_id=actions_run_id,
+            )
+            result.comment_body = comment_body
             result.posted_comment_url = posted.get("html_url")
             _record_posted_comment_url(
                 result.verdict_artifact_path,

@@ -10,6 +10,7 @@ has proven the shared library on main.
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import os
 import sys
@@ -24,7 +25,9 @@ import re
 MIN_ABBREVIATED_SHA_LENGTH = 7
 AUTHOR_EXCLUSION_ENV = "CODE_MOWER_AUTHOR_EXCLUSION_JSON"
 ACTIONS_RUN_MARKER_RE = re.compile(
-    r"<!--\s*CODE_MOWER_AUDIT_RUN:\s*run_id=([0-9]+)\s*-->"
+    r"<!--\s*CODE_MOWER_AUDIT_RUN:\s*run_id=([0-9]+)"
+    r"(?:\s+comment_id=([0-9]+))?"
+    r"(?:\s+body_sha256=([0-9a-f]{64}))?\s*-->"
 )
 TRUSTED_ACTIONS_AUDIT_EVENTS = frozenset({"pull_request_target"})
 
@@ -42,6 +45,13 @@ class LabelDecision:
 class GitHubToken:
     name: str
     value: str
+
+
+@dataclass(frozen=True)
+class ActionsRunMarker:
+    run_id: str
+    comment_id: str
+    body_sha256: str
 
 
 @dataclass(frozen=True)
@@ -300,8 +310,32 @@ def parse_csv_set(raw: str) -> frozenset[str]:
 
 
 def parse_audit_run_id(body: str) -> str:
+    marker = parse_audit_run_marker(body)
+    return marker.run_id if marker else ""
+
+
+def parse_audit_run_marker(body: str) -> Optional[ActionsRunMarker]:
     match = ACTIONS_RUN_MARKER_RE.search(body)
-    return match.group(1) if match else ""
+    if not match:
+        return None
+    return ActionsRunMarker(
+        run_id=match.group(1),
+        comment_id=match.group(2) or "",
+        body_sha256=match.group(3) or "",
+    )
+
+
+def audit_run_marker_body_digest_matches(body: str) -> bool:
+    match = ACTIONS_RUN_MARKER_RE.search(body)
+    if not match or not match.group(2) or not match.group(3):
+        return False
+    canonical_marker = (
+        "<!-- CODE_MOWER_AUDIT_RUN: "
+        f"run_id={match.group(1)} comment_id={match.group(2)} -->"
+    )
+    canonical_body = body[: match.start()] + canonical_marker + body[match.end() :]
+    digest = hashlib.sha256(canonical_body.encode("utf-8")).hexdigest()
+    return digest == match.group(3)
 
 
 def workflow_path_matches(path: str, trusted_workflows: Sequence[str]) -> bool:
@@ -357,6 +391,7 @@ def github_actions_comment_attested(
     *,
     repo: str,
     body: str,
+    comment_id: int | str | None = None,
     issue_number: int,
     head_sha: str,
     workflow_paths: Sequence[str],
@@ -367,14 +402,19 @@ def github_actions_comment_attested(
     """Return whether a github-actions[bot] audit comment is tied to this PR head."""
     trusted_workflows = tuple(parse_csv_set(",".join(workflow_paths)))
     token_list = tuple(token for token in tokens if token.value)
-    run_id = parse_audit_run_id(body)
-    if not trusted_workflows or not token_list or not run_id or not head_sha:
+    marker = parse_audit_run_marker(body)
+    comment_id_text = str(comment_id or "").strip()
+    if not trusted_workflows or not token_list or marker is None or not head_sha:
+        return False
+    if not comment_id_text or marker.comment_id != comment_id_text:
+        return False
+    if not audit_run_marker_body_digest_matches(body):
         return False
     try:
         if actions_run_lookup is None:
-            run = fetch_actions_run(repo, run_id, tokens=token_list)
+            run = fetch_actions_run(repo, marker.run_id, tokens=token_list)
         else:
-            run = dict(actions_run_lookup(run_id))
+            run = dict(actions_run_lookup(marker.run_id))
     except Exception:
         return False
 

@@ -122,6 +122,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                     {
                         "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
                         "PYTEST_CURRENT_TEST": "",
+                        "GITHUB_RUN_ID": "",
                     },
                 ),
                 mock.patch.object(
@@ -213,6 +214,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                         "PYTEST_CURRENT_TEST": "tests/test_live_guard.py::test_guard",
                         "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
                         "CODE_MOWER_VERDICT_QUARANTINE_DIR": str(tmp_path / "quarantine"),
+                        "GITHUB_RUN_ID": "",
                     },
                 ),
                 mock.patch.object(
@@ -277,6 +279,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                     {
                         "PYTEST_CURRENT_TEST": "",
                         "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                        "GITHUB_RUN_ID": "",
                     },
                 ),
                 mock.patch.object(

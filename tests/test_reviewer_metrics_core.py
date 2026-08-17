@@ -7,12 +7,14 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from code_mower import cloud as code_mower_cloud
 from code_mower import code_mower_telemetry, reviewer_metrics
+from code_mower.provider_runners import verdict_artifacts
 from code_mower.provider_runners import write_audit_verdict_artifact
 
 
@@ -432,6 +434,62 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
                 os.environ.pop("CODE_MOWER_VERDICT_QUARANTINE_DIR", None)
             else:
                 os.environ["CODE_MOWER_VERDICT_QUARANTINE_DIR"] = old_quarantine_dir
+
+    def test_repost_verdict_artifact_binds_actions_run_comment_marker(self) -> None:
+        old_artifact_dir = os.environ.get(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ[code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV] = str(
+                    Path(tmp) / "verdicts"
+                )
+                path = write_audit_verdict_artifact(
+                    lane_id="claude-audit",
+                    repo="owner/repo",
+                    pr_number=42,
+                    head_sha_start="a" * 40,
+                    head_sha_end="a" * 40,
+                    verdict="PASS",
+                    trailer="<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    comment_body=(
+                        "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+                        "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+                    ),
+                )
+                assert path is not None
+
+                with (
+                    mock.patch.object(
+                        verdict_artifacts,
+                        "post_pr_comment",
+                        return_value={"id": 67890, "html_url": "https://github.test/c/1"},
+                    ) as post_comment,
+                    mock.patch.object(
+                        verdict_artifacts,
+                        "edit_pr_comment",
+                        return_value={"id": 67890, "html_url": "https://github.test/c/1"},
+                    ) as edit_comment,
+                ):
+                    posted = verdict_artifacts.repost_audit_verdict_artifact(
+                        path,
+                        token="token",
+                    )
+
+                self.assertEqual(posted["html_url"], "https://github.test/c/1")
+                post_comment.assert_called_once()
+                edit_comment.assert_called_once()
+                edited_body = edit_comment.call_args.args[2]
+                self.assertRegex(
+                    edited_body,
+                    r"<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 "
+                    r"comment_id=67890 body_sha256=[0-9a-f]{64} -->",
+                )
+        finally:
+            if old_artifact_dir is None:
+                os.environ.pop(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV, None)
+            else:
+                os.environ[code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV] = (
+                    old_artifact_dir
+                )
 
     def test_cloud_reviewer_runs_builds_dry_run_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

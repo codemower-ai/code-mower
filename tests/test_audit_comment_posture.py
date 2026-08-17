@@ -1,4 +1,5 @@
 import unittest
+import re
 from unittest.mock import patch
 
 from code_mower.claude_audit_pr import (
@@ -11,6 +12,7 @@ from code_mower.codex_audit_pr import (
     _parse_args as parse_codex_args,
     format_comment as format_codex_comment,
 )
+from code_mower.provider_runners import bind_actions_run_comment_id
 
 
 class AuditCommentPostureTests(unittest.TestCase):
@@ -74,6 +76,17 @@ class AuditCommentPostureTests(unittest.TestCase):
 
         self.assertIn("<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->", codex_comment)
         self.assertIn("<!-- CODE_MOWER_AUDIT_RUN: run_id=67890 -->", claude_comment)
+
+    def test_actions_run_marker_can_be_bound_to_comment_id(self) -> None:
+        body = "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->"
+
+        self.assertRegex(
+            bind_actions_run_comment_id(body, 67890),
+            re.compile(
+                r"<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 "
+                r"comment_id=67890 body_sha256=[0-9a-f]{64} -->"
+            ),
+        )
 
     def test_cli_posture_defaults_can_be_overridden(self) -> None:
         with patch.dict("os.environ", {"CODEX_AUDIT_MERGE_AUTHORITY": "false"}):

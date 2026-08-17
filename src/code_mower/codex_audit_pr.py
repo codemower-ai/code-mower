@@ -90,7 +90,9 @@ if __package__ in {None, "", "tools"}:
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
         from tools.provider_runners import (
             audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
+            bind_actions_run_comment_id,
             clip_text as _clip_text,
+            edit_pr_comment,
             fetch_pull_request,
             fetch_base_ref as _shared_fetch_base_ref,
             fetch_pr_head as _shared_fetch_pr_head,
@@ -115,7 +117,9 @@ if __package__ in {None, "", "tools"}:
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
         from provider_runners import (  # type: ignore
             audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
+            bind_actions_run_comment_id,
             clip_text as _clip_text,
+            edit_pr_comment,
             fetch_pull_request,
             fetch_base_ref as _shared_fetch_base_ref,
             fetch_pr_head as _shared_fetch_pr_head,
@@ -140,8 +144,10 @@ else:  # pragma: no cover - exercised after package extraction.
     from .audit_progress import AuditProgress, run_subprocess_with_progress
     from .provider_runners import (
         audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
+        bind_actions_run_comment_id,
         clip_text as _clip_text,
         create_temp_worktree as _shared_create_temp_worktree,
+        edit_pr_comment,
         fetch_base_ref as _shared_fetch_base_ref,
         fetch_pull_request,
         fetch_pr_head as _shared_fetch_pr_head,
@@ -319,6 +325,22 @@ STALE_TRAILER = "<!-- CODEX_AUDIT_STATE: needs-codex-audit -->"
 DONE_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
 BLOCKED_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
 AUDIT_RUN_TRAILER_PREFIX = "<!-- CODE_MOWER_AUDIT_RUN:"
+
+
+def _post_audit_comment(
+    repo: str,
+    pr_number: int,
+    body: str,
+    *,
+    token: str,
+    actions_run_id: Optional[str],
+) -> tuple[dict[str, Any], str]:
+    posted = post_pr_comment(repo, pr_number, body, token=token)
+    if not actions_run_id:
+        return posted, body
+    bound_body = bind_actions_run_comment_id(body, posted.get("id"))
+    edited = edit_pr_comment(repo, posted["id"], bound_body, token=token)
+    return edited if isinstance(edited, dict) else posted, bound_body
 
 
 def _quarantine_is_test_only(reason: Optional[str]) -> bool:
@@ -1389,6 +1411,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         pr_meta_after = fetch_pull_request(repo, pr_number, token=config.github_token)
         head_sha_after = pr_meta_after["head"]["sha"]
         if head_sha_after != head_sha_start:
+            actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
             print(f"  force-push race: head moved from {head_sha_start[:8]} "
                   f"to {head_sha_after[:8]} during fetch; emitting STALE",
                   file=sys.stderr, flush=True)
@@ -1399,6 +1422,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 is_stale=True,
                 stale_end_sha=head_sha_after,
                 merge_authority=config.merge_authority,
+                actions_run_id=actions_run_id,
             )
             result = AuditResult(
                 repo=repo, pr_number=pr_number,
@@ -1458,8 +1482,14 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                             quarantine_reason,
                         )
                         result.comment_body = comment_body
-                    posted = post_pr_comment(repo, pr_number, comment_body,
-                                              token=config.github_token)
+                    posted, comment_body = _post_audit_comment(
+                        repo,
+                        pr_number,
+                        comment_body,
+                        token=config.github_token,
+                        actions_run_id=actions_run_id,
+                    )
+                    result.comment_body = comment_body
                     result.posted_comment_url = posted.get("html_url")
             config.progress.emit(
                 "audit",
@@ -1657,8 +1687,14 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                     quarantine_reason,
                 )
                 result.comment_body = comment_body
-            posted = post_pr_comment(repo, pr_number, comment_body,
-                                      token=config.github_token)
+            posted, comment_body = _post_audit_comment(
+                repo,
+                pr_number,
+                comment_body,
+                token=config.github_token,
+                actions_run_id=actions_run_id,
+            )
+            result.comment_body = comment_body
             result.posted_comment_url = posted.get("html_url")
             print(f"posted {repo}#{pr_number} verdict={result_verdict} "
                   f"url={result.posted_comment_url}", file=sys.stderr)

@@ -16,7 +16,7 @@ on:
 permissions:
   actions: read
   contents: read
-  issues: read
+  issues: write
   pull-requests: write
   statuses: write
 
@@ -43,11 +43,33 @@ jobs:
           ref: {% raw %}${{ github.event.repository.default_branch }}{% endraw %}
           persist-credentials: false
 
+      - name: Clear stale Code Mower gate override
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.action == 'synchronize' &&
+          env.CODE_MOWER_GATE_OVERRIDE_LABEL != ''
+        env:
+          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+          PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
+        run: |
+          set -euo pipefail
+          gh issue edit "${PR_NUMBER}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --remove-label "${CODE_MOWER_GATE_OVERRIDE_LABEL}" && exit 0
+          if gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" \
+            --jq '.[].name' | grep -Fxq -- "${CODE_MOWER_GATE_OVERRIDE_LABEL}"; then
+            echo "::warning::Failed to remove stale ${CODE_MOWER_GATE_OVERRIDE_LABEL} label; publishing gate failure status."
+            echo "CODE_MOWER_GATE_OVERRIDE_CLEAR_FAILED=true" >> "${GITHUB_ENV}"
+            exit 0
+          fi
+          echo "::notice::${CODE_MOWER_GATE_OVERRIDE_LABEL} was already absent."
+
       - name: Publish Code Mower gate status
         env:
           GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
           PR_NUMBER: {% raw %}${{ github.event.pull_request.number || github.event.inputs.pr_number }}{% endraw %}
           HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha || github.event.inputs.head_sha }}{% endraw %}
+__GATE_AUTHOR_ENV_ASSIGNMENTS__
         run: |
           set -euo pipefail
 
@@ -77,7 +99,8 @@ jobs:
           except ImportError:  # pragma: no cover - unit-test/package fallback
               from code_mower.audit_labeler_lib import GitHubToken, github_actions_comment_attested
 
-          # github_actions_comment_attested verifies the hidden CODE_MOWER_AUDIT_RUN marker.
+          # github_actions_comment_attested verifies the hidden CODE_MOWER_AUDIT_RUN marker
+          # and requires comment_id/body_sha256 to match the issue comment being evaluated.
           def emit(state, description):
               description = str(description).replace("\n", " ")[:140]
               print("gate_state=" + shlex.quote(state))
@@ -112,6 +135,10 @@ jobs:
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
           owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
           gate_override_label = os.environ.get("CODE_MOWER_GATE_OVERRIDE_LABEL", "gate:override")
+          override_clear_failed = (
+              os.environ.get("CODE_MOWER_GATE_OVERRIDE_CLEAR_FAILED", "").lower()
+              == "true"
+          )
           owner_login = os.environ.get("CODE_MOWER_OWNER_LOGIN", "").strip()
           repo_owner = os.environ["GITHUB_REPOSITORY"].split("/", 1)[0]
           configured_override_owner = (
@@ -138,21 +165,25 @@ jobs:
 
           def trusted_authors(lane):
               raw = str(lane.get("bot_authors") or "")
-              return {item.strip() for item in raw.split(",") if item.strip()}
+              env_raw = os.environ.get(str(lane.get("authors_env") or ""), "")
+              merged = raw + "," + env_raw
+              return {item.strip().lower() for item in merged.split(",") if item.strip()}
 
           def trusted_github_actions_workflows(lane):
               raw = str(lane.get("github_actions_workflows") or "")
               return {item.strip() for item in raw.split(",") if item.strip()}
 
-          def trusted_comment_author(lane, author, body):
+          def trusted_comment_author(lane, author, body, comment_id):
               authors = trusted_authors(lane)
-              if author not in authors:
+              author_login = author.strip().lower()
+              if author_login not in authors:
                   return False
-              if author != "github-actions[bot]":
+              if author_login != "github-actions[bot]":
                   return True
               return github_actions_comment_attested(
                   repo=os.environ["GITHUB_REPOSITORY"],
                   body=body,
+                  comment_id=comment_id,
                   issue_number=int(pr_number),
                   head_sha=head_sha,
                   workflow_paths=trusted_github_actions_workflows(lane),
@@ -165,7 +196,7 @@ jobs:
               for comment in reversed(comments):
                   author = str(((comment.get("user") or {}).get("login")) or "")
                   body = str(comment.get("body") or "")
-                  if not trusted_comment_author(lane, author, body):
+                  if not trusted_comment_author(lane, author, body, comment.get("id")):
                       continue
                   if head_marker in body and trailer_suffix in body:
                       return True
@@ -190,44 +221,46 @@ jobs:
           ]
 
           override_actor = ""
-          override_event_index = -1
-          head_event_index = -1
+          override_event_key = None
+          head_move_event_key = None
           def timeline_sha(value):
               if isinstance(value, dict):
                   return str(value.get("sha") or value.get("id") or "")
               return str(value or "")
 
+          def event_key(index, event):
+              created = str(event.get("created_at") or "")
+              return (created, index)
+
+          def is_current_head_move(event):
+              event_name = str(event.get("event") or "")
+              if event_name == "committed":
+                  return str(event.get("sha") or "") == head_sha
+              if event_name == "head_ref_force_pushed":
+                  return (
+                      timeline_sha(event.get("after_commit")) == head_sha
+                      or str(event.get("commit_id") or "") == head_sha
+                  )
+              if event_name == "head_ref_restored":
+                  return str(event.get("commit_id") or "") == head_sha
+              return False
+
           if gate_override_label:
               for index, event in enumerate(events):
-                  event_name = str(event.get("event") or "")
-                  if (
-                      event_name == "committed"
-                      and str(event.get("sha") or "") == head_sha
-                  ):
-                      head_event_index = index
-                  if (
-                      event_name == "head_ref_force_pushed"
-                      and (
-                          timeline_sha(event.get("after_commit")) == head_sha
-                          or str(event.get("commit_id") or "") == head_sha
-                      )
-                  ):
-                      head_event_index = index
-                  if (
-                      event_name == "head_ref_restored"
-                      and str(event.get("commit_id") or "") == head_sha
-                  ):
-                      head_event_index = index
+                  if is_current_head_move(event):
+                      head_move_event_key = event_key(index, event)
                   if event.get("event") != "labeled":
                       continue
                   if str(((event.get("label") or {}).get("name")) or "") != gate_override_label:
                       continue
                   override_actor = str(((event.get("actor") or {}).get("login")) or "").lower()
-                  override_event_index = index
+                  override_event_key = event_key(index, event)
           override_current_head = (
-              override_event_index >= 0
-              and head_event_index >= 0
-              and override_event_index > head_event_index
+              override_event_key is not None
+              and (
+                  head_move_event_key is None
+                  or override_event_key > head_move_event_key
+              )
           )
 
           if len(builder_matches) > 1:
@@ -236,6 +269,8 @@ jobs:
               emit("pending", owner_label + ": waiting on owner")
           elif gate_override_label and gate_override_label in labels and override_actor != override_owner:
               emit("failure", gate_override_label + " was not owner-applied")
+          elif gate_override_label and gate_override_label in labels and override_clear_failed:
+              emit("failure", gate_override_label + " could not be cleared after head change")
           elif gate_override_label and gate_override_label in labels and not override_current_head:
               emit("failure", gate_override_label + " is stale for current head")
           elif gate_override_label and gate_override_label in labels:

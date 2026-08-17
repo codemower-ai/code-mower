@@ -44,7 +44,10 @@ The generated merge gate treats `owner_surface.gate_override_label` as an
 owner-only escape hatch: the label succeeds the gate only when the configured
 owner applied it after the current PR head appeared in the GitHub timeline; a
 non-owner-applied or stale override fails the gate. Set `gate_override_label`
-to an empty string to disable the override path entirely.
+to an empty string to disable the override path entirely. On `synchronize`, the
+generated gate workflow removes a stale override label before recomputing the
+status; if the label cannot be removed, the workflow still publishes a failing
+gate status for the new head.
 
 Configure the owner surface in `code-mower.yml` before enabling the weekly
 schedule:
@@ -230,11 +233,14 @@ post authoritative verdicts.
 
 For merge-gating Codex and Claude lanes, `github-actions[bot]` comments also
 need the hidden `CODE_MOWER_AUDIT_RUN` marker emitted by the wrappers inside
-GitHub Actions. The generated labeler and gate verify that marker against a
-trusted `local-cli-audit.yml` run for the same PR and head before accepting the
-terminal trailer. If GitHub omits the run's `pull_requests` array, Code Mower
-resolves the run head SHA through the commit-to-PRs API; without that match,
-the shared-bot comment is ignored. Use lane-specific posting tokens or remove
+GitHub Actions. The wrappers post the comment, immediately edit it to bind the
+marker to GitHub's created comment id plus a SHA-256 digest of the final comment
+body, and the generated labeler listens for both created and edited comments.
+The labeler and gate verify that bound marker against a trusted
+`local-cli-audit.yml` run for the same PR/head before accepting the terminal
+trailer. If GitHub omits the run's `pull_requests` array, Code Mower resolves
+the run head SHA through the commit-to-PRs API; without that match, the
+shared-bot comment is ignored. Use lane-specific posting tokens or remove
 `github-actions[bot]` from the lane authors when a repository wants a stricter
 separation between Actions jobs and merge-gating audit verdicts.
 
@@ -338,9 +344,9 @@ it invokes `tools/run_codex_audit_pr.sh` and
 from the authenticated macOS account. Do not rely on `@codex` issue mentions
 to dispatch local audit lanes; those mentions are not a dependable Actions
 trigger.
-Generated clear-stale workflows include the lane id in their concurrency group
-so Codex and Claude stale-label cleanup cannot cancel each other on the same PR
-push.
+Generated clear-stale workflows include the lane id in their workflow name and
+concurrency group so Codex and Claude stale-label cleanup cannot cancel each
+other on the same PR push.
 
 If `CODE_MOWER_CLOUD_TOKEN` is configured, the generated workflow also uploads
 metadata-only reviewer evidence after every audit attempt. It sends saved
@@ -454,6 +460,9 @@ builder_identity:
 PR-body trailer mappings remain configuration-valid for non-gating provenance
 experiments, but merge-authority author exclusion uses only labels and
 authenticated PR authors until trailer sources can be trusted.
+Generated gates register default `builder:<lane>` labels for audit lanes,
+including informational lanes, so conflicting builder provenance is visible
+before a merge-authority lane is excluded.
 
 Branch protection should require `code-mower/gate` alongside normal CI before
 autonomous merge is trusted. Inspect the existing status-check protection first:
