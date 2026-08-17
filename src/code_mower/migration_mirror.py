@@ -21,6 +21,7 @@ PRODUCT_SUPPORT_PATTERNS = (
     "tools/devin_audit_bridge.py",
     "tools/audit_handoff_log.py",
     "tools/request_review.py",
+    "tools/audit_labeler_lib.py",
     "tools/safe_gh_comment.py",
     "tools/status_report.py",
     "tools/codex_audit_env.sh",

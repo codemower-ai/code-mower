@@ -1407,6 +1407,7 @@ exit 1
                 repo / "tools" / "code_mower_standalone_pin.env",
                 repo / "tools" / "code_mower_standalone_shadow.sh",
                 repo / "tools" / "run_codex_audit_pr.sh",
+                repo / "tools" / "audit_labeler_lib.py",
                 repo / "tools" / "safe_gh_comment.py",
             ]
             for path in support_paths:
@@ -1423,6 +1424,7 @@ exit 1
 
         self.assertEqual(payload["status"], "mirrors_removed")
         self.assertEqual(payload["mirrored_file_count"], 0)
+        self.assertIn("tools/audit_labeler_lib.py", payload["product_support_files"])
         self.assertIn("tools/run_codex_audit_pr.sh", payload["product_support_files"])
         self.assertIn("tools/safe_gh_comment.py", payload["product_support_files"])
 
@@ -1985,6 +1987,7 @@ fi
                 "tools/code_mower_standalone_pin.env",
                 "tools/run_codex_audit_pr.sh",
                 "tools/run_claude_audit_pr.sh",
+                "tools/audit_labeler_lib.py",
                 "tools/safe_gh_comment.py",
                 "tools/status_report.py",
             }
@@ -2002,6 +2005,7 @@ fi
             self.assertTrue(generated.isdisjoint(placeholder_files))
             non_executable_generated = {
                 "reviewer-value-report.example.md",
+                "tools/audit_labeler_lib.py",
                 "tools/code_mower_standalone_pin.env",
             }
             for rel_path in generated - non_executable_generated:
@@ -2017,6 +2021,24 @@ fi
                 output_dir.joinpath("reviewer-value-report.example.md").read_text(
                     encoding="utf-8"
                 ),
+            )
+            package_helper = ROOT / "src/code_mower/audit_labeler_lib.py"
+            self.assertTrue(package_helper.is_file())
+            self.assertEqual(
+                output_dir.joinpath("tools/audit_labeler_lib.py").read_text(
+                    encoding="utf-8"
+                ),
+                package_helper.read_text(encoding="utf-8"),
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "py_compile",
+                    str(output_dir / "tools/audit_labeler_lib.py"),
+                ],
+                check=True,
+                text=True,
             )
 
             devin_config = {
@@ -2437,16 +2459,24 @@ printf '%s\\n' "${lane}"
 
     def test_package_materializer_includes_product_support_templates(self) -> None:
         packaged_sources = {source for _, source, _ in code_mower_package.PACKAGE_FILES}
+        packaged_sources_by_target = {
+            target: source for source, target, _ in code_mower_package.PACKAGE_FILES
+        }
         for source in (
             "src/code_mower/templates/product-support/code_mower",
             "src/code_mower/templates/product-support/code_mower_standalone_pin.env",
             "src/code_mower/templates/product-support/code_mower_standalone_shadow.sh",
             "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
             "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
+            "src/code_mower/audit_labeler_lib.py",
             "src/code_mower/templates/product-support/safe_gh_comment.py",
             "src/code_mower/templates/product-support/status_report.py",
         ):
             self.assertIn(source, packaged_sources)
+        self.assertEqual(
+            packaged_sources_by_target["src/code_mower/audit_labeler_lib.py"],
+            "tools/audit_labeler_lib.py",
+        )
 
         packaged_template_targets = {
             target for _kind, target in code_mower_package.TEMPLATE_FILES
