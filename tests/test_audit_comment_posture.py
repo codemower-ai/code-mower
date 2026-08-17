@@ -42,6 +42,24 @@ class AuditCommentPostureTests(unittest.TestCase):
         self.assertIn("## Claude audit (informational only)", comment)
         self.assertIn("Claude Audit: BLOCKED", comment)
 
+    def test_audit_comments_render_full_head_sha(self) -> None:
+        codex_head = "0123456789abcdef0123456789abcdef01234567"
+        claude_head = "fedcba9876543210fedcba9876543210fedcba98"
+
+        codex_comment = format_codex_comment(
+            CodexVerdict(verdict="PASS", prose="Findings: none."),
+            codex_head,
+        )
+        claude_comment = format_claude_comment(
+            ClaudeVerdict(verdict="PASS", prose="Findings: none."),
+            claude_head,
+        )
+
+        self.assertIn(f"Head SHA: `{codex_head}`", codex_comment)
+        self.assertIn(f"Head SHA: `{claude_head}`", claude_comment)
+        self.assertNotIn(f"Head SHA: `{codex_head[:12]}`", codex_comment)
+        self.assertNotIn(f"Head SHA: `{claude_head[:12]}`", claude_comment)
+
     def test_actions_run_marker_can_be_rendered_for_workflow_comments(self) -> None:
         codex_comment = format_codex_comment(
             CodexVerdict(verdict="PASS", prose="Findings: none."),

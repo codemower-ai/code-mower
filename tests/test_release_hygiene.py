@@ -897,8 +897,10 @@ exit 1
         self.assertIn("__TRAILER_LANE__", trailer)
         self.assertIn("__BOT_AUTHORS__", trailer)
         self.assertIn("CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS", trailer)
-        self.assertIn("actions: read", trailer)
+        self.assertIn("actions: write", trailer)
         self.assertIn("pull-requests: write", trailer)
+        self.assertIn("gh workflow run code-mower-gate.yml", trailer)
+        self.assertIn('gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"', trailer)
         self.assertIn("vars.__AUTHORS_ENV__", trailer)
         self.assertIn(
             "contains(github.event.comment.body, '__TRAILER_PREFIX__')",
@@ -1194,6 +1196,31 @@ exit 1
             comments=[
                 {
                     "body": "Head SHA: `" + ("b" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
+    def test_gate_decision_rejects_abbreviated_current_head_trailer(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 12) + "`\n"
                     "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
                     "user": {"login": "claude-audit-bot"},
                 }
@@ -1585,8 +1612,11 @@ exit 1
             self.assertIn("claude-audit-bot[bot]", claude)
             self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", claude)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS", claude)
-            self.assertIn("actions: read", claude)
+            self.assertIn("actions: write", claude)
             self.assertIn('CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml"', claude)
+            self.assertIn("gh workflow run code-mower-gate.yml", claude)
+            self.assertIn("repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}", claude)
+            self.assertIn('-f "head_sha=${head_sha}"', claude)
             self.assertNotIn("github.event.inputs.lane", claude)
             self.assertNotIn("github.event.comment.user.type == 'Bot'", claude)
 

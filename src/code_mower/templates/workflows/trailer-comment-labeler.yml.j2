@@ -6,7 +6,7 @@ on:
     types: [created]
 
 permissions:
-  actions: read
+  actions: write
   contents: read
   issues: write
   pull-requests: write
@@ -61,3 +61,16 @@ jobs:
           TRAILER_LANE: __TRAILER_LANE__
           CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: "__GITHUB_ACTIONS_WORKFLOWS__"
         run: tools/code_mower trailer-comment-labeler --lane "${TRAILER_LANE}"
+
+      - name: Recompute Code Mower gate
+        env:
+          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+          PR_NUMBER: {% raw %}${{ github.event.issue.number }}{% endraw %}
+        run: |
+          set -euo pipefail
+          head_sha="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          gh workflow run code-mower-gate.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref {% raw %}"${{ github.event.repository.default_branch }}"{% endraw %} \
+            -f "pr_number=${PR_NUMBER}" \
+            -f "head_sha=${head_sha}"
