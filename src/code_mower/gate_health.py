@@ -23,6 +23,9 @@ LOCAL_AUDIT_WORKFLOW_PATH_SUFFIXES = (
 LOCAL_AUDIT_WORKFLOW_NAMES = {
     "Code Mower Local CLI Audits",
 }
+DEFAULT_UNKNOWN_STREAK_THRESHOLD = 3
+DEFAULT_UNKNOWN_STREAK_HISTORY_HOURS = 168
+DEFAULT_UNKNOWN_STREAK_CLOSED_PR_LIMIT = 100
 
 
 @dataclass(frozen=True)
@@ -242,6 +245,95 @@ def runner_alert(runners: Sequence[dict[str, Any]], runner_label: str) -> Alert 
     return None
 
 
+def _comment_time(comment: dict[str, Any]) -> datetime:
+    return parse_time(str(comment.get("created_at") or comment.get("createdAt") or ""))
+
+
+def _lane_requeue_kind(body: str, lane: dict[str, Any]) -> str:
+    for terminal_label in (str(lane.get("done") or ""), str(lane.get("blocked") or "")):
+        if terminal_label and f": {terminal_label} -->" in body:
+            return "terminal"
+    needs = str(lane.get("needs") or "")
+    if not needs or f": {needs} -->" not in body:
+        return ""
+    if "Head SHA changed during review" in body:
+        return "stale"
+    if "Could not validate" in body and "structured verdict" in body:
+        return "unknown"
+    return "requeue"
+
+
+def lane_unknown_streak_alerts(
+    *,
+    repo: str,
+    lanes: Sequence[dict[str, Any]],
+    prs: Sequence[dict[str, Any]],
+    comments: dict[int, Sequence[dict[str, Any]]],
+    threshold: int,
+    tokens: Sequence[GitHubToken],
+    recent: set[str],
+) -> list[Alert]:
+    if threshold <= 0:
+        return []
+    events_by_lane: dict[str, list[tuple[datetime, str, int, str]]] = {}
+    for pr in prs:
+        number = int(pr["number"])
+        head_sha = str(pr.get("headRefOid") or pr.get("head_sha") or "")
+        for comment in comments.get(number, ()):
+            author = str(((comment.get("user") or {}).get("login")) or "")
+            body = str(comment.get("body") or "")
+            for lane in lanes:
+                lane_id = str(lane.get("id") or lane.get("needs") or "lane")
+                kind = _lane_requeue_kind(body, lane)
+                if not kind:
+                    continue
+                if not trusted_comment_author(
+                    repo=repo,
+                    lane=lane,
+                    author=author,
+                    body=body,
+                    comment_id=comment.get("id"),
+                    number=number,
+                    head_sha=head_sha,
+                    tokens=tokens,
+                ):
+                    continue
+                try:
+                    created_at = _comment_time(comment)
+                except ValueError:
+                    continue
+                events_by_lane.setdefault(lane_id, []).append(
+                    (created_at, kind, number, head_sha)
+                )
+
+    alerts: list[Alert] = []
+    for lane_id, events in events_by_lane.items():
+        events.sort(reverse=True)
+        streak = []
+        for event in events:
+            if event[1] != "unknown":
+                break
+            streak.append(event)
+        if len(streak) < threshold:
+            continue
+        latest_time, _kind, latest_pr, latest_sha = streak[0]
+        key = f"lane-{lane_id}-unknown-{latest_time.strftime('%Y%m%dT%H%M%S')}"
+        if key in recent:
+            continue
+        alerts.append(
+            Alert(
+                key,
+                f"{lane_id} audit lane has repeated UNKNOWN verdicts",
+                (
+                    f"The latest {len(streak)} trusted {lane_id} requeue comment(s) "
+                    "were UNKNOWN, not STALE. Inspect runner CLI/auth before "
+                    f"retrying PRs; latest was PR #{latest_pr} at `{latest_sha[:12]}`."
+                ),
+            )
+        )
+    return alerts
+
+
 def evaluate(
     *,
     now: datetime,
@@ -258,6 +350,9 @@ def evaluate(
     runner_label: str,
     repo: str = "",
     tokens: Sequence[GitHubToken] = (),
+    unknown_streak_threshold: int = DEFAULT_UNKNOWN_STREAK_THRESHOLD,
+    stale_prs: Sequence[dict[str, Any]] | None = None,
+    unknown_streak_prs: Sequence[dict[str, Any]] | None = None,
 ) -> list[Alert]:
     recent = recent_alert_keys(status_comments, now, dedupe_hours)
     alerts = [
@@ -271,7 +366,7 @@ def evaluate(
         for lane in lanes
         if str(lane.get("needs") or "")
     }
-    for pr in prs:
+    for pr in (stale_prs if stale_prs is not None else prs):
         number = int(pr["number"])
         head_sha = str(pr.get("headRefOid") or pr.get("head_sha") or "")
         labels = label_names(pr)
@@ -312,6 +407,9 @@ def evaluate(
                             True,
                         )
                     )
+    for pr in prs:
+        number = int(pr["number"])
+        head_sha = str(pr.get("headRefOid") or pr.get("head_sha") or "")
         failed = latest_local_audit_failure(
             check_runs.get(number, check_runs.get(head_sha, ()))
         )
@@ -329,6 +427,17 @@ def evaluate(
                         number,
                     )
                 )
+    alerts.extend(
+        lane_unknown_streak_alerts(
+            repo=repo,
+            lanes=lanes,
+            prs=unknown_streak_prs if unknown_streak_prs is not None else prs,
+            comments=comments,
+            threshold=unknown_streak_threshold,
+            tokens=tokens,
+            recent=recent,
+        )
+    )
     return alerts
 
 
@@ -432,6 +541,79 @@ def fetch_per_pr(
             failures.append(f"{kind}:pr-{number}")
             print(f"warning: failed to fetch {kind} for PR #{number}: {exc}", flush=True)
     return out
+
+
+def _issue_number_from_url(url: str) -> int | None:
+    value = url.rstrip("/").rsplit("/", 1)[-1]
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _comment_key(comment: dict[str, Any]) -> str:
+    return str(
+        comment.get("id")
+        or comment.get("node_id")
+        or comment.get("url")
+        or f"{comment.get('created_at') or comment.get('createdAt')}:{comment.get('body')}"
+    )
+
+
+def merge_comments(
+    first: Sequence[dict[str, Any]],
+    second: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for comment in [*first, *second]:
+        key = _comment_key(comment)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(comment)
+    return merged
+
+
+def fetch_recent_pr_comments(
+    repo: str,
+    prs: Sequence[dict[str, Any]],
+    since: str,
+    failures: list[str],
+) -> dict[int, list[dict[str, Any]]]:
+    pr_numbers = {int(pr["number"]) for pr in prs}
+    out = {number: [] for number in pr_numbers}
+    if not pr_numbers:
+        return out
+    try:
+        items = gh_api_list(
+            repo,
+            f"issues/comments?per_page=100&since={since}",
+        )
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        failures.append("comments:recent")
+        print(f"warning: failed to fetch recent issue comments: {exc}", flush=True)
+        return out
+    for item in items:
+        number = _issue_number_from_url(str(item.get("issue_url") or ""))
+        if number in pr_numbers:
+            out[number].append(item)
+    return out
+
+
+def merge_prs(
+    first: Sequence[dict[str, Any]],
+    second: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for pr in [*first, *second]:
+        number = int(pr["number"])
+        if number in seen:
+            continue
+        seen.add(number)
+        merged.append(pr)
+    return merged
 
 
 def fetch_head_times(
@@ -572,6 +754,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("auto", "disabled", "required"),
         default="auto",
     )
+    parser.add_argument(
+        "--unknown-streak-threshold",
+        type=int,
+        default=int(os.environ.get("CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_THRESHOLD", "3")),
+    )
+    parser.add_argument(
+        "--unknown-streak-history-hours",
+        type=int,
+        default=int(
+            os.environ.get(
+                "CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_HISTORY_HOURS",
+                str(DEFAULT_UNKNOWN_STREAK_HISTORY_HOURS),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--unknown-streak-closed-pr-limit",
+        type=int,
+        default=int(
+            os.environ.get(
+                "CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_CLOSED_PR_LIMIT",
+                str(DEFAULT_UNKNOWN_STREAK_CLOSED_PR_LIMIT),
+            )
+        ),
+    )
     parser.add_argument("--owner-login", default=os.environ.get("OWNER_LOGIN", ""))
     parser.add_argument("--alert-runner-api-unavailable", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -604,22 +811,50 @@ def main(argv: Sequence[str] | None = None) -> int:
             "number,title,headRefOid,labels",
         ]
     )
+    closed_prs = (
+        gh_json(
+            [
+                "pr",
+                "list",
+                "--repo",
+                args.repo,
+                "--state",
+                "closed",
+                "--limit",
+                str(args.unknown_streak_closed_pr_limit),
+                "--json",
+                "number,title,headRefOid,labels",
+            ]
+        )
+        if args.unknown_streak_closed_pr_limit > 0
+        else []
+    )
+    streak_prs = merge_prs(prs, closed_prs)
     gate_prs = [pr for pr in prs if label_names(pr) & needs_labels]
-    timelines = fetch_per_pr(args.repo, gate_prs, "timeline", fetch_failures)
-    comments = fetch_per_pr(args.repo, gate_prs, "comments", fetch_failures)
-    eval_prs = [
-        pr
-        for pr in gate_prs
-        if int(pr["number"]) in timelines and int(pr["number"]) in comments
-    ]
-    check_runs = fetch_per_pr(args.repo, prs, "checks", fetch_failures)
-    head_times = fetch_head_times(args.repo, eval_prs, fetch_failures)
     dedupe_since = (
         (now - timedelta(hours=args.dedupe_hours))
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z")
     )
+    streak_since = (
+        (now - timedelta(hours=args.unknown_streak_history_hours))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    timelines = fetch_per_pr(args.repo, gate_prs, "timeline", fetch_failures)
+    comments = fetch_recent_pr_comments(args.repo, streak_prs, streak_since, fetch_failures)
+    gate_comments = fetch_per_pr(args.repo, gate_prs, "comments", fetch_failures)
+    for number, items in gate_comments.items():
+        comments[number] = merge_comments(comments.get(number, ()), items)
+    eval_prs = [
+        pr
+        for pr in gate_prs
+        if int(pr["number"]) in timelines and int(pr["number"]) in gate_comments
+    ]
+    check_runs = fetch_per_pr(args.repo, prs, "checks", fetch_failures)
+    head_times = fetch_head_times(args.repo, eval_prs, fetch_failures)
     status_comments = (
         gh_api_list(
             args.repo,
@@ -696,6 +931,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         runner_label=args.runner_label if runner_inventory_available else "",
         repo=args.repo,
         tokens=(GitHubToken("GH_TOKEN", os.environ.get("GH_TOKEN", "")),),
+        unknown_streak_threshold=args.unknown_streak_threshold,
+        stale_prs=eval_prs,
+        unknown_streak_prs=streak_prs,
     )
     failures: list[str] = []
     announced_alerts = list(alerts) if args.dry_run else []

@@ -46,6 +46,38 @@ def audit_check(**overrides: object) -> dict[str, object]:
     return base
 
 
+def audit_comment(kind: str, *, created_at: str) -> dict[str, object]:
+    body = f"Head SHA: `{SHA}`\n"
+    if kind == "unknown":
+        body += "Could not validate a Claude structured verdict artifact.\n"
+    elif kind == "stale":
+        body += "Head SHA changed during review (`aaaaaaaa` -> `bbbbbbbb`).\n"
+    elif kind == "terminal":
+        body += "Claude Audit: PASS\n<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
+        return {
+            "id": created_at,
+            "created_at": created_at,
+            "user": {"login": "trusted-audit-bot"},
+            "body": body,
+        }
+    else:
+        body += "Claude Audit: PASS\n"
+    body += "<!-- CLAUDE_AUDIT_STATE: needs-claude-audit -->"
+    return {
+        "id": created_at,
+        "created_at": created_at,
+        "user": {"login": "trusted-audit-bot"},
+        "body": body,
+    }
+
+
+def issue_comment(number: int, comment: dict[str, object]) -> dict[str, object]:
+    return {
+        **comment,
+        "issue_url": f"https://api.github.com/repos/owner/repo/issues/{number}",
+    }
+
+
 def pr(labels: list[str]) -> dict[str, object]:
     return {
         "number": 9,
@@ -319,6 +351,56 @@ class GateHealthTests(unittest.TestCase):
 
         self.assertEqual(alerts, [])
 
+    def test_repeated_unknown_comments_alert_per_lane(self) -> None:
+        lanes = [{**LANES[1], "bot_authors": "trusted-audit-bot"}]
+        alerts = evaluate_case(
+            lanes=lanes,
+            comments={
+                9: [
+                    audit_comment("unknown", created_at="2026-08-17T04:01:00Z"),
+                    audit_comment("unknown", created_at="2026-08-17T04:02:00Z"),
+                    audit_comment("unknown", created_at="2026-08-17T04:03:00Z"),
+                ]
+            },
+            repo="owner/repo",
+        )
+
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("repeated UNKNOWN", alerts[0].title)
+        self.assertIn("not STALE", alerts[0].body)
+
+    def test_stale_comment_breaks_unknown_streak(self) -> None:
+        lanes = [{**LANES[1], "bot_authors": "trusted-audit-bot"}]
+        alerts = evaluate_case(
+            lanes=lanes,
+            comments={
+                9: [
+                    audit_comment("unknown", created_at="2026-08-17T04:01:00Z"),
+                    audit_comment("stale", created_at="2026-08-17T04:02:00Z"),
+                    audit_comment("unknown", created_at="2026-08-17T04:03:00Z"),
+                ]
+            },
+            repo="owner/repo",
+        )
+
+        self.assertEqual(alerts, [])
+
+    def test_terminal_comment_breaks_unknown_streak(self) -> None:
+        lanes = [{**LANES[1], "bot_authors": "trusted-audit-bot"}]
+        alerts = evaluate_case(
+            lanes=lanes,
+            comments={
+                9: [
+                    audit_comment("unknown", created_at="2026-08-17T04:01:00Z"),
+                    audit_comment("terminal", created_at="2026-08-17T04:02:00Z"),
+                    audit_comment("unknown", created_at="2026-08-17T04:03:00Z"),
+                ]
+            },
+            repo="owner/repo",
+        )
+
+        self.assertEqual(alerts, [])
+
     def test_runner_offline_alert_dedupes(self) -> None:
         alerts = evaluate_case(
             prs=[],
@@ -460,6 +542,8 @@ class GateHealthTests(unittest.TestCase):
         ) -> list[dict[str, object]]:
             if path.startswith("issues/TODO_STATUS_ISSUE/"):
                 raise AssertionError(path)
+            if path.startswith("issues/comments?"):
+                return []
             if path == "issues/9/timeline?per_page=100":
                 return [
                     {
@@ -507,6 +591,230 @@ class GateHealthTests(unittest.TestCase):
         self.assertEqual(payload["failed_alerts"], [])
         self.assertEqual(posted, [])
         self.assertEqual(stalled, [9])
+
+    def test_main_fetches_comments_for_non_gate_prs_to_reset_unknown_streak(self) -> None:
+        import code_mower.gate_health as gate_health
+
+        original_gh_json = gate_health.gh_json
+        original_gh_api_list = gate_health.gh_api_list
+        lanes = [{**LANES[1], "bot_authors": "trusted-audit-bot"}]
+
+        def fake_gh_json(args: list[str], env: dict[str, str] | None = None) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 9,
+                        "title": "Recovered",
+                        "headRefOid": SHA,
+                        "labels": [],
+                    },
+                    {**pr(["needs-claude-audit"]), "number": 10},
+                ]
+            if args[:1] == ["api"] and args[1] == f"repos/owner/repo/commits/{SHA}":
+                return {"commit": {"committer": {"date": "2000-01-01T00:00:00Z"}}}
+            raise AssertionError(args)
+
+        def fake_gh_api_list(
+            repo: str,
+            path: str,
+            key: str | None = None,
+            *,
+            env: dict[str, str] | None = None,
+        ) -> list[dict[str, object]]:
+            if path.startswith("issues/comments?"):
+                return [
+                    issue_comment(
+                        9,
+                        audit_comment("terminal", created_at="2026-08-17T04:04:00Z"),
+                    ),
+                    issue_comment(
+                        10,
+                        audit_comment("unknown", created_at="2026-08-17T04:01:00Z"),
+                    ),
+                    issue_comment(
+                        10,
+                        audit_comment("unknown", created_at="2026-08-17T04:02:00Z"),
+                    ),
+                    issue_comment(
+                        10,
+                        audit_comment("unknown", created_at="2026-08-17T04:03:00Z"),
+                    ),
+                ]
+            if path == "issues/9/comments?per_page=100":
+                raise AssertionError("non-gate PR comments should use the batch endpoint")
+            if path == "issues/9/timeline?per_page=100":
+                raise AssertionError("non-gate PR timelines should not be fetched")
+            if path == "issues/10/comments?per_page=100":
+                return []
+            if path == "issues/10/timeline?per_page=100":
+                return [
+                    {
+                        "event": "labeled",
+                        "label": {"name": "needs-claude-audit"},
+                        "created_at": "2026-08-17T04:59:00Z",
+                    }
+                ]
+            if path == f"commits/{SHA}/check-runs?per_page=100":
+                return []
+            raise AssertionError(path)
+
+        try:
+            gate_health.gh_json = fake_gh_json  # type: ignore[assignment]
+            gate_health.gh_api_list = fake_gh_api_list  # type: ignore[assignment]
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = gate_health.main(
+                    [
+                        "--repo",
+                        "owner/repo",
+                        "--lanes-json",
+                        json.dumps(lanes),
+                        "--stale-minutes",
+                        "9999",
+                        "--runner-check",
+                        "disabled",
+                        "--dry-run",
+                    ]
+                )
+        finally:
+            gate_health.gh_json = original_gh_json
+            gate_health.gh_api_list = original_gh_api_list
+
+        payload = json.loads(stdout.getvalue().strip().splitlines()[-1])
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["alerts"], [])
+
+    def test_main_skips_stale_eval_when_gate_comments_fetch_fails(self) -> None:
+        import code_mower.gate_health as gate_health
+
+        original_gh_json = gate_health.gh_json
+        original_gh_api_list = gate_health.gh_api_list
+
+        def fake_gh_json(args: list[str], env: dict[str, str] | None = None) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [pr(["needs-codex-audit"])]
+            raise AssertionError(args)
+
+        def fake_gh_api_list(
+            repo: str,
+            path: str,
+            key: str | None = None,
+            *,
+            env: dict[str, str] | None = None,
+        ) -> list[dict[str, object]]:
+            if path.startswith("issues/comments?"):
+                return []
+            if path == "issues/9/timeline?per_page=100":
+                return [
+                    {
+                        "event": "labeled",
+                        "label": {"name": "needs-codex-audit"},
+                        "created_at": "2000-01-01T00:00:00Z",
+                    }
+                ]
+            if path == "issues/9/comments?per_page=100":
+                raise ValueError("comments unavailable")
+            if path == f"commits/{SHA}/check-runs?per_page=100":
+                return []
+            raise AssertionError(path)
+
+        try:
+            gate_health.gh_json = fake_gh_json  # type: ignore[assignment]
+            gate_health.gh_api_list = fake_gh_api_list  # type: ignore[assignment]
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = gate_health.main(
+                    [
+                        "--repo",
+                        "owner/repo",
+                        "--lanes-json",
+                        json.dumps(LANES),
+                        "--stale-minutes",
+                        "1",
+                        "--runner-check",
+                        "disabled",
+                        "--dry-run",
+                    ]
+                )
+        finally:
+            gate_health.gh_json = original_gh_json
+            gate_health.gh_api_list = original_gh_api_list
+
+        payload = json.loads(stdout.getvalue().strip().splitlines()[-1])
+        self.assertEqual(code, 1)
+        self.assertIn("comments:pr-9", payload["fetch_failures"])
+        self.assertNotIn(f"pr-9-codex-{SHA[:12]}-stale", payload["alerts"])
+
+    def test_main_counts_recent_closed_pr_comments_for_unknown_streak(self) -> None:
+        import code_mower.gate_health as gate_health
+
+        original_gh_json = gate_health.gh_json
+        original_gh_api_list = gate_health.gh_api_list
+        lanes = [{**LANES[1], "bot_authors": "trusted-audit-bot"}]
+
+        def fake_gh_json(args: list[str], env: dict[str, str] | None = None) -> object:
+            if args[:2] == ["pr", "list"] and "--state" in args:
+                state = args[args.index("--state") + 1]
+                if state == "open":
+                    return []
+                if state == "closed":
+                    return [
+                        {
+                            "number": 12,
+                            "title": "Closed broken lane",
+                            "headRefOid": SHA,
+                            "labels": [],
+                        }
+                    ]
+            raise AssertionError(args)
+
+        def fake_gh_api_list(
+            repo: str,
+            path: str,
+            key: str | None = None,
+            *,
+            env: dict[str, str] | None = None,
+        ) -> list[dict[str, object]]:
+            if path.startswith("issues/comments?"):
+                return [
+                    issue_comment(
+                        12,
+                        audit_comment("unknown", created_at="2026-08-17T04:01:00Z"),
+                    ),
+                    issue_comment(
+                        12,
+                        audit_comment("unknown", created_at="2026-08-17T04:02:00Z"),
+                    ),
+                    issue_comment(
+                        12,
+                        audit_comment("unknown", created_at="2026-08-17T04:03:00Z"),
+                    ),
+                ]
+            raise AssertionError(path)
+
+        try:
+            gate_health.gh_json = fake_gh_json  # type: ignore[assignment]
+            gate_health.gh_api_list = fake_gh_api_list  # type: ignore[assignment]
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = gate_health.main(
+                    [
+                        "--repo",
+                        "owner/repo",
+                        "--lanes-json",
+                        json.dumps(lanes),
+                        "--runner-check",
+                        "disabled",
+                        "--dry-run",
+                    ]
+                )
+        finally:
+            gate_health.gh_json = original_gh_json
+            gate_health.gh_api_list = original_gh_api_list
+
+        payload = json.loads(stdout.getvalue().strip().splitlines()[-1])
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["alerts"], ["lane-claude-unknown-20260817T040300"])
 
     def test_main_does_not_emit_runner_missing_when_runner_check_disabled(self) -> None:
         import code_mower.gate_health as gate_health
@@ -563,6 +871,8 @@ class GateHealthTests(unittest.TestCase):
             env: dict[str, str] | None = None,
         ) -> list[dict[str, object]]:
             if path.startswith("issues/6/comments?"):
+                return []
+            if path.startswith("issues/comments?"):
                 return []
             if path == f"commits/{SHA}/check-runs?per_page=100":
                 return [

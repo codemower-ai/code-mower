@@ -55,6 +55,7 @@ from .registry import (
 )
 from .runtime import (
     check_github_auth_surface,
+    check_macos_runner_launchagent,
     check_pytest,
     check_python_runtime,
     check_ripgrep,
@@ -83,6 +84,7 @@ __all__ = [
     "build_doctor_run_plan",
     "check_cloud_token_surface",
     "check_github_auth_surface",
+    "check_macos_runner_launchagent",
     "check_github_setup",
     "check_repository_posture",
     "check_lane_runtime",

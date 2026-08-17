@@ -23,6 +23,9 @@ env:
     __GATE_HEALTH_LANES_JSON__
   CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES: {% raw %}${{ github.event.inputs.max_wait_minutes || '__GATE_HEALTH_MAX_WAIT_MINUTES__' }}{% endraw %}
   CODE_MOWER_GATE_HEALTH_DEDUPE_HOURS: "6"
+  CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_THRESHOLD: "3"
+  CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_HISTORY_HOURS: "168"
+  CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_CLOSED_PR_LIMIT: "100"
   CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL: "__LOCAL_AUDIT_RUNNER_LABEL__"
   CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN: {% raw %}${{ secrets.CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN || '' }}{% endraw %}
   NEEDS_OWNER_LABEL: "__NEEDS_OWNER_LABEL__"
@@ -51,6 +54,9 @@ __GATE_HEALTH_AUTHOR_ENV_ASSIGNMENTS__
             --status-issue "${STATUS_ISSUE}" \
             --stale-minutes "${CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES}" \
             --dedupe-hours "${CODE_MOWER_GATE_HEALTH_DEDUPE_HOURS}" \
+            --unknown-streak-threshold "${CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_THRESHOLD}" \
+            --unknown-streak-history-hours "${CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_HISTORY_HOURS}" \
+            --unknown-streak-closed-pr-limit "${CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_CLOSED_PR_LIMIT}" \
             --runner-label "${CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL}" \
             --owner-login "${OWNER_LOGIN}" \
             --alert-runner-api-unavailable

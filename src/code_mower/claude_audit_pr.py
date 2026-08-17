@@ -21,6 +21,7 @@ import tempfile
 import time
 import urllib.error
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -129,6 +130,9 @@ MIN_BLOCKED_VERDICT_PROSE_CHARS = 80
 SCHEMA_PLACEHOLDER_TEXT = frozenset({"test", "example", "placeholder"})
 CLAUDE_RAW_OUTPUT_SCHEMA = "code_mower.claudeAuditRawOutput.v1"
 BLOCKER_SEVERITIES = frozenset({"P0", "P1", "P2"})
+DEFAULT_CLAUDE_CLI_FAILURE_DIR = (
+    Path.home() / ".cache" / "code-mower-audits" / "cli-failures"
+)
 
 STALE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: needs-claude-audit -->"
 DONE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
@@ -512,6 +516,104 @@ def _write_claude_raw_output_sidecar(
             f"warning: failed to write Claude raw output sidecar {sidecar_path}: {exc}",
             file=sys.stderr,
         )
+
+
+def _claude_status_payload(stdout: str, stderr: str) -> Dict[str, Any]:
+    candidates = [stdout.strip(), stderr.strip()]
+    candidates.extend(
+        line.strip()
+        for text in (stdout, stderr)
+        for line in reversed(text.splitlines())
+    )
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _claude_payload_text(payload: Dict[str, Any], key: str, limit: int = 500) -> str:
+    value = payload.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, sort_keys=True)
+    else:
+        text = str(value)
+    return _one_line(text, limit)
+
+
+def _claude_cli_failure_reason(stdout: str, stderr: str) -> str:
+    payload = _claude_status_payload(stdout, stderr)
+    if not payload:
+        return ""
+    result = _claude_payload_text(payload, "result", 160)
+    terminal_reason = _claude_payload_text(payload, "terminal_reason", 160)
+    status = _claude_payload_text(payload, "api_error_status", 40)
+    reason = result.split(" · ", 1)[0].strip() or terminal_reason
+    if not reason and status:
+        reason = f"API error {status}"
+    return f"Claude CLI: {reason}" if reason else ""
+
+
+def _dump_claude_cli_failure(
+    *,
+    repo: str,
+    pr_number: int,
+    head_sha: str,
+    stdout: str,
+    stderr: str,
+    reason: str,
+    base_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    try:
+        base_dir = base_dir or DEFAULT_CLAUDE_CLI_FAILURE_DIR
+        base_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(base_dir, 0o700)
+        except OSError:
+            pass
+        owner_name = repo.replace("/", "_")
+        short_sha = (head_sha or "unknown")[:12]
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+        path = base_dir / f"{owner_name}_pr{pr_number}_{short_sha}_{ts}_claude.log"
+        payload = _claude_status_payload(stdout, stderr)
+        field_lines = ""
+        for key in ("result", "terminal_reason", "api_error_status"):
+            value = _claude_payload_text(payload, key)
+            if value:
+                field_lines += f"# claude_{key}: {value}\n"
+        body = (
+            "# Claude CLI raw output - structured verdict was unusable\n"
+            f"# repo: {repo}\n"
+            f"# pr: {pr_number}\n"
+            f"# head_sha: {head_sha}\n"
+            f"# captured_at: {ts}\n"
+            f"# diagnostic_reason: {reason}\n"
+            f"{field_lines}"
+            f"# stdout_bytes: {len(stdout.encode('utf-8'))}\n"
+            f"# stderr_bytes: {len(stderr.encode('utf-8'))}\n"
+            "\n===== STDOUT =====\n"
+            + (stdout if stdout else "<empty>\n")
+            + "\n===== STDERR =====\n"
+            + (stderr if stderr else "<empty>\n")
+        )
+        fd = os.open(
+            str(path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        return path
+    except OSError as exc:
+        print(f"  warning: failed to dump Claude CLI output: {exc}", file=sys.stderr)
+        return None
 
 
 def _guardrail_retry_prompt(
@@ -921,6 +1023,7 @@ def format_comment(
     is_unknown: bool = False,
     merge_authority: bool = True,
     actions_run_id: Optional[str] = None,
+    unknown_reason: str = "",
 ) -> str:
     posture = "merge-authority lane" if merge_authority else "informational only"
     header = f"## Claude audit ({posture})\n\n"
@@ -938,11 +1041,14 @@ def format_comment(
         )
         return limit_comment_body(body, STALE_TRAILER, provider_name="Claude")
     if is_unknown:
+        reason_line = f"\n\n{unknown_reason}." if unknown_reason else ""
         body = (
             header
             + "\nCould not validate a Claude structured verdict artifact. "
             + "The CLI may have failed, exceeded budget, or emitted no "
-            + "schema-valid structured output. Requeuing for re-review.\n\n"
+            + "schema-valid structured output. Requeuing for re-review."
+            + reason_line
+            + "\n\n"
             + STALE_TRAILER
             + "\n"
         )
@@ -1212,6 +1318,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     head_sha_end = pr_meta_after["head"]["sha"]
     is_stale = head_sha_start != head_sha_end
     actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
+    claude_cli_reason = _claude_cli_failure_reason(claude_stdout, claude_stderr)
 
     if is_stale:
         comment_body = format_comment(
@@ -1231,6 +1338,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             is_unknown=True,
             merge_authority=config.merge_authority,
             actions_run_id=actions_run_id,
+            unknown_reason=claude_cli_reason,
         )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
@@ -1258,6 +1366,21 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     )
 
     if not config.dry_run:
+        if result_verdict == "UNKNOWN":
+            dump_path = _dump_claude_cli_failure(
+                repo=repo,
+                pr_number=pr_number,
+                head_sha=head_sha_start,
+                stdout=claude_stdout,
+                stderr=claude_stderr,
+                reason=parsed.prose,
+            )
+            if dump_path is not None:
+                print(
+                    f"  captured Claude CLI output for diagnosis: {dump_path}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         quarantine_reason = _audit_runtime_quarantine_reason(
             comment_body=comment_body,
             fixture_reason=final_fixture_reason if parsed.verdict == "UNKNOWN" else None,
@@ -1572,7 +1695,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"spend metadata appended to {args.spend_path}", file=sys.stderr)
         except (OSError, ValueError) as exc:
             print(f"warning: failed to append spend metadata: {exc}", file=sys.stderr)
-    return 2 if result.verdict in {"STALE", "UNKNOWN"} else 0
+    return _audit_exit_code(result.verdict)
+
+
+def _audit_exit_code(verdict: str) -> int:
+    return 2 if verdict == "UNKNOWN" else 0
 
 
 if __name__ == "__main__":

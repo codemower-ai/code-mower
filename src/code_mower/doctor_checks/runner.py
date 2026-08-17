@@ -16,6 +16,7 @@ from .providers import check_lane_runtime, effective_lane, provider_template_cov
 from .registry import DoctorCheckStage, build_doctor_run_plan
 from .runtime import (
     check_github_auth_surface,
+    check_macos_runner_launchagent,
     check_pytest,
     check_python_runtime,
     check_ripgrep,
@@ -34,6 +35,7 @@ def _global_runtime_checks(
             probe_runtime=probe_runtime,
             http_timeout=http_timeout,
         ),
+        check_macos_runner_launchagent(),
         check_ripgrep(),
     )
 
