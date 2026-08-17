@@ -128,8 +128,10 @@ class CodexAuditPrTests(unittest.TestCase):
             )
 
             self.assertEqual(result.verdict, "UNKNOWN")
-            self.assertIsNone(result.posted_comment_url)
-            post_comment.assert_not_called()
+            self.assertEqual(result.posted_comment_url, "https://github.test/comment/1")
+            post_comment.assert_called_once()
+            self.assertIn("Runtime quarantine:", result.comment_body)
+            self.assertIn("fixture-shaped structured verdict", result.comment_body)
             self.assertIsNotNone(result.verdict_artifact_path)
             assert result.verdict_artifact_path is not None
             self.assertIn("quarantine", str(result.verdict_artifact_path))

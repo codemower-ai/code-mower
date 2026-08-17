@@ -325,6 +325,19 @@ def _quarantine_is_test_only(reason: Optional[str]) -> bool:
     return reason == "PYTEST_CURRENT_TEST is set"
 
 
+def _comment_with_runtime_quarantine_note(comment_body: str, reason: str) -> str:
+    note = (
+        "\nRuntime quarantine: local verdict artifact was quarantined because "
+        f"{reason}. Posting UNKNOWN so the lane requeues visibly.\n"
+    )
+    marker = f"\n\n{STALE_TRAILER}"
+    if marker in comment_body:
+        body = comment_body.replace(marker, note + "\n" + STALE_TRAILER, 1)
+    else:
+        body = comment_body.rstrip() + note + "\n" + STALE_TRAILER + "\n"
+    return limit_comment_body(body, STALE_TRAILER, provider_name="Codex")
+
+
 # ----- Structured verdict validation -----
 
 
@@ -1427,15 +1440,22 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 # the general silent-success/silent-failure lesson.
                 if quarantine_reason:
                     print(
-                        "  runtime guard quarantined verdict artifact and "
-                        f"skipped GitHub post: {quarantine_reason}",
+                        "  runtime guard quarantined verdict artifact: "
+                        f"{quarantine_reason}",
                         file=sys.stderr,
                         flush=True,
                     )
-                    if not _quarantine_is_test_only(quarantine_reason):
+                if quarantine_reason and _quarantine_is_test_only(quarantine_reason):
+                    print("  skipped GitHub post for pytest-only quarantine", file=sys.stderr, flush=True)
+                else:
+                    if quarantine_reason:
                         result.verdict = "UNKNOWN"
                         result.trailer = STALE_TRAILER
-                else:
+                        comment_body = _comment_with_runtime_quarantine_note(
+                            comment_body,
+                            quarantine_reason,
+                        )
+                        result.comment_body = comment_body
                     posted = post_pr_comment(repo, pr_number, comment_body,
                                               token=config.github_token)
                     result.posted_comment_url = posted.get("html_url")
@@ -1618,15 +1638,22 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         # failed. Do not catch the exception here.
         if quarantine_reason:
             print(
-                "  runtime guard quarantined verdict artifact and skipped "
-                f"GitHub post: {quarantine_reason}",
+                "  runtime guard quarantined verdict artifact: "
+                f"{quarantine_reason}",
                 file=sys.stderr,
                 flush=True,
             )
-            if not _quarantine_is_test_only(quarantine_reason):
+        if quarantine_reason and _quarantine_is_test_only(quarantine_reason):
+            print("  skipped GitHub post for pytest-only quarantine", file=sys.stderr, flush=True)
+        else:
+            if quarantine_reason:
                 result.verdict = "UNKNOWN"
                 result.trailer = STALE_TRAILER
-        else:
+                comment_body = _comment_with_runtime_quarantine_note(
+                    comment_body,
+                    quarantine_reason,
+                )
+                result.comment_body = comment_body
             posted = post_pr_comment(repo, pr_number, comment_body,
                                       token=config.github_token)
             result.posted_comment_url = posted.get("html_url")

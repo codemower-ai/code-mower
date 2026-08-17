@@ -457,8 +457,10 @@ retries Claude once after those guardrails fire; a second unusable result posts
 `UNKNOWN` with the requeue trailer instead of a merge-gating blocked label. When
 an artifact is saved, the wrapper also saves a local-only raw CLI output sidecar
 and backfills `posted_comment_url` after a successful GitHub comment POST.
-Both Codex and Claude audit wrappers quarantine fixture-shaped verdict comments
-or pytest runtime output instead of posting them, and reviewer-run export /
+Both Codex and Claude audit wrappers quarantine fixture-shaped verdict artifacts
+and pytest runtime output. Pytest-only quarantines skip GitHub posting; non-test
+fixture-shaped structured verdicts still post a visible `UNKNOWN` requeue trailer
+while keeping the local artifact quarantined. Reviewer-run export and
 calibration auto-discovery ignore the same fixture-shaped artifacts/comments.
 Verdict artifacts default to `CODE_MOWER_VERDICT_ARTIFACT_DIR`, then
 `$XDG_CACHE_HOME/code-mower-audits/verdicts`, then

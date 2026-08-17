@@ -293,13 +293,20 @@ class ClaudeAuditPrTests(unittest.TestCase):
                     "run_claude_audit",
                     return_value=(placeholder, '{"structured_output":"placeholder"}', ""),
                 ) as run_claude,
-                mock.patch.object(cap, "post_pr_comment") as post_comment,
+                mock.patch.object(
+                    cap,
+                    "post_pr_comment",
+                    return_value={"html_url": "https://github.test/comment/1"},
+                ) as post_comment,
             ):
                 result = cap.audit_pr(config, "owner/repo", 42)
 
             self.assertEqual(result.verdict, "UNKNOWN")
             self.assertEqual(run_claude.call_count, cap.MAX_CLAUDE_AUDIT_ATTEMPTS)
-            post_comment.assert_not_called()
+            self.assertEqual(result.posted_comment_url, "https://github.test/comment/1")
+            post_comment.assert_called_once()
+            self.assertIn("Runtime quarantine:", result.comment_body)
+            self.assertIn("fixture-shaped structured verdict", result.comment_body)
             self.assertIsNotNone(result.verdict_artifact_path)
             assert result.verdict_artifact_path is not None
             self.assertIn("quarantine", str(result.verdict_artifact_path))
