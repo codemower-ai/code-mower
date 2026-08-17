@@ -4,6 +4,20 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.46
+
+This beta carries generated GitHub workflow fixes needed by product repos that
+use Code Mower as a merge gate with owner override and stale-audit cleanup.
+
+### Changed
+
+- Generated `code-mower-gate.yml` keeps owner-only `gate:override` support,
+  including non-owner failure and owner-applied success paths.
+- Generated stale-audit cleanup workflow concurrency is now lane-specific, so
+  Codex and Claude cleanup jobs cannot cancel each other on the same PR.
+- GitHub setup docs now call out the owner-only override posture and stale
+  cleanup concurrency behavior.
+
 ## v0.5.0-beta.45
 
 This beta carries the audit-duration telemetry needed by product repos that use
