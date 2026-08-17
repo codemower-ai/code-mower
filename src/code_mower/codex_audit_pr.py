@@ -310,6 +310,7 @@ class ReviewContextDiagnostics:
 STALE_TRAILER = "<!-- CODEX_AUDIT_STATE: needs-codex-audit -->"
 DONE_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
 BLOCKED_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
+AUDIT_RUN_TRAILER_PREFIX = "<!-- CODE_MOWER_AUDIT_RUN:"
 
 
 # ----- Structured verdict validation -----
@@ -1188,11 +1189,14 @@ def format_comment(
     stale_end_sha: Optional[str] = None,
     is_unknown: bool = False,
     merge_authority: bool = True,
+    actions_run_id: Optional[str] = None,
 ) -> str:
     """Build the GitHub comment body with header, prose, and trailer."""
     posture = "merge-authority lane" if merge_authority else "informational only"
     header = f"## Codex audit ({posture})\n\n"
     header += f"Head SHA: `{head_sha}`\n"
+    if actions_run_id:
+        header += f"{AUDIT_RUN_TRAILER_PREFIX} run_id={actions_run_id} -->\n"
     if is_stale:
         body = (
             header
@@ -1471,6 +1475,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     pr_meta_after = fetch_pull_request(repo, pr_number, token=config.github_token)
     head_sha_end = pr_meta_after["head"]["sha"]
     is_stale = head_sha_start != head_sha_end
+    actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
 
     if is_stale:
         comment_body = format_comment(
@@ -1479,6 +1484,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             is_stale=True,
             stale_end_sha=head_sha_end,
             merge_authority=config.merge_authority,
+            actions_run_id=actions_run_id,
         )
         result_verdict = "STALE"
         trailer = STALE_TRAILER
@@ -1513,6 +1519,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             head_sha_start,
             is_unknown=True,
             merge_authority=config.merge_authority,
+            actions_run_id=actions_run_id,
         )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
@@ -1521,6 +1528,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             parsed,
             head_sha_start,
             merge_authority=config.merge_authority,
+            actions_run_id=actions_run_id,
         )
         result_verdict = parsed.verdict
         trailer = BLOCKED_TRAILER if parsed.verdict == "BLOCKED" else DONE_TRAILER

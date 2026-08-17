@@ -17,7 +17,7 @@ CONFIG = LaneConfig(
     done_label="claude-audit-done",
     blocked_label="claude-audit-blocked",
     trailer_prefix="CLAUDE_AUDIT_STATE",
-    default_authors=("claude-audit-bot", "claude-audit-bot[bot]"),
+    default_authors=("claude-audit-bot", "claude-audit-bot[bot]", "github-actions[bot]"),
     authors_env_var="CLAUDE_AUDIT_BOT_AUTHORS",
     pass_patterns=(
         re.compile(

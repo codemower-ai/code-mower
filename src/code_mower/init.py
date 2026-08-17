@@ -63,6 +63,8 @@ LOCAL_AUDIT_WRAPPERS = {
     "claude": "tools/run_claude_audit_pr.sh",
     "codex": "tools/run_codex_audit_pr.sh",
 }
+GATE_HEALTH_WORKFLOW_PATH = ".github/workflows/code-mower-gate-health.yml"
+GATE_HEALTH_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-gate-health.yml.j2"
 
 DEFAULT_APPLY_OUTPUT_DIR = ".code-mower.generated"
 APPLY_MANIFEST_FILENAME = "code-mower-init-plan.json"
@@ -149,6 +151,8 @@ OWNER_SURFACE_DEFAULTS = {
     "gate_override_label": "gate:override",
     "status_issue": "TODO_STATUS_ISSUE",
     "weekly_cron": "0 14 * * 1",
+    "gate_health_cron": "*/15 * * * *",
+    "gate_health_max_wait_minutes": "30",
     "ready_label": "tier:R",
     "phase_labels": "phase:0,phase:1,phase:2,phase:3,phase:4,phase:5",
     "reviewer_spend_path": ".code-mower/reviewer-spend.json",
@@ -350,6 +354,12 @@ def _configured_bot_authors(lane: Mapping[str, Any]) -> str:
     return ",".join(str(author).strip() for author in authors if str(author).strip())
 
 
+def _default_bot_authors_for_lane(lane_id: str, lane: Mapping[str, Any]) -> str:
+    if lane.get("driver") == "saas_event":
+        return _configured_bot_authors(lane)
+    return _default_trailer_bot_authors(_trailer_lane_name(lane_id, lane))
+
+
 def _trailer_prefix_for_lane(trailer_lane: str) -> str:
     return f"{trailer_lane.replace('-', '_').upper()}_AUDIT_STATE"
 
@@ -512,9 +522,55 @@ def _local_audit_workflow_entry(entries: tuple[dict[str, str], ...]) -> dict[str
     }
 
 
+def _gate_health_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
+    labels = _labels_for(lane)
+    trailer_lane = _trailer_lane_name(lane_id, lane)
+    github_actions_workflows = LOCAL_AUDIT_WORKFLOW_PATH if lane.get("driver") == "local_cli" else ""
+    return {
+        "id": lane_id,
+        "display_name": _display_name(trailer_lane),
+        "needs": str(labels["needs"]),
+        "done": str(labels["done"]),
+        "blocked": str(labels["blocked"]),
+        "bot_authors": _bot_author_csv(_default_bot_authors_for_lane(lane_id, lane), lane),
+        "github_actions_workflows": github_actions_workflows,
+    }
+
+
+def _gate_health_workflow_entry(
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+    owner_surface: Mapping[str, str],
+    *,
+    include_local_audit_runner: bool,
+) -> dict[str, str]:
+    audit_lanes = [
+        _gate_health_lane_entry(lane_id, lane)
+        for lane_id, lane in selected_lanes.items()
+        if lane.get("type") == "audit"
+    ]
+    return {
+        "path": GATE_HEALTH_WORKFLOW_PATH,
+        "source": "code-mower-gate-health-workflow-template",
+        "copy_from": GATE_HEALTH_WORKFLOW_TEMPLATE,
+        "package_copy_from": GATE_HEALTH_WORKFLOW_TEMPLATE,
+        "gate_health_lanes_json": json.dumps(
+            audit_lanes,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "gate_health_cron": owner_surface["gate_health_cron"],
+        "gate_health_max_wait_minutes": owner_surface["gate_health_max_wait_minutes"],
+        "local_audit_runner_label": LOCAL_AUDIT_RUNNER_LABEL if include_local_audit_runner else "",
+        "needs_owner_label": owner_surface["needs_owner_label"],
+        "owner_login": owner_surface["owner_login"],
+        "status_issue": owner_surface["status_issue"],
+    }
+
+
 def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
     labels = _labels_for(lane)
     trailer_lane = _trailer_lane_name(lane_id, lane)
+    github_actions_workflows = LOCAL_AUDIT_WORKFLOW_PATH if lane.get("driver") == "local_cli" else ""
     return {
         "id": lane_id,
         "author_lane": _author_lane_name(lane_id, lane),
@@ -523,6 +579,7 @@ def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
         "blocked": str(labels["blocked"]),
         "builder_label": f"builder:{trailer_lane}",
         "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
+        "github_actions_workflows": github_actions_workflows,
     }
 
 
@@ -672,7 +729,11 @@ def _lane_warnings(
         warnings.append(f"{lane_id}: opt-in lane selected by profile")
     if lane.get("trigger_policy") == "manual":
         warnings.append(f"{lane_id}: manual trigger policy; installer must not auto-dispatch")
-    if "GITHUB_TOKEN" in _token_env_names(lane):
+    if "GITHUB_TOKEN" in _token_env_names(lane) and "github-actions[bot]" not in {
+        author.strip()
+        for author in _default_bot_authors_for_lane(lane_id, lane).split(",")
+        if author.strip()
+    }:
         warnings.append(
             f"{lane_id}: GITHUB_TOKEN posting comments as github-actions[bot] requires "
             "an explicit *_BOT_AUTHORS repository variable"
@@ -914,6 +975,11 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
         "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
+        "__GATE_HEALTH_CRON__": str(entry.get("gate_health_cron") or ""),
+        "__GATE_HEALTH_LANES_JSON__": str(entry.get("gate_health_lanes_json") or "[]"),
+        "__GATE_HEALTH_MAX_WAIT_MINUTES__": str(
+            entry.get("gate_health_max_wait_minutes") or "30"
+        ),
         "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
         "__LANE_ID__": str(entry.get("lane_id") or ""),
@@ -949,6 +1015,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
 def _workflow_template_needs_render(source: str) -> bool:
     return source in {
         "shared-cleanup-template",
+        "code-mower-gate-health-workflow-template",
         "code-mower-gate-workflow-template",
         "hosted-bridge-workflow-template",
         "owner-notify-workflow-template",
@@ -1232,6 +1299,27 @@ def render_init_plan(
                 config,
                 selected_lanes,
                 author_exclusion_json=author_exclusion_json,
+            )
+        )
+
+    has_audit_lanes = any(lane.get("type") == "audit" for lane in selected_lanes.values())
+    if has_audit_lanes and GATE_HEALTH_WORKFLOW_PATH not in generated_paths:
+        if local_audit_entries:
+            required_secrets.add("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN")
+        workflow_targets.add(GATE_HEALTH_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "code-mower-gate-health",
+                "driver": "gate_health",
+                "target": GATE_HEALTH_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(GATE_HEALTH_WORKFLOW_PATH)
+        generated_files.append(
+            _gate_health_workflow_entry(
+                selected_lanes,
+                owner_surface,
+                include_local_audit_runner=bool(local_audit_entries),
             )
         )
 
