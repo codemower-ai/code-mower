@@ -62,7 +62,7 @@ jobs:
           pr_file="$(mktemp)"
           gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" > "${labels_file}"
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" > "${comments_file}"
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/events?per_page=100" > "${events_file}"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100" > "${events_file}"
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}"
 
           eval "$(
@@ -190,13 +190,45 @@ jobs:
           ]
 
           override_actor = ""
+          override_event_index = -1
+          head_event_index = -1
+          def timeline_sha(value):
+              if isinstance(value, dict):
+                  return str(value.get("sha") or value.get("id") or "")
+              return str(value or "")
+
           if gate_override_label:
-              for event in events:
+              for index, event in enumerate(events):
+                  event_name = str(event.get("event") or "")
+                  if (
+                      event_name == "committed"
+                      and str(event.get("sha") or "") == head_sha
+                  ):
+                      head_event_index = index
+                  if (
+                      event_name == "head_ref_force_pushed"
+                      and (
+                          timeline_sha(event.get("after_commit")) == head_sha
+                          or str(event.get("commit_id") or "") == head_sha
+                      )
+                  ):
+                      head_event_index = index
+                  if (
+                      event_name == "head_ref_restored"
+                      and str(event.get("commit_id") or "") == head_sha
+                  ):
+                      head_event_index = index
                   if event.get("event") != "labeled":
                       continue
                   if str(((event.get("label") or {}).get("name")) or "") != gate_override_label:
                       continue
                   override_actor = str(((event.get("actor") or {}).get("login")) or "").lower()
+                  override_event_index = index
+          override_current_head = (
+              override_event_index >= 0
+              and head_event_index >= 0
+              and override_event_index > head_event_index
+          )
 
           if len(builder_matches) > 1:
               emit("failure", "conflicting Code Mower builder identity")
@@ -204,6 +236,8 @@ jobs:
               emit("pending", owner_label + ": waiting on owner")
           elif gate_override_label and gate_override_label in labels and override_actor != override_owner:
               emit("failure", gate_override_label + " was not owner-applied")
+          elif gate_override_label and gate_override_label in labels and not override_current_head:
+              emit("failure", gate_override_label + " is stale for current head")
           elif gate_override_label and gate_override_label in labels:
               emit("success", "owner gate override")
           elif blocked:

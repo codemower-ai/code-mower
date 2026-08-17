@@ -42,8 +42,9 @@ For fork PRs where GitHub grants a read-only token, owner notify emits a
 workflow warning instead of failing the run.
 The generated merge gate treats `owner_surface.gate_override_label` as an
 owner-only escape hatch: the label succeeds the gate only when the configured
-owner applied it; a non-owner-applied override fails the gate. Set
-`gate_override_label` to an empty string to disable the override path entirely.
+owner applied it after the current PR head appeared in the GitHub timeline; a
+non-owner-applied or stale override fails the gate. Set `gate_override_label`
+to an empty string to disable the override path entirely.
 
 Configure the owner surface in `code-mower.yml` before enabling the weekly
 schedule:

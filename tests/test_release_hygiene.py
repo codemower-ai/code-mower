@@ -1427,6 +1427,10 @@ exit 1
             ],
             events=[
                 {
+                    "event": "committed",
+                    "sha": "a" * 40,
+                },
+                {
                     "event": "labeled",
                     "label": {"name": "gate:override"},
                     "actor": {"login": "owner"},
@@ -1437,6 +1441,45 @@ exit 1
 
         self.assertEqual(result["gate_state"], "success")
         self.assertEqual(result["gate_description"], "owner gate override")
+
+    def test_gate_decision_rejects_stale_owner_gate_override(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"gate:override", "claude-audit-blocked"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+            events=[
+                {
+                    "event": "labeled",
+                    "label": {"name": "gate:override"},
+                    "actor": {"login": "owner"},
+                },
+                {
+                    "event": "head_ref_force_pushed",
+                    "after_commit": {"sha": "a" * 40},
+                },
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(
+            result["gate_description"],
+            "gate:override is stale for current head",
+        )
 
     def test_gate_decision_rejects_non_owner_gate_override(self) -> None:
         result = self._run_gate_template_decision(
@@ -1452,6 +1495,10 @@ exit 1
             ],
             labels={"gate:override"},
             events=[
+                {
+                    "event": "committed",
+                    "sha": "a" * 40,
+                },
                 {
                     "event": "labeled",
                     "label": {"name": "gate:override"},
@@ -1634,9 +1681,10 @@ exit 1
             self.assertIn("github_actions_workflows", gate)
             self.assertIn(".github/workflows/local-cli-audit.yml", gate)
             self.assertIn("CODE_MOWER_GATE_OVERRIDE_LABEL", gate)
-            self.assertIn("issues/${PR_NUMBER}/events?per_page=100", gate)
+            self.assertIn("issues/${PR_NUMBER}/timeline?per_page=100", gate)
             self.assertIn("gate:override", gate)
             self.assertIn("was not owner-applied", gate)
+            self.assertIn("is stale for current head", gate)
             self.assertIn("owner gate override", gate)
             self.assertNotIn("__GATE_LANES_JSON__", gate)
 
