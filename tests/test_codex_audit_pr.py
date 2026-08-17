@@ -1,0 +1,104 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from code_mower import codex_audit_pr as cap
+
+
+class CodexAuditPrTests(unittest.TestCase):
+    def _run_mocked_audit(
+        self,
+        *,
+        tmp_path: Path,
+        pytest_current_test: str,
+    ) -> tuple[cap.AuditResult, mock.Mock]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        head_sha = "d" * 40
+        pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+        parsed = cap.CodexVerdict(
+            verdict="PASS",
+            prose="Summary:\n\nNo merge-blocking regressions found.\n\nFindings: none.",
+        )
+        config = cap.AuditConfig(
+            "token",
+            {"owner/repo": repo},
+            include_plan_context=False,
+        )
+
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "PYTEST_CURRENT_TEST": pytest_current_test,
+                    "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                },
+            ),
+            mock.patch.object(cap, "fetch_pull_request", side_effect=[pr_payload, pr_payload]),
+            mock.patch.object(cap, "preflight_codex_cli", return_value="codex-test"),
+            mock.patch.object(cap, "_discover_venv", return_value=None),
+            mock.patch.object(cap, "_fetch_pr_head"),
+            mock.patch.object(cap, "_fetch_base_ref"),
+            mock.patch.object(
+                cap,
+                "_build_review_context_diagnostics",
+                return_value=mock.Mock(summary=lambda: "review context ok"),
+            ),
+            mock.patch.object(cap, "_create_temp_worktree", return_value=worktree),
+            mock.patch.object(cap, "_remove_worktree"),
+            mock.patch.object(cap, "run_codex_review", return_value=("review text", "")),
+            mock.patch.object(
+                cap,
+                "run_codex_verdict_structuring",
+                return_value=(parsed, '{"structured_output":"pass"}', ""),
+            ),
+            mock.patch.object(
+                cap,
+                "post_pr_comment",
+                return_value={"html_url": "https://github.test/comment/1"},
+            ) as post_comment,
+        ):
+            result = cap.audit_pr(config, "owner/repo", 42)
+        return result, post_comment
+
+    def test_codex_audit_posts_in_non_pytest_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, post_comment = self._run_mocked_audit(
+                tmp_path=Path(tmp),
+                pytest_current_test="",
+            )
+
+            self.assertEqual(result.verdict, "PASS")
+            self.assertEqual(result.posted_comment_url, "https://github.test/comment/1")
+            post_comment.assert_called_once()
+            self.assertIsNotNone(result.verdict_artifact_path)
+            assert result.verdict_artifact_path is not None
+            artifact = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
+            self.assertNotIn("quarantined", artifact)
+
+    def test_codex_audit_pytest_runtime_quarantines_without_posting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, post_comment = self._run_mocked_audit(
+                tmp_path=Path(tmp),
+                pytest_current_test="tests/test_live_guard.py::test_guard",
+            )
+
+            self.assertEqual(result.verdict, "PASS")
+            self.assertIsNone(result.posted_comment_url)
+            post_comment.assert_not_called()
+            self.assertIsNotNone(result.verdict_artifact_path)
+            assert result.verdict_artifact_path is not None
+            self.assertIn("quarantine", str(result.verdict_artifact_path))
+            artifact = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
+            self.assertTrue(artifact["quarantined"])
+            self.assertIn("PYTEST_CURRENT_TEST", artifact["quarantine_reason"])
+
+
+if __name__ == "__main__":
+    unittest.main()
