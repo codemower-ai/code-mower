@@ -67,6 +67,26 @@ def edit_comment(repo: str, comment_id: int, body: str, run: RunFn = subprocess.
     )
 
 
+def _stream_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    return str(value).strip()
+
+
+def _format_error(exc: BaseException) -> str:
+    lines = [f"error: {exc}"]
+    if isinstance(exc, subprocess.CalledProcessError):
+        stderr = _stream_text(exc.stderr)
+        stdout = _stream_text(exc.stdout)
+        if stderr:
+            lines.append(f"stderr:\n{stderr}")
+        if stdout:
+            lines.append(f"stdout:\n{stdout}")
+    return "\n".join(lines)
+
+
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     target = parser.add_mutually_exclusive_group(required=True)
@@ -87,7 +107,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         else:
             post_comment(repo, args.issue_or_pr, body)
     except (OSError, subprocess.CalledProcessError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(_format_error(exc), file=sys.stderr)
         return 1
     return 0
 

@@ -1769,9 +1769,19 @@ exit 1
             notify = output_dir.joinpath(
                 ".github/workflows/needs-owner-notify.yml"
             ).read_text(encoding="utf-8")
+            parsed_notify = yaml.safe_load(notify)
             self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', notify)
             self.assertIn('OWNER_LOGIN: "jeffhuber"', notify)
-            self.assertIn("github.event.label.name == 'needs-jeff'", notify)
+            self.assertEqual(parsed_notify["env"]["NEEDS_OWNER_LABEL"], "needs-jeff")
+            self.assertEqual(parsed_notify["env"]["GATE_OVERRIDE_LABEL"], "gate:override")
+            notify_step = parsed_notify["jobs"]["notify"]["steps"][0]
+            self.assertEqual(
+                notify_step["if"],
+                "github.event.label.name == env.NEEDS_OWNER_LABEL || "
+                "github.event.label.name == env.GATE_OVERRIDE_LABEL",
+            )
+            self.assertNotIn("github.event.label.name == 'needs-jeff'", notify)
+            self.assertNotIn("github.event.label.name == 'gate:override'", notify)
             self.assertIn(
                 'gh api -X POST "repos/${REPO}/issues/${NUM}/assignees"',
                 notify,
@@ -1853,6 +1863,19 @@ exit 1
                 parsed_gate["env"]["CODE_MOWER_GATE_OVERRIDE_LABEL"],
                 "gate:override",
             )
+            special_notify = special_output_dir.joinpath(
+                ".github/workflows/needs-owner-notify.yml"
+            ).read_text(encoding="utf-8")
+            parsed_special_notify = yaml.safe_load(special_notify)
+            self.assertEqual(
+                parsed_special_notify["env"]["NEEDS_OWNER_LABEL"],
+                "needs: jeff # owner",
+            )
+            self.assertEqual(
+                parsed_special_notify["jobs"]["notify"]["steps"][0]["if"],
+                "github.event.label.name == env.NEEDS_OWNER_LABEL || "
+                "github.event.label.name == env.GATE_OVERRIDE_LABEL",
+            )
 
             config["owner_surface"]["gate_override_label"] = ""
             disabled_override_plan = code_mower_init.render_init_plan(
@@ -1877,6 +1900,20 @@ exit 1
                 "",
             )
 
+            disabled_override_notify = disabled_override_output_dir.joinpath(
+                ".github/workflows/needs-owner-notify.yml"
+            ).read_text(encoding="utf-8")
+            parsed_disabled_override_notify = yaml.safe_load(disabled_override_notify)
+            self.assertEqual(
+                parsed_disabled_override_notify["env"]["GATE_OVERRIDE_LABEL"],
+                "",
+            )
+            self.assertEqual(
+                parsed_disabled_override_notify["jobs"]["notify"]["steps"][0]["if"],
+                "github.event.label.name == env.NEEDS_OWNER_LABEL || "
+                "github.event.label.name == env.GATE_OVERRIDE_LABEL",
+            )
+
             status_report = output_dir.joinpath("tools/status_report.py")
             self.assertTrue(status_report.stat().st_mode & 0o111)
             self.assertIn(
@@ -1888,6 +1925,26 @@ exit 1
                 check=True,
                 text=True,
             )
+
+    def test_safe_gh_comment_reports_gh_streams_on_failure(self) -> None:
+        module_path = ROOT / "src/code_mower/templates/product-support/safe_gh_comment.py"
+        spec = importlib.util.spec_from_file_location("safe_gh_comment_template", module_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        exc = subprocess.CalledProcessError(
+            1,
+            ["gh", "api"],
+            output="response body\n",
+            stderr="permission denied\n",
+        )
+
+        formatted = module._format_error(exc)
+        self.assertIn("error: Command '['gh', 'api']' returned non-zero exit status 1.", formatted)
+        self.assertIn("stderr:\npermission denied", formatted)
+        self.assertIn("stdout:\nresponse body", formatted)
 
     def test_gate_health_skips_runner_check_without_local_cli_lanes(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
