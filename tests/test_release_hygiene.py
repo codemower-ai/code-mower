@@ -900,6 +900,20 @@ exit 1
         ).read_text(encoding="utf-8")
         self.assertIn("pull-requests: write", cleanup)
 
+    def test_local_audit_label_expression_uses_exact_label_membership(self) -> None:
+        entries = ({"needs_label": "needs-codex-audit"},)
+
+        expression = code_mower_init._local_audit_label_expression(
+            entries,
+            "pull_request",
+        )
+
+        self.assertIn(
+            "contains(github.event.pull_request.labels.*.name, 'needs-codex-audit')",
+            expression,
+        )
+        self.assertNotIn("join(", expression)
+
     def test_provider_catalog_wires_merge_authority_stale_hygiene(self) -> None:
         for relative_path in (
             "templates/providers.yml",
@@ -1263,6 +1277,174 @@ exit 1
                 )
             )
 
+    def test_init_apply_generates_owner_surface_templates(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        config = dict(code_mower_config.load_config(config_path))
+        config["owner_surface"] = {
+            "owner_login": "jeffhuber",
+            "needs_owner_label": "needs-jeff",
+            "gate_override_label": "gate:override",
+            "status_issue": "6",
+            "weekly_cron": "15 12 * * 1",
+            "ready_label": "tier:R",
+            "phase_labels": ["phase:0", "phase:1"],
+            "reviewer_spend_path": ".code-mower/reviewer-spend.json",
+            "reviewer_value_report_path": ".code-mower/reviewer-value-report.md",
+        }
+        plan = code_mower_init.render_init_plan(
+            config,
+            package_mode=True,
+            package_command="code-mower",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / ".code-mower.generated"
+            result = code_mower_init.apply_init_plan(plan, output_dir)
+            generated = {
+                ".github/workflows/needs-owner-notify.yml",
+                ".github/workflows/weekly-status.yml",
+                "tools/status_report.py",
+            }
+            written = {
+                str(Path(path).relative_to(output_dir))
+                for path in result["written_files"]
+                if Path(path).is_relative_to(output_dir)
+            }
+            placeholder_files = {
+                str(Path(path).relative_to(output_dir))
+                for path in result["placeholder_files"]
+                if Path(path).is_relative_to(output_dir)
+            }
+            self.assertTrue(generated.issubset(written))
+            self.assertTrue(generated.isdisjoint(placeholder_files))
+            self.assertIn("needs-jeff", plan.data["labels"])
+            self.assertIn("gate:override", plan.data["labels"])
+
+            notify = output_dir.joinpath(
+                ".github/workflows/needs-owner-notify.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', notify)
+            self.assertIn('OWNER_LOGIN: "jeffhuber"', notify)
+            self.assertIn("github.event.label.name == 'needs-jeff'", notify)
+            self.assertIn(
+                'gh api -X POST "repos/${REPO}/issues/${NUM}/assignees"',
+                notify,
+            )
+            self.assertIn(
+                'gh api -X POST "repos/${REPO}/issues/${NUM}/comments"',
+                notify,
+            )
+            self.assertNotIn('gh api -X PATCH "repos/${REPO}/issues/${NUM}"', notify)
+            self.assertNotIn("gh issue comment", notify)
+            self.assertNotIn("__NEEDS_OWNER_LABEL__", notify)
+            self.assertNotIn("{% raw %}", notify)
+
+            weekly = output_dir.joinpath(
+                ".github/workflows/weekly-status.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn('cron: "15 12 * * 1"', weekly)
+            self.assertIn('STATUS_ISSUE: "6"', weekly)
+            self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', weekly)
+            self.assertIn('PHASE_LABELS: "phase:0,phase:1"', weekly)
+            self.assertIn("python3 tools/status_report.py", weekly)
+            self.assertIn(
+                "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
+                weekly,
+            )
+            self.assertIn(
+                "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405",
+                weekly,
+            )
+            self.assertNotIn("actions/checkout@v6", weekly)
+            self.assertNotIn("actions/setup-python@v6", weekly)
+            self.assertNotIn('STATUS_ISSUE: "TODO_STATUS_ISSUE"', weekly)
+            self.assertNotIn("{% raw %}", weekly)
+
+            status_report = output_dir.joinpath("tools/status_report.py")
+            self.assertTrue(status_report.stat().st_mode & 0o111)
+            self.assertIn(
+                "metadata only",
+                status_report.read_text(encoding="utf-8"),
+            )
+            subprocess.run(
+                [sys.executable, "-m", "py_compile", str(status_report)],
+                check=True,
+                text=True,
+            )
+
+    def test_status_report_template_summarizes_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_gh = root / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="$1 $2"
+state=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--state" ]; then state="$2"; fi
+  shift || true
+done
+if [ "$cmd" = "issue list" ] && [ "$state" = "open" ]; then
+  printf '%s\\n' '[{"number":1,"title":"Needs owner","labels":[{"name":"needs-jeff"},{"name":"phase:0"}],"assignees":[]},{"number":2,"title":"Ready","labels":[{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]}]'
+elif [ "$cmd" = "issue list" ] && [ "$state" = "closed" ]; then
+  printf '%s\\n' '[{"number":4,"title":"Done","labels":[{"name":"phase:0"}],"closedAt":"2099-01-01T00:00:00Z","assignees":[]}]'
+elif [ "$cmd" = "pr list" ] && [ "$state" = "open" ]; then
+  printf '%s\\n' '[{"number":3,"title":"Builder PR","labels":[{"name":"builder:codex"},{"name":"needs-codex-audit"},{"name":"needs-jeff"}],"author":{"login":"builder"},"isDraft":false}]'
+elif [ "$cmd" = "pr list" ] && [ "$state" = "merged" ]; then
+  printf '%s\\n' '[]'
+else
+  printf '%s\\n' '[]'
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            spend_dir = root / ".code-mower"
+            spend_dir.mkdir()
+            (spend_dir / "reviewer-spend.json").write_text(
+                json.dumps(
+                    {
+                        "runs": [
+                            {
+                                "lane": "codex",
+                                "wall_seconds": 12,
+                                "tokens": {"total": 34},
+                                "cost_usd": 0.056,
+                                "verdict": "pass",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "src/code_mower/templates/product-support/status_report.py"),
+                ],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
+                    "REPO": "owner/repo",
+                    "NEEDS_OWNER_LABEL": "needs-jeff",
+                    "READY_LABEL": "tier:R",
+                    "PHASE_LABELS": "phase:0",
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+        self.assertIn("## Needs Owner (needs-jeff)", completed.stdout)
+        self.assertIn("- issue #1 Needs owner", completed.stdout)
+        self.assertIn("- PR #3 Builder PR", completed.stdout)
+        self.assertIn("codex:pending", completed.stdout)
+        self.assertIn("| codex | 1 | 12 | 34 | 0.0560 | pass |", completed.stdout)
+        self.assertNotIn("body", completed.stdout.lower())
+
     def test_init_apply_generates_devin_bridge_labeler_and_stale_workflow(self) -> None:
         devin_config = {
             "version": 1,
@@ -1373,6 +1555,7 @@ exit 1
                 "tools/run_codex_audit_pr.sh",
                 "tools/run_claude_audit_pr.sh",
                 "tools/safe_gh_comment.py",
+                "tools/status_report.py",
             }
             written = {
                 str(Path(path).relative_to(output_dir))
@@ -1830,6 +2013,7 @@ printf '%s\\n' "${lane}"
             "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
             "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
             "src/code_mower/templates/product-support/safe_gh_comment.py",
+            "src/code_mower/templates/product-support/status_report.py",
         ):
             self.assertIn(source, packaged_sources)
 
@@ -1838,6 +2022,14 @@ printf '%s\\n' "${lane}"
         }
         self.assertIn(
             "src/code_mower/templates/workflows/review-clear-stale.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/needs-owner-notify.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/weekly-status.yml.j2",
             packaged_template_targets,
         )
         self.assertIn(

@@ -133,6 +133,37 @@ PRODUCT_SUPPORT_FILES = (
         "product-support-helper",
         "0755",
     ),
+    (
+        "tools/status_report.py",
+        "templates/product-support/status_report.py",
+        "product-support-status-report",
+        "0755",
+    ),
+)
+
+OWNER_SURFACE_DEFAULTS = {
+    "owner_login": "TODO_OWNER_LOGIN",
+    "needs_owner_label": "needs-owner",
+    "gate_override_label": "gate:override",
+    "status_issue": "TODO_STATUS_ISSUE",
+    "weekly_cron": "0 14 * * 1",
+    "ready_label": "tier:R",
+    "phase_labels": "phase:0,phase:1,phase:2,phase:3,phase:4,phase:5",
+    "reviewer_spend_path": ".code-mower/reviewer-spend.json",
+    "reviewer_value_report_path": ".code-mower/reviewer-value-report.md",
+}
+
+OWNER_SURFACE_WORKFLOW_FILES = (
+    (
+        ".github/workflows/needs-owner-notify.yml",
+        "templates/workflows/needs-owner-notify.yml.j2",
+        "owner-notify-workflow-template",
+    ),
+    (
+        ".github/workflows/weekly-status.yml",
+        "templates/workflows/weekly-status.yml.j2",
+        "weekly-status-workflow-template",
+    ),
 )
 
 GATE_WORKFLOW_PATH = ".github/workflows/code-mower-gate.yml"
@@ -321,6 +352,52 @@ def _workflow_entry_for_target(
     }
 
 
+def _csv_value(value: Any, default: str) -> str:
+    if isinstance(value, list):
+        return ",".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
+
+
+def _owner_surface_config(config: Mapping[str, Any]) -> dict[str, str]:
+    raw = config.get("owner_surface")
+    surface = raw if isinstance(raw, Mapping) else {}
+    rendered: dict[str, str] = {}
+    for key, default in OWNER_SURFACE_DEFAULTS.items():
+        if key == "phase_labels":
+            rendered[key] = _csv_value(surface.get(key), default)
+            continue
+        value = surface.get(key, default)
+        rendered[key] = str(value).strip() if value is not None else default
+        if not rendered[key]:
+            rendered[key] = default
+    return rendered
+
+
+def _owner_surface_workflow_entry(
+    path: str,
+    copy_from: str,
+    source_name: str,
+    owner_surface: Mapping[str, str],
+) -> dict[str, str]:
+    return {
+        "path": path,
+        "source": source_name,
+        "copy_from": copy_from,
+        "package_copy_from": copy_from,
+        "owner_login": owner_surface["owner_login"],
+        "needs_owner_label": owner_surface["needs_owner_label"],
+        "gate_override_label": owner_surface["gate_override_label"],
+        "status_issue": owner_surface["status_issue"],
+        "weekly_status_cron": owner_surface["weekly_cron"],
+        "ready_label": owner_surface["ready_label"],
+        "phase_labels": owner_surface["phase_labels"],
+        "reviewer_spend_path": owner_surface["reviewer_spend_path"],
+        "reviewer_value_report_path": owner_surface["reviewer_value_report_path"],
+    }
+
+
 def _local_audit_entries(
     selected_lanes: Mapping[str, Mapping[str, Any]],
 ) -> tuple[dict[str, str], ...]:
@@ -356,7 +433,7 @@ def _local_audit_label_expression(entries: tuple[dict[str, str], ...], source: s
             f"{label_path} == {_actions_string(entry['needs_label'])}" for entry in entries
         )
     return " || ".join(
-        "contains(join({label_path}, ','), {label})".format(
+        "contains({label_path}, {label})".format(
             label_path=label_path,
             label=_actions_string(entry["needs_label"]),
         )
@@ -795,9 +872,20 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
             entry.get("local_audit_token_env_assignments") or ""
         ),
         "__NEEDS_LABEL__": str(entry.get("needs_label") or ""),
+        "__NEEDS_OWNER_LABEL__": str(entry.get("needs_owner_label") or ""),
+        "__OWNER_LOGIN__": str(entry.get("owner_login") or ""),
+        "__GATE_OVERRIDE_LABEL__": str(entry.get("gate_override_label") or ""),
+        "__PHASE_LABELS__": str(entry.get("phase_labels") or ""),
+        "__READY_LABEL__": str(entry.get("ready_label") or ""),
+        "__REVIEWER_SPEND_PATH__": str(entry.get("reviewer_spend_path") or ""),
+        "__REVIEWER_VALUE_REPORT_PATH__": str(
+            entry.get("reviewer_value_report_path") or ""
+        ),
+        "__STATUS_ISSUE__": str(entry.get("status_issue") or ""),
         "__OWNER_LABEL__": str(entry.get("owner_label") or DEFAULT_OWNER_LABEL),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
         "__TRAILER_PREFIX__": str(entry.get("trailer_prefix") or ""),
+        "__WEEKLY_STATUS_CRON__": str(entry.get("weekly_status_cron") or ""),
         "__WORKFLOW_NAME__": str(entry.get("workflow_name") or "Code Mower labeler"),
     }
     for placeholder, value in replacements.items():
@@ -810,9 +898,11 @@ def _workflow_template_needs_render(source: str) -> bool:
         "shared-cleanup-template",
         "code-mower-gate-workflow-template",
         "hosted-bridge-workflow-template",
+        "owner-notify-workflow-template",
         "self-hosted-local-audit-workflow-template",
         "saas-reviewer-labeler-workflow-template",
         "trailer-comment-labeler-workflow-template",
+        "weekly-status-workflow-template",
     }
 
 
@@ -997,6 +1087,7 @@ def render_init_plan(
     warnings: list[str] = []
     merge_authority_lanes: list[str] = []
     informational_lanes: list[str] = []
+    owner_surface = _owner_surface_config(config)
     author_exclusion_json = _author_exclusion_json(config, selected_lanes)
 
     for lane_id, lane in selected_lanes.items():
@@ -1045,6 +1136,13 @@ def render_init_plan(
                 )
         smoke_tests.extend(_lane_smoke_tests(lane_id, lane, package_mode=package_mode))
         warnings.extend(_lane_warnings(lane_id, lane, package_mode=package_mode))
+
+    for label in (
+        owner_surface["needs_owner_label"],
+        owner_surface["gate_override_label"],
+    ):
+        if label:
+            labels.append(label)
 
     local_audit_entries = _local_audit_entries(selected_lanes)
     if local_audit_entries and LOCAL_AUDIT_WORKFLOW_PATH not in generated_paths:
@@ -1105,6 +1203,14 @@ def render_init_plan(
                     "stale_lane": _trailer_lane_name(lane_id, lane),
                 }
             )
+    for target, copy_from, source_name in OWNER_SURFACE_WORKFLOW_FILES:
+        if target in generated_paths:
+            warnings.append(f"owner surface workflow target {target} collides")
+            continue
+        generated_paths.add(target)
+        generated_files.append(
+            _owner_surface_workflow_entry(target, copy_from, source_name, owner_surface)
+        )
     for target, copy_from, package_copy_from, source_name in STARTER_DATA_FILES:
         if target in generated_paths:
             warnings.append(f"starter data target {target} collides with another generated file")
@@ -1132,10 +1238,22 @@ def render_init_plan(
                 "mode": mode,
             }
         )
+    smoke_tests.append(
+        "python3 -m py_compile "
+        '"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/status_report.py"'
+    )
 
     if not merge_authority_lanes:
         warnings.append(
             f"{profile.profile_id}: profile has no merge-authority lanes; keep informational only"
+        )
+    if owner_surface["owner_login"] == OWNER_SURFACE_DEFAULTS["owner_login"]:
+        warnings.append(
+            "owner_surface.owner_login is unset; notify workflow will mention repository owner without assignment"
+        )
+    if owner_surface["status_issue"] == OWNER_SURFACE_DEFAULTS["status_issue"]:
+        warnings.append(
+            "owner_surface.status_issue is unset; weekly status workflow will skip until configured"
         )
 
     data = {

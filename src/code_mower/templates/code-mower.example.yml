@@ -9,6 +9,23 @@ repositories:
     default_branch: main
     local_path_env: EXAMPLE_REPO_PATH
 
+owner_surface:
+  owner_login: TODO_OWNER_LOGIN
+  needs_owner_label: needs-owner
+  gate_override_label: "gate:override"
+  status_issue: TODO_STATUS_ISSUE
+  weekly_cron: "0 14 * * 1"
+  ready_label: "tier:R"
+  phase_labels:
+    - "phase:0"
+    - "phase:1"
+    - "phase:2"
+    - "phase:3"
+    - "phase:4"
+    - "phase:5"
+  reviewer_spend_path: .code-mower/reviewer-spend.json
+  reviewer_value_report_path: .code-mower/reviewer-value-report.md
+
 merge_authority_excludes_author: true
 builder_identity:
   labels:

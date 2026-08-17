@@ -120,8 +120,9 @@ code-mower calibration value-report .code-mower.generated/calibration-corpus.jso
   --output .code-mower/reviewer-value-report.md
 ```
 
-The generated starter corpus proves the command path. To bootstrap a draft from
-your repository history:
+The generated setup also includes the configurable owner escalation and weekly
+status digest templates. The generated starter corpus proves the command path.
+To bootstrap a draft from your repository history:
 
 ```bash
 code-mower calibration auto-discover \
