@@ -218,7 +218,8 @@ def infer_builder_from_pr(metadata: PullRequestMetadata) -> BuilderInference | N
         return None
 
     provider, executor, confidence = candidate
-    builder_id = _builder_id_from_url(cursor_url) or "-".join(
+    provider_run_url = cursor_url if provider == "cursor_cloud_agent" else ""
+    builder_id = _builder_id_from_url(provider_run_url) or "-".join(
         part
         for part in (
             _safe_slug(provider, ""),
@@ -231,7 +232,7 @@ def infer_builder_from_pr(metadata: PullRequestMetadata) -> BuilderInference | N
         provider=provider,
         executor=executor,
         builder_id=builder_id,
-        run_url=cursor_url,
+        run_url=provider_run_url,
         confidence=confidence,
         signals=tuple(dict.fromkeys(signals)),
     )

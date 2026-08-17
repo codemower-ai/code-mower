@@ -713,6 +713,37 @@ def test_builder_auto_record_accepts_cursor_agent_footer_marker() -> None:
         assert "cursor_agent_footer" in event["dimensions"]["builder_inference_signals"]
 
 
+def test_builder_auto_record_does_not_attach_cursor_url_to_claude_author() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        pr_json = root / "event.json"
+        output = root / "builder-run.cloud-event.json"
+        _write_pr_event(
+            pr_json,
+            author="claude[bot]",
+            branch="claude/bridge-copy",
+            body="Related run: https://cursor.com/agents/run_unrelated",
+        )
+
+        code = builder_runs.main(
+            [
+                "auto-record",
+                "--pr-json",
+                str(pr_json),
+                "--output",
+                str(output),
+                "--json",
+            ]
+        )
+
+        event = json.loads(output.read_text(encoding="utf-8"))
+        assert code == 0
+        assert event["provider"] == "claude"
+        assert event["dimensions"]["builder_executor"] == "claude_code_action"
+        assert event["dimensions"]["builder_run_url"] == ""
+        assert event["dimensions"]["builder_id"].startswith("claude-")
+
+
 def test_builder_auto_record_infers_claude_bot_author() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
