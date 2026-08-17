@@ -92,6 +92,16 @@ intervention count. They exist so CodeMower.com can connect
 without receiving source, issue bodies, diffs, prompts, transcripts,
 stdout/stderr, auth output, or secrets.
 
+Auto-inferred `builder_run` events may add metadata-only dimensions such as
+`auto_inferred`, `builder_inference_confidence`, `builder_inference_signals`,
+and `pr_author`. The inference signals are marker names only, for example a bot
+author, branch prefix, or detected hosted-agent URL marker; the PR body text and
+footer text used for inference are not stored.
+Cursor inference only accepts Cursor agent/background-agent URLs or explicit
+Cursor-agent footer markers; generic `cursor.com` links are ignored.
+When metadata signals disagree, the highest-priority provider signal wins and
+provider-specific run URLs are emitted only for that winning provider.
+
 Audit CLIs may also append local spend rows to `reviewer-spend.json` using
 schema `code_mower.reviewerSpend.v1`. The file remains backward-compatible with
 beta.40 aggregate files that only contain `profiles`; new clients add an

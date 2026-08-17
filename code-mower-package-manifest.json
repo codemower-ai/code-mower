@@ -1110,6 +1110,11 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "templates/workflows/builder-provenance.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "templates/workflows/code-mower-gate.yml.j2"
     },
     {
@@ -1146,6 +1151,11 @@
       "kind": "workflow",
       "source": "generated",
       "target": "src/code_mower/templates/workflows/hosted-bridge.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/builder-provenance.yml.j2"
     },
     {
       "kind": "workflow",
