@@ -102,6 +102,8 @@ def run_rehearsal(args: argparse.Namespace) -> dict[str, Any]:
         [
             str(venv_python),
             "scripts/smoke_easy_mode.py",
+            "--code-mower-bin",
+            str(_venv_code_mower(venv_dir)),
             "--work-dir",
             str(smoke_dir),
             "--json",

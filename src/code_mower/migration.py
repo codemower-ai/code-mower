@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -185,7 +186,16 @@ CALIBRATION_EVIDENCE_ADDITIVE_KEYS = frozenset(
 
 
 def _resolve_command(command_text: str) -> tuple[str, ...]:
-    parts = tuple(part for part in command_text.split(" ") if part)
+    stripped = command_text.strip()
+    if not stripped:
+        raise ValueError("command must not be empty")
+    path_command = Path(stripped).expanduser()
+    if path_command.is_file():
+        return (str(path_command.resolve()),)
+    resolved = shutil.which(stripped)
+    if resolved:
+        return (resolved,)
+    parts = tuple(shlex.split(stripped))
     if not parts:
         raise ValueError("command must not be empty")
     return parts

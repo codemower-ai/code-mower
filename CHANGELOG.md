@@ -4,6 +4,30 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.41
+
+This beta lands the Code Mower dogfood improvements from epic #302 so Bridge
+Pro can use Code Mower as the merge gate for three AI builder lanes.
+
+### Added
+
+- Generated workflows now support the Code Mower merge gate as a commit status,
+  auto-merge enablement, author-lane exclusion, builder identity mapping,
+  self-hosted local audit dispatch, owner escalation, and multi-repo
+  `init --add-repo` rollout (#291, #292, #293, #300, #301).
+- Reviewer spend/latency capture, automatic builder provenance, plan-conformance
+  audit context, over-generation guardrails, and per-lane audit-comment
+  attribution now have metadata-only OSS contracts and tests (#294, #295, #296,
+  #297, #298).
+
+### Changed
+
+- Labeler, clear-stale, cleanup, and runner documentation now match the pinned
+  wrapper flags, pull-request label permissions, and configured merge posture
+  used during Bridge Pro dogfood (#290, #299).
+- `docs/cloud-data-contract.md` documents the new optional upload fields while
+  keeping CodeMower.com backward-compatible with beta.40 metadata uploads.
+
 ## v0.5.0-beta.39
 
 This beta hardens the Grok Build reviewer lane after the first Bridge Pro
