@@ -184,8 +184,8 @@ workflows. The v1.0 posture is:
 - generated labelers trust configured lane bot authors; the built-in Codex and
   Claude local audit lanes also trust `github-actions[bot]` so the generated
   self-hosted runner workflow can post verdicts with `GITHUB_TOKEN`, while the
-  merge gate requires those shared-bot comments to be attested by a
-  `local-cli-audit.yml` workflow run for the same PR
+  labeler and merge gate require those shared-bot comments to be attested by a
+  trusted `local-cli-audit.yml` workflow run for the same PR/head
 
 ## Promotion Policy
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from code_mower.audit_labeler_lib import GitHubToken
 from code_mower.lane_configs import load_lane_config
 from code_mower.trailer_comment_labeler import resolve_label_decision
 
@@ -64,3 +65,87 @@ def test_default_lane_bot_keeps_legacy_prose_fallback(monkeypatch) -> None:
     assert decision is not None
     assert decision.add_label == "codex-audit-done"
     assert reason == "label done"
+
+
+def test_github_actions_bot_requires_run_attestation(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
+    config = load_lane_config("codex")
+    body = (
+        "Codex Audit - PASS\n"
+        f"Head SHA: {HEAD_SHA}\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
+    )
+
+    decision, reason = resolve_label_decision(
+        _event("github-actions[bot]", body),
+        current_head_sha=HEAD_SHA,
+        config=config,
+    )
+
+    assert decision is None
+    assert reason == "github-actions[bot] audit comment is not run-attested"
+
+
+def test_github_actions_bot_accepts_empty_run_prs_with_commit_fallback(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
+    config = load_lane_config("codex")
+    body = (
+        "Codex Audit - PASS\n"
+        f"Head SHA: {HEAD_SHA}\n"
+        "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
+    )
+
+    decision, reason = resolve_label_decision(
+        _event("github-actions[bot]", body),
+        current_head_sha=HEAD_SHA,
+        config=config,
+        repo="owner/repo",
+        tokens=(GitHubToken("TEST_TOKEN", "token"),),
+        github_actions_workflows=(".github/workflows/local-cli-audit.yml",),
+        actions_run_lookup=lambda _run_id: {
+            "event": "pull_request_target",
+            "head_sha": HEAD_SHA,
+            "path": ".github/workflows/local-cli-audit.yml",
+            "pull_requests": [],
+        },
+        commit_pull_requests_lookup=lambda _head_sha: [
+            {"number": 42, "head": {"sha": HEAD_SHA}},
+        ],
+    )
+
+    assert decision is not None
+    assert decision.add_label == "codex-audit-done"
+    assert reason == "label done"
+
+
+def test_github_actions_bot_rejects_empty_run_prs_without_commit_match(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
+    config = load_lane_config("codex")
+    body = (
+        "Codex Audit - PASS\n"
+        f"Head SHA: {HEAD_SHA}\n"
+        "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
+    )
+
+    decision, reason = resolve_label_decision(
+        _event("github-actions[bot]", body),
+        current_head_sha=HEAD_SHA,
+        config=config,
+        repo="owner/repo",
+        tokens=(GitHubToken("TEST_TOKEN", "token"),),
+        github_actions_workflows=(".github/workflows/local-cli-audit.yml",),
+        actions_run_lookup=lambda _run_id: {
+            "event": "pull_request_target",
+            "head_sha": HEAD_SHA,
+            "path": ".github/workflows/local-cli-audit.yml",
+            "pull_requests": [],
+        },
+        commit_pull_requests_lookup=lambda _head_sha: [
+            {"number": 99, "head": {"sha": HEAD_SHA}},
+        ],
+    )
+
+    assert decision is None
+    assert reason == "github-actions[bot] audit comment is not run-attested"

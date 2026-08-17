@@ -207,7 +207,7 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
             --install-id "${install_id}" \
             --yes \
             --json \
-            "${event_args[@]}" || upload_failed=1
+            ${event_args[@]+"${event_args[@]}"} || upload_failed=1
 
           if [ "${upload_failed}" -ne 0 ]; then
             echo "::warning::Code Mower audit metadata upload failed; audit verdict remains authoritative."
