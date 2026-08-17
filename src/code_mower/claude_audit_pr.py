@@ -456,6 +456,10 @@ def _fixture_guardrail_quarantine_reason(reason: Optional[str]) -> Optional[str]
     return None
 
 
+def _quarantine_is_test_only(reason: Optional[str]) -> bool:
+    return reason == "PYTEST_CURRENT_TEST is set"
+
+
 def _write_claude_raw_output_sidecar(
     artifact_path: Optional[Path],
     attempts: List[Dict[str, Any]],
@@ -1035,6 +1039,9 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                     file=sys.stderr,
                     flush=True,
                 )
+                if not _quarantine_is_test_only(quarantine_reason):
+                    result.verdict = "UNKNOWN"
+                    result.trailer = STALE_TRAILER
             else:
                 posted = post_pr_comment(repo, pr_number, comment_body, token=config.github_token)
                 result.posted_comment_url = posted.get("html_url")
@@ -1231,6 +1238,9 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                 file=sys.stderr,
                 flush=True,
             )
+            if not _quarantine_is_test_only(quarantine_reason):
+                result.verdict = "UNKNOWN"
+                result.trailer = STALE_TRAILER
         else:
             posted = post_pr_comment(repo, pr_number, comment_body, token=config.github_token)
             result.posted_comment_url = posted.get("html_url")
@@ -1246,7 +1256,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     config.progress.emit(
         "audit",
         status="finish",
-        detail=f"{repo}#{pr_number} verdict={result_verdict}",
+        detail=f"{repo}#{pr_number} verdict={result.verdict}",
     )
     return result
 

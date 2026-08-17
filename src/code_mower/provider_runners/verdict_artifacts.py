@@ -60,6 +60,10 @@ def _verdict_artifact_root(*, quarantine: bool = False) -> Path:
         configured = os.environ.get(VERDICT_QUARANTINE_DIR_ENV, "").strip()
         if configured:
             return Path(configured).expanduser()
+        configured_artifacts = os.environ.get(VERDICT_ARTIFACT_DIR_ENV, "").strip()
+        if configured_artifacts:
+            artifact_root = Path(configured_artifacts).expanduser()
+            return artifact_root.parent / "quarantine" / artifact_root.name
         return _cache_home() / "code-mower-audits" / "quarantine" / "verdicts"
     configured = os.environ.get(VERDICT_ARTIFACT_DIR_ENV, "").strip()
     if configured:

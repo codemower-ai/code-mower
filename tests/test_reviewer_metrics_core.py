@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from code_mower import cloud as code_mower_cloud
 from code_mower import code_mower_telemetry, reviewer_metrics
+from code_mower.provider_runners import write_audit_verdict_artifact
 
 
 class ReviewerMetricsCoreTests(unittest.TestCase):
@@ -387,6 +388,44 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
                 os.environ.pop("XDG_CACHE_HOME", None)
             else:
                 os.environ["XDG_CACHE_HOME"] = old_xdg
+
+    def test_quarantine_dir_defaults_next_to_pinned_verdict_dir(self) -> None:
+        old_artifact_dir = os.environ.get(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV)
+        old_quarantine_dir = os.environ.get("CODE_MOWER_VERDICT_QUARANTINE_DIR")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                verdict_dir = Path(tmp) / "state" / "verdicts"
+                os.environ[code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV] = str(verdict_dir)
+                os.environ.pop("CODE_MOWER_VERDICT_QUARANTINE_DIR", None)
+
+                path = write_audit_verdict_artifact(
+                    lane_id="claude-audit",
+                    repo="owner/repo",
+                    pr_number=42,
+                    head_sha_start="a" * 40,
+                    head_sha_end="a" * 40,
+                    verdict="UNKNOWN",
+                    trailer="<!-- CLAUDE_AUDIT_STATE: needs-claude-audit -->",
+                    comment_body="requeued",
+                    quarantine_reason="fixture-shaped audit verdict comment",
+                )
+
+                self.assertIsNotNone(path)
+                assert path is not None
+                self.assertTrue(
+                    path.is_relative_to(Path(tmp) / "state" / "quarantine" / "verdicts")
+                )
+        finally:
+            if old_artifact_dir is None:
+                os.environ.pop(code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV, None)
+            else:
+                os.environ[code_mower_telemetry.VERDICT_ARTIFACT_DIR_ENV] = (
+                    old_artifact_dir
+                )
+            if old_quarantine_dir is None:
+                os.environ.pop("CODE_MOWER_VERDICT_QUARANTINE_DIR", None)
+            else:
+                os.environ["CODE_MOWER_VERDICT_QUARANTINE_DIR"] = old_quarantine_dir
 
     def test_cloud_reviewer_runs_builds_dry_run_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

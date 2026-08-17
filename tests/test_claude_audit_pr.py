@@ -243,6 +243,70 @@ class ClaudeAuditPrTests(unittest.TestCase):
             self.assertTrue(artifact["quarantined"])
             self.assertIn("PYTEST_CURRENT_TEST", artifact["quarantine_reason"])
 
+    def test_claude_audit_fixture_verdict_quarantines_as_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            head_sha = "c" * 40
+            pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+            placeholder = cap.parse_structured_claude_verdict(
+                _payload(summary="test", findings=[_finding(title="test")])
+            )
+            diff_context = cap.DiffContext(
+                "src/app.py | 1 +",
+                "diff --git a/src/app.py b/src/app.py",
+                ("src/app.py",),
+                False,
+                1_000,
+                1_000,
+                40,
+                40,
+            )
+            config = cap.ClaudeAuditConfig(
+                "token",
+                {"owner/repo": repo},
+                include_plan_context=False,
+            )
+
+            with (
+                mock.patch.dict(
+                    "os.environ",
+                    {
+                        "PYTEST_CURRENT_TEST": "",
+                        "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                    },
+                ),
+                mock.patch.object(
+                    cap,
+                    "fetch_pull_request",
+                    side_effect=[pr_payload, pr_payload],
+                ),
+                mock.patch.object(cap, "_build_diff_context", return_value=diff_context),
+                mock.patch.object(
+                    cap.code_mower_prompts,
+                    "load_review_prompt",
+                    return_value="",
+                ),
+                mock.patch.object(
+                    cap,
+                    "run_claude_audit",
+                    return_value=(placeholder, '{"structured_output":"placeholder"}', ""),
+                ) as run_claude,
+                mock.patch.object(cap, "post_pr_comment") as post_comment,
+            ):
+                result = cap.audit_pr(config, "owner/repo", 42)
+
+            self.assertEqual(result.verdict, "UNKNOWN")
+            self.assertEqual(run_claude.call_count, cap.MAX_CLAUDE_AUDIT_ATTEMPTS)
+            post_comment.assert_not_called()
+            self.assertIsNotNone(result.verdict_artifact_path)
+            assert result.verdict_artifact_path is not None
+            self.assertIn("quarantine", str(result.verdict_artifact_path))
+            artifact = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
+            self.assertTrue(artifact["quarantined"])
+            self.assertIn("fixture-shaped structured verdict", artifact["quarantine_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

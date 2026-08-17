@@ -316,6 +316,10 @@ BLOCKED_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
 AUDIT_RUN_TRAILER_PREFIX = "<!-- CODE_MOWER_AUDIT_RUN:"
 
 
+def _quarantine_is_test_only(reason: Optional[str]) -> bool:
+    return reason == "PYTEST_CURRENT_TEST is set"
+
+
 # ----- Structured verdict validation -----
 
 
@@ -1409,6 +1413,9 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                         file=sys.stderr,
                         flush=True,
                     )
+                    if not _quarantine_is_test_only(quarantine_reason):
+                        result.verdict = "UNKNOWN"
+                        result.trailer = STALE_TRAILER
                 else:
                     posted = post_pr_comment(repo, pr_number, comment_body,
                                               token=config.github_token)
@@ -1594,6 +1601,9 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 file=sys.stderr,
                 flush=True,
             )
+            if not _quarantine_is_test_only(quarantine_reason):
+                result.verdict = "UNKNOWN"
+                result.trailer = STALE_TRAILER
         else:
             posted = post_pr_comment(repo, pr_number, comment_body,
                                       token=config.github_token)
@@ -1604,7 +1614,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     config.progress.emit(
         "audit",
         status="finish",
-        detail=f"{repo}#{pr_number} verdict={result_verdict}",
+        detail=f"{repo}#{pr_number} verdict={result.verdict}",
     )
     return result
 
