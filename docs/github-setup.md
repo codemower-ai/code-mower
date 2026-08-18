@@ -366,9 +366,9 @@ other on the same PR push.
 
 If `CODE_MOWER_CLOUD_TOKEN` is configured, the generated workflow also uploads
 metadata-only reviewer evidence after every audit attempt. It sends saved
-verdict artifacts with `code-mower cloud reviewer-runs`, spend rows captured in
-a runner-temp `reviewer-spend.json` with `cloud dogfood --spend`, and trusted
-default-branch work-order `*.cloud-event.json` sidecars. The generated template
+verdict artifacts and runner-temp `reviewer-spend.json` rows with
+`code-mower cloud reviewer-runs`, plus trusted default-branch work-order
+`*.cloud-event.json` sidecars through `cloud dogfood`. The generated template
 sets the runner-temp spend path at step scope because GitHub Actions does not
 allow the `runner` context in job-level `env`. The upload step runs with
 `if: always()` for non-superseded audit attempts, skips successfully when the

@@ -130,16 +130,20 @@ append-only `runs` list. Each run may include `run_id`, `created_at`, `lane`,
 metadata-only fields. The ledger must not contain source, diffs, prompts,
 transcripts, stdout/stderr, issue bodies, auth output, or secrets.
 
-`code-mower cloud export --spend reviewer-spend.json` and dogfood uploads
-convert spend `runs` into `reviewer_run` events. The derived event places
-latency/cost/token numbers under `metrics`, PR/SHA/lane identifiers under
-`dimensions`, and model/tool identity under `tool`. CodeMower.com should accept
-uploads without these fields from beta.40 clients and treat missing spend rows
-as unknown, not zero measured spend.
+`code-mower cloud export --spend reviewer-spend.json`, `cloud dogfood`, and
+`cloud reviewer-runs` convert spend `runs` into `reviewer_run` events.
+`reviewer-runs` reads `.code-mower/reviewer-spend.json` automatically when the
+ledger is present and merges spend metrics into matching verdict events before
+upload so dashboards do not double-count reviewer attempts. The derived event
+places latency/cost/token numbers under `metrics`, PR/SHA/lane identifiers
+under `dimensions`, and model/tool identity under `tool`. CodeMower.com should
+accept uploads without these fields from beta.40 clients and treat missing
+spend rows as unknown, not zero measured spend.
 
 Generated self-hosted local audit workflows may automatically call
-`cloud reviewer-runs` and `cloud dogfood --spend` after audit attempts when a
-team configures `CODE_MOWER_CLOUD_TOKEN`. This is an upload-path change, not an
+`cloud reviewer-runs` and `cloud dogfood` after audit attempts when a team
+configures `CODE_MOWER_CLOUD_TOKEN`; runner-temp spend rows travel with the
+reviewer-run upload. This is an upload-path change, not an
 event-shape change: verdict artifacts still become `reviewer_run` events,
 spend rows still become `reviewer_run` events, work-order sidecars remain
 `work_order` events, and beta.40 through beta.46 uploads that omit these

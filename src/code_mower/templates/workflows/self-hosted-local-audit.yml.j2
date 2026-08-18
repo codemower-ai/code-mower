@@ -198,6 +198,7 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
             --repo-path "${PR_HEAD_PATH}" \
             --repo-slug "${GITHUB_REPOSITORY}" \
             --verdicts "${verdict_dir}" \
+            --spend "${CODE_MOWER_REVIEWER_SPEND_PATH}" \
             --output-dir "${RUNNER_TEMP}/code-mower-reviewer-runs" \
             --install-id "${install_id}" \
             --include-git-ref \
@@ -216,7 +217,6 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
             --repo-path "${SUPPORT_PATH}" \
             --repo-slug "${GITHUB_REPOSITORY}" \
             --source local-cli-audit \
-            --spend "${CODE_MOWER_REVIEWER_SPEND_PATH}" \
             --output-dir "${RUNNER_TEMP}/code-mower-dogfood" \
             --install-id "${install_id}" \
             --yes \

@@ -277,7 +277,9 @@ code-mower cloud dogfood --yes --json
 `cloud dogfood` auto-detects the current GitHub repo when possible, includes
 common shareable reports if they exist, adds a metadata-only `dogfood_upload`
 event, and is the easiest way to make the CodeMower.com dashboard useful over
-time.
+time. Reviewer-run uploads automatically include `.code-mower/reviewer-spend.json`
+when present, so routine dashboard refreshes do not need a separate spend-only
+command.
 
 To catch up recent GitHub Actions history after the token is configured:
 

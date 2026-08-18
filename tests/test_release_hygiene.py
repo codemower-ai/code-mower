@@ -2176,11 +2176,17 @@ jobs:
                 local_cli_audit,
             )
             self.assertIn(
+                '--verdicts "${verdict_dir}" \\\n'
+                '            --spend "${CODE_MOWER_REVIEWER_SPEND_PATH}"',
+                local_cli_audit,
+            )
+            self.assertIn(
                 '"${SUPPORT_PATH}/tools/code_mower" cloud dogfood \\\n'
                 '            --repo-path "${SUPPORT_PATH}"',
                 local_cli_audit,
             )
             self.assertIn("--spend \"${CODE_MOWER_REVIEWER_SPEND_PATH}\"", local_cli_audit)
+            self.assertNotIn('--source local-cli-audit \\\n            --spend', local_cli_audit)
             self.assertIn("--event \"work_order=${event_file}\"", local_cli_audit)
             self.assertNotIn("__LOCAL_AUDIT_", local_cli_audit)
             parsed_local_cli = yaml.safe_load(local_cli_audit)
