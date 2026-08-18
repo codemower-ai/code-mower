@@ -18,6 +18,7 @@ owner_surface:
   weekly_cron: "0 14 * * 1"
   gate_health_cron: "*/15 * * * *"
   gate_health_max_wait_minutes: "30"
+  gate_health_liveness_minutes: "45"
   local_audit_runner_label: code-mower-audit
   ready_label: "tier:R"
   phase_labels:

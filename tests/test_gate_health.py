@@ -100,12 +100,68 @@ def issue_comment(number: int, comment: dict[str, object]) -> dict[str, object]:
     }
 
 
-def pr(labels: list[str]) -> dict[str, object]:
+def pr(
+    labels: list[str],
+    *,
+    number: int = 9,
+    title: str = "Test PR",
+    head: str = SHA,
+) -> dict[str, object]:
     return {
-        "number": 9,
-        "title": "Test PR",
-        "headRefOid": SHA,
+        "number": number,
+        "title": title,
+        "headRefOid": head,
         "labels": [{"name": label} for label in labels],
+    }
+
+
+def label_event(label: str, *, created_at: str) -> dict[str, object]:
+    return {
+        "event": "labeled",
+        "label": {"name": label},
+        "created_at": created_at,
+    }
+
+
+def cursor_lanes() -> list[dict[str, object]]:
+    return [
+        {
+            **LANES[0],
+            "author_lane": "cursor",
+            "builder_label": "builder:cursor",
+            "builder_authors": "cursor,cursor[bot]",
+            "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+        }
+    ]
+
+
+def blocked_cursor_timeline() -> dict[int, list[dict[str, object]]]:
+    return {
+        9: [
+            label_event(
+                "codex-audit-blocked",
+                created_at="2026-08-17T03:00:00Z",
+            )
+        ]
+    }
+
+
+def pr_comment(author: str, *, created_at: str) -> dict[str, object]:
+    return {
+        "id": created_at,
+        "created_at": created_at,
+        "user": {"login": author},
+        "body": "working on the blocked audit",
+    }
+
+
+def pr_commit(author: str, *, created_at: str) -> dict[str, object]:
+    return {
+        "author": {"login": author},
+        "commit": {
+            "author": {"date": created_at},
+            "committer": {"date": created_at},
+        },
     }
 
 
@@ -117,12 +173,14 @@ def evaluate_case(**overrides: object) -> list[Alert]:
         "timelines": {9: []},
         "comments": {9: []},
         "check_runs": {SHA: []},
+        "commits": {9: []},
         "head_times": {},
         "runners": [{"name": "mac", "status": "online", "labels": [{"name": "bridge-pro-audit"}]}],
         "status_comments": [],
         "stale_minutes": 45,
         "dedupe_hours": 6,
         "runner_label": "bridge-pro-audit",
+        "liveness_minutes": 45,
     }
     defaults.update(overrides)
     return evaluate(**defaults)  # type: ignore[arg-type]
@@ -414,6 +472,58 @@ class GateHealthTests(unittest.TestCase):
                     )
                 ]
             }
+        )
+
+        self.assertEqual(alerts, [])
+
+    def test_lane_liveness_alerts_when_blocked_builder_lane_goes_silent(self) -> None:
+        alerts = evaluate_case(
+            lanes=cursor_lanes(),
+            prs=[pr(["builder:cursor", "codex-audit-blocked"])],
+            timelines=blocked_cursor_timeline(),
+        )
+
+        self.assertEqual([alert.key for alert in alerts], [f"builder-cursor-liveness-9-{SHA[:12]}"])
+        self.assertIn("cursor builder lane appears stalled", alerts[0].title)
+        self.assertIn("This is stalled with work, not an empty lane.", alerts[0].body)
+        self.assertIn("#9 (`codex-audit-blocked`", alerts[0].body)
+
+    def test_lane_liveness_suppressed_by_recent_lane_comment(self) -> None:
+        alerts = evaluate_case(
+            lanes=cursor_lanes(),
+            prs=[pr(["builder:cursor", "codex-audit-blocked"])],
+            timelines=blocked_cursor_timeline(),
+            comments={9: [pr_comment("cursor[bot]", created_at="2026-08-17T04:30:00Z")]},
+        )
+
+        self.assertEqual(alerts, [])
+
+    def test_lane_liveness_not_suppressed_by_recent_audit_comment(self) -> None:
+        alerts = evaluate_case(
+            lanes=cursor_lanes(),
+            prs=[pr(["builder:cursor", "codex-audit-blocked"])],
+            timelines=blocked_cursor_timeline(),
+            comments={
+                9: [pr_comment("codex-audit-bot", created_at="2026-08-17T04:30:00Z")]
+            },
+        )
+
+        self.assertEqual([alert.key for alert in alerts], [f"builder-cursor-liveness-9-{SHA[:12]}"])
+
+    def test_lane_liveness_suppressed_by_recent_lane_commit(self) -> None:
+        alerts = evaluate_case(
+            lanes=cursor_lanes(),
+            prs=[pr(["builder:cursor", "codex-audit-blocked"])],
+            timelines=blocked_cursor_timeline(),
+            commits={9: [pr_commit("cursor", created_at="2026-08-17T04:30:00Z")]},
+        )
+
+        self.assertEqual(alerts, [])
+
+    def test_lane_liveness_does_not_alert_without_blocked_work(self) -> None:
+        alerts = evaluate_case(
+            prs=[pr(["builder:cursor"])],
+            timelines={9: [label_event("builder:cursor", created_at="2026-08-17T03:00:00Z")]},
         )
 
         self.assertEqual(alerts, [])
@@ -838,6 +948,67 @@ class GateHealthTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue().strip().splitlines()[-1])
         self.assertEqual(code, 0)
         self.assertEqual(payload["alerts"], [])
+
+    def test_main_fetches_liveness_metadata_for_blocked_builder_prs(self) -> None:
+        import code_mower.gate_health as gate_health
+
+        original_gh_json = gate_health.gh_json
+        original_gh_api_list = gate_health.gh_api_list
+
+        def fake_gh_json(args: list[str], env: dict[str, str] | None = None) -> object:
+            if args[:2] == ["pr", "list"] and "--state" in args:
+                state = args[args.index("--state") + 1]
+                if state == "open":
+                    return [pr(["builder:cursor", "codex-audit-blocked"])]
+                if state == "closed":
+                    return []
+            raise AssertionError(args)
+
+        def fake_gh_api_list(
+            repo: str,
+            path: str,
+            key: str | None = None,
+            *,
+            env: dict[str, str] | None = None,
+            paginate: bool = True,
+        ) -> list[dict[str, object]]:
+            if path.startswith("issues/comments?"):
+                return []
+            if path == "issues/9/timeline?per_page=100":
+                return [label_event("codex-audit-blocked", created_at="2026-08-17T03:00:00Z")]
+            if path == "issues/9/comments?per_page=100":
+                return []
+            if path == "pulls/9/commits?per_page=100":
+                return []
+            if path == f"commits/{SHA}/check-runs?per_page=100":
+                return []
+            if path.startswith("actions/runs?"):
+                return []
+            raise AssertionError(path)
+
+        try:
+            gate_health.gh_json = fake_gh_json  # type: ignore[assignment]
+            gate_health.gh_api_list = fake_gh_api_list  # type: ignore[assignment]
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = gate_health.main(
+                    [
+                        "--repo",
+                        "owner/repo",
+                        "--lanes-json",
+                        json.dumps(cursor_lanes()),
+                        "--runner-check",
+                        "disabled",
+                        "--dry-run",
+                    ]
+                )
+        finally:
+            gate_health.gh_json = original_gh_json
+            gate_health.gh_api_list = original_gh_api_list
+
+        payload = json.loads(stdout.getvalue().strip().splitlines()[-1])
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["alerts"], [f"builder-cursor-liveness-9-{SHA[:12]}"])
 
     def test_main_skips_stale_eval_when_gate_comments_fetch_fails(self) -> None:
         import code_mower.gate_health as gate_health

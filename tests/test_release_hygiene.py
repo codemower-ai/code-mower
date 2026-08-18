@@ -1007,6 +1007,7 @@ exit 1
         self.assertIn("tools/code_mower gate-health", gate_health)
         self.assertIn("--status-issue", gate_health)
         self.assertIn("--runner-label", gate_health)
+        self.assertIn("--liveness-minutes", gate_health)
         self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", gate_health)
 
     def test_local_audit_label_expression_uses_exact_label_membership(self) -> None:
@@ -1054,6 +1055,10 @@ jobs:
         self.assertIn("--repo \"{% raw %}${{ github.repository }}{% endraw %}\"", template)
         self.assertIn("--status-issue \"${STATUS_ISSUE}\"", template)
         self.assertIn("--runner-label \"${CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL}\"", template)
+        self.assertIn(
+            "--liveness-minutes \"${CODE_MOWER_GATE_HEALTH_LIVENESS_MINUTES}\"",
+            template,
+        )
         self.assertNotIn("python3 - <<'PY'", template)
 
     def test_provider_catalog_wires_merge_authority_stale_hygiene(self) -> None:
@@ -2316,9 +2321,13 @@ jobs:
             ).read_text(encoding="utf-8")
             self.assertIn("CODE_MOWER_GATE_HEALTH_LANES_JSON", gate_health)
             self.assertIn("CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES", gate_health)
+            self.assertIn("CODE_MOWER_GATE_HEALTH_LIVENESS_MINUTES", gate_health)
             self.assertIn('NEEDS_OWNER_LABEL: "needs-owner"', gate_health)
             self.assertIn("needs-codex-audit", gate_health)
             self.assertIn("needs-claude-audit", gate_health)
+            self.assertIn('"author_lane":"codex"', gate_health)
+            self.assertIn('"builder_authors":"chatgpt-codex-connector[bot]"', gate_health)
+            self.assertIn('"builder_label":"builder:codex"', gate_health)
             self.assertIn("github-actions[bot]", gate_health)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS: ${{ vars.CLAUDE_AUDIT_BOT_AUTHORS || '' }}", gate_health)
             self.assertIn("CODEX_BOT_AUTHORS: ${{ vars.CODEX_BOT_AUTHORS || '' }}", gate_health)
@@ -2356,6 +2365,7 @@ jobs:
             "weekly_cron": "15 12 * * 1",
             "gate_health_cron": "*/15 * * * *",
             "gate_health_max_wait_minutes": "45",
+            "gate_health_liveness_minutes": "60",
             "local_audit_runner_label": "bridge-pro-audit",
             "ready_label": "tier:R",
             "phase_labels": ["phase:0", "phase:1"],
@@ -2455,6 +2465,7 @@ jobs:
             self.assertIn('STATUS_ISSUE: "6"', gate_health)
             self.assertIn('cron: "*/15 * * * *"', gate_health)
             self.assertIn('CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES: ${{ github.event.inputs.max_wait_minutes || \'45\' }}', gate_health)
+            self.assertIn('CODE_MOWER_GATE_HEALTH_LIVENESS_MINUTES: ${{ github.event.inputs.liveness_minutes || \'60\' }}', gate_health)
             self.assertIn('CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL: "bridge-pro-audit"', gate_health)
             self.assertIn("tools/code_mower gate-health", gate_health)
             self.assertIn("needs-codex-audit", gate_health)

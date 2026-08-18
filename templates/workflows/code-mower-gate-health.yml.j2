@@ -9,6 +9,9 @@ on:
       max_wait_minutes:
         description: "Minutes a needs-audit label may wait without a head-bound verdict."
         required: false
+      liveness_minutes:
+        description: "Minutes a blocked builder PR may wait without builder activity."
+        required: false
 
 permissions:
   actions: read
@@ -22,6 +25,7 @@ env:
   CODE_MOWER_GATE_HEALTH_LANES_JSON: >-
     __GATE_HEALTH_LANES_JSON__
   CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES: {% raw %}${{ github.event.inputs.max_wait_minutes || '__GATE_HEALTH_MAX_WAIT_MINUTES__' }}{% endraw %}
+  CODE_MOWER_GATE_HEALTH_LIVENESS_MINUTES: {% raw %}${{ github.event.inputs.liveness_minutes || '__GATE_HEALTH_LIVENESS_MINUTES__' }}{% endraw %}
   CODE_MOWER_GATE_HEALTH_DEDUPE_HOURS: "6"
   CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_THRESHOLD: "3"
   CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_HISTORY_HOURS: "168"
@@ -53,6 +57,7 @@ __GATE_HEALTH_AUTHOR_ENV_ASSIGNMENTS__
             --repo "{% raw %}${{ github.repository }}{% endraw %}" \
             --status-issue "${STATUS_ISSUE}" \
             --stale-minutes "${CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES}" \
+            --liveness-minutes "${CODE_MOWER_GATE_HEALTH_LIVENESS_MINUTES}" \
             --dedupe-hours "${CODE_MOWER_GATE_HEALTH_DEDUPE_HOURS}" \
             --unknown-streak-threshold "${CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_THRESHOLD}" \
             --unknown-streak-history-hours "${CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_HISTORY_HOURS}" \
