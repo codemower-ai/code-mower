@@ -74,15 +74,10 @@ def _parse_expiry(value: str) -> date | None:
     text = value.strip()
     if not text:
         return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(text).date()
+        return date.fromisoformat(text)
     except ValueError:
-        try:
-            return date.fromisoformat(value.strip())
-        except ValueError:
-            return None
+        return None
 
 
 def check_human_automation_token(

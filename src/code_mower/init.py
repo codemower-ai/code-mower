@@ -28,6 +28,7 @@ if __package__ in {None, "", "tools"}:
         required_secret_entries_for_lane,
         validate_config,
     )
+    from tools.doctor_checks.github_human_token import human_automation_token_required
 else:  # pragma: no cover - exercised after package extraction.
     from . import secrets as code_mower_secrets
     from .config import (
@@ -39,6 +40,7 @@ else:  # pragma: no cover - exercised after package extraction.
         required_secret_entries_for_lane,
         validate_config,
     )
+    from .doctor_checks.github_human_token import human_automation_token_required
 
 
 WORKFLOW_TARGETS_BY_DRIVER = {
@@ -1558,13 +1560,9 @@ def render_init_plan(
             labels.append(label)
 
     local_audit_entries = _local_audit_entries(selected_lanes)
-    human_token_required = bool(
-        any(
-            entry.get("token_env") == owner_surface["dispatch_token_env"]
-            for entry in local_audit_entries
-        )
-        or (agent_pr_rules and audit_rearm_entries)
-        or (fix_round_rules and audit_rearm_entries)
+    human_token_required = human_automation_token_required(
+        config,
+        tuple(selected_lanes.items()),
     )
     if human_token_required:
         required_secrets.add(owner_surface["dispatch_token_env"])

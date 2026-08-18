@@ -143,6 +143,23 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertEqual(check.status, "fail")
         self.assertIn("expired", check.message)
 
+    def test_human_automation_token_check_rejects_timestamp_expiry(self) -> None:
+        check = self._human_token_check(
+            [
+                ({"name": "DISPATCH_TOKEN"}, {}),
+                (
+                    {
+                        "name": "DISPATCH_TOKEN_EXPIRES_AT",
+                        "value": "2026-09-15T23:59:59Z",
+                    },
+                    {},
+                ),
+            ]
+        )
+
+        self.assertEqual(check.status, "fail")
+        self.assertIn("invalid DISPATCH_TOKEN_EXPIRES_AT", check.message)
+
     def test_human_automation_token_check_skips_when_not_required(self) -> None:
         check = check_human_automation_token(
             gh_path="/usr/bin/gh",
