@@ -379,6 +379,47 @@ class CalibrationTruthTests(unittest.TestCase):
         self.assertEqual(stats["known_blocked_missed_runs"], 0)
         self.assertEqual(stats["audit_input_insufficient_runs"], 1)
 
+    def test_stale_run_is_neutral_in_value_report_metrics(self) -> None:
+        corpus = self._load_corpus(
+            {
+                "version": 1,
+                "name": "truth-stale",
+                "corpus": [
+                    {
+                        "repo": "owner/repo",
+                        "pr_number": 33,
+                        "head_sha": "3" * 40,
+                        "source": "historical-control",
+                        "truth": {"expectation": "known_blocked"},
+                        "reviewer_runs": [
+                            {
+                                "reviewer": "codex-audit",
+                                "status": "superseded_head",
+                                "finding_count": 0,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+        report = code_mower_calibration.build_value_report(corpus)
+        stats = report["metrics"]["profiles"]["codex-audit"]
+        policy = report["policy"]["policies"]["codex-audit"]
+        rendered = code_mower_calibration.render_value_report_text(report)
+        html = code_mower_calibration.render_value_report_html(report)
+
+        self.assertEqual(stats["known_blocked_runs"], 1)
+        self.assertEqual(stats["known_blocked_caught_runs"], 0)
+        self.assertEqual(stats["known_blocked_missed_runs"], 0)
+        self.assertEqual(stats["infra_error_runs"], 0)
+        self.assertEqual(stats["stale_runs"], 1)
+        self.assertEqual(stats["run_statuses"], {"superseded_head": 1})
+        self.assertEqual(policy["stale_runs"], 1)
+        self.assertIn("| Infra errors | Stale | Input gaps |", rendered)
+        self.assertIn("| `codex-audit` | 1 | 0 | 0 |", rendered)
+        self.assertIn("<th>Stale</th>", html)
+
     def test_legacy_source_prefixes_still_define_truth(self) -> None:
         corpus = self._load_corpus(
             {

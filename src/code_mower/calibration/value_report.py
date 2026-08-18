@@ -56,8 +56,8 @@ def render_value_report_text(report: Mapping[str, Any]) -> str:
         f"Run dispositions: {report.get('run_disposition_count', 0)}",
         f"Reviewer runs: {report.get('reviewer_run_count', 0)}",
         "",
-        "| Reviewer | Runs | Useful | Negative | Useful rate | Known-clean pass | Known-blocked caught/missed | Infra errors | Input gaps | Auto/manual M/MB/FB | Cost | Sec/run | Cost/useful | Policy | Recommended role |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |",
+        "| Reviewer | Runs | Useful | Negative | Useful rate | Known-clean pass | Known-blocked caught/missed | Infra errors | Stale | Input gaps | Auto/manual M/MB/FB | Cost | Sec/run | Cost/useful | Policy | Recommended role |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |",
     ]
     if isinstance(profiles, Mapping) and profiles:
         for profile_id, stats in sorted(profiles.items()):
@@ -89,6 +89,7 @@ def render_value_report_text(report: Mapping[str, Any]) -> str:
                         str(stats.get("known_clean_pass_runs", 0)),
                         caught_missed,
                         str(stats.get("infra_error_runs", 0)),
+                        str(stats.get("stale_runs", 0)),
                         str(stats.get("audit_input_insufficient_runs", 0)),
                         auto_manual,
                         str(stats.get("cost_usd", 0)),
@@ -109,7 +110,7 @@ def render_value_report_text(report: Mapping[str, Any]) -> str:
                 + " |"
             )
     else:
-        lines.append("| none | 0 | 0 | 0 |  | 0 | 0/0 | 0 | 0 | 0/0/0 | 0 |  |  |  |  |")
+        lines.append("| none | 0 | 0 | 0 |  | 0 | 0/0 | 0 | 0 | 0 | 0/0/0 | 0 |  |  |  |  |")
 
     recommendations = metrics.get("recommendations", []) if isinstance(metrics, Mapping) else []
     lines.extend(["", "## Recommendations"])
@@ -188,6 +189,7 @@ def render_value_report_html(report: Mapping[str, Any]) -> str:
                 f"<td>{esc(stats.get('negative_findings', 0))}</td>"
                 f"<td>{esc(stats.get('useful_rate', ''))}</td>"
                 f"<td>{esc(caught_missed)}</td>"
+                f"<td>{esc(stats.get('stale_runs', 0))}</td>"
                 f"<td>{esc(auto_manual)}</td>"
                 f"<td>{esc(stats.get('cost_usd', 0))}</td>"
                 f"<td>{esc(stats.get('seconds_per_run', ''))}</td>"
@@ -195,7 +197,7 @@ def render_value_report_html(report: Mapping[str, Any]) -> str:
                 "</tr>"
             )
     else:
-        rows.append("<tr><td colspan='10'>No reviewer rows yet.</td></tr>")
+        rows.append("<tr><td colspan='11'>No reviewer rows yet.</td></tr>")
 
     recommendation_items = (
         "\n".join(f"<li>{esc(item)}</li>" for item in recommendations)
@@ -242,7 +244,7 @@ def render_value_report_html(report: Mapping[str, Any]) -> str:
         "  </section>\n"
         "  <section class='card'>\n"
         "    <h2>Reviewer / lens signal</h2>\n"
-        "    <table><thead><tr><th>Reviewer</th><th>Runs</th><th>Useful</th><th>Negative</th><th>Useful rate</th><th>Blocked caught/missed</th><th>Auto/manual</th><th>Cost</th><th>Sec/run</th><th>Role</th></tr></thead>\n"
+        "    <table><thead><tr><th>Reviewer</th><th>Runs</th><th>Useful</th><th>Negative</th><th>Useful rate</th><th>Blocked caught/missed</th><th>Stale</th><th>Auto/manual</th><th>Cost</th><th>Sec/run</th><th>Role</th></tr></thead>\n"
         f"    <tbody>{''.join(rows)}</tbody></table>\n"
         "  </section>\n"
         "  <section class='card'>\n"

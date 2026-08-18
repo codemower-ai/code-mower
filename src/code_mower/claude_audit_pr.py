@@ -209,6 +209,7 @@ class ClaudeAuditConfig:
     max_plan_context_bytes: int = code_mower_plan_context.DEFAULT_MAX_TOTAL_BYTES
     max_plan_context_file_bytes: int = code_mower_plan_context.DEFAULT_MAX_FILE_BYTES
     merge_authority: bool = True
+    calibration_badge: str = ""
 
 
 @dataclass
@@ -1026,10 +1027,13 @@ def format_comment(
     merge_authority: bool = True,
     actions_run_id: Optional[str] = None,
     unknown_reason: str = "",
+    calibration_badge: str = "",
 ) -> str:
     posture = "merge-authority lane" if merge_authority else "informational only"
     header = f"## Claude audit ({posture})\n\n"
     header += f"Head SHA: `{head_sha}`\n"
+    if badge := _normalize_calibration_badge(calibration_badge):
+        header += f"Calibration: {badge}\n"
     if actions_run_id:
         header += f"{AUDIT_RUN_TRAILER_PREFIX} run_id={actions_run_id} -->\n"
     if is_stale:
@@ -1077,6 +1081,10 @@ def format_comment(
         trailer,
     ]) + "\n"
     return limit_comment_body(body, trailer, provider_name="Claude")
+
+
+def _normalize_calibration_badge(value: str | None) -> str:
+    return " ".join(str(value or "").strip().split())[:120]
 
 
 def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAuditResult:
@@ -1148,6 +1156,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             stale_end_sha=exc.actual_sha,
             merge_authority=config.merge_authority,
             actions_run_id=actions_run_id,
+            calibration_badge=config.calibration_badge,
         )
         result = ClaudeAuditResult(
             repo=repo,
@@ -1334,6 +1343,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             stale_end_sha=head_sha_end,
             merge_authority=config.merge_authority,
             actions_run_id=actions_run_id,
+            calibration_badge=config.calibration_badge,
         )
         result_verdict = "STALE"
         trailer = STALE_TRAILER
@@ -1345,6 +1355,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             merge_authority=config.merge_authority,
             actions_run_id=actions_run_id,
             unknown_reason=claude_cli_reason,
+            calibration_badge=config.calibration_badge,
         )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
@@ -1354,6 +1365,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             head_sha_start,
             merge_authority=config.merge_authority,
             actions_run_id=actions_run_id,
+            calibration_badge=config.calibration_badge,
         )
         result_verdict = parsed.verdict
         trailer = BLOCKED_TRAILER if parsed.verdict == "BLOCKED" else DONE_TRAILER
@@ -1611,7 +1623,15 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--informational",
         dest="merge_authority",
         action="store_false",
-        help="Render audit comments as informational-only calibration comments.",
+        help="Render audit comments as informational-only lane comments.",
+    )
+    ap.add_argument(
+        "--calibration-badge",
+        default=os.environ.get("CLAUDE_AUDIT_CALIBRATION_BADGE", ""),
+        help=(
+            "Render a separate calibration status badge line without changing "
+            "the lane's merge-authority posture."
+        ),
     )
     return ap.parse_args(argv)
 
@@ -1673,6 +1693,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_plan_context_bytes=args.max_plan_context_bytes,
             max_plan_context_file_bytes=args.max_plan_context_file_bytes,
             merge_authority=args.merge_authority,
+            calibration_badge=args.calibration_badge,
         )
         result = audit_pr(config, args.repo, args.pr)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
@@ -1705,7 +1726,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 def _audit_exit_code(verdict: str) -> int:
-    return 2 if verdict == "UNKNOWN" else 0
+    return 2 if str(verdict or "").upper() == "UNKNOWN" else 0
 
 
 if __name__ == "__main__":

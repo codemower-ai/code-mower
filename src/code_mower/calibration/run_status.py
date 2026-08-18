@@ -9,6 +9,7 @@ RUN_STATUS_PASS = "pass"
 RUN_STATUS_BLOCKED = "blocked"
 RUN_STATUS_AUDIT_INPUT_INSUFFICIENT = "audit_input_insufficient"
 RUN_STATUS_INFRA_ERROR = "infra_error"
+RUN_STATUS_STALE = "stale"
 RUN_STATUS_UNKNOWN = "unknown"
 
 RUN_STATUS_CATEGORY_ALIASES = {
@@ -36,7 +37,9 @@ RUN_STATUS_CATEGORY_ALIASES = {
     "rate_limit": RUN_STATUS_INFRA_ERROR,
     "rate_limited": RUN_STATUS_INFRA_ERROR,
     "setup_error": RUN_STATUS_INFRA_ERROR,
-    "stale": RUN_STATUS_INFRA_ERROR,
+    "stale": RUN_STATUS_STALE,
+    "superseded": RUN_STATUS_STALE,
+    "superseded_head": RUN_STATUS_STALE,
     "timeout": RUN_STATUS_INFRA_ERROR,
     "timed_out": RUN_STATUS_INFRA_ERROR,
 }

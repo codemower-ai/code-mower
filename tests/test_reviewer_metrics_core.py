@@ -29,6 +29,8 @@ class ReviewerMetricsCoreTests(unittest.TestCase):
                     "duration_seconds_total": 30.0,
                     "known_blocked_runs": 1,
                     "known_blocked_caught_runs": 1,
+                    "stale_runs": 1,
+                    "run_statuses": {"stale": 1},
                     "dispositions": {
                         "true_positive": 1,
                         "false_positive": 1,
@@ -83,6 +85,8 @@ class ReviewerMetricsCoreTests(unittest.TestCase):
         self.assertEqual(profile["spend_wall_seconds_total"], 50.0)
         self.assertEqual(profile["seconds_per_run"], 25.0)
         self.assertEqual(profile["total_tokens"], 900)
+        self.assertEqual(profile["stale_runs"], 1)
+        self.assertEqual(profile["run_statuses"], {"stale": 1})
         self.assertEqual(profile["event_log"]["blocked"], 1)
         self.assertEqual(profile["event_log"]["observed_pr_count"], 2)
 

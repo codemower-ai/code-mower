@@ -136,6 +136,7 @@ def build_reviewer_metrics(
     known_blocked_caught_runs: dict[str, int] = defaultdict(int)
     known_blocked_missed_runs: dict[str, int] = defaultdict(int)
     infra_error_runs: dict[str, int] = defaultdict(int)
+    stale_runs: dict[str, int] = defaultdict(int)
     audit_input_insufficient_runs: dict[str, int] = defaultdict(int)
     run_statuses: dict[str, Counter[str]] = defaultdict(Counter)
     automated_vs_manual: dict[str, Counter[str]] = defaultdict(Counter)
@@ -175,6 +176,7 @@ def build_reviewer_metrics(
                     stats.get("known_blocked_missed_runs") or 0
                 )
                 infra_error_runs[profile] += int(stats.get("infra_error_runs") or 0)
+                stale_runs[profile] += int(stats.get("stale_runs") or 0)
                 audit_input_insufficient_runs[profile] += int(
                     stats.get("audit_input_insufficient_runs") or 0
                 )
@@ -272,6 +274,7 @@ def build_reviewer_metrics(
             "known_blocked_caught_runs": known_blocked_caught_runs.get(profile_id, 0),
             "known_blocked_missed_runs": known_blocked_missed_runs.get(profile_id, 0),
             "infra_error_runs": infra_error_runs.get(profile_id, 0),
+            "stale_runs": stale_runs.get(profile_id, 0),
             "audit_input_insufficient_runs": audit_input_insufficient_runs.get(
                 profile_id, 0
             ),

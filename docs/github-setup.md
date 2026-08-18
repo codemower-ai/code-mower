@@ -369,6 +369,9 @@ That makes the generated `persist-credentials: false` PR-head checkout viable
 for normal runner-dispatched audits. If a custom workflow intentionally passes
 a checkout that is not at the PR head, keep credentials on that checkout or
 fetch the PR head before invoking the wrapper.
+If the head moves after an audit starts, the wrapper posts a STALE requeue note
+and exits successfully; gate health counts STALE separately from UNKNOWN/infra
+failures because the newer head's audit owns the merge signal.
 
 macOS Keychain access is user-session sensitive. If `svc.sh install` writes
 `SessionCreate=true` into `~/Library/LaunchAgents/actions.runner.*.plist`, the

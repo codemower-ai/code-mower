@@ -455,9 +455,12 @@ body digest before the generated labeler or gate can trust the terminal trailer.
 The reference provider catalog marks Codex and Claude audit lanes as
 merge-authority lanes, so their wrapper comments render that posture by default.
 Pass `--informational`, or set `CODEX_AUDIT_MERGE_AUTHORITY=false` /
-`CLAUDE_AUDIT_MERGE_AUTHORITY=false`, for calibration-only runs. The comment
-header is descriptive; a repository still opts into real gating through its
-configured labels, generated status workflow, and branch-protection rule.
+`CLAUDE_AUDIT_MERGE_AUTHORITY=false`, for non-gating runs. Use
+`--calibration-badge` or `CODEX_AUDIT_CALIBRATION_BADGE` /
+`CLAUDE_AUDIT_CALIBRATION_BADGE` to show calibration status as a separate
+comment line without changing that merge posture. The comment header is
+descriptive; a repository still opts into real gating through its configured
+labels, generated status workflow, and branch-protection rule.
 
 Claude audit rejects schema-placeholder verdicts, findings that cite files
 outside the PR diff, and implausibly short blocked verdict bodies. The wrapper

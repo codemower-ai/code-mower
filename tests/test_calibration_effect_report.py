@@ -4,6 +4,7 @@ import unittest
 
 from code_mower.calibration.effect_report import (
     build_effect_report,
+    render_effect_report_text,
     reviewer_dimensions,
 )
 from code_mower.code_mower_calibration import main as calibration_main
@@ -129,6 +130,38 @@ class CalibrationEffectReportTests(unittest.TestCase):
         self.assertEqual(spread["lens"], "context-driven-quality")
         self.assertEqual(spread["effective_catch_rate_spread"], 1.0)
         self.assertIsNone(spread["catch_rate_spread"])
+
+    def test_effect_report_counts_stale_separately_from_unknown_blocked(self) -> None:
+        corpus = {
+            "version": 1,
+            "name": "stale-effect-test",
+            "corpus": [
+                {
+                    "repo": "owner/repo",
+                    "pr_number": 1,
+                    "head_sha": "1" * 40,
+                    "truth": {"expectation": "known_blocked"},
+                    "reviewer_runs": [
+                        {
+                            "reviewer": "codex-base-audit",
+                            "status": "stale",
+                            "finding_count": 0,
+                        }
+                    ],
+                }
+            ],
+        }
+
+        report = build_effect_report(corpus)
+        cell = report["cells"][0]
+        text = render_effect_report_text(report)
+
+        self.assertEqual(cell["known_blocked_runs"], 1)
+        self.assertEqual(cell["known_blocked_missed_runs"], 0)
+        self.assertEqual(cell["infra_error_runs"], 0)
+        self.assertEqual(cell["stale_runs"], 1)
+        self.assertEqual(cell["unknown_blocked_runs"], 0)
+        self.assertIn("| Input gaps | Stale | Clean pass/false block |", text)
 
     def test_effect_report_output_file_is_markdown_when_json_stdout_requested(self) -> None:
         import contextlib

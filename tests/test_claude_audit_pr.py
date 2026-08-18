@@ -406,8 +406,26 @@ class ClaudeAuditPrTests(unittest.TestCase):
 
     def test_audit_exit_code_keeps_stale_neutral_and_unknown_loud(self) -> None:
         self.assertEqual(cap._audit_exit_code("STALE"), 0)
+        self.assertEqual(cap._audit_exit_code("stale"), 0)
         self.assertEqual(cap._audit_exit_code("PASS"), 0)
         self.assertEqual(cap._audit_exit_code("UNKNOWN"), 2)
+        self.assertEqual(cap._audit_exit_code("unknown"), 2)
+
+    def test_comment_header_separates_authority_from_calibration_badge(self) -> None:
+        body = cap.format_comment(
+            cap.ClaudeVerdict(
+                verdict="PASS",
+                prose="No merge-blocking regressions found.",
+            ),
+            "a" * 40,
+            merge_authority=True,
+            calibration_badge=" calibration phase - informational only\nfor CM-1 ",
+        )
+
+        first_line = body.splitlines()[0]
+        self.assertEqual(first_line, "## Claude audit (merge-authority lane)")
+        self.assertNotIn("calibration phase", first_line)
+        self.assertIn("Calibration: calibration phase - informational only for CM-1", body)
 
     def test_requeue_comments_include_machine_readable_kind_markers(self) -> None:
         unknown = cap.format_comment(
