@@ -37,7 +37,8 @@ without replacing existing assignees, and
 `.github/workflows/weekly-status.yml` refreshes a pinned status issue from
 `tools/status_report.py`. Repositories with audit lanes also receive
 `.github/workflows/code-mower-gate-health.yml`, which alerts the owner when
-audit labels, local audit runs, or the self-hosted runner stall.
+audit labels, blocked builder PRs, local audit runs, or the self-hosted runner
+stall.
 For fork PRs where GitHub grants a read-only token, owner notify emits a
 workflow warning instead of failing the run.
 The generated merge gate treats `owner_surface.gate_override_label` as an
@@ -62,6 +63,7 @@ owner_surface:
   weekly_cron: "0 14 * * 1"
   gate_health_cron: "*/15 * * * *"
   gate_health_max_wait_minutes: "30"
+  gate_health_liveness_minutes: "45"
   local_audit_runner_label: code-mower-audit
   ready_label: "tier:R"
 ```
@@ -79,6 +81,11 @@ not read source, diffs, transcripts, or issue bodies.
 Use `owner_surface.owner_sitting_label` for physical or account-bound sittings
 that no builder lane can complete. Generated owner surfaces include those items
 in the owner queue and keep them out of dispatchable ready/WIP lists.
+Gate health also treats open PRs with a `builder:<lane>` label plus an
+unresolved `*-audit-blocked` label as stalled with work when that lane has not
+authored a PR commit or comment within `gate_health_liveness_minutes`; the
+generated workflow gets builder authors from `builder_identity.authors`. Lanes
+with no blocked builder PRs do not alert.
 
 ## Multi-Repo Rollout
 

@@ -162,6 +162,7 @@ OWNER_SURFACE_DEFAULTS = {
     "weekly_cron": "0 14 * * 1",
     "gate_health_cron": "*/15 * * * *",
     "gate_health_max_wait_minutes": "30",
+    "gate_health_liveness_minutes": "45",
     "local_audit_runner_label": LOCAL_AUDIT_RUNNER_LABEL,
     "ready_label": "tier:R",
     "phase_labels": "phase:0,phase:1,phase:2,phase:3,phase:4,phase:5",
@@ -556,16 +557,39 @@ def _var_env_assignments(names: Sequence[str], *, indent: str = "          ") ->
     )
 
 
-def _gate_health_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
+def _builder_authors_for_lane(
+    builder_lane: str,
+    author_exclusion: Mapping[str, Any],
+) -> str:
+    author_map = _identity_section(author_exclusion, "authors")
+    normalized_builder = builder_lane.replace("_", "-").lower()
+    return ",".join(
+        author
+        for author, lane in sorted(author_map.items())
+        if str(lane).replace("_", "-").lower() == normalized_builder
+    )
+
+
+def _gate_health_lane_entry(
+    lane_id: str,
+    lane: Mapping[str, Any],
+    author_exclusion: Mapping[str, Any],
+) -> dict[str, str]:
     labels = _labels_for(lane)
     trailer_lane = _trailer_lane_name(lane_id, lane)
-    github_actions_workflows = LOCAL_AUDIT_WORKFLOW_PATH if lane.get("driver") == "local_cli" else ""
+    author_lane = _author_lane_name(lane_id, lane)
+    github_actions_workflows = (
+        LOCAL_AUDIT_WORKFLOW_PATH if lane.get("driver") == "local_cli" else ""
+    )
     return {
         "id": lane_id,
+        "author_lane": author_lane,
         "display_name": _display_name(trailer_lane),
         "needs": str(labels["needs"]),
         "done": str(labels["done"]),
         "blocked": str(labels["blocked"]),
+        "builder_label": f"builder:{author_lane}",
+        "builder_authors": _builder_authors_for_lane(author_lane, author_exclusion),
         "bot_authors": _bot_author_csv(_default_bot_authors_for_lane(lane_id, lane), lane),
         "authors_env": _authors_env_for_lane(lane_id, lane),
         "github_actions_workflows": github_actions_workflows,
@@ -576,10 +600,12 @@ def _gate_health_workflow_entry(
     selected_lanes: Mapping[str, Mapping[str, Any]],
     owner_surface: Mapping[str, str],
     *,
+    author_exclusion_json: str,
     include_local_audit_runner: bool,
 ) -> dict[str, str]:
+    author_exclusion = json.loads(author_exclusion_json)
     audit_lanes = [
-        _gate_health_lane_entry(lane_id, lane)
+        _gate_health_lane_entry(lane_id, lane, author_exclusion)
         for lane_id, lane in selected_lanes.items()
         if lane.get("type") == "audit"
     ]
@@ -598,6 +624,7 @@ def _gate_health_workflow_entry(
         ),
         "gate_health_cron": owner_surface["gate_health_cron"],
         "gate_health_max_wait_minutes": owner_surface["gate_health_max_wait_minutes"],
+        "gate_health_liveness_minutes": owner_surface["gate_health_liveness_minutes"],
         "local_audit_runner_label": owner_surface["local_audit_runner_label"] if include_local_audit_runner else "",
         "needs_owner_label": owner_surface["needs_owner_label"],
         "owner_sitting_label": owner_surface["owner_sitting_label"],
@@ -1042,6 +1069,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__GATE_HEALTH_MAX_WAIT_MINUTES__": str(
             entry.get("gate_health_max_wait_minutes") or "30"
         ),
+        "__GATE_HEALTH_LIVENESS_MINUTES__": str(
+            entry.get("gate_health_liveness_minutes") or "45"
+        ),
         "__GATE_AUTHOR_ENV_ASSIGNMENTS__": str(
             entry.get("gate_author_env_assignments") or ""
         ),
@@ -1403,6 +1433,7 @@ def render_init_plan(
             _gate_health_workflow_entry(
                 selected_lanes,
                 owner_surface,
+                author_exclusion_json=author_exclusion_json,
                 include_local_audit_runner=bool(local_audit_entries),
             )
         )

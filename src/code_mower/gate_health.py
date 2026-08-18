@@ -34,6 +34,7 @@ LOCAL_AUDIT_WORKFLOW_NAMES = {
 DEFAULT_UNKNOWN_STREAK_THRESHOLD = 3
 DEFAULT_UNKNOWN_STREAK_HISTORY_HOURS = 168
 DEFAULT_UNKNOWN_STREAK_CLOSED_PR_LIMIT = 100
+DEFAULT_LIVENESS_MINUTES = 45
 LOCAL_AUDIT_WORKFLOW_RUN_SAMPLE_LIMIT = 20
 LOCAL_AUDIT_JOBLESS_FAILURE_LIMIT = 5
 REQUEUE_KIND_MARKER_RE = re.compile(
@@ -56,6 +57,21 @@ def parse_time(raw: str) -> datetime:
 
 def label_names(pr: dict[str, Any]) -> set[str]:
     return {str(item.get("name") or "") for item in pr.get("labels") or []}
+
+
+def builder_lanes(pr: dict[str, Any]) -> tuple[str, ...]:
+    lanes = []
+    for label in sorted(label_names(pr)):
+        if not label.startswith("builder:"):
+            continue
+        lane = label.split(":", 1)[1].strip()
+        if lane:
+            lanes.append(lane)
+    return tuple(lanes)
+
+
+def audit_block_labels(pr: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(sorted(label for label in label_names(pr) if label.endswith("-audit-blocked")))
 
 
 def latest_label_time(timeline: Sequence[dict[str, Any]], label: str) -> datetime | None:
@@ -109,6 +125,167 @@ def trusted_authors(lane: dict[str, Any]) -> set[str]:
 def trusted_github_actions_workflows(lane: dict[str, Any]) -> set[str]:
     raw = str(lane.get("github_actions_workflows") or "")
     return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def csv_values(raw: object) -> set[str]:
+    return {item.strip() for item in str(raw or "").split(",") if item.strip()}
+
+
+def _lane_key(value: str) -> str:
+    return value.replace("_", "-").lower()
+
+
+def builder_activity_authors(builder_lane: str, lanes: Sequence[dict[str, Any]]) -> set[str]:
+    lane_key = _lane_key(builder_lane)
+    authors = {builder_lane.lower(), f"{builder_lane.lower()}[bot]"}
+    for lane in lanes:
+        candidates = {
+            _lane_key(str(lane.get("id") or "")),
+            _lane_key(str(lane.get("author_lane") or "")),
+        }
+        builder_label = str(lane.get("builder_label") or "")
+        if builder_label.startswith("builder:"):
+            candidates.add(_lane_key(builder_label.split(":", 1)[1]))
+        if lane_key in candidates:
+            authors.update(author.lower() for author in csv_values(lane.get("builder_authors")))
+    return {author for author in authors if author}
+
+
+def _comment_author(comment: dict[str, Any]) -> str:
+    return str(((comment.get("user") or {}).get("login")) or "").strip().lower()
+
+
+def _commit_authors(commit: dict[str, Any]) -> set[str]:
+    authors = set()
+    for key in ("author", "committer"):
+        value = commit.get(key)
+        if isinstance(value, dict):
+            login = str(value.get("login") or "").strip().lower()
+            if login:
+                authors.add(login)
+    return authors
+
+
+def _commit_time(commit: dict[str, Any]) -> datetime | None:
+    payload = commit.get("commit")
+    if not isinstance(payload, dict):
+        return None
+    for key in ("committer", "author"):
+        value = payload.get(key)
+        if not isinstance(value, dict):
+            continue
+        raw = str(value.get("date") or "")
+        if not raw:
+            continue
+        try:
+            return parse_time(raw)
+        except ValueError:
+            continue
+    return None
+
+
+def latest_builder_activity(
+    *,
+    builder_lane: str,
+    lanes: Sequence[dict[str, Any]],
+    comments: Sequence[dict[str, Any]],
+    commits: Sequence[dict[str, Any]],
+) -> datetime | None:
+    authors = builder_activity_authors(builder_lane, lanes)
+    latest: datetime | None = None
+    for comment in comments:
+        if _comment_author(comment) not in authors:
+            continue
+        try:
+            created = _comment_time(comment)
+        except ValueError:
+            continue
+        latest = created if latest is None or created > latest else latest
+    for commit in commits:
+        if not (_commit_authors(commit) & authors):
+            continue
+        created = _commit_time(commit)
+        if created is None:
+            continue
+        latest = created if latest is None or created > latest else latest
+    return latest
+
+
+def _alert_key_part(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9-]+", "-", _lane_key(value))
+    return cleaned.strip("-") or "lane"
+
+
+def lane_liveness_alerts(
+    *,
+    now: datetime,
+    lanes: Sequence[dict[str, Any]],
+    prs: Sequence[dict[str, Any]],
+    timelines: dict[int, Sequence[dict[str, Any]]],
+    comments: dict[int, Sequence[dict[str, Any]]],
+    commits: dict[int, Sequence[dict[str, Any]]],
+    liveness_minutes: int,
+    recent: set[str],
+) -> list[Alert]:
+    if liveness_minutes <= 0:
+        return []
+    cutoff = now - timedelta(minutes=liveness_minutes)
+    stalled: list[tuple[str, int, str, tuple[str, ...], datetime]] = []
+    for pr in prs:
+        lanes_for_pr = builder_lanes(pr)
+        blocks = audit_block_labels(pr)
+        if not lanes_for_pr or not blocks:
+            continue
+        number = int(pr["number"])
+        pr_timeline = timelines.get(number)
+        if pr_timeline is None:
+            continue
+        block_times = [
+            labeled_at
+            for label in blocks
+            if (labeled_at := latest_label_time(pr_timeline, label)) is not None
+        ]
+        if not block_times:
+            continue
+        block_since = max(block_times)
+        pr_comments = comments.get(number, ())
+        pr_commits = commits.get(number, ())
+        head_sha = str(pr.get("headRefOid") or pr.get("head_sha") or "")
+        for builder_lane in lanes_for_pr:
+            activity = latest_builder_activity(
+                builder_lane=builder_lane,
+                lanes=lanes,
+                comments=pr_comments,
+                commits=pr_commits,
+            )
+            active_since = max(
+                (item for item in (block_since, activity) if item is not None),
+                default=None,
+            )
+            if active_since is None or active_since > cutoff:
+                continue
+            stalled.append((builder_lane, number, head_sha, blocks, active_since))
+
+    alerts: list[Alert] = []
+    for builder_lane, number, head_sha, blocks, active_since in sorted(stalled):
+        key = f"builder-{_alert_key_part(builder_lane)}-liveness-{number}-{head_sha[:12]}"
+        if key in recent:
+            continue
+        block_text = ", ".join(f"`{label}`" for label in blocks)
+        alerts.append(
+            Alert(
+                key,
+                f"{builder_lane} builder lane appears stalled",
+                (
+                    f"`builder:{builder_lane}` has open PR #{number} with unresolved "
+                    f"audit blocks ({block_text}) and no lane-authored commit/comment "
+                    f"for at least {liveness_minutes} minutes; stalled since "
+                    f"{active_since.isoformat()}. "
+                    "This is stalled with work, not an empty lane."
+                ),
+            )
+        )
+    return alerts
 
 
 def trusted_comment_author(
@@ -436,10 +613,13 @@ def evaluate(
     stale_minutes: int,
     dedupe_hours: int,
     runner_label: str,
+    commits: dict[int, Sequence[dict[str, Any]]] | None = None,
     repo: str = "",
     tokens: Sequence[GitHubToken] = (),
     unknown_streak_threshold: int = DEFAULT_UNKNOWN_STREAK_THRESHOLD,
+    liveness_minutes: int = DEFAULT_LIVENESS_MINUTES,
     stale_prs: Sequence[dict[str, Any]] | None = None,
+    liveness_prs: Sequence[dict[str, Any]] | None = None,
     unknown_streak_prs: Sequence[dict[str, Any]] | None = None,
 ) -> list[Alert]:
     recent = recent_alert_keys(status_comments, now, dedupe_hours)
@@ -523,6 +703,18 @@ def evaluate(
             comments=comments,
             threshold=unknown_streak_threshold,
             tokens=tokens,
+            recent=recent,
+        )
+    )
+    alerts.extend(
+        lane_liveness_alerts(
+            now=now,
+            lanes=lanes,
+            prs=liveness_prs if liveness_prs is not None else prs,
+            timelines=timelines,
+            comments=comments,
+            commits=commits or {},
+            liveness_minutes=liveness_minutes,
             recent=recent,
         )
     )
@@ -619,6 +811,7 @@ def fetch_per_pr(
             path, key, out_key = {
                 "timeline": (f"issues/{number}/timeline?per_page=100", None, number),
                 "comments": (f"issues/{number}/comments?per_page=100", None, number),
+                "commits": (f"pulls/{number}/commits?per_page=100", None, number),
                 "checks": (f"commits/{sha}/check-runs?per_page=100", "check_runs", number),
             }[kind]
             items = gh_api_list(repo, path, key)
@@ -902,6 +1095,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         ),
     )
+    parser.add_argument(
+        "--liveness-minutes",
+        type=int,
+        default=int(
+            os.environ.get(
+                "CODE_MOWER_GATE_HEALTH_LIVENESS_MINUTES",
+                str(DEFAULT_LIVENESS_MINUTES),
+            )
+        ),
+    )
     parser.add_argument("--owner-login", default=os.environ.get("OWNER_LOGIN", ""))
     parser.add_argument("--alert-runner-api-unavailable", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -954,6 +1157,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     streak_prs = merge_prs(prs, closed_prs)
     gate_prs = [pr for pr in prs if label_names(pr) & needs_labels]
+    liveness_prs = [
+        pr for pr in prs if builder_lanes(pr) and audit_block_labels(pr)
+    ]
+    timeline_prs = merge_prs(gate_prs, liveness_prs)
+    direct_comment_prs = merge_prs(gate_prs, liveness_prs)
     dedupe_since = (
         (now - timedelta(hours=args.dedupe_hours))
         .replace(microsecond=0)
@@ -966,15 +1174,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         .isoformat()
         .replace("+00:00", "Z")
     )
-    timelines = fetch_per_pr(args.repo, gate_prs, "timeline", fetch_failures)
+    timelines = fetch_per_pr(args.repo, timeline_prs, "timeline", fetch_failures)
     comments = fetch_recent_pr_comments(args.repo, streak_prs, streak_since, fetch_failures)
-    gate_comments = fetch_per_pr(args.repo, gate_prs, "comments", fetch_failures)
-    for number, items in gate_comments.items():
+    direct_comments = fetch_per_pr(
+        args.repo,
+        direct_comment_prs,
+        "comments",
+        fetch_failures,
+    )
+    for number, items in direct_comments.items():
         comments[number] = merge_comments(comments.get(number, ()), items)
     eval_prs = [
         pr
         for pr in gate_prs
-        if int(pr["number"]) in timelines and int(pr["number"]) in gate_comments
+        if int(pr["number"]) in timelines and int(pr["number"]) in direct_comments
+    ]
+    commits = fetch_per_pr(args.repo, liveness_prs, "commits", fetch_failures)
+    liveness_eval_prs = [
+        pr
+        for pr in liveness_prs
+        if int(pr["number"]) in timelines
+        and int(pr["number"]) in direct_comments
+        and int(pr["number"]) in commits
     ]
     check_runs = fetch_per_pr(args.repo, prs, "checks", fetch_failures)
     head_times = fetch_head_times(args.repo, eval_prs, fetch_failures)
@@ -1065,10 +1286,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         stale_minutes=args.stale_minutes,
         dedupe_hours=args.dedupe_hours,
         runner_label=args.runner_label if runner_inventory_available else "",
+        commits=commits,
         repo=args.repo,
         tokens=(GitHubToken("GH_TOKEN", os.environ.get("GH_TOKEN", "")),),
         unknown_streak_threshold=args.unknown_streak_threshold,
+        liveness_minutes=args.liveness_minutes,
         stale_prs=eval_prs,
+        liveness_prs=liveness_eval_prs,
         unknown_streak_prs=streak_prs,
     )
     failures: list[str] = []
