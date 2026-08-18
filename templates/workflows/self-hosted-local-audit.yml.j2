@@ -21,6 +21,7 @@ env:
 
 jobs:
   audit:
+    name: audit ({% raw %}${{ matrix.lane.lane }}{% endraw %})
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       (
@@ -33,8 +34,13 @@ jobs:
       )
     runs-on: [self-hosted, macOS, __LOCAL_AUDIT_RUNNER_LABEL__]
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: __LOCAL_AUDIT_LANES_JSON__
     concurrency:
-      group: {% raw %}${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}{% endraw %}
+      group: {% raw %}${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ matrix.lane.lane }}{% endraw %}
+      cancel-in-progress: true
     env:
       PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
       PR_HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha }}{% endraw %}
@@ -103,6 +109,7 @@ jobs:
           fi
 
       - name: Run matching local CLI audits
+        id: run_audit
         if: >-
           steps.verify_pr_head.conclusion == 'success' &&
           steps.verify_pr_head.outputs.superseded != 'true'
@@ -111,8 +118,11 @@ jobs:
           GITHUB_TOKEN: {% raw %}${{ github.token }}{% endraw %}
           CODE_MOWER_REVIEWER_SPEND_PATH: {% raw %}${{ runner.temp }}/code-mower-reviewer-spend.json{% endraw %}
 __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
-          CODE_MOWER_LOCAL_AUDIT_LANES_JSON: >-
-            __LOCAL_AUDIT_LANES_JSON__
+          CODE_MOWER_LOCAL_AUDIT_LANE: {% raw %}${{ matrix.lane.lane }}{% endraw %}
+          CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME: {% raw %}${{ matrix.lane.display_name }}{% endraw %}
+          CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL: {% raw %}${{ matrix.lane.needs_label }}{% endraw %}
+          CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV: {% raw %}${{ matrix.lane.token_env }}{% endraw %}
+          CODE_MOWER_LOCAL_AUDIT_SCRIPT: {% raw %}${{ matrix.lane.script }}{% endraw %}
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
@@ -127,67 +137,44 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
             grep -Fxq "$1" "${labels_file}"
           }
 
-          lanes_file="${RUNNER_TEMP}/code-mower-local-audit-lanes.tsv"
-          python3 - <<'PY' > "${lanes_file}"
-          import json
-          import os
-
-          for lane in json.loads(os.environ["CODE_MOWER_LOCAL_AUDIT_LANES_JSON"]):
-              print(
-                  "\t".join(
-                      [
-                          lane["lane"],
-                          lane["display_name"],
-                          lane["needs_label"],
-                          lane["token_env"],
-                          lane["script"],
-                      ]
-                  )
-              )
-          PY
-
-          ran=0
-          while IFS=$'\t' read -r lane display_name needs_label token_env script; do
-            if ! has_label "${needs_label}"; then
-              continue
-            fi
-
-            wrapper="${SUPPORT_PATH}/${script}"
-            if [ ! -x "${wrapper}" ]; then
-              echo "::error::Missing executable audit wrapper: ${script}"
-              exit 1
-            fi
-
-            token="${!token_env:-}"
-            if [ -z "${token}" ]; then
-              token="${GITHUB_TOKEN:-}"
-            fi
-            if [ -z "${token}" ]; then
-              echo "::error::No GitHub token available for ${display_name} audit"
-              exit 1
-            fi
-
-            echo "Running ${display_name} local CLI audit for PR #${PR_NUMBER}"
-            # PR_HEAD_PATH was checked out and verified at PR_HEAD_SHA above.
-            # Code Mower's PR-head fetch helper skips the private pull/N/head
-            # fetch when --repo-paths already points at that exact head.
-            printf '%s\n' "${token}" | "${wrapper}" \
-              --read-token-from-stdin \
-              --repo "${GITHUB_REPOSITORY}" \
-              --pr "${PR_NUMBER}" \
-              --repo-paths "${GITHUB_REPOSITORY}:${PR_HEAD_PATH}"
-            ran=$((ran + 1))
-          done < "${lanes_file}"
-
-          if [ "${ran}" -eq 0 ]; then
-            echo "No supported local CLI audit labels are present."
+          if ! has_label "${CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL}"; then
+            echo "No ${CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL} label is present for ${CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME}."
+            echo "audited=false" >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
+
+          wrapper="${SUPPORT_PATH}/${CODE_MOWER_LOCAL_AUDIT_SCRIPT}"
+          if [ ! -x "${wrapper}" ]; then
+            echo "::error::Missing executable audit wrapper: ${CODE_MOWER_LOCAL_AUDIT_SCRIPT}"
+            exit 1
+          fi
+
+          token="${!CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV:-}"
+          if [ -z "${token}" ]; then
+            token="${GITHUB_TOKEN:-}"
+          fi
+          if [ -z "${token}" ]; then
+            echo "::error::No GitHub token available for ${CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME} audit"
+            exit 1
+          fi
+
+          echo "Running ${CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME} local CLI audit for PR #${PR_NUMBER}"
+          echo "audited=true" >> "${GITHUB_OUTPUT}"
+          # PR_HEAD_PATH was checked out and verified at PR_HEAD_SHA above.
+          # Code Mower's PR-head fetch helper skips the private pull/N/head
+          # fetch when --repo-paths already points at that exact head.
+          printf '%s\n' "${token}" | "${wrapper}" \
+            --read-token-from-stdin \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pr "${PR_NUMBER}" \
+            --repo-paths "${GITHUB_REPOSITORY}:${PR_HEAD_PATH}"
 
       - name: Upload Code Mower audit metadata
         if: >-
           always() &&
           steps.verify_pr_head.conclusion == 'success' &&
-          steps.verify_pr_head.outputs.superseded != 'true'
+          steps.verify_pr_head.outputs.superseded != 'true' &&
+          steps.run_audit.outputs.audited == 'true'
         env:
           CODE_MOWER_CLOUD_TOKEN: {% raw %}${{ secrets.CODE_MOWER_CLOUD_TOKEN }}{% endraw %}
           CODE_MOWER_CLOUD_TEAM_ID: {% raw %}${{ vars.CODE_MOWER_CLOUD_TEAM_ID }}{% endraw %}

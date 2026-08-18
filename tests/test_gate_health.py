@@ -263,6 +263,22 @@ class GateHealthTests(unittest.TestCase):
         self.assertEqual([alert.key for alert in alerts], [f"pr-9-{SHA[:12]}-local-audit-failed"])
         self.assertFalse(alerts[0].gate_stalled)
 
+    def test_matrix_local_audit_check_alerts(self) -> None:
+        alerts = evaluate_case(
+            check_runs={
+                SHA: [
+                    audit_check(
+                        name="audit (claude)",
+                        conclusion="failure",
+                        created_at="2026-08-17T04:55:00Z",
+                        completed_at="2026-08-17T04:55:00Z",
+                    )
+                ]
+            },
+        )
+
+        self.assertEqual([alert.key for alert in alerts], [f"pr-9-{SHA[:12]}-local-audit-failed"])
+
     def test_cancelled_local_audit_check_alerts(self) -> None:
         alerts = evaluate_case(
             check_runs={

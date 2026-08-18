@@ -4,6 +4,9 @@ name: Code Mower gate
 on:
   pull_request:
     types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+  workflow_run:
+    workflows: ["Code Mower Local CLI Audits"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -67,14 +70,41 @@ jobs:
       - name: Publish Code Mower gate status
         env:
           GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
-          PR_NUMBER: {% raw %}${{ github.event.pull_request.number || github.event.inputs.pr_number }}{% endraw %}
+          PR_NUMBER: {% raw %}${{ github.event.pull_request.number || github.event.inputs.pr_number || github.event.workflow_run.pull_requests[0].number }}{% endraw %}
           HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha || github.event.inputs.head_sha }}{% endraw %}
+          WORKFLOW_RUN_HEAD_SHA: {% raw %}${{ github.event.workflow_run.head_sha || '' }}{% endraw %}
+          WORKFLOW_RUN_HEAD_BRANCH: {% raw %}${{ github.event.workflow_run.head_branch || '' }}{% endraw %}
+          WORKFLOW_RUN_HEAD_REPOSITORY: {% raw %}${{ github.event.workflow_run.head_repository.full_name || '' }}{% endraw %}
 __GATE_AUTHOR_ENV_ASSIGNMENTS__
         run: |
           set -euo pipefail
 
-          if [ -z "${PR_NUMBER:-}" ] || [ -z "${HEAD_SHA:-}" ]; then
-            echo "::notice::No PR number/head SHA available for Code Mower gate."
+          if [ -z "${PR_NUMBER:-}" ] && [ -n "${WORKFLOW_RUN_HEAD_SHA:-}" ]; then
+            PR_NUMBER="$(
+              gh api -H "Accept: application/vnd.github+json" \
+                "repos/${GITHUB_REPOSITORY}/commits/${WORKFLOW_RUN_HEAD_SHA}/pulls?per_page=100" \
+                --jq 'map(select(.state == "open")) | .[0].number // ""' 2>/dev/null || true
+            )"
+            export PR_NUMBER
+          fi
+          if [ -z "${PR_NUMBER:-}" ] && [ -n "${WORKFLOW_RUN_HEAD_BRANCH:-}" ]; then
+            repo_owner="${GITHUB_REPOSITORY%%/*}"
+            head_owner="${repo_owner}"
+            if [ -n "${WORKFLOW_RUN_HEAD_REPOSITORY:-}" ]; then
+              head_owner="${WORKFLOW_RUN_HEAD_REPOSITORY%%/*}"
+            fi
+            PR_NUMBER="$(
+              gh api "repos/${GITHUB_REPOSITORY}/pulls" \
+                --method GET \
+                -f state=open \
+                -f "head=${head_owner}:${WORKFLOW_RUN_HEAD_BRANCH}" \
+                -F per_page=10 \
+                --jq '.[0].number // ""' 2>/dev/null || true
+            )"
+            export PR_NUMBER
+          fi
+          if [ -z "${PR_NUMBER:-}" ]; then
+            echo "::notice::No PR number available for Code Mower gate."
             exit 0
           fi
 
@@ -82,22 +112,180 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           comments_file="$(mktemp)"
           events_file="$(mktemp)"
           pr_file="$(mktemp)"
+          workflow_runs_file="$(mktemp)"
+          audit_runs_file="$(mktemp)"
           gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" > "${labels_file}"
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" > "${comments_file}"
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100" > "${events_file}"
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}"
+          if [ -z "${HEAD_SHA:-}" ]; then
+            HEAD_SHA="$(python3 - "${pr_file}" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              payload = json.load(handle)
+          print(str(((payload.get("head") or {}).get("sha")) or ""))
+          PY
+          )"
+            export HEAD_SHA
+          fi
+          if [ -z "${HEAD_SHA:-}" ]; then
+            echo "::notice::No PR head SHA available for Code Mower gate."
+            exit 0
+          fi
+          if python3 - "${workflow_runs_file}" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          try:
+              from tools.audit_labeler_lib import AUDIT_RUN_NON_TERMINAL_STATUSES
+          except ImportError:  # pragma: no cover - package fallback
+              from code_mower.audit_labeler_lib import AUDIT_RUN_NON_TERMINAL_STATUSES
+
+          pages = []
+          repo = os.environ["GITHUB_REPOSITORY"]
+          for status in sorted(AUDIT_RUN_NON_TERMINAL_STATUSES):
+              completed = subprocess.run(
+                  [
+                      "gh",
+                      "api",
+                      "--paginate",
+                      "--slurp",
+                      f"repos/{repo}/actions/runs?event=pull_request_target&status={status}&per_page=100",
+                  ],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+                  text=True,
+              )
+              if completed.returncode != 0:
+                  raise SystemExit(1)
+              try:
+                  payload = json.loads(completed.stdout or "[]")
+              except json.JSONDecodeError:
+                  raise SystemExit(1)
+              if isinstance(payload, list):
+                  pages.extend(payload)
+              elif isinstance(payload, dict):
+                  pages.append(payload)
+          with open(sys.argv[1], "w", encoding="utf-8") as handle:
+              json.dump(pages, handle)
+          PY
+          then
+            python3 - "${workflow_runs_file}" "${audit_runs_file}" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          try:
+              from tools.audit_labeler_lib import (
+                  AUDIT_RUN_NON_TERMINAL_STATUSES,
+                  audit_run_matches_pr_head,
+                  audit_run_workflow_path,
+                  workflow_path_matches,
+              )
+          except ImportError:  # pragma: no cover - package fallback
+              from code_mower.audit_labeler_lib import (
+                  AUDIT_RUN_NON_TERMINAL_STATUSES,
+                  audit_run_matches_pr_head,
+                  audit_run_workflow_path,
+                  workflow_path_matches,
+              )
+
+          def trusted_workflows_for_lanes():
+              values = set()
+              for lane in lanes:
+                  raw = str(lane.get("github_actions_workflows") or "")
+                  values.update(item.strip() for item in raw.split(",") if item.strip())
+              return values
+
+          def workflow_runs_from_payload(payload):
+              if isinstance(payload, dict):
+                  return payload.get("workflow_runs", [])
+              runs = []
+              if isinstance(payload, list):
+                  for page in payload:
+                      if isinstance(page, dict):
+                          page_runs = page.get("workflow_runs", [])
+                          if isinstance(page_runs, list):
+                              runs.extend(page_runs)
+              return runs
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              workflow_runs_payload = json.load(handle)
+          lanes = json.loads(os.environ.get("CODE_MOWER_GATE_LANES_JSON", "[]"))
+          lanes = [lane for lane in lanes if isinstance(lane, dict)]
+          trusted_workflows = trusted_workflows_for_lanes()
+          head_sha = os.environ.get("HEAD_SHA", "")
+          pr_number = str(os.environ.get("PR_NUMBER", ""))
+          runs = workflow_runs_from_payload(workflow_runs_payload)
+          entries = []
+          for run in runs:
+              if not isinstance(run, dict):
+                  continue
+              if str(run.get("status") or "") not in AUDIT_RUN_NON_TERMINAL_STATUSES:
+                  continue
+              if not workflow_path_matches(audit_run_workflow_path(run), trusted_workflows):
+                  continue
+              if not audit_run_matches_pr_head(run, head_sha=head_sha, pr_number=pr_number):
+                  continue
+              run_id = str(run.get("id") or "")
+              jobs = []
+              jobs_fetch_failed = False
+              if run_id:
+                  completed = subprocess.run(
+                      ["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}/jobs?per_page=100"],
+                      check=False,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL,
+                      text=True,
+                  )
+                  if completed.returncode == 0:
+                      try:
+                          jobs_payload = json.loads(completed.stdout or "{}")
+                          raw_jobs = jobs_payload.get("jobs", []) if isinstance(jobs_payload, dict) else []
+                          jobs = [job for job in raw_jobs if isinstance(job, dict)]
+                      except json.JSONDecodeError:
+                          jobs_fetch_failed = True
+                  else:
+                      jobs_fetch_failed = True
+              entries.append({"run": run, "jobs": jobs, "jobs_fetch_failed": jobs_fetch_failed})
+          with open(sys.argv[2], "w", encoding="utf-8") as handle:
+              json.dump(entries, handle)
+          PY
+          else
+            printf '[]' > "${audit_runs_file}"
+          fi
 
           eval "$(
-            python3 - "${labels_file}" "${comments_file}" "${events_file}" "${pr_file}" <<'PY'
+            python3 - "${labels_file}" "${comments_file}" "${events_file}" "${pr_file}" "${audit_runs_file}" <<'PY'
           import json
           import os
           import shlex
           import sys
 
           try:
-              from tools.audit_labeler_lib import GitHubToken, github_actions_comment_attested
+              from tools.audit_labeler_lib import (
+                  GitHubToken,
+                  attested_non_current_audit_heads,
+                  audit_run_in_flight_for_lane,
+                  flatten_paginated_items,
+                  github_actions_comment_attested,
+                  latest_current_audit_verdict,
+              )
           except ImportError:  # pragma: no cover - unit-test/package fallback
-              from code_mower.audit_labeler_lib import GitHubToken, github_actions_comment_attested
+              from code_mower.audit_labeler_lib import (
+                  GitHubToken,
+                  attested_non_current_audit_heads,
+                  audit_run_in_flight_for_lane,
+                  flatten_paginated_items,
+                  github_actions_comment_attested,
+                  latest_current_audit_verdict,
+              )
 
           # github_actions_comment_attested verifies the hidden CODE_MOWER_AUDIT_RUN marker
           # and requires comment_id/body_sha256 to match the issue comment being evaluated.
@@ -117,6 +305,8 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   events_payload = json.load(events_handle)
               with open(sys.argv[4], encoding="utf-8") as pr_handle:
                   pr_payload = json.load(pr_handle)
+              with open(sys.argv[5], encoding="utf-8") as audit_runs_handle:
+                  audit_runs_payload = json.load(audit_runs_handle)
           except Exception:
               emit("failure", "Code Mower gate config could not be parsed")
               raise SystemExit(0)
@@ -150,14 +340,9 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           pr_number = str(pr_payload.get("number") or os.environ.get("PR_NUMBER") or "")
           pr_author = str(((pr_payload.get("user") or {}).get("login") or ""))
           github_tokens = (GitHubToken("GH_TOKEN", os.environ.get("GH_TOKEN", "")),)
-          comments = []
-          for page in comments_payload:
-              if isinstance(page, list):
-                  comments.extend(item for item in page if isinstance(item, dict))
-          events = []
-          for page in events_payload:
-              if isinstance(page, list):
-                  events.extend(item for item in page if isinstance(item, dict))
+          comments = flatten_paginated_items(comments_payload)
+          events = flatten_paginated_items(events_payload)
+          audit_runs = audit_runs_payload if isinstance(audit_runs_payload, list) else []
 
           def mapping(section):
               value = exclusion.get(section) if isinstance(exclusion, dict) else {}
@@ -173,34 +358,31 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
               raw = str(lane.get("github_actions_workflows") or "")
               return {item.strip() for item in raw.split(",") if item.strip()}
 
-          def trusted_comment_author(lane, author, body, comment_id):
+          def trusted_comment_author(lane, author, body, comment_id, expected_head_sha=None):
               authors = trusted_authors(lane)
               author_login = author.strip().lower()
               if author_login not in authors:
                   return False
               if author_login != "github-actions[bot]":
                   return True
+              attested_head_sha = expected_head_sha or head_sha
               return github_actions_comment_attested(
                   repo=os.environ["GITHUB_REPOSITORY"],
                   body=body,
                   comment_id=comment_id,
                   issue_number=int(pr_number),
-                  head_sha=head_sha,
+                  head_sha=attested_head_sha,
                   workflow_paths=trusted_github_actions_workflows(lane),
                   tokens=github_tokens,
               )
 
-          def has_current_trailer(lane, label):
-              trailer_suffix = ": " + label + " -->"
-              head_marker = "Head SHA: `" + head_sha + "`"
-              for comment in reversed(comments):
-                  author = str(((comment.get("user") or {}).get("login")) or "")
-                  body = str(comment.get("body") or "")
-                  if not trusted_comment_author(lane, author, body, comment.get("id")):
-                      continue
-                  if head_marker in body and trailer_suffix in body:
-                      return True
-              return False
+          def latest_current_verdict(lane):
+              return latest_current_audit_verdict(
+                  lane,
+                  comments,
+                  head_sha=head_sha,
+                  trusted_comment_author=trusted_comment_author,
+              )
 
           builder_matches = []
           if isinstance(exclusion, dict) and exclusion.get("enabled"):
@@ -213,11 +395,29 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   builder_matches.append(author_map[pr_author.lower()])
           builder_matches = list(dict.fromkeys(builder_matches))
 
+          def lane_display(lane):
+              return str(lane.get("display_name") or lane.get("id") or lane.get("done") or "")
+
+          def in_flight_lanes(required):
+              names = []
+              for lane in required:
+                  if any(
+                      audit_run_in_flight_for_lane(
+                          entry,
+                          lane,
+                          head_sha=head_sha,
+                          pr_number=pr_number,
+                      )
+                      for entry in audit_runs
+                      if isinstance(entry, dict)
+                  ):
+                      names.append(lane_display(lane))
+              return names
+
           blocked = [
-              str(lane.get("display_name") or lane.get("id") or lane.get("blocked"))
+              lane_display(lane)
               for lane in lanes
-              if str(lane.get("blocked") or "") in labels
-              and has_current_trailer(lane, str(lane.get("blocked") or ""))
+              if latest_current_verdict(lane) == "blocked"
           ]
 
           override_actor = ""
@@ -262,6 +462,19 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   or override_event_key > head_move_event_key
               )
           )
+          print(
+              "history_warning_heads="
+              + shlex.quote(
+                  json.dumps(
+                      attested_non_current_audit_heads(
+                          lanes,
+                          comments,
+                          head_sha=head_sha,
+                          trusted_comment_author=trusted_comment_author,
+                      )
+                  )
+              )
+          )
 
           if len(builder_matches) > 1:
               emit("failure", "conflicting Code Mower builder identity")
@@ -284,23 +497,84 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   for lane in lanes
                   if str(lane.get("author_lane") or lane.get("id") or "") != excluded_builder
               ]
+              in_flight = in_flight_lanes(required)
               missing = [
-                  str(lane.get("display_name") or lane.get("id") or lane.get("done"))
+                  lane_display(lane)
                   for lane in required
                   if str(lane.get("done") or "") not in labels
-                  or not has_current_trailer(lane, str(lane.get("done") or ""))
+                  or latest_current_verdict(lane) != "done"
               ]
               if not required:
                   if excluded_builder:
                       emit("failure", "no independent Code Mower audit lane remains")
                   else:
                       emit("failure", "no Code Mower merge-authority lanes configured")
+              elif in_flight:
+                  emit("pending", "audit in flight: " + ", ".join(in_flight))
               elif missing:
                   emit("pending", "waiting for audit: " + ", ".join(missing))
               else:
                   emit("success", "Code Mower merge gate passed")
           PY
           )"
+
+          history_warning_file="$(mktemp)"
+          python3 - "${history_warning_heads:-[]}" "${comments_file}" "${history_warning_file}" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          try:
+              heads = json.loads(sys.argv[1])
+          except json.JSONDecodeError:
+              heads = []
+          heads = [str(head) for head in heads if str(head)]
+          try:
+              with open(sys.argv[2], encoding="utf-8") as handle:
+                  comments_payload = json.load(handle)
+          except Exception:
+              comments_payload = []
+          comments = []
+          for page in comments_payload:
+              if isinstance(page, list):
+                  comments.extend(item for item in page if isinstance(item, dict))
+          head_sha = os.environ.get("HEAD_SHA", "")
+          repo = os.environ.get("GITHUB_REPOSITORY", "")
+          for previous in heads:
+              marker = f"<!-- CODE_MOWER_HISTORY_REWRITE_WARNING previous={previous} current={head_sha} -->"
+              if any(marker in str(comment.get("body") or "") for comment in comments):
+                  continue
+              completed = subprocess.run(
+                  ["gh", "api", f"repos/{repo}/compare/{previous}...{head_sha}", "--jq", ".status"],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+                  text=True,
+              )
+              if completed.returncode != 0:
+                  continue
+              status = completed.stdout.strip()
+              if status in {"ahead", "identical"}:
+                  continue
+              body = (
+                  marker
+                  + "\nCode Mower notice: previously audited head `"
+                  + previous[:12]
+                  + "` is no longer an ancestor of current head `"
+                  + head_sha[:12]
+                  + "`; commits may have been dropped. Only current-head audit verdicts count."
+              )
+              with open(sys.argv[3], "w", encoding="utf-8") as handle:
+                  json.dump({"body": body}, handle)
+              break
+          PY
+          if [ -s "${history_warning_file}" ]; then
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              --input "${history_warning_file}" >/dev/null || {
+                echo "::notice::Could not post Code Mower history-rewrite warning."
+              }
+          fi
 
           target_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \

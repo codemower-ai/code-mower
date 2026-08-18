@@ -25,7 +25,9 @@ if __package__ and __package__.startswith("code_mower"):
         author_exclusion_reason,
         extract_reviewed_sha,
         fetch_pull_request,
+        fetch_issue_comments,
         github_actions_comment_attested,
+        IssueCommentPaginationLimitExceeded,
         load_json,
         parse_csv_set,
         sha_matches_reviewed_head,
@@ -41,7 +43,9 @@ else:
             author_exclusion_reason,
             extract_reviewed_sha,
             fetch_pull_request,
+            fetch_issue_comments,
             github_actions_comment_attested,
+            IssueCommentPaginationLimitExceeded,
             load_json,
             parse_csv_set,
             sha_matches_reviewed_head,
@@ -56,7 +60,9 @@ else:
             author_exclusion_reason,
             extract_reviewed_sha,
             fetch_pull_request,
+            fetch_issue_comments,
             github_actions_comment_attested,
+            IssueCommentPaginationLimitExceeded,
             load_json,
             parse_csv_set,
             sha_matches_reviewed_head,
@@ -118,6 +124,71 @@ def _has_label_fallback(body: str, label: str) -> bool:
     )
 
 
+def _comment_sort_key(comment: Mapping[str, Any]) -> tuple[str, int]:
+    raw_id = comment.get("id") or 0
+    try:
+        comment_id = int(raw_id)
+    except (TypeError, ValueError):
+        comment_id = 0
+    return (
+        str(comment.get("updated_at") or comment.get("created_at") or ""),
+        comment_id,
+    )
+
+
+def _is_latest_current_terminal_comment(
+    *,
+    event_comment: Mapping[str, Any],
+    issue_comments: Sequence[Mapping[str, Any]] | None,
+    current_head_sha: str | None,
+    config: LaneConfig,
+    repo: str,
+    tokens: Sequence[GitHubToken],
+    github_actions_workflows: Sequence[str],
+    actions_run_lookup: Optional[Callable[[str], Mapping[str, Any]]],
+    commit_pull_requests_lookup: Optional[Callable[[str], Sequence[Mapping[str, Any]]]],
+) -> bool:
+    if not issue_comments or not current_head_sha:
+        return True
+    latest: Mapping[str, Any] | None = None
+    for comment in issue_comments:
+        author = str(((comment.get("user") or {}).get("login")) or "")
+        if author.lower() not in config.comment_authors():
+            continue
+        body = str(comment.get("body") or "")
+        if author.lower() == "github-actions[bot]" and not github_actions_comment_attested(
+            repo=repo,
+            body=body,
+            comment_id=comment.get("id"),
+            issue_number=int((comment.get("issue_number") or 0) or 0)
+            if comment.get("issue_number")
+            else int((event_comment.get("issue_number") or 0) or 0),
+            head_sha=current_head_sha,
+            workflow_paths=github_actions_workflows,
+            tokens=tokens,
+            actions_run_lookup=actions_run_lookup,
+            commit_pull_requests_lookup=commit_pull_requests_lookup,
+        ):
+            continue
+        if (
+            config.is_configured_comment_author(author)
+            and not config.is_default_comment_author(author)
+            and not has_authoritative_trailer(body, config)
+        ):
+            continue
+        status = classify_audit_comment(body, config)
+        if status not in {"done", "blocked"}:
+            continue
+        reviewed_sha = extract_reviewed_sha(body)
+        if not reviewed_sha or not sha_matches_reviewed_head(reviewed_sha, current_head_sha):
+            continue
+        if latest is None or _comment_sort_key(comment) > _comment_sort_key(latest):
+            latest = comment
+    if latest is None:
+        return True
+    return str(latest.get("id") or "") == str(event_comment.get("id") or "")
+
+
 def resolve_label_decision(
     event: Dict[str, Any],
     *,
@@ -128,6 +199,7 @@ def resolve_label_decision(
     github_actions_workflows: Sequence[str] = (),
     actions_run_lookup: Optional[Callable[[str], Mapping[str, Any]]] = None,
     commit_pull_requests_lookup: Optional[Callable[[str], Sequence[Mapping[str, Any]]]] = None,
+    issue_comments: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[Optional[LabelDecision], str]:
     if event.get("action") not in {"created", "edited"}:
         return None, f"unsupported action: {event.get('action')}"
@@ -207,6 +279,19 @@ def resolve_label_decision(
             reason="audit reported head changed during review",
         ), "label needs audit"
 
+    if status in {"done", "blocked"} and not _is_latest_current_terminal_comment(
+        event_comment={**comment, "issue_number": issue_number},
+        issue_comments=issue_comments,
+        current_head_sha=current_head_sha,
+        config=config,
+        repo=repo,
+        tokens=tokens,
+        github_actions_workflows=github_actions_workflows,
+        actions_run_lookup=actions_run_lookup,
+        commit_pull_requests_lookup=commit_pull_requests_lookup,
+    ):
+        return None, "newer current-head audit verdict already exists"
+
     if status == "done":
         return LabelDecision(
             issue_number=issue_number,
@@ -236,6 +321,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     event = load_json(event_path)
 
     current_head_sha = os.environ.get("DRY_RUN_HEAD_SHA")
+    issue_comments: Sequence[Mapping[str, Any]] | None = None
+    comment_history_complete = True
     tokens = config.github_tokens_from_env()
     if not os.environ.get("DRY_RUN"):
         if not tokens:
@@ -246,6 +333,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         issue_number = int(issue.get("number", 0))
         if issue_number and "pull_request" in issue:
             current_head_sha = fetch_pull_request(repo, issue_number, tokens=tokens)["head"]["sha"]
+            page_cap = int(os.environ.get("CODE_MOWER_LABELER_COMMENT_PAGE_CAP", "10"))
+            try:
+                issue_comments = fetch_issue_comments(
+                    repo,
+                    issue_number,
+                    tokens=tokens,
+                    page_cap=page_cap,
+                )
+            except IssueCommentPaginationLimitExceeded as exc:
+                comment_history_complete = False
+                print(
+                    f"warning: {exc}; skipping label update because latest verdict cannot be established",
+                    file=sys.stderr,
+                )
 
     github_actions_workflows = tuple(
         parse_csv_set(os.environ.get("CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS") or "")
@@ -257,9 +358,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         repo=repo,
         tokens=tokens,
         github_actions_workflows=github_actions_workflows,
+        issue_comments=issue_comments,
     )
     if decision is None:
         print(f"skip: {reason}")
+        return 0
+    if not comment_history_complete:
+        print("skip: comment history pagination cap exceeded; label state unchanged")
         return 0
 
     if os.environ.get("DRY_RUN"):
