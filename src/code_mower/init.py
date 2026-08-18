@@ -765,6 +765,32 @@ def _builder_labels_by_lane(author_exclusion: Mapping[str, Any]) -> dict[str, st
     return out
 
 
+def _builder_identity_rule_warnings(
+    author_exclusion: Mapping[str, Any],
+    rules: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    labels = _identity_section(author_exclusion, "labels")
+    labels_by_lane: dict[str, list[str]] = {}
+    for label, lane in sorted(labels.items()):
+        if label.startswith("builder:"):
+            labels_by_lane.setdefault(lane, []).append(label)
+
+    warnings: list[str] = []
+    for lane, lane_labels in sorted(labels_by_lane.items()):
+        if len(lane_labels) > 1:
+            warnings.append(
+                f"builder_identity: lane {lane!r} maps multiple builder labels; "
+                f"generated automation uses {lane_labels[0]!r}"
+            )
+    for lane in sorted({str(rule.get("builder_lane") or "") for rule in rules}):
+        if lane and lane not in labels_by_lane:
+            warnings.append(
+                f"builder_identity: lane {lane!r} has no matching builder label; "
+                f"generated automation will use 'builder:{lane}'"
+            )
+    return tuple(warnings)
+
+
 def _agent_pr_label_rules(
     config: Mapping[str, Any],
     author_exclusion: Mapping[str, Any],
@@ -1449,6 +1475,12 @@ def render_init_plan(
     audit_rearm_entries = _audit_rearm_entries(selected_lanes)
     agent_pr_rules = _agent_pr_label_rules(config, author_exclusion)
     fix_round_rules = _fix_round_rules(config, author_exclusion)
+    warnings.extend(
+        _builder_identity_rule_warnings(
+            author_exclusion,
+            [*agent_pr_rules, *fix_round_rules],
+        )
+    )
 
     for lane_id, lane in selected_lanes.items():
         lane_labels = _labels_for(lane)

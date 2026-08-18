@@ -2383,6 +2383,23 @@ jobs:
                 )
             )
 
+    def test_init_warns_for_agent_pr_builder_identity_mismatches(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        config = copy.deepcopy(code_mower_config.load_config(config_path))
+        config["builder_identity"]["labels"]["builder:grok-alt"] = "grok-bot"
+        config["builder_identity"]["branch_prefixes"]["cursr/"] = "grok-boot"
+        config["builder_identity"]["fix_round_mentions"]["grok-boot"] = "@cursor"
+
+        plan = code_mower_init.render_init_plan(
+            config,
+            package_mode=True,
+            package_command="code-mower",
+        )
+
+        warnings = "\n".join(plan.data["warnings"])
+        self.assertIn("maps multiple builder labels", warnings)
+        self.assertIn("lane 'grok-boot' has no matching builder label", warnings)
+
     def test_init_apply_generates_owner_surface_templates(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
         config = dict(code_mower_config.load_config(config_path))
