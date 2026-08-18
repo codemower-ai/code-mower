@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from code_mower.audit_labeler_lib import GitHubToken
+import json
+
+from code_mower import trailer_comment_labeler
+from code_mower.audit_labeler_lib import GitHubToken, IssueCommentPaginationLimitExceeded
 from code_mower.lane_configs import load_lane_config
 from code_mower.provider_runners import bind_actions_run_comment_id
 from code_mower.trailer_comment_labeler import resolve_label_decision
@@ -19,6 +22,121 @@ def _event(author: str, body: str, *, action: str = "created", comment_id: int =
 
 def _bound_actions_body(body: str, *, comment_id: int = 9001) -> str:
     return bind_actions_run_comment_id(body, comment_id)
+
+
+def test_main_skips_when_comment_history_exceeds_page_cap(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
+    body = (
+        "Codex Audit - PASS\n"
+        f"Head SHA: `{HEAD_SHA}`\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
+    )
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(_event("codex-audit-bot", body)), encoding="utf-8")
+    applied = []
+
+    def raise_page_cap(*_args, **_kwargs):
+        raise IssueCommentPaginationLimitExceeded("too many comments")
+
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setattr(
+        trailer_comment_labeler,
+        "fetch_pull_request",
+        lambda *_args, **_kwargs: {"head": {"sha": HEAD_SHA}},
+    )
+    monkeypatch.setattr(trailer_comment_labeler, "fetch_issue_comments", raise_page_cap)
+    monkeypatch.setattr(
+        trailer_comment_labeler,
+        "apply_label_decision",
+        lambda repo, decision, **_kwargs: applied.append((repo, decision)),
+    )
+
+    assert trailer_comment_labeler.main(["--lane", "codex"]) == 0
+
+    captured = capsys.readouterr()
+    assert "latest verdict cannot be established" in captured.err
+    assert "comment history pagination cap exceeded" in captured.out
+    assert applied == []
+
+
+def test_labeler_ignores_older_current_head_verdict_when_newer_exists(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
+    config = load_lane_config("codex")
+    older_pass = (
+        "Codex Audit - PASS\n"
+        f"Head SHA: `{HEAD_SHA}`\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
+    )
+    newer_block = (
+        "Codex Audit - BLOCKED\n"
+        f"Head SHA: `{HEAD_SHA}`\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
+    )
+
+    decision, reason = resolve_label_decision(
+        _event("codex-audit-bot", older_pass, comment_id=1001),
+        current_head_sha=HEAD_SHA,
+        config=config,
+        issue_comments=[
+            {
+                "id": 1001,
+                "created_at": "2026-08-18T02:52:00Z",
+                "user": {"login": "codex-audit-bot"},
+                "body": older_pass,
+            },
+            {
+                "id": 1002,
+                "created_at": "2026-08-18T03:01:00Z",
+                "user": {"login": "codex-audit-bot"},
+                "body": newer_block,
+            },
+        ],
+    )
+
+    assert decision is None
+    assert reason == "newer current-head audit verdict already exists"
+
+
+def test_labeler_later_blocked_demotes_earlier_done(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
+    config = load_lane_config("codex")
+    older_pass = (
+        "Codex Audit - PASS\n"
+        f"Head SHA: `{HEAD_SHA}`\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
+    )
+    newer_block = (
+        "Codex Audit - BLOCKED\n"
+        f"Head SHA: `{HEAD_SHA}`\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
+    )
+
+    decision, reason = resolve_label_decision(
+        _event("codex-audit-bot", newer_block, comment_id=1002),
+        current_head_sha=HEAD_SHA,
+        config=config,
+        issue_comments=[
+            {
+                "id": 1001,
+                "created_at": "2026-08-18T02:52:00Z",
+                "user": {"login": "codex-audit-bot"},
+                "body": older_pass,
+            },
+            {
+                "id": 1002,
+                "created_at": "2026-08-18T03:01:00Z",
+                "user": {"login": "codex-audit-bot"},
+                "body": newer_block,
+            },
+        ],
+    )
+
+    assert decision is not None
+    assert reason == "label blocked"
+    assert decision.add_label == "codex-audit-blocked"
+    assert decision.remove_labels == ("needs-codex-audit", "codex-audit-done")
 
 
 def test_configured_shared_author_requires_matching_lane_trailer(monkeypatch) -> None:

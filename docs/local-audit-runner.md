@@ -28,6 +28,15 @@ App posting-token secrets. Runner jobs can post with `GITHUB_TOKEN`, but GitHub
 does not trigger `issue_comment` labeler workflows for comments created by the
 built-in token, so the labels will not flip without those posting tokens.
 
+Generated local-audit workflows run one matrix job per configured lane and
+cancel older runs for the same workflow, PR, head SHA, and lane. A queued or
+in-progress required lane keeps `code-mower/gate` pending until the current-head
+audit finishes; the generated gate re-evaluates on local-audit workflow
+completion so that pending status can settle after the terminal verdict lands.
+Matrix lanes whose `needs-*-audit` label is absent exit without uploading audit
+metadata, so optional lanes do not duplicate cached reviewer-run or dogfood
+events.
+
 After regenerating `.github/workflows/local-cli-audit.yml`, run `actionlint` on
 the generated workflow. If GitHub reports a failed workflow run with no jobs,
 treat it as workflow syntax or context validation failure before debugging the

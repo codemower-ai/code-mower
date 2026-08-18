@@ -238,11 +238,22 @@ marker to GitHub's created comment id plus a SHA-256 digest of the final comment
 body, and the generated labeler listens for both created and edited comments.
 The labeler and gate verify that bound marker against a trusted
 `local-cli-audit.yml` run for the same PR/head before accepting the terminal
-trailer. If GitHub omits the run's `pull_requests` array, Code Mower resolves
-the run head SHA through the commit-to-PRs API; without that match, the
-shared-bot comment is ignored. Use lane-specific posting tokens or remove
+trailer. The generated gate also re-checks when `Code Mower Local CLI Audits`
+completes, resolving missing workflow-run PR metadata from the run commit or
+head branch before fetching the current PR head, so a status left pending while
+the audit workflow was still active can settle after the terminal verdict
+lands. The in-flight scan fetches only non-terminal workflow runs before local
+PR/head/lane filtering, so historical audit volume does not dominate each gate
+check. If GitHub omits the run's `pull_requests` array, Code Mower resolves the
+run head SHA through the commit-to-PRs API; without that match, the shared-bot
+comment is ignored. When GitHub does provide `pull_requests`, the run must
+belong to the target PR before it can keep that PR's gate pending. Use
+lane-specific posting tokens or remove
 `github-actions[bot]` from the lane authors when a repository wants a stricter
 separation between Actions jobs and merge-gating audit verdicts.
+If the labeler cannot fetch enough comment history to identify the latest
+trusted current-head verdict, it leaves labels unchanged so an older delayed
+comment cannot overwrite a newer audit result.
 
 When one operator or shared machine user posts multiple local-lane comments,
 each configured-author comment must carry the matching hidden
@@ -337,12 +348,13 @@ Runner setup recipe:
    built-in token, so runner lanes need PAT/App posting tokens for trailer
    labelers to flip `needs-*-audit` to done or blocked.
 
-The generated workflow grants `pull-requests: write`, uses job-level
-concurrency keyed by PR and head SHA without `cancel-in-progress`, and wipes
-the `pr-head` workspace before every checkout so one run cannot inherit another
-run's worktree. After checkout, it re-reads the PR head SHA and exits cleanly
-without running or uploading audits when a newer commit has superseded the
-queued run. Use the runner workflow as the dispatch mechanism for local lanes:
+The generated workflow grants `pull-requests: write`, runs one matrix job per
+configured local audit lane, uses concurrency keyed by workflow, PR, head SHA,
+and lane with `cancel-in-progress: true`, and wipes the `pr-head` workspace
+before every checkout so one run cannot inherit another run's worktree. After
+checkout, it re-reads the PR head SHA and exits cleanly without running or
+uploading audits when a newer commit has superseded the queued run. Use the
+runner workflow as the dispatch mechanism for local lanes:
 it invokes `tools/run_codex_audit_pr.sh` and
 `tools/run_claude_audit_pr.sh`, which in turn run `codex exec` or `claude -p`
 from the authenticated macOS account. Do not rely on `@codex` issue mentions
@@ -447,7 +459,15 @@ pending; treats configured current-head `*-blocked` labels as failure; applies
 `enablePullRequestAutoMerge` when the status is green. A `*-done` or
 `*-blocked` label counts only when the matching terminal audit comment carries
 the same head SHA and comes from the lane's configured bot authors, so stale
-labels and forged comments cannot win races against cleanup.
+labels and forged comments cannot win races against cleanup. When several
+trusted terminal comments exist for the same lane and head, the most recent
+comment wins; a later BLOCKED trailer demotes an earlier PASS even if a stale
+`*-done` label is still present. Before success, the gate also checks Actions
+metadata for queued or in-progress local audit runs for required lanes on the
+current head and publishes `pending: audit in flight` until those runs settle.
+If a previously audited head is no longer an ancestor of the current head, the
+gate posts a metadata-only notice that commits may have been dropped and keeps
+using only current-head audit verdicts.
 The generated product-support files include `tools/audit_labeler_lib.py`, which
 the gate uses for GitHub Actions audit-comment attestation without uploading
 source, diffs, or transcripts.
@@ -462,6 +482,12 @@ The recommended three-builder pattern is:
   author, so Codex audit gates them.
 - Hosted-built PRs carry a third builder identity such as `builder:grok-bot`,
   so both Codex and Claude audit gates still apply.
+
+Use a single-writer rule for PR branches: only the lane named by the owning
+`builder:<lane>` identity may push commits to that branch. Peer lanes should
+review, comment, or open follow-up work, not push competing commits. When the
+owning builder must rewrite a branch, use `git push --force-with-lease` and
+never a blind force push.
 
 Configure those identities in `code-mower.yml`:
 

@@ -210,7 +210,8 @@ def _workflow_run_path(run: dict[str, Any]) -> str:
 
 
 def is_local_audit_check_run(run: dict[str, Any]) -> bool:
-    if str(run.get("name") or "") != "audit":
+    name = str(run.get("name") or "")
+    if name != "audit" and not name.startswith("audit ("):
         return False
     workflow_path = _check_run_workflow_path(run)
     if any(workflow_path.endswith(suffix) for suffix in LOCAL_AUDIT_WORKFLOW_PATH_SUFFIXES):

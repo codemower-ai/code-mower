@@ -30,6 +30,10 @@ ACTIONS_RUN_MARKER_RE = re.compile(
     r"(?:\s+body_sha256=([0-9a-f]{64}))?\s*-->"
 )
 TRUSTED_ACTIONS_AUDIT_EVENTS = frozenset({"pull_request_target"})
+AUDIT_RUN_NON_TERMINAL_STATUSES = frozenset(
+    {"queued", "requested", "waiting", "pending", "in_progress"}
+)
+HEAD_SHA_LINE_RE = re.compile(r"Head SHA:\s*`?([0-9a-fA-F]{7,40})`?", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -342,6 +346,192 @@ def workflow_path_matches(path: str, trusted_workflows: Sequence[str]) -> bool:
     if not path:
         return False
     return any(path == item or path.endswith("/" + item) for item in trusted_workflows)
+
+
+def flatten_paginated_items(payload: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if isinstance(payload, list):
+        for page in payload:
+            if isinstance(page, list):
+                items.extend(item for item in page if isinstance(item, dict))
+            elif isinstance(page, dict):
+                items.append(page)
+    return items
+
+
+def audit_comment_head_sha(body: str) -> str:
+    match = HEAD_SHA_LINE_RE.search(body)
+    return match.group(1) if match else ""
+
+
+def terminal_audit_trailer_verdict(lane: Mapping[str, Any], body: str) -> str:
+    candidates: list[tuple[int, str]] = []
+    for label_key, verdict in (("done", "done"), ("blocked", "blocked")):
+        label = str(lane.get(label_key) or "")
+        if not label:
+            continue
+        index = body.rfind(": " + label + " -->")
+        if index >= 0:
+            candidates.append((index, verdict))
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def current_audit_trailer_verdict(
+    lane: Mapping[str, Any],
+    body: str,
+    *,
+    head_sha: str,
+) -> str:
+    if "Head SHA: `" + head_sha + "`" not in body:
+        return ""
+    return terminal_audit_trailer_verdict(lane, body)
+
+
+def latest_current_audit_verdict(
+    lane: Mapping[str, Any],
+    comments: Sequence[Mapping[str, Any]],
+    *,
+    head_sha: str,
+    trusted_comment_author: Callable[
+        [Mapping[str, Any], str, str, object, str | None],
+        bool,
+    ],
+) -> str:
+    verdicts: list[tuple[tuple[str, str, int, int], str]] = []
+    for index, comment in enumerate(comments):
+        author = str(((comment.get("user") or {}).get("login")) or "")
+        body = str(comment.get("body") or "")
+        if not trusted_comment_author(lane, author, body, comment.get("id"), None):
+            continue
+        verdict = current_audit_trailer_verdict(lane, body, head_sha=head_sha)
+        if verdict:
+            try:
+                comment_id = int(comment.get("id") or 0)
+            except (TypeError, ValueError):
+                comment_id = 0
+            updated = str(
+                comment.get("updated_at")
+                or comment.get("updatedAt")
+                or comment.get("created_at")
+                or comment.get("createdAt")
+                or ""
+            )
+            created = str(comment.get("created_at") or comment.get("createdAt") or "")
+            verdicts.append(((updated, created, comment_id, index), verdict))
+    if verdicts:
+        return max(verdicts, key=lambda item: item[0])[1]
+    return ""
+
+
+def attested_non_current_audit_heads(
+    lanes: Sequence[Mapping[str, Any]],
+    comments: Sequence[Mapping[str, Any]],
+    *,
+    head_sha: str,
+    trusted_comment_author: Callable[
+        [Mapping[str, Any], str, str, object, str | None],
+        bool,
+    ],
+) -> list[str]:
+    heads: list[str] = []
+    for comment in comments:
+        author = str(((comment.get("user") or {}).get("login")) or "")
+        body = str(comment.get("body") or "")
+        reviewed = audit_comment_head_sha(body)
+        if not reviewed or sha_matches(reviewed, head_sha):
+            continue
+        for lane in lanes:
+            if not terminal_audit_trailer_verdict(lane, body):
+                continue
+            if not trusted_comment_author(lane, author, body, comment.get("id"), reviewed):
+                continue
+            heads.append(reviewed)
+            break
+    return list(dict.fromkeys(heads))
+
+
+def audit_run_workflow_path(run: Mapping[str, Any]) -> str:
+    return str(run.get("path") or run.get("workflow_path") or run.get("workflowPath") or "")
+
+
+def audit_run_matches_pr_head(
+    run: Mapping[str, Any],
+    *,
+    head_sha: str,
+    pr_number: int | str,
+) -> bool:
+    run_head_sha = str(run.get("head_sha") or "")
+    pull_requests = [
+        item for item in run.get("pull_requests") or [] if isinstance(item, Mapping)
+    ]
+    for item in pull_requests:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("number") or "") != str(pr_number):
+            continue
+        pr_head = str(((item.get("head") or {}).get("sha")) or "")
+        if pr_head and sha_matches(pr_head, head_sha):
+            return True
+        if run_head_sha and sha_matches(run_head_sha, head_sha):
+            return True
+    if pull_requests:
+        return False
+    if run_head_sha and sha_matches(run_head_sha, head_sha):
+        return True
+    return False
+
+
+def _audit_lane_match_tokens(lane: Mapping[str, Any]) -> set[str]:
+    tokens = [
+        str(lane.get("id") or ""),
+        str(lane.get("author_lane") or ""),
+        str(lane.get("display_name") or ""),
+    ]
+    for label_key in ("done", "blocked"):
+        label = str(lane.get(label_key) or "")
+        for suffix in ("-audit-done", "-audit-blocked", "-done", "-blocked"):
+            if label.endswith(suffix):
+                tokens.append(label[: -len(suffix)])
+    return {token.strip().lower().replace("_", "-") for token in tokens if token.strip()}
+
+
+def audit_job_matches_lane(job: Mapping[str, Any], lane: Mapping[str, Any]) -> bool:
+    name = str(job.get("name") or "").lower().replace("_", "-")
+    return any(token in name for token in _audit_lane_match_tokens(lane))
+
+
+def audit_run_in_flight_for_lane(
+    entry: Mapping[str, Any],
+    lane: Mapping[str, Any],
+    *,
+    head_sha: str,
+    pr_number: int | str,
+) -> bool:
+    run = entry.get("run") if isinstance(entry.get("run"), Mapping) else entry
+    if not isinstance(run, Mapping):
+        return False
+    if str(run.get("status") or "") not in AUDIT_RUN_NON_TERMINAL_STATUSES:
+        return False
+    workflows = parse_csv_set(str(lane.get("github_actions_workflows") or ""))
+    if not workflow_path_matches(audit_run_workflow_path(run), workflows):
+        return False
+    if not audit_run_matches_pr_head(run, head_sha=head_sha, pr_number=pr_number):
+        return False
+    jobs = entry.get("jobs") if isinstance(entry.get("jobs"), list) else []
+    non_terminal_jobs = [
+        job
+        for job in jobs
+        if isinstance(job, Mapping)
+        and (
+            str(job.get("status") or "") in AUDIT_RUN_NON_TERMINAL_STATUSES
+            or (str(job.get("status") or "") != "completed" and job.get("conclusion") is None)
+        )
+    ]
+    if non_terminal_jobs:
+        return any(audit_job_matches_lane(job, lane) for job in non_terminal_jobs)
+    return bool(entry.get("jobs_fetch_failed") or not jobs)
 
 
 def _pr_item_matches_head(

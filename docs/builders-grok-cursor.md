@@ -57,6 +57,12 @@ code-mower builder auto-record \
 The bundled `templates/workflows/builder-provenance.yml.j2` workflow runs this
 on pull requests and uploads the generated sidecar as a workflow artifact.
 
+Treat each PR branch as single-writer. The owning `builder:<lane>` identity is
+the only lane that should push commits to that branch; other builders and audit
+lanes should leave PR comments or open follow-up work instead. If the owning
+builder must rewrite history, use `git push --force-with-lease` so another
+lane's newer commits cannot be silently dropped.
+
 Then attach delivery/reviewer/merge metadata to the work-order event as normal:
 
 ```bash

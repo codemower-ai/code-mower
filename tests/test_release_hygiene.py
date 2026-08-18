@@ -944,6 +944,22 @@ exit 1
         self.assertIn("github_actions_comment_attested", gate_template)
         self.assertIn("github_actions_workflows", gate_template)
         self.assertIn("Clear stale Code Mower gate override", gate_template)
+        self.assertIn("audit in flight", gate_template)
+        self.assertIn("workflow_run:", gate_template)
+        self.assertIn('workflows: ["Code Mower Local CLI Audits"]', gate_template)
+        self.assertIn("github.event.workflow_run.pull_requests[0].number", gate_template)
+        self.assertIn("WORKFLOW_RUN_HEAD_SHA", gate_template)
+        self.assertIn("commits/${WORKFLOW_RUN_HEAD_SHA}/pulls?per_page=100", gate_template)
+        self.assertIn("WORKFLOW_RUN_HEAD_BRANCH", gate_template)
+        self.assertIn('--method GET', gate_template)
+        self.assertIn('gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"', gate_template)
+        self.assertIn("export HEAD_SHA", gate_template)
+        self.assertNotIn("HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.inputs.head_sha || github.event.workflow_run.head_sha }}", gate_template)
+        self.assertIn("CODE_MOWER_HISTORY_REWRITE_WARNING", gate_template)
+        self.assertIn(
+            "actions/runs?event=pull_request_target&status={status}&per_page=100",
+            gate_template,
+        )
         hosted = (
             ROOT / "templates/workflows/hosted-bridge.yml.j2"
         ).read_text(encoding="utf-8")
@@ -971,7 +987,12 @@ exit 1
         self.assertNotIn("CODE_MOWER_REVIEWER_SPEND_PATH", local_audit.split("    steps:", 1)[0])
         self.assertIn("Reset pull request checkout path", local_audit)
         self.assertIn("${{ github.workflow }}-${{ github.event.pull_request.number }}", local_audit)
-        self.assertNotIn("cancel-in-progress", local_audit)
+        self.assertIn("${{ matrix.lane.lane }}", local_audit)
+        self.assertIn("cancel-in-progress: true", local_audit)
+        self.assertIn("id: run_audit", local_audit)
+        self.assertIn("audited=false", local_audit)
+        self.assertIn("audited=true", local_audit)
+        self.assertIn("steps.run_audit.outputs.audited == 'true'", local_audit)
         self.assertIn("Upload Code Mower audit metadata", local_audit)
         self.assertIn("secrets.CODE_MOWER_CLOUD_TOKEN", local_audit)
         self.assertIn("cloud reviewer-runs", local_audit)
@@ -1064,6 +1085,7 @@ jobs:
         pr_head_sha: str | None = None,
         pr_number: int = 7,
         actions_runs: dict[str, dict[str, object]] | None = None,
+        audit_runs: list[dict[str, object]] | None = None,
         commit_pull_requests: dict[str, list[dict[str, object]]] | None = None,
         author_exclusion: dict[str, object] | None = None,
         owner_login: str = "owner",
@@ -1073,7 +1095,7 @@ jobs:
             ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
         ).read_text(encoding="utf-8")
         script = template.split(
-            'python3 - "${labels_file}" "${comments_file}" "${events_file}" "${pr_file}" <<\'PY\'\n',
+            'python3 - "${labels_file}" "${comments_file}" "${events_file}" "${pr_file}" "${audit_runs_file}" <<\'PY\'\n',
             1,
         )[1].split("\n          PY", 1)[0]
         script = textwrap.dedent(script)
@@ -1090,6 +1112,9 @@ jobs:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             json.dump({"number": pr_number, "head": {"sha": pr_head_sha or head_sha}}, handle)
             pr_path = handle.name
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            json.dump(audit_runs or [], handle)
+            audit_runs_path = handle.name
 
         stdout = StringIO()
         action_patch = nullcontext()
@@ -1142,7 +1167,14 @@ jobs:
                 mock.patch.object(
                     sys,
                     "argv",
-                    ["gate-decision", labels_path, comments_path, events_path, pr_path],
+                    [
+                        "gate-decision",
+                        labels_path,
+                        comments_path,
+                        events_path,
+                        pr_path,
+                        audit_runs_path,
+                    ],
                 ),
                 action_patch,
                 redirect_stdout(stdout),
@@ -1157,6 +1189,7 @@ jobs:
             Path(comments_path).unlink(missing_ok=True)
             Path(events_path).unlink(missing_ok=True)
             Path(pr_path).unlink(missing_ok=True)
+            Path(audit_runs_path).unlink(missing_ok=True)
 
         result: dict[str, str] = {}
         for line in stdout.getvalue().splitlines():
@@ -1287,6 +1320,203 @@ jobs:
 
         self.assertEqual(result["gate_state"], "pending")
         self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
+    def test_gate_decision_later_blocked_beats_earlier_done_label(self) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                },
+                {
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->",
+                    "user": {"login": "claude-audit-bot"},
+                },
+            ],
+            head_sha=head_sha,
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(result["gate_description"], "blocked audit: Claude")
+
+    def test_gate_decision_uses_updated_comment_order_for_latest_verdict(self) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "id": 10,
+                    "created_at": "2026-08-18T02:52:00Z",
+                    "updated_at": "2026-08-18T03:02:00Z",
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                },
+                {
+                    "id": 11,
+                    "created_at": "2026-08-18T03:01:00Z",
+                    "updated_at": "2026-08-18T03:01:00Z",
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->",
+                    "user": {"login": "claude-audit-bot"},
+                },
+            ],
+            head_sha=head_sha,
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_decision_pending_when_required_audit_run_in_flight(self) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude_audit",
+                    "author_lane": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+            head_sha=head_sha,
+            audit_runs=[
+                {
+                    "run": {
+                        "id": 12345,
+                        "status": "in_progress",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (claude)",
+                            "status": "in_progress",
+                            "conclusion": None,
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "audit in flight: Claude")
+
+    def test_gate_decision_ignores_in_flight_run_for_different_pr(self) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude_audit",
+                    "author_lane": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+            head_sha=head_sha,
+            audit_runs=[
+                {
+                    "run": {
+                        "id": 12345,
+                        "status": "in_progress",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "pull_requests": [{"number": 99, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (claude)",
+                            "status": "in_progress",
+                            "conclusion": None,
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_decision_reports_attested_non_current_heads(self) -> None:
+        head_sha = "a" * 40
+        old_head = "b" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + old_head + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                },
+                {
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                },
+            ],
+            head_sha=head_sha,
+        )
+
+        self.assertEqual(json.loads(result["history_warning_heads"]), [old_head])
+        self.assertEqual(result["gate_state"], "success")
 
     def test_gate_decision_rejects_abbreviated_current_head_trailer(self) -> None:
         result = self._run_gate_template_decision(
@@ -1902,7 +2132,9 @@ jobs:
             self.assertIn("Reset pull request checkout path", local_cli_audit)
             self.assertIn("rm -rf \"${PR_HEAD_PATH}\"", local_cli_audit)
             self.assertIn("concurrency:\n      group:", local_cli_audit)
-            self.assertNotIn("cancel-in-progress", local_cli_audit)
+            self.assertIn("cancel-in-progress: true", local_cli_audit)
+            self.assertIn("name: audit (${{ matrix.lane.lane }})", local_cli_audit)
+            self.assertIn("strategy:\n      fail-fast: false", local_cli_audit)
             self.assertIn("path: code-mower-support", local_cli_audit)
             self.assertIn("path: pr-head", local_cli_audit)
             self.assertIn("fetch-depth: 0", local_cli_audit)
@@ -1980,6 +2212,24 @@ jobs:
                 "${{ github.event.pull_request.head.sha }}",
                 audit_job["concurrency"]["group"],
             )
+            self.assertIn(
+                "${{ matrix.lane.lane }}",
+                audit_job["concurrency"]["group"],
+            )
+            self.assertTrue(audit_job["concurrency"]["cancel-in-progress"])
+            self.assertIn("lane", audit_job["strategy"]["matrix"])
+            run_step = next(
+                step
+                for step in audit_job["steps"]
+                if step["name"] == "Run matching local CLI audits"
+            )
+            self.assertEqual(run_step["id"], "run_audit")
+            self.assertIn("audited=false", run_step["run"])
+            self.assertIn("audited=true", run_step["run"])
+            self.assertIn(
+                "steps.run_audit.outputs.audited == 'true'",
+                upload_step["if"],
+            )
 
             gate = output_dir.joinpath(
                 ".github/workflows/code-mower-gate.yml"
@@ -2008,6 +2258,22 @@ jobs:
             self.assertIn("was not owner-applied", gate)
             self.assertIn("is stale for current head", gate)
             self.assertIn("owner gate override", gate)
+            self.assertIn("audit in flight", gate)
+            self.assertIn("workflow_run:", gate)
+            self.assertIn('workflows: ["Code Mower Local CLI Audits"]', gate)
+            self.assertIn("github.event.workflow_run.pull_requests[0].number", gate)
+            self.assertIn("WORKFLOW_RUN_HEAD_SHA", gate)
+            self.assertIn("commits/${WORKFLOW_RUN_HEAD_SHA}/pulls?per_page=100", gate)
+            self.assertIn("WORKFLOW_RUN_HEAD_BRANCH", gate)
+            self.assertIn("--method GET", gate)
+            self.assertIn('gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"', gate)
+            self.assertIn("export HEAD_SHA", gate)
+            self.assertNotIn("HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.inputs.head_sha || github.event.workflow_run.head_sha }}", gate)
+            self.assertIn("commits may have been dropped", gate)
+            self.assertIn(
+                "actions/runs?event=pull_request_target&status={status}&per_page=100",
+                gate,
+            )
             self.assertNotIn("__GATE_LANES_JSON__", gate)
 
             gate_health = output_dir.joinpath(
