@@ -22,14 +22,16 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.49`, published on
-PyPI as `code-mower==0.5.0b49`. It is intended to be installed from the package
+The current verified public beta baseline is `v0.5.0-beta.50`, published on
+PyPI as `code-mower==0.5.0b50`. It is intended to be installed from the package
 index for friendly-user pilots, with GitHub tag/source installs kept as a
-fallback and development path. Beta.49 is the current baseline after the
-Bridge Pro merge-gate dogfood push: it keeps the PyPI-first install path,
+fallback and development path. Beta.50 is the current baseline after the
+Bridge Pro merge-gate dogfood follow-up: it keeps the PyPI-first install path,
 trusted publishing, release rehearsal, production dogfood upload shape,
 catch-up provenance, stale-audit inspection, AI tool/model source diagnostics,
-CodeMower.com trust guidance, and generated gate hardening in one verified
+CodeMower.com trust guidance, generated gate hardening, owner-bound WIP
+hygiene, lane liveness checks, fix-round templates, human-token diagnostics,
+owner-decision escalation, and provider sandbox/live guardrails in one verified
 release line.
 It has proved:
 
@@ -88,8 +90,9 @@ It has proved:
   report upload in the release rehearsal path; and
 - a beta.39 private-repo install rehearsal target against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
-  to prove `code-mower==0.5.0b49` can detect and dry-run repository-native
-  checks in an external-ish private repo without committing support files first.
+  that proved the package-installed CLI can detect and dry-run
+  repository-native checks in an external-ish private repo without committing
+  support files first.
   The rehearsal passed with 10/10 first-user readiness and 0 readiness
   warnings, detected `npm run lint`, `npm run typecheck`, and `npm run test`
   from `package.json`, and separately reported only expected setup diagnostics
@@ -103,7 +106,7 @@ It has proved:
 - a v0.5 friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- a public PyPI package-install rehearsal from `code-mower==0.5.0b49` with a
+- a public PyPI package-install rehearsal from `code-mower==0.5.0b50` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout; and

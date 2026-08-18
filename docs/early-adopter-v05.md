@@ -137,7 +137,7 @@ Cut a v0.5 alpha or beta only after:
 
 ## Current Beta
 
-`v0.5.0-beta.49` is the current friendly-user beta. It keeps the
+`v0.5.0-beta.50` is the current friendly-user beta. It keeps the
 local-first package path from alpha.1, the cloud doctor service-readiness check
 from alpha.5, the hardened provider-auth doctor diagnostics needed for
 early-adopter troubleshooting, the dogfood dry-run path that feeds the
@@ -147,7 +147,11 @@ It also adds a first-user readiness scorecard to the package-install rehearsal
 so install, doctor, report, and cloud dry-run privacy gates can be checked at a
 glance, and it carries provider/model/version provenance through cloud bundles
 so CodeMower.com can separate benchmark-grade evidence from operational
-dogfood. Earlier alpha hardening also keeps the package
+dogfood. The beta.50 follow-up also keeps owner-bound work out of lane WIP,
+adds lane-liveness and fix-round template support, makes human-token posture
+first-class in setup/doctor, separates owner-decision escalation from raw owner
+notifications, and teaches provider-integration prompts to avoid ambiguous
+sandbox/live shared namespaces. Earlier alpha hardening also keeps the package
 materializer self-hosting from installed checkouts, gates release readiness on
 generated standalone package versions, and rejects unsafe structured cloud
 metadata before export or upload instead of relying on hosted-side cleanup.
