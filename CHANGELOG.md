@@ -4,6 +4,27 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.47
+
+This beta carries the local-audit runner and generated-workflow hardening found
+while dogfooding Code Mower as the Bridge Pro merge gate.
+
+### Changed
+
+- Codex and Claude `UNKNOWN`/`STALE` audit comments now include
+  machine-readable requeue markers, and gate-health prefers the latest marker
+  when deciding whether an audit lane is still actionable (#336).
+- The macOS runner LaunchAgent doctor handles unavailable home-directory
+  lookups as a warning instead of crashing the check (#336).
+- Generated `local-cli-audit.yml` keeps `${{ runner.temp }}` in step-level
+  environment only, avoiding invalid job-level `runner` context use (#358).
+- CI now actionlints every easy-mode generated workflow with self-hosted runner
+  labels configured, and package guards catch generated workflow templates that
+  reintroduce job-level `runner` context (#358).
+- Doctor and gate-health now flag failed local-audit workflow runs with no jobs
+  as likely workflow syntax/context failures, while avoiding cancelled-run
+  false positives and keeping recent workflow-run sampling bounded (#358).
+
 ## v0.5.0-beta.46
 
 This beta carries generated GitHub workflow fixes needed by product repos that

@@ -284,7 +284,7 @@ run:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b46 \
+  --package-spec code-mower==0.5.0b47 \
   --repo-path /path/to/product-repo \
   --json
 ```
