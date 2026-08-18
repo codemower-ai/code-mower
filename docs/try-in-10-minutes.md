@@ -46,9 +46,10 @@ code-mower init --easy --apply --output-dir .code-mower.generated
 
 The generated tree is reviewable output. It does not mutate live workflows,
 create labels, trigger reviewers, or upload data. It includes owner-surface
-templates for the configurable `needs-owner` escalation label and a weekly
-pinned-issue status digest; see [GitHub Setup](github-setup.md) before enabling
-the scheduled workflow.
+templates for the configurable `needs-owner` escalation label, the
+`owner-sitting` physical-step convention, and a weekly pinned-issue status
+digest; see [GitHub Setup](github-setup.md) before enabling the scheduled
+workflow.
 
 ## 4. Run The Preflight Doctor
 

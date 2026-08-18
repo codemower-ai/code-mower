@@ -56,6 +56,7 @@ schedule:
 owner_surface:
   owner_login: YOUR_GITHUB_LOGIN
   needs_owner_label: needs-owner
+  owner_sitting_label: owner-sitting
   gate_override_label: "gate:override"
   status_issue: "123"
   weekly_cron: "0 14 * * 1"
@@ -75,6 +76,9 @@ gh issue pin 123
 The generated digest reads GitHub metadata only: labels, titles, PR state,
 assignees, timestamps, and optional local Code Mower spend/value files. It does
 not read source, diffs, transcripts, or issue bodies.
+Use `owner_surface.owner_sitting_label` for physical or account-bound sittings
+that no builder lane can complete. Generated owner surfaces include those items
+in the owner queue and keep them out of dispatchable ready/WIP lists.
 
 ## Multi-Repo Rollout
 

@@ -1155,6 +1155,7 @@ jobs:
                             author_exclusion or {"enabled": False}
                         ),
                         "CODE_MOWER_OWNER_LABEL": "needs-owner",
+                        "CODE_MOWER_OWNER_SITTING_LABEL": "owner-sitting",
                         "CODE_MOWER_OWNER_LOGIN": owner_login,
                         "CODE_MOWER_GATE_OVERRIDE_LABEL": "gate:override",
                         "GITHUB_REPOSITORY": "owner/repo",
@@ -1320,6 +1321,31 @@ jobs:
 
         self.assertEqual(result["gate_state"], "pending")
         self.assertEqual(result["gate_description"], "waiting for audit: Claude")
+
+    def test_gate_decision_pending_on_owner_sitting_label(self) -> None:
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"owner-sitting", "claude-audit-done"},
+            comments=[
+                {
+                    "body": "Head SHA: `" + ("a" * 40) + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(result["gate_description"], "owner-sitting: waiting on owner")
 
     def test_gate_decision_later_blocked_beats_earlier_done_label(self) -> None:
         head_sha = "a" * 40
@@ -2324,6 +2350,7 @@ jobs:
         config["owner_surface"] = {
             "owner_login": "jeffhuber",
             "needs_owner_label": "needs-jeff",
+            "owner_sitting_label": "owner-sitting",
             "gate_override_label": "gate:override",
             "status_issue": "6",
             "weekly_cron": "15 12 * * 1",
@@ -2363,6 +2390,7 @@ jobs:
             self.assertTrue(generated.issubset(written))
             self.assertTrue(generated.isdisjoint(placeholder_files))
             self.assertIn("needs-jeff", plan.data["labels"])
+            self.assertIn("owner-sitting", plan.data["labels"])
             self.assertIn("gate:override", plan.data["labels"])
 
             notify = output_dir.joinpath(
@@ -2370,13 +2398,16 @@ jobs:
             ).read_text(encoding="utf-8")
             parsed_notify = yaml.safe_load(notify)
             self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', notify)
+            self.assertIn('OWNER_SITTING_LABEL: "owner-sitting"', notify)
             self.assertIn('OWNER_LOGIN: "jeffhuber"', notify)
             self.assertEqual(parsed_notify["env"]["NEEDS_OWNER_LABEL"], "needs-jeff")
+            self.assertEqual(parsed_notify["env"]["OWNER_SITTING_LABEL"], "owner-sitting")
             self.assertEqual(parsed_notify["env"]["GATE_OVERRIDE_LABEL"], "gate:override")
             notify_step = parsed_notify["jobs"]["notify"]["steps"][0]
             self.assertEqual(
                 notify_step["if"],
                 "github.event.label.name == env.NEEDS_OWNER_LABEL || "
+                "github.event.label.name == env.OWNER_SITTING_LABEL || "
                 "github.event.label.name == env.GATE_OVERRIDE_LABEL",
             )
             self.assertNotIn("github.event.label.name == 'needs-jeff'", notify)
@@ -2400,6 +2431,7 @@ jobs:
             self.assertIn('cron: "15 12 * * 1"', weekly)
             self.assertIn('STATUS_ISSUE: "6"', weekly)
             self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', weekly)
+            self.assertIn('OWNER_SITTING_LABEL: "owner-sitting"', weekly)
             self.assertIn('PHASE_LABELS: "phase:0,phase:1"', weekly)
             self.assertIn("python3 tools/status_report.py", weekly)
             self.assertIn(
@@ -2434,6 +2466,7 @@ jobs:
                 ".github/workflows/code-mower-gate.yml"
             ).read_text(encoding="utf-8")
             self.assertIn('CODE_MOWER_OWNER_LABEL: "needs-jeff"', gate)
+            self.assertIn('CODE_MOWER_OWNER_SITTING_LABEL: "owner-sitting"', gate)
             self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
             self.assertIn('CODE_MOWER_GATE_OVERRIDE_LABEL: "gate:override"', gate)
             self.assertIn("override_actor != override_owner", gate)
@@ -2458,6 +2491,10 @@ jobs:
                 "needs: jeff # owner",
             )
             self.assertEqual(
+                parsed_gate["env"]["CODE_MOWER_OWNER_SITTING_LABEL"],
+                "owner-sitting",
+            )
+            self.assertEqual(
                 parsed_gate["env"]["CODE_MOWER_OWNER_LOGIN"],
                 "jeffhuber",
             )
@@ -2474,8 +2511,13 @@ jobs:
                 "needs: jeff # owner",
             )
             self.assertEqual(
+                parsed_special_notify["env"]["OWNER_SITTING_LABEL"],
+                "owner-sitting",
+            )
+            self.assertEqual(
                 parsed_special_notify["jobs"]["notify"]["steps"][0]["if"],
                 "github.event.label.name == env.NEEDS_OWNER_LABEL || "
+                "github.event.label.name == env.OWNER_SITTING_LABEL || "
                 "github.event.label.name == env.GATE_OVERRIDE_LABEL",
             )
 
@@ -2513,6 +2555,7 @@ jobs:
             self.assertEqual(
                 parsed_disabled_override_notify["jobs"]["notify"]["steps"][0]["if"],
                 "github.event.label.name == env.NEEDS_OWNER_LABEL || "
+                "github.event.label.name == env.OWNER_SITTING_LABEL || "
                 "github.event.label.name == env.GATE_OVERRIDE_LABEL",
             )
 
@@ -2596,11 +2639,11 @@ while [ "$#" -gt 0 ]; do
   shift || true
 done
 if [ "$cmd" = "issue list" ] && [ "$state" = "open" ]; then
-  printf '%s\\n' '[{"number":1,"title":"Needs owner","labels":[{"name":"needs-jeff"},{"name":"phase:0"}],"assignees":[]},{"number":2,"title":"Ready","labels":[{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]}]'
+  printf '%s\\n' '[{"number":1,"title":"Needs owner","labels":[{"name":"needs-jeff"},{"name":"phase:0"}],"assignees":[]},{"number":2,"title":"Ready","labels":[{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]},{"number":5,"title":"Owner sitting","labels":[{"name":"owner-sitting"},{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]}]'
 elif [ "$cmd" = "issue list" ] && [ "$state" = "closed" ]; then
   printf '%s\\n' '[{"number":4,"title":"Done","labels":[{"name":"phase:0"}],"closedAt":"2099-01-01T00:00:00Z","assignees":[]}]'
 elif [ "$cmd" = "pr list" ] && [ "$state" = "open" ]; then
-  printf '%s\\n' '[{"number":3,"title":"Builder PR","labels":[{"name":"builder:codex"},{"name":"needs-codex-audit"},{"name":"needs-jeff"}],"author":{"login":"builder"},"isDraft":false}]'
+  printf '%s\\n' '[{"number":3,"title":"Builder PR","labels":[{"name":"builder:codex"},{"name":"needs-codex-audit"},{"name":"needs-jeff"}],"author":{"login":"builder"},"isDraft":false},{"number":6,"title":"Owner sitting PR","labels":[{"name":"builder:claude"},{"name":"owner-sitting"}],"author":{"login":"builder"},"isDraft":false}]'
 elif [ "$cmd" = "pr list" ] && [ "$state" = "merged" ]; then
   printf '%s\\n' '[]'
 else
@@ -2640,6 +2683,7 @@ fi
                     "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
                     "REPO": "owner/repo",
                     "NEEDS_OWNER_LABEL": "needs-jeff",
+                    "OWNER_SITTING_LABEL": "owner-sitting",
                     "READY_LABEL": "tier:R",
                     "PHASE_LABELS": "phase:0",
                 },
@@ -2649,8 +2693,14 @@ fi
             )
 
         self.assertIn("## Needs Owner (needs-jeff)", completed.stdout)
+        self.assertIn("`owner-sitting` physical-step sittings", completed.stdout)
         self.assertIn("- issue #1 Needs owner", completed.stdout)
+        self.assertIn("- issue #5 Owner sitting", completed.stdout)
         self.assertIn("- PR #3 Builder PR", completed.stdout)
+        self.assertIn("- PR #6 Owner sitting PR", completed.stdout)
+        ready_section = completed.stdout.split("## Ready Queue", 1)[1].split("## Reviewer Spend", 1)[0]
+        self.assertIn("- issue #2 Ready", ready_section)
+        self.assertNotIn("Owner sitting", ready_section)
         self.assertIn("codex:pending", completed.stdout)
         self.assertIn("| codex | 1 | 12 | 34 | 0.0560 | pass |", completed.stdout)
         self.assertNotIn("body", completed.stdout.lower())

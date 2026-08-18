@@ -156,6 +156,7 @@ PRODUCT_SUPPORT_FILES = (
 OWNER_SURFACE_DEFAULTS = {
     "owner_login": "TODO_OWNER_LOGIN",
     "needs_owner_label": "needs-owner",
+    "owner_sitting_label": "owner-sitting",
     "gate_override_label": "gate:override",
     "status_issue": "TODO_STATUS_ISSUE",
     "weekly_cron": "0 14 * * 1",
@@ -471,6 +472,7 @@ def _owner_surface_workflow_entry(
         "package_copy_from": copy_from,
         "owner_login": owner_surface["owner_login"],
         "needs_owner_label": owner_surface["needs_owner_label"],
+        "owner_sitting_label": owner_surface["owner_sitting_label"],
         "gate_override_label": owner_surface["gate_override_label"],
         "status_issue": owner_surface["status_issue"],
         "weekly_status_cron": owner_surface["weekly_cron"],
@@ -598,6 +600,7 @@ def _gate_health_workflow_entry(
         "gate_health_max_wait_minutes": owner_surface["gate_health_max_wait_minutes"],
         "local_audit_runner_label": owner_surface["local_audit_runner_label"] if include_local_audit_runner else "",
         "needs_owner_label": owner_surface["needs_owner_label"],
+        "owner_sitting_label": owner_surface["owner_sitting_label"],
         "owner_login": owner_surface["owner_login"],
         "status_issue": owner_surface["status_issue"],
     }
@@ -667,6 +670,7 @@ def _gate_workflow_entry(
     *,
     author_exclusion_json: str,
     owner_label: str = DEFAULT_OWNER_LABEL,
+    owner_sitting_label: str = "owner-sitting",
     owner_login: str = "",
     gate_override_label: str = "gate:override",
 ) -> dict[str, str]:
@@ -685,6 +689,7 @@ def _gate_workflow_entry(
             [lane.get("authors_env", "") for lane in gate_lanes]
         ),
         "owner_label": owner_label,
+        "owner_sitting_label": owner_sitting_label,
         "owner_login": owner_login,
         "gate_override_label": gate_override_label,
         "author_exclusion_json": author_exclusion_json,
@@ -1054,6 +1059,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__NEEDS_LABEL__": str(entry.get("needs_label") or ""),
         "__NEEDS_OWNER_LABEL__": str(entry.get("needs_owner_label") or ""),
+        "__OWNER_SITTING_LABEL__": str(entry.get("owner_sitting_label") or ""),
         "__OWNER_LOGIN__": str(entry.get("owner_login") or ""),
         "__GATE_OVERRIDE_LABEL__": str(entry.get("gate_override_label") or ""),
         "__PHASE_LABELS__": str(entry.get("phase_labels") or ""),
@@ -1065,6 +1071,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__STATUS_ISSUE__": str(entry.get("status_issue") or ""),
         "__OWNER_LABEL__": json.dumps(
             str(entry.get("owner_label") or DEFAULT_OWNER_LABEL)
+        ),
+        "__OWNER_SITTING_LABEL_JSON__": json.dumps(
+            str(entry.get("owner_sitting_label") or "owner-sitting")
         ),
         "__OWNER_LOGIN_JSON__": json.dumps(str(entry.get("owner_login") or "")),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
@@ -1331,6 +1340,7 @@ def render_init_plan(
 
     for label in (
         owner_surface["needs_owner_label"],
+        owner_surface["owner_sitting_label"],
         owner_surface["gate_override_label"],
     ):
         if label:
@@ -1370,6 +1380,7 @@ def render_init_plan(
                 selected_lanes,
                 author_exclusion_json=author_exclusion_json,
                 owner_label=owner_surface["needs_owner_label"],
+                owner_sitting_label=owner_surface["owner_sitting_label"],
                 owner_login=owner_surface["owner_login"],
                 gate_override_label=owner_surface["gate_override_label"],
             )
