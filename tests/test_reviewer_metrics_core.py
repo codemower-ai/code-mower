@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from code_mower import cloud as code_mower_cloud
+from code_mower.cloud_client import operations as cloud_operations
 from code_mower import code_mower_telemetry, reviewer_metrics
 from code_mower.provider_runners import verdict_artifacts
 from code_mower.provider_runners import write_audit_verdict_artifact
@@ -524,6 +525,195 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             self.assertEqual(result["event_count"], 1)
             self.assertEqual(result["export"]["event_count"], 1)
             self.assertEqual(result["upload"]["event_count"], 1)
+
+    def test_cloud_reviewer_runs_merges_default_spend_into_verdict_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            verdicts = root / "verdicts"
+            self._write_artifact(verdicts, duration_seconds=12.3)
+            spend_dir = root / ".code-mower"
+            spend_dir.mkdir()
+            (spend_dir / "reviewer-spend.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "code_mower.reviewerSpend.v1",
+                        "runs": [
+                            {
+                                "run_id": "spend-run-1",
+                                "created_at": "2026-06-15T12:00:01Z",
+                                "lane": "codex-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 42,
+                                "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
+                                "model": "gpt-5",
+                                "wall_seconds": 15.0,
+                                "verdict": "BLOCKED",
+                                "cost_usd": 0.031,
+                                "total_tokens": 1234,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output_dir = root / "bundle"
+
+            result = code_mower_cloud._reviewer_runs_upload(
+                repo_path=root,
+                verdicts=verdicts,
+                output_dir=output_dir,
+                repo_slug="owner/repo",
+                team_id="team-test",
+                install_id="install-test",
+                limit=10,
+                endpoint="https://codemower.com/api/ingest",
+                token_env="MISSING_TOKEN_FOR_TEST",
+                yes=False,
+                timeout=1,
+                include_git_ref=True,
+            )
+
+            payload = code_mower_cloud.build_upload_payload(bundle_dir=output_dir)
+            event = payload["events"][0]
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["event_count"], 1)
+            self.assertTrue(event["event_id"].startswith("verdict-artifact-"))
+            self.assertEqual(event["metrics"]["wall_seconds"], 12.3)
+            self.assertEqual(event["metrics"]["cost_usd"], 0.031)
+            self.assertEqual(event["metrics"]["total_tokens"], 1234)
+            self.assertEqual(event["dimensions"]["spend_run_id"], "spend-run-1")
+
+    def test_cloud_reviewer_runs_uploads_default_spend_without_verdicts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spend_dir = root / ".code-mower"
+            spend_dir.mkdir()
+            (spend_dir / "reviewer-spend.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "code_mower.reviewerSpend.v1",
+                        "runs": [
+                            {
+                                "run_id": "spend-run-1",
+                                "created_at": "2026-06-15T12:00:00Z",
+                                "lane": "codex-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 42,
+                                "model": "gpt-5",
+                                "wall_seconds": 15.0,
+                                "verdict": "PASS",
+                                "cost_usd": 0.031,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output_dir = root / "bundle"
+
+            result = code_mower_cloud._reviewer_runs_upload(
+                repo_path=root,
+                verdicts=root / "missing-verdicts",
+                output_dir=output_dir,
+                repo_slug="owner/repo",
+                team_id="team-test",
+                install_id="install-test",
+                limit=10,
+                endpoint="https://codemower.com/api/ingest",
+                token_env="MISSING_TOKEN_FOR_TEST",
+                yes=False,
+                timeout=1,
+                include_git_ref=False,
+            )
+
+            payload = code_mower_cloud.build_upload_payload(bundle_dir=output_dir)
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(payload["events"][0]["event_id"], "spend-run-1")
+            self.assertEqual(payload["events"][0]["metrics"]["cost_usd"], 0.031)
+
+    def test_cloud_reviewer_runs_keeps_fallback_spend_collisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            verdicts = root / "verdicts"
+            self._write_artifact(verdicts)
+            spend_dir = root / ".code-mower"
+            spend_dir.mkdir()
+            (spend_dir / "reviewer-spend.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "code_mower.reviewerSpend.v1",
+                        "runs": [
+                            {
+                                "run_id": "spend-run-1",
+                                "created_at": "2026-06-15T12:00:01Z",
+                                "lane": "codex-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 42,
+                                "model": "gpt-5",
+                                "wall_seconds": 15.0,
+                                "verdict": "BLOCKED",
+                                "cost_usd": 0.031,
+                            },
+                            {
+                                "run_id": "spend-run-2",
+                                "created_at": "2026-06-15T12:05:01Z",
+                                "lane": "codex-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 42,
+                                "model": "gpt-5",
+                                "wall_seconds": 16.0,
+                                "verdict": "BLOCKED",
+                                "cost_usd": 0.041,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output_dir = root / "bundle"
+
+            result = code_mower_cloud._reviewer_runs_upload(
+                repo_path=root,
+                verdicts=verdicts,
+                output_dir=output_dir,
+                repo_slug="owner/repo",
+                team_id="team-test",
+                install_id="install-test",
+                limit=10,
+                endpoint="https://codemower.com/api/ingest",
+                token_env="MISSING_TOKEN_FOR_TEST",
+                yes=False,
+                timeout=1,
+                include_git_ref=False,
+            )
+
+            payload = code_mower_cloud.build_upload_payload(bundle_dir=output_dir)
+            self.assertEqual(result["event_count"], 2)
+            self.assertEqual(payload["events"][0]["dimensions"]["spend_run_id"], "spend-run-1")
+            self.assertEqual(payload["events"][1]["event_id"], "spend-run-2")
+            self.assertEqual(payload["events"][1]["metrics"]["cost_usd"], 0.041)
+
+    def test_reviewer_spend_merge_does_not_clobber_existing_metrics(self) -> None:
+        events = [
+            {
+                "repo_slug": "owner/repo",
+                "metrics": {"cost_usd": 0.99, "total_tokens": 99},
+                "dimensions": {"lane_id": "codex-audit", "pr_number": 42},
+            }
+        ]
+        spend_events = [
+            {
+                "repo_slug": "owner/repo",
+                "metrics": {"cost_usd": 0.031, "total_tokens": 1234},
+                "dimensions": {"lane": "codex-audit", "pr_number": "42"},
+            }
+        ]
+
+        merged = cloud_operations._merge_reviewer_spend_events(events, spend_events)
+
+        self.assertEqual(merged[0]["metrics"]["cost_usd"], 0.99)
+        self.assertEqual(merged[0]["metrics"]["total_tokens"], 99)
 
     def test_cloud_reviewer_runs_offset_chunks_bundle_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

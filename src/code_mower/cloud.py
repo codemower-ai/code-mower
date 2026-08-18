@@ -430,6 +430,15 @@ def main(argv: list[str] | None = None) -> int:
         help="include verdict head SHA metadata",
     )
     reviewer_runs.add_argument(
+        "--spend",
+        type=Path,
+        default=None,
+        help=(
+            "reviewer spend ledger to merge into reviewer_run events; defaults "
+            "to .code-mower/reviewer-spend.json when present"
+        ),
+    )
+    reviewer_runs.add_argument(
         "--endpoint",
         default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
     )
@@ -686,6 +695,7 @@ def main(argv: list[str] | None = None) -> int:
                 yes=args.yes,
                 timeout=args.timeout,
                 include_git_ref=args.include_git_ref,
+                spend_path=args.spend,
             )
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))

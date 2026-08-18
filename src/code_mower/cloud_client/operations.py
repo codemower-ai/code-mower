@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .. import code_mower_telemetry
 from .. import reviewer_spend
@@ -86,6 +86,108 @@ def build_catch_up_summary(
     }
 
 
+def _reviewer_spend_events(
+    *,
+    repo_path: Path,
+    spend_path: Path | None,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+) -> list[dict[str, Any]]:
+    resolved_spend_path = spend_path or repo_path / reviewer_spend.DEFAULT_SPEND_PATH
+    if not resolved_spend_path.is_file():
+        return []
+    return reviewer_spend.spend_runs_to_events(
+        reviewer_spend.load_spend_file(resolved_spend_path),
+        repo_slug=repo_slug,
+        team_id=team_id,
+        install_id=install_id,
+        source=source,
+    )
+
+
+def _mapping(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _event_match_values(event: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    dimensions = _mapping(event.get("dimensions"))
+    lane = str(
+        dimensions.get("audit_comment_lane_id")
+        or dimensions.get("lane_id")
+        or dimensions.get("lane")
+        or event.get("lens")
+        or event.get("provider")
+        or ""
+    ).strip()
+    return (
+        str(event.get("repo_slug") or "").strip(),
+        str(dimensions.get("pr_number") or "").strip(),
+        lane,
+        str(dimensions.get("head_sha") or "").strip(),
+    )
+
+
+def _merge_spend_metrics(
+    event: dict[str, Any],
+    spend_event: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = dict(event)
+    metrics = dict(_mapping(event.get("metrics")))
+    for key, value in _mapping(spend_event.get("metrics")).items():
+        metrics.setdefault(key, value)
+    dimensions = dict(_mapping(event.get("dimensions")))
+    spend_dimensions = _mapping(spend_event.get("dimensions"))
+    if spend_dimensions.get("spend_run_id"):
+        dimensions["spend_run_id"] = spend_dimensions["spend_run_id"]
+    if spend_event.get("source"):
+        dimensions["spend_source"] = spend_event["source"]
+    merged["metrics"] = metrics
+    merged["dimensions"] = dimensions
+    if not _mapping(event.get("tool")) and isinstance(spend_event.get("tool"), Mapping):
+        merged["tool"] = dict(spend_event["tool"])
+    return merged
+
+
+def _merge_reviewer_spend_events(
+    events: list[dict[str, Any]],
+    spend_events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not spend_events:
+        return events
+    merged = list(events)
+    exact_matches: dict[tuple[str, str, str, str], int] = {}
+    fallback_matches: dict[tuple[str, str, str], int | None] = {}
+    for index, event in enumerate(merged):
+        repo_slug, pr_number, lane, head_sha = _event_match_values(event)
+        if not repo_slug or not pr_number or not lane:
+            continue
+        if head_sha:
+            exact_matches[(repo_slug, pr_number, lane, head_sha)] = index
+        fallback_key = (repo_slug, pr_number, lane)
+        fallback_matches[fallback_key] = (
+            None if fallback_key in fallback_matches else index
+        )
+
+    unmatched: list[dict[str, Any]] = []
+    merged_targets: set[int] = set()
+    for spend_event in spend_events:
+        repo_slug, pr_number, lane, head_sha = _event_match_values(spend_event)
+        target_index = None
+        if head_sha:
+            target_index = exact_matches.get((repo_slug, pr_number, lane, head_sha))
+        if target_index is None:
+            target_index = fallback_matches.get((repo_slug, pr_number, lane))
+        if target_index is None or target_index in merged_targets:
+            unmatched.append(spend_event)
+            continue
+        merged_targets.add(target_index)
+        merged[target_index] = _merge_spend_metrics(merged[target_index], spend_event)
+    remaining = max(0, MAX_EVENT_COUNT - len(merged))
+    return [*merged, *unmatched[:remaining]]
+
+
 def dogfood_upload(
     *,
     repo_path: Path,
@@ -112,16 +214,14 @@ def dogfood_upload(
     resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
     resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
     resolved_reports = reports or default_dogfood_reports(repo_path)
-    resolved_spend_path = spend_path or repo_path / reviewer_spend.DEFAULT_SPEND_PATH
-    spend_events: list[dict[str, Any]] = []
-    if resolved_spend_path.is_file():
-        spend_events = reviewer_spend.spend_runs_to_events(
-            reviewer_spend.load_spend_file(resolved_spend_path),
-            repo_slug=detected_repo_slug,
-            team_id=resolved_team_id,
-            install_id=resolved_install_id,
-            source="code-mower cloud dogfood spend",
-        )
+    spend_events = _reviewer_spend_events(
+        repo_path=repo_path,
+        spend_path=spend_path,
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        source="code-mower cloud dogfood spend",
+    )
     dogfood_plan = build_dogfood_plan(
         repo_slug=detected_repo_slug,
         team_id=resolved_team_id,
@@ -321,6 +421,7 @@ def reviewer_runs_upload(
     yes: bool,
     timeout: float,
     include_git_ref: bool,
+    spend_path: Path | None = None,
 ) -> dict[str, Any]:
     if limit < 1 or limit > MAX_EVENT_COUNT:
         raise CloudBundleError(f"--limit must be between 1 and {MAX_EVENT_COUNT}")
@@ -344,6 +445,15 @@ def reviewer_runs_upload(
         )
     except ValueError as exc:
         raise CloudBundleError(str(exc)) from exc
+    spend_events = _reviewer_spend_events(
+        repo_path=repo_path,
+        spend_path=spend_path,
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        source="code-mower cloud reviewer-runs spend",
+    )
+    events = _merge_reviewer_spend_events(events, spend_events)
     if not events:
         return {
             "mode": "cloud-reviewer-runs",
@@ -566,6 +676,7 @@ def repo_sync_upload(
                         yes=yes,
                         timeout=timeout,
                         include_git_ref=include_git_ref,
+                        spend_path=None,
                     )
                 else:  # pragma: no cover - argparse constrains modes.
                     raise CloudBundleError(f"unsupported repo-sync mode: {mode}")

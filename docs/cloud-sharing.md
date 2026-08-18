@@ -449,9 +449,11 @@ source ~/.config/code-mower/tokens/your-install-id.env
 code-mower cloud reviewer-runs --repo-slug owner/repo --yes --json
 ```
 
-Use `--verdicts` to point at a non-default artifact directory and
-`--include-git-ref` only after deciding that head SHA metadata is acceptable for
-your team.
+`reviewer-runs` also reads `.code-mower/reviewer-spend.json` when present and
+merges spend metrics into matching verdict events before upload. Use `--spend`
+to point at a non-default ledger, `--verdicts` to point at a non-default
+artifact directory, and `--include-git-ref` only after deciding that head SHA
+metadata is acceptable for your team.
 For directories with more than the 500-event bundle cap, repeat the command
 with `--offset 500`, `--offset 1000`, and so on until the dry run reports no
 events.
@@ -496,7 +498,8 @@ code-mower cloud repo-sync \
 ```
 
 By default, `repo-sync` runs `dogfood` plus `reviewer-runs` for each repo and
-stays dry-run. After inspecting the preview:
+stays dry-run; the reviewer-runs step includes the default spend ledger when
+present. After inspecting the preview:
 
 ```bash
 source ~/.config/code-mower/tokens/your-install-id.env
