@@ -455,7 +455,9 @@ it reads PR labels, audit comments, and authenticated PR metadata; validates
 the requested SHA against the PR's current head; treats `needs-owner` as
 pending; treats configured current-head `*-blocked` labels as failure; applies
 `merge_authority_excludes_author` from `code-mower.yml`; publishes the
-`code-mower/gate` commit status; and calls GitHub's
+`code-mower/gate` commit status; keeps the gate job display name as
+`code-mower/gate` for repositories that already require the GitHub Actions
+check-run; and calls GitHub's
 `enablePullRequestAutoMerge` when the status is green. A `*-done` or
 `*-blocked` label counts only when the matching terminal audit comment carries
 the same head SHA and comes from the lane's configured bot authors, so stale

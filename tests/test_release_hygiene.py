@@ -2235,6 +2235,7 @@ jobs:
                 ".github/workflows/code-mower-gate.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("CODE_MOWER_GATE_CONTEXT: code-mower/gate", gate)
+            self.assertIn("name: code-mower/gate", gate)
             self.assertIn("Check out Code Mower support files", gate)
             self.assertIn('CODE_MOWER_OWNER_LABEL: "needs-owner"', gate)
             self.assertIn("codex-audit-done", gate)
