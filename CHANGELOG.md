@@ -4,6 +4,19 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.49
+
+This beta carries the generated gate fixes found immediately after beta.48
+landed in Bridge Pro.
+
+### Changed
+
+- Generated `code-mower-gate.yml` preserves the `code-mower/gate` job display
+  name for repositories that require the GitHub Actions check-run (#368).
+- Generated `code-mower-gate.yml` treats GitHub auto-merge enablement as an
+  optional post-green action, so a token permission denial logs a notice without
+  failing an otherwise green gate (#370).
+
 ## v0.5.0-beta.48
 
 This beta closes the same-head audit race found while dogfooding Code Mower as
