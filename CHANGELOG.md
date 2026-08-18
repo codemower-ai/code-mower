@@ -4,6 +4,27 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.48
+
+This beta closes the same-head audit race found while dogfooding Code Mower as
+the Bridge Pro merge gate.
+
+### Changed
+
+- Generated `local-cli-audit.yml` now scopes concurrency by workflow, PR,
+  current head SHA, and lane, with `cancel-in-progress: true` so superseded
+  same-head audit jobs cannot post late contradictory verdicts (#365).
+- Generated `code-mower-gate.yml` now reports `pending` while a required
+  current-head audit run is queued or in progress, re-checks after the local
+  audit workflow completes, and lets the newest attested same-head verdict win
+  when deciding whether a lane is green or blocked (#365).
+- The gate posts a metadata-only history-rewrite warning when a previously
+  attested head is no longer an ancestor of the PR head, and docs now spell out
+  the single-writer PR branch rule plus `--force-with-lease` posture (#365).
+- The reusable gate-health workflow template, command, and docs are included in
+  the beta line for product repos that need stalled-audit and runner-health
+  escalation (#337).
+
 ## v0.5.0-beta.47
 
 This beta carries the local-audit runner and generated-workflow hardening found
