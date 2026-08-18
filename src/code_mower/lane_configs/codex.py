@@ -28,5 +28,5 @@ CONFIG = LaneConfig(
             flags=re.IGNORECASE,
         ),
     ),
-    token_env_vars=("CODEX_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"),
+    token_env_vars=("DISPATCH_TOKEN", "CODEX_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"),
 )

@@ -18,6 +18,7 @@ from .github_actions import (
 from .github_actions_permissions import check_actions_permissions
 from .github_branch import check_branch_protection
 from .github_config import configured_repositories, selected_saas_or_hosted_lanes
+from .github_human_token import check_human_automation_token
 from .github_provider import check_private_repo_provider_surface
 from .github_repo import (
     check_repo_auto_merge,
@@ -123,6 +124,15 @@ def check_github_setup(
                     ),
                 ),
             ]
+        )
+        checks.append(
+            check_human_automation_token(
+                gh_path=gh_path,
+                slug=slug,
+                config=config,
+                lanes=lanes,
+                http_timeout=http_timeout,
+            )
         )
         if has_merge_authority:
             checks.append(

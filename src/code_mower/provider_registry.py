@@ -80,7 +80,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             done="codex-audit-done",
             blocked="codex-audit-blocked",
         ),
-        token_env=("CODEX_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"),
+        token_env=("DISPATCH_TOKEN", "GITHUB_TOKEN"),
         result_sources=("trailer_comment",),
         merge_authority=True,
         provider_config={
@@ -118,7 +118,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             done="claude-audit-done",
             blocked="claude-audit-blocked",
         ),
-        token_env=("CLAUDE_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"),
+        token_env=("DISPATCH_TOKEN", "GITHUB_TOKEN"),
         result_sources=("trailer_comment",),
         merge_authority=True,
         provider_config={

@@ -66,6 +66,7 @@ owner_surface:
   gate_health_liveness_minutes: "45"
   local_audit_runner_label: code-mower-audit
   dispatch_token_env: DISPATCH_TOKEN
+  dispatch_token_expires_var: DISPATCH_TOKEN_EXPIRES_AT
   ready_label: "tier:R"
 ```
 
@@ -208,7 +209,13 @@ The built-in `GITHUB_TOKEN` is enough for some workflows, but not all repos.
 Repository or organization settings may make the workflow token read-only. Fork
 pull requests also have restricted secret access.
 
-Code Mower lanes therefore support explicit token fallbacks:
+Code Mower lanes therefore support one human-owned automation token by default:
+
+- `DISPATCH_TOKEN`
+- `DISPATCH_TOKEN_EXPIRES_AT` as a repository variable containing the PAT expiry
+  date in `YYYY-MM-DD` format
+
+Keep older per-lane token names only as beta compatibility fallbacks:
 
 - `CODEX_AUDIT_LABEL_TOKEN`
 - `CLAUDE_AUDIT_LABEL_TOKEN`
@@ -219,16 +226,30 @@ Code Mower lanes therefore support explicit token fallbacks:
 - `DEVIN_AUDIT_LABEL_TOKEN`
 - lane-specific local or research tokens when enabled
 
-Use fine-grained tokens with the smallest useful permissions. A common labeler
-fallback needs:
+Use a fine-grained PAT owned by a human or explicitly delegated machine user
+with the smallest useful permissions. The default `DISPATCH_TOKEN` needs:
 
 - Issues: read/write
-- Pull requests: write for label mutation on PR-backed issues
-- Contents: read only when a lane must fetch files through GitHub
+- Pull requests: read/write
+- Contents: read
 
-Generated labeler, hosted-requeue, clear-stale, and audit-label-cleanup
-workflows grant this permission to `GITHUB_TOKEN`; fine-grained PAT secrets are
-optional fallbacks for repositories that intentionally use separate
+Set the token and expiry metadata with:
+
+```bash
+gh secret set DISPATCH_TOKEN
+gh variable set DISPATCH_TOKEN_EXPIRES_AT --body YYYY-MM-DD
+```
+
+`code-mower doctor --github` fails when the generated human-token workflows are
+enabled but the secret is missing, the expiry variable is missing, or the
+recorded expiry date is in the past. It warns when rotation is due within 14
+days. The check reads only GitHub secret/variable metadata; it cannot read the
+PAT value.
+
+Generated workflows still grant `GITHUB_TOKEN` write permissions where GitHub
+allows them, but human-token templates prefer `DISPATCH_TOKEN` so label events
+and agent mentions trigger downstream automation. Per-lane PAT names remain
+compatibility fallbacks for repositories that intentionally use separate
 credentials.
 
 Do not store provider API keys in repository docs. Use environment variables,
@@ -354,10 +375,10 @@ Runner setup recipe:
 6. Verify local auth from that same account: `gh auth status`,
    `codex --version`, `claude auth status`, and
    `claude -p "Reply with exactly: ok" --output-format json`.
-7. Add posting-token secrets `CODEX_AUDIT_LABEL_TOKEN` and
-   `CLAUDE_AUDIT_LABEL_TOKEN`. The workflow can post with `GITHUB_TOKEN`, but
+7. Add the shared posting-token secret `DISPATCH_TOKEN` and expiry variable
+   `DISPATCH_TOKEN_EXPIRES_AT`. The workflow can post with `GITHUB_TOKEN`, but
    GitHub does not fire `issue_comment` workflows for comments created by the
-   built-in token, so runner lanes need PAT/App posting tokens for trailer
+   built-in token, so runner lanes need a human-owned PAT/App token for trailer
    labelers to flip `needs-*-audit` to done or blocked.
 
 The generated workflow grants `pull-requests: write`, runs one matrix job per
@@ -536,7 +557,9 @@ synchronize. When `builder_identity.fix_round_mentions` is configured,
 generated fix-round dispatch comments once per blocked head and audit lane.
 Both generated workflows use `owner_surface.dispatch_token_env`, which must name
 a human-owned secret so label events and agent mentions are not authored by the
-built-in workflow token.
+built-in workflow token. Record the same token's expiry date in
+`owner_surface.dispatch_token_expires_var` so `doctor --github` can report the
+rotation countdown.
 
 Branch protection should require `code-mower/gate` alongside normal CI before
 autonomous merge is trusted. Inspect the existing status-check protection first:

@@ -180,6 +180,24 @@ class BuilderIdentityTests(unittest.TestCase):
             any(issue.path == "builder_identity.fix_round_mentions.bad lane" for issue in issues)
         )
 
+    def test_config_validation_checks_owner_surface_token_names(self) -> None:
+        cfg = dict(
+            code_mower_config.load_config(
+                code_mower_init._resolve_config_path("code-mower.example.yml")
+            )
+        )
+        cfg["owner_surface"] = {
+            "dispatch_token_env": "BAD TOKEN",
+            "dispatch_token_expires_var": "1_BAD",
+        }
+
+        issues = code_mower_config.validate_config(cfg)
+
+        self.assertTrue(any(issue.path == "owner_surface.dispatch_token_env" for issue in issues))
+        self.assertTrue(
+            any(issue.path == "owner_surface.dispatch_token_expires_var" for issue in issues)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

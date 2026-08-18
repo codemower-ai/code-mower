@@ -57,7 +57,7 @@ PASS  runtime.python              Python 3.12 satisfies Code Mower requirements
 PASS  runtime.github_auth         GitHub CLI auth probe succeeded
 PASS  runtime.local_cli codex     codex found
 PASS  runtime.local_cli claude    claude auth smoke probe succeeded
-WARN  env.tokens codex            missing CODEX_AUDIT_LABEL_TOKEN or GITHUB_TOKEN
+WARN  env.tokens codex            missing DISPATCH_TOKEN or GITHUB_TOKEN
 WARN  github.actions_cost         private repo has high-frequency metadata workflows
 PASS  cloud.token                 optional Code Mower Cloud token file is configured
 

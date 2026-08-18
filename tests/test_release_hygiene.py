@@ -2093,6 +2093,8 @@ jobs:
         )
         self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", plan.data["required_secrets"])
         self.assertIn("DISPATCH_TOKEN", plan.data["required_secrets"])
+        self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", plan.data["required_variables"])
+        self.assertEqual(plan.data["human_automation_token"]["secret"], "DISPATCH_TOKEN")
         self.assertIn("builder:grok-bot", plan.data["labels"])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2117,6 +2119,10 @@ jobs:
                 ".github/workflows/local-cli-audit.yml",
             }
             self.assertTrue(expected.isdisjoint(placeholder_files))
+            required_variables = output_dir.joinpath("required-variables.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", required_variables)
             for rel_path in expected:
                 text = output_dir.joinpath(rel_path).read_text(encoding="utf-8")
                 self.assertNotIn("__WORKFLOW_NAME__", text)
@@ -2130,7 +2136,7 @@ jobs:
             self.assertIn("tools/code_mower trailer-comment-labeler --lane", claude)
             self.assertIn("TRAILER_LANE: claude", claude)
             self.assertIn("claude-audit-bot[bot]", claude)
-            self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", claude)
+            self.assertIn("DISPATCH_TOKEN", claude)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS", claude)
             self.assertIn("actions: write", claude)
             self.assertIn('CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml"', claude)
@@ -2217,8 +2223,9 @@ jobs:
             self.assertIn("github.event.action != 'labeled'", local_cli_audit)
             self.assertIn("needs-codex-audit", local_cli_audit)
             self.assertIn("needs-claude-audit", local_cli_audit)
-            self.assertIn("CODEX_AUDIT_LABEL_TOKEN", local_cli_audit)
-            self.assertIn("CLAUDE_AUDIT_LABEL_TOKEN", local_cli_audit)
+            self.assertIn("DISPATCH_TOKEN", local_cli_audit)
+            self.assertNotIn("CODEX_AUDIT_LABEL_TOKEN", local_cli_audit)
+            self.assertNotIn("CLAUDE_AUDIT_LABEL_TOKEN", local_cli_audit)
             self.assertIn("tools/run_codex_audit_pr.sh", local_cli_audit)
             self.assertIn("tools/run_claude_audit_pr.sh", local_cli_audit)
             self.assertIn("--read-token-from-stdin", local_cli_audit)

@@ -1,4 +1,5 @@
 import unittest
+from datetime import UTC, datetime
 from unittest import mock
 
 from code_mower.doctor_checks.github_actions_permissions import check_actions_permissions
@@ -15,6 +16,10 @@ from code_mower.doctor_checks.github_config import (
     configured_repositories,
     selected_saas_or_hosted_lanes,
 )
+from code_mower.doctor_checks.github_human_token import (
+    check_human_automation_token,
+    human_automation_token_required,
+)
 from code_mower.doctor_checks.github_provider import check_private_repo_provider_surface
 from code_mower.doctor_checks.github_repo import (
     check_repo_auto_merge,
@@ -23,6 +28,23 @@ from code_mower.doctor_checks.github_repo import (
 
 
 class GitHubDoctorCheckTests(unittest.TestCase):
+    def _human_token_check(
+        self,
+        api_responses: list[tuple[object, dict[str, object]]],
+    ):
+        with mock.patch(
+            "code_mower.doctor_checks.github_human_token._github_api_json",
+            side_effect=api_responses,
+        ):
+            return check_human_automation_token(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                config={"owner_surface": {"dispatch_token_env": "DISPATCH_TOKEN"}},
+                lanes=[("codex", {"token_env": ["DISPATCH_TOKEN", "GITHUB_TOKEN"]})],
+                http_timeout=1,
+                now=datetime(2026, 8, 18, tzinfo=UTC),
+            )
+
     def test_config_helpers_filter_repositories_and_hosted_lanes(self) -> None:
         repos = configured_repositories(
             {
@@ -63,6 +85,92 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertEqual(check.detail["repo_count"], 2)
         self.assertEqual(check.detail["repositories"], ["owner/base", "owner/sibling"])
         self.assertEqual(check.detail["local_path_env_count"], 1)
+
+    def test_human_automation_token_required_for_dispatch_config(self) -> None:
+        required = human_automation_token_required(
+            {
+                "owner_surface": {"dispatch_token_env": "DISPATCH_TOKEN"},
+                "builder_identity": {"branch_prefixes": {"cursor/": "cursor"}},
+            },
+            [("codex", {"type": "audit", "merge_authority": True})],
+        )
+
+        self.assertTrue(required)
+
+    def test_human_automation_token_check_passes_with_future_expiry(self) -> None:
+        check = self._human_token_check(
+            [
+                (
+                    {
+                        "name": "DISPATCH_TOKEN",
+                        "created_at": "2026-08-01T00:00:00Z",
+                        "updated_at": "2026-08-02T00:00:00Z",
+                    },
+                    {},
+                ),
+                (
+                    {
+                        "name": "DISPATCH_TOKEN_EXPIRES_AT",
+                        "value": "2026-09-15",
+                    },
+                    {},
+                ),
+            ]
+        )
+
+        self.assertEqual(check.status, "pass")
+        self.assertIn("expires in 28 day(s)", check.message)
+        self.assertEqual(check.detail["days_remaining"], 28)
+        self.assertEqual(check.detail["secret"], "DISPATCH_TOKEN")
+
+    def test_human_automation_token_check_fails_when_secret_missing(self) -> None:
+        check = self._human_token_check(
+            [(None, {"returncode": 1, "output_summary": "not found"})]
+        )
+
+        self.assertEqual(check.status, "fail")
+        self.assertIn("missing the DISPATCH_TOKEN", check.message)
+        self.assertIn("fine-grained PAT", str(check.remediation))
+
+    def test_human_automation_token_check_fails_when_expired(self) -> None:
+        check = self._human_token_check(
+            [
+                ({"name": "DISPATCH_TOKEN"}, {}),
+                ({"name": "DISPATCH_TOKEN_EXPIRES_AT", "value": "2026-08-17"}, {}),
+            ]
+        )
+
+        self.assertEqual(check.status, "fail")
+        self.assertIn("expired", check.message)
+
+    def test_human_automation_token_check_rejects_timestamp_expiry(self) -> None:
+        check = self._human_token_check(
+            [
+                ({"name": "DISPATCH_TOKEN"}, {}),
+                (
+                    {
+                        "name": "DISPATCH_TOKEN_EXPIRES_AT",
+                        "value": "2026-09-15T23:59:59Z",
+                    },
+                    {},
+                ),
+            ]
+        )
+
+        self.assertEqual(check.status, "fail")
+        self.assertIn("invalid DISPATCH_TOKEN_EXPIRES_AT", check.message)
+
+    def test_human_automation_token_check_skips_when_not_required(self) -> None:
+        check = check_human_automation_token(
+            gh_path="/usr/bin/gh",
+            slug="owner/repo",
+            config={"owner_surface": {"dispatch_token_env": "DISPATCH_TOKEN"}},
+            lanes=[("manual", {"driver": "manual", "type": "review"})],
+            http_timeout=1,
+            now=datetime(2026, 8, 18, tzinfo=UTC),
+        )
+
+        self.assertEqual(check.status, "skip")
 
     def test_private_repo_provider_check_warns_for_hosted_lanes(self) -> None:
         check = check_private_repo_provider_surface(

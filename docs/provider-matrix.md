@@ -182,9 +182,9 @@ workflows. The v1.0 posture is:
   their dashboards, but Code Mower should not spend Actions minutes parsing
   them unless the PR opted into that lane
 - generated labelers trust configured lane bot authors; local audit runner
-  comments should use `CODEX_AUDIT_LABEL_TOKEN` or `CLAUDE_AUDIT_LABEL_TOKEN`
-  because GitHub does not fire `issue_comment` labeler workflows for comments
-  created by the built-in `GITHUB_TOKEN`
+  comments should use the shared `DISPATCH_TOKEN` human-token secret because
+  GitHub does not fire `issue_comment` labeler workflows for comments created
+  by the built-in `GITHUB_TOKEN`
 
 ## Promotion Policy
 

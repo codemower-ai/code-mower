@@ -35,12 +35,12 @@ Runtime
 - PASS runtime.ripgrep: rg found
 
 Provider lanes (3 warnings)
-- WARN env.tokens [codex]: missing token env vars: CODEX_AUDIT_LABEL_TOKEN, GITHUB_TOKEN
-  remediation: set CODEX_AUDIT_LABEL_TOKEN, GITHUB_TOKEN in your shell or GitHub secret store before enabling this lane.
+- WARN env.tokens [codex]: missing token env vars: DISPATCH_TOKEN, GITHUB_TOKEN
+  remediation: set DISPATCH_TOKEN, GITHUB_TOKEN in your shell or GitHub secret store before enabling this lane.
 - PASS runtime.local_cli [codex]: codex found
 - PASS runtime.local_cli.probe [codex]: codex probe succeeded
-- WARN env.tokens [claude_audit]: missing token env vars: CLAUDE_AUDIT_LABEL_TOKEN, GITHUB_TOKEN
-  remediation: set CLAUDE_AUDIT_LABEL_TOKEN, GITHUB_TOKEN in your shell or GitHub secret store before enabling this lane.
+- WARN env.tokens [claude_audit]: missing token env vars: DISPATCH_TOKEN, GITHUB_TOKEN
+  remediation: set DISPATCH_TOKEN, GITHUB_TOKEN in your shell or GitHub secret store before enabling this lane.
 - PASS runtime.local_cli [claude_audit]: claude found
 - PASS runtime.local_cli.probe [claude_audit]: claude auth smoke probe succeeded
 - WARN env.tokens [gitar]: missing token env vars: GITAR_AUDIT_LABEL_TOKEN, GITHUB_TOKEN

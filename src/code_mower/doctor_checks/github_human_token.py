@@ -1,0 +1,199 @@
+"""Human-owned GitHub token posture checks."""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime
+from typing import Any, Mapping, Sequence
+
+from .common import DoctorCheck, STATUS_FAIL, STATUS_PASS, STATUS_SKIP, STATUS_WARN
+from .github_api import _github_api_json
+
+DEFAULT_HUMAN_TOKEN_SECRET = "DISPATCH_TOKEN"
+DEFAULT_HUMAN_TOKEN_EXPIRES_VAR = "DISPATCH_TOKEN_EXPIRES_AT"
+EXPIRY_WARNING_DAYS = 14
+
+
+def _owner_surface_value(
+    config: Mapping[str, Any],
+    key: str,
+    default: str,
+) -> str:
+    surface = config.get("owner_surface")
+    if not isinstance(surface, Mapping):
+        return default
+    value = surface.get(key, default)
+    text = str(value).strip() if value is not None else ""
+    return text or default
+
+
+def human_automation_token_config(config: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "secret": _owner_surface_value(
+            config,
+            "dispatch_token_env",
+            DEFAULT_HUMAN_TOKEN_SECRET,
+        ),
+        "expires_var": _owner_surface_value(
+            config,
+            "dispatch_token_expires_var",
+            DEFAULT_HUMAN_TOKEN_EXPIRES_VAR,
+        ),
+    }
+
+
+def _lane_token_names(lane: Mapping[str, Any]) -> tuple[str, ...]:
+    token_env = lane.get("token_env", [])
+    if isinstance(token_env, str):
+        return (token_env,)
+    if isinstance(token_env, Sequence) and not isinstance(token_env, (bytes, bytearray)):
+        return tuple(str(name) for name in token_env if str(name).strip())
+    return ()
+
+
+def human_automation_token_required(
+    config: Mapping[str, Any],
+    lanes: Sequence[tuple[str, Mapping[str, Any]]],
+) -> bool:
+    token = human_automation_token_config(config)["secret"]
+    if any(token in _lane_token_names(lane) for _lane_id, lane in lanes):
+        return True
+    identity = config.get("builder_identity")
+    if not isinstance(identity, Mapping):
+        return False
+    has_builder_automation = bool(
+        identity.get("branch_prefixes") or identity.get("fix_round_mentions")
+    )
+    has_merge_authority_audit = any(
+        lane.get("type") == "audit" and lane.get("merge_authority")
+        for _lane_id, lane in lanes
+    )
+    return has_builder_automation and has_merge_authority_audit
+
+
+def _parse_expiry(value: str) -> date | None:
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def check_human_automation_token(
+    *,
+    gh_path: str,
+    slug: str,
+    config: Mapping[str, Any],
+    lanes: Sequence[tuple[str, Mapping[str, Any]]],
+    http_timeout: int,
+    now: datetime | None = None,
+) -> DoctorCheck:
+    token = human_automation_token_config(config)
+    secret_name = token["secret"]
+    expires_var = token["expires_var"]
+    detail = {
+        "repo": slug,
+        "secret": secret_name,
+        "expires_var": expires_var,
+        "required": human_automation_token_required(config, lanes),
+    }
+    if not detail["required"]:
+        return DoctorCheck(
+            name="github.human_automation_token",
+            status=STATUS_SKIP,
+            message=f"{slug} does not require a shared human automation token",
+            detail=detail,
+        )
+
+    secret_payload, secret_detail = _github_api_json(
+        gh_path,
+        f"repos/{slug}/actions/secrets/{secret_name}",
+        http_timeout=http_timeout,
+    )
+    if secret_payload is None:
+        return DoctorCheck(
+            name="github.human_automation_token",
+            status=STATUS_FAIL,
+            message=f"{slug} is missing the {secret_name} human automation token secret",
+            detail={**detail, "secret_check": secret_detail},
+            remediation=(
+                f"Create one human-owned fine-grained PAT secret with "
+                f"`gh secret set {secret_name}`. Grant repository Contents read, "
+                "Issues read/write, and Pull requests read/write."
+            ),
+        )
+
+    variable_payload, variable_detail = _github_api_json(
+        gh_path,
+        f"repos/{slug}/actions/variables/{expires_var}",
+        http_timeout=http_timeout,
+    )
+    if variable_payload is None:
+        return DoctorCheck(
+            name="github.human_automation_token",
+            status=STATUS_FAIL,
+            message=f"{slug} is missing the {expires_var} human token expiry variable",
+            detail={
+                **detail,
+                "created_at": str(secret_payload.get("created_at") or ""),
+                "updated_at": str(secret_payload.get("updated_at") or ""),
+                "expiry_check": variable_detail,
+            },
+            remediation=(
+                f"Record the PAT expiry date with "
+                f"`gh variable set {expires_var} --body YYYY-MM-DD`, then "
+                "rerun `code-mower doctor --github`."
+            ),
+        )
+
+    expiry_text = str(variable_payload.get("value") or "").strip()
+    expiry = _parse_expiry(expiry_text)
+    if expiry is None:
+        return DoctorCheck(
+            name="github.human_automation_token",
+            status=STATUS_FAIL,
+            message=f"{slug} has an invalid {expires_var} value",
+            detail={**detail, "expires_at": expiry_text},
+            remediation=(
+                f"Set {expires_var} to the PAT expiry date in YYYY-MM-DD format."
+            ),
+        )
+
+    today = (now or datetime.now(UTC)).date()
+    days_remaining = (expiry - today).days
+    status = STATUS_PASS
+    if days_remaining < 0:
+        status = STATUS_FAIL
+    elif days_remaining <= EXPIRY_WARNING_DAYS:
+        status = STATUS_WARN
+
+    return DoctorCheck(
+        name="github.human_automation_token",
+        status=status,
+        message=(
+            f"{slug} {secret_name} is expired ({-days_remaining} day(s) ago)"
+            if days_remaining < 0
+            else f"{slug} {secret_name} expires in {days_remaining} day(s)"
+        ),
+        detail={
+            **detail,
+            "created_at": str(secret_payload.get("created_at") or ""),
+            "updated_at": str(secret_payload.get("updated_at") or ""),
+            "expires_at": expiry.isoformat(),
+            "days_remaining": days_remaining,
+        },
+        remediation=(
+            f"Rotate {secret_name} and update {expires_var} before relying on "
+            "unattended labels, comments, or fix-round mentions."
+            if status != STATUS_PASS
+            else None
+        ),
+    )
+
+
+__all__ = (
+    "check_human_automation_token",
+    "human_automation_token_config",
+    "human_automation_token_required",
+)
