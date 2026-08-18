@@ -1828,6 +1828,18 @@ def render_init_plan(
         lines.extend(["", "Additional repository targets from --add-repo:"])
         lines.extend(f"- {slug}" for slug in add_repositories)
 
+    if merge_authority_lanes:
+        lines.extend(
+            [
+                "",
+                "Branch protection:",
+                "- require `code-mower/gate` from Any source "
+                "(API checks[].app_id: null), not GitHub Actions "
+                "(app_id: 15368)",
+                "- inspect: gh api repos/OWNER/REPO/branches/main/protection/required_status_checks",
+            ]
+        )
+
     lines.extend(["", "Required secrets/PAT fallbacks:"])
     if data["required_secrets"]:
         lines.extend(f"- {secret}" for secret in data["required_secrets"])

@@ -497,9 +497,9 @@ it reads PR labels, audit comments, and authenticated PR metadata; validates
 the requested SHA against the PR's current head; treats `needs-owner` as
 pending; treats configured current-head `*-blocked` labels as failure; applies
 `merge_authority_excludes_author` from `code-mower.yml`; publishes the
-`code-mower/gate` commit status; keeps the gate job display name as
-`code-mower/gate` for repositories that already require the GitHub Actions
-check-run; and calls GitHub's
+`code-mower/gate` commit status; keeps the workflow job name distinct from that
+status so GitHub does not bind branch protection to the Actions check-run; and
+calls GitHub's
 `enablePullRequestAutoMerge` when the status is green. A `*-done` or
 `*-blocked` label counts only when the matching terminal audit comment carries
 the same head SHA and comes from the lane's configured bot authors, so stale
@@ -570,12 +570,22 @@ built-in workflow token. Record the same token's expiry date in
 `owner_surface.dispatch_token_expires_var` so `doctor --github` can report the
 rotation countdown.
 
-Branch protection should require `code-mower/gate` alongside normal CI before
-autonomous merge is trusted. Inspect the existing status-check protection first:
+Branch protection should require the `code-mower/gate` commit status from **Any
+source**, alongside normal CI, before autonomous merge is trusted. Do not select
+the GitHub Actions source for `code-mower/gate` in the branch-protection UI:
+that binds protection to the workflow job's check-run instead of the commit
+status.
+
+Inspect the existing status-check protection first:
 
 ```bash
 gh api repos/OWNER/REPO/branches/main/protection/required_status_checks
 ```
+
+For `code-mower/gate`, a correct Any-source binding shows
+`"app_id": null` in the `checks[]` entry. `"app_id": 15368` means the context is
+bound to GitHub Actions and should be changed before relying on unattended
+merge.
 
 Then update the same endpoint with all existing required contexts plus
 `code-mower/gate`:
@@ -588,7 +598,8 @@ gh api -X PATCH repos/OWNER/REPO/branches/main/protection/required_status_checks
 ```
 
 Repeat `-F contexts[]=...` for every existing required context returned by the
-inspection call.
+inspection call, and confirm the follow-up API response shows `app_id: null`
+for `code-mower/gate`.
 
 If the repository does not allow auto-merge yet, enable it explicitly:
 
@@ -635,12 +646,19 @@ If repository policy allows a bypass, the maintainer should:
 - prove the provider failure with a harmless sanity command or provider status;
 - leave a PR comment that names the provider, head SHA, failure class, and other
   clean merge evidence;
+- announce any admin merge or branch-protection bypass before using it, with
+  the head SHA, reason, and evidence that the remaining merge bar is clean;
 - remove the stale `needs-*-audit` label only after the bypass is documented;
 - avoid counting the failed provider run as PASS evidence; and
 - repair provider auth/setup before relying on that lane again.
 
 Do not make this automatic in v1.0. A provider-unavailable bypass is an explicit
 human or delegated-maintainer action.
+
+Generated dispatchers also treat GitHub API rate limits as infrastructure
+pressure: they validate the reset timestamp before calling `date`, wait briefly
+when the reset fits the job timeout, and otherwise exit 0 with a notice so a
+later event can retry.
 
 ## Fork Pull Requests
 

@@ -368,14 +368,14 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertIn("code-mower/gate", check.message)
         self.assertEqual(check.detail["required_status_context"], "code-mower/gate")
 
-    def test_branch_protection_accepts_gate_status_from_checks_array(self) -> None:
+    def test_branch_protection_accepts_any_source_gate_status_binding(self) -> None:
         with mock.patch(
             "code_mower.doctor_checks.github_branch._github_api_json",
             return_value=(
                 {
                     "required_status_checks": {
                         "contexts": ["ci"],
-                        "checks": [{"context": "code-mower/gate"}],
+                        "checks": [{"context": "code-mower/gate", "app_id": None}],
                     }
                 },
                 {},
@@ -391,6 +391,39 @@ class GitHubDoctorCheckTests(unittest.TestCase):
 
         self.assertEqual(check.status, "pass")
         self.assertIn("code-mower/gate", check.detail["required_status_contexts"])
+        self.assertEqual(
+            check.detail["required_status_check_bindings"],
+            [{"context": "code-mower/gate", "app_id": None}],
+        )
+
+    def test_branch_protection_warns_when_gate_status_bound_to_actions(self) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.github_branch._github_api_json",
+            return_value=(
+                {
+                    "required_status_checks": {
+                        "contexts": ["code-mower/gate"],
+                        "checks": [{"context": "code-mower/gate", "app_id": 15368}],
+                    }
+                },
+                {},
+            ),
+        ):
+            check = check_branch_protection(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                default_branch="main",
+                http_timeout=1,
+                required_status_context="code-mower/gate",
+            )
+
+        self.assertEqual(check.status, "warn")
+        self.assertIn("GitHub Actions instead of Any source", check.message)
+        self.assertIn("app_id: null", check.remediation)
+        self.assertEqual(
+            check.detail["required_status_check_bindings"],
+            [{"context": "code-mower/gate", "app_id": 15368}],
+        )
 
     def test_repo_auto_merge_warns_when_disabled(self) -> None:
         check = check_repo_auto_merge(
