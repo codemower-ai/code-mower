@@ -57,6 +57,7 @@ schedule:
 owner_surface:
   owner_login: YOUR_GITHUB_LOGIN
   needs_owner_label: needs-owner
+  owner_decision_label: owner-decision
   owner_sitting_label: owner-sitting
   gate_override_label: "gate:override"
   status_issue: "123"
@@ -83,6 +84,14 @@ not read source, diffs, transcripts, or issue bodies.
 Use `owner_surface.owner_sitting_label` for physical or account-bound sittings
 that no builder lane can complete. Generated owner surfaces include those items
 in the owner queue and keep them out of dispatchable ready/WIP lists.
+Use `owner_surface.owner_decision_label` for decision asks that survived
+orchestration triage. A raw `needs-owner` label triggers the generated owner
+notification, but the weekly owner queue includes it only after the item also
+has the decision label. Before adding that decision label, the ask should name
+the options, the recommendation, and the existing ADR, operating-model section,
+issue comment, or policy it touches. If accepted project context already
+answers the ask, the orchestration lane may comment with the resolution, remove
+`needs-owner`, and continue without paging the owner.
 Gate health also treats open PRs with a `builder:<lane>` label plus an
 unresolved `*-audit-blocked` label as stalled with work when that lane has not
 authored a PR commit or comment within `gate_health_liveness_minutes`; the
