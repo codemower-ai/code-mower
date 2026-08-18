@@ -65,6 +65,10 @@ LOCAL_AUDIT_WRAPPERS = {
 }
 GATE_HEALTH_WORKFLOW_PATH = ".github/workflows/code-mower-gate-health.yml"
 GATE_HEALTH_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-gate-health.yml.j2"
+AGENT_PR_LABELER_WORKFLOW_PATH = ".github/workflows/code-mower-agent-pr-labeler.yml"
+AGENT_PR_LABELER_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-agent-pr-labeler.yml.j2"
+FIX_ROUND_DISPATCH_WORKFLOW_PATH = ".github/workflows/code-mower-fix-round-dispatch.yml"
+FIX_ROUND_DISPATCH_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-fix-round-dispatch.yml.j2"
 
 DEFAULT_APPLY_OUTPUT_DIR = ".code-mower.generated"
 APPLY_MANIFEST_FILENAME = "code-mower-init-plan.json"
@@ -168,6 +172,7 @@ OWNER_SURFACE_DEFAULTS = {
     "phase_labels": "phase:0,phase:1,phase:2,phase:3,phase:4,phase:5",
     "reviewer_spend_path": ".code-mower/reviewer-spend.json",
     "reviewer_value_report_path": ".code-mower/reviewer-value-report.md",
+    "dispatch_token_env": "DISPATCH_TOKEN",
 }
 
 OWNER_SURFACE_WORKFLOW_FILES = (
@@ -633,6 +638,47 @@ def _gate_health_workflow_entry(
     }
 
 
+def _agent_pr_labeler_workflow_entry(
+    rules: Sequence[Mapping[str, Any]],
+    audit_lanes: Sequence[Mapping[str, str]],
+    owner_surface: Mapping[str, str],
+) -> dict[str, str]:
+    return {
+        "path": AGENT_PR_LABELER_WORKFLOW_PATH,
+        "source": "agent-pr-labeler-workflow-template",
+        "copy_from": AGENT_PR_LABELER_WORKFLOW_TEMPLATE,
+        "package_copy_from": AGENT_PR_LABELER_WORKFLOW_TEMPLATE,
+        "agent_pr_rules_json": json.dumps(list(rules), separators=(",", ":"), sort_keys=True),
+        "agent_pr_audit_lanes_json": json.dumps(
+            list(audit_lanes),
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "dispatch_token_env": owner_surface["dispatch_token_env"],
+    }
+
+
+def _fix_round_dispatch_workflow_entry(
+    rules: Sequence[Mapping[str, str]],
+    audit_lanes: Sequence[Mapping[str, str]],
+    owner_surface: Mapping[str, str],
+) -> dict[str, str]:
+    return {
+        "path": FIX_ROUND_DISPATCH_WORKFLOW_PATH,
+        "source": "fix-round-dispatch-workflow-template",
+        "copy_from": FIX_ROUND_DISPATCH_WORKFLOW_TEMPLATE,
+        "package_copy_from": FIX_ROUND_DISPATCH_WORKFLOW_TEMPLATE,
+        "fix_round_rules_json": json.dumps(list(rules), separators=(",", ":"), sort_keys=True),
+        "fix_round_audit_lanes_json": json.dumps(
+            list(audit_lanes),
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "dispatch_token_env": owner_surface["dispatch_token_env"],
+        "needs_owner_label": owner_surface["needs_owner_label"],
+    }
+
+
 def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
     labels = _labels_for(lane)
     trailer_lane = _trailer_lane_name(lane_id, lane)
@@ -689,6 +735,74 @@ def _author_exclusion_json(
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def _audit_rearm_entries(
+    selected_lanes: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, str], ...]:
+    entries: list[dict[str, str]] = []
+    for lane_id, lane in selected_lanes.items():
+        if lane.get("type") != "audit" or not lane.get("merge_authority"):
+            continue
+        labels = _labels_for(lane)
+        entries.append(
+            {
+                "id": lane_id,
+                "needs": str(labels["needs"]),
+                "done": str(labels["done"]),
+                "blocked": str(labels["blocked"]),
+            }
+        )
+    return tuple(entries)
+
+
+def _builder_labels_by_lane(author_exclusion: Mapping[str, Any]) -> dict[str, str]:
+    labels = _identity_section(author_exclusion, "labels")
+    out: dict[str, str] = {}
+    for label, lane in sorted(labels.items()):
+        if label.startswith("builder:"):
+            out.setdefault(lane, label)
+    return out
+
+
+def _agent_pr_label_rules(
+    config: Mapping[str, Any],
+    author_exclusion: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    identity = config.get("builder_identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    prefixes = _identity_section(identity, "branch_prefixes")
+    labels_by_lane = _builder_labels_by_lane(author_exclusion)
+    rules_by_lane: dict[str, dict[str, Any]] = {}
+    for prefix, lane in sorted(prefixes.items()):
+        label = labels_by_lane.get(lane) or f"builder:{lane}"
+        rule = rules_by_lane.setdefault(
+            lane,
+            {"builder_lane": lane, "builder_label": label, "branch_prefixes": []},
+        )
+        rule["branch_prefixes"].append(prefix)
+    return tuple(rules_by_lane[lane] for lane in sorted(rules_by_lane))
+
+
+def _fix_round_rules(
+    config: Mapping[str, Any],
+    author_exclusion: Mapping[str, Any],
+) -> tuple[dict[str, str], ...]:
+    identity = config.get("builder_identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    mentions = _identity_section(identity, "fix_round_mentions")
+    labels_by_lane = _builder_labels_by_lane(author_exclusion)
+    rules: list[dict[str, str]] = []
+    for lane, mention in sorted(mentions.items()):
+        label = labels_by_lane.get(lane) or f"builder:{lane}"
+        rules.append(
+            {
+                "builder_lane": lane,
+                "builder_label": label,
+                "mention": mention,
+            }
+        )
+    return tuple(rules)
 
 
 def _gate_workflow_entry(
@@ -1061,6 +1175,15 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
         "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
+        "__AGENT_PR_RULES_JSON__": str(entry.get("agent_pr_rules_json") or "[]"),
+        "__AGENT_PR_AUDIT_LANES_JSON__": str(
+            entry.get("agent_pr_audit_lanes_json") or "[]"
+        ),
+        "__DISPATCH_TOKEN_ENV__": str(entry.get("dispatch_token_env") or "DISPATCH_TOKEN"),
+        "__FIX_ROUND_RULES_JSON__": str(entry.get("fix_round_rules_json") or "[]"),
+        "__FIX_ROUND_AUDIT_LANES_JSON__": str(
+            entry.get("fix_round_audit_lanes_json") or "[]"
+        ),
         "__GATE_HEALTH_CRON__": str(entry.get("gate_health_cron") or ""),
         "__GATE_HEALTH_LANES_JSON__": str(entry.get("gate_health_lanes_json") or "[]"),
         "__GATE_HEALTH_AUTHOR_ENV_ASSIGNMENTS__": str(
@@ -1118,9 +1241,11 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
 
 def _workflow_template_needs_render(source: str) -> bool:
     return source in {
+        "agent-pr-labeler-workflow-template",
         "shared-cleanup-template",
         "code-mower-gate-health-workflow-template",
         "code-mower-gate-workflow-template",
+        "fix-round-dispatch-workflow-template",
         "hosted-bridge-workflow-template",
         "owner-notify-workflow-template",
         "self-hosted-local-audit-workflow-template",
@@ -1320,6 +1445,10 @@ def render_init_plan(
     informational_lanes: list[str] = []
     owner_surface = _owner_surface_config(config)
     author_exclusion_json = _author_exclusion_json(config, selected_lanes)
+    author_exclusion = json.loads(author_exclusion_json)
+    audit_rearm_entries = _audit_rearm_entries(selected_lanes)
+    agent_pr_rules = _agent_pr_label_rules(config, author_exclusion)
+    fix_round_rules = _fix_round_rules(config, author_exclusion)
 
     for lane_id, lane in selected_lanes.items():
         lane_labels = _labels_for(lane)
@@ -1373,6 +1502,12 @@ def render_init_plan(
         owner_surface["owner_sitting_label"],
         owner_surface["gate_override_label"],
     ):
+        if label:
+            labels.append(label)
+    for label in _builder_labels_by_lane(author_exclusion).values():
+        labels.append(label)
+    for rule in [*agent_pr_rules, *fix_round_rules]:
+        label = str(rule.get("builder_label") or "")
         if label:
             labels.append(label)
 
@@ -1435,6 +1570,52 @@ def render_init_plan(
                 owner_surface,
                 author_exclusion_json=author_exclusion_json,
                 include_local_audit_runner=bool(local_audit_entries),
+            )
+        )
+
+    if (
+        agent_pr_rules
+        and audit_rearm_entries
+        and AGENT_PR_LABELER_WORKFLOW_PATH not in generated_paths
+    ):
+        required_secrets.add(owner_surface["dispatch_token_env"])
+        workflow_targets.add(AGENT_PR_LABELER_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "code-mower-agent-pr-labeler",
+                "driver": "agent_pr_labeler",
+                "target": AGENT_PR_LABELER_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(AGENT_PR_LABELER_WORKFLOW_PATH)
+        generated_files.append(
+            _agent_pr_labeler_workflow_entry(
+                agent_pr_rules,
+                audit_rearm_entries,
+                owner_surface,
+            )
+        )
+
+    if (
+        fix_round_rules
+        and audit_rearm_entries
+        and FIX_ROUND_DISPATCH_WORKFLOW_PATH not in generated_paths
+    ):
+        required_secrets.add(owner_surface["dispatch_token_env"])
+        workflow_targets.add(FIX_ROUND_DISPATCH_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "code-mower-fix-round-dispatch",
+                "driver": "fix_round_dispatch",
+                "target": FIX_ROUND_DISPATCH_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(FIX_ROUND_DISPATCH_WORKFLOW_PATH)
+        generated_files.append(
+            _fix_round_dispatch_workflow_entry(
+                fix_round_rules,
+                audit_rearm_entries,
+                owner_surface,
             )
         )
 

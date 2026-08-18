@@ -880,6 +880,8 @@ exit 1
     def test_reviewer_workflow_templates_are_real_and_packaged(self) -> None:
         workflow_templates = (
             "audit-label-cleanup.yml.j2",
+            "code-mower-agent-pr-labeler.yml.j2",
+            "code-mower-fix-round-dispatch.yml.j2",
             "code-mower-gate-health.yml.j2",
             "code-mower-gate.yml.j2",
             "hosted-bridge.yml.j2",
@@ -2090,6 +2092,8 @@ jobs:
             package_command="code-mower",
         )
         self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", plan.data["required_secrets"])
+        self.assertIn("DISPATCH_TOKEN", plan.data["required_secrets"])
+        self.assertIn("builder:grok-bot", plan.data["labels"])
 
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / ".code-mower.generated"
@@ -2103,6 +2107,8 @@ jobs:
                 ".github/workflows/audit-label-cleanup.yml",
                 ".github/workflows/claude-audit-labeler.yml",
                 ".github/workflows/claude-clear-stale.yml",
+                ".github/workflows/code-mower-agent-pr-labeler.yml",
+                ".github/workflows/code-mower-fix-round-dispatch.yml",
                 ".github/workflows/code-mower-gate-health.yml",
                 ".github/workflows/code-mower-gate.yml",
                 ".github/workflows/codex-audit-labeler.yml",
@@ -2163,6 +2169,30 @@ jobs:
             self.assertIn("Reset pull request checkout path", local_cli_audit)
             self.assertIn("rm -rf \"${PR_HEAD_PATH}\"", local_cli_audit)
             self.assertIn("concurrency:\n      group:", local_cli_audit)
+
+            agent_labeler = output_dir.joinpath(
+                ".github/workflows/code-mower-agent-pr-labeler.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("CODE_MOWER_AGENT_PR_RULES_JSON", agent_labeler)
+            self.assertIn('"branch_prefixes":["cursor/"]', agent_labeler)
+            self.assertIn('"builder_label":"builder:grok-bot"', agent_labeler)
+            self.assertIn("secrets.DISPATCH_TOKEN", agent_labeler)
+            self.assertIn("--remove-label", agent_labeler)
+            self.assertIn("needs-codex-audit", agent_labeler)
+            self.assertIn("needs-claude-audit", agent_labeler)
+            self.assertNotIn("__AGENT_PR", agent_labeler)
+
+            fix_round = output_dir.joinpath(
+                ".github/workflows/code-mower-fix-round-dispatch.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("CODE_MOWER_FIX_ROUND_RULES_JSON", fix_round)
+            self.assertIn('"mention":"@cursor"', fix_round)
+            self.assertIn("CODE_MOWER_FIX_ROUND:", fix_round)
+            self.assertIn("secrets.DISPATCH_TOKEN", fix_round)
+            self.assertIn('NEEDS_OWNER_LABEL: "needs-owner"', fix_round)
+            self.assertIn("codex-audit-blocked", fix_round)
+            self.assertIn("claude-audit-blocked", fix_round)
+            self.assertNotIn("__FIX_ROUND", fix_round)
             self.assertIn("cancel-in-progress: true", local_cli_audit)
             self.assertIn("name: audit (${{ matrix.lane.lane }})", local_cli_audit)
             self.assertIn("strategy:\n      fail-fast: false", local_cli_audit)
@@ -3383,6 +3413,14 @@ printf '%s\\n' "${lane}"
         )
         self.assertIn(
             "src/code_mower/templates/workflows/code-mower-gate-health.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/code-mower-agent-pr-labeler.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/code-mower-fix-round-dispatch.yml.j2",
             packaged_template_targets,
         )
 

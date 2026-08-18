@@ -65,6 +65,7 @@ owner_surface:
   gate_health_max_wait_minutes: "30"
   gate_health_liveness_minutes: "45"
   local_audit_runner_label: code-mower-audit
+  dispatch_token_env: DISPATCH_TOKEN
   ready_label: "tier:R"
 ```
 
@@ -516,6 +517,10 @@ builder_identity:
   authors:
     chatgpt-codex-connector[bot]: codex
     claude[bot]: claude
+  branch_prefixes:
+    cursor/: grok-bot
+  fix_round_mentions:
+    grok-bot: "@cursor"
 ```
 
 PR-body trailer mappings remain configuration-valid for non-gating provenance
@@ -524,6 +529,14 @@ authenticated PR authors until trailer sources can be trusted.
 Generated gates register default `builder:<lane>` labels for audit lanes,
 including informational lanes, so conflicting builder provenance is visible
 before a merge-authority lane is excluded.
+When `builder_identity.branch_prefixes` is configured, generated agent PR
+labeling adds the matching `builder:<lane>` label, drops stale audit terminal
+labels, and re-adds merge-authority `needs-*-audit` labels on PR open/reopen and
+synchronize. When `builder_identity.fix_round_mentions` is configured,
+generated fix-round dispatch comments once per blocked head and audit lane.
+Both generated workflows use `owner_surface.dispatch_token_env`, which must name
+a human-owned secret so label events and agent mentions are not authored by the
+built-in workflow token.
 
 Branch protection should require `code-mower/gate` alongside normal CI before
 autonomous merge is trusted. Inspect the existing status-check protection first:
