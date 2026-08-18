@@ -4,6 +4,7 @@ import plistlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from code_mower.doctor_checks.runtime import check_macos_runner_launchagent
 
@@ -42,6 +43,17 @@ class DoctorRuntimeTests(unittest.TestCase):
         check = check_macos_runner_launchagent(platform="linux")
 
         self.assertEqual(check.status, "skip")
+
+    def test_macos_runner_launchagent_warns_when_home_cannot_resolve(self) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.runtime.Path.home",
+            side_effect=RuntimeError("home unavailable"),
+        ):
+            check = check_macos_runner_launchagent(platform="darwin")
+
+        self.assertEqual(check.status, "warn")
+        self.assertIn("could not resolve home directory", check.message)
+        self.assertEqual(check.detail["error"], "home unavailable")
 
 
 if __name__ == "__main__":

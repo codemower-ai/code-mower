@@ -325,6 +325,8 @@ STALE_TRAILER = "<!-- CODEX_AUDIT_STATE: needs-codex-audit -->"
 DONE_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
 BLOCKED_TRAILER = "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
 AUDIT_RUN_TRAILER_PREFIX = "<!-- CODE_MOWER_AUDIT_RUN:"
+STALE_REQUEUE_MARKER = "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=stale -->"
+UNKNOWN_REQUEUE_MARKER = "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=unknown -->"
 
 
 def _post_audit_comment(
@@ -1264,6 +1266,8 @@ def format_comment(
             + f"\nHead SHA changed during review (`{head_sha[:8]}` → "
             + f"`{(stale_end_sha or '?')[:8]}`). Skipping this verdict and "
             + "requeuing for re-review of the new head.\n\n"
+            + STALE_REQUEUE_MARKER
+            + "\n"
             + STALE_TRAILER
             + "\n"
         )
@@ -1276,6 +1280,8 @@ def format_comment(
             + "the structured-output pass may have failed, or the verdict "
             + "format may have drifted. "
             + "Requeuing for re-review.\n\n"
+            + UNKNOWN_REQUEUE_MARKER
+            + "\n"
             + STALE_TRAILER
             + "\n"
         )

@@ -104,7 +104,21 @@ def check_macos_runner_launchagent(
             message="macOS runner LaunchAgent check skipped on this platform",
         )
 
-    launch_agents = (home or Path.home()) / "Library" / "LaunchAgents"
+    try:
+        home_dir = home or Path.home()
+    except RuntimeError as exc:
+        return DoctorCheck(
+            name="runtime.macos_runner_launchagent",
+            status=STATUS_WARN,
+            message="could not resolve home directory for macOS runner LaunchAgent check",
+            detail={"error": str(exc)},
+            remediation=(
+                "Set HOME for the runner account or pass an explicit home path, "
+                "then rerun doctor to inspect actions.runner.*.plist."
+            ),
+        )
+
+    launch_agents = home_dir / "Library" / "LaunchAgents"
     plists = sorted(launch_agents.glob("actions.runner.*.plist"))
     if not plists:
         return DoctorCheck(
