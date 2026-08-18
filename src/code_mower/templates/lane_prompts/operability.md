@@ -14,6 +14,7 @@ Review focus:
 - Flag missing or misleading status, health, diagnostics, telemetry, or audit trails for new failure modes.
 - Flag retries, timeouts, idempotency, rollback, cleanup, or partial-failure handling that can wedge a workflow.
 - Flag deploy/runtime assumptions that differ between local repos, temp worktrees, extracted packages, CI, Vercel, Railway, Xcode Cloud, or mobile clients.
+- Flag sandbox/live environment ambiguity in provider-integration scaffolds, especially commerce catalogs where test writes can surface in live parent-account namespaces; setup should read existing resources before create and use stable lookup or idempotency keys.
 - Flag logs or artifacts that are too noisy to debug, too sparse to diagnose, or unsafe to share.
 - Flag operational paths that succeed locally but fail when credentials, paths, Python versions, CLIs, network, or third-party services differ.
 

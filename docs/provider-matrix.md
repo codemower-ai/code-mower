@@ -24,6 +24,17 @@ Everything else is opt-in until calibrated on the user's codebase.
 | Hosted async builder | Devin, Jules, Cursor Cloud Agents, Grok Bot-orchestrated runs | Yes, if app/API is authorized | Provider may clone or modify repo | Opt-in, paid, explicit trust boundary; record as `builder_run` metadata first |
 | Protocol bridge | ACP-backed CLIs | Depends on underlying agent | Depends on underlying agent | Research only until runtime stabilizes |
 
+## Provider Integration Guardrails
+
+When Code Mower prompts or templates review provider-integration scaffolds, treat
+sandbox/live boundaries as operational and billing risk. Commerce catalogs,
+prices, entitlements, webhooks, and account objects should be read-before-create:
+look up existing resources by stable external ids or lookup keys, use
+idempotency keys where the provider supports them, and make the target
+environment explicit before any write. Some providers expose sandbox/test
+objects in a live parent-account namespace, so a "test" write is not proof that
+the live catalog is untouched.
+
 ## Lane Details
 
 | Lane id | Provider | Trigger | Cost policy | Private repo requirement | v1.0 merge role |

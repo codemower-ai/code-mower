@@ -12,6 +12,7 @@ Stance:
 Review focus:
 
 - Flag missing server-side authorization, quota, entitlement, ownership, or replay checks.
+- Flag commerce or provider scaffolds that write catalog, price, entitlement, webhook, or account objects before reading by stable external id or lookup key; sandbox/test credentials can share object-id namespaces with live parent accounts, so setup must be idempotent and environment-explicit.
 - Flag token, secret, account-state, debug payload, or customer-data exposure in logs, artifacts, comments, client state, or shareable reports.
 - Flag client-side-only controls for protected actions.
 - Flag unsafe defaults, broad permissions, ambiguous identity binding, or failure paths that grant access.
