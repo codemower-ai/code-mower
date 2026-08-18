@@ -13,6 +13,15 @@ class PromptDoctrineTests(unittest.TestCase):
         self.assertIn("already exists in the base tree", normalized_prompt)
         self.assertIn("surrounding checkout context", normalized_prompt)
 
+    def test_commerce_scaffold_lenses_guard_shared_sandbox_namespaces(self) -> None:
+        prompt = prompts.load_review_prompt(("security-threat-model", "operability"))
+        normalized_prompt = " ".join(prompt.split())
+
+        self.assertIn("sandbox/test credentials can share object-id namespaces", normalized_prompt)
+        self.assertIn("live parent-account namespaces", normalized_prompt)
+        self.assertIn("read existing resources before create", normalized_prompt)
+        self.assertIn("idempotency keys", normalized_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
