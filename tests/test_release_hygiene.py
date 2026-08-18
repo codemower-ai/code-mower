@@ -460,8 +460,16 @@ class ReleaseHygieneTests(unittest.TestCase):
             calibration_pkg.RUN_STATUS_INFRA_ERROR,
         )
         self.assertEqual(
+            calibration_pkg.status_from_verdict("stale", returncode=2),
+            calibration_pkg.RUN_STATUS_STALE,
+        )
+        self.assertEqual(
             code_mower_calibration.RUN_STATUS_UNKNOWN,
             calibration_pkg.RUN_STATUS_UNKNOWN,
+        )
+        self.assertEqual(
+            code_mower_calibration.RUN_STATUS_STALE,
+            calibration_pkg.RUN_STATUS_STALE,
         )
         self.assertIs(
             code_mower_calibration.RUN_STATUS_CATEGORY_ALIASES,

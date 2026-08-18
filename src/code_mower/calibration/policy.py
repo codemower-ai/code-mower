@@ -32,6 +32,7 @@ def build_lane_policy_report(metrics: Mapping[str, Any]) -> dict[str, Any]:
         false_positive_runs = int(stats.get("blocking_false_positive_runs") or 0)
         known_blocked_missed_runs = int(stats.get("known_blocked_missed_runs") or 0)
         infra_error_runs = int(stats.get("infra_error_runs") or 0)
+        stale_runs = int(stats.get("stale_runs") or 0)
         audit_input_insufficient_runs = int(
             stats.get("audit_input_insufficient_runs") or 0
         )
@@ -158,6 +159,7 @@ def build_lane_policy_report(metrics: Mapping[str, Any]) -> dict[str, Any]:
             ),
             "known_blocked_missed_runs": known_blocked_missed_runs,
             "infra_error_runs": infra_error_runs,
+            "stale_runs": stale_runs,
             "audit_input_insufficient_runs": audit_input_insufficient_runs,
             "observed_pr_count": observed_pr_count,
             "reasons": reasons

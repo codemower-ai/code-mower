@@ -12,6 +12,7 @@ from .run_status import (
     RUN_STATUS_BLOCKED,
     RUN_STATUS_INFRA_ERROR,
     RUN_STATUS_PASS,
+    RUN_STATUS_STALE,
     normalize_run_status_category,
 )
 
@@ -39,6 +40,7 @@ class CellStats:
     known_blocked_missed_runs: int = 0
     audit_input_insufficient_runs: int = 0
     infra_error_runs: int = 0
+    stale_runs: int = 0
     unknown_blocked_runs: int = 0
     known_clean_runs: int = 0
     known_clean_pass_runs: int = 0
@@ -94,6 +96,7 @@ class CellStats:
             "clean_nonblocking_finding_runs": self.clean_nonblocking_finding_runs,
             "audit_input_insufficient_runs": self.audit_input_insufficient_runs,
             "infra_error_runs": self.infra_error_runs,
+            "stale_runs": self.stale_runs,
             "unknown_blocked_runs": self.unknown_blocked_runs,
             "duration_seconds_total": round(self.duration_seconds_total, 3),
             "seconds_per_run": _round_or_none(self.seconds_per_run),
@@ -209,8 +212,12 @@ def build_effect_report(
                 cell.audit_input_insufficient_runs += 1
             elif status_category == RUN_STATUS_INFRA_ERROR:
                 cell.infra_error_runs += 1
+            elif status_category == RUN_STATUS_STALE:
+                cell.stale_runs += 1
             else:
                 cell.unknown_blocked_runs += 1
+        elif status_category == RUN_STATUS_STALE:
+            cell.stale_runs += 1
         if known_clean:
             cell.known_clean_runs += 1
             if status_category == RUN_STATUS_PASS and finding_count == 0:
@@ -489,8 +496,8 @@ def render_effect_report_text(report: Mapping[str, Any]) -> str:
         "",
         "## Provider/Lens Cells",
         "",
-        "| Provider | Lens | Runs | Blocked caught/missed | Input gaps | Clean pass/false block | Effective catch | Evaluable catch | False-blocker rate | Sec/run |",
-        "| --- | --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: |",
+        "| Provider | Lens | Runs | Blocked caught/missed | Input gaps | Stale | Clean pass/false block | Effective catch | Evaluable catch | False-blocker rate | Sec/run |",
+        "| --- | --- | ---: | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |",
     ]
     for cell in report.get("cells", []) or []:
         if not isinstance(cell, Mapping):
@@ -504,6 +511,7 @@ def render_effect_report_text(report: Mapping[str, Any]) -> str:
                     str(cell.get("runs", 0)),
                     f"{cell.get('known_blocked_caught_runs', 0)}/{cell.get('known_blocked_missed_runs', 0)}",
                     str(cell.get("audit_input_insufficient_runs", 0)),
+                    str(cell.get("stale_runs", 0)),
                     f"{cell.get('known_clean_pass_runs', 0)}/{cell.get('blocking_false_positive_runs', 0)}",
                     _format_rate(cell.get("effective_catch_rate")),
                     _format_rate(cell.get("catch_rate")),

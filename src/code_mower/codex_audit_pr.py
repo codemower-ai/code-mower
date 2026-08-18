@@ -236,6 +236,9 @@ class AuditConfig:
     # reference provider catalog's Codex audit posture; pass --informational
     # when replaying or calibrating a lane that is not a repository gate.
     merge_authority: bool = True
+    # Optional human-facing calibration status. This must never decide merge
+    # authority; it only renders as a separate badge line in the comment.
+    calibration_badge: str = ""
 
 
 @dataclass
@@ -1253,11 +1256,14 @@ def format_comment(
     is_unknown: bool = False,
     merge_authority: bool = True,
     actions_run_id: Optional[str] = None,
+    calibration_badge: str = "",
 ) -> str:
     """Build the GitHub comment body with header, prose, and trailer."""
     posture = "merge-authority lane" if merge_authority else "informational only"
     header = f"## Codex audit ({posture})\n\n"
     header += f"Head SHA: `{head_sha}`\n"
+    if badge := _normalize_calibration_badge(calibration_badge):
+        header += f"Calibration: {badge}\n"
     if actions_run_id:
         header += f"{AUDIT_RUN_TRAILER_PREFIX} run_id={actions_run_id} -->\n"
     if is_stale:
@@ -1313,6 +1319,10 @@ def format_comment(
         trailer,
         provider_name="Codex",
     )
+
+
+def _normalize_calibration_badge(value: str | None) -> str:
+    return " ".join(str(value or "").strip().split())[:120]
 
 
 # ----- Orchestration -----
@@ -1429,6 +1439,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 stale_end_sha=head_sha_after,
                 merge_authority=config.merge_authority,
                 actions_run_id=actions_run_id,
+                calibration_badge=config.calibration_badge,
             )
             result = AuditResult(
                 repo=repo, pr_number=pr_number,
@@ -1584,6 +1595,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             stale_end_sha=head_sha_end,
             merge_authority=config.merge_authority,
             actions_run_id=actions_run_id,
+            calibration_badge=config.calibration_badge,
         )
         result_verdict = "STALE"
         trailer = STALE_TRAILER
@@ -1619,6 +1631,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             is_unknown=True,
             merge_authority=config.merge_authority,
             actions_run_id=actions_run_id,
+            calibration_badge=config.calibration_badge,
         )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
@@ -1628,6 +1641,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             head_sha_start,
             merge_authority=config.merge_authority,
             actions_run_id=actions_run_id,
+            calibration_badge=config.calibration_badge,
         )
         result_verdict = parsed.verdict
         trailer = BLOCKED_TRAILER if parsed.verdict == "BLOCKED" else DONE_TRAILER
@@ -1868,7 +1882,15 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--informational",
         dest="merge_authority",
         action="store_false",
-        help="Render audit comments as informational-only calibration comments.",
+        help="Render audit comments as informational-only lane comments.",
+    )
+    ap.add_argument(
+        "--calibration-badge",
+        default=os.environ.get("CODEX_AUDIT_CALIBRATION_BADGE", ""),
+        help=(
+            "Render a separate calibration status badge line without changing "
+            "the lane's merge-authority posture."
+        ),
     )
     return ap.parse_args(argv)
 
@@ -2011,6 +2033,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_plan_context_bytes=args.max_plan_context_bytes,
         max_plan_context_file_bytes=args.max_plan_context_file_bytes,
         merge_authority=args.merge_authority,
+        calibration_badge=args.calibration_badge,
     )
 
     audit_started = time.monotonic()
@@ -2066,7 +2089,7 @@ def _audit_exit_code(verdict: str) -> int:
     # fail loudly. STALE means a newer head superseded this run after the wrapper
     # posted a requeue note, so returning success avoids alarm-grade noise while
     # the newer head's audit becomes authoritative.
-    return 2 if verdict == "UNKNOWN" else 0
+    return 2 if str(verdict or "").upper() == "UNKNOWN" else 0
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from .run_status import (
     RUN_STATUS_BLOCKED,
     RUN_STATUS_INFRA_ERROR,
     RUN_STATUS_PASS,
+    RUN_STATUS_STALE,
     RUN_STATUS_UNKNOWN,
     normalize_run_status_category,
 )
@@ -77,6 +78,7 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
     profile_known_blocked_missed_run_keys: dict[str, set[tuple[Any, ...]]] = {}
     profile_audit_input_insufficient_run_keys: dict[str, set[tuple[Any, ...]]] = {}
     profile_infra_error_run_keys: dict[str, set[tuple[Any, ...]]] = {}
+    profile_stale_run_keys: dict[str, set[tuple[Any, ...]]] = {}
     profile_run_statuses: dict[str, dict[str, int]] = {}
     profile_automated_vs_manual: dict[str, dict[str, int]] = {}
     profile_review_classes: dict[str, set[str]] = {}
@@ -303,6 +305,8 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
                 profile_infra_error_run_keys.setdefault(reviewer, set()).add(
                     reviewer_run_key
                 )
+            if status_category == RUN_STATUS_STALE:
+                profile_stale_run_keys.setdefault(reviewer, set()).add(reviewer_run_key)
             if status_category == RUN_STATUS_AUDIT_INPUT_INSUFFICIENT:
                 profile_audit_input_insufficient_run_keys.setdefault(
                     reviewer, set()
@@ -358,6 +362,7 @@ def build_reviewer_evidence_report(corpus: Mapping[str, Any]) -> dict[str, Any]:
                 profile_known_blocked_missed_run_keys.get(reviewer, set())
             ),
             "infra_error_runs": len(profile_infra_error_run_keys.get(reviewer, set())),
+            "stale_runs": len(profile_stale_run_keys.get(reviewer, set())),
             "audit_input_insufficient_runs": len(
                 profile_audit_input_insufficient_run_keys.get(reviewer, set())
             ),

@@ -7,9 +7,9 @@ Finding evidence: 0
 Run dispositions: 0
 Reviewer runs: 1
 
-| Reviewer | Runs | Useful | Negative | Useful rate | Known-clean pass | Known-blocked caught/missed | Infra errors | Input gaps | Auto/manual M/MB/FB | Cost | Sec/run | Cost/useful | Policy | Recommended role |
-| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |
-| `codex-audit` | 1 | 0 | 0 |  | 1 | 0/0 | 0 | 0 | 1/0/0 | 0.0 | 120.0 |  | `informational` | `informational` |
+| Reviewer | Runs | Useful | Negative | Useful rate | Known-clean pass | Known-blocked caught/missed | Infra errors | Stale | Input gaps | Auto/manual M/MB/FB | Cost | Sec/run | Cost/useful | Policy | Recommended role |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |
+| `codex-audit` | 1 | 0 | 0 |  | 1 | 0/0 | 0 | 0 | 0 | 1/0/0 | 0.0 | 120.0 |  | `informational` | `informational` |
 
 ## Recommendations
 - codex-audit: collect human dispositions before comparing reviewer accuracy.
