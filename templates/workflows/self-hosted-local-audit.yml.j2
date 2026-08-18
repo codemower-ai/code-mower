@@ -40,7 +40,6 @@ jobs:
       PR_HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha }}{% endraw %}
       PR_HEAD_PATH: {% raw %}${{ github.workspace }}/pr-head{% endraw %}
       SUPPORT_PATH: {% raw %}${{ github.workspace }}/code-mower-support{% endraw %}
-      CODE_MOWER_REVIEWER_SPEND_PATH: {% raw %}${{ runner.temp }}/code-mower-reviewer-spend.json{% endraw %}
     steps:
       - name: Verify local runner environment
         run: |
@@ -110,6 +109,7 @@ jobs:
         env:
           GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
           GITHUB_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+          CODE_MOWER_REVIEWER_SPEND_PATH: {% raw %}${{ runner.temp }}/code-mower-reviewer-spend.json{% endraw %}
 __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
           CODE_MOWER_LOCAL_AUDIT_LANES_JSON: >-
             __LOCAL_AUDIT_LANES_JSON__
@@ -192,6 +192,7 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
           CODE_MOWER_CLOUD_TOKEN: {% raw %}${{ secrets.CODE_MOWER_CLOUD_TOKEN }}{% endraw %}
           CODE_MOWER_CLOUD_TEAM_ID: {% raw %}${{ vars.CODE_MOWER_CLOUD_TEAM_ID }}{% endraw %}
           CODE_MOWER_INSTALL_ID: {% raw %}${{ vars.CODE_MOWER_INSTALL_ID }}{% endraw %}
+          CODE_MOWER_REVIEWER_SPEND_PATH: {% raw %}${{ runner.temp }}/code-mower-reviewer-spend.json{% endraw %}
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"

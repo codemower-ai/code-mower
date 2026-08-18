@@ -183,6 +183,36 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertIn("could not fully inspect", check.message)
         self.assertEqual(check.detail["incomplete_inspection_count"], 1)
 
+    def test_actions_failure_doctor_warns_when_failed_run_has_no_jobs(self) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.github_actions_failures.inspect_recent_actions_failures",
+            return_value=mock.Mock(
+                unavailable_detail=None,
+                missing_workflow_runs=False,
+                has_billing_blocks=False,
+                incomplete_inspections=(
+                    {
+                        "run_id": 100,
+                        "workflow": ".github/workflows/local-cli-audit.yml",
+                        "stage": "jobs",
+                        "reason": "no_jobs",
+                    },
+                ),
+                inspected_failed_runs=1,
+                inspected_failed_jobs=0,
+            ),
+        ):
+            check = _check_recent_actions_billing_blocks(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                http_timeout=1,
+            )
+
+        self.assertEqual(check.status, "warn")
+        self.assertIn("workflow file may be invalid", check.message)
+        self.assertEqual(check.detail["jobless_run_count"], 1)
+        self.assertIn("actionlint", str(check.remediation))
+
     def test_actions_job_check_run_id_parser(self) -> None:
         self.assertEqual(
             _check_run_id_from_actions_job(

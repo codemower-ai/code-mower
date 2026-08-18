@@ -40,6 +40,14 @@ jobs:
       - name: Guard package workflow templates
         run: python scripts/guard_package_workflows.py
 
+      - name: Install actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Actionlint generated workflows
+        run: python scripts/actionlint_generated_workflows.py --code-mower-bin code-mower
+
       - name: Release readiness
         run: python -m code_mower.migration release-readiness --json
 

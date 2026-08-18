@@ -15,7 +15,14 @@ from .audit_labeler_lib import GitHubToken, github_actions_comment_attested
 
 MARKER = "CODE_MOWER_GATE_HEALTH_ALERT"
 NON_TERMINAL_CHECK_STATUSES = {"queued", "requested", "waiting", "pending", "in_progress"}
-LOCAL_AUDIT_FAILURE_CONCLUSIONS = {"action_required", "cancelled", "failure", "timed_out"}
+LOCAL_AUDIT_FAILURE_CONCLUSIONS = {
+    "action_required",
+    "cancelled",
+    "failure",
+    "startup_failure",
+    "timed_out",
+}
+LOCAL_AUDIT_JOBLESS_FAILURE_CONCLUSIONS = {"failure", "startup_failure"}
 COMMENT_ALERT_LIMIT = 20
 LOCAL_AUDIT_WORKFLOW_PATH_SUFFIXES = (
     "/local-cli-audit.yml",
@@ -27,6 +34,8 @@ LOCAL_AUDIT_WORKFLOW_NAMES = {
 DEFAULT_UNKNOWN_STREAK_THRESHOLD = 3
 DEFAULT_UNKNOWN_STREAK_HISTORY_HOURS = 168
 DEFAULT_UNKNOWN_STREAK_CLOSED_PR_LIMIT = 100
+LOCAL_AUDIT_WORKFLOW_RUN_SAMPLE_LIMIT = 20
+LOCAL_AUDIT_JOBLESS_FAILURE_LIMIT = 5
 REQUEUE_KIND_MARKER_RE = re.compile(
     r"<!--\s*CODE_MOWER_AUDIT_REQUEUE:\s*kind=(?P<kind>unknown|stale|requeue)\s*-->"
 )
@@ -177,6 +186,29 @@ def _check_run_workflow_name(run: dict[str, Any]) -> str:
     )
 
 
+def _workflow_run_id(run: dict[str, Any]) -> str:
+    value = run.get("id") or run.get("databaseId") or run.get("run_id")
+    text = str(value or "")
+    return text if text.isdigit() else ""
+
+
+def _workflow_run_sort_key(run: dict[str, Any]) -> tuple[str, int]:
+    created = str(run.get("created_at") or run.get("createdAt") or "")
+    try:
+        numeric_id = int(_workflow_run_id(run) or "0")
+    except ValueError:
+        numeric_id = 0
+    return created, numeric_id
+
+
+def _workflow_run_name(run: dict[str, Any]) -> str:
+    return str(run.get("name") or run.get("workflowName") or "")
+
+
+def _workflow_run_path(run: dict[str, Any]) -> str:
+    return str(run.get("path") or run.get("workflow_path") or run.get("workflowPath") or "")
+
+
 def is_local_audit_check_run(run: dict[str, Any]) -> bool:
     if str(run.get("name") or "") != "audit":
         return False
@@ -184,6 +216,17 @@ def is_local_audit_check_run(run: dict[str, Any]) -> bool:
     if any(workflow_path.endswith(suffix) for suffix in LOCAL_AUDIT_WORKFLOW_PATH_SUFFIXES):
         return True
     return _check_run_workflow_name(run) in LOCAL_AUDIT_WORKFLOW_NAMES
+
+
+def is_local_audit_workflow_run(run: dict[str, Any]) -> bool:
+    candidates = (_workflow_run_path(run), _workflow_run_name(run))
+    if any(
+        candidate.endswith(suffix)
+        for candidate in candidates
+        for suffix in LOCAL_AUDIT_WORKFLOW_PATH_SUFFIXES
+    ):
+        return True
+    return _workflow_run_name(run) in LOCAL_AUDIT_WORKFLOW_NAMES
 
 
 def latest_local_audit_failure(check_runs: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
@@ -195,6 +238,43 @@ def latest_local_audit_failure(check_runs: Sequence[dict[str, Any]]) -> dict[str
     if _check_run_non_terminal(latest):
         return None
     return latest if latest.get("conclusion") in LOCAL_AUDIT_FAILURE_CONCLUSIONS else None
+
+
+def workflow_run_jobless_failure_alerts(
+    workflow_runs: Sequence[dict[str, Any]],
+    jobs_by_run: dict[str, Sequence[dict[str, Any]]],
+    recent: set[str],
+) -> list[Alert]:
+    alerts: list[Alert] = []
+    runs = sorted(workflow_runs, key=_workflow_run_sort_key, reverse=True)
+    for run in runs:
+        if not is_local_audit_workflow_run(run):
+            continue
+        if run.get("status") != "completed":
+            continue
+        conclusion = str(run.get("conclusion") or "")
+        if conclusion not in LOCAL_AUDIT_JOBLESS_FAILURE_CONCLUSIONS:
+            continue
+        run_id = _workflow_run_id(run)
+        if not run_id or run_id not in jobs_by_run or jobs_by_run[run_id]:
+            continue
+        key = f"local-audit-workflow-{run_id}-no-jobs"
+        if key in recent:
+            continue
+        workflow = _workflow_run_name(run) or _workflow_run_path(run) or "local audit"
+        alerts.append(
+            Alert(
+                key,
+                "Code Mower local audit workflow failed before jobs started",
+                (
+                    f"`{workflow}` concluded `{conclusion}` with no jobs. "
+                    "The workflow file may be invalid; run actionlint or "
+                    "regenerate the Code Mower workflow templates before "
+                    "trusting audit freshness."
+                ),
+            )
+        )
+    return alerts
 
 
 def recent_alert_keys(
@@ -458,18 +538,20 @@ def gh_api_list(
     key: str | None = None,
     *,
     env: dict[str, str] | None = None,
+    paginate: bool = True,
 ) -> list[dict[str, Any]]:
-    pages = gh_json(
+    args = ["api"]
+    if paginate:
+        args.extend(("--paginate", "--slurp"))
+    args.extend(
         [
-            "api",
-            "--paginate",
-            "--slurp",
             f"repos/{repo}/{path}",
             "-H",
             "Accept: application/vnd.github+json",
-        ],
-        env=env,
+        ]
     )
+    raw_pages = gh_json(args, env=env)
+    pages = raw_pages if paginate else [raw_pages]
     items: list[dict[str, Any]] = []
     for page in pages:
         raw_items = page.get(key, []) if key else page
@@ -605,6 +687,39 @@ def fetch_recent_pr_comments(
         number = _issue_number_from_url(str(item.get("issue_url") or ""))
         if number in pr_numbers:
             out[number].append(item)
+    return out
+
+
+def fetch_recent_workflow_runs(repo: str, failures: list[str]) -> list[dict[str, Any]]:
+    try:
+        return gh_api_list(
+            repo,
+            f"actions/runs?per_page={LOCAL_AUDIT_WORKFLOW_RUN_SAMPLE_LIMIT}",
+            "workflow_runs",
+            paginate=False,
+        )
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        failures.append("workflow-runs:recent")
+        print(f"warning: failed to fetch recent workflow runs: {exc}", flush=True)
+        return []
+
+
+def fetch_workflow_run_jobs(
+    repo: str,
+    run_ids: Sequence[str],
+    failures: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for run_id in run_ids[:LOCAL_AUDIT_JOBLESS_FAILURE_LIMIT]:
+        try:
+            out[run_id] = gh_api_list(
+                repo,
+                f"actions/runs/{run_id}/jobs?per_page=20",
+                "jobs",
+            )
+        except (subprocess.CalledProcessError, ValueError) as exc:
+            failures.append(f"workflow-jobs:{run_id}")
+            print(f"warning: failed to fetch workflow jobs for run {run_id}: {exc}", flush=True)
     return out
 
 
@@ -887,7 +1002,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "Code Mower audit runner check disabled",
                 f"`{args.runner_token_env}` is not configured, so self-hosted runner health was not checked.",
             )
-        )
+            )
     try:
         runner_env = {**os.environ, "GH_TOKEN": runner_token} if runner_token else None
         runners = (
@@ -923,6 +1038,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"Could not read self-hosted runners for `{args.runner_label}`: {exc}.",
                 )
             )
+    workflow_runs = fetch_recent_workflow_runs(args.repo, fetch_failures)
+    jobless_candidate_ids = [
+        _workflow_run_id(run)
+        for run in workflow_runs
+        if is_local_audit_workflow_run(run)
+        and run.get("status") == "completed"
+        and str(run.get("conclusion") or "") in LOCAL_AUDIT_JOBLESS_FAILURE_CONCLUSIONS
+        and _workflow_run_id(run)
+    ]
+    workflow_jobs = fetch_workflow_run_jobs(args.repo, jobless_candidate_ids, fetch_failures)
+    extra_alerts.extend(
+        workflow_run_jobless_failure_alerts(workflow_runs, workflow_jobs, recent)
+    )
     alerts = extra_alerts + evaluate(
         now=now,
         lanes=lanes,

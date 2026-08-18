@@ -27,3 +27,8 @@ Set `CODEX_AUDIT_LABEL_TOKEN` and `CLAUDE_AUDIT_LABEL_TOKEN` as PAT or GitHub
 App posting-token secrets. Runner jobs can post with `GITHUB_TOKEN`, but GitHub
 does not trigger `issue_comment` labeler workflows for comments created by the
 built-in token, so the labels will not flip without those posting tokens.
+
+After regenerating `.github/workflows/local-cli-audit.yml`, run `actionlint` on
+the generated workflow. If GitHub reports a failed workflow run with no jobs,
+treat it as workflow syntax or context validation failure before debugging the
+self-hosted runner.

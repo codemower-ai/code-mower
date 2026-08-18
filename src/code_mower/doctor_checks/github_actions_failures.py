@@ -65,6 +65,32 @@ def _check_recent_actions_billing_blocks(
             ),
         )
 
+    jobless = [
+        item
+        for item in inspection.incomplete_inspections
+        if item.get("reason") == "no_jobs"
+    ]
+    if jobless:
+        return DoctorCheck(
+            name="github.actions.recent_failures",
+            status=STATUS_WARN,
+            message=(
+                f"{slug} has recent failed Actions runs with no jobs; "
+                "a workflow file may be invalid"
+            ),
+            detail={
+                "repo": slug,
+                "jobless_run_count": len(jobless),
+                "jobless_runs": jobless[:5],
+                "inspected_failed_runs": inspection.inspected_failed_runs,
+                "inspected_failed_jobs": inspection.inspected_failed_jobs,
+            },
+            remediation=(
+                "Run actionlint against generated workflow files, regenerate "
+                "Code Mower templates if needed, then rerun the failed workflow."
+            ),
+        )
+
     if inspection.incomplete_inspections:
         return DoctorCheck(
             name="github.actions.recent_failures",
