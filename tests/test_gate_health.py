@@ -50,8 +50,15 @@ def audit_comment(kind: str, *, created_at: str) -> dict[str, object]:
     body = f"Head SHA: `{SHA}`\n"
     if kind == "unknown":
         body += "Could not validate a Claude structured verdict artifact.\n"
+    elif kind == "unknown-marker":
+        body += "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=unknown -->\n"
+    elif kind == "unknown-marker-after-noisy-diagnostic":
+        body += "Diagnostic: <!-- CODE_MOWER_AUDIT_REQUEUE: kind=stale -->\n"
+        body += "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=unknown -->\n"
     elif kind == "stale":
         body += "Head SHA changed during review (`aaaaaaaa` -> `bbbbbbbb`).\n"
+    elif kind == "stale-marker":
+        body += "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=stale -->\n"
     elif kind == "terminal":
         body += "Claude Audit: PASS\n<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
         return {
@@ -369,6 +376,49 @@ class GateHealthTests(unittest.TestCase):
         self.assertIn("repeated UNKNOWN", alerts[0].title)
         self.assertIn("not STALE", alerts[0].body)
 
+    def test_repeated_unknown_marker_comments_do_not_depend_on_prose(self) -> None:
+        lanes = [{**LANES[1], "bot_authors": "trusted-audit-bot"}]
+        alerts = evaluate_case(
+            lanes=lanes,
+            comments={
+                9: [
+                    audit_comment("unknown-marker", created_at="2026-08-17T04:01:00Z"),
+                    audit_comment("unknown-marker", created_at="2026-08-17T04:02:00Z"),
+                    audit_comment("unknown-marker", created_at="2026-08-17T04:03:00Z"),
+                ]
+            },
+            repo="owner/repo",
+        )
+
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("repeated UNKNOWN", alerts[0].title)
+
+    def test_requeue_kind_uses_final_generated_marker(self) -> None:
+        lanes = [{**LANES[1], "bot_authors": "trusted-audit-bot"}]
+        alerts = evaluate_case(
+            lanes=lanes,
+            comments={
+                9: [
+                    audit_comment(
+                        "unknown-marker-after-noisy-diagnostic",
+                        created_at="2026-08-17T04:01:00Z",
+                    ),
+                    audit_comment(
+                        "unknown-marker-after-noisy-diagnostic",
+                        created_at="2026-08-17T04:02:00Z",
+                    ),
+                    audit_comment(
+                        "unknown-marker-after-noisy-diagnostic",
+                        created_at="2026-08-17T04:03:00Z",
+                    ),
+                ]
+            },
+            repo="owner/repo",
+        )
+
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("repeated UNKNOWN", alerts[0].title)
+
     def test_stale_comment_breaks_unknown_streak(self) -> None:
         lanes = [{**LANES[1], "bot_authors": "trusted-audit-bot"}]
         alerts = evaluate_case(
@@ -378,6 +428,22 @@ class GateHealthTests(unittest.TestCase):
                     audit_comment("unknown", created_at="2026-08-17T04:01:00Z"),
                     audit_comment("stale", created_at="2026-08-17T04:02:00Z"),
                     audit_comment("unknown", created_at="2026-08-17T04:03:00Z"),
+                ]
+            },
+            repo="owner/repo",
+        )
+
+        self.assertEqual(alerts, [])
+
+    def test_stale_marker_breaks_unknown_streak(self) -> None:
+        lanes = [{**LANES[1], "bot_authors": "trusted-audit-bot"}]
+        alerts = evaluate_case(
+            lanes=lanes,
+            comments={
+                9: [
+                    audit_comment("unknown-marker", created_at="2026-08-17T04:01:00Z"),
+                    audit_comment("stale-marker", created_at="2026-08-17T04:02:00Z"),
+                    audit_comment("unknown-marker", created_at="2026-08-17T04:03:00Z"),
                 ]
             },
             repo="owner/repo",

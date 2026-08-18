@@ -409,6 +409,22 @@ class ClaudeAuditPrTests(unittest.TestCase):
         self.assertEqual(cap._audit_exit_code("PASS"), 0)
         self.assertEqual(cap._audit_exit_code("UNKNOWN"), 2)
 
+    def test_requeue_comments_include_machine_readable_kind_markers(self) -> None:
+        unknown = cap.format_comment(
+            cap._unknown_structured_verdict("Claude CLI exited 1"),
+            "a" * 40,
+            is_unknown=True,
+        )
+        stale = cap.format_comment(
+            cap._unknown_structured_verdict("stale"),
+            "a" * 40,
+            is_stale=True,
+            stale_end_sha="b" * 40,
+        )
+
+        self.assertIn(cap.UNKNOWN_REQUEUE_MARKER, unknown)
+        self.assertIn(cap.STALE_REQUEUE_MARKER, stale)
+
 
 if __name__ == "__main__":
     unittest.main()

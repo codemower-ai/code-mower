@@ -204,6 +204,22 @@ class CodexAuditPrTests(unittest.TestCase):
         self.assertEqual(cap._audit_exit_code("PASS"), 0)
         self.assertEqual(cap._audit_exit_code("UNKNOWN"), 2)
 
+    def test_requeue_comments_include_machine_readable_kind_markers(self) -> None:
+        unknown = cap.format_comment(
+            cap.CodexVerdict(verdict="UNKNOWN", prose="untrusted"),
+            "a" * 40,
+            is_unknown=True,
+        )
+        stale = cap.format_comment(
+            cap.CodexVerdict(verdict="UNKNOWN", prose="stale"),
+            "a" * 40,
+            is_stale=True,
+            stale_end_sha="b" * 40,
+        )
+
+        self.assertIn(cap.UNKNOWN_REQUEUE_MARKER, unknown)
+        self.assertIn(cap.STALE_REQUEUE_MARKER, stale)
+
 
 if __name__ == "__main__":
     unittest.main()

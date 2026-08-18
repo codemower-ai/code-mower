@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,9 @@ LOCAL_AUDIT_WORKFLOW_NAMES = {
 DEFAULT_UNKNOWN_STREAK_THRESHOLD = 3
 DEFAULT_UNKNOWN_STREAK_HISTORY_HOURS = 168
 DEFAULT_UNKNOWN_STREAK_CLOSED_PR_LIMIT = 100
+REQUEUE_KIND_MARKER_RE = re.compile(
+    r"<!--\s*CODE_MOWER_AUDIT_REQUEUE:\s*kind=(?P<kind>unknown|stale|requeue)\s*-->"
+)
 
 
 @dataclass(frozen=True)
@@ -256,6 +260,9 @@ def _lane_requeue_kind(body: str, lane: dict[str, Any]) -> str:
     needs = str(lane.get("needs") or "")
     if not needs or f": {needs} -->" not in body:
         return ""
+    markers = list(REQUEUE_KIND_MARKER_RE.finditer(body))
+    if markers:
+        return markers[-1].group("kind")
     if "Head SHA changed during review" in body:
         return "stale"
     if "Could not validate" in body and "structured verdict" in body:

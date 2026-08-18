@@ -138,6 +138,8 @@ STALE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: needs-claude-audit -->"
 DONE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
 BLOCKED_TRAILER = "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->"
 AUDIT_RUN_TRAILER_PREFIX = "<!-- CODE_MOWER_AUDIT_RUN:"
+STALE_REQUEUE_MARKER = "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=stale -->"
+UNKNOWN_REQUEUE_MARKER = "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=unknown -->"
 
 
 def _post_audit_comment(
@@ -1036,6 +1038,8 @@ def format_comment(
             + f"\nHead SHA changed during review (`{head_sha[:8]}` -> "
             + f"`{(stale_end_sha or '?')[:8]}`). Skipping this verdict and "
             + "requeuing for re-review of the new head.\n\n"
+            + STALE_REQUEUE_MARKER
+            + "\n"
             + STALE_TRAILER
             + "\n"
         )
@@ -1049,6 +1053,8 @@ def format_comment(
             + "schema-valid structured output. Requeuing for re-review."
             + reason_line
             + "\n\n"
+            + UNKNOWN_REQUEUE_MARKER
+            + "\n"
             + STALE_TRAILER
             + "\n"
         )
