@@ -38,7 +38,7 @@ env:
 
 jobs:
   gate:
-    name: code-mower/gate
+    name: publish Code Mower gate status
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -590,6 +590,8 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
 
           echo "Code Mower gate: ${gate_state} - ${gate_description}"
 
+          # The merge signal is the commit status above. Keep expected
+          # pending/failure verdicts from creating a second required check-run.
           if [ "${gate_state}" != "success" ] || [ "${CODE_MOWER_GATE_ENABLE_AUTO_MERGE}" != "true" ]; then
             exit 0
           fi

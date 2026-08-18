@@ -97,7 +97,42 @@ jobs:
             echo "::error::${CODE_MOWER_DISPATCH_TOKEN_ENV} secret is missing or empty; fix-round mentions must be posted by a human-owned token"
             exit 1
           fi
-          bodies="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate -q '.[].body')"
+          code_mower_handle_rate_limit() {
+            rate_limited=false
+            for file in "$@"; do
+              if [ -s "${file}" ] && grep -qiE 'API rate limit exceeded|rate limit' "${file}"; then
+                rate_limited=true
+              fi
+            done
+            [ "${rate_limited}" = "true" ] || return 1
+
+            reset_epoch="$(gh api rate_limit --jq '.resources.core.reset // .rate.reset // ""' 2>/dev/null || true)"
+            if [[ "${reset_epoch}" =~ ^[0-9]+$ ]]; then
+              now_epoch="$(date -u +%s)"
+              wait_seconds=$((reset_epoch - now_epoch + 5))
+              reset_iso="$(date -u -d "@${reset_epoch}" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "${reset_epoch}")"
+              if [ "${wait_seconds}" -gt 0 ] && [ "${wait_seconds}" -le 240 ]; then
+                echo "::notice::GitHub API rate limit hit; backing off until ${reset_iso}."
+                sleep "${wait_seconds}"
+              else
+                echo "::notice::GitHub API rate limit hit; reset at ${reset_iso}; exiting cleanly so a later event can retry."
+              fi
+            else
+              echo "::notice::GitHub API rate limit hit; reset time unavailable; exiting cleanly so a later event can retry."
+            fi
+            return 0
+          }
+
+          comments_output="$(mktemp)"
+          comments_error="$(mktemp)"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate -q '.[].body' >"${comments_output}" 2>"${comments_error}"; then
+            if code_mower_handle_rate_limit "${comments_error}" "${comments_output}"; then
+              exit 0
+            fi
+            cat "${comments_error}" >&2
+            exit 1
+          fi
+          bodies="$(cat "${comments_output}")"
           if printf '%s' "${bodies}" | grep -qF -- "${MARKER}"; then
             echo "fix round already dispatched for ${HEAD_SHA} (${AUDIT_LANE}/${BUILDER_LANE})"
             exit 0
@@ -107,5 +142,12 @@ jobs:
           body="${FIX_ROUND_MENTION} The **${AUDIT_LANE}** audit lane BLOCKED this PR (head ${short_sha}). Read the latest Code Mower audit comments on this PR, address every blocking finding without scope additions, push to this branch, then re-add: \`${needs_labels}\`. If a finding is wrong, reply with evidence and add \`${NEEDS_OWNER_LABEL}\`.
 
           ${MARKER}"
-          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "${body}"
+          comment_error="$(mktemp)"
+          if ! gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "${body}" 2>"${comment_error}"; then
+            if code_mower_handle_rate_limit "${comment_error}"; then
+              exit 0
+            fi
+            cat "${comment_error}" >&2
+            exit 1
+          fi
           echo "dispatched fix round for #${PR_NUMBER} (${AUDIT_LANE}/${BUILDER_LANE}, ${short_sha})"

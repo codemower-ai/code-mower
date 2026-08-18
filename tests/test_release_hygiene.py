@@ -2096,6 +2096,8 @@ jobs:
         self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", plan.data["required_variables"])
         self.assertEqual(plan.data["human_automation_token"]["secret"], "DISPATCH_TOKEN")
         self.assertIn("builder:grok-bot", plan.data["labels"])
+        self.assertIn("require `code-mower/gate` from Any source", plan.text)
+        self.assertIn("app_id: 15368", plan.text)
 
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / ".code-mower.generated"
@@ -2184,6 +2186,8 @@ jobs:
             self.assertIn('"builder_label":"builder:grok-bot"', agent_labeler)
             self.assertIn("secrets.DISPATCH_TOKEN", agent_labeler)
             self.assertIn("--remove-label", agent_labeler)
+            self.assertIn("code_mower_handle_rate_limit", agent_labeler)
+            self.assertIn("GitHub API rate limit hit", agent_labeler)
             self.assertIn("needs-codex-audit", agent_labeler)
             self.assertIn("needs-claude-audit", agent_labeler)
             self.assertNotIn("__AGENT_PR", agent_labeler)
@@ -2198,6 +2202,9 @@ jobs:
             self.assertIn('NEEDS_OWNER_LABEL: "needs-owner"', fix_round)
             self.assertIn("codex-audit-blocked", fix_round)
             self.assertIn("claude-audit-blocked", fix_round)
+            self.assertIn("code_mower_handle_rate_limit", fix_round)
+            self.assertIn("GitHub API rate limit hit", fix_round)
+            self.assertIn("comments_output", fix_round)
             self.assertNotIn("__FIX_ROUND", fix_round)
             self.assertIn("cancel-in-progress: true", local_cli_audit)
             self.assertIn("name: audit (${{ matrix.lane.lane }})", local_cli_audit)
@@ -2309,7 +2316,8 @@ jobs:
                 ".github/workflows/code-mower-gate.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("CODE_MOWER_GATE_CONTEXT: code-mower/gate", gate)
-            self.assertIn("name: code-mower/gate", gate)
+            self.assertIn("name: publish Code Mower gate status", gate)
+            self.assertNotIn("name: code-mower/gate", gate)
             self.assertIn("Check out Code Mower support files", gate)
             self.assertIn('CODE_MOWER_OWNER_LABEL: "needs-owner"', gate)
             self.assertIn("codex-audit-done", gate)
@@ -2337,6 +2345,7 @@ jobs:
             self.assertIn("owner gate override", gate)
             self.assertIn("audit in flight", gate)
             self.assertIn("workflow_run:", gate)
+            self.assertIn("pending/failure verdicts", gate)
             self.assertIn('workflows: ["Code Mower Local CLI Audits"]', gate)
             self.assertIn("github.event.workflow_run.pull_requests[0].number", gate)
             self.assertIn("WORKFLOW_RUN_HEAD_SHA", gate)
