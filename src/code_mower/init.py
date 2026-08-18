@@ -167,6 +167,7 @@ PRODUCT_SUPPORT_FILES = (
 OWNER_SURFACE_DEFAULTS = {
     "owner_login": "TODO_OWNER_LOGIN",
     "needs_owner_label": "needs-owner",
+    "owner_decision_label": "owner-decision",
     "owner_sitting_label": "owner-sitting",
     "gate_override_label": "gate:override",
     "status_issue": "TODO_STATUS_ISSUE",
@@ -492,6 +493,7 @@ def _owner_surface_workflow_entry(
         "package_copy_from": copy_from,
         "owner_login": owner_surface["owner_login"],
         "needs_owner_label": owner_surface["needs_owner_label"],
+        "owner_decision_label": owner_surface["owner_decision_label"],
         "owner_sitting_label": owner_surface["owner_sitting_label"],
         "gate_override_label": owner_surface["gate_override_label"],
         "status_issue": owner_surface["status_issue"],
@@ -1252,6 +1254,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__NEEDS_LABEL__": str(entry.get("needs_label") or ""),
         "__NEEDS_OWNER_LABEL__": str(entry.get("needs_owner_label") or ""),
+        "__OWNER_DECISION_LABEL__": str(entry.get("owner_decision_label") or ""),
         "__OWNER_SITTING_LABEL__": str(entry.get("owner_sitting_label") or ""),
         "__OWNER_LOGIN__": str(entry.get("owner_login") or ""),
         "__GATE_OVERRIDE_LABEL__": str(entry.get("gate_override_label") or ""),
@@ -1547,6 +1550,7 @@ def render_init_plan(
 
     for label in (
         owner_surface["needs_owner_label"],
+        owner_surface["owner_decision_label"],
         owner_surface["owner_sitting_label"],
         owner_surface["gate_override_label"],
     ):

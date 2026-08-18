@@ -2413,6 +2413,7 @@ jobs:
         config["owner_surface"] = {
             "owner_login": "jeffhuber",
             "needs_owner_label": "needs-jeff",
+            "owner_decision_label": "owner-decision",
             "owner_sitting_label": "owner-sitting",
             "gate_override_label": "gate:override",
             "status_issue": "6",
@@ -2454,6 +2455,7 @@ jobs:
             self.assertTrue(generated.issubset(written))
             self.assertTrue(generated.isdisjoint(placeholder_files))
             self.assertIn("needs-jeff", plan.data["labels"])
+            self.assertIn("owner-decision", plan.data["labels"])
             self.assertIn("owner-sitting", plan.data["labels"])
             self.assertIn("gate:override", plan.data["labels"])
 
@@ -2462,15 +2464,18 @@ jobs:
             ).read_text(encoding="utf-8")
             parsed_notify = yaml.safe_load(notify)
             self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', notify)
+            self.assertIn('OWNER_DECISION_LABEL: "owner-decision"', notify)
             self.assertIn('OWNER_SITTING_LABEL: "owner-sitting"', notify)
             self.assertIn('OWNER_LOGIN: "jeffhuber"', notify)
             self.assertEqual(parsed_notify["env"]["NEEDS_OWNER_LABEL"], "needs-jeff")
+            self.assertEqual(parsed_notify["env"]["OWNER_DECISION_LABEL"], "owner-decision")
             self.assertEqual(parsed_notify["env"]["OWNER_SITTING_LABEL"], "owner-sitting")
             self.assertEqual(parsed_notify["env"]["GATE_OVERRIDE_LABEL"], "gate:override")
             notify_step = parsed_notify["jobs"]["notify"]["steps"][0]
             self.assertEqual(
                 notify_step["if"],
                 "github.event.label.name == env.NEEDS_OWNER_LABEL || "
+                "github.event.label.name == env.OWNER_DECISION_LABEL || "
                 "github.event.label.name == env.OWNER_SITTING_LABEL || "
                 "github.event.label.name == env.GATE_OVERRIDE_LABEL",
             )
@@ -2486,6 +2491,8 @@ jobs:
             )
             self.assertNotIn('gh api -X PATCH "repos/${REPO}/issues/${NUM}"', notify)
             self.assertNotIn("gh issue comment", notify)
+            self.assertIn("Options, Recommendation, and Existing decision touched", notify)
+            self.assertIn("orchestration lane may resolve it here", notify)
             self.assertNotIn("__NEEDS_OWNER_LABEL__", notify)
             self.assertNotIn("{% raw %}", notify)
 
@@ -2495,6 +2502,7 @@ jobs:
             self.assertIn('cron: "15 12 * * 1"', weekly)
             self.assertIn('STATUS_ISSUE: "6"', weekly)
             self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', weekly)
+            self.assertIn('OWNER_DECISION_LABEL: "owner-decision"', weekly)
             self.assertIn('OWNER_SITTING_LABEL: "owner-sitting"', weekly)
             self.assertIn('PHASE_LABELS: "phase:0,phase:1"', weekly)
             self.assertIn("python3 tools/status_report.py", weekly)
@@ -2576,12 +2584,17 @@ jobs:
                 "needs: jeff # owner",
             )
             self.assertEqual(
+                parsed_special_notify["env"]["OWNER_DECISION_LABEL"],
+                "owner-decision",
+            )
+            self.assertEqual(
                 parsed_special_notify["env"]["OWNER_SITTING_LABEL"],
                 "owner-sitting",
             )
             self.assertEqual(
                 parsed_special_notify["jobs"]["notify"]["steps"][0]["if"],
                 "github.event.label.name == env.NEEDS_OWNER_LABEL || "
+                "github.event.label.name == env.OWNER_DECISION_LABEL || "
                 "github.event.label.name == env.OWNER_SITTING_LABEL || "
                 "github.event.label.name == env.GATE_OVERRIDE_LABEL",
             )
@@ -2620,6 +2633,7 @@ jobs:
             self.assertEqual(
                 parsed_disabled_override_notify["jobs"]["notify"]["steps"][0]["if"],
                 "github.event.label.name == env.NEEDS_OWNER_LABEL || "
+                "github.event.label.name == env.OWNER_DECISION_LABEL || "
                 "github.event.label.name == env.OWNER_SITTING_LABEL || "
                 "github.event.label.name == env.GATE_OVERRIDE_LABEL",
             )
@@ -2704,11 +2718,11 @@ while [ "$#" -gt 0 ]; do
   shift || true
 done
 if [ "$cmd" = "issue list" ] && [ "$state" = "open" ]; then
-  printf '%s\\n' '[{"number":1,"title":"Needs owner","labels":[{"name":"needs-jeff"},{"name":"phase:0"}],"assignees":[]},{"number":2,"title":"Ready","labels":[{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]},{"number":5,"title":"Owner sitting","labels":[{"name":"owner-sitting"},{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]}]'
+  printf '%s\\n' '[{"number":1,"title":"Raw needs owner","labels":[{"name":"needs-jeff"},{"name":"phase:0"}],"assignees":[]},{"number":2,"title":"Ready","labels":[{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]},{"number":5,"title":"Owner sitting","labels":[{"name":"owner-sitting"},{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]},{"number":7,"title":"Owner decision","labels":[{"name":"needs-jeff"},{"name":"owner-decision"},{"name":"phase:0"}],"assignees":[]}]'
 elif [ "$cmd" = "issue list" ] && [ "$state" = "closed" ]; then
   printf '%s\\n' '[{"number":4,"title":"Done","labels":[{"name":"phase:0"}],"closedAt":"2099-01-01T00:00:00Z","assignees":[]}]'
 elif [ "$cmd" = "pr list" ] && [ "$state" = "open" ]; then
-  printf '%s\\n' '[{"number":3,"title":"Builder PR","labels":[{"name":"builder:codex"},{"name":"needs-codex-audit"},{"name":"needs-jeff"}],"author":{"login":"builder"},"isDraft":false},{"number":6,"title":"Owner sitting PR","labels":[{"name":"builder:claude"},{"name":"owner-sitting"}],"author":{"login":"builder"},"isDraft":false}]'
+  printf '%s\\n' '[{"number":3,"title":"Builder PR","labels":[{"name":"builder:codex"},{"name":"needs-codex-audit"},{"name":"needs-jeff"}],"author":{"login":"builder"},"isDraft":false},{"number":6,"title":"Owner sitting PR","labels":[{"name":"builder:claude"},{"name":"owner-sitting"}],"author":{"login":"builder"},"isDraft":false},{"number":8,"title":"Owner decision PR","labels":[{"name":"builder:claude"},{"name":"needs-jeff"},{"name":"owner-decision"}],"author":{"login":"builder"},"isDraft":false}]'
 elif [ "$cmd" = "pr list" ] && [ "$state" = "merged" ]; then
   printf '%s\\n' '[]'
 else
@@ -2748,6 +2762,7 @@ fi
                     "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
                     "REPO": "owner/repo",
                     "NEEDS_OWNER_LABEL": "needs-jeff",
+                    "OWNER_DECISION_LABEL": "owner-decision",
                     "OWNER_SITTING_LABEL": "owner-sitting",
                     "READY_LABEL": "tier:R",
                     "PHASE_LABELS": "phase:0",
@@ -2758,13 +2773,27 @@ fi
             )
 
         self.assertIn("## Needs Owner (needs-jeff)", completed.stdout)
+        self.assertIn("`owner-decision` decisions that survived triage", completed.stdout)
         self.assertIn("`owner-sitting` physical-step sittings", completed.stdout)
-        self.assertIn("- issue #1 Needs owner", completed.stdout)
-        self.assertIn("- issue #5 Owner sitting", completed.stdout)
-        self.assertIn("- PR #3 Builder PR", completed.stdout)
-        self.assertIn("- PR #6 Owner sitting PR", completed.stdout)
+        owner_section = completed.stdout.split("## Needs Owner", 1)[1].split(
+            "## Open PRs",
+            1,
+        )[0]
+        self.assertNotIn("- issue #1 Raw needs owner", owner_section)
+        self.assertIn("- issue #5 Owner sitting", owner_section)
+        self.assertIn("- issue #7 Owner decision", owner_section)
+        self.assertNotIn("- PR #3 Builder PR", owner_section)
+        self.assertIn("- PR #6 Owner sitting PR", owner_section)
+        self.assertIn("- PR #8 Owner decision PR", owner_section)
+        open_pr_section = completed.stdout.split("## Open PRs", 1)[1].split(
+            "## Merged In The Last 7 Days",
+            1,
+        )[0]
+        self.assertIn("- #3 Builder PR", open_pr_section)
         ready_section = completed.stdout.split("## Ready Queue", 1)[1].split("## Reviewer Spend", 1)[0]
         self.assertIn("- issue #2 Ready", ready_section)
+        self.assertNotIn("Raw needs owner", ready_section)
+        self.assertNotIn("Owner decision", ready_section)
         self.assertNotIn("Owner sitting", ready_section)
         self.assertIn("codex:pending", completed.stdout)
         self.assertIn("| codex | 1 | 12 | 34 | 0.0560 | pass |", completed.stdout)

@@ -18,6 +18,7 @@ from typing import Any
 
 REPO = os.environ.get("REPO", os.environ.get("GITHUB_REPOSITORY", ""))
 NEEDS_OWNER = os.environ.get("NEEDS_OWNER_LABEL", "needs-owner")
+OWNER_DECISION = os.environ.get("OWNER_DECISION_LABEL", "owner-decision")
 OWNER_SITTING = os.environ.get("OWNER_SITTING_LABEL", "owner-sitting")
 READY = os.environ.get("READY_LABEL", "tier:R")
 PHASES = [
@@ -84,7 +85,19 @@ def has(item: dict[str, Any], label: str) -> bool:
 
 def is_owner_bound(item: dict[str, Any]) -> bool:
     names = set(labels(item))
-    return NEEDS_OWNER in names or bool(OWNER_SITTING and OWNER_SITTING in names)
+    return (
+        (NEEDS_OWNER in names and (not OWNER_DECISION or OWNER_DECISION in names))
+        or bool(OWNER_SITTING and OWNER_SITTING in names)
+    )
+
+
+def blocks_ready(item: dict[str, Any]) -> bool:
+    names = set(labels(item))
+    return (
+        NEEDS_OWNER in names
+        or (bool(OWNER_DECISION) and OWNER_DECISION in names)
+        or bool(OWNER_SITTING and OWNER_SITTING in names)
+    )
 
 
 def since(value: Any, cutoff: dt.datetime) -> bool:
@@ -199,6 +212,9 @@ def main() -> int:
     owner = [row("issue", i) for i in open_i if is_owner_bound(i)]
     owner += [row("PR", pr) for pr in open_p if is_owner_bound(pr)]
     lines += ["", f"## Needs Owner ({NEEDS_OWNER})", ""]
+    if OWNER_DECISION and OWNER_DECISION != NEEDS_OWNER:
+        lines.append(f"_Only includes `{OWNER_DECISION}` decisions that survived triage._")
+        lines.append("")
     if OWNER_SITTING and OWNER_SITTING != NEEDS_OWNER:
         lines.append(f"_Also includes `{OWNER_SITTING}` physical-step sittings._")
         lines.append("")
@@ -223,7 +239,7 @@ def main() -> int:
         issue
         for issue in open_i
         if has(issue, READY)
-        and not is_owner_bound(issue)
+        and not blocks_ready(issue)
         and not issue.get("assignees")
         and not any(label.startswith("blocked-by:") for label in labels(issue))
     ]

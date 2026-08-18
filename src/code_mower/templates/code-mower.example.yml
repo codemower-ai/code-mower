@@ -12,6 +12,7 @@ repositories:
 owner_surface:
   owner_login: TODO_OWNER_LOGIN
   needs_owner_label: needs-owner
+  owner_decision_label: owner-decision
   owner_sitting_label: owner-sitting
   gate_override_label: "gate:override"
   status_issue: TODO_STATUS_ISSUE
