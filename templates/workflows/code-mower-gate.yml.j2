@@ -606,8 +606,8 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
             exit 0
           fi
 
-          gh api graphql \
+          if ! gh api graphql \
             -f pullRequestId="${pr_node_id}" \
-            -f query='mutation($pullRequestId:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:SQUASH}){pullRequest{id}}}' >/dev/null || {
+            -f query='mutation($pullRequestId:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:SQUASH}){pullRequest{id}}}' >/dev/null; then
               echo "::notice::Code Mower gate is green, but GitHub could not enable auto-merge. Confirm allow_auto_merge and token permissions."
-            }
+          fi

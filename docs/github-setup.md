@@ -474,7 +474,9 @@ The generated product-support files include `tools/audit_labeler_lib.py`, which
 the gate uses for GitHub Actions audit-comment attestation without uploading
 source, diffs, or transcripts.
 Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
-call in the repository gate workflow.
+call in the repository gate workflow. If GitHub rejects that optional
+auto-merge call after a green gate, the workflow logs a notice and leaves the
+published gate status green.
 
 The recommended three-builder pattern is:
 
