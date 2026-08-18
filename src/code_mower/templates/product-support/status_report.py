@@ -18,6 +18,7 @@ from typing import Any
 
 REPO = os.environ.get("REPO", os.environ.get("GITHUB_REPOSITORY", ""))
 NEEDS_OWNER = os.environ.get("NEEDS_OWNER_LABEL", "needs-owner")
+OWNER_SITTING = os.environ.get("OWNER_SITTING_LABEL", "owner-sitting")
 READY = os.environ.get("READY_LABEL", "tier:R")
 PHASES = [
     label.strip()
@@ -79,6 +80,11 @@ def labels(item: dict[str, Any]) -> tuple[str, ...]:
 
 def has(item: dict[str, Any], label: str) -> bool:
     return label in labels(item)
+
+
+def is_owner_bound(item: dict[str, Any]) -> bool:
+    names = set(labels(item))
+    return NEEDS_OWNER in names or bool(OWNER_SITTING and OWNER_SITTING in names)
 
 
 def since(value: Any, cutoff: dt.datetime) -> bool:
@@ -190,9 +196,13 @@ def main() -> int:
     else:
         lines.append("- no phase labels configured")
 
-    owner = [row("issue", i) for i in open_i if has(i, NEEDS_OWNER)]
-    owner += [row("PR", pr) for pr in open_p if has(pr, NEEDS_OWNER)]
-    lines += ["", f"## Needs Owner ({NEEDS_OWNER})", "", *(owner or ["- none"])]
+    owner = [row("issue", i) for i in open_i if is_owner_bound(i)]
+    owner += [row("PR", pr) for pr in open_p if is_owner_bound(pr)]
+    lines += ["", f"## Needs Owner ({NEEDS_OWNER})", ""]
+    if OWNER_SITTING and OWNER_SITTING != NEEDS_OWNER:
+        lines.append(f"_Also includes `{OWNER_SITTING}` physical-step sittings._")
+        lines.append("")
+    lines += owner or ["- none"]
 
     lines += ["", "## Open PRs", ""]
     for pr in open_p:
@@ -213,7 +223,7 @@ def main() -> int:
         issue
         for issue in open_i
         if has(issue, READY)
-        and not has(issue, NEEDS_OWNER)
+        and not is_owner_bound(issue)
         and not issue.get("assignees")
         and not any(label.startswith("blocked-by:") for label in labels(issue))
     ]

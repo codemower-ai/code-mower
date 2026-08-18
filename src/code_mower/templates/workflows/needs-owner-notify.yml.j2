@@ -14,6 +14,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   NEEDS_OWNER_LABEL: "__NEEDS_OWNER_LABEL__"
+  OWNER_SITTING_LABEL: "__OWNER_SITTING_LABEL__"
   GATE_OVERRIDE_LABEL: "__GATE_OVERRIDE_LABEL__"
   OWNER_LOGIN: "__OWNER_LOGIN__"
 
@@ -25,6 +26,7 @@ jobs:
       - name: Assign owner and mention
         if: >-
           github.event.label.name == env.NEEDS_OWNER_LABEL ||
+          github.event.label.name == env.OWNER_SITTING_LABEL ||
           github.event.label.name == env.GATE_OVERRIDE_LABEL
         env:
           GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
@@ -46,6 +48,8 @@ jobs:
 
           if [ "${LABEL}" = "${NEEDS_OWNER_LABEL}" ]; then
             body="${mention} - decision or physical step needed on this ${KIND} (labeled by ${ACTOR}). Builders are blocked on it; reply here or remove the label when resolved."
+          elif [ -n "${OWNER_SITTING_LABEL:-}" ] && [ "${LABEL}" = "${OWNER_SITTING_LABEL}" ]; then
+            body="${mention} - owner sitting needed on this ${KIND} (labeled by ${ACTOR}). Code Mower keeps this out of builder WIP until the physical step is done."
           else
             body="${mention} - ${GATE_OVERRIDE_LABEL} was applied by ${ACTOR}. Only the owner should override a gate; log the reason in this thread."
           fi

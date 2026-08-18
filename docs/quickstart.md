@@ -139,7 +139,8 @@ code-mower next-steps --profile recommended --repo OWNER/REPO
 `init --easy` is non-mutating by default. `--apply` writes a generated tree for
 review; it does not edit live workflows or trigger paid providers. The
 generated tree includes owner-surface templates for a configurable
-`needs-owner` escalation label and a weekly pinned-issue status digest.
+`needs-owner` escalation label, an `owner-sitting` physical-step convention,
+and a weekly pinned-issue status digest.
 `doctor --preflight` is the recommended early-adopter preset for GitHub auth,
 Python/runtime checks, provider CLI probes, private-repo caveats, Actions cost
 diagnostics, and optional cloud-token setup. It is equivalent to the versioned

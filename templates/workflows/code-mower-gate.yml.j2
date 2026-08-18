@@ -28,6 +28,7 @@ env:
   CODE_MOWER_GATE_CONTEXT: code-mower/gate
   CODE_MOWER_GATE_ENABLE_AUTO_MERGE: "true"
   CODE_MOWER_OWNER_LABEL: __OWNER_LABEL__
+  CODE_MOWER_OWNER_SITTING_LABEL: __OWNER_SITTING_LABEL_JSON__
   CODE_MOWER_OWNER_LOGIN: __OWNER_LOGIN_JSON__
   CODE_MOWER_GATE_OVERRIDE_LABEL: __GATE_OVERRIDE_LABEL_JSON__
   CODE_MOWER_AUTHOR_EXCLUSION_JSON: >-
@@ -325,6 +326,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           }
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
           owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
+          owner_sitting_label = os.environ.get("CODE_MOWER_OWNER_SITTING_LABEL", "owner-sitting")
           gate_override_label = os.environ.get("CODE_MOWER_GATE_OVERRIDE_LABEL", "gate:override")
           override_clear_failed = (
               os.environ.get("CODE_MOWER_GATE_OVERRIDE_CLEAR_FAILED", "").lower()
@@ -481,6 +483,8 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
               emit("failure", "conflicting Code Mower builder identity")
           elif owner_label in labels:
               emit("pending", owner_label + ": waiting on owner")
+          elif owner_sitting_label and owner_sitting_label in labels:
+              emit("pending", owner_sitting_label + ": waiting on owner")
           elif gate_override_label and gate_override_label in labels and override_actor != override_owner:
               emit("failure", gate_override_label + " was not owner-applied")
           elif gate_override_label and gate_override_label in labels and override_clear_failed:
