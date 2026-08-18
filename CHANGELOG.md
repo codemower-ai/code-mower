@@ -4,6 +4,32 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.50
+
+This beta lands the #391 follow-up from the Bridge Pro merge-gate dogfood,
+separating owner-bound work from lane capacity while tightening generated
+workflow liveness, fix-round, token, escalation, and provider-scaffold
+guardrails.
+
+### Added
+
+- Owner-bound tasks can stay visible without consuming lane WIP, and stale WIP
+  diagnostics now distinguish active builder capacity from physical owner work
+  (#385).
+- Lane liveness checks report stalled, missing, or unhealthy reviewer/builder
+  lanes from metadata-only GitHub workflow state (#386).
+- Generated templates include fix-round dispatch and agent-PR auto-labeling
+  support for the review loop (#387).
+- Setup and doctor guidance now make the required human GitHub token posture
+  explicit before repositories depend on hosted builders or merge automation
+  (#388).
+- Owner-decision escalation separates raw owner notifications from triaged
+  owner decisions in generated owner-surface templates and status reports
+  (#389).
+- Provider-integration prompts now guard against sandbox/live shared-namespace
+  mistakes in commerce-style scaffolds, requiring environment-explicit,
+  read-before-create, idempotent setup (#390).
+
 ## v0.5.0-beta.49
 
 This beta carries the generated gate fixes found immediately after beta.48
