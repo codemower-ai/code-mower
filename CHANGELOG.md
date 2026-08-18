@@ -4,6 +4,27 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.51
+
+This beta carries the merge-gate status-source fixes found while dogfooding
+beta.50 on Bridge Pro, plus generated dispatcher backoff for GitHub API rate
+limits.
+
+### Changed
+
+- Generated `code-mower-gate.yml` now keeps the merge signal as the
+  `code-mower/gate` commit status while using a distinct GitHub Actions job
+  name, so branch protection can require the status from Any source without a
+  competing Actions check-run (#399, #400).
+- Doctor, init, and setup docs now call out the required branch-protection
+  source binding: `code-mower/gate` should use `checks[].app_id: null`, not the
+  GitHub Actions app binding (`15368`) (#400).
+- Generated agent-labeler and fix-round dispatch templates detect GitHub API
+  rate-limit responses, validate reset timestamps, back off briefly when
+  possible, and otherwise exit cleanly so a later event can retry (#400).
+- Setup docs now require a pre-announced owner/admin bypass when GitHub
+  incidents prevent the normal gate from completing (#400).
+
 ## v0.5.0-beta.50
 
 This beta lands the #391 follow-up from the Bridge Pro merge-gate dogfood,
