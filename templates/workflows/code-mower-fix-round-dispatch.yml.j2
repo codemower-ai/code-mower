@@ -1,0 +1,111 @@
+# Code Mower workflow template: dispatch fix rounds when audit lanes block.
+name: Code Mower fix-round dispatch
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: code-mower-fix-round-{% raw %}${{ github.event.pull_request.number }}{% endraw %}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_FIX_ROUND_RULES_JSON: >-
+    __FIX_ROUND_RULES_JSON__
+  CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON: >-
+    __FIX_ROUND_AUDIT_LANES_JSON__
+  CODE_MOWER_DISPATCH_TOKEN_ENV: "__DISPATCH_TOKEN_ENV__"
+  NEEDS_OWNER_LABEL: "__NEEDS_OWNER_LABEL__"
+
+jobs:
+  dispatch:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: {% raw %}${{ secrets.__DISPATCH_TOKEN_ENV__ || '' }}{% endraw %}
+      PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
+    steps:
+      - name: Plan fix-round dispatch
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          pr = event["pull_request"]
+          event_label = (event.get("label") or {}).get("name", "")
+          pr_labels = {item.get("name", "") for item in pr.get("labels") or []}
+          audit_lanes = json.loads(os.environ["CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON"])
+          rules = json.loads(os.environ["CODE_MOWER_FIX_ROUND_RULES_JSON"])
+
+          audit_lane = next(
+              (lane for lane in audit_lanes if lane.get("blocked") == event_label),
+              None,
+          )
+          rule = next(
+              (
+                  item
+                  for item in rules
+                  if item.get("builder_label") in pr_labels and item.get("mention")
+              ),
+              None,
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              if not audit_lane or not rule:
+                  print("matched=false", file=out)
+                  raise SystemExit(0)
+              head_sha = pr["head"]["sha"]
+              marker = (
+                  f"<!-- CODE_MOWER_FIX_ROUND:{head_sha}:"
+                  f"{audit_lane['id']}:{rule['builder_lane']} -->"
+              )
+              print("matched=true", file=out)
+              print(f"audit_lane={audit_lane['id']}", file=out)
+              print(f"builder_lane={rule['builder_lane']}", file=out)
+              print(f"mention={rule['mention']}", file=out)
+              print(f"head_sha={head_sha}", file=out)
+              print(f"marker={marker}", file=out)
+          needs_labels = [lane["needs"] for lane in audit_lanes if lane.get("needs")]
+          Path(".code-mower-fix-round-needs-labels.txt").write_text(
+              "\n".join(needs_labels) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Post fix-round mention
+        if: steps.plan.outputs.matched == 'true'
+        shell: bash
+        env:
+          AUDIT_LANE: {% raw %}${{ steps.plan.outputs.audit_lane }}{% endraw %}
+          BUILDER_LANE: {% raw %}${{ steps.plan.outputs.builder_lane }}{% endraw %}
+          FIX_ROUND_MENTION: {% raw %}${{ steps.plan.outputs.mention }}{% endraw %}
+          HEAD_SHA: {% raw %}${{ steps.plan.outputs.head_sha }}{% endraw %}
+          MARKER: {% raw %}${{ steps.plan.outputs.marker }}{% endraw %}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::${CODE_MOWER_DISPATCH_TOKEN_ENV} secret is missing or empty; fix-round mentions must be posted by a human-owned token"
+            exit 1
+          fi
+          bodies="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate -q '.[].body')"
+          if printf '%s' "${bodies}" | grep -qF -- "${MARKER}"; then
+            echo "fix round already dispatched for ${HEAD_SHA} (${AUDIT_LANE}/${BUILDER_LANE})"
+            exit 0
+          fi
+          needs_labels="$(paste -sd ', ' .code-mower-fix-round-needs-labels.txt)"
+          short_sha="${HEAD_SHA:0:7}"
+          body="${FIX_ROUND_MENTION} The **${AUDIT_LANE}** audit lane BLOCKED this PR (head ${short_sha}). Read the latest Code Mower audit comments on this PR, address every blocking finding without scope additions, push to this branch, then re-add: \`${needs_labels}\`. If a finding is wrong, reply with evidence and add \`${NEEDS_OWNER_LABEL}\`.
+
+          ${MARKER}"
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "${body}"
+          echo "dispatched fix round for #${PR_NUMBER} (${AUDIT_LANE}/${BUILDER_LANE}, ${short_sha})"

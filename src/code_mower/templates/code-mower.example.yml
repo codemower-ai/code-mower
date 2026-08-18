@@ -41,6 +41,10 @@ builder_identity:
     chatgpt-codex-connector[bot]: codex
     claude[bot]: claude
     grok-bot[bot]: grok-bot
+  branch_prefixes:
+    cursor/: grok-bot
+  fix_round_mentions:
+    grok-bot: "@cursor"
   trailers:
     CODE_MOWER_BUILDER:codex: codex
     CODE_MOWER_BUILDER:claude: claude

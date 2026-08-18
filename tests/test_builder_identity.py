@@ -160,6 +160,26 @@ class BuilderIdentityTests(unittest.TestCase):
         )
         self.assertTrue(any(issue.path == "builder_identity.unknown" for issue in issues))
 
+    def test_config_validation_checks_agent_pr_identity_sections(self) -> None:
+        cfg = dict(
+            code_mower_config.load_config(
+                code_mower_init._resolve_config_path("code-mower.example.yml")
+            )
+        )
+        cfg["builder_identity"] = {
+            "branch_prefixes": {"cursor/": "bad lane"},
+            "fix_round_mentions": {"bad lane": ""},
+        }
+
+        issues = code_mower_config.validate_config(cfg)
+
+        self.assertTrue(
+            any(issue.path == "builder_identity.branch_prefixes.cursor/" for issue in issues)
+        )
+        self.assertTrue(
+            any(issue.path == "builder_identity.fix_round_mentions.bad lane" for issue in issues)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

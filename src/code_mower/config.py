@@ -21,7 +21,13 @@ ALLOWED_LANE_TYPES = {"audit", "review"}
 ALLOWED_DRIVERS = {"local_cli", "manual", "hosted_bridge", "saas_event", "api_model"}
 ALLOWED_EVENTS = {"issue_comment", "pull_request_review", "check_run"}
 ALLOWED_SPEND_POLICIES = {"none", "local", "included", "paid"}
-BUILDER_IDENTITY_SECTIONS = {"labels", "authors", "trailers"}
+BUILDER_IDENTITY_SECTIONS = {
+    "labels",
+    "authors",
+    "trailers",
+    "branch_prefixes",
+    "fix_round_mentions",
+}
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 SAFE_WORKFLOW_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*\.ya?ml$")
 GENERATED_WORKFLOW_BY_DRIVER = {
@@ -403,8 +409,16 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
             section_path = f"builder_identity.{section}"
             if section not in BUILDER_IDENTITY_SECTIONS:
                 issues.append(
-                    ConfigIssue(section_path, "must be labels, authors, or trailers")
+                    ConfigIssue(
+                        section_path,
+                        "must be labels, authors, trailers, branch_prefixes, or fix_round_mentions",
+                    )
                 )
+                continue
+            if section == "fix_round_mentions":
+                for lane_name, mention in _as_mapping(values, section_path, issues).items():
+                    _require_identifier(lane_name, f"{section_path}.{lane_name}", issues)
+                    _require_string(mention, f"{section_path}.{lane_name}", issues)
                 continue
             for key, lane_name in _as_mapping(values, section_path, issues).items():
                 _require_string(str(key), f"{section_path}.{key}", issues)

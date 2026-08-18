@@ -1,0 +1,105 @@
+# Code Mower workflow template: label agent-authored PRs and re-arm audits.
+name: Code Mower agent PR labeler
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: code-mower-agent-pr-{% raw %}${{ github.event.pull_request.number }}{% endraw %}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_AGENT_PR_RULES_JSON: >-
+    __AGENT_PR_RULES_JSON__
+  CODE_MOWER_AGENT_PR_AUDIT_LANES_JSON: >-
+    __AGENT_PR_AUDIT_LANES_JSON__
+  CODE_MOWER_DISPATCH_TOKEN_ENV: "__DISPATCH_TOKEN_ENV__"
+
+jobs:
+  label:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: {% raw %}${{ secrets.__DISPATCH_TOKEN_ENV__ || '' }}{% endraw %}
+      PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
+      PR_ACTION: {% raw %}${{ github.event.action }}{% endraw %}
+    steps:
+      - name: Plan agent labels
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          pr = event["pull_request"]
+          branch = pr.get("head", {}).get("ref", "")
+          rules = json.loads(os.environ["CODE_MOWER_AGENT_PR_RULES_JSON"])
+          audit_lanes = json.loads(os.environ["CODE_MOWER_AGENT_PR_AUDIT_LANES_JSON"])
+
+          match = None
+          for rule in rules:
+              prefixes = rule.get("branch_prefixes") or []
+              if any(branch.startswith(prefix) for prefix in prefixes):
+                  match = rule
+                  break
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              if not match:
+                  print("matched=false", file=out)
+                  raise SystemExit(0)
+              print("matched=true", file=out)
+              print(f"builder_lane={match['builder_lane']}", file=out)
+
+          add_labels = [match["builder_label"]]
+          add_labels.extend(lane["needs"] for lane in audit_lanes)
+          remove_labels = [
+              lane[key]
+              for lane in audit_lanes
+              for key in ("done", "blocked")
+              if lane.get(key)
+          ]
+          Path(".code-mower-agent-add-labels.txt").write_text(
+              "\n".join(dict.fromkeys(add_labels)) + "\n",
+              encoding="utf-8",
+          )
+          Path(".code-mower-agent-remove-labels.txt").write_text(
+              "\n".join(dict.fromkeys(remove_labels)) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Apply labels with human token
+        if: steps.plan.outputs.matched == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::${CODE_MOWER_DISPATCH_TOKEN_ENV} secret is missing; labels must be applied by a human-owned token so audit workflows trigger"
+            exit 1
+          fi
+          mapfile -t remove_labels < .code-mower-agent-remove-labels.txt
+          mapfile -t add_labels < .code-mower-agent-add-labels.txt
+          remove_args=()
+          for label in "${remove_labels[@]}"; do
+            [ -n "${label}" ] && remove_args+=(--remove-label "${label}")
+          done
+          if [ "${#remove_args[@]}" -gt 0 ]; then
+            gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" "${remove_args[@]}" >/dev/null 2>&1 || true
+          fi
+          add_args=()
+          for label in "${add_labels[@]}"; do
+            [ -n "${label}" ] && add_args+=(--add-label "${label}")
+          done
+          gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" "${add_args[@]}"
+          printf '#%s (%s): %s\n' "${PR_NUMBER}" "${PR_ACTION}" "$(paste -sd ', ' .code-mower-agent-add-labels.txt)"
