@@ -22,8 +22,8 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.50`, published on
-PyPI as `code-mower==0.5.0b50`. It is intended to be installed from the package
+The current verified public beta baseline is `v0.5.0-beta.51`, published on
+PyPI as `code-mower==0.5.0b51`. It is intended to be installed from the package
 index for friendly-user pilots, with GitHub tag/source installs kept as a
 fallback and development path. Beta.50 is the current baseline after the
 Bridge Pro merge-gate dogfood follow-up: it keeps the PyPI-first install path,
@@ -106,7 +106,7 @@ It has proved:
 - a v0.5 friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- a public PyPI package-install rehearsal from `code-mower==0.5.0b50` with a
+- a public PyPI package-install rehearsal from `code-mower==0.5.0b51` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout; and
