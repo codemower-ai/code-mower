@@ -10,7 +10,7 @@ codex:
   enabled_by_default: true
   events: []
   token_env:
-    - "CODEX_AUDIT_LABEL_TOKEN"
+    - "DISPATCH_TOKEN"
     - "GITHUB_TOKEN"
   token_env_any: []
   trigger_policy: "label"

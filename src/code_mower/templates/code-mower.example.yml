@@ -20,6 +20,8 @@ owner_surface:
   gate_health_max_wait_minutes: "30"
   gate_health_liveness_minutes: "45"
   local_audit_runner_label: code-mower-audit
+  dispatch_token_env: DISPATCH_TOKEN
+  dispatch_token_expires_var: DISPATCH_TOKEN_EXPIRES_AT
   ready_label: "tier:R"
   phase_labels:
     - "phase:0"
@@ -61,7 +63,7 @@ lanes:
       done: codex-audit-done
       blocked: codex-audit-blocked
     token_env:
-      - CODEX_AUDIT_LABEL_TOKEN
+      - DISPATCH_TOKEN
       - GITHUB_TOKEN
     provider_config:
       command: codex
@@ -98,7 +100,7 @@ lanes:
       done: claude-audit-done
       blocked: claude-audit-blocked
     token_env:
-      - CLAUDE_AUDIT_LABEL_TOKEN
+      - DISPATCH_TOKEN
       - GITHUB_TOKEN
     provider_config:
       command: claude

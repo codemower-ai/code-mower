@@ -29,6 +29,7 @@ BUILDER_IDENTITY_SECTIONS = {
     "fix_round_mentions",
 }
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+SAFE_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_WORKFLOW_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*\.ya?ml$")
 GENERATED_WORKFLOW_BY_DRIVER = {
     "api_model": "trailer-comment labeler + API/model runner",
@@ -311,6 +312,21 @@ def _require_identifier(value: Any, path: str, issues: list[ConfigIssue]) -> str
     return text
 
 
+def _require_env_name(value: Any, path: str, issues: list[ConfigIssue]) -> str | None:
+    text = _require_string(value, path, issues)
+    if text is None:
+        return None
+    if not SAFE_ENV_NAME_RE.fullmatch(text):
+        issues.append(
+            ConfigIssue(
+                path,
+                "must match [A-Za-z_][A-Za-z0-9_]* for generated workflow safety",
+            )
+        )
+        return None
+    return text
+
+
 def _require_workflow_path(value: Any, path: str, issues: list[ConfigIssue]) -> str | None:
     text = _require_string(value, path, issues)
     if text is None:
@@ -423,6 +439,13 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
             for key, lane_name in _as_mapping(values, section_path, issues).items():
                 _require_string(str(key), f"{section_path}.{key}", issues)
                 _require_identifier(lane_name, f"{section_path}.{key}", issues)
+
+    owner_surface = config.get("owner_surface")
+    if owner_surface is not None:
+        owner_surface_map = _as_mapping(owner_surface, "owner_surface", issues)
+        for key in ("dispatch_token_env", "dispatch_token_expires_var"):
+            if key in owner_surface_map:
+                _require_env_name(owner_surface_map.get(key), f"owner_surface.{key}", issues)
 
     all_labels: dict[str, str] = {}
     for lane_id, lane in lanes.items():

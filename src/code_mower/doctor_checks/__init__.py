@@ -19,6 +19,11 @@ from .common import (
 )
 from .github import check_github_setup
 from .github_config import check_repository_posture
+from .github_human_token import (
+    check_human_automation_token,
+    human_automation_token_config,
+    human_automation_token_required,
+)
 from .groups import GROUP_LABELS, doctor_check_group_id
 from .models import (
     STATUS_FAIL,
@@ -86,6 +91,7 @@ __all__ = [
     "check_github_auth_surface",
     "check_macos_runner_launchagent",
     "check_github_setup",
+    "check_human_automation_token",
     "check_repository_posture",
     "check_lane_runtime",
     "check_review_hygiene",
@@ -97,6 +103,8 @@ __all__ = [
     "doctor_output_group",
     "effective_lane",
     "evaluate_json_probe",
+    "human_automation_token_config",
+    "human_automation_token_required",
     "load_inputs",
     "local_cli_probe_remediation",
     "provider_template_coverage",

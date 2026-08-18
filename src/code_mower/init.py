@@ -72,7 +72,12 @@ FIX_ROUND_DISPATCH_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-fix-round
 
 DEFAULT_APPLY_OUTPUT_DIR = ".code-mower.generated"
 APPLY_MANIFEST_FILENAME = "code-mower-init-plan.json"
-APPLY_SUMMARY_FILES = ("labels.txt", "required-secrets.txt", "smoke-tests.sh")
+APPLY_SUMMARY_FILES = (
+    "labels.txt",
+    "required-secrets.txt",
+    "required-variables.txt",
+    "smoke-tests.sh",
+)
 OWNER_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REFERENCE_PYTHON = ".code-mower-venv/bin/python"
 GEMINI_AUTH_FILE_ENV = "GEMINI_API_KEY_FILE"
@@ -173,7 +178,14 @@ OWNER_SURFACE_DEFAULTS = {
     "reviewer_spend_path": ".code-mower/reviewer-spend.json",
     "reviewer_value_report_path": ".code-mower/reviewer-value-report.md",
     "dispatch_token_env": "DISPATCH_TOKEN",
+    "dispatch_token_expires_var": "DISPATCH_TOKEN_EXPIRES_AT",
 }
+
+HUMAN_AUTOMATION_TOKEN_SCOPES = (
+    "Contents: read",
+    "Issues: read/write",
+    "Pull requests: read/write",
+)
 
 OWNER_SURFACE_WORKFLOW_FILES = (
     (
@@ -1366,6 +1378,7 @@ def apply_init_plan(
     summary_files = {
         "labels.txt": "\n".join(plan.data["labels"]) + "\n",
         "required-secrets.txt": "\n".join(plan.data["required_secrets"]) + "\n",
+        "required-variables.txt": "\n".join(plan.data["required_variables"]) + "\n",
         "smoke-tests.sh": "#!/usr/bin/env bash\nset -euo pipefail\n\n"
         + "\n".join(plan.data["smoke_tests"])
         + "\n",
@@ -1437,6 +1450,7 @@ def render_init_plan(
     workflow_targets: set[str] = set()
     generated_paths: set[str] = set()
     required_secrets: set[str] = set()
+    required_variables: set[str] = set()
     quoted_config_path = shlex.quote(config_path)
     quoted_profile_id = shlex.quote(profile.profile_id)
     if package_mode is None:
@@ -1544,6 +1558,17 @@ def render_init_plan(
             labels.append(label)
 
     local_audit_entries = _local_audit_entries(selected_lanes)
+    human_token_required = bool(
+        any(
+            entry.get("token_env") == owner_surface["dispatch_token_env"]
+            for entry in local_audit_entries
+        )
+        or (agent_pr_rules and audit_rearm_entries)
+        or (fix_round_rules and audit_rearm_entries)
+    )
+    if human_token_required:
+        required_secrets.add(owner_surface["dispatch_token_env"])
+        required_variables.add(owner_surface["dispatch_token_expires_var"])
     if local_audit_entries and LOCAL_AUDIT_WORKFLOW_PATH not in generated_paths:
         workflow_targets.add(LOCAL_AUDIT_WORKFLOW_PATH)
         workflows.append(
@@ -1743,6 +1768,13 @@ def render_init_plan(
         "workflows": workflows,
         "generated_files": generated_files,
         "required_secrets": sorted(required_secrets),
+        "required_variables": sorted(required_variables),
+        "human_automation_token": {
+            "required": human_token_required,
+            "secret": owner_surface["dispatch_token_env"],
+            "expires_var": owner_surface["dispatch_token_expires_var"],
+            "scopes": list(HUMAN_AUTOMATION_TOKEN_SCOPES),
+        },
         "repositories": _repository_entries(config),
         "additional_repositories": list(add_repositories),
         "merge_authority_lanes": merge_authority_lanes,
@@ -1799,6 +1831,25 @@ def render_init_plan(
         lines.extend(f"- {secret}" for secret in data["required_secrets"])
     else:
         lines.append("- none beyond GITHUB_TOKEN")
+
+    lines.extend(["", "Required repository variables:"])
+    if data["required_variables"]:
+        lines.extend(f"- {variable}" for variable in data["required_variables"])
+    else:
+        lines.append("- none")
+
+    token = data["human_automation_token"]
+    lines.extend(["", "Human automation token:"])
+    if token["required"]:
+        lines.append(f"- secret: {token['secret']}")
+        lines.append(f"- expiry variable: {token['expires_var']} (YYYY-MM-DD)")
+        lines.append("- scopes: " + "; ".join(token["scopes"]))
+        lines.append(
+            f"- setup: gh secret set {token['secret']} && "
+            f"gh variable set {token['expires_var']} --body YYYY-MM-DD"
+        )
+    else:
+        lines.append("- not required for this profile")
 
     lines.extend(["", "Smoke tests after render:"])
     lines.extend(f"- {test}" for test in smoke_tests)

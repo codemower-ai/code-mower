@@ -23,10 +23,11 @@ claude auth status
 claude -p "Reply with exactly: ok" --output-format json
 ```
 
-Set `CODEX_AUDIT_LABEL_TOKEN` and `CLAUDE_AUDIT_LABEL_TOKEN` as PAT or GitHub
-App posting-token secrets. Runner jobs can post with `GITHUB_TOKEN`, but GitHub
-does not trigger `issue_comment` labeler workflows for comments created by the
-built-in token, so the labels will not flip without those posting tokens.
+Set `DISPATCH_TOKEN` as a human-owned PAT or GitHub App posting-token secret,
+and set `DISPATCH_TOKEN_EXPIRES_AT` as a repository variable with the expiry
+date in `YYYY-MM-DD` format. Runner jobs can post with `GITHUB_TOKEN`, but
+GitHub does not trigger `issue_comment` labeler workflows for comments created
+by the built-in token, so the labels will not flip without that posting token.
 
 Generated local-audit workflows run one matrix job per configured lane and
 cancel older runs for the same workflow, PR, head SHA, and lane. A queued or
