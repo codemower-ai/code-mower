@@ -11,9 +11,11 @@ from code_mower.gate_health import (
     Alert,
     evaluate,
     fetch_per_pr,
+    fetch_recent_workflow_runs,
     format_alert_comments,
     gh_api_list,
     recent_alert_keys,
+    workflow_run_jobless_failure_alerts,
 )
 
 NOW = datetime(2026, 8, 17, 5, 0, tzinfo=timezone.utc)
@@ -41,6 +43,19 @@ def audit_check(**overrides: object) -> dict[str, object]:
         "workflow_path": LOCAL_AUDIT_WORKFLOW_PATH,
         "status": "completed",
         "created_at": "2026-08-17T04:00:00Z",
+    }
+    base.update(overrides)
+    return base
+
+
+def workflow_run(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "id": 100,
+        "name": "Code Mower Local CLI Audits",
+        "path": ".github/workflows/local-cli-audit.yml",
+        "status": "completed",
+        "conclusion": "failure",
+        "created_at": "2026-08-17T04:55:00Z",
     }
     base.update(overrides)
     return base
@@ -262,6 +277,35 @@ class GateHealthTests(unittest.TestCase):
         )
 
         self.assertEqual([alert.key for alert in alerts], [f"pr-9-{SHA[:12]}-local-audit-failed"])
+
+    def test_jobless_local_audit_workflow_run_alerts(self) -> None:
+        alerts = workflow_run_jobless_failure_alerts(
+            [workflow_run()],
+            {"100": []},
+            set(),
+        )
+
+        self.assertEqual([alert.key for alert in alerts], ["local-audit-workflow-100-no-jobs"])
+        self.assertIn("failed before jobs started", alerts[0].title)
+        self.assertIn("workflow file may be invalid", alerts[0].body)
+
+    def test_cancelled_jobless_local_audit_workflow_run_does_not_alert(self) -> None:
+        alerts = workflow_run_jobless_failure_alerts(
+            [workflow_run(conclusion="cancelled")],
+            {"100": []},
+            set(),
+        )
+
+        self.assertEqual(alerts, [])
+
+    def test_jobless_workflow_run_does_not_alert_when_jobs_fetch_failed(self) -> None:
+        alerts = workflow_run_jobless_failure_alerts(
+            [workflow_run()],
+            {},
+            set(),
+        )
+
+        self.assertEqual(alerts, [])
 
     def test_new_head_time_resets_stale_clock(self) -> None:
         alerts = evaluate_case(
@@ -500,12 +544,35 @@ class GateHealthTests(unittest.TestCase):
         finally:
             gate_health.gh_json = original
 
+    def test_fetch_recent_workflow_runs_fetches_one_page(self) -> None:
+        import code_mower.gate_health as gate_health
+
+        original = gate_health.gh_json
+        calls: list[list[str]] = []
+        try:
+            gate_health.gh_json = lambda args, env=None: calls.append(args) or {
+                "workflow_runs": [workflow_run(id=101)]
+            }
+            failures: list[str] = []
+            runs = fetch_recent_workflow_runs("owner/repo", failures)
+        finally:
+            gate_health.gh_json = original
+
+        self.assertEqual(runs, [workflow_run(id=101)])
+        self.assertEqual(failures, [])
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("--paginate", calls[0])
+        self.assertNotIn("--slurp", calls[0])
+        self.assertIn("repos/owner/repo/actions/runs?per_page=20", calls[0])
+
     def test_fetch_check_runs_uses_pr_numbers_for_duplicate_head_shas(self) -> None:
         import code_mower.gate_health as gate_health
 
         original = gate_health.gh_api_list
         try:
-            gate_health.gh_api_list = lambda _repo, _path, key=None, env=None: [{"name": "audit"}]
+            gate_health.gh_api_list = lambda _repo, _path, key=None, env=None, **_kw: [
+                {"name": "audit"}
+            ]
             failures: list[str] = []
             result = fetch_per_pr(
                 "owner/repo",
@@ -528,7 +595,7 @@ class GateHealthTests(unittest.TestCase):
         original_gh_api_list = gate_health.gh_api_list
         original_gh_json = gate_health.gh_json
         try:
-            gate_health.gh_api_list = lambda _repo, _path, key=None, env=None: [
+            gate_health.gh_api_list = lambda _repo, _path, key=None, env=None, **_kw: [
                 {
                     "name": "audit",
                     "details_url": "https://github.com/owner/repo/actions/runs/123/job/456",
@@ -605,6 +672,7 @@ class GateHealthTests(unittest.TestCase):
             key: str | None = None,
             *,
             env: dict[str, str] | None = None,
+            paginate: bool = True,
         ) -> list[dict[str, object]]:
             if path.startswith("issues/TODO_STATUS_ISSUE/"):
                 raise AssertionError(path)
@@ -621,6 +689,8 @@ class GateHealthTests(unittest.TestCase):
             if path == "issues/9/comments?per_page=100":
                 return []
             if path == f"commits/{SHA}/check-runs?per_page=100":
+                return []
+            if path.startswith("actions/runs?"):
                 return []
             raise AssertionError(path)
 
@@ -686,6 +756,7 @@ class GateHealthTests(unittest.TestCase):
             key: str | None = None,
             *,
             env: dict[str, str] | None = None,
+            paginate: bool = True,
         ) -> list[dict[str, object]]:
             if path.startswith("issues/comments?"):
                 return [
@@ -721,6 +792,8 @@ class GateHealthTests(unittest.TestCase):
                     }
                 ]
             if path == f"commits/{SHA}/check-runs?per_page=100":
+                return []
+            if path.startswith("actions/runs?"):
                 return []
             raise AssertionError(path)
 
@@ -767,6 +840,7 @@ class GateHealthTests(unittest.TestCase):
             key: str | None = None,
             *,
             env: dict[str, str] | None = None,
+            paginate: bool = True,
         ) -> list[dict[str, object]]:
             if path.startswith("issues/comments?"):
                 return []
@@ -781,6 +855,8 @@ class GateHealthTests(unittest.TestCase):
             if path == "issues/9/comments?per_page=100":
                 raise ValueError("comments unavailable")
             if path == f"commits/{SHA}/check-runs?per_page=100":
+                return []
+            if path.startswith("actions/runs?"):
                 return []
             raise AssertionError(path)
 
@@ -840,6 +916,7 @@ class GateHealthTests(unittest.TestCase):
             key: str | None = None,
             *,
             env: dict[str, str] | None = None,
+            paginate: bool = True,
         ) -> list[dict[str, object]]:
             if path.startswith("issues/comments?"):
                 return [
@@ -856,6 +933,8 @@ class GateHealthTests(unittest.TestCase):
                         audit_comment("unknown", created_at="2026-08-17T04:03:00Z"),
                     ),
                 ]
+            if path.startswith("actions/runs?"):
+                return []
             raise AssertionError(path)
 
         try:
@@ -891,7 +970,7 @@ class GateHealthTests(unittest.TestCase):
         posted: list[int] = []
         try:
             gate_health.gh_json = lambda _args, env=None: []
-            gate_health.gh_api_list = lambda _repo, _path, key=None, env=None: []
+            gate_health.gh_api_list = lambda _repo, _path, key=None, env=None, **_kw: []
             gate_health.post_comment = lambda _repo, issue, _body: posted.append(issue) or True
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
@@ -935,6 +1014,7 @@ class GateHealthTests(unittest.TestCase):
             key: str | None = None,
             *,
             env: dict[str, str] | None = None,
+            paginate: bool = True,
         ) -> list[dict[str, object]]:
             if path.startswith("issues/6/comments?"):
                 return []
@@ -948,6 +1028,8 @@ class GateHealthTests(unittest.TestCase):
                         completed_at="2026-08-17T04:30:00Z",
                     )
                 ]
+            if path.startswith("actions/runs?"):
+                return []
             raise AssertionError(path)
 
         try:
@@ -988,6 +1070,7 @@ class GateHealthTests(unittest.TestCase):
             key: str | None = None,
             *,
             env: dict[str, str] | None = None,
+            paginate: bool = True,
         ) -> list[dict[str, object]]:
             if path.startswith("issues/6/comments?"):
                 return []

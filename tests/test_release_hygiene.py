@@ -50,7 +50,7 @@ from code_mower import versioning as code_mower_versioning
 from code_mower.calibration import arms as calibration_arms
 from code_mower.calibration import policy as calibration_policy
 from code_mower.provider_registry import REFERENCE_PROVIDERS
-from scripts import privacy_scan
+from scripts import guard_package_workflows, privacy_scan
 
 
 class ReleaseHygieneTests(unittest.TestCase):
@@ -151,6 +151,20 @@ class ReleaseHygieneTests(unittest.TestCase):
         )
         self.assertIn('          --python "$(command -v python)"\n', workflow)
         self.assertIn("          --json\n", workflow)
+
+    def test_ci_workflow_actionlints_generated_workflows(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn("      - name: Install actionlint\n", workflow)
+        self.assertIn(
+            "go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12\n",
+            workflow,
+        )
+        self.assertIn("      - name: Actionlint generated workflows\n", workflow)
+        self.assertIn(
+            "run: python scripts/actionlint_generated_workflows.py --code-mower-bin code-mower\n",
+            workflow,
+        )
 
     def test_cli_command_registry_is_single_source_of_truth(self) -> None:
         self.assertEqual(
@@ -946,6 +960,7 @@ exit 1
         self.assertIn("Verify local runner environment", local_audit)
         self.assertIn("for name in USER LOGNAME SHELL LANG", local_audit)
         self.assertIn("CODE_MOWER_REVIEWER_SPEND_PATH", local_audit)
+        self.assertNotIn("CODE_MOWER_REVIEWER_SPEND_PATH", local_audit.split("    steps:", 1)[0])
         self.assertIn("Reset pull request checkout path", local_audit)
         self.assertIn("${{ github.workflow }}-${{ github.event.pull_request.number }}", local_audit)
         self.assertNotIn("cancel-in-progress", local_audit)
@@ -978,6 +993,29 @@ exit 1
             expression,
         )
         self.assertNotIn("join(", expression)
+
+    def test_package_workflow_guard_rejects_runner_context_in_job_env(self) -> None:
+        bad_workflow = """
+name: bad
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      BAD: ${{ runner.temp }}/spend.json
+    steps:
+      - name: ok
+        env:
+          OK: ${{ runner.temp }}/step.json
+        run: true
+"""
+
+        errors = guard_package_workflows._job_env_runner_context_errors(
+            "bad.yml",
+            bad_workflow,
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("runner context is not valid in job-level env", errors[0])
 
     def test_gate_health_template_invokes_packaged_command(self) -> None:
         template = (
@@ -1906,13 +1944,33 @@ exit 1
             self.assertIn("--event \"work_order=${event_file}\"", local_cli_audit)
             self.assertNotIn("__LOCAL_AUDIT_", local_cli_audit)
             parsed_local_cli = yaml.safe_load(local_cli_audit)
+            audit_job = parsed_local_cli["jobs"]["audit"]
+            self.assertNotIn("CODE_MOWER_REVIEWER_SPEND_PATH", audit_job["env"])
+            run_step = next(
+                step
+                for step in audit_job["steps"]
+                if step.get("name") == "Run matching local CLI audits"
+            )
+            upload_step = next(
+                step
+                for step in audit_job["steps"]
+                if step.get("name") == "Upload Code Mower audit metadata"
+            )
+            self.assertEqual(
+                run_step["env"]["CODE_MOWER_REVIEWER_SPEND_PATH"],
+                "${{ runner.temp }}/code-mower-reviewer-spend.json",
+            )
+            self.assertEqual(
+                upload_step["env"]["CODE_MOWER_REVIEWER_SPEND_PATH"],
+                "${{ runner.temp }}/code-mower-reviewer-spend.json",
+            )
             self.assertIn(
                 "github.event.pull_request.head.repo.full_name == github.repository",
-                parsed_local_cli["jobs"]["audit"]["if"],
+                audit_job["if"],
             )
             self.assertIn(
                 "${{ github.event.pull_request.head.sha }}",
-                parsed_local_cli["jobs"]["audit"]["concurrency"]["group"],
+                audit_job["concurrency"]["group"],
             )
 
             gate = output_dir.joinpath(
