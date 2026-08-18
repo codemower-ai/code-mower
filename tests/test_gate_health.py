@@ -486,7 +486,8 @@ class GateHealthTests(unittest.TestCase):
         self.assertEqual([alert.key for alert in alerts], [f"builder-cursor-liveness-9-{SHA[:12]}"])
         self.assertIn("cursor builder lane appears stalled", alerts[0].title)
         self.assertIn("This is stalled with work, not an empty lane.", alerts[0].body)
-        self.assertIn("#9 (`codex-audit-blocked`", alerts[0].body)
+        self.assertIn("open PR #9", alerts[0].body)
+        self.assertIn("`codex-audit-blocked`", alerts[0].body)
 
     def test_lane_liveness_suppressed_by_recent_lane_comment(self) -> None:
         alerts = evaluate_case(
@@ -509,6 +510,44 @@ class GateHealthTests(unittest.TestCase):
         )
 
         self.assertEqual([alert.key for alert in alerts], [f"builder-cursor-liveness-9-{SHA[:12]}"])
+
+    def test_lane_liveness_dedupes_each_pr_independently(self) -> None:
+        second_sha = "b" * 40
+
+        alerts = evaluate_case(
+            lanes=cursor_lanes(),
+            prs=[
+                pr(["builder:cursor", "codex-audit-blocked"]),
+                pr(["builder:cursor", "codex-audit-blocked"], number=10, head=second_sha),
+            ],
+            timelines={
+                9: [
+                    label_event(
+                        "codex-audit-blocked",
+                        created_at="2026-08-17T03:00:00Z",
+                    )
+                ],
+                10: [
+                    label_event(
+                        "codex-audit-blocked",
+                        created_at="2026-08-17T03:00:00Z",
+                    )
+                ],
+            },
+            comments={9: [], 10: []},
+            commits={9: [], 10: []},
+            status_comments=[
+                {
+                    "created_at": "2026-08-17T04:00:00Z",
+                    "body": f"<!-- CODE_MOWER_GATE_HEALTH_ALERT key=builder-cursor-liveness-9-{SHA[:12]} -->",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            [alert.key for alert in alerts],
+            [f"builder-cursor-liveness-10-{second_sha[:12]}"],
+        )
 
     def test_lane_liveness_suppressed_by_recent_lane_commit(self) -> None:
         alerts = evaluate_case(

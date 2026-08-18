@@ -230,8 +230,7 @@ def lane_liveness_alerts(
     if liveness_minutes <= 0:
         return []
     cutoff = now - timedelta(minutes=liveness_minutes)
-    stalled: dict[str, list[str]] = {}
-    keys: dict[str, list[str]] = {}
+    stalled: list[tuple[str, int, str, tuple[str, ...], datetime]] = []
     for pr in prs:
         lanes_for_pr = builder_lanes(pr)
         blocks = audit_block_labels(pr)
@@ -265,26 +264,23 @@ def lane_liveness_alerts(
             )
             if active_since is None or active_since > cutoff:
                 continue
-            block_text = ", ".join(f"`{label}`" for label in blocks)
-            stalled.setdefault(builder_lane, []).append(
-                f"#{number} ({block_text}; stalled since {active_since.isoformat()})"
-            )
-            keys.setdefault(builder_lane, []).append(f"{number}-{head_sha[:12]}")
+            stalled.append((builder_lane, number, head_sha, blocks, active_since))
 
     alerts: list[Alert] = []
-    for builder_lane, items in sorted(stalled.items()):
-        key = f"builder-{_alert_key_part(builder_lane)}-liveness-{'-'.join(keys[builder_lane])}"
+    for builder_lane, number, head_sha, blocks, active_since in sorted(stalled):
+        key = f"builder-{_alert_key_part(builder_lane)}-liveness-{number}-{head_sha[:12]}"
         if key in recent:
             continue
-        plural = "PR" if len(items) == 1 else "PRs"
+        block_text = ", ".join(f"`{label}`" for label in blocks)
         alerts.append(
             Alert(
                 key,
                 f"{builder_lane} builder lane appears stalled",
                 (
-                    f"`builder:{builder_lane}` has {len(items)} open {plural} with "
-                    f"unresolved audit blocks and no lane-authored commit/comment for "
-                    f"at least {liveness_minutes} minutes: {', '.join(items)}. "
+                    f"`builder:{builder_lane}` has open PR #{number} with unresolved "
+                    f"audit blocks ({block_text}) and no lane-authored commit/comment "
+                    f"for at least {liveness_minutes} minutes; stalled since "
+                    f"{active_since.isoformat()}. "
                     "This is stalled with work, not an empty lane."
                 ),
             )
