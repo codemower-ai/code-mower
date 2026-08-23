@@ -1094,6 +1094,7 @@ jobs:
         labels: set[str],
         comments: list[dict[str, object]] | None = None,
         events: list[dict[str, object]] | None = None,
+        event_pages: list[list[dict[str, object]]] | None = None,
         head_sha: str = "a" * 40,
         pr_head_sha: str | None = None,
         pr_number: int = 7,
@@ -1120,7 +1121,7 @@ jobs:
             json.dump([comments or []], handle)
             comments_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
-            json.dump([events or []], handle)
+            json.dump(event_pages if event_pages is not None else [events or []], handle)
             events_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             json.dump({"number": pr_number, "head": {"sha": pr_head_sha or head_sha}}, handle)
@@ -1461,6 +1462,119 @@ jobs:
                         "status": "in_progress",
                         "path": ".github/workflows/local-cli-audit.yml",
                         "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:18:09Z",
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (claude)",
+                            "status": "in_progress",
+                            "conclusion": None,
+                            "started_at": "2026-08-19T16:18:12Z",
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(
+            result["gate_description"],
+            "audit in flight: Claude (run 12345 job 'audit (claude)' queued since 2026-08-19T16:18:12Z)",
+        )
+
+    def test_gate_decision_done_verdict_older_than_in_flight_job_stays_pending(
+        self,
+    ) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude_audit",
+                    "author_lane": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "id": 222,
+                    "created_at": "2026-08-19T16:25:00Z",
+                    "updated_at": "2026-08-19T16:25:00Z",
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+            head_sha=head_sha,
+            audit_runs=[
+                {
+                    "run": {
+                        "id": 12345,
+                        "status": "in_progress",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:18:09Z",
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (claude)",
+                            "status": "in_progress",
+                            "conclusion": None,
+                            "started_at": "2026-08-19T16:30:00Z",
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(
+            result["gate_description"],
+            "audit in flight: Claude (run 12345 job 'audit (claude)' queued since 2026-08-19T16:30:00Z)",
+        )
+
+    def test_gate_decision_done_verdict_newer_than_in_flight_run_passes(self) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude_audit",
+                    "author_lane": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "id": 222,
+                    "created_at": "2026-08-19T16:25:00Z",
+                    "updated_at": "2026-08-19T16:25:00Z",
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+            head_sha=head_sha,
+            audit_runs=[
+                {
+                    "run": {
+                        "id": 12345,
+                        "status": "in_progress",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:18:09Z",
                         "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
                     },
                     "jobs": [
@@ -1474,8 +1588,345 @@ jobs:
             ],
         )
 
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_decision_equal_second_newer_verdict_run_passes(self) -> None:
+        head_sha = "a" * 40
+        body = self._bound_actions_body(
+            "Head SHA: `" + head_sha + "`\n"
+            "<!-- CODE_MOWER_AUDIT_RUN: run_id=12346 -->\n"
+            "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+            comment_id=222,
+        )
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude_audit",
+                    "author_lane": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "id": 222,
+                    "created_at": "2026-08-19T16:25:00Z",
+                    "updated_at": "2026-08-19T16:25:00Z",
+                    "body": body,
+                    "user": {"login": "github-actions[bot]"},
+                }
+            ],
+            head_sha=head_sha,
+            actions_runs={
+                "12346": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "head_sha": head_sha,
+                    "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                },
+            },
+            audit_runs=[
+                {
+                    "run": {
+                        "id": 12345,
+                        "status": "in_progress",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:25:00Z",
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (claude)",
+                            "status": "in_progress",
+                            "conclusion": None,
+                            "started_at": "2026-08-19T16:25:00Z",
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_decision_equal_second_older_verdict_run_stays_pending(self) -> None:
+        head_sha = "a" * 40
+        body = self._bound_actions_body(
+            "Head SHA: `" + head_sha + "`\n"
+            "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+            "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+            comment_id=222,
+        )
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude_audit",
+                    "author_lane": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "id": 222,
+                    "created_at": "2026-08-19T16:25:00Z",
+                    "updated_at": "2026-08-19T16:25:00Z",
+                    "body": body,
+                    "user": {"login": "github-actions[bot]"},
+                }
+            ],
+            head_sha=head_sha,
+            actions_runs={
+                "12345": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "head_sha": head_sha,
+                    "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                },
+            },
+            audit_runs=[
+                {
+                    "run": {
+                        "id": 12346,
+                        "status": "in_progress",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:25:00Z",
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (claude)",
+                            "status": "in_progress",
+                            "conclusion": None,
+                            "started_at": "2026-08-19T16:25:00Z",
+                        }
+                    ],
+                }
+            ],
+        )
+
         self.assertEqual(result["gate_state"], "pending")
-        self.assertEqual(result["gate_description"], "audit in flight: Claude")
+        self.assertEqual(
+            result["gate_description"],
+            "audit in flight: Claude (run 12346 job 'audit (claude)' queued since 2026-08-19T16:25:00Z)",
+        )
+
+    def test_gate_decision_older_verdict_run_edited_after_in_flight_stays_pending(
+        self,
+    ) -> None:
+        head_sha = "a" * 40
+        body = self._bound_actions_body(
+            "Head SHA: `" + head_sha + "`\n"
+            "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+            "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+            comment_id=222,
+        )
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude_audit",
+                    "author_lane": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "id": 222,
+                    "created_at": "2026-08-19T16:20:00Z",
+                    "updated_at": "2026-08-19T16:35:00Z",
+                    "body": body,
+                    "user": {"login": "github-actions[bot]"},
+                }
+            ],
+            head_sha=head_sha,
+            actions_runs={
+                "12345": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "head_sha": head_sha,
+                    "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                },
+            },
+            audit_runs=[
+                {
+                    "run": {
+                        "id": 12346,
+                        "status": "in_progress",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:30:00Z",
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (claude)",
+                            "status": "in_progress",
+                            "conclusion": None,
+                            "started_at": "2026-08-19T16:30:00Z",
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(
+            result["gate_description"],
+            "audit in flight: Claude (run 12346 job 'audit (claude)' queued since 2026-08-19T16:30:00Z)",
+        )
+
+    def test_gate_decision_404_terminal_audit_runs_fixture_passes(self) -> None:
+        head_sha = "7821693" + ("a" * 33)
+        codex_body = self._bound_actions_body(
+            "Head SHA: `" + head_sha + "`\n"
+            "<!-- CODE_MOWER_AUDIT_RUN: run_id=31101 -->\n"
+            "<!-- CODEX_AUDIT_STATE: codex-audit-done -->",
+            comment_id=501,
+        )
+        claude_body = self._bound_actions_body(
+            "Head SHA: `" + head_sha + "`\n"
+            "<!-- CODE_MOWER_AUDIT_RUN: run_id=31102 -->\n"
+            "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+            comment_id=502,
+        )
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "author_lane": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "builder_label": "builder:codex",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                },
+                {
+                    "id": "claude_audit",
+                    "author_lane": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                },
+            ],
+            labels={"codex-audit-done", "claude-audit-done"},
+            comments=[
+                {
+                    "id": 501,
+                    "created_at": "2026-08-19T16:25:00Z",
+                    "updated_at": "2026-08-19T16:25:00Z",
+                    "body": codex_body,
+                    "user": {"login": "github-actions[bot]"},
+                },
+                {
+                    "id": 502,
+                    "created_at": "2026-08-19T16:26:00Z",
+                    "updated_at": "2026-08-19T16:26:00Z",
+                    "body": claude_body,
+                    "user": {"login": "github-actions[bot]"},
+                },
+            ],
+            head_sha=head_sha,
+            actions_runs={
+                "31101": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "head_sha": head_sha,
+                    "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                },
+                "31102": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "head_sha": head_sha,
+                    "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                },
+            },
+            audit_runs=[
+                {
+                    "run": {
+                        "id": 31101,
+                        "status": "completed",
+                        "conclusion": "cancelled",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:18:09Z",
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (codex)",
+                            "status": "in_progress",
+                            "conclusion": None,
+                        },
+                        {
+                            "name": "audit (claude)",
+                            "status": "queued",
+                            "conclusion": None,
+                        },
+                    ],
+                },
+                {
+                    "run": {
+                        "id": 31102,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:18:09Z",
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (codex)",
+                            "status": "completed",
+                            "conclusion": "success",
+                        },
+                        {
+                            "name": "audit (claude)",
+                            "status": "completed",
+                            "conclusion": "success",
+                        },
+                    ],
+                },
+                {
+                    "run": {
+                        "id": 31103,
+                        "status": "completed",
+                        "conclusion": "skipped",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:30:00Z",
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [],
+                },
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
 
     def test_gate_decision_ignores_in_flight_run_for_different_pr(self) -> None:
         head_sha = "a" * 40
@@ -1914,6 +2365,54 @@ jobs:
                 }
             ],
             owner_login="Owner",
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "owner gate override")
+
+    def test_gate_decision_allows_owner_override_from_late_timeline_page(self) -> None:
+        head_sha = "a" * 40
+        event_pages = [
+            [
+                {
+                    "event": "commented",
+                    "created_at": f"2026-08-19T00:{page:02d}:{index % 60:02d}Z",
+                }
+                for index in range(100)
+            ]
+            for page in range(6)
+        ]
+        event_pages.append(
+            [
+                {
+                    "event": "committed",
+                    "sha": head_sha,
+                    "created_at": "2026-08-19T16:00:00Z",
+                },
+                {
+                    "event": "labeled",
+                    "label": {"name": "gate:override"},
+                    "actor": {"login": "owner"},
+                    "created_at": "2026-08-19T16:01:00Z",
+                },
+            ]
+        )
+
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                }
+            ],
+            labels={"gate:override"},
+            event_pages=event_pages,
+            head_sha=head_sha,
+            owner_login="owner",
         )
 
         self.assertEqual(result["gate_state"], "success")
@@ -2579,6 +3078,7 @@ jobs:
             self.assertIn('CODE_MOWER_OWNER_SITTING_LABEL: "owner-sitting"', gate)
             self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
             self.assertIn('CODE_MOWER_GATE_OVERRIDE_LABEL: "gate:override"', gate)
+            self.assertNotIn("permission=admin", gate)
             self.assertIn("override_actor != override_owner", gate)
             self.assertIn("Clear stale Code Mower gate override", gate)
             self.assertIn("CODE_MOWER_GATE_OVERRIDE_CLEAR_FAILED=true", gate)

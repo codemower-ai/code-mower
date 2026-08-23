@@ -274,27 +274,33 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
               from tools.audit_labeler_lib import (
                   GitHubToken,
                   attested_non_current_audit_heads,
-                  audit_run_in_flight_for_lane,
+                  audit_run_in_flight_detail_for_lane,
+                  audit_verdict_newer_than_in_flight,
                   flatten_paginated_items,
                   github_actions_comment_attested,
                   latest_current_audit_verdict,
+                  latest_current_audit_verdict_detail,
               )
           except ImportError:  # pragma: no cover - unit-test/package fallback
               from code_mower.audit_labeler_lib import (
                   GitHubToken,
                   attested_non_current_audit_heads,
-                  audit_run_in_flight_for_lane,
+                  audit_run_in_flight_detail_for_lane,
+                  audit_verdict_newer_than_in_flight,
                   flatten_paginated_items,
                   github_actions_comment_attested,
                   latest_current_audit_verdict,
+                  latest_current_audit_verdict_detail,
               )
 
           # github_actions_comment_attested verifies the hidden CODE_MOWER_AUDIT_RUN marker
           # and requires comment_id/body_sha256 to match the issue comment being evaluated.
           def emit(state, description):
-              description = str(description).replace("\n", " ")[:140]
+              raw_description = str(description).replace("\n", " ")
+              description = raw_description[:140]
               print("gate_state=" + shlex.quote(state))
               print("gate_description=" + shlex.quote(description))
+              print("gate_log_description=" + shlex.quote(raw_description))
 
           try:
               lanes = json.loads(os.environ.get("CODE_MOWER_GATE_LANES_JSON", "[]"))
@@ -325,6 +331,9 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
               if isinstance(item, dict)
           }
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
+          comments = flatten_paginated_items(comments_payload)
+          events = flatten_paginated_items(events_payload)
+          audit_runs = audit_runs_payload if isinstance(audit_runs_payload, list) else []
           owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
           owner_sitting_label = os.environ.get("CODE_MOWER_OWNER_SITTING_LABEL", "owner-sitting")
           gate_override_label = os.environ.get("CODE_MOWER_GATE_OVERRIDE_LABEL", "gate:override")
@@ -343,9 +352,6 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           pr_number = str(pr_payload.get("number") or os.environ.get("PR_NUMBER") or "")
           pr_author = str(((pr_payload.get("user") or {}).get("login") or ""))
           github_tokens = (GitHubToken("GH_TOKEN", os.environ.get("GH_TOKEN", "")),)
-          comments = flatten_paginated_items(comments_payload)
-          events = flatten_paginated_items(events_payload)
-          audit_runs = audit_runs_payload if isinstance(audit_runs_payload, list) else []
 
           def mapping(section):
               value = exclusion.get(section) if isinstance(exclusion, dict) else {}
@@ -387,6 +393,14 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   trusted_comment_author=trusted_comment_author,
               )
 
+          def latest_current_verdict_detail(lane):
+              return latest_current_audit_verdict_detail(
+                  lane,
+                  comments,
+                  head_sha=head_sha,
+                  trusted_comment_author=trusted_comment_author,
+              )
+
           builder_matches = []
           if isinstance(exclusion, dict) and exclusion.get("enabled"):
               label_map = mapping("labels")
@@ -404,17 +418,24 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           def in_flight_lanes(required):
               names = []
               for lane in required:
-                  if any(
-                      audit_run_in_flight_for_lane(
+                  verdict = latest_current_verdict_detail(lane)
+                  for entry in audit_runs:
+                      if not isinstance(entry, dict):
+                          continue
+                      detail = audit_run_in_flight_detail_for_lane(
                           entry,
                           lane,
                           head_sha=head_sha,
                           pr_number=pr_number,
                       )
-                      for entry in audit_runs
-                      if isinstance(entry, dict)
-                  ):
-                      names.append(lane_display(lane))
+                      if detail is None:
+                          continue
+                      if audit_verdict_newer_than_in_flight(verdict, detail):
+                          continue
+                      names.append(
+                          lane_display(lane) + " (" + detail.description() + ")"
+                      )
+                      break
               return names
 
           blocked = [
@@ -588,7 +609,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
             -f description="${gate_description}" \
             -f target_url="${target_url}" >/dev/null
 
-          echo "Code Mower gate: ${gate_state} - ${gate_description}"
+          echo "Code Mower gate: ${gate_state} - ${gate_log_description:-${gate_description}}"
 
           # The merge signal is the commit status above. Keep expected
           # pending/failure verdicts from creating a second required check-run.
