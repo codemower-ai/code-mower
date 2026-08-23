@@ -113,16 +113,12 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           labels_file="$(mktemp)"
           comments_file="$(mktemp)"
           events_file="$(mktemp)"
-          admins_file="$(mktemp)"
           pr_file="$(mktemp)"
           workflow_runs_file="$(mktemp)"
           audit_runs_file="$(mktemp)"
           gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" > "${labels_file}"
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" > "${comments_file}"
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100" > "${events_file}"
-          if ! gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/collaborators?affiliation=all&permission=admin&per_page=100" > "${admins_file}"; then
-            printf '[]' > "${admins_file}"
-          fi
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}"
           if [ -z "${HEAD_SHA:-}" ]; then
             HEAD_SHA="$(python3 - "${pr_file}" <<'PY'
@@ -268,7 +264,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           fi
 
           eval "$(
-            python3 - "${labels_file}" "${comments_file}" "${events_file}" "${pr_file}" "${audit_runs_file}" "${admins_file}" <<'PY'
+            python3 - "${labels_file}" "${comments_file}" "${events_file}" "${pr_file}" "${audit_runs_file}" <<'PY'
           import json
           import os
           import shlex
@@ -317,8 +313,6 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   pr_payload = json.load(pr_handle)
               with open(sys.argv[5], encoding="utf-8") as audit_runs_handle:
                   audit_runs_payload = json.load(audit_runs_handle)
-              with open(sys.argv[6], encoding="utf-8") as admins_handle:
-                  admins_payload = json.load(admins_handle)
           except Exception:
               emit("failure", "Code Mower gate config could not be parsed")
               raise SystemExit(0)
@@ -337,7 +331,6 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
           comments = flatten_paginated_items(comments_payload)
           events = flatten_paginated_items(events_payload)
-          admin_collaborators = flatten_paginated_items(admins_payload)
           audit_runs = audit_runs_payload if isinstance(audit_runs_payload, list) else []
           owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
           owner_sitting_label = os.environ.get("CODE_MOWER_OWNER_SITTING_LABEL", "owner-sitting")
@@ -354,11 +347,6 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
               else repo_owner
           )
           override_owner = configured_override_owner.lower()
-          override_admins = {repo_owner.lower(), override_owner}
-          for collaborator in admin_collaborators:
-              login = str(collaborator.get("login") or "").strip().lower()
-              if login:
-                  override_admins.add(login)
           pr_number = str(pr_payload.get("number") or os.environ.get("PR_NUMBER") or "")
           pr_author = str(((pr_payload.get("user") or {}).get("login") or ""))
           github_tokens = (GitHubToken("GH_TOKEN", os.environ.get("GH_TOKEN", "")),)
@@ -425,12 +413,6 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           def lane_display(lane):
               return str(lane.get("display_name") or lane.get("id") or lane.get("done") or "")
 
-          def audit_detail_description(detail):
-              run_id = detail.run_id or "unknown"
-              job_name = detail.job_name or "unknown"
-              queued_since = detail.queued_since or "unknown"
-              return f"run {run_id} job {job_name!r} queued since {queued_since}"
-
           def verdict_newer_than_in_flight(verdict, detail):
               return (
                   verdict is not None
@@ -458,7 +440,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                       if verdict_newer_than_in_flight(verdict, detail):
                           continue
                       names.append(
-                          lane_display(lane) + " (" + audit_detail_description(detail) + ")"
+                          lane_display(lane) + " (" + detail.description() + ")"
                       )
                       break
               return names
@@ -531,7 +513,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
               emit("pending", owner_label + ": waiting on owner")
           elif owner_sitting_label and owner_sitting_label in labels:
               emit("pending", owner_sitting_label + ": waiting on owner")
-          elif gate_override_label and gate_override_label in labels and override_actor not in override_admins:
+          elif gate_override_label and gate_override_label in labels and override_actor != override_owner:
               emit("failure", gate_override_label + " was not owner-applied")
           elif gate_override_label and gate_override_label in labels and override_clear_failed:
               emit("failure", gate_override_label + " could not be cleared after head change")

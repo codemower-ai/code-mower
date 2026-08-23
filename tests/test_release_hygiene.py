@@ -1101,7 +1101,6 @@ jobs:
         actions_runs: dict[str, dict[str, object]] | None = None,
         audit_runs: list[dict[str, object]] | None = None,
         commit_pull_requests: dict[str, list[dict[str, object]]] | None = None,
-        admin_collaborators: list[dict[str, object]] | None = None,
         author_exclusion: dict[str, object] | None = None,
         owner_login: str = "owner",
         env: dict[str, str] | None = None,
@@ -1110,7 +1109,7 @@ jobs:
             ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
         ).read_text(encoding="utf-8")
         script = template.split(
-            'python3 - "${labels_file}" "${comments_file}" "${events_file}" "${pr_file}" "${audit_runs_file}" "${admins_file}" <<\'PY\'\n',
+            'python3 - "${labels_file}" "${comments_file}" "${events_file}" "${pr_file}" "${audit_runs_file}" <<\'PY\'\n',
             1,
         )[1].split("\n          PY", 1)[0]
         script = textwrap.dedent(script)
@@ -1130,9 +1129,6 @@ jobs:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             json.dump(audit_runs or [], handle)
             audit_runs_path = handle.name
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
-            json.dump([admin_collaborators or []], handle)
-            admins_path = handle.name
 
         stdout = StringIO()
         action_patch = nullcontext()
@@ -1193,7 +1189,6 @@ jobs:
                         events_path,
                         pr_path,
                         audit_runs_path,
-                        admins_path,
                     ],
                 ),
                 action_patch,
@@ -1210,7 +1205,6 @@ jobs:
             Path(events_path).unlink(missing_ok=True)
             Path(pr_path).unlink(missing_ok=True)
             Path(audit_runs_path).unlink(missing_ok=True)
-            Path(admins_path).unlink(missing_ok=True)
 
         result: dict[str, str] = {}
         for line in stdout.getvalue().splitlines():
@@ -1486,7 +1480,64 @@ jobs:
         self.assertEqual(result["gate_state"], "pending")
         self.assertEqual(
             result["gate_description"],
-            "audit in flight: Claude (run 12345 job 'audit (claude)' queued since 2026-08-19T16:18:09Z)",
+            "audit in flight: Claude (run 12345 job 'audit (claude)' queued since 2026-08-19T16:18:12Z)",
+        )
+
+    def test_gate_decision_done_verdict_older_than_in_flight_job_stays_pending(
+        self,
+    ) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude_audit",
+                    "author_lane": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "id": 222,
+                    "created_at": "2026-08-19T16:25:00Z",
+                    "updated_at": "2026-08-19T16:25:00Z",
+                    "body": "Head SHA: `" + head_sha + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                }
+            ],
+            head_sha=head_sha,
+            audit_runs=[
+                {
+                    "run": {
+                        "id": 12345,
+                        "status": "in_progress",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:18:09Z",
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (claude)",
+                            "status": "in_progress",
+                            "conclusion": None,
+                            "started_at": "2026-08-19T16:30:00Z",
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(
+            result["gate_description"],
+            "audit in flight: Claude (run 12345 job 'audit (claude)' queued since 2026-08-19T16:30:00Z)",
         )
 
     def test_gate_decision_done_verdict_newer_than_in_flight_run_passes(self) -> None:
@@ -2116,7 +2167,7 @@ jobs:
         self.assertEqual(result["gate_state"], "success")
         self.assertEqual(result["gate_description"], "owner gate override")
 
-    def test_gate_decision_allows_admin_override_from_late_timeline_page(self) -> None:
+    def test_gate_decision_allows_owner_override_from_late_timeline_page(self) -> None:
         head_sha = "a" * 40
         event_pages = [
             [
@@ -2138,7 +2189,7 @@ jobs:
                 {
                     "event": "labeled",
                     "label": {"name": "gate:override"},
-                    "actor": {"login": "repo-admin"},
+                    "actor": {"login": "owner"},
                     "created_at": "2026-08-19T16:01:00Z",
                 },
             ]
@@ -2159,12 +2210,6 @@ jobs:
             event_pages=event_pages,
             head_sha=head_sha,
             owner_login="owner",
-            admin_collaborators=[
-                {
-                    "login": "repo-admin",
-                    "permissions": {"admin": True},
-                }
-            ],
         )
 
         self.assertEqual(result["gate_state"], "success")
@@ -2808,8 +2853,8 @@ jobs:
             self.assertIn('CODE_MOWER_OWNER_SITTING_LABEL: "owner-sitting"', gate)
             self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
             self.assertIn('CODE_MOWER_GATE_OVERRIDE_LABEL: "gate:override"', gate)
-            self.assertIn("permission=admin", gate)
-            self.assertIn("override_actor not in override_admins", gate)
+            self.assertNotIn("permission=admin", gate)
+            self.assertIn("override_actor != override_owner", gate)
             self.assertIn("Clear stale Code Mower gate override", gate)
             self.assertIn("CODE_MOWER_GATE_OVERRIDE_CLEAR_FAILED=true", gate)
             self.assertNotIn('CODE_MOWER_OWNER_LABEL: "needs-owner"', gate)

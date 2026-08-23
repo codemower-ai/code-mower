@@ -569,7 +569,23 @@ def audit_run_queued_since(
     run: Mapping[str, Any],
     job: Mapping[str, Any] | None = None,
 ) -> str:
-    run_time = _audit_mapping_timestamp(
+    if job is not None:
+        job_time = _audit_mapping_timestamp(
+            job,
+            (
+                "queued_at",
+                "queuedAt",
+                "started_at",
+                "startedAt",
+                "created_at",
+                "createdAt",
+                "completed_at",
+                "completedAt",
+            ),
+        )
+        if job_time:
+            return job_time
+    return _audit_mapping_timestamp(
         run,
         (
             "created_at",
@@ -582,21 +598,6 @@ def audit_run_queued_since(
             "startedAt",
             "updated_at",
             "updatedAt",
-        ),
-    )
-    if run_time or job is None:
-        return run_time
-    return _audit_mapping_timestamp(
-        job,
-        (
-            "created_at",
-            "createdAt",
-            "queued_at",
-            "queuedAt",
-            "started_at",
-            "startedAt",
-            "completed_at",
-            "completedAt",
         ),
     )
 
