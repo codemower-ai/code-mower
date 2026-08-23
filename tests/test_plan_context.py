@@ -4,7 +4,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 from code_mower import claude_audit_pr, codex_audit_pr, plan_context
@@ -98,14 +97,7 @@ class PlanContextTests(unittest.TestCase):
             self.assertIn("plan context path escapes repo root", rendered.text)
             self.assertNotIn("do not exfiltrate", rendered.text)
 
-    def test_codex_review_passes_plan_context_prompt_on_stdin(self) -> None:
-        calls = {}
-
-        def fake_run(command, **kwargs):
-            calls["command"] = command
-            calls["input"] = kwargs.get("input")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
+    def test_codex_review_rejects_supplemental_prompt_with_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 mock.patch.object(
@@ -116,28 +108,16 @@ class PlanContextTests(unittest.TestCase):
                 mock.patch.object(
                     codex_audit_pr,
                     "run_subprocess_with_progress",
-                    side_effect=fake_run,
-                ),
-                mock.patch.object(
-                    codex_audit_pr,
-                    "_require_codex_review_stdin_prompt_support",
-                    return_value=None,
-                ),
-                mock.patch.object(
-                    codex_audit_pr,
-                    "_read_last_message_file",
-                    return_value="review text",
-                ),
+                ) as run_progress,
             ):
-                review, _stderr = codex_audit_pr.run_codex_review(
-                    codex_audit_pr.AuditConfig(github_token="", repo_paths={}),
-                    Path(tmp),
-                    "Plan context prompt",
-                )
+                with self.assertRaisesRegex(RuntimeError, "structured-verdict stage"):
+                    codex_audit_pr.run_codex_review(
+                        codex_audit_pr.AuditConfig(github_token="", repo_paths={}),
+                        Path(tmp),
+                        "Plan context prompt",
+                    )
 
-        self.assertEqual(review, "review text")
-        self.assertEqual(calls["command"][-1], "-")
-        self.assertEqual(calls["input"], "Plan context prompt")
+        run_progress.assert_not_called()
 
     def test_codex_review_omits_plan_prompt_when_no_context_sections_rendered(self) -> None:
         rendered = plan_context.RenderedPlanContext(
@@ -148,14 +128,39 @@ class PlanContextTests(unittest.TestCase):
 
         self.assertEqual(codex_audit_pr._codex_review_context_prompt(rendered), "")
 
-    def test_codex_review_requires_stdin_prompt_support_only_when_prompt_is_used(self) -> None:
-        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+    def test_codex_review_stdin_probe_runs_base_prompt_on_scratch_repo(self) -> None:
+        commands: list[list[str]] = []
+
+        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
             if command == ["codex", "exec", "review", "--help"]:
                 return subprocess.CompletedProcess(
                     command,
                     0,
-                    stdout="--base\n--output-last-message\n",
+                    stdout=(
+                        "Usage: codex exec review [OPTIONS] [PROMPT]\n"
+                        "If `-` is used, read from stdin\n"
+                        "--base\n--output-last-message\n"
+                    ),
                     stderr="",
+                )
+            if command and command[0] == "git":
+                self.assertIn("codex-review-stdin-probe-", str(kwargs.get("cwd")))
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+            if command == ["codex", "exec", "review", "--base", "x", "-"]:
+                self.assertIn("codex-review-stdin-probe-", str(kwargs.get("cwd")))
+                self.assertEqual(
+                    kwargs.get("input"),
+                    "Code Mower stdin prompt compatibility probe.\n",
+                )
+                return subprocess.CompletedProcess(
+                    command,
+                    2,
+                    stdout="",
+                    stderr=(
+                        "error: the argument '--base <BRANCH>' cannot be used "
+                        "with '[PROMPT]'"
+                    ),
                 )
             raise AssertionError(f"unexpected command: {command}")
 
@@ -164,16 +169,11 @@ class PlanContextTests(unittest.TestCase):
             repo_paths={},
             codex_cli_path="codex",
         )
-        with (
-            mock.patch.object(
-                codex_audit_pr,
-                "_resolve_executable_path",
-                return_value="codex",
-            ),
-            mock.patch.object(codex_audit_pr.subprocess, "run", side_effect=fake_run),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "stdin prompt"):
-                codex_audit_pr.run_codex_review(config, Path.cwd(), "Plan context")
+        with mock.patch.object(codex_audit_pr.subprocess, "run", side_effect=fake_run):
+            with self.assertRaisesRegex(RuntimeError, "cannot combine"):
+                codex_audit_pr._require_codex_review_stdin_prompt_support(config)
+
+        self.assertIn(["codex", "exec", "review", "--base", "x", "-"], commands)
 
     def test_renderer_reads_default_context_from_trusted_git_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

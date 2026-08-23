@@ -1195,9 +1195,66 @@ def _require_codex_review_stdin_prompt_support(config: AuditConfig) -> None:
             "Codex CLI is missing required structured-audit capability: "
             "codex exec review stdin prompt"
         )
+    probe_dir = _make_secure_temp_dir("codex-review-stdin-probe-")
+    try:
+        for git_command in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.name", "Code Mower"],
+            ["git", "config", "user.email", "code-mower@example.com"],
+            ["git", "commit", "--allow-empty", "-qm", "base"],
+            ["git", "branch", "x"],
+        ):
+            subprocess.run(
+                git_command,
+                cwd=str(probe_dir),
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+                check=True,
+            )
+        probe_command = [config.codex_cli_path, "exec", "review", "--base", "x", "-"]
+        probe = subprocess.run(
+            probe_command,
+            cwd=str(probe_dir),
+            input="Code Mower stdin prompt compatibility probe.\n",
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+    finally:
+        shutil.rmtree(str(probe_dir), ignore_errors=True)
+    probe_text = probe.stdout + probe.stderr
+    if probe.returncode != 0 and "--base" in probe_text and "[PROMPT]" in probe_text:
+        raise RuntimeError(
+            "Codex CLI cannot combine codex exec review --base with a stdin prompt"
+        )
+    if probe.returncode != 0:
+        raise subprocess.CalledProcessError(
+            probe.returncode,
+            probe_command,
+            output=probe.stdout,
+            stderr=probe.stderr,
+        )
 
 
-def _structured_verdict_prompt(review_text: str) -> str:
+def _structured_verdict_prompt(review_text: str, trusted_context: str = "") -> str:
+    context_block = ""
+    if trusted_context.strip():
+        context_block = (
+            "\nTrusted audit context:\n"
+            "----- BEGIN TRUSTED AUDIT CONTEXT -----\n"
+            f"{trusted_context.rstrip()}\n"
+            "----- END TRUSTED AUDIT CONTEXT -----\n\n"
+            "Use trusted context only to apply Code Mower audit policy to findings "
+            "already present in the review prose. If the context contains a decision "
+            "registry, an otherwise blocking finding covered by an exact registry "
+            "match must be emitted only as P3 and its detail must mention "
+            "`acknowledged by decision <id>`. Report registry-listed unauthorized "
+            "decision markers only as P3 `unauthorized decision marker`. Do not "
+            "invent P0/P1/P2 findings from trusted context.\n"
+        )
     return (
         "Convert the Codex review prose below into the exact structured "
         "audit verdict schema. This is a transport step, not a second "
@@ -1209,6 +1266,7 @@ def _structured_verdict_prompt(review_text: str) -> str:
         f"{CODEX_AUDIT_SCHEMA_ID!r}. For line ranges, use the first line. "
         "If the review says no blocking issues were found, return an "
         "empty findings array.\n\n"
+        f"{context_block}"
         "Review prose:\n"
         "----- BEGIN REVIEW -----\n"
         f"{review_text.rstrip()}\n"
@@ -1236,6 +1294,11 @@ def run_codex_review(
         label="Codex CLI",
         env_name="CODEX_CLI_PATH",
     )
+    if review_prompt.strip():
+        raise RuntimeError(
+            "Codex review --base cannot be combined with a stdin prompt; "
+            "pass supplemental context to the structured-verdict stage"
+        )
     env = _build_subprocess_env(config.venv_path)
     tmp_dir = _make_secure_temp_dir("codex-audit-review-")
     review_path = tmp_dir / "review.txt"
@@ -1249,9 +1312,6 @@ def run_codex_review(
         "--output-last-message",
         str(review_path),
     )
-    if review_prompt.strip():
-        _require_codex_review_stdin_prompt_support(config)
-        command.append("-")
     try:
         result = run_subprocess_with_progress(
             command,
@@ -1259,7 +1319,6 @@ def run_codex_review(
             phase="codex-review",
             run=subprocess.run,
             cwd=str(worktree_path),
-            input=review_prompt if review_prompt.strip() else None,
             capture_output=True,
             text=True,
             timeout=config.timeout,
@@ -1389,6 +1448,7 @@ def _decision_authorities_for_repo(
 def run_codex_verdict_structuring(
     config: AuditConfig,
     review_text: str,
+    trusted_context: str = "",
 ) -> Tuple[CodexVerdict, str, str]:
     """Convert review prose to a schema-validated verdict JSON artifact."""
     config.codex_cli_path = _resolve_executable_path(
@@ -1422,7 +1482,7 @@ def run_codex_verdict_structuring(
             phase="codex-structure",
             run=subprocess.run,
             cwd=str(_trusted_repo_root()),
-            input=_structured_verdict_prompt(review_text),
+            input=_structured_verdict_prompt(review_text, trusted_context),
             capture_output=True,
             text=True,
             timeout=config.timeout,
@@ -1790,14 +1850,14 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 )
                 if decision_registry_context.strip():
                     print("  decision registry: included", file=sys.stderr, flush=True)
+            trusted_audit_context = _codex_review_context_prompt(
+                rendered_plan_context,
+                decision_registry_context,
+            )
             t0 = time.time()
             review_text, review_stderr = run_codex_review(
                 config,
                 worktree_path,
-                _codex_review_context_prompt(
-                    rendered_plan_context,
-                    decision_registry_context,
-                ),
             )
             dt = time.time() - t0
             print(f"  codex review completed in {dt:.0f}s", file=sys.stderr, flush=True)
@@ -1811,6 +1871,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         parsed, structure_stdout, structure_stderr = run_codex_verdict_structuring(
             config,
             review_text,
+            trusted_audit_context,
         )
         dt = time.time() - t0
         print(

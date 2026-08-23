@@ -16,6 +16,7 @@ class CodexAuditPrTests(unittest.TestCase):
     def test_main_missing_repo_paths_error_links_local_audit_docs(self) -> None:
         stderr = StringIO()
         with (
+            mock.patch.dict("os.environ", {"CODEX_AUDIT_REPO_PATHS": ""}),
             mock.patch.object(cap, "_resolve_github_token", return_value="token"),
             redirect_stderr(stderr),
         ):
@@ -452,6 +453,115 @@ class CodexAuditPrTests(unittest.TestCase):
         self.assertIn("Trusted Code Mower decision registry", prompt)
         self.assertIn("ADR-007", prompt)
         self.assertIn("codex:b93829375d1f7c3d27fa", prompt)
+        structured_prompt = cap._structured_verdict_prompt("No blockers.", prompt)
+        self.assertIn("BEGIN TRUSTED AUDIT CONTEXT", structured_prompt)
+        self.assertIn("acknowledged by decision <id>", structured_prompt)
+
+    def test_codex_audit_sends_decision_registry_to_structuring_not_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            worktree = tmp_path / "worktree"
+            worktree.mkdir()
+            head_sha = "d" * 40
+            pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+            decision_comment = (
+                '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
+                'finding_id="codex:b93829375d1f7c3d27fa" by=owner ref=ADR-007 -->'
+            )
+            parsed = cap.CodexVerdict(
+                verdict="PASS",
+                prose="Summary:\n\nNo merge-blocking regressions found.\n\nFindings: none.",
+            )
+            review_prompts: list[str] = []
+            structuring_contexts: list[str] = []
+
+            def fake_review(
+                _config: cap.AuditConfig,
+                _worktree: Path,
+                review_prompt: str = "",
+            ) -> tuple[str, str]:
+                review_prompts.append(review_prompt)
+                return "review text", ""
+
+            def fake_structuring(
+                _config: cap.AuditConfig,
+                _review_text: str,
+                trusted_context: str = "",
+            ) -> tuple[cap.CodexVerdict, str, str]:
+                structuring_contexts.append(trusted_context)
+                return parsed, '{"structured_output":"pass"}', ""
+
+            config = cap.AuditConfig(
+                "token",
+                {"owner/repo": repo},
+                include_plan_context=False,
+                include_decision_context=True,
+                decision_authorities=("owner",),
+            )
+            review_context = cap.ReviewContextDiagnostics(
+                base_ref=config.base_ref,
+                head_sha=head_sha,
+                changed_file_count=1,
+                diff_bytes=128,
+                requested_max_bytes=config.max_diff_bytes,
+                hard_limit_bytes=(
+                    config.max_diff_hard_limit_bytes
+                    or cap.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES
+                ),
+                included_diff_bytes=128,
+                effective_budget_usd=config.max_budget_usd or cap.DEFAULT_MAX_BUDGET_USD,
+            )
+
+            with (
+                mock.patch.dict(
+                    "os.environ",
+                    {
+                        "PYTEST_CURRENT_TEST": "",
+                        "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                        "GITHUB_RUN_ID": "",
+                    },
+                ),
+                mock.patch.object(cap, "fetch_pull_request", side_effect=[pr_payload, pr_payload]),
+                mock.patch.object(cap, "fetch_issue_comments", return_value=[
+                    {
+                        "author_association": "MEMBER",
+                        "user": {"login": "owner"},
+                        "body": decision_comment,
+                    }
+                ]),
+                mock.patch.object(cap, "preflight_codex_cli", return_value="codex-test"),
+                mock.patch.object(cap, "_discover_venv", return_value=None),
+                mock.patch.object(cap, "_fetch_pr_head"),
+                mock.patch.object(cap, "_fetch_base_ref"),
+                mock.patch.object(
+                    cap,
+                    "_build_review_context_diagnostics",
+                    return_value=review_context,
+                ),
+                mock.patch.object(cap, "_create_temp_worktree", return_value=worktree),
+                mock.patch.object(cap, "_remove_worktree"),
+                mock.patch.object(cap, "run_codex_review", side_effect=fake_review),
+                mock.patch.object(
+                    cap,
+                    "run_codex_verdict_structuring",
+                    side_effect=fake_structuring,
+                ),
+                mock.patch.object(cap, "dump_cli_failure", return_value=tmp_path / "cli.log"),
+                mock.patch.object(
+                    cap,
+                    "post_pr_comment",
+                    return_value={"html_url": "https://github.test/comment/1"},
+                ),
+            ):
+                result = cap.audit_pr(config, "owner/repo", 42)
+
+        self.assertEqual(result.verdict, "PASS")
+        self.assertEqual(review_prompts, [""])
+        self.assertEqual(len(structuring_contexts), 1)
+        self.assertIn("Trusted Code Mower decision registry", structuring_contexts[0])
+        self.assertIn("ADR-007", structuring_contexts[0])
 
     def test_decision_registry_context_fetch_failure_degrades_to_empty(self) -> None:
         with mock.patch.object(
