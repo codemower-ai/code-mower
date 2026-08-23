@@ -111,7 +111,14 @@ code-mower doctor --preflight --json
 The GitHub stage should report the human automation token posture instead of a
 missing `DISPATCH_TOKEN` or invalid `DISPATCH_TOKEN_EXPIRES_AT` warning.
 
-## 3. Enable The Gate And Auto-Merge
+## 3. Enable The Gate And Auto-Merge (Promotion Step)
+
+Timing matters: perform this section only when at least one reviewer lane has
+met [docs/lane-promotion-policy.md](lane-promotion-policy.md). During an
+informational pilot, skip this section, leave `allow_auto_merge` off, and merge
+manually - otherwise a PR can merge on CI alone while `code-mower/gate` is not
+yet a required status. Turn the required gate status and `allow_auto_merge` on
+together, never separately.
 
 Enable repository auto-merge:
 
