@@ -13,6 +13,9 @@ Dispatcher rules:
 - Ready means open, labeled `__BUILD_LOOP_READY_LABEL__`, labeled for exactly one
   builder lane, not assigned, not carrying `blocked-by:*`, and not carrying any
   owner-blocking label: __OWNER_BLOCKING_LABELS__.
+- Ready issues from untrusted authors also need a trusted work-order comment.
+  The first content line must start with `# Work Order:`, `## Work Order:`, or
+  `Work order:`.
 - Dependencies listed under an issue `## Dependencies` section must be closed
   before dispatch.
 - A lane stops dispatching when its open PRs plus active dispatched issues reach

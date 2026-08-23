@@ -15,6 +15,9 @@ Dispatcher rules:
 - Ready means open, labeled `tier:R`, labeled for exactly one
   builder lane, not assigned, not carrying `blocked-by:*`, and not carrying any
   owner-blocking label: `needs-owner`, `owner-decision`, `owner-sitting`.
+- Ready issues from untrusted authors also need a trusted work-order comment.
+  The first content line must start with `# Work Order:`, `## Work Order:`, or
+  `Work order:`.
 - Dependencies listed under an issue `## Dependencies` section must be closed
   before dispatch.
 - A lane stops dispatching when its open PRs plus active dispatched issues reach

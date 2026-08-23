@@ -24,13 +24,24 @@ ready label and that lane's builder label. It skips issues with assignees, open
 active dispatch labels, open dependencies, or an open PR that already closes the
 issue.
 
+The dispatcher only hands an issue to a builder when the issue author is trusted
+or a trusted author has left a work-order comment. For untrusted-author issues,
+the work-order comment must come from the repository owner, a configured
+decision authority, or an explicitly opted-in trusted author, and its first
+content line must start with `# Work Order:`, `## Work Order:`, or
+`Work order:`. If neither condition is met, the dispatcher leaves one idempotent
+comment asking for a work order from an authority and does not add a dispatch
+label.
+
 Dependencies are read from an issue section named `## Dependencies`. Items like
 `#123` must be closed. External keys such as `PROJ-123` are matched by title
 prefix if the repository mirrors them as GitHub Issues.
 
 The dispatcher posts a short lane mention that points at `docs/lanes/<lane>.md`
-and `docs/build-loop.md`. Issue bodies remain the source of task detail and
-acceptance criteria.
+and `docs/build-loop.md`. Trusted-author issue bodies remain the source of task
+detail and acceptance criteria. For untrusted-author issues, the trusted
+work-order comment is the task source and issue title/body text is treated as an
+opaque reference.
 
 ## WIP Cap
 
@@ -83,6 +94,9 @@ default, that means the repository owner login plus the configured
 Hosted builder bot accounts are not trusted by default because their comments can
 restate untrusted issue content. To opt in a specific bot account, add it to
 `owner_surface.lane_runner_trusted_authors`.
+
+When the selected issue was opened by an untrusted author, the runner omits the
+issue title and body and includes the latest trusted work-order comment instead.
 
 Runner setup checklist:
 

@@ -151,10 +151,33 @@ has_open_pr_for_issue() {
     '
 }
 
+issue_work_order_gate() {
+  local issue="$1"
+  gh issue view "$issue" -R "$REPO" --json author,comments \
+    | jq -r --argjson trusted "$trusted_authors_json" '
+      def trusted_author($login):
+        any($trusted[]; (. | ascii_downcase) == (($login // "") | ascii_downcase));
+      def first_content_line($body):
+        ($body // "")
+        | split("\n")
+        | map(gsub("^\\s+|\\s+$"; ""))
+        | map(select(length > 0 and (startswith("<!--")|not)))
+        | .[0] // "";
+      def work_order_comment($body):
+        first_content_line($body)
+        | test("^(#{1,6}[[:space:]]*)?Work[- ]Order\\b[[:space:]]*:?"; "i");
+      trusted_author(.author.login // "") or any(
+        .comments[]?;
+        trusted_author(.author.login // "") and work_order_comment(.body // "")
+      )
+    '
+}
+
 if [ -z "$kind" ]; then
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
-    if [ "$(has_open_pr_for_issue "$candidate")" != "true" ]; then
+    if [ "$(has_open_pr_for_issue "$candidate")" != "true" ] && \
+      [ "$(issue_work_order_gate "$candidate")" = "true" ]; then
       num="$candidate"
       kind="issue"
       mode="build"
@@ -162,21 +185,23 @@ if [ -z "$kind" ]; then
     fi
   done < <(gh issue list -R "$REPO" --state open --label "$dispatch_label" --limit 100 \
     --json number,labels,assignees,author \
-    | jq -r --arg builder "$builder_label" --arg ready "$ready_label" --argjson owner_labels "$owner_labels_json" --argjson trusted "$trusted_authors_json" '
-      def trusted_author($login): any($trusted[]; . == $login);
+    | jq -r --arg builder "$builder_label" --arg ready "$ready_label" --argjson owner_labels "$owner_labels_json" '
       def owner_blocking_label($name): any($owner_labels[]; . == $name) or ($name|startswith("blocked-by:"));
       .[] | select(
         any(.labels[]; .name==$ready) and
         any(.labels[]; .name==$builder) and
         all(.labels[]; (owner_blocking_label(.name)|not)) and
-        ((.assignees // [])|length == 0) and
-        trusted_author(.author.login // "")
+        ((.assignees // [])|length == 0)
       ) | .number' | sort -n)
 fi
 
 if [ -z "$kind" ]; then
   echo "${LANE}: nothing to do"
   exit 0
+fi
+if [ "$kind" = "issue" ] && [ "$(issue_work_order_gate "$num")" != "true" ]; then
+  echo "${LANE}: refusing issue #${num}; needs a work order from an authority" >&2
+  exit 1
 fi
 echo "${LANE}: selected ${mode} ${kind} #${num}"
 
@@ -329,18 +354,42 @@ prompt_file="$(mktemp)"
     echo "## Target: issue #${num}"
     gh issue view "$num" -R "$REPO" --json title,body,labels,url,author \
       | jq -r --argjson trusted "$trusted_authors_json" '
-        def trusted_author($login): any($trusted[]; . == $login);
+        def trusted_author($login):
+          any($trusted[]; (. | ascii_downcase) == (($login // "") | ascii_downcase));
         def trusted_title:
           if trusted_author(.author.login // "") then (.title // "") else "[omitted: issue title author is not trusted]" end;
         "Title: \(trusted_title)\nAuthor: \(.author.login // "unknown")\nURL: \(.url)\nLabels: \([.labels[].name]|join(", "))\n\n" +
         (if trusted_author(.author.login // "") then (.body // "") else "[omitted: issue body author is not trusted]" end)'
     echo
-    echo "## Recent trusted comments on #${num}"
+    echo "## Trusted work-order comment on #${num}"
     gh issue view "$num" -R "$REPO" --json comments \
       | jq -r --argjson trusted "$trusted_authors_json" '
-        def trusted_author($login): any($trusted[]; . == $login);
-        [.comments[]? | select(trusted_author(.author.login // ""))] | .[-8:][]? |
+        def trusted_author($login):
+          any($trusted[]; (. | ascii_downcase) == (($login // "") | ascii_downcase));
+        def first_content_line($body):
+          ($body // "")
+          | split("\n")
+          | map(gsub("^\\s+|\\s+$"; ""))
+          | map(select(length > 0 and (startswith("<!--")|not)))
+          | .[0] // "";
+        def work_order_comment($body):
+          first_content_line($body)
+          | test("^(#{1,6}[[:space:]]*)?Work[- ]Order\\b[[:space:]]*:?"; "i");
+        [.comments[]? | select(trusted_author(.author.login // "") and work_order_comment(.body // ""))]
+        | .[-1:][]? |
         "--- \(.author.login) \(.createdAt)\n\(.body)"' || true
+    echo
+    echo "## Recent trusted comments on #${num}"
+    gh issue view "$num" -R "$REPO" --json author,comments \
+      | jq -r --argjson trusted "$trusted_authors_json" '
+        def trusted_author($login):
+          any($trusted[]; (. | ascii_downcase) == (($login // "") | ascii_downcase));
+        if trusted_author(.author.login // "") then
+          [.comments[]? | select(trusted_author(.author.login // ""))] | .[-8:][]? |
+          "--- \(.author.login) \(.createdAt)\n\(.body)"
+        else
+          empty
+        end' || true
   else
     if [ "$mode" = "audit" ]; then
       echo "## Target: pull request #${num} (audit duty)"

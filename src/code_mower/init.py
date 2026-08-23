@@ -950,9 +950,22 @@ def _builder_dispatch_lane_entries(
     return tuple(entries)
 
 
+def _build_loop_trusted_authors(
+    owner_surface: Mapping[str, str],
+    decision_authorities: Sequence[str],
+) -> tuple[str, ...]:
+    trusted_authors = [
+        *decision_authorities,
+        *_csv_items(owner_surface["lane_runner_trusted_authors"], ""),
+    ]
+    return tuple(dict.fromkeys(trusted_authors))
+
+
 def _dispatch_lanes_workflow_entry(
     builder_entries: Sequence[Mapping[str, str]],
     owner_surface: Mapping[str, str],
+    *,
+    decision_authorities: Sequence[str] = (),
 ) -> dict[str, str]:
     owner_labels = _build_loop_owner_labels(owner_surface)
     return {
@@ -973,6 +986,10 @@ def _dispatch_lanes_workflow_entry(
         ),
         "build_loop_max_wip": owner_surface["builder_wip_cap"],
         "dispatch_token_env": owner_surface["dispatch_token_env"],
+        "build_loop_trusted_authors_json": json.dumps(
+            _build_loop_trusted_authors(owner_surface, decision_authorities),
+            separators=(",", ":"),
+        ),
     }
 
 
@@ -1047,10 +1064,6 @@ def _lane_mac_runner_script_entry(
     for prefix, lane in sorted(configured_prefixes.items()):
         if lane in branch_prefixes and prefix not in branch_prefixes[lane]:
             branch_prefixes[lane].append(prefix)
-    trusted_authors = [
-        *decision_authorities,
-        *_csv_items(owner_surface["lane_runner_trusted_authors"], ""),
-    ]
     return {
         "path": LANE_MAC_RUNNER_SCRIPT_PATH,
         "source": "lane-mac-runner-script-template",
@@ -1082,7 +1095,9 @@ def _lane_mac_runner_script_entry(
             _build_loop_owner_labels(owner_surface),
             separators=(",", ":"),
         ),
-        "lane_mac_runner_trusted_authors": ",".join(dict.fromkeys(trusted_authors)),
+        "lane_mac_runner_trusted_authors": ",".join(
+            _build_loop_trusted_authors(owner_surface, decision_authorities)
+        ),
         "build_loop_ready_label": owner_surface["ready_label"],
         "needs_owner_label": owner_surface["needs_owner_label"],
     }
@@ -1681,6 +1696,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
             entry.get("build_loop_ready_label") or ""
         ),
         "__BUILD_LOOP_READY_LABEL__": str(entry.get("build_loop_ready_label") or ""),
+        "__BUILD_LOOP_TRUSTED_AUTHORS_JSON__": _yaml_scalar(
+            entry.get("build_loop_trusted_authors_json") or "[]"
+        ),
         "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
         "__AGENT_PR_RULES_JSON__": _yaml_scalar(
@@ -2346,7 +2364,13 @@ def render_init_plan(
             }
         )
         generated_paths.add(BUILDER_DISPATCH_WORKFLOW_PATH)
-        generated_files.append(_dispatch_lanes_workflow_entry(builder_entries, owner_surface))
+        generated_files.append(
+            _dispatch_lanes_workflow_entry(
+                builder_entries,
+                owner_surface,
+                decision_authorities=decision_authority_list,
+            )
+        )
 
     mac_runner_entries = tuple(
         entry
@@ -2584,7 +2608,11 @@ def render_init_plan(
             "lanes": list(builder_entries),
             "ready_label": owner_surface["ready_label"],
             "owner_labels": json.loads(
-                _dispatch_lanes_workflow_entry(builder_entries, owner_surface)[
+                _dispatch_lanes_workflow_entry(
+                    builder_entries,
+                    owner_surface,
+                    decision_authorities=decision_authority_list,
+                )[
                     "build_loop_owner_labels_json"
                 ]
             )
