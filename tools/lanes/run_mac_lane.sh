@@ -63,7 +63,7 @@ trusted_authors_json="$(
   printf '%s\n' "$trusted_authors" \
     | jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))'
 )"
-audit_needs_labels_json='["needs-codex-audit","needs-claude-audit"]'
+audit_labels_json='{"claude":{"blocked":"claude-audit-blocked","done":"claude-audit-done","needs":"needs-claude-audit"},"codex":{"blocked":"codex-audit-blocked","done":"codex-audit-done","needs":"needs-codex-audit"}}'
 audit_block_filter='.name=="codex-audit-blocked" or .name=="claude-audit-blocked"'
 ready_label="tier:R"
 owner_label="needs-owner"
@@ -99,29 +99,31 @@ if [ -z "$kind" ]; then
 fi
 
 if [ -z "$kind" ] && [ "$LANE" = "claude" ] && [ "$ENABLE_AUDIT_DUTY" = "true" ]; then
-  claude_needs="$(
-    AUDIT_NEEDS_LABELS_JSON="$audit_needs_labels_json" python3 - <<'PY'
-import json
-import os
-
-labels = json.loads(os.environ["AUDIT_NEEDS_LABELS_JSON"])
-print(next((label for label in labels if "claude" in label), "needs-claude-audit"))
-PY
+  claude_needs="$(printf '%s\n' "$audit_labels_json" | jq -r '.claude.needs // empty')"
+  [ -n "$claude_needs" ] || { echo "missing claude audit needs label" >&2; exit 2; }
+  claude_terminal_labels_json="$(
+    printf '%s\n' "$audit_labels_json" \
+      | jq -c '[.claude.done, .claude.blocked] | map(select(. != null and . != ""))'
   )"
   num="$(gh pr list -R "$REPO" --state open --label "$claude_needs" --limit 100 \
     --json number,labels,updatedAt \
-    -q '[.[] | select(all(.labels[]; .name!="claude-audit-done" and .name!="claude-audit-blocked"))] | sort_by(.updatedAt) | .[0].number // empty')"
+    | jq -r --argjson terminal "$claude_terminal_labels_json" '
+      def terminal_label($name): any($terminal[]; . == $name);
+      [.[] | select(all(.labels[]; (terminal_label(.name)|not)))] | sort_by(.updatedAt) | .[0].number // empty')"
   [ -n "$num" ] && kind="pr" && mode="audit"
 fi
 
 has_open_pr_for_issue() {
   local issue="$1"
   gh pr list -R "$REPO" --state open --search "\"#${issue}\" in:body" --limit 100 \
-    --json body,closingIssuesReferences \
-    | jq -r --arg issue "$issue" '
-      any(.[]; (
-        any((.closingIssuesReferences // [])[]; ((.number // "") | tostring) == $issue) or
-        ((.body // "") | test("#" + $issue + "\\b"))
+    --json closingIssuesReferences \
+    | jq -r --arg issue "$issue" --arg repo "$REPO" '
+      def ref_repo:
+        ((.repository // {}) as $repository
+          | (($repository.owner.login // "") + "/" + ($repository.name // "")));
+      any(.[]; any((.closingIssuesReferences // [])[];
+        ((.number // "") | tostring) == $issue
+        and ((ref_repo == "/") or ((ref_repo | ascii_downcase) == ($repo | ascii_downcase)))
       ))
     '
 }

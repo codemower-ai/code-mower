@@ -110,6 +110,8 @@ class InitBuildLoopTests(unittest.TestCase):
             self.assertIn("[omitted: PR title author is not trusted]", runner_text)
             self.assertIn("has_open_pr_for_issue()", runner_text)
             self.assertIn("closingIssuesReferences", runner_text)
+            self.assertNotIn("--json body,closingIssuesReferences", runner_text)
+            self.assertNotIn('test("#" + $issue', runner_text)
 
     def test_dispatcher_expires_stale_dispatches_with_paginated_events_and_exact_closing_refs(self) -> None:
         plan = _builders_plan()
@@ -189,7 +191,7 @@ fi
             gh_log_text,
         )
 
-    def test_mac_lane_runner_does_not_treat_issue_prefix_pr_as_open_work(self) -> None:
+    def test_mac_lane_runner_ignores_non_closing_pr_body_mentions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bin_dir = root / "bin"
@@ -212,7 +214,7 @@ elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
   if [[ "$args" == *"--json number"* ]]; then
     printf '1\\n'
   else
-    printf '%s\\n' '[{"number":99,"body":"Closes #123","closingIssuesReferences":[{"number":123}]}]'
+    printf '%s\\n' '[{"number":99,"body":"Discusses #12 but closes #123","closingIssuesReferences":[{"number":123}]}]'
   fi
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\\n'
@@ -288,6 +290,9 @@ printf 'fake codex completed\\n'
             "bridge-pro-lane",
         ]
         cfg["owner_surface"]["lane_runner_enabled_var"] = "BRIDGE_PRO_LANE_ENABLED"
+        cfg["lanes"]["claude_audit"]["labels"]["needs"] = "needs-jeff-audit"
+        cfg["lanes"]["claude_audit"]["labels"]["done"] = "jeff-audit-done"
+        cfg["lanes"]["claude_audit"]["labels"]["blocked"] = "jeff-audit-blocked"
         cfg["builder_identity"]["labels"].pop("builder:codex")
         cfg["builder_identity"]["labels"]["builder:code-mower-codex"] = "codex"
         plan = _builders_plan(cfg)
@@ -339,6 +344,14 @@ printf 'fake codex completed\\n'
             """owner_labels_json='["needs-jeff","decision-jeff","sitting-jeff"]'""",
             runner,
         )
+        self.assertIn(
+            """"claude":{"blocked":"jeff-audit-blocked","done":"jeff-audit-done","needs":"needs-jeff-audit"}""",
+            runner,
+        )
+        self.assertIn('claude_needs="$(printf', runner)
+        self.assertIn("terminal_label(.name)|not", runner)
+        self.assertNotIn('.name!="claude-audit-done"', runner)
+        self.assertNotIn('.name!="claude-audit-blocked"', runner)
         self.assertIn("def owner_blocking_label($name)", runner)
         self.assertIn("owner_blocking_label(.name)|not", runner)
 

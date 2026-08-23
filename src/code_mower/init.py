@@ -1006,11 +1006,14 @@ def _lane_mac_runner_script_entry(
         for entry in audit_lanes
         if str(entry.get("blocked") or "")
     ]
-    needs_labels = [
-        str(entry.get("needs") or "")
+    audit_labels = {
+        str(entry["author_lane"]): {
+            "blocked": str(entry.get("blocked") or ""),
+            "done": str(entry.get("done") or ""),
+            "needs": str(entry.get("needs") or ""),
+        }
         for entry in audit_lanes
-        if str(entry.get("needs") or "")
-    ]
+    }
     builder_labels = {
         str(entry["lane"]): str(entry["builder_label"])
         for entry in builder_entries
@@ -1037,7 +1040,11 @@ def _lane_mac_runner_script_entry(
             f'.name=={json.dumps(label)}' for label in blocked_labels
         )
         or "false",
-        "lane_mac_runner_needs_labels_json": json.dumps(needs_labels, separators=(",", ":")),
+        "lane_mac_runner_audit_labels_json": json.dumps(
+            audit_labels,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
         "lane_mac_runner_owner_labels_json": json.dumps(
             _build_loop_owner_labels(owner_surface),
             separators=(",", ":"),
@@ -1688,6 +1695,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__LANE_MAC_RUNNER_BUILDER_LABELS_JSON__": str(
             entry.get("lane_mac_runner_builder_labels_json") or "{}"
         ),
+        "__LANE_MAC_RUNNER_AUDIT_LABELS_JSON__": str(
+            entry.get("lane_mac_runner_audit_labels_json") or "{}"
+        ),
         "__LANE_MAC_RUNNER_BLOCKED_LABELS_JQ__": str(
             entry.get("lane_mac_runner_blocked_labels_jq") or "false"
         ),
@@ -1704,9 +1714,6 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__LANE_MAC_RUNNER_MAX_MINUTES__": str(
             entry.get("lane_mac_runner_max_minutes") or "90"
-        ),
-        "__LANE_MAC_RUNNER_NEEDS_LABELS_JSON__": str(
-            entry.get("lane_mac_runner_needs_labels_json") or "[]"
         ),
         "__LANE_MAC_RUNNER_OWNER_LABELS_JSON__": str(
             entry.get("lane_mac_runner_owner_labels_json") or "[]"
