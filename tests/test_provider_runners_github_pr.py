@@ -60,6 +60,44 @@ class GitHubPrHelperTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "files response was not a list"):
                 github_pr.fetch_pull_request_files("owner/repo", 12, token="ghs_token")
 
+    def test_fetch_issue_comments_paginates_until_short_page(self) -> None:
+        page_one = [{"id": index} for index in range(100)]
+        page_two = [{"id": 101}]
+        with mock.patch.object(
+            github_pr,
+            "_gh_request",
+            side_effect=[page_one, page_two],
+        ) as request:
+            comments = github_pr.fetch_issue_comments("owner/repo", 12, token="ghs_token")
+
+        self.assertEqual(comments, [*page_one, *page_two])
+        self.assertEqual(request.call_count, 2)
+        request.assert_has_calls(
+            [
+                mock.call(
+                    "GET",
+                    "/repos/owner/repo/issues/12/comments?per_page=100&page=1",
+                    token="ghs_token",
+                ),
+                mock.call(
+                    "GET",
+                    "/repos/owner/repo/issues/12/comments?per_page=100&page=2",
+                    token="ghs_token",
+                ),
+            ]
+        )
+
+    def test_fetch_issue_comments_rejects_full_page_cap(self) -> None:
+        page = [{"id": index} for index in range(100)]
+        with mock.patch.object(github_pr, "_gh_request", return_value=page):
+            with self.assertRaisesRegex(RuntimeError, "pagination cap"):
+                github_pr.fetch_issue_comments(
+                    "owner/repo",
+                    12,
+                    token="ghs_token",
+                    page_cap=1,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

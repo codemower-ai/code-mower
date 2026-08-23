@@ -18,6 +18,7 @@ from .github_auth import (
 )
 from .github_pr import (
     edit_pr_comment,
+    fetch_issue_comments,
     fetch_pull_request,
     fetch_pull_request_diff,
     fetch_pull_request_files,
@@ -60,6 +61,7 @@ __all__ = [
     "fetch_pull_request",
     "fetch_pull_request_diff",
     "fetch_pull_request_files",
+    "fetch_issue_comments",
     "edit_pr_comment",
     "FetchedHeadMismatch",
     "fetch_base_ref",

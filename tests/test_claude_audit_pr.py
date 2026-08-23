@@ -114,6 +114,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             with (
@@ -205,6 +206,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             with (
@@ -271,6 +273,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             with (
@@ -360,6 +363,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             with (
@@ -434,6 +438,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             def fake_run(
@@ -497,6 +502,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             with (
@@ -569,6 +575,40 @@ class ClaudeAuditPrTests(unittest.TestCase):
 
         self.assertIn(cap.UNKNOWN_REQUEUE_MARKER, unknown)
         self.assertIn(cap.STALE_REQUEUE_MARKER, stale)
+
+    def test_claude_prompt_includes_decision_registry(self) -> None:
+        comments = [
+            {
+                "author_association": "MEMBER",
+                "body": (
+                    '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
+                    'resolves="HOST_DISPLAY_NAME" by=owner ref=ADR-007 -->'
+                ),
+            }
+        ]
+        with mock.patch.object(cap, "fetch_issue_comments", return_value=comments):
+            registry = cap._decision_registry_context(
+                "owner/repo",
+                42,
+                token="token",
+            )
+
+        prompt = cap._review_prompt(
+            repo="owner/repo",
+            pr_number=42,
+            head_sha="a" * 40,
+            base_ref="origin/main",
+            branch_name="human/fix",
+            title="Fix",
+            diff_stat="src/app.py | 1 +",
+            diff_text="diff --git a/src/app.py b/src/app.py",
+            was_truncated=False,
+            decision_registry_text=registry,
+        )
+
+        self.assertIn("Trusted Code Mower decision registry", prompt)
+        self.assertIn("ADR-007", prompt)
+        self.assertIn("HOST_DISPLAY_NAME", prompt)
 
 
 if __name__ == "__main__":

@@ -188,6 +188,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "codex-audit",
                 "codex-audit-env-preflight",
                 "codex-audit-schema-smoke",
+                "decide",
                 "doctor",
                 "gemini-cli",
                 "gate-health",
@@ -1393,6 +1394,49 @@ jobs:
         self.assertEqual(result["gate_state"], "failure")
         self.assertEqual(result["gate_description"], "blocked audit: Claude")
 
+    def test_gate_decision_treats_decision_covered_blocked_verdict_as_done(self) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "builder_label": "builder:codex",
+                    "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+                }
+            ],
+            labels={"codex-audit-done"},
+            comments=[
+                {
+                    "id": 1,
+                    "author_association": "MEMBER",
+                    "body": (
+                        '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
+                        'resolves="HOST_DISPLAY_NAME" by=owner ref=ADR-007 -->'
+                    ),
+                    "user": {"login": "owner"},
+                },
+                {
+                    "id": 2,
+                    "created_at": "2026-08-18T02:52:00Z",
+                    "body": (
+                        "Head SHA: `" + head_sha + "`\n"
+                        "Findings:\n\n"
+                        "- [P2] HOST_DISPLAY_NAME class-B finding repeats -- `src/app.py:1`\n"
+                        "  ADR-007 already accepted this topic.\n\n"
+                        "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
+                    ),
+                    "user": {"login": "codex-audit-bot"},
+                },
+            ],
+            head_sha=head_sha,
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
     def test_gate_decision_uses_updated_comment_order_for_latest_verdict(self) -> None:
         head_sha = "a" * 40
         result = self._run_gate_template_decision(
@@ -2569,6 +2613,7 @@ jobs:
                 repo / "tools" / "code_mower_standalone_shadow.sh",
                 repo / "tools" / "run_codex_audit_pr.sh",
                 repo / "tools" / "audit_labeler_lib.py",
+                repo / "tools" / "decisions.py",
                 repo / "tools" / "safe_gh_comment.py",
             ]
             for path in support_paths:
@@ -2586,6 +2631,7 @@ jobs:
         self.assertEqual(payload["status"], "mirrors_removed")
         self.assertEqual(payload["mirrored_file_count"], 0)
         self.assertIn("tools/audit_labeler_lib.py", payload["product_support_files"])
+        self.assertIn("tools/decisions.py", payload["product_support_files"])
         self.assertIn("tools/run_codex_audit_pr.sh", payload["product_support_files"])
         self.assertIn("tools/safe_gh_comment.py", payload["product_support_files"])
 
@@ -3489,6 +3535,7 @@ fi
                 "tools/run_codex_audit_pr.sh",
                 "tools/run_claude_audit_pr.sh",
                 "tools/audit_labeler_lib.py",
+                "tools/decisions.py",
                 "tools/safe_gh_comment.py",
                 "tools/status_report.py",
             }
@@ -3507,6 +3554,7 @@ fi
             non_executable_generated = {
                 "reviewer-value-report.example.md",
                 "tools/audit_labeler_lib.py",
+                "tools/decisions.py",
                 "tools/code_mower_standalone_pin.env",
             }
             for rel_path in generated - non_executable_generated:
@@ -3973,6 +4021,7 @@ printf '%s\\n' "${lane}"
             "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
             "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
             "src/code_mower/audit_labeler_lib.py",
+            "src/code_mower/decisions.py",
             "src/code_mower/templates/product-support/safe_gh_comment.py",
             "src/code_mower/templates/product-support/status_report.py",
         ):

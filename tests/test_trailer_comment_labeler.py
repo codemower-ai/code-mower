@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from code_mower import trailer_comment_labeler
 from code_mower.audit_labeler_lib import GitHubToken, IssueCommentPaginationLimitExceeded
@@ -10,6 +11,7 @@ from code_mower.trailer_comment_labeler import resolve_label_decision
 
 
 HEAD_SHA = "abcdef0123456789abcdef0123456789abcdef01"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def _event(author: str, body: str, *, action: str = "created", comment_id: int = 9001) -> dict:
@@ -137,6 +139,33 @@ def test_labeler_later_blocked_demotes_earlier_done(monkeypatch) -> None:
     assert reason == "label blocked"
     assert decision.add_label == "codex-audit-blocked"
     assert decision.remove_labels == ("needs-codex-audit", "codex-audit-done")
+
+
+def test_labeler_counts_decision_covered_p2_as_codex_done(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
+    config = load_lane_config("codex")
+    transcript = json.loads(
+        (FIXTURES / "bridge_pro_311_decision_transcript.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    audit_comment = transcript[-1]
+
+    decision, reason = resolve_label_decision(
+        _event(
+            "codex-audit-bot",
+            audit_comment["body"],
+            comment_id=int(audit_comment["id"]),
+        ),
+        current_head_sha=HEAD_SHA,
+        config=config,
+        issue_comments=transcript,
+    )
+
+    assert decision is not None
+    assert reason == "label done"
+    assert decision.add_label == "codex-audit-done"
+    assert decision.remove_labels == ("needs-codex-audit", "codex-audit-blocked")
 
 
 def test_configured_shared_author_requires_matching_lane_trailer(monkeypatch) -> None:

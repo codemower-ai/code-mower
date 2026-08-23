@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 if __package__ and __package__.startswith("code_mower"):
+    from . import decisions as code_mower_decisions
     from .audit_labeler_lib import (
         LaneConfig,
         GitHubToken,
@@ -35,6 +36,7 @@ if __package__ and __package__.startswith("code_mower"):
     from .lane_configs import load_lane_config
 else:
     try:
+        from tools import decisions as code_mower_decisions
         from tools.audit_labeler_lib import (
             LaneConfig,
             GitHubToken,
@@ -52,6 +54,7 @@ else:
         )
         from tools.lane_configs import load_lane_config
     except ImportError:  # pragma: no cover - direct `python tools/foo.py` execution
+        import decisions as code_mower_decisions  # type: ignore
         from audit_labeler_lib import (
             LaneConfig,
             GitHubToken,
@@ -76,7 +79,12 @@ HEAD_CHANGED_PATTERN = re.compile(
 )
 
 
-def classify_audit_comment(body: str, config: LaneConfig) -> Optional[str]:
+def classify_audit_comment(
+    body: str,
+    config: LaneConfig,
+    *,
+    decision_records: Sequence[code_mower_decisions.DecisionRecord] = (),
+) -> Optional[str]:
     """Return "done", "blocked", "needs", or None for a lane comment body."""
     trailers = list(config.trailer_pattern().finditer(body))
     if trailers:
@@ -84,6 +92,11 @@ def classify_audit_comment(body: str, config: LaneConfig) -> Optional[str]:
         if label == config.done_label:
             return "done"
         if label == config.blocked_label:
+            if code_mower_decisions.audit_blockers_are_decision_covered(
+                body,
+                decision_records,
+            ):
+                return "done"
             return "blocked"
         return "needs"
 
@@ -150,6 +163,9 @@ def _is_latest_current_terminal_comment(
 ) -> bool:
     if not issue_comments or not current_head_sha:
         return True
+    decision_records = code_mower_decisions.collect_decision_records_from_comments(
+        issue_comments,
+    )
     latest: Mapping[str, Any] | None = None
     for comment in issue_comments:
         author = str(((comment.get("user") or {}).get("login")) or "")
@@ -176,7 +192,11 @@ def _is_latest_current_terminal_comment(
             and not has_authoritative_trailer(body, config)
         ):
             continue
-        status = classify_audit_comment(body, config)
+        status = classify_audit_comment(
+            body,
+            config,
+            decision_records=decision_records,
+        )
         if status not in {"done", "blocked"}:
             continue
         reviewed_sha = extract_reviewed_sha(body)
@@ -239,7 +259,14 @@ def resolve_label_decision(
             f"{config.trailer_prefix} trailer",
         )
 
-    status = classify_audit_comment(body, config)
+    decision_records = code_mower_decisions.collect_decision_records_from_comments(
+        issue_comments or (),
+    )
+    status = classify_audit_comment(
+        body,
+        config,
+        decision_records=decision_records,
+    )
     if status is None:
         return None, f"comment is not a final {config.display_name} audit result"
 

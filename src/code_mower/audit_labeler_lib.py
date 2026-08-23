@@ -22,6 +22,14 @@ from typing import Any, Callable, Dict, Mapping, Optional, Pattern, Sequence
 from urllib.parse import quote
 import re
 
+if __package__:
+    try:
+        from . import decisions as code_mower_decisions
+    except ImportError:  # pragma: no cover - copied tools fallback
+        import decisions as code_mower_decisions  # type: ignore
+else:  # pragma: no cover - direct helper execution
+    import decisions as code_mower_decisions  # type: ignore
+
 MIN_ABBREVIATED_SHA_LENGTH = 7
 AUTHOR_EXCLUSION_ENV = "CODE_MOWER_AUTHOR_EXCLUSION_JSON"
 ACTIONS_RUN_MARKER_RE = re.compile(
@@ -393,7 +401,12 @@ def audit_comment_head_sha(body: str) -> str:
     return match.group(1) if match else ""
 
 
-def terminal_audit_trailer_verdict(lane: Mapping[str, Any], body: str) -> str:
+def terminal_audit_trailer_verdict(
+    lane: Mapping[str, Any],
+    body: str,
+    *,
+    decisions: Sequence[code_mower_decisions.DecisionRecord] = (),
+) -> str:
     candidates: list[tuple[int, str]] = []
     for label_key, verdict in (("done", "done"), ("blocked", "blocked")):
         label = str(lane.get(label_key) or "")
@@ -404,7 +417,13 @@ def terminal_audit_trailer_verdict(lane: Mapping[str, Any], body: str) -> str:
             candidates.append((index, verdict))
     if not candidates:
         return ""
-    return max(candidates, key=lambda item: item[0])[1]
+    verdict = max(candidates, key=lambda item: item[0])[1]
+    if verdict == "blocked" and code_mower_decisions.audit_blockers_are_decision_covered(
+        body,
+        decisions,
+    ):
+        return "done"
+    return verdict
 
 
 def current_audit_trailer_verdict(
@@ -412,10 +431,11 @@ def current_audit_trailer_verdict(
     body: str,
     *,
     head_sha: str,
+    decisions: Sequence[code_mower_decisions.DecisionRecord] = (),
 ) -> str:
     if "Head SHA: `" + head_sha + "`" not in body:
         return ""
-    return terminal_audit_trailer_verdict(lane, body)
+    return terminal_audit_trailer_verdict(lane, body, decisions=decisions)
 
 
 def latest_current_audit_verdict(
@@ -448,12 +468,18 @@ def latest_current_audit_verdict_detail(
     ],
 ) -> AuditVerdict | None:
     verdicts: list[AuditVerdict] = []
+    decisions = code_mower_decisions.collect_decision_records_from_comments(comments)
     for index, comment in enumerate(comments):
         author = str(((comment.get("user") or {}).get("login")) or "")
         body = str(comment.get("body") or "")
         if not trusted_comment_author(lane, author, body, comment.get("id"), None):
             continue
-        verdict = current_audit_trailer_verdict(lane, body, head_sha=head_sha)
+        verdict = current_audit_trailer_verdict(
+            lane,
+            body,
+            head_sha=head_sha,
+            decisions=decisions,
+        )
         if verdict:
             try:
                 comment_id = int(comment.get("id") or 0)

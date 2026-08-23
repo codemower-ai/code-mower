@@ -146,7 +146,7 @@ class PlanContextTests(unittest.TestCase):
             included_bytes=0,
         )
 
-        self.assertEqual(codex_audit_pr._codex_review_plan_prompt(rendered), "")
+        self.assertEqual(codex_audit_pr._codex_review_context_prompt(rendered), "")
 
     def test_codex_review_requires_stdin_prompt_support_only_when_prompt_is_used(self) -> None:
         def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:

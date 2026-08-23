@@ -96,13 +96,43 @@ def fetch_pull_request_files(
             token=token,
         )
         if not chunk:
-            break
+            return all_comments
         if not isinstance(chunk, list):
             raise ValueError("GitHub pull request files response was not a list")
         all_files.extend(chunk)
         if len(chunk) < per_page:
             break
     return all_files
+
+
+def fetch_issue_comments(
+    repo: str,
+    issue_number: int,
+    *,
+    token: str,
+    page_cap: int = 10,
+    per_page: int = 100,
+) -> list[dict[str, Any]]:
+    """Return issue/PR comments with a bounded pagination cap."""
+
+    all_comments: list[dict[str, Any]] = []
+    for page in range(1, page_cap + 1):
+        chunk = _gh_request(
+            "GET",
+            f"/repos/{repo}/issues/{issue_number}/comments?per_page={per_page}&page={page}",
+            token=token,
+        )
+        if not chunk:
+            break
+        if not isinstance(chunk, list):
+            raise ValueError("GitHub issue comments response was not a list")
+        all_comments.extend(comment for comment in chunk if isinstance(comment, dict))
+        if len(chunk) < per_page:
+            return all_comments
+    raise RuntimeError(
+        f"hit pagination cap of {page_cap} pages ({page_cap * per_page} comments) "
+        f"for {repo}#{issue_number}; refusing to collect partial decision context"
+    )
 
 
 def post_pr_comment(

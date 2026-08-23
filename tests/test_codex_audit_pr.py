@@ -32,6 +32,7 @@ class CodexAuditPrTests(unittest.TestCase):
             "token",
             {"owner/repo": repo},
             include_plan_context=False,
+            include_decision_context=False,
         )
         review_context = review_context or cap.ReviewContextDiagnostics(
             base_ref=config.base_ref,
@@ -204,6 +205,7 @@ class CodexAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
                 max_diff_bytes=100,
                 max_diff_hard_limit_bytes=150,
             )
@@ -350,6 +352,29 @@ class CodexAuditPrTests(unittest.TestCase):
 
         self.assertIn(cap.UNKNOWN_REQUEUE_MARKER, unknown)
         self.assertIn(cap.STALE_REQUEUE_MARKER, stale)
+
+    def test_codex_review_context_includes_decision_registry(self) -> None:
+        comments = [
+            {
+                "author_association": "MEMBER",
+                "body": (
+                    '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
+                    'resolves="HOST_DISPLAY_NAME" by=owner ref=ADR-007 -->'
+                ),
+            }
+        ]
+        with mock.patch.object(cap, "fetch_issue_comments", return_value=comments):
+            registry = cap._decision_registry_context(
+                "owner/repo",
+                42,
+                token="token",
+            )
+
+        prompt = cap._codex_review_context_prompt(None, registry)
+
+        self.assertIn("Trusted Code Mower decision registry", prompt)
+        self.assertIn("ADR-007", prompt)
+        self.assertIn("HOST_DISPLAY_NAME", prompt)
 
 
 if __name__ == "__main__":

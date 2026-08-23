@@ -153,6 +153,12 @@ PRODUCT_SUPPORT_FILES = (
         "0644",
     ),
     (
+        "tools/decisions.py",
+        "decisions.py",
+        "product-support-helper",
+        "0644",
+    ),
+    (
         "tools/safe_gh_comment.py",
         "templates/product-support/safe_gh_comment.py",
         "product-support-helper",
