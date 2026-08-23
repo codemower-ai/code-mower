@@ -1011,6 +1011,11 @@ def _lane_mac_runner_script_entry(
         for entry in audit_lanes
         if str(entry.get("needs") or "")
     ]
+    builder_labels = {
+        str(entry["lane"]): str(entry["builder_label"])
+        for entry in builder_entries
+        if str(entry.get("mac_runner") or "") == "true"
+    }
     trusted_authors = list(DEFAULT_LANE_MAC_RUNNER_TRUSTED_AUTHORS)
     owner_login = str(owner_surface.get("owner_login") or "").strip()
     if owner_login and owner_login != OWNER_SURFACE_DEFAULTS["owner_login"]:
@@ -1023,6 +1028,11 @@ def _lane_mac_runner_script_entry(
         "package_copy_first": True,
         "mode": "0755",
         "lane_mac_runner_allowed_case": "|".join(mac_lanes) or "codex|claude",
+        "lane_mac_runner_builder_labels_json": json.dumps(
+            builder_labels,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
         "lane_mac_runner_blocked_labels_jq": " or ".join(
             f'.name=={json.dumps(label)}' for label in blocked_labels
         )
@@ -1038,7 +1048,10 @@ def _lane_mac_runner_script_entry(
     }
 
 
-def _lane_standing_file_entry(entry: Mapping[str, str]) -> dict[str, str]:
+def _lane_standing_file_entry(
+    entry: Mapping[str, str],
+    owner_surface: Mapping[str, str],
+) -> dict[str, str]:
     return {
         "path": str(entry["doc_target"]),
         "source": "lane-standing-instructions-template",
@@ -1048,6 +1061,7 @@ def _lane_standing_file_entry(entry: Mapping[str, str]) -> dict[str, str]:
         "lane_display_name": str(entry["display_name"]),
         "builder_label": str(entry["builder_label"]),
         "required_audit_labels": str(entry["audit_labels_display"]),
+        "needs_owner_label": owner_surface["needs_owner_label"],
     }
 
 
@@ -1671,6 +1685,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__LANE_MAC_RUNNER_ALLOWED_CASE__": str(
             entry.get("lane_mac_runner_allowed_case") or ""
         ),
+        "__LANE_MAC_RUNNER_BUILDER_LABELS_JSON__": str(
+            entry.get("lane_mac_runner_builder_labels_json") or "{}"
+        ),
         "__LANE_MAC_RUNNER_BLOCKED_LABELS_JQ__": str(
             entry.get("lane_mac_runner_blocked_labels_jq") or "false"
         ),
@@ -2286,7 +2303,7 @@ def render_init_plan(
             warnings.append(f"lane standing instruction target {target} collides")
             continue
         generated_paths.add(target)
-        generated_files.append(_lane_standing_file_entry(entry))
+        generated_files.append(_lane_standing_file_entry(entry, owner_surface))
 
     if merge_authority_lanes and GATE_WORKFLOW_PATH not in generated_paths:
         workflow_targets.add(GATE_WORKFLOW_PATH)

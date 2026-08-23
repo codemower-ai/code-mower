@@ -83,7 +83,11 @@ class InitBuildLoopTests(unittest.TestCase):
                 text = path.read_text(encoding="utf-8")
                 self.assertNotIn("__BUILD_LOOP", text)
                 self.assertNotIn("__LANE_MAC", text)
+                self.assertNotIn("__NEEDS_OWNER_LABEL__", text)
                 self.assertNotIn("{% raw %}", text)
+                if rel_path.startswith("docs/lanes/") and rel_path != "docs/lanes/README.md":
+                    self.assertIn("label the issue or PR `needs-owner`", text)
+                    self.assertNotIn("label the issue or PR ``", text)
 
             for rel_path in (
                 ".github/workflows/dispatch-lanes.yml",
@@ -96,6 +100,11 @@ class InitBuildLoopTests(unittest.TestCase):
             self.assertTrue(runner.stat().st_mode & 0o111)
             runner_text = runner.read_text(encoding="utf-8")
             self.assertIn("case \"$LANE\" in codex|claude)", runner_text)
+            self.assertIn(
+                """builder_labels_json='{"claude":"builder:claude","codex":"builder:codex"}'""",
+                runner_text,
+            )
+            self.assertNotIn('builder_label="builder:${LANE}"', runner_text)
             self.assertIn('repo_owner="${REPO%%/*}"', runner_text)
             self.assertIn("[omitted: issue title author is not trusted]", runner_text)
             self.assertIn("[omitted: PR title author is not trusted]", runner_text)
@@ -279,6 +288,8 @@ printf 'fake codex completed\\n'
             "bridge-pro-lane",
         ]
         cfg["owner_surface"]["lane_runner_enabled_var"] = "BRIDGE_PRO_LANE_ENABLED"
+        cfg["builder_identity"]["labels"].pop("builder:codex")
+        cfg["builder_identity"]["labels"]["builder:code-mower-codex"] = "codex"
         plan = _builders_plan(cfg)
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -296,6 +307,9 @@ printf 'fake codex completed\\n'
             runner = output_dir.joinpath("tools/lanes/run_mac_lane.sh").read_text(
                 encoding="utf-8"
             )
+            codex_doc = output_dir.joinpath("docs/lanes/codex.md").read_text(
+                encoding="utf-8"
+            )
 
         self.assertIn('CODE_MOWER_MAX_WIP: ${{ github.event.inputs.max_wip || vars.CODE_MOWER_MAX_WIP || \'2\' }}', dispatch)
         self.assertIn('GH_TOKEN: ${{ secrets.DISPATCH_TOKEN || \'\' }}', dispatch)
@@ -308,11 +322,19 @@ printf 'fake codex completed\\n'
         self.assertIn("`needs-jeff`", readme)
         self.assertIn("`decision-jeff`", readme)
         self.assertIn("`sitting-jeff`", readme)
+        self.assertIn("label the issue or PR `needs-jeff`", codex_doc)
+        self.assertNotIn("label the issue or PR ``", codex_doc)
         self.assertIn("default `2`", readme)
         self.assertIn(
             "LANE_TRUSTED_AUTHORS:-jeffhuber,github-actions[bot]",
             runner,
         )
+        self.assertIn(
+            """builder_labels_json='{"claude":"builder:claude","codex":"builder:code-mower-codex"}'""",
+            runner,
+        )
+        self.assertIn('--label "$builder_label"', runner)
+        self.assertNotIn('builder_label="builder:${LANE}"', runner)
         self.assertIn(
             """owner_labels_json='["needs-jeff","decision-jeff","sitting-jeff"]'""",
             runner,

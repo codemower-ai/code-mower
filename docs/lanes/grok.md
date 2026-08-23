@@ -10,7 +10,7 @@ Rules:
 - Do not deploy, publish releases, change credentials, or make paid-path changes
   unless an owner decision on the issue or PR explicitly says to do so.
 - If a task needs local credentials, UI approval, or unclear product judgment,
-  label the issue or PR ``, leave a numbered action list,
+  label the issue or PR `needs-owner`, leave a numbered action list,
   and stop that unit.
 - Before exiting, comment with the PR link, head SHA, tests run, and anything
   that remains.

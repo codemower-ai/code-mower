@@ -38,7 +38,12 @@ case "$MAX_MINUTES" in ''|*[!0-9]*) echo "--max-minutes must be an integer" >&2;
 
 here="$(CDPATH=; cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(CDPATH=; cd -- "${here}/../.." && pwd -P)"
-builder_label="builder:${LANE}"
+builder_labels_json='__LANE_MAC_RUNNER_BUILDER_LABELS_JSON__'
+builder_label="$(
+  printf '%s\n' "$builder_labels_json" \
+    | jq -r --arg lane "$LANE" '.[$lane] // empty'
+)"
+[ -n "$builder_label" ] || { echo "missing builder label for lane: $LANE" >&2; exit 2; }
 dispatch_label="dispatched:${LANE}"
 lane_doc="${repo_root}/docs/lanes/${LANE}.md"
 [ -f "$lane_doc" ] || { echo "missing ${lane_doc}" >&2; exit 1; }

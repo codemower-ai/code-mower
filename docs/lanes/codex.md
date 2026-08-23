@@ -10,7 +10,7 @@ Rules:
 - Keep release, publishing, credential, and destructive infrastructure actions
   behind an explicit owner decision recorded on the issue or PR.
 - If a task needs local credentials, UI approval, or unclear product judgment,
-  label the issue or PR ``, leave a numbered action list,
+  label the issue or PR `needs-owner`, leave a numbered action list,
   and stop that unit.
 - Before exiting, comment with the PR link, head SHA, tests run, and anything
   that remains.
