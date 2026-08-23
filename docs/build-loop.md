@@ -69,6 +69,8 @@ self-hosted macOS runner. It is disabled until the repository variable named by
 The runner uses the runner user's `gh`, `git`, Codex CLI, and Claude CLI
 credentials. The workflow intentionally unsets `GH_TOKEN` and `GITHUB_TOKEN`
 before starting lane work so PRs and comments are attributed to the runner user.
+The generated job timeout is `owner_surface.lane_runner_max_minutes` plus a
+15-minute cleanup grace period.
 
 Runner setup checklist:
 

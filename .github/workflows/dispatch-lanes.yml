@@ -19,6 +19,10 @@ permissions:
   issues: write
   pull-requests: read
 
+concurrency:
+  group: dispatch-lanes-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   dispatch:
     runs-on: ubuntu-latest

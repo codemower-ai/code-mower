@@ -37,6 +37,11 @@ BUILDER_IDENTITY_SECTIONS = {
     "branch_prefixes",
     "fix_round_mentions",
 }
+SELF_HOSTED_ACTIONS_JOB_TIMEOUT_MAX_MINUTES = 5 * 24 * 60
+LANE_MAC_RUNNER_TIMEOUT_GRACE_MINUTES = 15
+LANE_MAC_RUNNER_MAX_MINUTES_LIMIT = (
+    SELF_HOSTED_ACTIONS_JOB_TIMEOUT_MAX_MINUTES - LANE_MAC_RUNNER_TIMEOUT_GRACE_MINUTES
+)
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 SAFE_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_WORKFLOW_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*\.ya?ml$")
@@ -467,6 +472,26 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
                 )
             except ValueError as exc:
                 issues.append(ConfigIssue("owner_surface.builder_wip_cap", str(exc)))
+        if "lane_runner_max_minutes" in owner_surface_map:
+            try:
+                lane_runner_max_minutes = audit_limits.parse_positive_int(
+                    owner_surface_map.get("lane_runner_max_minutes"),
+                    field_name="owner_surface.lane_runner_max_minutes",
+                )
+                if lane_runner_max_minutes > LANE_MAC_RUNNER_MAX_MINUTES_LIMIT:
+                    issues.append(
+                        ConfigIssue(
+                            "owner_surface.lane_runner_max_minutes",
+                            "must be no greater than "
+                            f"{LANE_MAC_RUNNER_MAX_MINUTES_LIMIT} so the generated "
+                            "job timeout stays within the self-hosted GitHub Actions "
+                            f"{SELF_HOSTED_ACTIONS_JOB_TIMEOUT_MAX_MINUTES}-minute maximum",
+                        )
+                    )
+            except ValueError as exc:
+                issues.append(
+                    ConfigIssue("owner_surface.lane_runner_max_minutes", str(exc))
+                )
 
     decisions = config.get("decisions")
     if decisions is not None:

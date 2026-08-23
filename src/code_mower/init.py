@@ -241,6 +241,7 @@ OWNER_SURFACE_DEFAULTS = {
     "dispatch_token_env": "DISPATCH_TOKEN",
     "dispatch_token_expires_var": "DISPATCH_TOKEN_EXPIRES_AT",
 }
+LANE_MAC_RUNNER_TIMEOUT_GRACE_MINUTES = 15
 
 DEFAULT_LANE_MAC_RUNNER_TRUSTED_AUTHORS = (
     "github-actions[bot]",
@@ -977,6 +978,10 @@ def _lane_mac_runner_workflow_entry(
         owner_surface["lane_runner_labels"],
         OWNER_SURFACE_DEFAULTS["lane_runner_labels"],
     )
+    max_minutes = code_mower_audit_limits.parse_positive_int(
+        owner_surface["lane_runner_max_minutes"],
+        field_name="owner_surface.lane_runner_max_minutes",
+    )
     return {
         "path": LANE_MAC_RUNNER_WORKFLOW_PATH,
         "source": "lane-mac-runner-workflow-template",
@@ -988,6 +993,9 @@ def _lane_mac_runner_workflow_entry(
         "lane_mac_runner_enabled_var": owner_surface["lane_runner_enabled_var"],
         "lane_mac_runner_cron": owner_surface["lane_runner_cron"],
         "lane_mac_runner_max_minutes": owner_surface["lane_runner_max_minutes"],
+        "lane_mac_runner_timeout_minutes": str(
+            max_minutes + LANE_MAC_RUNNER_TIMEOUT_GRACE_MINUTES
+        ),
     }
 
 
@@ -1714,6 +1722,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__LANE_MAC_RUNNER_MAX_MINUTES__": str(
             entry.get("lane_mac_runner_max_minutes") or "90"
+        ),
+        "__LANE_MAC_RUNNER_TIMEOUT_MINUTES__": str(
+            entry.get("lane_mac_runner_timeout_minutes") or "105"
         ),
         "__LANE_MAC_RUNNER_OWNER_LABELS_JSON__": str(
             entry.get("lane_mac_runner_owner_labels_json") or "[]"

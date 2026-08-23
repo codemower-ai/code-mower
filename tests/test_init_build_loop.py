@@ -94,7 +94,15 @@ class InitBuildLoopTests(unittest.TestCase):
                 ".github/workflows/lane-mac-runner.yml",
             ):
                 with (output_dir / rel_path).open(encoding="utf-8") as handle:
-                    yaml.safe_load(handle)
+                    workflow = yaml.safe_load(handle)
+                if rel_path == ".github/workflows/dispatch-lanes.yml":
+                    self.assertEqual(
+                        workflow["concurrency"]["group"],
+                        "dispatch-lanes-${{ github.repository }}",
+                    )
+                    self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
+                else:
+                    self.assertEqual(workflow["jobs"]["run"]["timeout-minutes"], 105)
 
             runner = output_dir / "tools/lanes/run_mac_lane.sh"
             self.assertTrue(runner.stat().st_mode & 0o111)
@@ -290,6 +298,7 @@ printf 'fake codex completed\\n'
             "bridge-pro-lane",
         ]
         cfg["owner_surface"]["lane_runner_enabled_var"] = "BRIDGE_PRO_LANE_ENABLED"
+        cfg["owner_surface"]["lane_runner_max_minutes"] = "180"
         cfg["lanes"]["claude_audit"]["labels"]["needs"] = "needs-jeff-audit"
         cfg["lanes"]["claude_audit"]["labels"]["done"] = "jeff-audit-done"
         cfg["lanes"]["claude_audit"]["labels"]["blocked"] = "jeff-audit-blocked"
@@ -324,6 +333,9 @@ printf 'fake codex completed\\n'
         self.assertIn('"needs-jeff","decision-jeff","sitting-jeff"', dispatch)
         self.assertIn('runs-on: ["self-hosted", "macOS", "bridge-pro-lane"]', mac_runner)
         self.assertIn("vars.BRIDGE_PRO_LANE_ENABLED == 'true'", mac_runner)
+        mac_runner_workflow = yaml.safe_load(mac_runner)
+        self.assertEqual(mac_runner_workflow["jobs"]["run"]["timeout-minutes"], 195)
+        self.assertIn('default: "180"', mac_runner)
         self.assertIn("`needs-jeff`", readme)
         self.assertIn("`decision-jeff`", readme)
         self.assertIn("`sitting-jeff`", readme)
@@ -364,6 +376,18 @@ printf 'fake codex completed\\n'
                 with self.assertRaisesRegex(
                     code_mower_config.ConfigError,
                     "owner_surface.builder_wip_cap",
+                ):
+                    _builders_plan(cfg)
+
+    def test_build_loop_rejects_invalid_lane_runner_max_minutes(self) -> None:
+        for value in ("unlimited", "0", "7186"):
+            with self.subTest(value=value):
+                cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
+                cfg["owner_surface"]["lane_runner_max_minutes"] = value
+
+                with self.assertRaisesRegex(
+                    code_mower_config.ConfigError,
+                    "owner_surface.lane_runner_max_minutes",
                 ):
                     _builders_plan(cfg)
 

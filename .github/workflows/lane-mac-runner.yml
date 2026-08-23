@@ -34,7 +34,7 @@ jobs:
   run:
     if: ${{ vars.LANE_MAC_RUNNER_ENABLED == 'true' }}
     runs-on: ["self-hosted", "macOS", "code-mower-lane"]
-    timeout-minutes: 120
+    timeout-minutes: 105
     strategy:
       fail-fast: false
       matrix:

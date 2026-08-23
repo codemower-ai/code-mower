@@ -34,7 +34,7 @@ jobs:
   run:
     if: {% raw %}${{ vars.__LANE_MAC_RUNNER_ENABLED_VAR__ == 'true' }}{% endraw %}
     runs-on: [__LANE_MAC_RUNNER_LABELS__]
-    timeout-minutes: 120
+    timeout-minutes: __LANE_MAC_RUNNER_TIMEOUT_MINUTES__
     strategy:
       fail-fast: false
       matrix:
