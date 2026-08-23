@@ -494,9 +494,12 @@ with `gh` authenticated as a repository admin:
 >    `pipx install --python python3.12 code-mower==0.5.0b52`). Verify
 >    `code-mower --version` matches.
 > 3. Reviewer gate first: `code-mower init --easy` (dry-run), review the plan,
->    then `--apply`; `code-mower doctor --preflight` must pass, including the
->    human automation token. Tell me exactly which tokens to create, with
->    scopes, and where each goes. Two settings belong to the promotion step,
+>    then `--apply`; run `code-mower doctor --preflight` and get every check
+>    green except the two promotion checks (required `code-mower/gate`
+>    branch protection and `allow_auto_merge`), which are expected to report
+>    failures during the informational pilot - carry them as the promotion
+>    to-do list. Tell me exactly which tokens to create, with scopes, and
+>    where each goes. Two settings belong to the promotion step,
 >    not the pilot: making `code-mower/gate` a required Any-source
 >    branch-protection status, and enabling repository `allow_auto_merge` -
 >    turn both on together only when a reviewer lane meets
