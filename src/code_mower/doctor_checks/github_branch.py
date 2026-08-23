@@ -5,7 +5,7 @@ from __future__ import annotations
 import urllib.parse
 from typing import Mapping
 
-from .common import DoctorCheck, STATUS_PASS, STATUS_WARN
+from .common import DoctorCheck, STATUS_FAIL, STATUS_PASS, STATUS_WARN
 from .github_api import _github_api_json
 
 GITHUB_ACTIONS_APP_ID = 15368
@@ -62,15 +62,27 @@ def check_branch_protection(
         binding
         for binding in check_bindings
         if binding.get("context") == required_status_context
-        and binding.get("app_id") == GITHUB_ACTIONS_APP_ID
+        and binding.get("app_id") is not None
     ]
     if required_status_context and wrong_gate_bindings:
+        app_ids = sorted(
+            {
+                str(binding.get("app_id"))
+                for binding in wrong_gate_bindings
+                if binding.get("app_id") is not None
+            }
+        )
+        source_description = (
+            "GitHub Actions"
+            if str(GITHUB_ACTIONS_APP_ID) in app_ids
+            else "a specific GitHub App"
+        )
         return DoctorCheck(
             name="github.branch_protection",
-            status=STATUS_WARN,
+            status=STATUS_FAIL,
             message=(
                 f"{slug}@{default_branch} requires {required_status_context} "
-                "from GitHub Actions instead of Any source"
+                f"from {source_description} instead of Any source"
             ),
             detail={
                 "repo": slug,
@@ -82,7 +94,7 @@ def check_branch_protection(
             },
             remediation=(
                 f"Rebind `{required_status_context}` in branch protection to "
-                "Any source, not GitHub Actions. In the API response, the "
+                f"Any source, not {source_description}. In the API response, the "
                 f"`checks[]` entry for `{required_status_context}` should have "
                 "`app_id: null`; `app_id: 15368` means GitHub is evaluating "
                 "the Actions job check-run instead of the Code Mower commit status."

@@ -38,7 +38,11 @@ from .pr_worktree import (
     remove_worktree,
     run_git_text,
 )
-from .repo_paths import parse_repo_paths
+from .repo_paths import (
+    LOCAL_AUDIT_RUNNER_DOC,
+    parse_repo_paths,
+    validate_repo_path_for_wrapper,
+)
 from .text_schema import clip_text, one_line, require_exact_keys
 from .verdict_artifacts import (
     audit_runtime_quarantine_reason,
@@ -85,6 +89,7 @@ __all__ = [
     "DEFAULT_HOME_ENV_KEYS",
     "one_line",
     "parse_repo_paths",
+    "LOCAL_AUDIT_RUNNER_DOC",
     "pop_github_token_env",
     "post_pr_comment",
     "ProviderWorkspaceError",
@@ -94,6 +99,7 @@ __all__ = [
     "resolve_github_token_from_stdin_or_env",
     "run_git",
     "run_git_text",
+    "validate_repo_path_for_wrapper",
     "create_temp_worktree",
     "remove_worktree",
     "verify_checkout_at_head",

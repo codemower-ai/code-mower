@@ -57,15 +57,17 @@ PASS  runtime.python              Python 3.12 satisfies Code Mower requirements
 PASS  runtime.github_auth         GitHub CLI auth probe succeeded
 PASS  runtime.local_cli codex     codex found
 PASS  runtime.local_cli claude    claude auth smoke probe succeeded
-WARN  env.tokens codex            missing DISPATCH_TOKEN or GITHUB_TOKEN
+FAIL  github.human_automation_token owner/repo is missing the DISPATCH_TOKEN human automation token secret
+FAIL  github.branch_protection    owner/repo@main requires code-mower/gate from GitHub Actions instead of Any source
+FAIL  github.repo.auto_merge      owner/repo does not allow auto-merge
 WARN  github.actions_cost         private repo has high-frequency metadata workflows
 PASS  cloud.token                 optional Code Mower Cloud token file is configured
 
-Summary: warn, 20 checks, 0 failures, 5 warnings
-Next: fix token warnings, keep paid lanes manual, then generate a value report.
+Summary: fail, 24 checks, 3 failures, 4 warnings
+Next: create DISPATCH_TOKEN, rebind code-mower/gate to Any source, enable repository auto-merge, then rerun doctor.
 ```
 
-The warnings are useful. They show whether the repo is safe to pilot before
+The failures are useful. They show whether the repo is safe to pilot before
 you add labels, GitHub workflows, provider CLIs, or cloud upload.
 
 ## Generate The Starter Value Report

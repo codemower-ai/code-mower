@@ -58,16 +58,19 @@ def human_automation_token_required(
     if any(token in _lane_token_names(lane) for _lane_id, lane in lanes):
         return True
     identity = config.get("builder_identity")
-    if not isinstance(identity, Mapping):
-        return False
-    has_builder_automation = bool(
-        identity.get("branch_prefixes") or identity.get("fix_round_mentions")
+    has_builder_automation = (
+        bool(identity.get("branch_prefixes") or identity.get("fix_round_mentions"))
+        if isinstance(identity, Mapping)
+        else False
     )
-    has_merge_authority_audit = any(
-        lane.get("type") == "audit" and lane.get("merge_authority")
+    if has_builder_automation:
+        return True
+    return any(
+        lane.get("type") == "audit"
+        and lane.get("driver") in {"local_cli", "hosted_bridge", "saas_event"}
+        and lane.get("trigger_policy") in {"label", "comment"}
         for _lane_id, lane in lanes
     )
-    return has_builder_automation and has_merge_authority_audit
 
 
 def _parse_expiry(value: str) -> date | None:

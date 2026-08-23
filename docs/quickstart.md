@@ -79,6 +79,44 @@ The prompt smoke is the real readiness check. If `claude auth status` says
 logged in but the prompt returns an auth error, follow
 [Troubleshooting](troubleshooting.md#claude-code-reports-logged-in-but-audits-fail).
 
+## 4. Create The Automation Tokens
+
+Create these before you run Easy Mode on a real repository:
+
+- `DISPATCH_TOKEN`: a human-owned fine-grained PAT stored as a repository
+  Actions secret.
+- `DISPATCH_TOKEN_EXPIRES_AT`: a repository Actions variable with the PAT
+  expiry date in `YYYY-MM-DD` format.
+
+Use a human account or explicitly delegated machine user. The default
+`DISPATCH_TOKEN` needs:
+
+- Contents: read
+- Issues: read/write
+- Pull requests: read/write
+
+Set the secret and expiry metadata:
+
+```bash
+gh secret set DISPATCH_TOKEN --repo OWNER/REPO
+gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo OWNER/REPO --body YYYY-MM-DD
+```
+
+Why this is required: comments, labels, and mentions posted by the built-in
+`GITHUB_TOKEN` are bot-authored. GitHub does not trigger downstream workflows
+from those events, and tools such as Cursor ignore bot-authored `@cursor`
+mentions. Code Mower uses the human-owned token for generated agent PR labels,
+fix-round comments, and audit rearming so the automation actually fires.
+
+Keep these per-lane names only as compatibility fallbacks when an existing beta
+install already uses separate credentials:
+
+- `CODEX_AUDIT_LABEL_TOKEN`
+- `CLAUDE_AUDIT_LABEL_TOKEN`
+
+The generated templates prefer `DISPATCH_TOKEN`, then fall back to per-lane
+tokens, then to `GITHUB_TOKEN` only where GitHub token inertness is acceptable.
+
 ## Optional: Create Planning Context
 
 You do not need this for the first audit. Use it when a change needs product
@@ -123,16 +161,18 @@ Details: [Planning And Work Orders](planning-work-orders.md).
 
 Keep SaaS reviewers such as Gitar, Cursor BugBot, CodeRabbit, Qodo, Greptile,
 and Devin informational/manual until your own calibration data supports
-promotion.
+promotion. Gitar is informational and quota-bound. Automatic processing can
+pause until the provider quota resets, and a manual `Gitar review` comment may
+be needed to refresh its signal. It is never required for the default Code
+Mower gate.
 
-## 4. Run Easy Mode
+## 5. Run Easy Mode
 
 From a clean checkout of the repository you want to pilot:
 
 ```bash
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower doctor --preflight --json
 code-mower next-steps --profile recommended --repo OWNER/REPO
 ```
 
@@ -141,12 +181,12 @@ review; it does not edit live workflows or trigger paid providers. The
 generated tree includes owner-surface templates for a configurable
 `needs-owner` escalation label, an `owner-sitting` physical-step convention,
 and a weekly pinned-issue status digest.
-`doctor --preflight` is the recommended early-adopter preset for GitHub auth,
-Python/runtime checks, provider CLI probes, private-repo caveats, Actions cost
-diagnostics, and optional cloud-token setup. It is equivalent to the versioned
-`doctor --v05` preset. Use `--strict` only when warnings should fail a
-bootstrap job. For auth-specific doctor failures, see
-[Troubleshooting](troubleshooting.md).
+
+For direct local audit wrapper runs, pass a GitHub posting token with
+`GITHUB_TOKEN` or `--read-token-from-stdin`, and pass repository paths as
+`--repo-paths OWNER/REPO:/absolute/path/to/pr-head-checkout`. The path must be
+a separate PR-head checkout, not the Code Mower support checkout or the current
+working directory. See [Local Audit Runner](local-audit-runner.md).
 
 To extend the same lane/label/workflow setup to a sibling repository, run the
 same init command from that checkout and add the target repo slug to the
@@ -166,7 +206,54 @@ sibling repos are easy to spot before they drift from the merge gate. For a
 permanent rollout, add the sibling slug to `repositories:` in the control
 config after reviewing the generated plan.
 
-## 5. Rehearse The Package Install Path
+## 6. Configure Branch Protection And Auto-Merge
+
+If the selected profile has merge-authority lanes, Code Mower publishes the
+`code-mower/gate` commit status and asks GitHub to enable auto-merge only after
+that status is green. Two GitHub settings must match that behavior.
+
+First, enable repository auto-merge:
+
+```bash
+gh api -X PATCH repos/OWNER/REPO -f allow_auto_merge=true
+```
+
+Then protect the default branch and require the Code Mower gate status from
+Any source:
+
+1. Open GitHub repository settings.
+2. Go to Branches, then edit the default branch protection rule.
+3. Enable "Require status checks to pass before merging".
+4. Add `code-mower/gate` to the required checks.
+5. Confirm the source shown next to `code-mower/gate` is **Any source**.
+
+Do not select GitHub Actions as the source for `code-mower/gate`. That binds
+branch protection to the Actions check-run app (`app_id: 15368`) instead of the
+Code Mower commit status, which can leave every check green while auto-merge
+never happens. The API shape for the correct binding is:
+
+```bash
+gh api repos/OWNER/REPO/branches/main/protection/required_status_checks
+```
+
+For `code-mower/gate`, the `checks[]` entry must show `"app_id": null`. If it
+shows `"app_id": 15368`, remove and re-add the required check from Any source.
+
+Now run the preflight:
+
+```bash
+code-mower doctor --preflight --json
+```
+
+`doctor --preflight` is the recommended early-adopter preset for GitHub auth,
+Python/runtime checks, provider CLI probes, private-repo caveats, Actions cost
+diagnostics, branch-protection source, repository auto-merge, human automation
+token metadata, and optional cloud-token setup. It is equivalent to the
+versioned `doctor --v05` preset. Use `--strict` only when warnings should fail
+a bootstrap job. For auth-specific doctor failures, see
+[Troubleshooting](troubleshooting.md).
+
+## 7. Rehearse The Package Install Path
 
 This proves Code Mower can be installed fresh and run the starter workflow in a
 toy repository. It now also leaves the first-user evidence artifacts behind: a
@@ -187,7 +274,7 @@ against the installed package during a mirror-removal migration.
 See [First-User Install Rehearsal](first-user-install-rehearsal.md) for the
 release-gate version of this command and the expected output artifacts.
 
-## 6. Generate A Local Value Report
+## 8. Generate A Local Value Report
 
 The starter corpus is only a command-path proof. Replace it with your own
 known-clean and known-blocked PRs before making lane promotion decisions.
@@ -202,7 +289,7 @@ The Markdown report is easy to commit or paste into a PR. The optional HTML
 report is a local, self-contained dashboard-style view for sharing with a team
 before opting into CodeMower.com uploads.
 
-## 7. Optional Cloud Export
+## 9. Optional Cloud Export
 
 Local-first is the default. To prepare an inspectable bundle for optional
 cloud sharing:

@@ -176,6 +176,11 @@ PACKAGE_FILES = (
         "src/code_mower/doctor_checks/provider_local_cli_probe_config.py",
         "core",
     ),
+    (
+        "src/code_mower/doctor_checks/provider_local_audit_setup.py",
+        "src/code_mower/doctor_checks/provider_local_audit_setup.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/provider_probe.py", "src/code_mower/doctor_checks/provider_probe.py", "core"),
     (
         "src/code_mower/doctor_checks/provider_probe_auth.py",

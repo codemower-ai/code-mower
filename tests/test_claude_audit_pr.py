@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -31,6 +33,40 @@ def _payload(**overrides: object) -> dict[str, object]:
 
 
 class ClaudeAuditPrTests(unittest.TestCase):
+    def test_main_missing_token_error_links_local_audit_docs(self) -> None:
+        stderr = StringIO()
+        with (
+            mock.patch.object(cap, "_resolve_github_token", return_value=None),
+            redirect_stderr(stderr),
+        ):
+            code = cap.main(["--repo", "owner/repo", "--pr", "42"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("GITHUB_TOKEN env var is required", stderr.getvalue())
+        self.assertIn("--read-token-from-stdin", stderr.getvalue())
+        self.assertIn("docs/local-audit-runner.md", stderr.getvalue())
+
+    def test_main_bad_repo_paths_error_links_local_audit_docs(self) -> None:
+        stderr = StringIO()
+        with (
+            mock.patch.object(cap, "_resolve_github_token", return_value="token"),
+            redirect_stderr(stderr),
+        ):
+            code = cap.main(
+                [
+                    "--repo",
+                    "owner/repo",
+                    "--pr",
+                    "42",
+                    "--repo-paths",
+                    "owner/repo:relative",
+                ]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertIn("OWNER/REPO:/absolute/path", stderr.getvalue())
+        self.assertIn("docs/local-audit-runner.md", stderr.getvalue())
+
     def test_claude_guardrails_reject_untrusted_verdicts(self) -> None:
         cases = [
             (

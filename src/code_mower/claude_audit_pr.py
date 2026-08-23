@@ -44,6 +44,7 @@ if __package__ in {None, "", "tools"}:
             fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
             is_fixture_structured_verdict as _is_fixture_structured_verdict,
             limit_comment_body,
+            LOCAL_AUDIT_RUNNER_DOC,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
             post_pr_comment,
@@ -52,6 +53,7 @@ if __package__ in {None, "", "tools"}:
             require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
             run_git_text as _shared_run_git_text,
+            validate_repo_path_for_wrapper as _validate_repo_path_for_wrapper,
             write_audit_verdict_artifact,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
@@ -75,6 +77,7 @@ if __package__ in {None, "", "tools"}:
             fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
             is_fixture_structured_verdict as _is_fixture_structured_verdict,
             limit_comment_body,
+            LOCAL_AUDIT_RUNNER_DOC,
             one_line as _one_line,
             parse_repo_paths as _parse_repo_paths,
             post_pr_comment,
@@ -83,6 +86,7 @@ if __package__ in {None, "", "tools"}:
             require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
             run_git_text as _shared_run_git_text,
+            validate_repo_path_for_wrapper as _validate_repo_path_for_wrapper,
             write_audit_verdict_artifact,
         )
 else:  # pragma: no cover - exercised after package extraction.
@@ -104,6 +108,7 @@ else:  # pragma: no cover - exercised after package extraction.
         fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
         is_fixture_structured_verdict as _is_fixture_structured_verdict,
         limit_comment_body,
+        LOCAL_AUDIT_RUNNER_DOC,
         one_line as _one_line,
         parse_repo_paths as _parse_repo_paths,
         post_pr_comment,
@@ -111,6 +116,7 @@ else:  # pragma: no cover - exercised after package extraction.
         require_exact_keys as _require_exact_keys,
         resolve_github_token_from_stdin_or_env,
         run_git_text as _shared_run_git_text,
+        validate_repo_path_for_wrapper as _validate_repo_path_for_wrapper,
         write_audit_verdict_artifact,
     )
 
@@ -1591,6 +1597,10 @@ def _resolve_github_token(read_from_stdin: bool) -> Optional[str]:
     return resolve_github_token_from_stdin_or_env(read_from_stdin)
 
 
+def _local_audit_doc_hint() -> str:
+    return f"See {LOCAL_AUDIT_RUNNER_DOC}."
+
+
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Claude audit CLI - review a single pull request.")
     ap.add_argument("--repo", help="owner/repo")
@@ -1750,9 +1760,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     token = _resolve_github_token(args.read_token_from_stdin)
     if not token:
         if args.read_token_from_stdin:
-            print("error: --read-token-from-stdin was passed but stdin did not contain a token", file=sys.stderr)
+            print(
+                "error: --read-token-from-stdin was passed but stdin did not "
+                f"contain a token. {_local_audit_doc_hint()}",
+                file=sys.stderr,
+            )
         else:
-            print("error: GITHUB_TOKEN env var is required (or pipe token with --read-token-from-stdin)", file=sys.stderr)
+            print(
+                "error: GITHUB_TOKEN env var is required (or pipe token with "
+                f"--read-token-from-stdin). {_local_audit_doc_hint()}",
+                file=sys.stderr,
+            )
         return 1
     if args.repost_verdict_artifact is not None:
         try:
@@ -1776,12 +1794,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("error: --repo and --pr are required unless --repost-verdict-artifact is used", file=sys.stderr)
         return 1
     if not args.repo_paths:
-        print("error: --repo-paths or CLAUDE_AUDIT_REPO_PATHS is required", file=sys.stderr)
+        print(
+            "error: --repo-paths or CLAUDE_AUDIT_REPO_PATHS is required "
+            "(expected OWNER/REPO:/absolute/path pointing at the separate "
+            f"PR-head checkout). {_local_audit_doc_hint()}",
+            file=sys.stderr,
+        )
         return 1
 
     audit_started = time.monotonic()
     try:
         repo_paths = _parse_repo_paths(args.repo_paths)
+        _validate_repo_path_for_wrapper(repo_paths, args.repo)
         config = ClaudeAuditConfig(
             github_token=token,
             repo_paths=repo_paths,
