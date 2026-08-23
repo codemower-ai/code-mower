@@ -4,6 +4,35 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.52
+
+This beta packages the adoption-readiness work from the build-loop dogfood:
+merge-gate diagnostics, preflight hard-fails, self-hosted runner guidance,
+builder-loop templates, and refreshed first-user docs.
+
+### Changed
+
+- Merge-gate handling now fixes in-flight audit terminal runs and adds
+  diagnostics for status-source behavior, closing the stale gate issue found in
+  #404 (#412).
+- Audit budgets and generated diff limits are now size-aware, giving larger
+  reviews bounded but more realistic reviewer capacity (#414, #416).
+- `doctor --preflight` now hard-fails missing human-token posture, incorrect
+  branch-protection source binding, and disabled `allow_auto_merge` setup
+  before a repository depends on the generated gate (#417).
+- Self-hosted Mac runner setup now has a dedicated guide and `doctor --runner`
+  coverage for runner labels, LaunchAgent health, and generated workflow
+  readiness (#419).
+- Audit decision markers are authority-gated, and the provider registry
+  delivery path no longer leaks registry context into Codex review prompts
+  (#418, #424).
+- `init --builders` now ships build-loop workflow templates and a lane runner
+  for builder dispatch and follow-up work (#420).
+- Getting-started docs are restructured around reviewer-gate and build-loop
+  paths, including an orchestrator worked example (#425).
+- Announcement and early-adopter docs were cleaned up for the beta.52 public
+  baseline (#421).
+
 ## v0.5.0-beta.51
 
 This beta carries the merge-gate status-source fixes found while dogfooding

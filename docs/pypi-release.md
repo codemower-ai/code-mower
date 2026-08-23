@@ -5,7 +5,7 @@ and wheel distributions, verifies them with `twine check`, and can publish to
 TestPyPI or production PyPI through trusted publishing.
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b51
+pipx install --python python3.12 code-mower==0.5.0b52
 ```
 
 ## Current Status
@@ -85,13 +85,15 @@ same artifact download path used by the optional PyPI publish job, then runs
 For beta releases, keep release metadata honest:
 
 ```bash
-gh release view v0.5.0-beta.51 --repo codemower-ai/code-mower
+gh release view v0.5.0-beta.52 --repo codemower-ai/code-mower
 gh api repos/codemower-ai/code-mower/releases/latest
 ```
 
-It is acceptable for the `/releases/latest` endpoint to return `404` while the
-newest public artifact is a beta prerelease. Do not manually mark beta releases
-as stable "Latest"; that makes the release line look more mature than it is.
+The owner decided on 2026-08-23 that the newest beta release should be marked
+**Latest** so GitHub's `/releases/latest` endpoint resolves for early adopters,
+automation, and package-index release checks. The tradeoff is that GitHub's
+Latest badge can make a prerelease line look more stable than it is, so the
+release title, notes, README, and install docs must keep saying beta.
 
 Before any package-index promotion, run the static release-readiness check from
 the repository root:
@@ -120,7 +122,7 @@ For production PyPI verification:
 ```bash
 python3.12 -m venv /tmp/code-mower-pypi-smoke
 /tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
-/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==0.5.0b51
+/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==0.5.0b52
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
@@ -128,7 +130,7 @@ Then run the release-gate first-user rehearsal against the same package:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b51 \
+  --package-spec code-mower==0.5.0b52 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -173,7 +175,7 @@ The primary README command should stay on an explicit beta version until a
 stable `1.0` line exists:
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b51
+pipx install --python python3.12 code-mower==0.5.0b52
 ```
 
 Do not switch to unpinned `pipx install code-mower` until:
