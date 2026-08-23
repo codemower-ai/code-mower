@@ -29,8 +29,18 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/builder_runs.py",
+      "target": "src/code_mower/builder_runs.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/builder_experiment.py",
       "target": "src/code_mower/builder_experiment.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/work_orders.py",
+      "target": "src/code_mower/work_orders.py"
     },
     {
       "kind": "core",
@@ -254,6 +264,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/audit_limits.py",
+      "target": "src/code_mower/doctor_checks/audit_limits.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/cloud.py",
       "target": "src/code_mower/doctor_checks/cloud.py"
     },
@@ -321,6 +336,11 @@
       "kind": "core",
       "source": "src/code_mower/doctor_checks/github_config.py",
       "target": "src/code_mower/doctor_checks/github_config.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_human_token.py",
+      "target": "src/code_mower/doctor_checks/github_human_token.py"
     },
     {
       "kind": "core",
@@ -434,6 +454,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/provider_review_hygiene.py",
+      "target": "src/code_mower/doctor_checks/provider_review_hygiene.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/privacy.py",
       "target": "src/code_mower/doctor_checks/privacy.py"
     },
@@ -441,6 +466,21 @@
       "kind": "core",
       "source": "src/code_mower/doctor_checks/providers.py",
       "target": "src/code_mower/doctor_checks/providers.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/providers/__init__.py",
+      "target": "src/code_mower/providers/__init__.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/providers/local_cli.py",
+      "target": "src/code_mower/providers/local_cli.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/providers/provenance.py",
+      "target": "src/code_mower/providers/provenance.py"
     },
     {
       "kind": "core",
@@ -456,6 +496,11 @@
       "kind": "core",
       "source": "src/code_mower/doctor_checks/runtime.py",
       "target": "src/code_mower/doctor_checks/runtime.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/self_hosted_runner.py",
+      "target": "src/code_mower/doctor_checks/self_hosted_runner.py"
     },
     {
       "kind": "core",
@@ -539,6 +584,11 @@
     },
     {
       "kind": "core",
+      "source": "tools/workflow_actionlint.py",
+      "target": "src/code_mower/workflow_actionlint.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/prompts.py",
       "target": "src/code_mower/prompts.py"
     },
@@ -591,6 +641,11 @@
       "kind": "core",
       "source": "src/code_mower/audit_labeler_lib.py",
       "target": "src/code_mower/audit_labeler_lib.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/audit_limits.py",
+      "target": "src/code_mower/audit_limits.py"
     },
     {
       "kind": "core",
@@ -743,6 +798,11 @@
       "target": "src/code_mower/coderabbit_cli_audit_pr.py"
     },
     {
+      "kind": "reviewer",
+      "source": "src/code_mower/grok_build_audit_pr.py",
+      "target": "src/code_mower/grok_build_audit_pr.py"
+    },
+    {
       "kind": "lane-config",
       "source": "src/code_mower/lane_configs/__init__.py",
       "target": "src/code_mower/lane_configs/__init__.py"
@@ -786,6 +846,11 @@
       "kind": "lane-config",
       "source": "src/code_mower/lane_configs/hermes_cli.py",
       "target": "src/code_mower/lane_configs/hermes_cli.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/grok_build.py",
+      "target": "src/code_mower/lane_configs/grok_build.py"
     },
     {
       "kind": "prompt",
@@ -933,6 +998,11 @@
       "target": "src/code_mower/templates/product-support/safe_gh_comment.py"
     },
     {
+      "kind": "template",
+      "source": "src/code_mower/templates/product-support/status_report.py",
+      "target": "src/code_mower/templates/product-support/status_report.py"
+    },
+    {
       "kind": "doc",
       "source": "docs/acp-bridge-spike.md",
       "target": "docs/acp-bridge-spike.md"
@@ -979,6 +1049,21 @@
     },
     {
       "kind": "doc",
+      "source": "docs/builders-grok-cursor.md",
+      "target": "docs/builders-grok-cursor.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/build-loop.md",
+      "target": "docs/build-loop.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/planning-work-orders.md",
+      "target": "docs/planning-work-orders.md"
+    },
+    {
+      "kind": "doc",
       "source": "docs/cloud-benchmarking.md",
       "target": "docs/cloud-benchmarking.md"
     },
@@ -1001,6 +1086,11 @@
       "kind": "doc",
       "source": "docs/github-setup.md",
       "target": "docs/github-setup.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/local-audit-runner.md",
+      "target": "docs/local-audit-runner.md"
     },
     {
       "kind": "doc",
@@ -1135,6 +1225,26 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "templates/workflows/dispatch-lanes.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/lane-mac-runner.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/code-mower-agent-pr-labeler.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/code-mower-fix-round-dispatch.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "templates/workflows/code-mower-gate-health.yml.j2"
     },
     {
@@ -1185,6 +1295,26 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "src/code_mower/templates/workflows/dispatch-lanes.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/lane-mac-runner.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/code-mower-agent-pr-labeler.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/code-mower-fix-round-dispatch.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "src/code_mower/templates/workflows/code-mower-gate-health.yml.j2"
     },
     {
@@ -1205,12 +1335,82 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "src/code_mower/templates/workflows/needs-owner-notify.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/weekly-status.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "templates/workflows/private-standalone-shadow.yml.j2"
     },
     {
       "kind": "workflow",
       "source": "generated",
       "target": "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "templates/lanes/README.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "templates/lanes/claude.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "templates/lanes/codex.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "templates/lanes/generic.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "templates/lanes/grok.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "templates/lanes/run_mac_lane.sh"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/README.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/claude.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/codex.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/generic.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/grok.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/run_mac_lane.sh"
     },
     {
       "kind": "config",
@@ -1285,6 +1485,11 @@
     {
       "kind": "provider-template",
       "source": "generated",
+      "target": "templates/providers/grok_build.yml"
+    },
+    {
+      "kind": "provider-template",
+      "source": "generated",
       "target": "templates/providers/hermes_cli.yml"
     },
     {
@@ -1310,6 +1515,6 @@
     "module": "code_mower",
     "name": "code-mower",
     "source_layout": "src/code_mower",
-    "version": "0.5.0b11"
+    "version": "0.5.0b51"
   }
 }

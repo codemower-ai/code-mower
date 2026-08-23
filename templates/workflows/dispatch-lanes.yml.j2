@@ -1,0 +1,342 @@
+# Code Mower workflow template: dispatch ready issues to builder lanes.
+name: Dispatch lanes
+
+on:
+  schedule:
+    - cron: "__BUILDER_DISPATCH_CRON__"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only print what would be dispatched"
+        required: false
+        default: "false"
+      max_wip:
+        description: "Per-lane WIP cap for this run"
+        required: false
+        default: ""
+
+permissions:
+  issues: write
+  pull-requests: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: {% raw %}${{ secrets.__DISPATCH_TOKEN_ENV__ || github.token }}{% endraw %}
+      REPO: {% raw %}${{ github.repository }}{% endraw %}
+      DRY_RUN: {% raw %}${{ github.event.inputs.dry_run || 'false' }}{% endraw %}
+      CODE_MOWER_MAX_WIP: {% raw %}${{ github.event.inputs.max_wip || vars.CODE_MOWER_MAX_WIP || '__BUILD_LOOP_MAX_WIP__' }}{% endraw %}
+      CODE_MOWER_READY_LABEL: "__BUILD_LOOP_READY_LABEL__"
+      CODE_MOWER_OWNER_LABELS_JSON: '__BUILD_LOOP_OWNER_LABELS_JSON__'
+      CODE_MOWER_BUILDER_LANES_JSON: '__BUILDER_DISPATCH_LANES_JSON__'
+    steps:
+      - name: Dispatch ready issues per lane
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import datetime as dt
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import tempfile
+
+          repo = os.environ["REPO"]
+          ready_label = os.environ["CODE_MOWER_READY_LABEL"]
+          owner_labels = set(json.loads(os.environ["CODE_MOWER_OWNER_LABELS_JSON"]))
+          lanes = json.loads(os.environ["CODE_MOWER_BUILDER_LANES_JSON"])
+          dry_run = os.environ.get("DRY_RUN", "false").lower() == "true"
+          raw_wip = os.environ.get("CODE_MOWER_MAX_WIP") or "__BUILD_LOOP_MAX_WIP__"
+          max_wip = int(raw_wip) if raw_wip.isdecimal() and int(raw_wip) > 0 else __BUILD_LOOP_MAX_WIP__
+
+          def gh(args, *, json_output=False, allow_failure=False):
+              completed = subprocess.run(
+                  ["gh", *args],
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  check=False,
+              )
+              if completed.returncode != 0:
+                  if allow_failure:
+                      return None if json_output else ""
+                  sys.stderr.write(completed.stderr or completed.stdout)
+                  raise SystemExit(completed.returncode)
+              if not json_output:
+                  return completed.stdout
+              text = completed.stdout.strip()
+              return json.loads(text) if text else None
+
+          def label_names(item):
+              return {label["name"] for label in item.get("labels", [])}
+
+          def has_open_pr_for_issue(issue_number):
+              prs = gh(
+                  [
+                      "pr",
+                      "list",
+                      "-R",
+                      repo,
+                      "--state",
+                      "open",
+                      "--search",
+                      f'"#{issue_number}" in:body',
+                      "--json",
+                      "number",
+                  ],
+                  json_output=True,
+              )
+              return bool(prs)
+
+          def dependency_open(dep):
+              if dep.startswith("#"):
+                  state = gh(
+                      [
+                          "issue",
+                          "view",
+                          dep[1:],
+                          "-R",
+                          repo,
+                          "--json",
+                          "state",
+                          "-q",
+                          ".state",
+                      ],
+                      allow_failure=True,
+                  )
+                  return (state or "UNKNOWN").strip() != "CLOSED"
+              matches = gh(
+                  [
+                      "issue",
+                      "list",
+                      "-R",
+                      repo,
+                      "--state",
+                      "all",
+                      "--search",
+                      f"{dep} in:title",
+                      "--limit",
+                      "20",
+                      "--json",
+                      "number,state,title",
+                  ],
+                  json_output=True,
+              )
+              for item in matches or []:
+                  if str(item.get("title", "")).startswith(dep):
+                      return item.get("state") != "CLOSED"
+              return True
+
+          def dependencies_closed(issue_number):
+              issue = gh(
+                  ["issue", "view", str(issue_number), "-R", repo, "--json", "body"],
+                  json_output=True,
+              )
+              body = issue.get("body") or ""
+              in_deps = False
+              deps = []
+              for line in body.splitlines():
+                  if re.match(r"^##\s+Dependencies\b", line):
+                      in_deps = True
+                      continue
+                  if in_deps and line.startswith("## "):
+                      break
+                  if in_deps:
+                      deps.extend(re.findall(r"(?:#[0-9]+|[A-Z]+-[0-9]+)", line))
+              for dep in deps:
+                  if dependency_open(dep):
+                      print(f"#{issue_number}: dependency {dep} is still open or unresolved")
+                      return False
+              return True
+
+          def dispatch_label_added_at(issue_number, dispatch_label):
+              events = gh(
+                  ["api", f"repos/{repo}/issues/{issue_number}/events"],
+                  json_output=True,
+                  allow_failure=True,
+              )
+              labeled = [
+                  event.get("created_at")
+                  for event in events or []
+                  if event.get("event") == "labeled"
+                  and (event.get("label") or {}).get("name") == dispatch_label
+              ]
+              return labeled[-1] if labeled else None
+
+          def expire_stale_dispatches(lane):
+              dispatch_label = lane["dispatch_label"]
+              issues = gh(
+                  [
+                      "issue",
+                      "list",
+                      "-R",
+                      repo,
+                      "--state",
+                      "open",
+                      "--label",
+                      lane["builder_label"],
+                      "--label",
+                      dispatch_label,
+                      "--limit",
+                      "200",
+                      "--json",
+                      "number,title",
+                  ],
+                  json_output=True,
+              )
+              now = dt.datetime.now(dt.UTC)
+              for issue in sorted(issues or [], key=lambda item: item["number"]):
+                  number = issue["number"]
+                  if has_open_pr_for_issue(number):
+                      continue
+                  added = dispatch_label_added_at(number, dispatch_label)
+                  if not added:
+                      continue
+                  added_at = dt.datetime.fromisoformat(added.replace("Z", "+00:00"))
+                  if (now - added_at).total_seconds() < 86400:
+                      continue
+                  if dry_run:
+                      print(f"{lane['lane']}: would expire stale dispatch on #{number}")
+                  else:
+                      print(f"{lane['lane']}: expire stale dispatch on #{number}")
+                      gh(["issue", "edit", str(number), "-R", repo, "--remove-label", dispatch_label])
+
+          def active_dispatch_count(lane):
+              dispatch_label = lane["dispatch_label"]
+              issues = gh(
+                  [
+                      "issue",
+                      "list",
+                      "-R",
+                      repo,
+                      "--state",
+                      "open",
+                      "--label",
+                      lane["builder_label"],
+                      "--label",
+                      dispatch_label,
+                      "--limit",
+                      "200",
+                      "--json",
+                      "number",
+                  ],
+                  json_output=True,
+              )
+              return sum(1 for issue in issues or [] if not has_open_pr_for_issue(issue["number"]))
+
+          def open_pr_count(lane):
+              prs = gh(
+                  [
+                      "pr",
+                      "list",
+                      "-R",
+                      repo,
+                      "--state",
+                      "open",
+                      "--label",
+                      lane["builder_label"],
+                      "--json",
+                      "number",
+                  ],
+                  json_output=True,
+              )
+              return len(prs or [])
+
+          def ready_issues(lane):
+              issues = gh(
+                  [
+                      "issue",
+                      "list",
+                      "-R",
+                      repo,
+                      "--state",
+                      "open",
+                      "--label",
+                      lane["builder_label"],
+                      "--label",
+                      ready_label,
+                      "--limit",
+                      "200",
+                      "--json",
+                      "number,title,labels,assignees",
+                  ],
+                  json_output=True,
+              )
+              for issue in sorted(issues or [], key=lambda item: item["number"]):
+                  labels = label_names(issue)
+                  if issue.get("assignees"):
+                      continue
+                  if any(label.startswith("blocked-by:") for label in labels):
+                      continue
+                  if any(label.startswith("dispatched:") for label in labels):
+                      continue
+                  if labels.intersection(owner_labels):
+                      continue
+                  yield issue
+
+          def dispatch_issue(lane, issue):
+              number = issue["number"]
+              title = issue["title"]
+              if not dependencies_closed(number):
+                  return False
+              if has_open_pr_for_issue(number):
+                  print(f"{lane['lane']}: #{number} already has an open PR")
+                  return False
+              audit_labels = lane.get("audit_labels_display") or "the configured audit labels"
+              body = (
+                  f"{lane['mention']} Dispatch for **{lane['lane']}**: implement issue "
+                  f"#{number} (\"{title}\") following `docs/{lane['doc']}` and "
+                  "`docs/build-loop.md`. Open exactly one PR, add "
+                  f"`{lane['builder_label']}` and audit labels: {audit_labels}. "
+                  "Comment here with the PR link and head SHA when it is ready."
+              )
+              print(f"{lane['lane']}: dispatch #{number}")
+              if dry_run:
+                  return True
+              with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+                  handle.write(body + "\n")
+                  body_file = handle.name
+              gh(["issue", "edit", str(number), "-R", repo, "--add-label", lane["dispatch_label"]])
+              try:
+                  gh(["issue", "comment", str(number), "-R", repo, "--body-file", body_file])
+              except SystemExit:
+                  gh(
+                      [
+                          "issue",
+                          "edit",
+                          str(number),
+                          "-R",
+                          repo,
+                          "--remove-label",
+                          lane["dispatch_label"],
+                      ],
+                      allow_failure=True,
+                  )
+                  raise
+              return True
+
+          print(f"per-lane WIP cap: {max_wip}")
+          for lane in lanes:
+              expire_stale_dispatches(lane)
+              prs = open_pr_count(lane)
+              dispatches = active_dispatch_count(lane)
+              active = prs + dispatches
+              if active >= max_wip:
+                  print(
+                      f"{lane['lane']}: WIP {active} >= {max_wip} "
+                      f"({prs} PRs, {dispatches} dispatches), skip"
+                  )
+                  continue
+              slots = max_wip - active
+              sent = 0
+              for issue in ready_issues(lane):
+                  if sent >= slots:
+                      break
+                  if dispatch_issue(lane, issue):
+                      sent += 1
+              if sent == 0:
+                  print(f"{lane['lane']}: no ready issue dispatched")
+          PY

@@ -885,7 +885,9 @@ exit 1
             "code-mower-fix-round-dispatch.yml.j2",
             "code-mower-gate-health.yml.j2",
             "code-mower-gate.yml.j2",
+            "dispatch-lanes.yml.j2",
             "hosted-bridge.yml.j2",
+            "lane-mac-runner.yml.j2",
             "local-cli-audit.yml.j2",
             "self-hosted-local-audit.yml.j2",
             "saas-reviewer-labeler.yml.j2",
@@ -4014,6 +4016,18 @@ printf '%s\\n' "${lane}"
         )
         self.assertIn(
             "src/code_mower/templates/workflows/code-mower-fix-round-dispatch.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/dispatch-lanes.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/lane-mac-runner.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/lanes/run_mac_lane.sh",
             packaged_template_targets,
         )
 

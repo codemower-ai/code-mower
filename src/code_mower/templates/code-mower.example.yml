@@ -28,6 +28,15 @@ owner_surface:
   gate_health_max_wait_minutes: "30"
   gate_health_liveness_minutes: "45"
   local_audit_runner_label: code-mower-audit
+  lane_runner_labels:
+    - self-hosted
+    - macOS
+    - code-mower-lane
+  lane_runner_enabled_var: LANE_MAC_RUNNER_ENABLED
+  lane_runner_cron: "*/15 * * * *"
+  lane_runner_max_minutes: "90"
+  builder_dispatch_cron: "*/30 * * * *"
+  builder_wip_cap: "5"
   dispatch_token_env: DISPATCH_TOKEN
   dispatch_token_expires_var: DISPATCH_TOKEN_EXPIRES_AT
   ready_label: "tier:R"

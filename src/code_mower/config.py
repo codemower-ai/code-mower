@@ -452,7 +452,11 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
     owner_surface = config.get("owner_surface")
     if owner_surface is not None:
         owner_surface_map = _as_mapping(owner_surface, "owner_surface", issues)
-        for key in ("dispatch_token_env", "dispatch_token_expires_var"):
+        for key in (
+            "dispatch_token_env",
+            "dispatch_token_expires_var",
+            "lane_runner_enabled_var",
+        ):
             if key in owner_surface_map:
                 _require_env_name(owner_surface_map.get(key), f"owner_surface.{key}", issues)
 
