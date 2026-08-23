@@ -23,8 +23,9 @@ the invite:
 pipx install --python python3.12 code-mower==0.5.0b51
 ```
 
-The beta.39 baseline has been rehearsed from PyPI and against a private
-JavaScript/mobile repository without requiring committed support files.
+The current verified public beta baseline is `v0.5.0-beta.51`, published on PyPI as `code-mower==0.5.0b51`.
+It has been rehearsed from PyPI and against a private JavaScript/mobile
+repository without requiring committed support files.
 
 ## Invite Criteria
 

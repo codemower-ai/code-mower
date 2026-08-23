@@ -48,22 +48,22 @@ package. It has proved:
 - public package installation from PyPI and TestPyPI as `code-mower==0.5.0b51`;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
-  private reference/product repos, with beta.39 preserving the same client path
-  and adding clearer provider/model provenance diagnostics;
+  private reference/product repos, with the current beta preserving the same
+  client path and adding clearer provider/model provenance diagnostics;
 - production catch-up upload across those four dogfood repos using
   `repo-sync --mode catch-up`, with imported workflow history separated from
   reviewer/lens calibration evidence;
-- beta.39 local dogfood uploads from a stored dashboard-issued token, proving
-  local Codex sessions can contribute current metadata without exposing source,
-  raw diffs, raw transcripts, auth output, or secrets;
-- beta.39 private-repo package-install rehearsal against
+- local dogfood uploads from a stored dashboard-issued token, proving local
+  Codex sessions can contribute current metadata without exposing source, raw
+  diffs, raw transcripts, auth output, or secrets;
+- private-repo package-install rehearsal against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app),
   including repository-native check detection and dry-run execution. That run
   passed with 10/10 first-user readiness, detected `npm run lint`,
   `npm run typecheck`, and `npm run test`, and did not require committing
   Code Mower support files into the private product repo;
-- beta.39 calibration/value-report generation from the installed package plus
-  sanitized report upload coverage for CodeMower.com;
+- calibration/value-report generation from the installed package plus sanitized
+  report upload coverage for CodeMower.com;
 - metadata-only AI tool/model provenance in cloud bundles and dogfood events,
   with CodeMower.com distinguishing known provider/model/version signal from
   missing provenance before making benchmark recommendations;
