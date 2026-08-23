@@ -478,8 +478,9 @@ with `gh` authenticated as a repository admin:
 > You are my orchestrator for adopting Code Mower
 > (https://github.com/codemower-ai/code-mower) on this repository, in the
 > reference configuration: you (Claude Code) as orchestrator; Claude Code,
-> Codex, and Cursor as builder lanes; Claude Code and Codex as merge-gating
-> reviewers; Gitar as an informational reviewer.
+> Codex, and Cursor as builder lanes; Claude Code and Codex as reviewers
+> (informational during the pilot, promoted to merge-gating only per
+> `docs/lane-promotion-policy.md`); Gitar as an informational reviewer.
 >
 > Work through it in this order, verifying each step before the next, and stop
 > with a numbered click-list whenever a step needs something only I can do
@@ -513,7 +514,9 @@ with `gh` authenticated as a repository admin:
 >    `builder:grok-bot`; the Mac lanes use `builder:codex` /
 >    `builder:claude` - confirm the exact names in the init output), watch it
 >    get dispatched, the PR opened, both audits post verdicts,
->    drive fix rounds by relaying the verdicts, and merge on double PASS.
+>    drive fix rounds by relaying the verdicts, and merge when both post
+>    PASS (during the pilot this is your manual merge criterion; the repo
+>    gate enforces it only after lanes are promoted per the policy).
 > 8. Throughout: never argue an audit BLOCKED away - either fix the finding or
 >    record a decision with `code-mower decide` (I am the decision authority;
 >    configure my GitHub login as `owner_login`). Escalate to me only with
