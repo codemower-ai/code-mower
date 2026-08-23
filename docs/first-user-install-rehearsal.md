@@ -241,14 +241,17 @@ If this fails, fix the first-user path before cutting or promoting a release.
 
 Do not record public package proof for `v0.5.0-beta.53` until the release
 workflow runs and package-install rehearsals exist. Publish and rehearse the
-package-index artifacts in this order.
+package-index artifacts in this order. After the release tag exists at the
+release commit, dispatch both package-index publication runs with
+`--ref v0.5.0-beta.53`; never substitute mutable `main`, because the TestPyPI
+and production PyPI builds must check out identical source.
 
 First, run `release.yml` for TestPyPI only:
 
 ```bash
 gh workflow run release.yml \
   --repo codemower-ai/code-mower \
-  --ref main \
+  --ref v0.5.0-beta.53 \
   -f publish_testpypi=true \
   -f publish_pypi=false
 ```
@@ -271,7 +274,7 @@ Then run `release.yml` for production PyPI only:
 ```bash
 gh workflow run release.yml \
   --repo codemower-ai/code-mower \
-  --ref main \
+  --ref v0.5.0-beta.53 \
   -f publish_testpypi=false \
   -f publish_pypi=true
 ```

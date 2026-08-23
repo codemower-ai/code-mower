@@ -6525,6 +6525,10 @@ def main():
         self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "pass")
         commands = {action["id"]: action["command"] for action in payload["next_actions"]}
         urls = {action["id"]: action.get("url", "") for action in payload["next_actions"]}
+        self.assertIn("--ref v0.5.0-beta.53", commands["dry-run-release-workflow"])
+        self.assertNotIn("--ref main", commands["dry-run-release-workflow"])
+        self.assertIn("--ref v0.5.0-beta.53", commands["publish-testpypi-candidate"])
+        self.assertNotIn("--ref main", commands["publish-testpypi-candidate"])
         self.assertIn("publish_testpypi=true", commands["publish-testpypi-candidate"])
         self.assertIn("publish_pypi=false", commands["publish-testpypi-candidate"])
         self.assertIn("--pip-index-url https://test.pypi.org/simple/", commands["testpypi-install-rehearsal"])
@@ -6786,6 +6790,10 @@ def main():
             "workflow runs and package-install rehearsals exist.",
             first_user,
         )
+        self.assertIn("dispatch both package-index publication runs", first_user)
+        self.assertIn("never substitute mutable `main`", first_user)
+        self.assertEqual(first_user.count("  --ref v0.5.0-beta.53 \\"), 2)
+        self.assertNotIn("  --ref main \\", first_user)
         self.assertIn("-f publish_testpypi=true", first_user)
         self.assertIn("-f publish_pypi=false", first_user)
         self.assertIn("-f publish_testpypi=false", first_user)
