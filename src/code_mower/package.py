@@ -56,6 +56,7 @@ if __package__ in {None, "", "tools"}:  # pragma: no cover - legacy product-loca
             cli_commands,
             _config_template_text,
             _init_py_text,
+            _lane_template_text,
             _pyproject_text,
             _workflow_template_text,
         )
@@ -64,6 +65,7 @@ if __package__ in {None, "", "tools"}:  # pragma: no cover - legacy product-loca
             cli_commands,
             _config_template_text,
             _init_py_text,
+            _lane_template_text,
             _pyproject_text,
             _workflow_template_text,
         )
@@ -72,6 +74,7 @@ else:  # pragma: no cover - exercised after package extraction.
         cli_commands,
         _config_template_text,
         _init_py_text,
+        _lane_template_text,
         _pyproject_text,
         _workflow_template_text,
     )
@@ -549,6 +552,8 @@ def materialize_package_plan(
             content = _config_template_text()
         elif target.startswith("templates/workflows/") or target.startswith("src/code_mower/templates/workflows/"):
             content = _workflow_template_text(target)
+        elif target.startswith("templates/lanes/") or target.startswith("src/code_mower/templates/lanes/"):
+            content = _lane_template_text(target)
         else:
             continue
         _write_text(output_dir / target, content, force=force)

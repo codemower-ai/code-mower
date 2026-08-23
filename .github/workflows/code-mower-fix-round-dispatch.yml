@@ -10,15 +10,15 @@ permissions:
   issues: write
 
 concurrency:
-  group: code-mower-fix-round-{% raw %}${{ github.event.pull_request.number }}{% endraw %}
+  group: code-mower-fix-round-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CODE_MOWER_FIX_ROUND_RULES_JSON: __FIX_ROUND_RULES_JSON__
-  CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON: __FIX_ROUND_AUDIT_LANES_JSON__
-  CODE_MOWER_DISPATCH_TOKEN_ENV: "__DISPATCH_TOKEN_ENV__"
-  NEEDS_OWNER_LABEL: __NEEDS_OWNER_LABEL_YAML__
+  CODE_MOWER_FIX_ROUND_RULES_JSON: "[{\"builder_label\":\"builder:grok-bot\",\"builder_lane\":\"grok-bot\",\"mention\":\"@cursor\"}]"
+  CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON: "[{\"author_lane\":\"codex\",\"blocked\":\"codex-audit-blocked\",\"done\":\"codex-audit-done\",\"id\":\"codex\",\"needs\":\"needs-codex-audit\"},{\"author_lane\":\"claude\",\"blocked\":\"claude-audit-blocked\",\"done\":\"claude-audit-done\",\"id\":\"claude_audit\",\"needs\":\"needs-claude-audit\"}]"
+  CODE_MOWER_DISPATCH_TOKEN_ENV: "DISPATCH_TOKEN"
+  NEEDS_OWNER_LABEL: "needs-owner"
 
 jobs:
   dispatch:
@@ -26,8 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GH_TOKEN: {% raw %}${{ secrets.__DISPATCH_TOKEN_ENV__ || '' }}{% endraw %}
-      PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
+      GH_TOKEN: ${{ secrets.DISPATCH_TOKEN || '' }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - name: Plan fix-round dispatch
         id: plan
@@ -84,11 +84,11 @@ jobs:
         if: steps.plan.outputs.matched == 'true'
         shell: bash
         env:
-          AUDIT_LANE: {% raw %}${{ steps.plan.outputs.audit_lane }}{% endraw %}
-          BUILDER_LANE: {% raw %}${{ steps.plan.outputs.builder_lane }}{% endraw %}
-          FIX_ROUND_MENTION: {% raw %}${{ steps.plan.outputs.mention }}{% endraw %}
-          HEAD_SHA: {% raw %}${{ steps.plan.outputs.head_sha }}{% endraw %}
-          MARKER: {% raw %}${{ steps.plan.outputs.marker }}{% endraw %}
+          AUDIT_LANE: ${{ steps.plan.outputs.audit_lane }}
+          BUILDER_LANE: ${{ steps.plan.outputs.builder_lane }}
+          FIX_ROUND_MENTION: ${{ steps.plan.outputs.mention }}
+          HEAD_SHA: ${{ steps.plan.outputs.head_sha }}
+          MARKER: ${{ steps.plan.outputs.marker }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then

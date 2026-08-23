@@ -197,12 +197,15 @@ code-mower init ../control-repo/code-mower.yml \
   --add-repo OWNER/SIBLING_REPO \
   --profile recommended \
   --apply \
+  --repo OWNER/SIBLING_REPO \
   --output-dir .code-mower.generated
 code-mower doctor ../control-repo/code-mower.yml --preflight --json
 ```
 
-`doctor` reports whether the config is single-repo or multi-repo so CI-only
-sibling repos are easy to spot before they drift from the merge gate. For a
+Apply mode creates missing labels in `--repo`, or in the current checkout's
+GitHub repository when `--repo` is omitted. `doctor` reports whether the config
+is single-repo or multi-repo so CI-only sibling repos are easy to spot before
+they drift from the merge gate. For a
 permanent rollout, add the sibling slug to `repositories:` in the control
 config after reviewing the generated plan.
 

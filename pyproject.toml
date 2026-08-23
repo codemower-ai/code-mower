@@ -31,6 +31,7 @@ code_mower = [
     "templates/**/*.yml",
     "templates/**/*.yaml",
     "templates/**/*.j2",
+    "templates/lanes/*",
     "templates/product-support/*",
 ]
 

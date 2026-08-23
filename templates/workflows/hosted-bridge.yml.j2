@@ -33,7 +33,7 @@ jobs:
           GH_TOKEN: {% raw %}${{ secrets.__LABEL_TOKEN_ENV__ || github.token }}{% endraw %}
           PR_NUMBER: {% raw %}${{ github.event.inputs.pr_number }}{% endraw %}
           EXPECTED_HEAD_SHA: {% raw %}${{ github.event.inputs.head_sha }}{% endraw %}
-          NEEDS_LABEL: "__NEEDS_LABEL__"
+          NEEDS_LABEL: __NEEDS_LABEL_YAML__
         run: |
           set -euo pipefail
 

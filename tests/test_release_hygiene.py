@@ -888,7 +888,9 @@ exit 1
             "code-mower-fix-round-dispatch.yml.j2",
             "code-mower-gate-health.yml.j2",
             "code-mower-gate.yml.j2",
+            "dispatch-lanes.yml.j2",
             "hosted-bridge.yml.j2",
+            "lane-mac-runner.yml.j2",
             "local-cli-audit.yml.j2",
             "self-hosted-local-audit.yml.j2",
             "saas-reviewer-labeler.yml.j2",
@@ -2876,12 +2878,21 @@ jobs:
             agent_labeler = output_dir.joinpath(
                 ".github/workflows/code-mower-agent-pr-labeler.yml"
             ).read_text(encoding="utf-8")
+            agent_env = yaml.safe_load(agent_labeler)["env"]
+            agent_rules = json.loads(agent_env["CODE_MOWER_AGENT_PR_RULES_JSON"])
             self.assertIn("CODE_MOWER_AGENT_PR_RULES_JSON", agent_labeler)
-            self.assertIn('"branch_prefixes":["cursor/"]', agent_labeler)
-            self.assertIn('"builder_label":"builder:grok-bot"', agent_labeler)
+            self.assertEqual(agent_rules[0]["branch_prefixes"], ["cursor/"])
+            self.assertEqual(agent_rules[0]["builder_label"], "builder:grok-bot")
             self.assertIn("secrets.DISPATCH_TOKEN", agent_labeler)
             self.assertIn("--remove-label", agent_labeler)
-            self.assertIn("code_mower_handle_rate_limit", agent_labeler)
+            self.assertIn("code_mower_backoff_rate_limit", agent_labeler)
+            self.assertIn("code_mower_pr_view_labels_retry", agent_labeler)
+            self.assertIn("code_mower_pr_edit_retry", agent_labeler)
+            self.assertIn('grep -Fxq -- "${label}"', agent_labeler)
+            self.assertIn('code_mower_pr_edit_retry "remove label ${label}" --remove-label "${label}"', agent_labeler)
+            self.assertIn('code_mower_pr_edit_retry "add requested labels" "${add_args[@]}"', agent_labeler)
+            self.assertIn("Retrying ${description} after rate-limit backoff", agent_labeler)
+            self.assertNotIn('gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" "${remove_args[@]}" >/dev/null 2>&1 || true', agent_labeler)
             self.assertIn("GitHub API rate limit hit", agent_labeler)
             self.assertIn("needs-codex-audit", agent_labeler)
             self.assertIn("needs-claude-audit", agent_labeler)
@@ -2890,11 +2901,13 @@ jobs:
             fix_round = output_dir.joinpath(
                 ".github/workflows/code-mower-fix-round-dispatch.yml"
             ).read_text(encoding="utf-8")
+            fix_env = yaml.safe_load(fix_round)["env"]
+            fix_rules = json.loads(fix_env["CODE_MOWER_FIX_ROUND_RULES_JSON"])
             self.assertIn("CODE_MOWER_FIX_ROUND_RULES_JSON", fix_round)
-            self.assertIn('"mention":"@cursor"', fix_round)
+            self.assertEqual(fix_rules[0]["mention"], "@cursor")
             self.assertIn("CODE_MOWER_FIX_ROUND:", fix_round)
             self.assertIn("secrets.DISPATCH_TOKEN", fix_round)
-            self.assertIn('NEEDS_OWNER_LABEL: "needs-owner"', fix_round)
+            self.assertEqual(fix_env["NEEDS_OWNER_LABEL"], "needs-owner")
             self.assertIn("codex-audit-blocked", fix_round)
             self.assertIn("claude-audit-blocked", fix_round)
             self.assertIn("code_mower_handle_rate_limit", fix_round)
@@ -3028,6 +3041,8 @@ jobs:
             gate = output_dir.joinpath(
                 ".github/workflows/code-mower-gate.yml"
             ).read_text(encoding="utf-8")
+            gate_env = yaml.safe_load(gate)["env"]
+            gate_lanes = json.loads(gate_env["CODE_MOWER_GATE_LANES_JSON"])
             self.assertIn("CODE_MOWER_GATE_CONTEXT: code-mower/gate", gate)
             self.assertIn("name: publish Code Mower gate status", gate)
             self.assertNotIn("name: code-mower/gate", gate)
@@ -3073,21 +3088,30 @@ jobs:
                 "actions/runs?event=pull_request_target&status={status}&per_page=100",
                 gate,
             )
-            self.assertIn('"decision_coverage":true', gate)
+            self.assertTrue(all(lane["decision_coverage"] for lane in gate_lanes))
             self.assertNotIn("__GATE_LANES_JSON__", gate)
 
             gate_health = output_dir.joinpath(
                 ".github/workflows/code-mower-gate-health.yml"
             ).read_text(encoding="utf-8")
+            gate_health_env = yaml.safe_load(gate_health)["env"]
+            gate_health_lanes = json.loads(
+                gate_health_env["CODE_MOWER_GATE_HEALTH_LANES_JSON"]
+            )
             self.assertIn("CODE_MOWER_GATE_HEALTH_LANES_JSON", gate_health)
             self.assertIn("CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES", gate_health)
             self.assertIn("CODE_MOWER_GATE_HEALTH_LIVENESS_MINUTES", gate_health)
-            self.assertIn('NEEDS_OWNER_LABEL: "needs-owner"', gate_health)
+            self.assertEqual(gate_health_env["NEEDS_OWNER_LABEL"], "needs-owner")
             self.assertIn("needs-codex-audit", gate_health)
             self.assertIn("needs-claude-audit", gate_health)
-            self.assertIn('"author_lane":"codex"', gate_health)
-            self.assertIn('"builder_authors":"chatgpt-codex-connector[bot]"', gate_health)
-            self.assertIn('"builder_label":"builder:codex"', gate_health)
+            codex_health = next(
+                lane for lane in gate_health_lanes if lane["author_lane"] == "codex"
+            )
+            self.assertEqual(
+                codex_health["builder_authors"],
+                "chatgpt-codex-connector[bot]",
+            )
+            self.assertEqual(codex_health["builder_label"], "builder:codex")
             self.assertIn("github-actions[bot]", gate_health)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS: ${{ vars.CLAUDE_AUDIT_BOT_AUTHORS || '' }}", gate_health)
             self.assertIn("CODEX_BOT_AUTHORS: ${{ vars.CODEX_BOT_AUTHORS || '' }}", gate_health)
@@ -3382,14 +3406,14 @@ jobs:
                 text=True,
             )
 
-    def test_init_escapes_decision_authorities_in_workflow_env(self) -> None:
+    def test_init_renders_valid_decision_authorities_in_workflow_env(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
         config = dict(code_mower_config.load_config(config_path))
         config["owner_surface"] = {"owner_login": "owner"}
         config["decisions"] = {
             "authorities": [
-                'quote"slash\\',
-                "line\nbreak",
+                "valid-maintainer",
+                "ci-bot[bot]",
             ],
         }
         plan = code_mower_init.render_init_plan(
@@ -3397,7 +3421,7 @@ jobs:
             package_mode=True,
             package_command="code-mower",
         )
-        expected = 'owner,quote"slash\\,line\nbreak'
+        expected = "owner,valid-maintainer,ci-bot[bot]"
 
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / ".code-mower.generated"
@@ -4245,6 +4269,18 @@ printf '%s\\n' "${lane}"
         )
         self.assertIn(
             "src/code_mower/templates/workflows/code-mower-fix-round-dispatch.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/dispatch-lanes.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/lane-mac-runner.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/lanes/run_mac_lane.sh",
             packaged_template_targets,
         )
 

@@ -189,6 +189,8 @@ class BuilderIdentityTests(unittest.TestCase):
         cfg["owner_surface"] = {
             "dispatch_token_env": "BAD TOKEN",
             "dispatch_token_expires_var": "1_BAD",
+            "builder_wip_cap": "unlimited",
+            "lane_runner_trusted_authors": ["owner", ""],
         }
 
         issues = code_mower_config.validate_config(cfg)
@@ -196,6 +198,13 @@ class BuilderIdentityTests(unittest.TestCase):
         self.assertTrue(any(issue.path == "owner_surface.dispatch_token_env" for issue in issues))
         self.assertTrue(
             any(issue.path == "owner_surface.dispatch_token_expires_var" for issue in issues)
+        )
+        self.assertTrue(any(issue.path == "owner_surface.builder_wip_cap" for issue in issues))
+        self.assertTrue(
+            any(
+                issue.path == "owner_surface.lane_runner_trusted_authors[1]"
+                for issue in issues
+            )
         )
 
     def test_config_validation_checks_decision_authorities(self) -> None:

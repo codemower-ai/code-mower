@@ -47,7 +47,7 @@ def _pyproject_text(package_name: str, *, version: str) -> str:
             'where = ["src"]',
             "",
             "[tool.setuptools.package-data]",
-            'code_mower = ["*.json", "templates/**/*.json", "templates/**/*.md", "templates/**/*.yml", "templates/**/*.yaml", "templates/**/*.j2", "templates/product-support/*"]',
+            'code_mower = ["*.json", "templates/**/*.json", "templates/**/*.md", "templates/**/*.yml", "templates/**/*.yaml", "templates/**/*.j2", "templates/lanes/*", "templates/product-support/*"]',
             "",
         ]
     )
@@ -376,6 +376,27 @@ jobs:
     )
 
 
+def _lane_template_file_text(target: str) -> str | None:
+    module_dir = Path(__file__).resolve().parent
+    filename = Path(target).name
+    candidates = (
+        module_dir / "templates" / "lanes" / filename,
+        module_dir.parent / "templates" / "lanes" / filename,
+        module_dir.parents[1] / "templates" / "lanes" / filename,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    return None
+
+
+def _lane_template_text(target: str) -> str:
+    file_text = _lane_template_file_text(target)
+    if file_text is None:
+        raise FileNotFoundError(f"lane template not found: {target}")
+    return file_text
+
+
 def _config_template_text() -> str:
     return "\n".join(
         [
@@ -400,6 +421,8 @@ def cli_commands(version: str) -> tuple[str, ...]:
         "code-mower config plan code-mower.yml --json",
         "code-mower init --easy",
         "code-mower init --easy --apply --output-dir .code-mower.generated",
+        "code-mower init --builders codex,claude,cursor --dry-run",
+        "code-mower init --builders codex,claude,cursor --apply --output-dir .code-mower.generated",
         "code-mower next-steps --profile recommended",
         "code-mower next-steps --profile recommended --json",
         "code-mower builder-experiment plan builder-experiment.json --json",

@@ -144,14 +144,17 @@ code-mower init ../control-repo/code-mower.yml \
   --add-repo OWNER/SIBLING_REPO \
   --profile recommended \
   --apply \
+  --repo OWNER/SIBLING_REPO \
   --output-dir .code-mower.generated
 code-mower doctor ../control-repo/code-mower.yml --preflight --json
 ```
 
 `--add-repo` does not edit `code-mower.yml`; it adds a reviewable target to the
 init manifest so the generated labeler, clear-stale, labels, and support files
-can be copied into the sibling repository. After review, add the sibling slug
-to `repositories:` in the control config. `doctor` reports the committed
+can be copied into the sibling repository. `--repo` is the GitHub repository
+where apply mode creates missing labels; omit it only when running from the
+target checkout. After review, add the sibling slug to `repositories:` in the
+control config. `doctor` reports the committed
 repository count and slugs even without `--github`, then `doctor --github`
 checks each configured repo's metadata, Actions settings, and branch
 protection.

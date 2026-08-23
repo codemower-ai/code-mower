@@ -1,0 +1,125 @@
+# Code Mower workflow template: run Mac builder lanes non-interactively.
+name: Mac lane runner
+
+on:
+  schedule:
+    - cron: __LANE_MAC_RUNNER_CRON__
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "Lane to run (__LANE_MAC_RUNNER_LANES_DISPLAY__ or all)"
+        required: false
+        default: "all"
+      target:
+        description: "Force a target: issue:<n> or pr:<n>"
+        required: false
+        default: ""
+      audit_target:
+        description: "Force a Claude audit target: pr:<n>"
+        required: false
+        default: ""
+      max_minutes:
+        description: "Wall-clock cap for the CLI run"
+        required: false
+        default: "__LANE_MAC_RUNNER_MAX_MINUTES__"
+      enable_audit_duty:
+        description: "Allow an explicit Claude audit fallback on manual runs"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    if: {% raw %}${{ vars.__LANE_MAC_RUNNER_ENABLED_VAR__ == 'true' }}{% endraw %}
+    runs-on: [__LANE_MAC_RUNNER_LABELS__]
+    timeout-minutes: __LANE_MAC_RUNNER_TIMEOUT_MINUTES__
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [__LANE_MAC_RUNNER_LANES_YAML__]
+    concurrency:
+      group: lane-mac-runner-{% raw %}${{ matrix.lane }}{% endraw %}
+      cancel-in-progress: false
+    env:
+      LANE: {% raw %}${{ matrix.lane }}{% endraw %}
+      REPO: {% raw %}${{ github.repository }}{% endraw %}
+      TARGET: {% raw %}${{ github.event.inputs.target || '' }}{% endraw %}
+      AUDIT_TARGET: {% raw %}${{ github.event.inputs.audit_target || '' }}{% endraw %}
+      MAX_MINUTES: {% raw %}${{ github.event.inputs.max_minutes || '__LANE_MAC_RUNNER_MAX_MINUTES__' }}{% endraw %}
+      LANE_FILTER: {% raw %}${{ github.event.inputs.lane || 'all' }}{% endraw %}
+      ENABLE_AUDIT_DUTY: {% raw %}${{ github.event.inputs.enable_audit_duty || 'false' }}{% endraw %}
+    steps:
+      - name: Skip lanes not selected
+        id: selection
+        run: |
+          set -euo pipefail
+          if [ "{% raw %}${{ github.event_name }}{% endraw %}" = "workflow_dispatch" ] && [ "${LANE_FILTER}" = "all" ]; then
+            if [ -n "${TARGET}" ] || [ -n "${AUDIT_TARGET}" ]; then
+              echo "::error::forced target runs require a single explicit lane; lane=all is not allowed with target or audit_target" >&2
+              echo "set the lane input to one of: __LANE_MAC_RUNNER_LANES_DISPLAY__" >&2
+              exit 1
+            fi
+          fi
+          if [ "${LANE_FILTER}" != "all" ] && [ "${LANE_FILTER}" != "${LANE}" ]; then
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            echo "lane ${LANE} not selected"
+            exit 0
+          fi
+          if [ "{% raw %}${{ github.event_name }}{% endraw %}" = "workflow_dispatch" ] && [ -n "${AUDIT_TARGET}" ] && [ "${LANE}" != "claude" ]; then
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            echo "audit target runs only use the claude lane"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import os
+          import sys
+
+          raw = os.environ.get("MAX_MINUTES", "")
+          configured = int("__LANE_MAC_RUNNER_MAX_MINUTES__")
+          if not raw.isdecimal() or int(raw) <= 0:
+              print("::error::max_minutes must be a positive integer", file=sys.stderr)
+              raise SystemExit(1)
+          requested = int(raw)
+          if requested > configured:
+              print(
+                  f"::error::max_minutes {requested} exceeds configured maximum "
+                  f"{configured}; raise owner_surface.lane_runner_max_minutes "
+                  "to allow longer runs",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          PY
+          echo "skip=false" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout lane tools
+        if: steps.selection.outputs.skip != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: {% raw %}${{ github.event.repository.default_branch }}{% endraw %}
+          persist-credentials: false
+
+      - name: Run one unit of lane work
+        if: steps.selection.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          for name in USER LOGNAME SHELL LANG; do
+            [ -n "${!name:-}" ] || { echo "runner env is missing ${name}" >&2; exit 1; }
+          done
+          unset GH_TOKEN GITHUB_TOKEN || true
+          gh auth status >/dev/null 2>&1 || {
+            echo "gh is not logged in for the runner user" >&2
+            exit 1
+          }
+          args=(--lane "${LANE}" --repo "${REPO}" --max-minutes "${MAX_MINUTES}")
+          if [ -n "${TARGET}" ]; then
+            args+=(--target "${TARGET}")
+          fi
+          if [ "{% raw %}${{ github.event_name }}{% endraw %}" = "workflow_dispatch" ] && [ -n "${AUDIT_TARGET}" ] && [ "${LANE}" = "claude" ]; then
+            args+=(--audit-target "${AUDIT_TARGET}")
+          fi
+          if [ "{% raw %}${{ github.event_name }}{% endraw %}" = "workflow_dispatch" ] && [ "${ENABLE_AUDIT_DUTY}" = "true" ]; then
+            args+=(--enable-audit-duty)
+          fi
+          exec tools/lanes/run_mac_lane.sh "${args[@]}"

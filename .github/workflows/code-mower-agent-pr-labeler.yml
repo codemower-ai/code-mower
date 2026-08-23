@@ -10,14 +10,14 @@ permissions:
   issues: write
 
 concurrency:
-  group: code-mower-agent-pr-{% raw %}${{ github.event.pull_request.number }}{% endraw %}
+  group: code-mower-agent-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CODE_MOWER_AGENT_PR_RULES_JSON: __AGENT_PR_RULES_JSON__
-  CODE_MOWER_AGENT_PR_AUDIT_LANES_JSON: __AGENT_PR_AUDIT_LANES_JSON__
-  CODE_MOWER_DISPATCH_TOKEN_ENV: "__DISPATCH_TOKEN_ENV__"
+  CODE_MOWER_AGENT_PR_RULES_JSON: "[{\"branch_prefixes\":[\"cursor/\"],\"builder_label\":\"builder:grok-bot\",\"builder_lane\":\"grok-bot\"}]"
+  CODE_MOWER_AGENT_PR_AUDIT_LANES_JSON: "[{\"author_lane\":\"codex\",\"blocked\":\"codex-audit-blocked\",\"done\":\"codex-audit-done\",\"id\":\"codex\",\"needs\":\"needs-codex-audit\"},{\"author_lane\":\"claude\",\"blocked\":\"claude-audit-blocked\",\"done\":\"claude-audit-done\",\"id\":\"claude_audit\",\"needs\":\"needs-claude-audit\"}]"
+  CODE_MOWER_DISPATCH_TOKEN_ENV: "DISPATCH_TOKEN"
 
 jobs:
   label:
@@ -25,9 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GH_TOKEN: {% raw %}${{ secrets.__DISPATCH_TOKEN_ENV__ || '' }}{% endraw %}
-      PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
-      PR_ACTION: {% raw %}${{ github.event.action }}{% endraw %}
+      GH_TOKEN: ${{ secrets.DISPATCH_TOKEN || '' }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_ACTION: ${{ github.event.action }}
     steps:
       - name: Plan agent labels
         id: plan
