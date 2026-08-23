@@ -493,9 +493,11 @@ with `gh` authenticated as a repository admin:
 >    prereleases with `--pip-args="--pre"`). Verify `code-mower --version`.
 > 3. Reviewer gate first: `code-mower init --easy` (dry-run), review the plan,
 >    then `--apply`; `code-mower doctor --preflight` must pass, including the
->    human automation token, branch protection requiring `code-mower/gate` as
->    an Any-source commit status, and repository `allow_auto_merge`. Tell me
->    exactly which tokens to create, with scopes, and where each goes.
+>    human automation token and repository `allow_auto_merge`. Tell me exactly
+>    which tokens to create, with scopes, and where each goes. Making
+>    `code-mower/gate` a required Any-source branch-protection status is the
+>    promotion step - do it only when a reviewer lane meets
+>    `docs/lane-promotion-policy.md`, not during the informational pilot.
 > 4. Builders: `code-mower init --builders codex,claude,cursor` (dry-run
 >    first, then `--apply` from the repository checkout). If I have a Mac for
 >    the self-hosted lane runner, walk me through
