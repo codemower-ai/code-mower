@@ -94,8 +94,8 @@ Choose one path. Each path has one guide and gets to one visible outcome.
 | A. Reviewer gate in 10 minutes | You want one audited PR before recurring workflows or builder dispatch. | Install, run `init --easy`, run `doctor --preflight`, open a small setup PR, run Codex and Claude audits, then merge manually when the audit evidence is clean. | [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md) |
 | B. Build loop in 30 minutes | You want builders plus an orchestrator pattern after the reviewer gate works. | Complete path A, then add the automation token, require `code-mower/gate` from Any source, enable repository auto-merge, prove the self-hosted Mac lane runner with `doctor --runner`, run `init --builders`, and dispatch the first issue. | [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md) |
 
-The beta.52 announcement entry point remains the tagged
-[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.5.0-beta.52/docs/try-in-10-minutes.md)
+The beta.53 announcement entry point is the tagged
+[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.5.0-beta.53/docs/try-in-10-minutes.md)
 guide.
 
 ## What Calibration Does And Does Not Prove
@@ -123,7 +123,7 @@ First-time command map: [docs/launch-command-surface.md](docs/launch-command-sur
 
 The current PyPI beta has been rehearsed end-to-end from a clean install:
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the latest 10/10 public-package readiness proof for `code-mower==0.5.0b52`.
+the latest 10/10 public-package readiness proof for `code-mower==0.5.0b53`.
 
 ## Optional: Plan Before Coding
 
@@ -287,9 +287,9 @@ measurement work.
 
 ## Installation Status
 
-The current public beta is `v0.5.0-beta.52` from
+The current public beta is `v0.5.0-beta.53` from
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), published
-as `code-mower==0.5.0b52` on [PyPI](https://pypi.org/project/code-mower/).
+as `code-mower==0.5.0b53` on [PyPI](https://pypi.org/project/code-mower/).
 GitHub releases remain the auditable source for tags, build artifacts, and
 release notes.
 

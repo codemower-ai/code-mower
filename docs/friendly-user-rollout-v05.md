@@ -23,10 +23,10 @@ Use the current public beta unless a newer release is explicitly called out in
 the invite:
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b52
+pipx install --python python3.12 code-mower==0.5.0b53
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.52`, published on PyPI as `code-mower==0.5.0b52`.
+The current verified public beta baseline is `v0.5.0-beta.53`, published on PyPI as `code-mower==0.5.0b53`.
 It has been rehearsed from PyPI and against a private JavaScript/mobile
 repository without requiring committed support files.
 
