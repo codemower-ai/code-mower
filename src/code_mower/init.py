@@ -1263,7 +1263,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
         "__GATE_OVERRIDE_LABEL_JSON__": json.dumps(str(gate_override_label)),
-        "__DECISION_AUTHORITIES__": str(entry.get("decision_authorities") or ""),
+        "__DECISION_AUTHORITIES__": json.dumps(
+            str(entry.get("decision_authorities") or "")
+        ),
         "__GITHUB_ACTIONS_WORKFLOWS__": str(entry.get("github_actions_workflows") or ""),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
         "__LANE_ID__": str(entry.get("lane_id") or ""),

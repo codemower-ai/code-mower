@@ -3242,6 +3242,42 @@ jobs:
                 text=True,
             )
 
+    def test_init_escapes_decision_authorities_in_workflow_env(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        config = dict(code_mower_config.load_config(config_path))
+        config["owner_surface"] = {"owner_login": "owner"}
+        config["decisions"] = {
+            "authorities": [
+                'quote"slash\\',
+                "line\nbreak",
+            ],
+        }
+        plan = code_mower_init.render_init_plan(
+            config,
+            package_mode=True,
+            package_command="code-mower",
+        )
+        expected = 'owner,quote"slash\\,line\nbreak'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / ".code-mower.generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+            gate = output_dir.joinpath(
+                ".github/workflows/code-mower-gate.yml"
+            ).read_text(encoding="utf-8")
+            codex_labeler = output_dir.joinpath(
+                ".github/workflows/codex-audit-labeler.yml"
+            ).read_text(encoding="utf-8")
+
+        self.assertEqual(
+            yaml.safe_load(gate)["env"]["CODE_MOWER_DECISION_AUTHORITIES"],
+            expected,
+        )
+        self.assertEqual(
+            yaml.safe_load(codex_labeler)["env"]["CODE_MOWER_DECISION_AUTHORITIES"],
+            expected,
+        )
+
     def test_safe_gh_comment_reports_gh_streams_on_failure(self) -> None:
         module_path = ROOT / "src/code_mower/templates/product-support/safe_gh_comment.py"
         spec = importlib.util.spec_from_file_location("safe_gh_comment_template", module_path)
