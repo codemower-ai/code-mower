@@ -108,6 +108,11 @@ class InitBuildLoopTests(unittest.TestCase):
                         '[ -n "${AUDIT_TARGET}" ] && [ "${LANE}" != "claude" ]',
                         selection_run,
                     )
+                    self.assertIn('configured = int("90")', selection_run)
+                    self.assertIn(
+                        "exceeds configured maximum",
+                        selection_run,
+                    )
                     run_step = workflow["jobs"]["run"]["steps"][2]["run"]
                     self.assertIn(
                         '[ -n "${AUDIT_TARGET}" ] && [ "${LANE}" = "claude" ]',
@@ -208,6 +213,76 @@ fi
             "issue edit 12 -R owner/repo --remove-label dispatched:codex",
             gh_log_text,
         )
+
+    def test_dispatcher_excludes_owner_blocked_dispatches_from_active_wip(self) -> None:
+        plan = _builders_plan()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+            script = _dispatch_workflow_python(
+                output_dir.joinpath(".github/workflows/dispatch-lanes.yml").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+args=" $* "
+if [ "$cmd" = "issue list" ] && [[ "$args" == *"--label dispatched:codex"* ]]; then
+  printf '%s\\n' '[{"number":12,"title":"Waiting on owner","labels":[{"name":"builder:codex"},{"name":"dispatched:codex"},{"name":"needs-owner"}]}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "api --paginate" ] && [[ "$args" == *"issues/12/events"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "issue list" ] && [[ "$args" == *"--label tier:R"* ]]; then
+  printf '%s\\n' '[{"number":13,"title":"Ready work","labels":[{"name":"builder:codex"},{"name":"tier:R"}],"assignees":[]}]'
+elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json body"* ]]; then
+  printf '%s\\n' '{"body":""}'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            lane = {
+                "lane": "codex",
+                "builder_label": "builder:codex",
+                "dispatch_label": "dispatched:codex",
+                "mention": "@codex",
+                "doc": "lanes/codex.md",
+                "audit_labels_display": "needs-claude-audit",
+            }
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "CODE_MOWER_BUILDER_LANES_JSON": json.dumps([lane]),
+                    "CODE_MOWER_MAX_WIP": "1",
+                    "CODE_MOWER_OWNER_LABELS_JSON": '["needs-owner"]',
+                    "CODE_MOWER_READY_LABEL": "tier:R",
+                    "DRY_RUN": "true",
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "REPO": "owner/repo",
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+        self.assertIn("codex: dispatch #13", completed.stdout)
+        self.assertNotIn("codex: WIP 1 >= 1", completed.stdout)
 
     def test_mac_lane_runner_ignores_non_closing_pr_body_mentions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -343,6 +418,8 @@ printf 'fake codex completed\\n'
         self.assertIn('"needs-jeff","decision-jeff","sitting-jeff"', dispatch)
         self.assertIn('runs-on: ["self-hosted", "macOS", "bridge-pro-lane"]', mac_runner)
         self.assertIn("vars.BRIDGE_PRO_LANE_ENABLED == 'true'", mac_runner)
+        self.assertIn('configured = int("180")', mac_runner)
+        self.assertIn("exceeds configured maximum", mac_runner)
         mac_runner_workflow = yaml.safe_load(mac_runner)
         self.assertEqual(mac_runner_workflow["jobs"]["run"]["timeout-minutes"], 195)
         self.assertIn('default: "180"', mac_runner)

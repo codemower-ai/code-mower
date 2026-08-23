@@ -255,11 +255,20 @@ jobs:
                       "--limit",
                       "200",
                       "--json",
-                      "number",
+                      "number,labels",
                   ],
                   json_output=True,
               )
-              return sum(1 for issue in issues or [] if not has_open_pr_for_issue(issue["number"]))
+              active = 0
+              for issue in issues or []:
+                  labels = label_names(issue)
+                  if any(label.startswith("blocked-by:") for label in labels):
+                      continue
+                  if labels.intersection(owner_labels):
+                      continue
+                  if not has_open_pr_for_issue(issue["number"]):
+                      active += 1
+              return active
 
           def open_pr_count(lane):
               prs = gh(

@@ -65,6 +65,25 @@ jobs:
             echo "audit target runs only use the claude lane"
             exit 0
           fi
+          python3 - <<'PY'
+          import os
+          import sys
+
+          raw = os.environ.get("MAX_MINUTES", "")
+          configured = int("90")
+          if not raw.isdecimal() or int(raw) <= 0:
+              print("::error::max_minutes must be a positive integer", file=sys.stderr)
+              raise SystemExit(1)
+          requested = int(raw)
+          if requested > configured:
+              print(
+                  f"::error::max_minutes {requested} exceeds configured maximum "
+                  f"{configured}; raise owner_surface.lane_runner_max_minutes "
+                  "to allow longer runs",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          PY
           echo "skip=false" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout lane tools
