@@ -2787,6 +2787,9 @@ jobs:
         self.assertEqual(plan.data["audit"]["budget_usd"], "")
         self.assertIn("builder:grok-bot", plan.data["labels"])
         self.assertIn("require `code-mower/gate` from Any source", plan.text)
+        self.assertIn("Required setup next steps:", plan.text)
+        self.assertIn("create human automation token secret DISPATCH_TOKEN", plan.text)
+        self.assertIn("allow_auto_merge=true", plan.text)
         self.assertIn("Audit limits:", plan.text)
         self.assertIn("app_id: 15368", plan.text)
 

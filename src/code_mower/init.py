@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import shlex
 import sys
 from dataclasses import dataclass
@@ -31,6 +30,14 @@ if __package__ in {None, "", "tools"}:
         validate_config,
     )
     from tools.doctor_checks.github_human_token import human_automation_token_required
+    from tools.workflow_actionlint import (
+        GeneratedWorkflow,
+        WorkflowLintError,
+        WorkflowLintUnavailable,
+        custom_self_hosted_runner_labels,
+        is_github_workflow_path,
+        run_actionlint_on_workflows,
+    )
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_limits as code_mower_audit_limits
     from . import decisions as code_mower_decisions
@@ -45,6 +52,14 @@ else:  # pragma: no cover - exercised after package extraction.
         validate_config,
     )
     from .doctor_checks.github_human_token import human_automation_token_required
+    from .workflow_actionlint import (
+        GeneratedWorkflow,
+        WorkflowLintError,
+        WorkflowLintUnavailable,
+        custom_self_hosted_runner_labels,
+        is_github_workflow_path,
+        run_actionlint_on_workflows,
+    )
 
 
 WORKFLOW_TARGETS_BY_DRIVER = {
@@ -223,6 +238,15 @@ class InitProfile:
     profile_id: str
     description: str
     lanes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MaterializedGeneratedFile:
+    entry: Mapping[str, Any]
+    path: str
+    destination: Path
+    text: str
+    placeholder: bool
 
 
 def _profile(config: Mapping[str, Any], profile_id: str) -> InitProfile:
@@ -1340,6 +1364,70 @@ def _copy_source_candidates(source_root: Path, entry: Mapping[str, Any], path: s
     return tuple(candidates)
 
 
+def _materialize_generated_file(
+    entry: Mapping[str, Any],
+    path: str,
+    destination: Path,
+    *,
+    source_root: Path,
+) -> MaterializedGeneratedFile:
+    source = next(
+        (candidate for candidate in _copy_source_candidates(source_root, entry, path) if candidate.is_file()),
+        None,
+    )
+    if source is None:
+        return MaterializedGeneratedFile(
+            entry=entry,
+            path=path,
+            destination=destination,
+            text=_placeholder_text(path, str(entry["source"])),
+            placeholder=True,
+        )
+    if entry.get("source") == "shared-stale-label-template":
+        text = _render_stale_workflow_template(
+            source.read_text(encoding="utf-8"),
+            lane=str(entry.get("stale_lane") or "devin"),
+        )
+    elif _workflow_template_needs_render(str(entry.get("source"))):
+        text = _render_workflow_template(source.read_text(encoding="utf-8"), entry)
+    else:
+        text = source.read_text(encoding="utf-8")
+    return MaterializedGeneratedFile(
+        entry=entry,
+        path=path,
+        destination=destination,
+        text=text,
+        placeholder=False,
+    )
+
+
+def _generated_workflows_for_actionlint(
+    files: Sequence[MaterializedGeneratedFile],
+) -> tuple[GeneratedWorkflow, ...]:
+    return tuple(
+        GeneratedWorkflow(path=item.path, text=item.text)
+        for item in files
+        if is_github_workflow_path(item.path)
+    )
+
+
+def _skipped_actionlint_result(
+    workflows: Sequence[GeneratedWorkflow],
+    *,
+    actionlint_bin: str,
+    reason: str,
+) -> dict[str, object]:
+    workflow_items = tuple(workflows)
+    return {
+        "status": "skipped",
+        "actionlint_bin": actionlint_bin,
+        "reason": reason,
+        "workflow_count": len(workflow_items),
+        "workflows": [workflow.path for workflow in workflow_items],
+        "custom_runner_labels": list(custom_self_hosted_runner_labels(workflow_items)),
+    }
+
+
 def _previous_apply_paths(output_dir: Path) -> list[Path]:
     manifest_path = output_dir / APPLY_MANIFEST_FILENAME
     if not manifest_path.exists():
@@ -1387,6 +1475,7 @@ def apply_init_plan(
     output_dir: Path,
     *,
     source_root: Path | None = None,
+    actionlint_bin: str | None = None,
 ) -> dict[str, Any]:
     source_root = (source_root or _repo_root()).resolve()
     resolved_output_dir = output_dir.resolve()
@@ -1400,6 +1489,34 @@ def apply_init_plan(
     for entry in plan.data["generated_files"]:
         path = str(entry["path"])
         generated_destinations.append((entry, path, _safe_output_path(output_dir, path)))
+
+    materialized = [
+        _materialize_generated_file(
+            entry,
+            path,
+            destination,
+            source_root=source_root,
+        )
+        for entry, path, destination in generated_destinations
+    ]
+    actionlint_result: Mapping[str, object] | None = None
+    if actionlint_bin:
+        workflows_for_lint = _generated_workflows_for_actionlint(materialized)
+        try:
+            lint_result = run_actionlint_on_workflows(
+                workflows_for_lint,
+                actionlint_bin=actionlint_bin,
+            )
+        except WorkflowLintUnavailable as exc:
+            actionlint_result = _skipped_actionlint_result(
+                workflows_for_lint,
+                actionlint_bin=actionlint_bin,
+                reason=str(exc),
+            )
+        except WorkflowLintError as exc:
+            raise ConfigError(str(exc)) from exc
+        else:
+            actionlint_result = {"status": "passed", **lint_result.as_dict()}
 
     output_dir.mkdir(parents=True, exist_ok=True)
     _prune_previous_apply(output_dir)
@@ -1425,41 +1542,24 @@ def apply_init_plan(
             destination.chmod(0o755)
         written_files.append(str(destination))
 
-    for entry, path, destination in generated_destinations:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        source = next(
-            (candidate for candidate in _copy_source_candidates(source_root, entry, path) if candidate.is_file()),
-            None,
-        )
-        if source is not None:
-            if entry.get("source") == "shared-stale-label-template":
-                destination.write_text(
-                    _render_stale_workflow_template(
-                        source.read_text(encoding="utf-8"),
-                        lane=str(entry.get("stale_lane") or "devin"),
-                    ),
-                    encoding="utf-8",
-                )
-            elif _workflow_template_needs_render(str(entry.get("source"))):
-                destination.write_text(
-                    _render_workflow_template(source.read_text(encoding="utf-8"), entry),
-                    encoding="utf-8",
-                )
-            else:
-                shutil.copyfile(source, destination)
-        else:
-            destination.write_text(_placeholder_text(path, str(entry["source"])), encoding="utf-8")
-            placeholder_files.append(str(destination))
-        if entry.get("mode") == "0755":
-            destination.chmod(0o755)
-        written_files.append(str(destination))
+    for item in materialized:
+        item.destination.parent.mkdir(parents=True, exist_ok=True)
+        item.destination.write_text(item.text, encoding="utf-8")
+        if item.placeholder:
+            placeholder_files.append(str(item.destination))
+        if item.entry.get("mode") == "0755":
+            item.destination.chmod(0o755)
+        written_files.append(str(item.destination))
 
-    return {
+    result: dict[str, Any] = {
         "mode": "apply",
         "output_dir": str(output_dir),
         "written_files": written_files,
         "placeholder_files": placeholder_files,
     }
+    if actionlint_result is not None:
+        result["actionlint"] = actionlint_result
+    return result
 
 
 def render_init_plan(
@@ -1877,6 +1977,27 @@ def render_init_plan(
         f"- max diff hard limit bytes: {data['audit']['max_diff_hard_limit_bytes']}"
     )
 
+    required_setup: list[str] = []
+    token = data["human_automation_token"]
+    if token["required"]:
+        required_setup.append(
+            f"create human automation token secret {token['secret']} and "
+            f"expiry variable {token['expires_var']}"
+        )
+    if merge_authority_lanes:
+        required_setup.extend(
+            [
+                "enable repository auto-merge "
+                "(`gh api -X PATCH repos/OWNER/REPO -f allow_auto_merge=true`)",
+                "require `code-mower/gate` from Any source "
+                "(API checks[].app_id: null), not GitHub Actions "
+                "(app_id: 15368)",
+            ]
+        )
+    if required_setup:
+        lines.extend(["", "Required setup next steps:"])
+        lines.extend(f"- {step}" for step in required_setup)
+
     if merge_authority_lanes:
         lines.extend(
             [
@@ -1901,7 +2022,6 @@ def render_init_plan(
     else:
         lines.append("- none")
 
-    token = data["human_automation_token"]
     lines.extend(["", "Human automation token:"])
     if token["required"]:
         lines.append(f"- secret: {token['secret']}")
@@ -1957,6 +2077,16 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_APPLY_OUTPUT_DIR,
         help="safe output directory for --apply mode",
     )
+    parser.add_argument(
+        "--actionlint-bin",
+        default="actionlint",
+        help="actionlint executable used to validate generated workflows during --apply",
+    )
+    parser.add_argument(
+        "--skip-actionlint",
+        action="store_true",
+        help="write generated workflows without actionlint validation",
+    )
     parser.add_argument("--json", action="store_true", help="emit dry-run plan as JSON")
     args = parser.parse_args(argv)
 
@@ -1987,7 +2117,11 @@ def main(argv: list[str] | None = None) -> int:
             add_repositories=added_repos,
         )
         apply_result = (
-            apply_init_plan(plan, Path(args.output_dir))
+            apply_init_plan(
+                plan,
+                Path(args.output_dir),
+                actionlint_bin=None if args.skip_actionlint else args.actionlint_bin,
+            )
             if args.apply
             else None
         )
@@ -2000,6 +2134,9 @@ def main(argv: list[str] | None = None) -> int:
     elif apply_result:
         print(f"Code Mower init apply wrote {len(apply_result['written_files'])} files")
         print(f"Output: {apply_result['output_dir']}")
+        actionlint_result = apply_result.get("actionlint")
+        if isinstance(actionlint_result, Mapping) and actionlint_result.get("status") == "skipped":
+            print(f"Warning: skipped actionlint: {actionlint_result.get('reason')}")
         if apply_result["placeholder_files"]:
             print("Placeholders:")
             for path in apply_result["placeholder_files"]:

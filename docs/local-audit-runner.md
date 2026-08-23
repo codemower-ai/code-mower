@@ -1,5 +1,8 @@
 # Local Audit Runner
 
+For the full macOS service setup, use
+[Self-Hosted Mac Runner](self-hosted-mac-runner.md).
+
 Use `./run.sh` first from the macOS account that owns `gh`, Codex, and Claude
 logins. Install the GitHub runner as a service only after the generated local
 audit workflow passes the same smoke checks.
@@ -28,6 +31,49 @@ and set `DISPATCH_TOKEN_EXPIRES_AT` as a repository variable with the expiry
 date in `YYYY-MM-DD` format. Runner jobs can post with `GITHUB_TOKEN`, but
 GitHub does not trigger `issue_comment` labeler workflows for comments created
 by the built-in token, so the labels will not flip without that posting token.
+
+## Wrapper Contract
+
+The Codex and Claude audit wrappers need a GitHub posting token and a separate
+PR-head checkout.
+
+Token input must use one of these forms:
+
+- `GITHUB_TOKEN` in the process environment.
+- `--read-token-from-stdin` with the token piped as the first stdin line.
+
+The generated self-hosted workflow uses `--read-token-from-stdin` so the token
+does not appear in the Python process's initial environment. Direct local runs
+may use `GITHUB_TOKEN` when that exposure is acceptable for the operator's
+machine.
+
+Repository paths must use this format:
+
+```text
+OWNER/REPO:/absolute/path/to/pr-head-checkout
+```
+
+Pass it with `--repo-paths` or with the lane-specific env var:
+
+```bash
+tools/run_codex_audit_pr.sh \
+  --repo OWNER/REPO \
+  --pr 123 \
+  --repo-paths OWNER/REPO:/absolute/path/to/pr-head-checkout
+
+tools/run_claude_audit_pr.sh \
+  --repo OWNER/REPO \
+  --pr 123 \
+  --repo-paths OWNER/REPO:/absolute/path/to/pr-head-checkout
+```
+
+The path must point at an existing checkout of the pull request head. It must
+not be the Code Mower support checkout or the wrapper's current working
+directory. This separation keeps product PR code out of the support checkout
+and lets the wrapper verify the PR head SHA before posting a verdict.
+
+Wrapper and doctor errors for missing tokens, malformed `--repo-paths`, relative
+paths, missing directories, or same-directory checkouts point back to this page.
 
 Generated local-audit workflows run one matrix job per configured lane and
 cancel older runs for the same workflow, PR, head SHA, and lane. A queued or

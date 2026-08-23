@@ -177,6 +177,11 @@ PACKAGE_FILES = (
         "src/code_mower/doctor_checks/provider_local_cli_probe_config.py",
         "core",
     ),
+    (
+        "src/code_mower/doctor_checks/provider_local_audit_setup.py",
+        "src/code_mower/doctor_checks/provider_local_audit_setup.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/provider_probe.py", "src/code_mower/doctor_checks/provider_probe.py", "core"),
     (
         "src/code_mower/doctor_checks/provider_probe_auth.py",
@@ -212,6 +217,11 @@ PACKAGE_FILES = (
     ("src/code_mower/doctor_checks/runner.py", "src/code_mower/doctor_checks/runner.py", "core"),
     ("src/code_mower/doctor_checks/runtime.py", "src/code_mower/doctor_checks/runtime.py", "core"),
     (
+        "src/code_mower/doctor_checks/self_hosted_runner.py",
+        "src/code_mower/doctor_checks/self_hosted_runner.py",
+        "core",
+    ),
+    (
         "src/code_mower/doctor_checks/runtime_github_auth.py",
         "src/code_mower/doctor_checks/runtime_github_auth.py",
         "core",
@@ -231,6 +241,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_package_rendering.py", "src/code_mower/package_rendering.py", "core"),
     ("tools/code_mower_package_static.py", "src/code_mower/package_static.py", "core"),
     ("tools/code_mower_versioning.py", "src/code_mower/versioning.py", "core"),
+    ("tools/workflow_actionlint.py", "src/code_mower/workflow_actionlint.py", "core"),
     ("tools/code_mower_prompts.py", "src/code_mower/prompts.py", "core"),
     ("src/code_mower/release_readiness.py", "src/code_mower/release_readiness.py", "core"),
     ("tools/code_mower_secrets.py", "src/code_mower/secrets.py", "core"),

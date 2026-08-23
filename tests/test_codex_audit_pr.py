@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -12,6 +13,43 @@ from code_mower import codex_audit_pr as cap
 
 
 class CodexAuditPrTests(unittest.TestCase):
+    def test_main_missing_repo_paths_error_links_local_audit_docs(self) -> None:
+        stderr = StringIO()
+        with (
+            mock.patch.object(cap, "_resolve_github_token", return_value="token"),
+            redirect_stderr(stderr),
+        ):
+            code = cap.main(["--repo", "owner/repo", "--pr", "42"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("--repo-paths or CODEX_AUDIT_REPO_PATHS is required", stderr.getvalue())
+        self.assertIn("OWNER/REPO:/absolute/path", stderr.getvalue())
+        self.assertIn("docs/local-audit-runner.md", stderr.getvalue())
+
+    def test_main_rejects_current_directory_repo_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            stderr = StringIO()
+            with (
+                mock.patch.object(cap, "_resolve_github_token", return_value="token"),
+                mock.patch("pathlib.Path.cwd", return_value=repo),
+                redirect_stderr(stderr),
+            ):
+                code = cap.main(
+                    [
+                        "--repo",
+                        "owner/repo",
+                        "--pr",
+                        "42",
+                        "--repo-paths",
+                        f"owner/repo:{repo}",
+                    ]
+                )
+
+        self.assertEqual(code, 1)
+        self.assertIn("separate PR-head checkout", stderr.getvalue())
+        self.assertIn("docs/local-audit-runner.md", stderr.getvalue())
+
     def _run_mocked_audit(
         self,
         *,
