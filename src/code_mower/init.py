@@ -337,6 +337,44 @@ def _normalize_repo_slug(value: str) -> str:
     return slug
 
 
+def _github_repo_slug_from_remote(remote_url: str) -> str:
+    remote = remote_url.strip()
+    if remote.startswith("git@github.com:"):
+        remote = remote.removeprefix("git@github.com:")
+    elif remote.startswith("https://github.com/"):
+        remote = remote.removeprefix("https://github.com/")
+    elif remote.startswith("http://github.com/"):
+        remote = remote.removeprefix("http://github.com/")
+    else:
+        return ""
+    slug = remote.removesuffix(".git").strip("/")
+    return slug if OWNER_REPO_RE.fullmatch(slug) else ""
+
+
+def _detect_github_repo_slug(repo_path: Path, *, git_bin: str = "git") -> str:
+    try:
+        completed = subprocess.run(
+            [git_bin, "-C", str(repo_path), "config", "--get", "remote.origin.url"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return _github_repo_slug_from_remote(completed.stdout)
+
+
+def _target_repo_slug_for_labels(config: Mapping[str, Any], output_dir: Path) -> str:
+    detected = _detect_github_repo_slug(output_dir)
+    if detected:
+        return detected
+    repositories = _repository_entries(config)
+    return repositories[0]["slug"] if repositories else ""
+
+
 def config_with_added_repositories(
     config: Mapping[str, Any],
     add_repos: list[str] | tuple[str, ...],
@@ -1893,9 +1931,21 @@ def ensure_github_labels(
 ) -> dict[str, Any]:
     unique_labels = sorted({label for label in labels if label})
     if not unique_labels:
-        return {"status": "skipped", "reason": "no labels requested", "created": []}
+        return {
+            "status": "skipped",
+            "reason": "no labels requested",
+            "repo": repo or "",
+            "requested": [],
+            "created": [],
+        }
     if shutil.which(gh_bin) is None and not Path(gh_bin).expanduser().is_file():
-        return {"status": "skipped", "reason": f"{gh_bin} executable not found", "created": []}
+        return {
+            "status": "skipped",
+            "reason": f"{gh_bin} executable not found",
+            "repo": repo or "",
+            "requested": unique_labels,
+            "created": [],
+        }
 
     repo_args = ["--repo", repo] if repo else []
     try:
@@ -1921,6 +1971,8 @@ def ensure_github_labels(
         return {
             "status": "failed",
             "reason": (exc.stderr or exc.stdout or str(exc)).strip(),
+            "repo": repo or "",
+            "requested": unique_labels,
             "created": [],
         }
 
@@ -1960,6 +2012,8 @@ def ensure_github_labels(
 
     return {
         "status": "failed" if failed else "passed",
+        "repo": repo or "",
+        "requested": unique_labels,
         "created": created,
         "existing": sorted(existing.intersection(unique_labels)),
         "failed": failed,
@@ -2611,7 +2665,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--skip-github-labels",
         action="store_true",
-        help="with --builders --apply, do not create missing GitHub labels via gh",
+        help=(
+            "with --builders --apply, do not create missing GitHub labels in "
+            "the target repo via gh; --dry-run lists labels without mutating GitHub"
+        ),
     )
     parser.add_argument("--json", action="store_true", help="emit dry-run plan as JSON")
     args = parser.parse_args(argv)
@@ -2656,9 +2713,26 @@ def main(argv: list[str] | None = None) -> int:
             else None
         )
         if apply_result is not None and builder_lanes and not args.skip_github_labels:
+            label_repo = _target_repo_slug_for_labels(config, Path(args.output_dir))
+            if not label_repo:
+                github_labels = {
+                    "status": "skipped",
+                    "reason": (
+                        "target GitHub repository could not be determined; "
+                        "create labels from labels.txt or rerun from a GitHub checkout"
+                    ),
+                    "repo": "",
+                    "requested": sorted(set(plan.data["labels"])),
+                    "created": [],
+                }
+            else:
+                github_labels = ensure_github_labels(
+                    plan.data["labels"],
+                    repo=label_repo,
+                )
             apply_result = {
                 **apply_result,
-                "github_labels": ensure_github_labels(plan.data["labels"]),
+                "github_labels": github_labels,
             }
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -2687,15 +2761,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"- set variable {builder_loop['runner_enabled_var']}=true after the Mac runner is ready")
             label_result = apply_result.get("github_labels")
             if isinstance(label_result, Mapping):
+                label_repo = label_result.get("repo")
+                label_scope = f" for {label_repo}" if label_repo else ""
                 if label_result.get("status") == "passed":
                     print(
-                        "GitHub labels: "
+                        f"GitHub labels{label_scope}: "
                         f"{len(label_result.get('created', []))} created, "
                         f"{len(label_result.get('existing', []))} already present"
                     )
                 else:
                     print(
-                        "Warning: GitHub labels not fully ensured: "
+                        f"Warning: GitHub labels{label_scope} not fully ensured: "
                         f"{label_result.get('reason') or label_result.get('failed')}"
                     )
     else:

@@ -175,7 +175,9 @@ prompt_file="$(mktemp)"
     gh issue view "$num" -R "$REPO" --json title,body,labels,url,author \
       | jq -r --argjson trusted "$trusted_authors_json" '
         def trusted_author($login): any($trusted[]; . == $login);
-        "Title: \(.title)\nAuthor: \(.author.login // "unknown")\nURL: \(.url)\nLabels: \([.labels[].name]|join(", "))\n\n" +
+        def trusted_title:
+          if trusted_author(.author.login // "") then (.title // "") else "[omitted: issue title author is not trusted]" end;
+        "Title: \(trusted_title)\nAuthor: \(.author.login // "unknown")\nURL: \(.url)\nLabels: \([.labels[].name]|join(", "))\n\n" +
         (if trusted_author(.author.login // "") then (.body // "") else "[omitted: issue body author is not trusted]" end)'
     echo
     echo "## Recent trusted comments on #${num}"
@@ -196,7 +198,9 @@ prompt_file="$(mktemp)"
     gh pr view "$num" -R "$REPO" --json title,body,headRefName,headRefOid,url,labels,author \
       | jq -r --argjson trusted "$trusted_authors_json" '
         def trusted_author($login): any($trusted[]; . == $login);
-        "Title: \(.title)\nAuthor: \(.author.login // "unknown")\nURL: \(.url)\nBranch: \(.headRefName) @ \(.headRefOid)\nLabels: \([.labels[].name]|join(", "))\n\n" +
+        def trusted_title:
+          if trusted_author(.author.login // "") then (.title // "") else "[omitted: PR title author is not trusted]" end;
+        "Title: \(trusted_title)\nAuthor: \(.author.login // "unknown")\nURL: \(.url)\nBranch: \(.headRefName) @ \(.headRefOid)\nLabels: \([.labels[].name]|join(", "))\n\n" +
         (if trusted_author(.author.login // "") then (.body // "") else "[omitted: PR body author is not trusted]" end)'
     echo
     echo "## Latest audit verdicts"

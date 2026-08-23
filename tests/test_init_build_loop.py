@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import copy
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -82,6 +84,8 @@ class InitBuildLoopTests(unittest.TestCase):
             runner_text = runner.read_text(encoding="utf-8")
             self.assertIn("case \"$LANE\" in codex|claude)", runner_text)
             self.assertIn('repo_owner="${REPO%%/*}"', runner_text)
+            self.assertIn("[omitted: issue title author is not trusted]", runner_text)
+            self.assertIn("[omitted: PR title author is not trusted]", runner_text)
 
     def test_build_loop_owner_surface_parameters_render_into_templates(self) -> None:
         cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
@@ -138,6 +142,99 @@ class InitBuildLoopTests(unittest.TestCase):
                     "owner_surface.builder_wip_cap",
                 ):
                     _builders_plan(cfg)
+
+    def test_label_target_prefers_output_checkout_remote(self) -> None:
+        cfg = code_mower_config.load_config(CONFIG_PATH)
+
+        with mock.patch.object(
+            code_mower_init,
+            "_detect_github_repo_slug",
+            return_value="target/repo",
+        ):
+            target = code_mower_init._target_repo_slug_for_labels(
+                cfg,
+                Path("/tmp/generated"),
+            )
+
+        self.assertEqual(target, "target/repo")
+
+    def test_label_target_remote_parser_accepts_github_remotes(self) -> None:
+        self.assertEqual(
+            code_mower_init._github_repo_slug_from_remote(
+                "git@github.com:target/repo.git\n",
+            ),
+            "target/repo",
+        )
+        self.assertEqual(
+            code_mower_init._github_repo_slug_from_remote(
+                "https://github.com/target/repo.git",
+            ),
+            "target/repo",
+        )
+        self.assertEqual(
+            code_mower_init._github_repo_slug_from_remote("ssh://example.com/repo.git"),
+            "",
+        )
+
+    def test_label_target_falls_back_to_primary_config_repo(self) -> None:
+        cfg = code_mower_config.load_config(CONFIG_PATH)
+
+        with mock.patch.object(
+            code_mower_init,
+            "_detect_github_repo_slug",
+            return_value="",
+        ):
+            target = code_mower_init._target_repo_slug_for_labels(
+                cfg,
+                Path("/tmp/generated"),
+            )
+
+        self.assertEqual(target, "owner/example")
+
+    def test_init_apply_ensures_github_labels_in_target_repo(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_ensure(labels, *, repo=None, gh_bin="gh", color="ededed"):
+            captured["repo"] = repo
+            captured["labels"] = sorted(set(labels))
+            return {
+                "status": "passed",
+                "repo": repo or "",
+                "requested": sorted(set(labels)),
+                "created": [],
+                "existing": sorted(set(labels)),
+                "failed": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            code_mower_init,
+            "_detect_github_repo_slug",
+            return_value="target/repo",
+        ), mock.patch.object(
+            code_mower_init,
+            "ensure_github_labels",
+            side_effect=fake_ensure,
+        ):
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout):
+                result = code_mower_init.main(
+                    [
+                        str(CONFIG_PATH),
+                        "--builders",
+                        "codex",
+                        "--apply",
+                        "--output-dir",
+                        str(Path(tmp) / "target"),
+                        "--skip-actionlint",
+                        "--json",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(captured["repo"], "target/repo")
+        self.assertIn("builder:codex", captured["labels"])
+        self.assertIn("dispatched:codex", captured["labels"])
+        self.assertIn('"repo": "target/repo"', stdout.getvalue())
 
 
 if __name__ == "__main__":
