@@ -714,6 +714,32 @@ fi
         self.assertIn("def owner_blocking_label($name)", runner)
         self.assertIn("owner_blocking_label(.name)|not", runner)
 
+    def test_build_loop_empty_lane_runner_labels_use_defaults(self) -> None:
+        for value in ("", []):
+            with self.subTest(value=value):
+                cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
+                cfg["owner_surface"]["lane_runner_labels"] = value
+                plan = _builders_plan(cfg)
+
+                self.assertEqual(
+                    plan.data["builder_loop"]["runner_labels"],
+                    ["self-hosted", "macOS", "code-mower-lane"],
+                )
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    output_dir = Path(tmp) / "generated"
+                    code_mower_init.apply_init_plan(plan, output_dir)
+                    mac_runner = yaml.safe_load(
+                        output_dir.joinpath(
+                            ".github/workflows/lane-mac-runner.yml"
+                        ).read_text(encoding="utf-8")
+                    )
+
+                self.assertEqual(
+                    mac_runner["jobs"]["run"]["runs-on"],
+                    ["self-hosted", "macOS", "code-mower-lane"],
+                )
+
     def test_build_loop_rejects_shell_unsafe_labels_and_logins(self) -> None:
         cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
         cfg["owner_surface"]["ready_label"] = "tier:$R"

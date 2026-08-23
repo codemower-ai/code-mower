@@ -586,6 +586,11 @@ def _csv_items(value: Any, default: str = "") -> tuple[str, ...]:
     return tuple(item.strip() for item in default.split(",") if item.strip())
 
 
+def _lane_runner_label_items(value: Any) -> tuple[str, ...]:
+    default = OWNER_SURFACE_DEFAULTS["lane_runner_labels"]
+    return _csv_items(value, default) or _csv_items(default)
+
+
 def _yaml_scalar(value: Any) -> str:
     return json.dumps(str(value))
 
@@ -603,7 +608,10 @@ def _owner_surface_config(config: Mapping[str, Any]) -> dict[str, str]:
     surface = raw if isinstance(raw, Mapping) else {}
     rendered: dict[str, str] = {}
     for key, default in OWNER_SURFACE_DEFAULTS.items():
-        if key in {"phase_labels", "lane_runner_labels", "lane_runner_trusted_authors"}:
+        if key == "lane_runner_labels":
+            rendered[key] = ",".join(_lane_runner_label_items(surface.get(key)))
+            continue
+        if key in {"phase_labels", "lane_runner_trusted_authors"}:
             rendered[key] = _csv_value(surface.get(key), default)
             continue
         value = surface.get(key, default)
@@ -977,10 +985,7 @@ def _lane_mac_runner_workflow_entry(
         for entry in builder_entries
         if str(entry.get("mac_runner") or "") == "true"
     ]
-    labels = _csv_items(
-        owner_surface["lane_runner_labels"],
-        OWNER_SURFACE_DEFAULTS["lane_runner_labels"],
-    )
+    labels = _lane_runner_label_items(owner_surface["lane_runner_labels"])
     max_minutes = code_mower_audit_limits.parse_positive_int(
         owner_surface["lane_runner_max_minutes"],
         field_name="owner_surface.lane_runner_max_minutes",
@@ -2587,10 +2592,7 @@ def render_init_plan(
             else [],
             "wip_cap": owner_surface["builder_wip_cap"],
             "runner_labels": list(
-                _csv_items(
-                    owner_surface["lane_runner_labels"],
-                    OWNER_SURFACE_DEFAULTS["lane_runner_labels"],
-                )
+                _lane_runner_label_items(owner_surface["lane_runner_labels"])
             ),
             "runner_enabled_var": owner_surface["lane_runner_enabled_var"],
         },
