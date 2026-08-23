@@ -3,6 +3,13 @@
 The Code Mower build loop turns ready GitHub Issues into builder PRs, then uses
 peer audits and fix rounds to converge on a mergeable change.
 
+The orchestrator is a workflow convention, not a hosted controller: issue plus
+optional work order, ready label, builder lane, single-writer branch, reviewer
+lanes, fix round, gate status, and merge. Code Mower's generated templates now
+support that convention end to end. Humans still own credentials, branch
+protection, owner escalations, reviewer calibration, and any account-bound or UI
+steps.
+
 ## Labels
 
 - `tier:R`: the issue is ready for builder dispatch.

@@ -10,6 +10,9 @@ around the top AI coding agents and reviewers. The OSS core helps teams move
 from plan to merge at maximum safe velocity while preserving code quality,
 architecture, and deployment confidence.
 
+Code Mower is beta, bring-your-own-agent-loop software for teams willing to
+calibrate reviewers. It is not a drop-in autonomous merge gate.
+
 It also creates a quality, speed, and cost benchmark loop on a team's actual
 product: which AI builders and reviewers produce useful results on this
 codebase, at what cost, and with which review policy.

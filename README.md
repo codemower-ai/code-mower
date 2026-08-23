@@ -4,6 +4,9 @@ Code Mower helps teams set up AI peer-programmer and reviewer lanes on real
 GitHub pull requests, then measure which builders and reviewers are useful on
 their actual codebase.
 
+Code Mower is beta, bring-your-own-agent-loop software for teams willing to
+calibrate reviewers. It is not a drop-in autonomous merge gate.
+
 The short version:
 
 - create safe, manual-first reviewer lanes for Codex, Claude, Gitar, and other
@@ -82,50 +85,18 @@ known-blocked control, and three reviewer lanes. It shows the decision Code
 Mower is built to support: which AI reviewers are useful, noisy, expensive,
 fast, or eligible for stronger merge policy on your actual codebase.
 
-## Try It First
+## Start Here
 
-Code Mower currently targets Python 3.11+; Python 3.12 is recommended.
+Choose one path. Each path has one guide and gets to one visible outcome.
 
-```bash
-python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b51
-code-mower --version
-```
+| Path | Use When | Route | Guide |
+| --- | --- | --- | --- |
+| A. Reviewer gate in 10 minutes | You want one audited PR before recurring workflows or builder dispatch. | Install, run `init --easy`, run `doctor --preflight`, open a small setup PR, run Codex and Claude audits, then merge manually when the audit evidence is clean. | [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md) |
+| B. Build loop in 30 minutes | You want builders plus an orchestrator pattern after the reviewer gate works. | Complete path A, then add the automation token, require `code-mower/gate` from Any source, enable repository auto-merge, prove the self-hosted Mac lane runner with `doctor --runner`, run `init --builders`, and dispatch the first issue. | [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md) |
 
-`0.5.0b51` is a beta release. Until Code Mower publishes a stable `1.0`
-line, use the explicit beta version above or allow prereleases with:
-
-```bash
-pipx install --python python3.12 --pip-args="--pre" code-mower
-```
-
-The beta.51 announcement entry point is the tagged
+The beta.51 announcement entry point remains the tagged
 [Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.5.0-beta.51/docs/try-in-10-minutes.md)
 guide.
-
-From the repository you want to pilot:
-
-```bash
-code-mower init --easy
-code-mower doctor --preflight
-code-mower checks detect --json
-```
-
-In Git worktrees, `checks detect` also offers `code-mower.pr-size`, a local
-PR-size lint that defaults to 300 changed lines and flags large batches of
-near-identical files.
-
-When those look sane, write the generated setup to a reviewable folder and
-produce the starter local report:
-
-```bash
-code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower calibration value-report .code-mower.generated/calibration-corpus.json \
-  --output .code-mower/reviewer-value-report.md
-```
-
-The generated setup also includes the configurable owner escalation and weekly
-status digest templates.
 
 ## What Calibration Does And Does Not Prove
 
@@ -204,12 +175,12 @@ transcripts, prompts, or issue body text. See
 
 ## Roles
 
-Code Mower records builder provenance for Cursor/Claude/Codex-style builders
-and runs reviewer lanes against the resulting pull requests. The orchestrator
-pattern, including Claude Code as conductor, issue plus work order,
-single-writer branch, and reviewer lanes, is workflow convention on top of Code
-Mower today, not yet a product feature. Track the build-loop templates in
-[#409](https://github.com/codemower-ai/code-mower/issues/409).
+Code Mower records builder provenance for Claude Code, Codex, Cursor-style
+hosted builders, and similar authoring lanes, then runs reviewer lanes against
+the resulting pull requests. The orchestrator is a workflow convention: issue,
+optional work order, single-writer branch, reviewer lanes, and fix rounds. Code
+Mower's templates now support that loop end to end; humans still own
+credentials, branch protection, calibration, and owner decisions.
 
 ## Why Not Just Run Codex Or Claude Yourself?
 
@@ -307,12 +278,12 @@ engineer can:
 7. optionally upload sanitized metadata to CodeMower.com and see useful team
    dashboard signal.
 
-Future builder/orchestrator experiments extend the same loop from "who reviews
-best?" to "which AI builder plus reviewer loop ships best on this product?" See
+Build-loop templates extend the same loop from "who reviews best?" to "which AI
+builder plus reviewer loop ships best on this product?" Start with
+[docs/build-loop-in-30-minutes.md](docs/build-loop-in-30-minutes.md), then use
 [docs/builder-experiments.md](docs/builder-experiments.md) and
-[docs/authoring-intelligence.md](docs/authoring-intelligence.md). For hosted
-builder provenance, start with
-[docs/builders-grok-cursor.md](docs/builders-grok-cursor.md).
+[docs/authoring-intelligence.md](docs/authoring-intelligence.md) for deeper
+measurement work.
 
 ## Installation Status
 
@@ -355,7 +326,19 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 ## Docs Map
 
 - [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
-- [Quickstart](docs/quickstart.md)
+- [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)
+- [Quickstart Reference](docs/quickstart.md)
+- [Planning And Work Orders](docs/planning-work-orders.md)
+- [Builder Providers: Grok And Cursor](docs/builders-grok-cursor.md)
+- [Build Loop Operations](docs/build-loop.md)
+- [Self-Hosted Mac Runner](docs/self-hosted-mac-runner.md)
+- [Local Audit Runner](docs/local-audit-runner.md)
+- [Lane Standing Instructions](docs/lanes/README.md)
+- [Codex Lane Standing Instructions](docs/lanes/codex.md)
+- [Claude Lane Standing Instructions](docs/lanes/claude.md)
+- [Cursor Hosted Lane Standing Instructions](docs/lanes/grok.md)
+- [Provider Matrix](docs/provider-matrix.md)
+- [GitHub Setup](docs/github-setup.md)
 - [First Run Transcript](docs/first-run-transcript.md)
 - [First-User Demo Transcript](docs/first-user-demo-transcript.md)
 - [First-User Install Rehearsal](docs/first-user-install-rehearsal.md)
@@ -364,8 +347,7 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 - [PyPI Release Runbook](docs/pypi-release.md)
 - [Sample Doctor Output](docs/sample-doctor-output.md)
 - [Architecture](docs/architecture.md)
-- [Provider Matrix](docs/provider-matrix.md)
-- [GitHub Setup](docs/github-setup.md)
+- [Lane Promotion Policy](docs/lane-promotion-policy.md)
 - [Cloud Sharing](docs/cloud-sharing.md)
 - [Cloud Data Contract](docs/cloud-data-contract.md)
 - [Privacy And Threat Model](docs/privacy-threat-model.md)

@@ -1,8 +1,11 @@
 # Code Mower Quickstart
 
-This guide gets one developer from install to a first local Code Mower setup
-check. Code Mower v0.5 is beta software; start on one repository and keep all
-reviewer lanes manual until the output is useful on your codebase.
+This is the reference for Code Mower's first-user command surface. For the two
+guided starts, use [Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the
+reviewer gate or [Build Loop In 30 Minutes](build-loop-in-30-minutes.md) for
+builders plus orchestrator convention. Code Mower v0.5 is beta software; start
+on one repository and keep all reviewer lanes manual until the output is useful
+on your codebase.
 
 To see the value loop before you touch a product repository, open the
 [Demo Calibration Example](../examples/demo-calibration/README.md) and the
@@ -270,9 +273,10 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
-Add `--repo-path /path/to/product-repo` only when the repository already has
-repo-local Code Mower wrapper files and you are comparing those wrappers
-against the installed package during a mirror-removal migration.
+Use `--repo-path /path/to/repo` to validate the installed Code Mower CLI
+against a real repository; if `tools/code_mower` exists, the rehearsal also
+runs wrapper parity for mirror-removal, otherwise it detects and dry-runs the
+repo's native checks.
 
 See [First-User Install Rehearsal](first-user-install-rehearsal.md) for the
 release-gate version of this command and the expected output artifacts.
@@ -401,3 +405,18 @@ One repository is ready for broader Code Mower use when:
 
 For a concise map of which commands are launch-safe versus advanced/operator
 surfaces, see [Launch Command Surface](launch-command-surface.md).
+
+## What To Read Next
+
+Read in this order when moving from a first reviewer gate to a real build loop:
+
+- [Try Code Mower In 10 Minutes](try-in-10-minutes.md)
+- [Build Loop In 30 Minutes](build-loop-in-30-minutes.md)
+- [Quickstart Reference](quickstart.md)
+- [Planning And Work Orders](planning-work-orders.md)
+- [Builder Providers: Grok And Cursor](builders-grok-cursor.md)
+- [Self-Hosted Mac Runner](self-hosted-mac-runner.md)
+- [Build Loop Operations](build-loop.md)
+- [Local Audit Runner](local-audit-runner.md)
+- [Provider Matrix](provider-matrix.md)
+- [GitHub Setup](github-setup.md)

@@ -6641,10 +6641,62 @@ def main():
             readme,
         )
         self.assertIn("[lane promotion policy](docs/lane-promotion-policy.md)", readme)
+        self.assertIn("## Start Here", readme)
+        self.assertIn("beta, bring-your-own-agent-loop software", readme)
+        self.assertIn("not a drop-in autonomous merge gate", readme)
         self.assertIn("## Roles", readme)
-        self.assertIn("Cursor/Claude/Codex-style builders", readme)
-        self.assertIn("not yet a product feature", readme)
-        self.assertIn("https://github.com/codemower-ai/code-mower/issues/409", readme)
+        self.assertIn("Claude Code, Codex, Cursor-style", readme)
+        self.assertIn("templates now support that loop end to end", readme)
+
+    def test_start_here_docs_cover_reviewer_gate_and_build_loop_routes(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        try_in_10 = (ROOT / "docs" / "try-in-10-minutes.md").read_text(
+            encoding="utf-8",
+        )
+        build_loop_30 = (ROOT / "docs" / "build-loop-in-30-minutes.md").read_text(
+            encoding="utf-8",
+        )
+        quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+
+        self.assertIn("[Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)", readme)
+        self.assertIn("[Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)", readme)
+        self.assertEqual(len(re.findall(r"^## 8\.", try_in_10, re.MULTILINE)), 1)
+        self.assertTrue(try_in_10.rstrip().endswith("](build-loop-in-30-minutes.md)."))
+        self.assertIn("[Quickstart](quickstart.md)", try_in_10)
+        self.assertIn("[Quickstart](quickstart.md)", build_loop_30)
+
+        docs_map = readme.split("## Docs Map", 1)[1]
+        for link in (
+            "docs/build-loop-in-30-minutes.md",
+            "docs/planning-work-orders.md",
+            "docs/builders-grok-cursor.md",
+            "docs/local-audit-runner.md",
+            "docs/self-hosted-mac-runner.md",
+            "docs/build-loop.md",
+            "docs/lanes/README.md",
+            "docs/lanes/codex.md",
+            "docs/lanes/claude.md",
+            "docs/lanes/grok.md",
+        ):
+            with self.subTest(link=link):
+                self.assertIn(link, docs_map)
+
+        self.assertIn("Roles: Claude Code as orchestrator", build_loop_30)
+        self.assertIn("builder:codex: codex", build_loop_30)
+        self.assertIn("builder:claude: claude", build_loop_30)
+        self.assertIn("builder:grok-bot: grok-bot", build_loop_30)
+        self.assertIn("dispatched:codex", build_loop_30)
+        self.assertIn("dispatched:claude", build_loop_30)
+        self.assertIn("dispatched:grok-bot", build_loop_30)
+
+        repo_path_truth = (
+            "Use `--repo-path /path/to/repo` to validate the installed Code Mower "
+            "CLI against a real repository; if `tools/code_mower` exists, the "
+            "rehearsal also runs wrapper parity for mirror-removal, otherwise it "
+            "detects and dry-runs the repo's native checks."
+        )
+        self.assertIn(repo_path_truth, " ".join(try_in_10.split()))
+        self.assertIn(repo_path_truth, " ".join(quickstart.split()))
 
     def test_package_command_inventory_derives_current_prerelease_spec(self) -> None:
         package_content_text = (ROOT / "src/code_mower/package_content.py").read_text(

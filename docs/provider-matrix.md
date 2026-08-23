@@ -60,13 +60,17 @@ the live catalog is untouched.
 
 Builder providers are authoring surfaces, not review approvals. Record them
 with `code-mower builder record` after they open a branch or pull request, then
-run the normal reviewer lanes on the PR head.
+run the normal reviewer lanes on the PR head. In the build-loop templates,
+builder identity controls dispatch, single-writer branch ownership, and which
+peer audit lanes must gate the PR.
 
-| Builder id | Typical executor | Role | v0.5 posture |
+| Builder id | Typical executor | Dispatch mechanism | Trust posture |
 |---|---|---|---|
-| `grok_bot` | `cursor_cloud_agent`, local IDE, or manual PR authoring | hosted/manual builder-orchestrator | source-free `builder_run` metadata only; not merge-gating |
-| `cursor_cloud_agent` | Cursor Cloud Agents | hosted async builder/executor | source-free `builder_run` metadata only; not merge-gating |
-| `devin` | Devin session | hosted async builder/reviewer depending on configuration | explicit opt-in; use separate reviewer evidence for merge policy |
+| `codex` | Codex CLI on the self-hosted Mac lane runner | `tier:R` plus `builder:codex`; `lane-mac-runner.yml` opens `codex/...` PRs | First-class local builder identity. The owning Codex branch is single-writer; Claude audit gates Codex-authored PRs. |
+| `claude` | Claude Code CLI on the self-hosted Mac lane runner | `tier:R` plus `builder:claude`; `lane-mac-runner.yml` opens `claude/...` PRs | First-class local builder identity. The owning Claude branch is single-writer; Codex audit gates Claude-authored PRs. |
+| `grok_bot` | Cursor Cloud Agents through an `@cursor` dispatch comment | `tier:R` plus `builder:grok-bot`; `dispatch-lanes.yml` posts the configured `@cursor` mention | Hosted builder identity for the reference Cursor path. Codex and Claude audits both gate before merge. |
+| `cursor_cloud_agent` | Cursor Cloud Agents | Usually represented by `grok_bot` in Code Mower build-loop config; standalone provenance can still use `builder record` | Hosted async executor. Treat source access, cost, and branch writes as explicit opt-in; never count it as reviewer approval. |
+| `devin` | Devin session | External hosted dispatch or manual handoff, then `builder record` once a PR exists | Explicit opt-in. Use separate reviewer evidence for merge policy; do not rely on Devin builder output as gate evidence. |
 
 Example:
 
