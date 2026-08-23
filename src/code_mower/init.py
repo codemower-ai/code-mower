@@ -1851,6 +1851,27 @@ def render_init_plan(
         f"- max diff hard limit bytes: {data['audit']['max_diff_hard_limit_bytes']}"
     )
 
+    required_setup: list[str] = []
+    token = data["human_automation_token"]
+    if token["required"]:
+        required_setup.append(
+            f"create human automation token secret {token['secret']} and "
+            f"expiry variable {token['expires_var']}"
+        )
+    if merge_authority_lanes:
+        required_setup.extend(
+            [
+                "enable repository auto-merge "
+                "(`gh api -X PATCH repos/OWNER/REPO -f allow_auto_merge=true`)",
+                "require `code-mower/gate` from Any source "
+                "(API checks[].app_id: null), not GitHub Actions "
+                "(app_id: 15368)",
+            ]
+        )
+    if required_setup:
+        lines.extend(["", "Required setup next steps:"])
+        lines.extend(f"- {step}" for step in required_setup)
+
     if merge_authority_lanes:
         lines.extend(
             [
@@ -1875,7 +1896,6 @@ def render_init_plan(
     else:
         lines.append("- none")
 
-    token = data["human_automation_token"]
     lines.extend(["", "Human automation token:"])
     if token["required"]:
         lines.append(f"- secret: {token['secret']}")

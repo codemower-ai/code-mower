@@ -21,6 +21,7 @@ from .provider_local_cli import (
     check_local_cli,
     check_local_cli_probe,
 )
+from .provider_local_audit_setup import check_local_audit_wrapper_setup
 from .provider_probe import (
     evaluate_json_probe,
     local_cli_probe_remediation,
@@ -130,6 +131,13 @@ def check_lane_runtime(
     checks.extend(check_required_env(lane_id, lane))
     driver = str(lane.get("driver", ""))
     if driver == "local_cli":
+        checks.extend(
+            check_local_audit_wrapper_setup(
+                lane_id,
+                lane,
+                repo_root=repo_root,
+            )
+        )
         checks.append(check_local_cli(lane_id, lane))
         checks.append(
             check_local_cli_probe(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .common import DoctorCheck, STATUS_PASS, STATUS_WARN
+from .common import DoctorCheck, STATUS_FAIL, STATUS_PASS, STATUS_WARN
 from .github_api import _github_api_json
 
 
@@ -136,7 +136,7 @@ def check_repo_auto_merge(*, slug: str, repo_payload: Mapping[str, Any]) -> Doct
     allow_auto_merge = bool(repo_payload.get("allow_auto_merge"))
     return DoctorCheck(
         name="github.repo.auto_merge",
-        status=STATUS_PASS if allow_auto_merge else STATUS_WARN,
+        status=STATUS_PASS if allow_auto_merge else STATUS_FAIL,
         message=(
             f"{slug} has auto-merge enabled"
             if allow_auto_merge

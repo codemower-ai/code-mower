@@ -118,6 +118,61 @@ code-mower doctor --easy --json
 This is the right path for early adopters and private-repo pilots such as
 mobile apps or web apps that have never installed Code Mower before.
 
+## Required Setup Failure Transcript
+
+A fresh product repository should fail preflight until the human automation
+token, branch-protection source, and repository auto-merge settings are fixed.
+The important failures look like this in the doctor JSON:
+
+```bash
+code-mower doctor --preflight --json
+```
+
+```json
+{
+  "name": "github.human_automation_token",
+  "status": "fail",
+  "message": "OWNER/REPO is missing the DISPATCH_TOKEN human automation token secret",
+  "remediation": "Create one human-owned fine-grained PAT secret with `gh secret set DISPATCH_TOKEN`. Grant repository Contents read, Issues read/write, and Pull requests read/write."
+}
+```
+
+After the token is present, a branch-protection rule bound to the Actions
+check-run instead of the Code Mower commit status is also a failure:
+
+```json
+{
+  "name": "github.branch_protection",
+  "status": "fail",
+  "message": "OWNER/REPO@main requires code-mower/gate from GitHub Actions instead of Any source",
+  "detail": {
+    "required_status_check_bindings": [
+      {
+        "context": "code-mower/gate",
+        "app_id": 15368
+      }
+    ]
+  },
+  "remediation": "Rebind `code-mower/gate` in branch protection to Any source, not GitHub Actions."
+}
+```
+
+The correct branch-protection API shape has `"app_id": null` for
+`code-mower/gate`. The repository must also allow auto-merge:
+
+```json
+{
+  "name": "github.repo.auto_merge",
+  "status": "fail",
+  "message": "OWNER/REPO does not allow auto-merge",
+  "remediation": "Enable repository auto-merge with `gh api -X PATCH repos/OWNER/REPO -f allow_auto_merge=true`."
+}
+```
+
+These failures are intentional first-run blockers. They prevent the "all checks
+green, nothing merges" state caused by bot-authored automation events or by
+binding branch protection to the wrong status source.
+
 ## Product Repo Comparison
 
 When a product repository already has Code Mower wrapper files, the same

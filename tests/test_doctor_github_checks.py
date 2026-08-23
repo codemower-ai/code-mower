@@ -98,6 +98,43 @@ class GitHubDoctorCheckTests(unittest.TestCase):
 
         self.assertTrue(required)
 
+    def test_human_automation_token_required_for_agent_lanes_without_merge_authority(
+        self,
+    ) -> None:
+        required = human_automation_token_required(
+            {
+                "owner_surface": {"dispatch_token_env": "DISPATCH_TOKEN"},
+                "builder_identity": {
+                    "fix_round_mentions": {
+                        "codex": {"mention": "@cursor"},
+                    }
+                },
+            },
+            [("gitar", {"type": "audit", "informational": True})],
+        )
+
+        self.assertTrue(required)
+
+    def test_human_automation_token_required_for_label_triggered_audit_lanes(
+        self,
+    ) -> None:
+        required = human_automation_token_required(
+            {"owner_surface": {"dispatch_token_env": "DISPATCH_TOKEN"}},
+            [
+                (
+                    "codex",
+                    {
+                        "type": "audit",
+                        "driver": "local_cli",
+                        "trigger_policy": "label",
+                        "token_env": ["GITHUB_TOKEN"],
+                    },
+                )
+            ],
+        )
+
+        self.assertTrue(required)
+
     def test_human_automation_token_check_passes_with_future_expiry(self) -> None:
         check = self._human_token_check(
             [
@@ -426,7 +463,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertEqual(check.detail["median_diff_bytes"], 1_700_000)
         self.assertIn("above audit hard limit", check.message)
 
-    def test_branch_protection_warns_when_gate_status_bound_to_actions(self) -> None:
+    def test_branch_protection_fails_when_gate_status_bound_to_actions(self) -> None:
         with mock.patch(
             "code_mower.doctor_checks.github_branch._github_api_json",
             return_value=(
@@ -447,7 +484,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
                 required_status_context="code-mower/gate",
             )
 
-        self.assertEqual(check.status, "warn")
+        self.assertEqual(check.status, "fail")
         self.assertIn("GitHub Actions instead of Any source", check.message)
         self.assertIn("app_id: null", check.remediation)
         self.assertEqual(
@@ -455,13 +492,37 @@ class GitHubDoctorCheckTests(unittest.TestCase):
             [{"context": "code-mower/gate", "app_id": 15368}],
         )
 
-    def test_repo_auto_merge_warns_when_disabled(self) -> None:
+    def test_branch_protection_fails_when_gate_status_bound_to_any_app(self) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.github_branch._github_api_json",
+            return_value=(
+                {
+                    "required_status_checks": {
+                        "checks": [{"context": "code-mower/gate", "app_id": 12345}],
+                    }
+                },
+                {},
+            ),
+        ):
+            check = check_branch_protection(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                default_branch="main",
+                http_timeout=1,
+                required_status_context="code-mower/gate",
+            )
+
+        self.assertEqual(check.status, "fail")
+        self.assertIn("specific GitHub App instead of Any source", check.message)
+        self.assertIn("app_id: null", check.remediation)
+
+    def test_repo_auto_merge_fails_when_disabled(self) -> None:
         check = check_repo_auto_merge(
             slug="owner/repo",
             repo_payload={"allow_auto_merge": False},
         )
 
-        self.assertEqual(check.status, "warn")
+        self.assertEqual(check.status, "fail")
         self.assertIn("allow_auto_merge=true", check.remediation)
 
 
