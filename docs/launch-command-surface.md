@@ -39,7 +39,7 @@ These commands are real, but they are not the first-user spine.
 - Provider runners: `codex-audit`, `claude-audit`, `gemini-cli`,
   `antigravity-cli`, `hermes-cli`, `coderabbit-cli`, `local-llm`.
 - Workflow helpers: `trailer-comment-labeler`, `saas-reviewer-labeler`,
-  `clear-stale`, `blind-review`.
+  `clear-stale`, `blind-review`, `decide`.
 - Migration and packaging internals: `package`, `bootstrap`, advanced
   `migration` subcommands.
 - Planning and authoring-intelligence surfaces: `work-order`, `builder`,

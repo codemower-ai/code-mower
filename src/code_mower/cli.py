@@ -38,6 +38,7 @@ from . import code_mower_context_packs
 from . import code_mower_merge
 from . import code_mower_telemetry
 from . import config as code_mower_config
+from . import decisions as code_mower_decisions
 from . import doctor as code_mower_doctor
 from . import gemini_cli_audit_pr
 from . import gate_health as code_mower_gate_health
@@ -397,6 +398,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "codex-audit": "Run a Codex structured audit lane.",
     "codex-audit-env-preflight": "Probe Codex audit environment setup.",
     "codex-audit-schema-smoke": "Smoke-test Codex audit schema parsing.",
+    "decide": "Render or post a machine-readable audit decision marker.",
     "doctor": "Check runtime, GitHub, providers, privacy, and cloud setup.",
     "gemini-cli": "Run a Gemini CLI structured audit lane.",
     "gate-health": "Alert when audit gate infrastructure stalls.",
@@ -529,6 +531,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "codex-audit": codex_audit_pr.main,
     "codex-audit-env-preflight": codex_audit_env_preflight.main,
     "codex-audit-schema-smoke": codex_audit_schema_smoke.main,
+    "decide": code_mower_decisions.main,
     "doctor": code_mower_doctor.main,
     "gemini-cli": gemini_cli_audit_pr.main,
     "gate-health": code_mower_gate_health.main,

@@ -92,6 +92,41 @@ the options, the recommendation, and the existing ADR, operating-model section,
 issue comment, or policy it touches. If accepted project context already
 answers the ask, the orchestration lane may comment with the resolution, remove
 `needs-owner`, and continue without paging the owner.
+
+Decision markers are honored only when the comment author is configured as a
+decision authority. Code Mower includes `owner_surface.owner_login` by default
+when it is set. Add any additional trusted logins under `decisions.authorities`:
+
+```yaml
+decisions:
+  authorities:
+    - release-manager
+```
+
+When an authorized owner or orchestrator closes an audit finding by policy,
+record a hidden decision marker in the issue or PR conversation:
+
+```bash
+code-mower decide \
+  --id ADR-007 \
+  --scope finding \
+  --finding-id codex:b93829375d1f7c3d27fa \
+  --by owner \
+  --ref ADR-007
+```
+
+The command prints a PR-comment body containing
+`<!-- CODE_MOWER_DECISION: ... -->`; add `--repo OWNER/REPO --issue 123 --post`
+to post it directly. Codex and Claude audits render a stable `Finding ID` line
+for each structured finding. A marker covers a finding only when its
+`finding_id` equals that stable fingerprint, or when `scope=topic` and
+`resolves` equals the finding title verbatim. Substring, leading-token,
+detail-only, and file-line-only matches are intentionally ignored. Markers from
+other authors, including builders and bots, are ignored and should be reported
+as P3 `unauthorized decision marker`. Covered findings must be reported as P3
+`acknowledged by decision <id>` and must not block. The trailer labeler and
+merge gate also treat a blocked audit comment as done when all P0, P1, and P2
+findings in that comment are covered by trusted decisions.
 Gate health also treats open PRs with a `builder:<lane>` label plus an
 unresolved `*-audit-blocked` label as stalled with work when that lane has not
 authored a PR commit or comment within `gate_health_liveness_minutes`; the
@@ -512,9 +547,10 @@ current head and publishes `pending: audit in flight` until those runs settle.
 If a previously audited head is no longer an ancestor of the current head, the
 gate posts a metadata-only notice that commits may have been dropped and keeps
 using only current-head audit verdicts.
-The generated product-support files include `tools/audit_labeler_lib.py`, which
-the gate uses for GitHub Actions audit-comment attestation without uploading
-source, diffs, or transcripts.
+The generated product-support files include `tools/audit_labeler_lib.py` and
+`tools/decisions.py`, which the gate uses for GitHub Actions audit-comment
+attestation and decision-covered blocker handling without uploading source,
+diffs, or transcripts.
 Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
 call in the repository gate workflow. If GitHub rejects that optional
 auto-merge call after a green gate, the workflow logs a notice and leaves the

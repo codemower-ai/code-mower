@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from code_mower import trailer_comment_labeler
+from code_mower import decisions, trailer_comment_labeler
 from code_mower.audit_labeler_lib import GitHubToken, IssueCommentPaginationLimitExceeded
 from code_mower.lane_configs import load_lane_config
 from code_mower.provider_runners import bind_actions_run_comment_id
@@ -10,6 +11,7 @@ from code_mower.trailer_comment_labeler import resolve_label_decision
 
 
 HEAD_SHA = "abcdef0123456789abcdef0123456789abcdef01"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def _event(author: str, body: str, *, action: str = "created", comment_id: int = 9001) -> dict:
@@ -22,6 +24,34 @@ def _event(author: str, body: str, *, action: str = "created", comment_id: int =
 
 def _bound_actions_body(body: str, *, comment_id: int = 9001) -> str:
     return bind_actions_run_comment_id(body, comment_id)
+
+
+def _decision_marker(*, lane: str, title: str, file_path: str) -> str:
+    return decisions.render_decision_marker(
+        decisions.DecisionRecord(
+            id="ADR-007",
+            scope="finding",
+            resolves="",
+            by="owner",
+            finding_id=decisions.stable_finding_id(lane, title, file_path),
+            ref="ADR-007",
+        )
+    )
+
+
+def _findings_marker(*, lane: str, title: str, file_path: str, line: int = 12) -> str:
+    return decisions.render_audit_findings_marker(
+        lane=lane,
+        findings=[
+            {
+                "severity": "P2",
+                "title": title,
+                "file": file_path,
+                "line": line,
+            }
+        ],
+        complete=True,
+    )
 
 
 def test_main_skips_when_comment_history_exceeds_page_cap(monkeypatch, tmp_path, capsys) -> None:
@@ -137,6 +167,108 @@ def test_labeler_later_blocked_demotes_earlier_done(monkeypatch) -> None:
     assert reason == "label blocked"
     assert decision.add_label == "codex-audit-blocked"
     assert decision.remove_labels == ("needs-codex-audit", "codex-audit-done")
+
+
+def test_labeler_counts_decision_covered_p2_as_codex_done(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
+    config = load_lane_config("codex")
+    transcript = json.loads(
+        (FIXTURES / "bridge_pro_311_decision_transcript.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    audit_comment = transcript[-1]
+
+    decision, reason = resolve_label_decision(
+        _event(
+            "codex-audit-bot",
+            audit_comment["body"],
+            comment_id=int(audit_comment["id"]),
+        ),
+        current_head_sha=HEAD_SHA,
+        config=config,
+        issue_comments=transcript,
+        decision_authorities=("owner",),
+    )
+
+    assert decision is not None
+    assert reason == "label done"
+    assert decision.add_label == "codex-audit-done"
+    assert decision.remove_labels == ("needs-codex-audit", "codex-audit-blocked")
+
+
+def test_labeler_does_not_promote_codex_free_text_findings(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
+    config = load_lane_config("codex")
+    title = "HOST_DISPLAY_NAME class-B finding repeats"
+    audit_body = (
+        "Codex Audit - BLOCKED\n"
+        f"Head SHA: `{HEAD_SHA}`\n"
+        "Findings:\n\n"
+        f"- [P2] {title} -- `src/display.py:12`\n"
+        "  ADR-007 already accepted this topic.\n\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
+    )
+    decision_body = _decision_marker(
+        lane="codex",
+        title=title,
+        file_path="src/display.py",
+    )
+
+    decision, reason = resolve_label_decision(
+        _event("codex-audit-bot", audit_body),
+        current_head_sha=HEAD_SHA,
+        config=config,
+        issue_comments=[
+            {"id": 1, "body": decision_body, "user": {"login": "owner"}},
+            {"id": 2, "body": audit_body, "user": {"login": "codex-audit-bot"}},
+        ],
+        decision_authorities=("owner",),
+    )
+
+    assert decision is not None
+    assert reason == "label blocked"
+    assert decision.add_label == "codex-audit-blocked"
+
+
+def test_labeler_does_not_promote_unopted_lane_structured_findings(monkeypatch) -> None:
+    monkeypatch.delenv("DEVIN_BOT_AUTHORS", raising=False)
+    config = load_lane_config("devin")
+    title = "HOST_DISPLAY_NAME class-B finding repeats"
+    audit_body = (
+        "Devin Audit - BLOCKED\n"
+        f"Head SHA: `{HEAD_SHA}`\n"
+        "Findings:\n\n"
+        + _findings_marker(
+            lane="devin",
+            title=title,
+            file_path="src/display.py",
+        )
+        + "\n\n"
+        f"- [P2] {title} -- `src/display.py:12`\n"
+        "  ADR-007 already accepted this topic.\n\n"
+        "<!-- DEVIN_AUDIT_STATE: devin-audit-blocked -->"
+    )
+    decision_body = _decision_marker(
+        lane="devin",
+        title=title,
+        file_path="src/display.py",
+    )
+
+    decision, reason = resolve_label_decision(
+        _event("devin-ai-integration", audit_body),
+        current_head_sha=HEAD_SHA,
+        config=config,
+        issue_comments=[
+            {"id": 1, "body": decision_body, "user": {"login": "owner"}},
+            {"id": 2, "body": audit_body, "user": {"login": "devin-ai-integration"}},
+        ],
+        decision_authorities=("owner",),
+    )
+
+    assert decision is not None
+    assert reason == "label blocked"
+    assert decision.add_label == "devin-audit-blocked"
 
 
 def test_configured_shared_author_requires_matching_lane_trailer(monkeypatch) -> None:

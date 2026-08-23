@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
@@ -118,6 +119,39 @@ class ClaudeAuditPrTests(unittest.TestCase):
         self.assertEqual(guarded.verdict, "BLOCKED")
         self.assertIsNone(reason)
 
+    def test_claude_structured_prose_includes_stable_finding_id(self) -> None:
+        title = "Unsafe auth bypass"
+        parsed = cap.parse_structured_claude_verdict(
+            _payload(
+                summary="Auth bypass in real code.",
+                findings=[
+                    _finding(
+                        severity="P1",
+                        title=title,
+                        file="src/auth.py",
+                        line=17,
+                        detail="The bypass accepts untrusted requests.",
+                    )
+                ],
+            )
+        )
+
+        self.assertEqual(parsed.verdict, "BLOCKED")
+        self.assertIn(
+            cap.code_mower_decisions.stable_finding_id(
+                "claude",
+                title,
+                "src/auth.py",
+            ),
+            parsed.prose,
+        )
+        findings = cap.code_mower_decisions.extract_audit_findings(
+            parsed.prose,
+            lane="claude",
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].title, title)
+
     def test_claude_audit_retries_guardrail_rejection_and_updates_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -150,6 +184,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             with (
@@ -241,6 +276,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             with (
@@ -307,6 +343,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             with (
@@ -396,6 +433,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             with (
@@ -470,6 +508,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             def fake_run(
@@ -533,6 +572,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "token",
                 {"owner/repo": repo},
                 include_plan_context=False,
+                include_decision_context=False,
             )
 
             with (
@@ -605,6 +645,87 @@ class ClaudeAuditPrTests(unittest.TestCase):
 
         self.assertIn(cap.UNKNOWN_REQUEUE_MARKER, unknown)
         self.assertIn(cap.STALE_REQUEUE_MARKER, stale)
+
+    def test_claude_prompt_includes_decision_registry(self) -> None:
+        comments = [
+            {
+                "author_association": "MEMBER",
+                "user": {"login": "owner"},
+                "body": (
+                    '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
+                    'finding_id="claude:f790e9961b7db082159c" by=owner ref=ADR-007 -->'
+                ),
+            }
+        ]
+        with mock.patch.object(cap, "fetch_issue_comments", return_value=comments):
+            registry = cap._decision_registry_context(
+                "owner/repo",
+                42,
+                token="token",
+                authorities=("owner",),
+            )
+
+        prompt = cap._review_prompt(
+            repo="owner/repo",
+            pr_number=42,
+            head_sha="a" * 40,
+            base_ref="origin/main",
+            branch_name="human/fix",
+            title="Fix",
+            diff_stat="src/app.py | 1 +",
+            diff_text="diff --git a/src/app.py b/src/app.py",
+            was_truncated=False,
+            decision_registry_text=registry,
+        )
+
+        self.assertIn("Trusted Code Mower decision registry", prompt)
+        self.assertIn("ADR-007", prompt)
+        self.assertIn("claude:f790e9961b7db082159c", prompt)
+
+    def test_decision_registry_context_fetch_failure_degrades_to_empty(self) -> None:
+        with mock.patch.object(
+            cap,
+            "fetch_issue_comments",
+            side_effect=RuntimeError("pagination cap"),
+        ):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                registry = cap._decision_registry_context(
+                    "owner/repo",
+                    42,
+                    token="token",
+                )
+
+        self.assertEqual(registry, "")
+        self.assertIn("decision registry: skipped", err.getvalue())
+
+    def test_decision_authorities_load_from_trusted_ref_not_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            repo.joinpath("code-mower.yml").write_text(
+                "owner_surface:\n  owner_login: attacker\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(
+                    cap,
+                    "_run_git",
+                    return_value="owner_surface:\n  owner_login: owner\n",
+                ) as run_git,
+                mock.patch.object(
+                    cap.code_mower_decisions,
+                    "decision_authorities_from_env",
+                    return_value=(),
+                ),
+            ):
+                authorities = cap._decision_authorities_for_repo(
+                    repo,
+                    ("configured",),
+                    trusted_ref="origin/main",
+                )
+
+        self.assertEqual(authorities, ("configured", "owner"))
+        run_git.assert_called_once_with(repo, ["show", "origin/main:code-mower.yml"])
 
 
 if __name__ == "__main__":
