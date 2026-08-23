@@ -120,26 +120,65 @@ gh api -X PATCH "repos/$REPO" -f allow_auto_merge=true
 ```
 
 Require the `code-mower/gate` commit status from Any source, alongside your
-normal CI checks. Inspect the current required checks first:
+normal CI checks. Read the current required checks, write a PATCH payload from
+the `checks[]` entries GitHub returned, and keep existing source-app bindings
+intact. Using `contexts[]` for this update can strip source-app bindings from
+checks that already require a specific GitHub App.
 
 ```bash
-gh api "repos/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks"
-```
+gh api "repos/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
+  > /tmp/required-status-checks.json
 
-Then update the same endpoint with every existing required context plus
-`code-mower/gate`:
+python3.12 - <<'PY'
+import json
+from pathlib import Path
 
-```bash
+source = Path("/tmp/required-status-checks.json")
+data = json.loads(source.read_text(encoding="utf-8"))
+checks = data.get("checks") or [
+    {"context": context, "app_id": -1}
+    for context in data.get("contexts", [])
+]
+preserved_checks = []
+for check in checks:
+    if check["context"] == "code-mower/gate":
+        continue
+    app_id = check.get("app_id")
+    if app_id is None:
+        app_id = -1
+    preserved_checks.append({"context": check["context"], "app_id": app_id})
+patch = {
+    "strict": data.get("strict", True),
+    "checks": preserved_checks + [{"context": "code-mower/gate", "app_id": -1}],
+}
+Path("/tmp/required-status-checks-patch.json").write_text(
+    json.dumps(patch, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+
 gh api -X PATCH "repos/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
-  -f strict=true \
-  -F contexts[]=EXISTING_REQUIRED_CONTEXT \
-  -F contexts[]=code-mower/gate
+  --input /tmp/required-status-checks-patch.json
 ```
 
-Repeat `-F contexts[]=...` for every existing required context returned by the
-inspection call. If your repository uses the GitHub settings UI instead, choose
-the source shown as Any source for `code-mower/gate`. Do not choose GitHub
-Actions.
+The patch payload should look like this shape:
+
+```json
+{
+  "strict": true,
+  "checks": [
+    {"context": "existing-ci", "app_id": 15368},
+    {"context": "existing-deploy", "app_id": 123456},
+    {"context": "code-mower/gate", "app_id": -1}
+  ]
+}
+```
+
+Preserve every existing `checks[]` entry and every non-null `app_id`; write
+Any-source entries as `app_id: -1`, and add only the `code-mower/gate` entry
+with `app_id: -1` for Any source. If your repository uses the GitHub settings
+UI instead, choose the source shown as Any source for `code-mower/gate`. Do not
+choose GitHub Actions.
 
 Proof:
 

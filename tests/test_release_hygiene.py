@@ -6664,6 +6664,13 @@ def main():
         self.assertTrue(try_in_10.rstrip().endswith("](build-loop-in-30-minutes.md)."))
         self.assertIn("[Quickstart](quickstart.md)", try_in_10)
         self.assertIn("[Quickstart](quickstart.md)", build_loop_30)
+        self.assertIn("write a PATCH payload from", build_loop_30)
+        self.assertIn("existing source-app bindings", build_loop_30)
+        self.assertIn("python3.12 - <<'PY'", build_loop_30)
+        self.assertIn('preserved_checks.append({"context": check["context"], "app_id": app_id})', build_loop_30)
+        self.assertIn('"checks": preserved_checks + [{"context": "code-mower/gate", "app_id": -1}]', build_loop_30)
+        self.assertIn("--input /tmp/required-status-checks-patch.json", build_loop_30)
+        self.assertNotIn("-F contexts[]=", build_loop_30)
 
         docs_map = readme.split("## Docs Map", 1)[1]
         for link in (
