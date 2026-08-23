@@ -42,6 +42,11 @@ def parse_repo_paths(spec: str) -> Dict[str, Path]:
                 f"(expected OWNER/REPO:/absolute/path). {_doc_hint()}"
             )
         out[repo] = repo_path
+    if not out:
+        raise ValueError(
+            "repo paths specification did not contain any "
+            f"OWNER/REPO:/absolute/path entries. {_doc_hint()}"
+        )
     return out
 
 

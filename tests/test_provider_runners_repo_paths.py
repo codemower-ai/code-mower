@@ -25,6 +25,14 @@ class RepoPathParsingTests(unittest.TestCase):
             {"owner/app": Path("/tmp/app")},
         )
 
+    def test_parse_repo_paths_rejects_specs_without_entries(self) -> None:
+        for spec in ("", " , , "):
+            with self.subTest(spec=spec):
+                with self.assertRaisesRegex(
+                    ValueError, "did not contain any OWNER/REPO:/absolute/path entries"
+                ):
+                    parse_repo_paths(spec)
+
     def test_parse_repo_paths_rejects_entries_without_separator(self) -> None:
         with self.assertRaisesRegex(ValueError, "expected OWNER/REPO:/absolute/path"):
             parse_repo_paths("owner/app")

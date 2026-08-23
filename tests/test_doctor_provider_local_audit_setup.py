@@ -48,6 +48,22 @@ class DoctorProviderLocalAuditSetupTests(unittest.TestCase):
         self.assertIn("CLAUDE_AUDIT_REPO_PATHS is invalid", checks[1].message)
         self.assertIn("docs/local-audit-runner.md", str(checks[1].remediation))
 
+    def test_repo_paths_env_without_entries_fails_with_doc_link(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"GITHUB_TOKEN": "token", "CODEX_AUDIT_REPO_PATHS": " , , "},
+            clear=True,
+        ):
+            checks = check_local_audit_wrapper_setup(
+                "codex",
+                {"driver": "local_cli", "provider": "codex"},
+            )
+
+        self.assertEqual([check.status for check in checks], ["pass", "fail"])
+        self.assertIn("CODEX_AUDIT_REPO_PATHS is invalid", checks[1].message)
+        self.assertIn("OWNER/REPO:/absolute/path entries", checks[1].message)
+        self.assertIn("docs/local-audit-runner.md", str(checks[1].remediation))
+
     def test_current_repo_path_env_fails_as_not_separate_checkout(self) -> None:
         with TemporaryDirectory() as tmp:
             repo = Path(tmp)
