@@ -1322,20 +1322,19 @@ fi
         self.assertIn("owner_surface.builder_dispatch_cron", message)
         self.assertIn("owner_surface.lane_runner_cron", message)
 
-    def test_label_target_prefers_output_checkout_remote(self) -> None:
-        cfg = code_mower_config.load_config(CONFIG_PATH)
-
+    def test_label_target_uses_checkout_remote(self) -> None:
         with mock.patch.object(
             code_mower_init,
             "_detect_github_repo_slug",
             return_value="target/repo",
-        ):
+        ) as detect:
+            checkout = Path("/tmp/checkout")
             target = code_mower_init._target_repo_slug_for_labels(
-                cfg,
-                Path("/tmp/generated"),
+                checkout,
             )
 
         self.assertEqual(target, "target/repo")
+        detect.assert_called_once_with(checkout)
 
     def test_label_target_remote_parser_accepts_github_remotes(self) -> None:
         self.assertEqual(
@@ -1361,8 +1360,9 @@ fi
             "",
         )
 
-    def test_label_target_falls_back_to_primary_config_repo(self) -> None:
+    def test_label_target_does_not_fall_back_to_primary_config_repo(self) -> None:
         cfg = code_mower_config.load_config(CONFIG_PATH)
+        self.assertEqual(cfg["repositories"][0]["slug"], "owner/example")
 
         with mock.patch.object(
             code_mower_init,
@@ -1370,11 +1370,23 @@ fi
             return_value="",
         ):
             target = code_mower_init._target_repo_slug_for_labels(
-                cfg,
                 Path("/tmp/generated"),
             )
 
-        self.assertEqual(target, "owner/example")
+        self.assertEqual(target, "")
+
+    def test_label_target_accepts_explicit_repo_without_checkout_detection(self) -> None:
+        with mock.patch.object(
+            code_mower_init,
+            "_detect_github_repo_slug",
+            side_effect=AssertionError("--repo must not inspect checkout"),
+        ):
+            target = code_mower_init._target_repo_slug_for_labels(
+                Path("/tmp/generated"),
+                explicit_repo="target/repo",
+            )
+
+        self.assertEqual(target, "target/repo")
 
     def test_init_apply_ensures_github_labels_in_target_repo(self) -> None:
         captured: dict[str, object] = {}
@@ -1395,7 +1407,7 @@ fi
             code_mower_init,
             "_detect_github_repo_slug",
             return_value="target/repo",
-        ), mock.patch.object(
+        ) as detect, mock.patch.object(
             code_mower_init,
             "ensure_github_labels",
             side_effect=fake_ensure,
@@ -1416,10 +1428,87 @@ fi
                 )
 
         self.assertEqual(result, 0)
+        detect.assert_called_once_with(Path.cwd())
         self.assertEqual(captured["repo"], "target/repo")
         self.assertIn("builder:codex", captured["labels"])
         self.assertIn("dispatched:codex", captured["labels"])
         self.assertIn('"repo": "target/repo"', stdout.getvalue())
+
+    def test_init_apply_ensures_github_labels_in_explicit_repo(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_ensure(labels, *, repo=None, gh_bin="gh", color="ededed"):
+            captured["repo"] = repo
+            captured["labels"] = sorted(set(labels))
+            return {
+                "status": "passed",
+                "repo": repo or "",
+                "requested": sorted(set(labels)),
+                "created": [],
+                "existing": sorted(set(labels)),
+                "failed": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            code_mower_init,
+            "_detect_github_repo_slug",
+            side_effect=AssertionError("--repo must bypass checkout detection"),
+        ), mock.patch.object(
+            code_mower_init,
+            "ensure_github_labels",
+            side_effect=fake_ensure,
+        ):
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout):
+                result = code_mower_init.main(
+                    [
+                        str(CONFIG_PATH),
+                        "--builders",
+                        "codex",
+                        "--apply",
+                        "--output-dir",
+                        str(Path(tmp) / "target"),
+                        "--repo",
+                        "target/repo",
+                        "--skip-actionlint",
+                        "--json",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(captured["repo"], "target/repo")
+        self.assertIn("builder:codex", captured["labels"])
+        self.assertIn('"repo": "target/repo"', stdout.getvalue())
+
+    def test_init_apply_requires_label_repo_when_checkout_detection_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            code_mower_init,
+            "_detect_github_repo_slug",
+            return_value="",
+        ), mock.patch.object(
+            code_mower_init,
+            "ensure_github_labels",
+            side_effect=AssertionError("label creation must not run without a target repo"),
+        ):
+            output_dir = Path(tmp) / "target"
+            stderr = io.StringIO()
+            with mock.patch("sys.stderr", stderr):
+                result = code_mower_init.main(
+                    [
+                        str(CONFIG_PATH),
+                        "--builders",
+                        "codex",
+                        "--apply",
+                        "--output-dir",
+                        str(output_dir),
+                        "--skip-actionlint",
+                    ]
+                )
+
+        self.assertEqual(result, 1)
+        self.assertIn("pass --repo OWNER/REPO", stderr.getvalue())
+        self.assertIn("--skip-github-labels", stderr.getvalue())
+        self.assertFalse(output_dir.exists())
 
     def test_init_builders_without_mode_defaults_to_dry_run_without_github_label_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(

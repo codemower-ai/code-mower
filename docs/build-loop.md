@@ -132,8 +132,9 @@ To rehearse a fresh repository:
 1. Run `code-mower init --builders codex,claude,cursor --dry-run` and inspect the
    plan, including the labels listed under `Labels to ensure`.
 2. Run `code-mower init --builders codex,claude,cursor --apply`.
-   This creates missing labels in the target GitHub repo unless
-   `--skip-github-labels` is passed.
+   This creates missing labels in the current checkout's GitHub repo unless
+   `--skip-github-labels` is passed. If you are rendering outside the target
+   checkout, pass `--repo OWNER/REPO` explicitly.
 3. Copy or commit the generated workflows, lane docs, and `tools/lanes` script.
 4. Set `DISPATCH_TOKEN`, `DISPATCH_TOKEN_EXPIRES_AT`, and any runner variables.
 5. Create a test issue with `tier:R` and `builder:codex`.

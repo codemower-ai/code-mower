@@ -332,10 +332,10 @@ def _workflow_name_for_target(target: str) -> str:
     return stem[:1].upper() + stem[1:]
 
 
-def _normalize_repo_slug(value: str) -> str:
+def _normalize_repo_slug(value: str, *, option: str = "--add-repo") -> str:
     slug = value.strip().strip("/")
     if not OWNER_REPO_RE.fullmatch(slug):
-        raise ConfigError("--add-repo expects an OWNER/REPO slug")
+        raise ConfigError(f"{option} expects an OWNER/REPO slug")
     return slug
 
 
@@ -371,12 +371,14 @@ def _detect_github_repo_slug(repo_path: Path, *, git_bin: str = "git") -> str:
     return _github_repo_slug_from_remote(completed.stdout)
 
 
-def _target_repo_slug_for_labels(config: Mapping[str, Any], output_dir: Path) -> str:
-    detected = _detect_github_repo_slug(output_dir)
-    if detected:
-        return detected
-    repositories = _repository_entries(config)
-    return repositories[0]["slug"] if repositories else ""
+def _target_repo_slug_for_labels(
+    checkout_dir: Path,
+    *,
+    explicit_repo: str | None = None,
+) -> str:
+    if explicit_repo:
+        return _normalize_repo_slug(explicit_repo, option="--repo")
+    return _detect_github_repo_slug(checkout_dir)
 
 
 def config_with_added_repositories(
@@ -2840,6 +2842,14 @@ def main(argv: list[str] | None = None) -> int:
             "the target repo via gh; --dry-run lists labels without mutating GitHub"
         ),
     )
+    parser.add_argument(
+        "--repo",
+        metavar="OWNER/REPO",
+        help=(
+            "explicit GitHub repository for --builders --apply label creation; "
+            "defaults to the current checkout's origin remote"
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="emit dry-run plan as JSON")
     args = parser.parse_args(argv)
 
@@ -2857,6 +2867,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        label_repo_override = (
+            _normalize_repo_slug(args.repo, option="--repo") if args.repo else None
+        )
         builder_lanes = _parse_builder_lanes(args.builders)
         config_source = _resolve_config_path(args.config)
         rendered_config_path = (
@@ -2873,6 +2886,18 @@ def main(argv: list[str] | None = None) -> int:
             add_repositories=added_repos,
             builders=builder_lanes,
         )
+        label_repo = ""
+        if args.apply and builder_lanes and not args.skip_github_labels:
+            label_repo = _target_repo_slug_for_labels(
+                Path.cwd(),
+                explicit_repo=label_repo_override,
+            )
+            if not label_repo:
+                raise ConfigError(
+                    "target GitHub repository could not be determined from "
+                    "the current checkout; rerun from a GitHub checkout, "
+                    "pass --repo OWNER/REPO, or pass --skip-github-labels"
+                )
         apply_result = (
             apply_init_plan(
                 plan,
@@ -2883,23 +2908,10 @@ def main(argv: list[str] | None = None) -> int:
             else None
         )
         if apply_result is not None and builder_lanes and not args.skip_github_labels:
-            label_repo = _target_repo_slug_for_labels(config, Path(args.output_dir))
-            if not label_repo:
-                github_labels = {
-                    "status": "skipped",
-                    "reason": (
-                        "target GitHub repository could not be determined; "
-                        "create labels from labels.txt or rerun from a GitHub checkout"
-                    ),
-                    "repo": "",
-                    "requested": sorted(set(plan.data["labels"])),
-                    "created": [],
-                }
-            else:
-                github_labels = ensure_github_labels(
-                    plan.data["labels"],
-                    repo=label_repo,
-                )
+            github_labels = ensure_github_labels(
+                plan.data["labels"],
+                repo=label_repo,
+            )
             apply_result = {
                 **apply_result,
                 "github_labels": github_labels,
