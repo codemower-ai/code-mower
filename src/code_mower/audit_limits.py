@@ -34,8 +34,11 @@ class AuditLimitSettings:
         )
 
 
-def _format_budget(value: Decimal) -> str:
-    return f"{value.quantize(Decimal('0.01')):.2f}"
+def _format_budget(value: Decimal, *, field_name: str = "budget_usd") -> str:
+    try:
+        return f"{value.quantize(Decimal('0.01')):.2f}"
+    except InvalidOperation as exc:
+        raise ValueError(f"{field_name} must be a positive decimal USD value") from exc
 
 
 def _clean_optional(value: Any) -> str:
@@ -71,7 +74,7 @@ def parse_budget_usd(value: Any, *, field_name: str) -> str:
         raise ValueError(f"{field_name} must be a positive decimal USD value") from exc
     if not parsed.is_finite() or parsed <= 0:
         raise ValueError(f"{field_name} must be a positive decimal USD value")
-    return _format_budget(parsed)
+    return _format_budget(parsed, field_name=field_name)
 
 
 def audit_limits_from_config(config: Mapping[str, Any]) -> AuditLimitSettings:

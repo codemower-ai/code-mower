@@ -1,6 +1,7 @@
 import unittest
 
 from code_mower import audit_limits
+from code_mower import config as code_mower_config
 
 
 class AuditLimitsTests(unittest.TestCase):
@@ -26,6 +27,28 @@ class AuditLimitsTests(unittest.TestCase):
             ),
             "3.50",
         )
+
+    def test_parse_budget_rejects_invalid_values(self) -> None:
+        for value in ("1e30", "-1", "NaN"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "positive decimal USD value"):
+                    audit_limits.parse_budget_usd(value, field_name="audit.budget_usd")
+
+    def test_parse_budget_allows_blank_default(self) -> None:
+        self.assertEqual(
+            audit_limits.parse_budget_usd("", field_name="audit.budget_usd"),
+            "",
+        )
+        self.assertEqual(
+            audit_limits.audit_limits_from_config({"audit": {"budget_usd": ""}}).budget_usd,
+            "",
+        )
+
+    def test_config_validation_reports_unquantizable_budget(self) -> None:
+        issues = code_mower_config.validate_config({"audit": {"budget_usd": "1e30"}})
+        budget_issue = next(issue for issue in issues if issue.path == "audit.budget_usd")
+
+        self.assertIn("positive decimal USD value", budget_issue.message)
 
     def test_config_limits_parse_defaults_and_reject_bad_hard_limit(self) -> None:
         defaults = audit_limits.audit_limits_from_config({})
