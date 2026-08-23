@@ -121,9 +121,12 @@ every disposition before using it for lane promotion or merge policy.
 Full walkthrough: [docs/try-in-10-minutes.md](docs/try-in-10-minutes.md).
 First-time command map: [docs/launch-command-surface.md](docs/launch-command-surface.md).
 
-The current PyPI beta has been rehearsed end-to-end from a clean install:
+The beta.53 package-index release is prepared:
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the latest 10/10 public-package readiness proof for `code-mower==0.5.0b53`.
+the release procedure. It is to be published and rehearsed as part of the
+`v0.5.0-beta.53` release execution, with evidence recorded on the release after
+the workflow runs complete. The latest completed public-package rehearsal
+remains beta.52: 10/10 first-user readiness for `code-mower==0.5.0b52`.
 
 ## Optional: Plan Before Coding
 
@@ -287,9 +290,11 @@ measurement work.
 
 ## Installation Status
 
-The current public beta is `v0.5.0-beta.53` from
-[codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), published
-as `code-mower==0.5.0b53` on [PyPI](https://pypi.org/project/code-mower/).
+The prepared public beta is `v0.5.0-beta.53` from
+[codemower-ai/code-mower](https://github.com/codemower-ai/code-mower). It is to
+be published and rehearsed as part of the `v0.5.0-beta.53` release execution,
+with evidence recorded on the release after the workflow runs complete. The
+pinned package-index install spec is `code-mower==0.5.0b53`.
 GitHub releases remain the auditable source for tags, build artifacts, and
 release notes.
 

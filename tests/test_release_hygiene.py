@@ -6674,8 +6674,11 @@ def main():
         self.assertEqual(
             code_mower_versioning.public_baseline_sentence(__version__),
             (
-                "The current verified public beta baseline is `v0.5.0-beta.53`, "
-                "published on PyPI as `code-mower==0.5.0b53`."
+                "The prepared public beta baseline is `v0.5.0-beta.53`; it is "
+                "to be published and rehearsed as part of the "
+                "`v0.5.0-beta.53` release execution, with evidence recorded on "
+                "the release after the workflow runs complete. The pinned "
+                "package-index install spec is `code-mower==0.5.0b53`."
             ),
         )
         self.assertEqual(
@@ -6716,11 +6719,46 @@ def main():
                 self.assertIsNone(stale_baseline.search(path.read_text(encoding="utf-8")))
 
     def test_beta53_release_docs_record_package_index_procedure_not_early_proof(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
         oss_checklist = (ROOT / "docs" / "oss-v1-checklist.md").read_text(
             encoding="utf-8",
         )
         first_user = (ROOT / "docs" / "first-user-install-rehearsal.md").read_text(
             encoding="utf-8",
+        )
+        current_state = (
+            ROOT / "docs" / "current-state-and-roadmap.md"
+        ).read_text(encoding="utf-8")
+        rollout = (ROOT / "docs" / "friendly-user-rollout-v05.md").read_text(
+            encoding="utf-8",
+        )
+        public_release = (ROOT / "docs" / "public-release-checklist.md").read_text(
+            encoding="utf-8",
+        )
+
+        prepared_status = (
+            "published and rehearsed as part of the `v0.5.0-beta.53` release "
+            "execution, with evidence recorded on the release after the "
+            "workflow runs complete"
+        )
+        for text in (readme, current_state, rollout, public_release):
+            self.assertIn(prepared_status, " ".join(text.split()))
+
+        self.assertIn(
+            "The latest completed public-package rehearsal\n"
+            "remains beta.52: 10/10 first-user readiness for `code-mower==0.5.0b52`.",
+            readme,
+        )
+        self.assertIn(
+            "The latest completed package-index proof remains beta.52: 10/10 "
+            "first-user\nreadiness from `code-mower==0.5.0b52`",
+            rollout,
+        )
+        self.assertIn(
+            "a public PyPI package-install rehearsal from beta.52\n"
+            "  `code-mower==0.5.0b52` with a\n"
+            "  10/10 first-user readiness score",
+            current_state,
         )
 
         self.assertIn(
@@ -6762,6 +6800,21 @@ def main():
             first_user,
         )
         self.assertNotIn("TestPyPI is not\npublished for `0.5.0b53`", first_user)
+        for text in (readme, current_state, rollout):
+            self.assertNotIn(
+                "published on PyPI as `code-mower==0.5.0b53`",
+                text,
+            )
+            self.assertNotIn(
+                "latest 10/10 public-package readiness proof for "
+                "`code-mower==0.5.0b53`",
+                text,
+            )
+            self.assertNotIn(
+                "public PyPI package-install rehearsal from "
+                "`code-mower==0.5.0b53`",
+                text,
+            )
 
     def test_readme_describes_calibration_limits_and_roles(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

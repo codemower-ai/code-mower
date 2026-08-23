@@ -19,16 +19,17 @@ the private history behind Code Mower:
 
 ## Current Baseline
 
-Use the current public beta unless a newer release is explicitly called out in
-the invite:
+Use the prepared beta.53 install pin after the release publishes unless a newer
+release is explicitly called out in the invite:
 
 ```bash
 pipx install --python python3.12 code-mower==0.5.0b53
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.53`, published on PyPI as `code-mower==0.5.0b53`.
-It has been rehearsed from PyPI and against a private JavaScript/mobile
-repository without requiring committed support files.
+The prepared public beta baseline is `v0.5.0-beta.53`; it is to be published and rehearsed as part of the `v0.5.0-beta.53` release execution, with evidence recorded on the release after the workflow runs complete. The pinned package-index install spec is `code-mower==0.5.0b53`.
+The latest completed package-index proof remains beta.52: 10/10 first-user
+readiness from `code-mower==0.5.0b52`, plus the private JavaScript/mobile
+repository rehearsal without requiring committed support files.
 
 ## Invite Criteria
 

@@ -44,9 +44,13 @@ def github_package_spec(version: str, repo_url: str = PUBLIC_REPO_URL) -> str:
 def public_baseline_sentence(version: str) -> str:
     """Return the shared current-baseline sentence for public docs."""
 
+    release_tag = release_tag_for_version(version)
     return (
-        f"The current verified public beta baseline is `{release_tag_for_version(version)}`, "
-        f"published on PyPI as `{public_package_spec(version)}`."
+        f"The prepared public beta baseline is `{release_tag}`; it is to be "
+        f"published and rehearsed as part of the `{release_tag}` release "
+        "execution, with evidence recorded on the release after the workflow "
+        f"runs complete. The pinned package-index install spec is "
+        f"`{public_package_spec(version)}`."
     )
 
 

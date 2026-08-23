@@ -5,6 +5,9 @@ designed for someone evaluating Code Mower for the first time: no private repo,
 no provider tokens, no uploads, and no hidden local machine assumptions.
 
 The transcript uses `$WORK_DIR` instead of a real local path.
+During beta.53 preparation, treat it as the expected output shape rather than
+release evidence; package publication and rehearsal evidence are recorded on the
+release after the workflow runs complete.
 
 ## Command
 
