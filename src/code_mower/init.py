@@ -19,6 +19,7 @@ if __package__ in {None, ""}:
 
 if __package__ in {None, "", "tools"}:
     from tools import audit_limits as code_mower_audit_limits
+    from tools import decisions as code_mower_decisions
     from tools import code_mower_secrets
     from tools.code_mower_config import (
         ConfigError,
@@ -32,6 +33,7 @@ if __package__ in {None, "", "tools"}:
     from tools.doctor_checks.github_human_token import human_automation_token_required
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_limits as code_mower_audit_limits
+    from . import decisions as code_mower_decisions
     from . import secrets as code_mower_secrets
     from .config import (
         ConfigError,
@@ -416,6 +418,7 @@ def _workflow_entry_for_target(
     target: str,
     *,
     author_exclusion_json: str = '{"enabled":false}',
+    decision_authorities: str = "",
 ) -> dict[str, str]:
     driver = str(lane.get("driver"))
     labels = _labels_for(lane)
@@ -430,6 +433,7 @@ def _workflow_entry_for_target(
         "blocked_label": str(labels["blocked"]),
         "label_token_env": _audit_token_env(lane),
         "author_exclusion_json": author_exclusion_json,
+        "decision_authorities": decision_authorities,
     }
     if target.endswith("-bridge.yml"):
         return {
@@ -871,6 +875,7 @@ def _gate_workflow_entry(
     owner_sitting_label: str = "owner-sitting",
     owner_login: str = "",
     gate_override_label: str = "gate:override",
+    decision_authorities: str = "",
 ) -> dict[str, str]:
     gate_lanes = [
         _gate_lane_entry(lane_id, lane)
@@ -890,6 +895,7 @@ def _gate_workflow_entry(
         "owner_sitting_label": owner_sitting_label,
         "owner_login": owner_login,
         "gate_override_label": gate_override_label,
+        "decision_authorities": decision_authorities,
         "author_exclusion_json": author_exclusion_json,
     }
 
@@ -1257,6 +1263,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
         "__GATE_OVERRIDE_LABEL_JSON__": json.dumps(str(gate_override_label)),
+        "__DECISION_AUTHORITIES__": str(entry.get("decision_authorities") or ""),
         "__GITHUB_ACTIONS_WORKFLOWS__": str(entry.get("github_actions_workflows") or ""),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
         "__LANE_ID__": str(entry.get("lane_id") or ""),
@@ -1504,6 +1511,9 @@ def render_init_plan(
     merge_authority_lanes: list[str] = []
     informational_lanes: list[str] = []
     owner_surface = _owner_surface_config(config)
+    decision_authorities = ",".join(
+        code_mower_decisions.decision_authorities_from_config(config)
+    )
     author_exclusion_json = _author_exclusion_json(config, selected_lanes)
     author_exclusion = json.loads(author_exclusion_json)
     audit_rearm_entries = _audit_rearm_entries(selected_lanes)
@@ -1544,6 +1554,7 @@ def render_init_plan(
                         lane,
                         target,
                         author_exclusion_json=author_exclusion_json,
+                        decision_authorities=decision_authorities,
                     )
                 )
         if lane.get("driver") in {"local_cli", "hosted_bridge", "api_model"}:
@@ -1623,6 +1634,7 @@ def render_init_plan(
                 owner_sitting_label=owner_surface["owner_sitting_label"],
                 owner_login=owner_surface["owner_login"],
                 gate_override_label=owner_surface["gate_override_label"],
+                decision_authorities=decision_authorities,
             )
         )
 

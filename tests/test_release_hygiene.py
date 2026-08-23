@@ -1173,6 +1173,7 @@ jobs:
                         "CODE_MOWER_OWNER_SITTING_LABEL": "owner-sitting",
                         "CODE_MOWER_OWNER_LOGIN": owner_login,
                         "CODE_MOWER_GATE_OVERRIDE_LABEL": "gate:override",
+                        "CODE_MOWER_DECISION_AUTHORITIES": owner_login,
                         "GITHUB_REPOSITORY": "owner/repo",
                         "GH_TOKEN": "test-token",
                         "HEAD_SHA": head_sha,
@@ -1414,7 +1415,7 @@ jobs:
                     "author_association": "MEMBER",
                     "body": (
                         '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
-                        'resolves="HOST_DISPLAY_NAME" by=owner ref=ADR-007 -->'
+                        'finding_id="codex:4c3d9d885482c8e63cca" by=owner ref=ADR-007 -->'
                     ),
                     "user": {"login": "owner"},
                 },
@@ -3124,11 +3125,19 @@ jobs:
             self.assertIn('CODE_MOWER_OWNER_SITTING_LABEL: "owner-sitting"', gate)
             self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
             self.assertIn('CODE_MOWER_GATE_OVERRIDE_LABEL: "gate:override"', gate)
+            self.assertIn('CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"', gate)
             self.assertNotIn("permission=admin", gate)
             self.assertIn("override_actor != override_owner", gate)
             self.assertIn("Clear stale Code Mower gate override", gate)
             self.assertIn("CODE_MOWER_GATE_OVERRIDE_CLEAR_FAILED=true", gate)
             self.assertNotIn('CODE_MOWER_OWNER_LABEL: "needs-owner"', gate)
+            codex_labeler = output_dir.joinpath(
+                ".github/workflows/codex-audit-labeler.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                'CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"',
+                codex_labeler,
+            )
 
             config["owner_surface"]["needs_owner_label"] = "needs: jeff # owner"
             special_plan = code_mower_init.render_init_plan(

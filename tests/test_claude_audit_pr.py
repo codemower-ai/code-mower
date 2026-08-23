@@ -84,6 +84,33 @@ class ClaudeAuditPrTests(unittest.TestCase):
         self.assertEqual(guarded.verdict, "BLOCKED")
         self.assertIsNone(reason)
 
+    def test_claude_structured_prose_includes_stable_finding_id(self) -> None:
+        title = "Unsafe auth bypass"
+        parsed = cap.parse_structured_claude_verdict(
+            _payload(
+                summary="Auth bypass in real code.",
+                findings=[
+                    _finding(
+                        severity="P1",
+                        title=title,
+                        file="src/auth.py",
+                        line=17,
+                        detail="The bypass accepts untrusted requests.",
+                    )
+                ],
+            )
+        )
+
+        self.assertEqual(parsed.verdict, "BLOCKED")
+        self.assertIn(
+            cap.code_mower_decisions.stable_finding_id(
+                "claude",
+                title,
+                "src/auth.py",
+            ),
+            parsed.prose,
+        )
+
     def test_claude_audit_retries_guardrail_rejection_and_updates_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -582,9 +609,10 @@ class ClaudeAuditPrTests(unittest.TestCase):
         comments = [
             {
                 "author_association": "MEMBER",
+                "user": {"login": "owner"},
                 "body": (
                     '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
-                    'resolves="HOST_DISPLAY_NAME" by=owner ref=ADR-007 -->'
+                    'finding_id="claude:f790e9961b7db082159c" by=owner ref=ADR-007 -->'
                 ),
             }
         ]
@@ -593,6 +621,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 "owner/repo",
                 42,
                 token="token",
+                authorities=("owner",),
             )
 
         prompt = cap._review_prompt(
@@ -610,7 +639,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
 
         self.assertIn("Trusted Code Mower decision registry", prompt)
         self.assertIn("ADR-007", prompt)
-        self.assertIn("HOST_DISPLAY_NAME", prompt)
+        self.assertIn("claude:f790e9961b7db082159c", prompt)
 
     def test_decision_registry_context_fetch_failure_degrades_to_empty(self) -> None:
         with mock.patch.object(

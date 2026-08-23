@@ -160,6 +160,7 @@ def test_labeler_counts_decision_covered_p2_as_codex_done(monkeypatch) -> None:
         current_head_sha=HEAD_SHA,
         config=config,
         issue_comments=transcript,
+        decision_authorities=("owner",),
     )
 
     assert decision is not None

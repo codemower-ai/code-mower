@@ -421,6 +421,7 @@ def terminal_audit_trailer_verdict(
     if verdict == "blocked" and code_mower_decisions.audit_blockers_are_decision_covered(
         body,
         decisions,
+        lane=str(lane.get("author_lane") or lane.get("id") or ""),
     ):
         return "done"
     return verdict
@@ -447,12 +448,14 @@ def latest_current_audit_verdict(
         [Mapping[str, Any], str, str, object, str | None],
         bool,
     ],
+    decision_authorities: Sequence[str] = (),
 ) -> str:
     verdict = latest_current_audit_verdict_detail(
         lane,
         comments,
         head_sha=head_sha,
         trusted_comment_author=trusted_comment_author,
+        decision_authorities=decision_authorities,
     )
     return verdict.verdict if verdict else ""
 
@@ -466,9 +469,13 @@ def latest_current_audit_verdict_detail(
         [Mapping[str, Any], str, str, object, str | None],
         bool,
     ],
+    decision_authorities: Sequence[str] = (),
 ) -> AuditVerdict | None:
     verdicts: list[AuditVerdict] = []
-    decisions = code_mower_decisions.collect_decision_records_from_comments(comments)
+    decisions = code_mower_decisions.collect_decision_records_from_comments(
+        comments,
+        authorities=decision_authorities,
+    )
     for index, comment in enumerate(comments):
         author = str(((comment.get("user") or {}).get("login")) or "")
         body = str(comment.get("body") or "")

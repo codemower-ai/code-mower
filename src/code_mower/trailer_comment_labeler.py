@@ -95,6 +95,7 @@ def classify_audit_comment(
             if code_mower_decisions.audit_blockers_are_decision_covered(
                 body,
                 decision_records,
+                lane=config.name,
             ):
                 return "done"
             return "blocked"
@@ -160,11 +161,13 @@ def _is_latest_current_terminal_comment(
     github_actions_workflows: Sequence[str],
     actions_run_lookup: Optional[Callable[[str], Mapping[str, Any]]],
     commit_pull_requests_lookup: Optional[Callable[[str], Sequence[Mapping[str, Any]]]],
+    decision_authorities: Sequence[str],
 ) -> bool:
     if not issue_comments or not current_head_sha:
         return True
     decision_records = code_mower_decisions.collect_decision_records_from_comments(
         issue_comments,
+        authorities=decision_authorities,
     )
     latest: Mapping[str, Any] | None = None
     for comment in issue_comments:
@@ -220,6 +223,7 @@ def resolve_label_decision(
     actions_run_lookup: Optional[Callable[[str], Mapping[str, Any]]] = None,
     commit_pull_requests_lookup: Optional[Callable[[str], Sequence[Mapping[str, Any]]]] = None,
     issue_comments: Sequence[Mapping[str, Any]] | None = None,
+    decision_authorities: Sequence[str] = (),
 ) -> tuple[Optional[LabelDecision], str]:
     if event.get("action") not in {"created", "edited"}:
         return None, f"unsupported action: {event.get('action')}"
@@ -261,6 +265,7 @@ def resolve_label_decision(
 
     decision_records = code_mower_decisions.collect_decision_records_from_comments(
         issue_comments or (),
+        authorities=decision_authorities,
     )
     status = classify_audit_comment(
         body,
@@ -316,6 +321,7 @@ def resolve_label_decision(
         github_actions_workflows=github_actions_workflows,
         actions_run_lookup=actions_run_lookup,
         commit_pull_requests_lookup=commit_pull_requests_lookup,
+        decision_authorities=decision_authorities,
     ):
         return None, "newer current-head audit verdict already exists"
 
@@ -386,6 +392,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         tokens=tokens,
         github_actions_workflows=github_actions_workflows,
         issue_comments=issue_comments,
+        decision_authorities=code_mower_decisions.decision_authorities_from_env(),
     )
     if decision is None:
         print(f"skip: {reason}")

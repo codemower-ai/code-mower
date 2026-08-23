@@ -52,63 +52,176 @@ class DecisionMarkerTests(unittest.TestCase):
         self.assertEqual(parsed[0].by, "owner")
         self.assertEqual(parsed[0].ref, "ADR-007")
 
+    def test_decide_renders_parseable_finding_id_marker(self) -> None:
+        out = io.StringIO()
+        with redirect_stdout(out):
+            result = decisions.main(
+                [
+                    "--id",
+                    "ADR-007",
+                    "--scope",
+                    "finding",
+                    "--finding-id",
+                    "codex:b93829375d1f7c3d27fa",
+                    "--by",
+                    "owner",
+                    "--ref",
+                    "ADR-007",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        parsed = decisions.parse_decision_markers(out.getvalue())
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].finding_id, "codex:b93829375d1f7c3d27fa")
+        self.assertEqual(parsed[0].resolves, "")
+
     def test_decision_registry_uses_only_trusted_comment_authors(self) -> None:
         marker = (
             '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
-            'resolves="HOST_DISPLAY_NAME" by=owner ref=ADR-007 -->'
+            'finding_id="codex:b93829375d1f7c3d27fa" by=owner ref=ADR-007 -->'
         )
         records = decisions.collect_decision_records_from_comments(
             [
-                {"author_association": "CONTRIBUTOR", "body": marker},
                 {
-                    "author_association": "MEMBER",
+                    "author_association": "OWNER",
+                    "body": marker,
+                    "user": {"login": "codex-audit-bot"},
+                },
+                {
+                    "author_association": "CONTRIBUTOR",
                     "body": marker,
                     "html_url": "https://example.test/c",
+                    "user": {"login": "owner"},
                 },
-            ]
+            ],
+            authorities=("owner",),
         )
 
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].source, "https://example.test/c")
+        self.assertEqual(records[0].author, "owner")
 
-    def test_decision_coverage_matches_explicit_finding_id(self) -> None:
+    def test_decision_registry_reports_unauthorized_markers(self) -> None:
+        marker = (
+            '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
+            'finding_id="codex:b93829375d1f7c3d27fa" by=owner ref=ADR-007 -->'
+        )
+        comments = [
+            {"id": 1, "body": marker, "user": {"login": "codex-audit-bot"}},
+            {"id": 2, "body": marker, "user": {"login": "owner"}},
+        ]
+
+        unauthorized = decisions.collect_unauthorized_decision_records_from_comments(
+            comments,
+            authorities=("owner",),
+        )
+        context = decisions.render_decision_registry_context(
+            decisions.collect_decision_records_from_comments(
+                comments,
+                authorities=("owner",),
+            ),
+            unauthorized=unauthorized,
+        )
+
+        self.assertEqual(len(unauthorized), 1)
+        self.assertEqual(unauthorized[0].author, "codex-audit-bot")
+        self.assertIn("unauthorized decision marker", context)
+        self.assertIn("codex-audit-bot", context)
+
+    def test_decision_authorities_include_owner_login_and_explicit_list(self) -> None:
+        authorities = decisions.decision_authorities_from_config(
+            {
+                "owner_surface": {"owner_login": "owner"},
+                "decisions": {"authorities": ["maintainer"]},
+            }
+        )
+
+        self.assertEqual(authorities, ("owner", "maintainer"))
+
+    def test_decision_coverage_matches_stable_finding_id(self) -> None:
+        title = "HOST_DISPLAY_NAME class-B finding repeats"
         record = decisions.DecisionRecord(
             id="ADR-007",
             scope="finding",
-            resolves="HOST_DISPLAY_NAME",
+            resolves="",
             by="owner",
+            finding_id=decisions.stable_finding_id("codex", title, "src/display.py"),
             ref="ADR-007",
         )
-        body = """
+        body = f"""
     Findings:
 
-    - [P2] HOST_DISPLAY_NAME class-B finding repeats -- `src/display.py:12`
+    - [P2] {title} -- `src/display.py:12`
       The bridge exposes the configured host display name.
     """
 
-        self.assertTrue(decisions.audit_blockers_are_decision_covered(body, (record,)))
+        self.assertTrue(
+            decisions.audit_blockers_are_decision_covered(
+                body,
+                (record,),
+                lane="codex",
+            )
+        )
         self.assertEqual(
-            decisions.decision_covered_blocker_ids(body, (record,)),
+            decisions.decision_covered_blocker_ids(body, (record,), lane="codex"),
             ("ADR-007",),
         )
+        self.assertFalse(
+            decisions.audit_blockers_are_decision_covered(
+                body,
+                (record,),
+                lane="claude",
+            )
+        )
 
-    def test_decision_coverage_matches_normalized_full_title(self) -> None:
+    def test_decision_coverage_matches_exact_topic_title(self) -> None:
+        title = "Host display name remains accepted by policy"
         record = decisions.DecisionRecord(
             id="ADR-008",
-            scope="finding",
-            resolves="host display-name remains accepted: by policy",
+            scope="topic",
+            resolves=title,
             by="owner",
         )
-        body = """
+        body = f"""
 Findings:
 
-- [P2] Host display name remains accepted by policy -- `src/display.py:12`
+- [P2] {title} -- `src/display.py:12`
   The bridge exposes the configured host display name.
 """
 
-        self.assertTrue(decisions.audit_blockers_are_decision_covered(body, (record,)))
+        self.assertTrue(
+            decisions.audit_blockers_are_decision_covered(
+                body,
+                (record,),
+                lane="codex",
+            )
+        )
 
-    def test_decision_coverage_matches_exact_file_line_location(self) -> None:
+    def test_decision_coverage_rejects_title_match_without_topic_scope(self) -> None:
+        title = "Host display name remains accepted by policy"
+        record = decisions.DecisionRecord(
+            id="ADR-009",
+            scope="finding",
+            resolves=title,
+            by="owner",
+        )
+        body = f"""
+Findings:
+
+- [P2] {title} -- `src/display.py:12`
+  The bridge exposes the configured host display name.
+"""
+
+        self.assertFalse(
+            decisions.audit_blockers_are_decision_covered(
+                body,
+                (record,),
+                lane="codex",
+            )
+        )
+
+    def test_decision_coverage_rejects_exact_file_line_location(self) -> None:
         record = decisions.DecisionRecord(
             id="ADR-009",
             scope="finding",
@@ -122,7 +235,13 @@ Findings:
   The bridge exposes the configured host display name.
 """
 
-        self.assertTrue(decisions.audit_blockers_are_decision_covered(body, (record,)))
+        self.assertFalse(
+            decisions.audit_blockers_are_decision_covered(
+                body,
+                (record,),
+                lane="codex",
+            )
+        )
 
     def test_decision_coverage_rejects_unscoped_substrings(self) -> None:
         record = decisions.DecisionRecord(
@@ -139,6 +258,28 @@ Findings:
 """
 
         self.assertFalse(decisions.audit_blockers_are_decision_covered(body, (record,)))
+
+    def test_decision_coverage_rejects_leading_identifier_collision(self) -> None:
+        record = decisions.DecisionRecord(
+            id="ADR-013",
+            scope="finding",
+            resolves="DEBUG_MODE",
+            by="owner",
+        )
+        body = """
+Findings:
+
+- [P1] DEBUG_MODE leaks stack traces to end users -- `src/settings.py:44`
+  This is unrelated to the earlier DEBUG_MODE decision.
+"""
+
+        self.assertFalse(
+            decisions.audit_blockers_are_decision_covered(
+                body,
+                (record,),
+                lane="claude",
+            )
+        )
 
     def test_decision_coverage_rejects_interior_identifier_substrings(self) -> None:
         record = decisions.DecisionRecord(
@@ -191,6 +332,7 @@ Findings:
             current_head_sha=HEAD_SHA,
             config=config,
             issue_comments=transcript,
+            decision_authorities=("owner",),
         )
 
         self.assertIsNotNone(decision)

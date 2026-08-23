@@ -86,6 +86,7 @@ from typing import Any, Dict, List, Optional, Tuple
 if __package__ in {None, "", "tools"}:
     try:
         from tools import audit_limits as code_mower_audit_limits
+        from tools import code_mower_config
         from tools import decisions as code_mower_decisions
         from tools import plan_context as code_mower_plan_context
         from tools import reviewer_spend
@@ -116,6 +117,10 @@ if __package__ in {None, "", "tools"}:
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
         import audit_limits as code_mower_audit_limits  # type: ignore
+        try:
+            import code_mower_config  # type: ignore
+        except ImportError:
+            import config as code_mower_config  # type: ignore
         import decisions as code_mower_decisions  # type: ignore
         import plan_context as code_mower_plan_context  # type: ignore
         import reviewer_spend  # type: ignore
@@ -146,6 +151,7 @@ if __package__ in {None, "", "tools"}:
         )
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_limits as code_mower_audit_limits
+    from . import config as code_mower_config
     from . import decisions as code_mower_decisions
     from . import plan_context as code_mower_plan_context
     from . import reviewer_spend
@@ -253,6 +259,7 @@ class AuditConfig:
     max_plan_context_bytes: int = code_mower_plan_context.DEFAULT_MAX_TOTAL_BYTES
     max_plan_context_file_bytes: int = code_mower_plan_context.DEFAULT_MAX_FILE_BYTES
     include_decision_context: bool = True
+    decision_authorities: Tuple[str, ...] = ()
     # Whether this lane is allowed to block the merge gate. Defaults to the
     # reference provider catalog's Codex audit posture; pass --informational
     # when replaying or calibrating a lane that is not a repository gate.
@@ -431,7 +438,14 @@ def _render_structured_prose(
         file_path = _one_line(finding["file"], MAX_FINDING_FILE_CHARS)
         line = finding["line"]
         detail = _clip_text(finding["detail"], MAX_FINDING_DETAIL_CHARS)
+        finding_id = code_mower_decisions.stable_finding_id(
+            "codex",
+            title,
+            file_path,
+        )
         lines.append(f"- [{severity}] {title} -- `{file_path}:{line}`")
+        if finding_id:
+            lines.append(f"  Finding ID: `{finding_id}`")
         for detail_line in detail.splitlines():
             lines.append(f"  {detail_line}")
 
@@ -1260,7 +1274,13 @@ def _codex_review_plan_prompt(rendered_plan_context: Any) -> str:
     return _codex_review_context_prompt(rendered_plan_context)
 
 
-def _decision_registry_context(repo: str, pr_number: int, *, token: str) -> str:
+def _decision_registry_context(
+    repo: str,
+    pr_number: int,
+    *,
+    token: str,
+    authorities: Tuple[str, ...] = (),
+) -> str:
     try:
         comments = fetch_issue_comments(
             repo,
@@ -1275,8 +1295,42 @@ def _decision_registry_context(repo: str, pr_number: int, *, token: str) -> str:
             flush=True,
         )
         return ""
-    decisions = code_mower_decisions.collect_decision_records_from_comments(comments)
-    return code_mower_decisions.render_decision_registry_context(decisions)
+    decisions = code_mower_decisions.collect_decision_records_from_comments(
+        comments,
+        authorities=authorities,
+    )
+    unauthorized = code_mower_decisions.collect_unauthorized_decision_records_from_comments(
+        comments,
+        authorities=authorities,
+    )
+    return code_mower_decisions.render_decision_registry_context(
+        decisions,
+        unauthorized=unauthorized,
+    )
+
+
+def _decision_authorities_for_repo(
+    local_repo: Path,
+    configured_authorities: Tuple[str, ...],
+) -> Tuple[str, ...]:
+    authorities: list[str] = []
+    authorities.extend(configured_authorities)
+    authorities.extend(code_mower_decisions.decision_authorities_from_env())
+    config_path = local_repo / "code-mower.yml"
+    if config_path.is_file():
+        try:
+            authorities.extend(
+                code_mower_decisions.decision_authorities_from_config(
+                    code_mower_config.load_config(config_path)
+                )
+            )
+        except Exception as exc:
+            print(
+                f"  decision registry: could not load authorities from {config_path}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+    return tuple(dict.fromkeys(authorities))
 
 
 def run_codex_verdict_structuring(
@@ -1460,6 +1514,10 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         )
     if config.progress is None:
         config = replace(config, progress=AuditProgress("codex-audit"))
+    decision_authorities = _decision_authorities_for_repo(
+        local_repo,
+        config.decision_authorities,
+    )
 
     pr_meta = fetch_pull_request(repo, pr_number, token=config.github_token)
     head_sha_start = pr_meta["head"]["sha"]
@@ -1675,6 +1733,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                     repo,
                     pr_number,
                     token=config.github_token,
+                    authorities=decision_authorities,
                 )
                 if decision_registry_context.strip():
                     print("  decision registry: included", file=sys.stderr, flush=True)

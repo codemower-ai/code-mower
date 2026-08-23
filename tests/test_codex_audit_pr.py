@@ -181,6 +181,35 @@ class CodexAuditPrTests(unittest.TestCase):
             self.assertTrue(artifact["quarantined"])
             self.assertIn("fixture-shaped structured verdict", artifact["quarantine_reason"])
 
+    def test_codex_structured_prose_includes_stable_finding_id(self) -> None:
+        title = "Unsafe auth bypass"
+        parsed = cap.parse_structured_codex_verdict(
+            {
+                "schema": cap.CODEX_AUDIT_SCHEMA_ID,
+                "verdict": "blocked",
+                "summary": "Auth bypass in real code.",
+                "findings": [
+                    {
+                        "severity": "P1",
+                        "title": title,
+                        "file": "src/auth.py",
+                        "line": 17,
+                        "detail": "The bypass accepts untrusted requests.",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(parsed.verdict, "BLOCKED")
+        self.assertIn(
+            cap.code_mower_decisions.stable_finding_id(
+                "codex",
+                title,
+                "src/auth.py",
+            ),
+            parsed.prose,
+        )
+
     def test_codex_truncated_diff_posts_unknown_without_running_codex(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -359,9 +388,10 @@ class CodexAuditPrTests(unittest.TestCase):
         comments = [
             {
                 "author_association": "MEMBER",
+                "user": {"login": "owner"},
                 "body": (
                     '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
-                    'resolves="HOST_DISPLAY_NAME" by=owner ref=ADR-007 -->'
+                    'finding_id="codex:b93829375d1f7c3d27fa" by=owner ref=ADR-007 -->'
                 ),
             }
         ]
@@ -370,13 +400,14 @@ class CodexAuditPrTests(unittest.TestCase):
                 "owner/repo",
                 42,
                 token="token",
+                authorities=("owner",),
             )
 
         prompt = cap._codex_review_context_prompt(None, registry)
 
         self.assertIn("Trusted Code Mower decision registry", prompt)
         self.assertIn("ADR-007", prompt)
-        self.assertIn("HOST_DISPLAY_NAME", prompt)
+        self.assertIn("codex:b93829375d1f7c3d27fa", prompt)
 
     def test_decision_registry_context_fetch_failure_degrades_to_empty(self) -> None:
         with mock.patch.object(

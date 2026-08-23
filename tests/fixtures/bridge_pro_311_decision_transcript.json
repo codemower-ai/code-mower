@@ -3,7 +3,7 @@
     "id": 311001,
     "author_association": "MEMBER",
     "user": {"login": "owner"},
-    "body": "Owner decision: ADR-007 closes the HOST_DISPLAY_NAME audit topic for this integration.\n\n<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding resolves=\"HOST_DISPLAY_NAME\" by=owner ref=ADR-007 -->"
+    "body": "Owner decision: ADR-007 closes the HOST_DISPLAY_NAME audit topic for this integration.\n\n<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding finding_id=\"codex:b93829375d1f7c3d27fa\" by=owner ref=ADR-007 -->"
   },
   {
     "id": 311002,
