@@ -507,12 +507,13 @@ with `gh` authenticated as a repository admin:
 >    `docs/lane-promotion-policy.md`. During the pilot, leave auto-merge off
 >    and merge manually, so a PR can never merge on CI alone while the gate is
 >    not yet required.
-> 4. Builders: `code-mower init --builders codex,claude,cursor` (dry-run
->    first, then `--apply` from the repository checkout). If I have a Mac for
->    the self-hosted lane runner, walk me through
->    `docs/self-hosted-mac-runner.md` and verify with
->    `code-mower doctor --runner`; if not, enable only the Cursor lane for now
->    and say what the Mac would add.
+> 4. Builders: first ask me whether a Mac is available for the self-hosted
+>    lane runner. If yes, walk me through `docs/self-hosted-mac-runner.md`,
+>    verify with `code-mower doctor --runner`, then
+>    `code-mower init --builders codex,claude,cursor` (dry-run first, then
+>    `--apply` from the repository checkout). If no Mac, use
+>    `code-mower init --builders cursor` only, and tell me what adding the
+>    Mac lanes later would unlock.
 > 5. Gitar: enable the GitHub App if I have it; keep it informational (it is
 >    quota-bound and may need a manual "Gitar review" comment) - never
 >    required.
