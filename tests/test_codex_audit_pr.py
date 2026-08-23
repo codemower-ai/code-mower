@@ -457,7 +457,7 @@ class CodexAuditPrTests(unittest.TestCase):
         self.assertIn("BEGIN TRUSTED AUDIT CONTEXT", structured_prompt)
         self.assertIn("acknowledged by decision <id>", structured_prompt)
 
-    def test_codex_audit_sends_decision_registry_to_structuring_not_review(self) -> None:
+    def test_codex_audit_sends_trusted_context_to_review_and_structuring(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
@@ -474,15 +474,15 @@ class CodexAuditPrTests(unittest.TestCase):
                 verdict="PASS",
                 prose="Summary:\n\nNo merge-blocking regressions found.\n\nFindings: none.",
             )
-            review_prompts: list[str] = []
+            review_contexts: list[str] = []
             structuring_contexts: list[str] = []
 
             def fake_review(
                 _config: cap.AuditConfig,
                 _worktree: Path,
-                review_prompt: str = "",
+                trusted_context: str = "",
             ) -> tuple[str, str]:
-                review_prompts.append(review_prompt)
+                review_contexts.append(trusted_context)
                 return "review text", ""
 
             def fake_structuring(
@@ -496,9 +496,17 @@ class CodexAuditPrTests(unittest.TestCase):
             config = cap.AuditConfig(
                 "token",
                 {"owner/repo": repo},
-                include_plan_context=False,
+                include_plan_context=True,
                 include_decision_context=True,
                 decision_authorities=("owner",),
+            )
+            rendered_plan_context = cap.code_mower_plan_context.RenderedPlanContext(
+                text=(
+                    cap.code_mower_plan_context.PLAN_CONFORMANCE_INSTRUCTIONS
+                    + "\nSupported transports: GitHub only.\n"
+                ),
+                included_documents=1,
+                included_bytes=32,
             )
             review_context = cap.ReviewContextDiagnostics(
                 base_ref=config.base_ref,
@@ -524,6 +532,11 @@ class CodexAuditPrTests(unittest.TestCase):
                     },
                 ),
                 mock.patch.object(cap, "fetch_pull_request", side_effect=[pr_payload, pr_payload]),
+                mock.patch.object(
+                    cap.code_mower_plan_context,
+                    "render_plan_context",
+                    return_value=rendered_plan_context,
+                ),
                 mock.patch.object(cap, "fetch_issue_comments", return_value=[
                     {
                         "author_association": "MEMBER",
@@ -558,8 +571,13 @@ class CodexAuditPrTests(unittest.TestCase):
                 result = cap.audit_pr(config, "owner/repo", 42)
 
         self.assertEqual(result.verdict, "PASS")
-        self.assertEqual(review_prompts, [""])
+        self.assertEqual(len(review_contexts), 1)
+        self.assertIn("Plan-Conformance Lens", review_contexts[0])
+        self.assertIn("Supported transports: GitHub only.", review_contexts[0])
+        self.assertIn("Trusted Code Mower decision registry", review_contexts[0])
+        self.assertIn("ADR-007", review_contexts[0])
         self.assertEqual(len(structuring_contexts), 1)
+        self.assertIn("Plan-Conformance Lens", structuring_contexts[0])
         self.assertIn("Trusted Code Mower decision registry", structuring_contexts[0])
         self.assertIn("ADR-007", structuring_contexts[0])
 
