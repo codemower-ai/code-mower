@@ -468,6 +468,30 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
             except ValueError as exc:
                 issues.append(ConfigIssue("owner_surface.builder_wip_cap", str(exc)))
 
+    decisions = config.get("decisions")
+    if decisions is not None:
+        decisions_map = _as_mapping(decisions, "decisions", issues)
+        for key in decisions_map:
+            if key != "authorities":
+                issues.append(
+                    ConfigIssue(
+                        f"decisions.{key}",
+                        "must be authorities",
+                    )
+                )
+        authorities = decisions_map.get("authorities")
+        if authorities is not None:
+            for index, authority in enumerate(
+                _as_sequence(authorities, "decisions.authorities", issues)
+            ):
+                if not isinstance(authority, str) or not authority.strip():
+                    issues.append(
+                        ConfigIssue(
+                            f"decisions.authorities[{index}]",
+                            "must be a non-empty string",
+                        )
+                    )
+
     raw_audit = config.get("audit")
     if raw_audit is not None:
         audit_map = _as_mapping(raw_audit, "audit", issues)

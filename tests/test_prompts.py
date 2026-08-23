@@ -12,6 +12,9 @@ class PromptDoctrineTests(unittest.TestCase):
 
         self.assertIn("already exists in the base tree", normalized_prompt)
         self.assertIn("surrounding checkout context", normalized_prompt)
+        self.assertIn("acknowledged by decision <id>", normalized_prompt)
+        self.assertIn("never block on it", normalized_prompt)
+        self.assertIn("contradict a prior verdict", normalized_prompt)
 
     def test_commerce_scaffold_lenses_guard_shared_sandbox_namespaces(self) -> None:
         prompt = prompts.load_review_prompt(("security-threat-model", "operability"))

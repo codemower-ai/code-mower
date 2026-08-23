@@ -11,8 +11,8 @@ __BUILDER_LANE_ROWS__
 
 Dispatcher rules:
 - Ready means open, labeled `__BUILD_LOOP_READY_LABEL__`, labeled for exactly one
-  builder lane, not assigned, not carrying `blocked-by:*`, and not carrying an
-  owner label such as `__NEEDS_OWNER_LABEL__` or `owner-sitting`.
+  builder lane, not assigned, not carrying `blocked-by:*`, and not carrying any
+  owner-blocking label: __OWNER_BLOCKING_LABELS__.
 - Dependencies listed under an issue `## Dependencies` section must be closed
   before dispatch.
 - A lane stops dispatching when its open PRs plus active dispatched issues reach

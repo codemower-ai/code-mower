@@ -99,6 +99,10 @@ line, use the explicit beta version above or allow prereleases with:
 pipx install --python python3.12 --pip-args="--pre" code-mower
 ```
 
+The beta.51 announcement entry point is the tagged
+[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.5.0-beta.51/docs/try-in-10-minutes.md)
+guide.
+
 From the repository you want to pilot:
 
 ```bash
@@ -121,7 +125,15 @@ code-mower calibration value-report .code-mower.generated/calibration-corpus.jso
 ```
 
 The generated setup also includes the configurable owner escalation and weekly
-status digest templates. The generated starter corpus proves the command path.
+status digest templates.
+
+## What Calibration Does And Does Not Prove
+
+The generated starter corpus proves that the commands run and the report path
+works. It does not prove that a reviewer should gate merges. Promote reviewer
+lanes only after repository-specific known-clean and known-blocked evidence
+meets the [lane promotion policy](docs/lane-promotion-policy.md).
+
 To bootstrap a draft from your repository history:
 
 ```bash
@@ -189,6 +201,15 @@ That lets CodeMower.com show `issue -> plan -> work order -> builder run -> PR
 -> reviewer checks -> merge` lineage without receiving source, diffs,
 transcripts, prompts, or issue body text. See
 [docs/builders-grok-cursor.md](docs/builders-grok-cursor.md).
+
+## Roles
+
+Code Mower records builder provenance for Cursor/Claude/Codex-style builders
+and runs reviewer lanes against the resulting pull requests. The orchestrator
+pattern, including Claude Code as conductor, issue plus work order,
+single-writer branch, and reviewer lanes, is workflow convention on top of Code
+Mower today, not yet a product feature. Track the build-loop templates in
+[#409](https://github.com/codemower-ai/code-mower/issues/409).
 
 ## Why Not Just Run Codex Or Claude Yourself?
 

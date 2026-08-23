@@ -200,6 +200,19 @@ class BuilderIdentityTests(unittest.TestCase):
         )
         self.assertTrue(any(issue.path == "owner_surface.builder_wip_cap" for issue in issues))
 
+    def test_config_validation_checks_decision_authorities(self) -> None:
+        cfg = dict(
+            code_mower_config.load_config(
+                code_mower_init._resolve_config_path("code-mower.example.yml")
+            )
+        )
+        cfg["decisions"] = {"authorities": "owner", "unexpected": []}
+
+        issues = code_mower_config.validate_config(cfg)
+
+        self.assertTrue(any(issue.path == "decisions.authorities" for issue in issues))
+        self.assertTrue(any(issue.path == "decisions.unexpected" for issue in issues))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,7 @@ import json
 import copy
 import importlib.util
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from code_mower import code_mower_calibration
 from code_mower import codex_audit_pr
 from code_mower import cli as code_mower_cli
 from code_mower import cloud_client
+from code_mower import decisions as code_mower_decisions
 from code_mower import doctor
 from code_mower import doctor_checks
 from code_mower import init as code_mower_init
@@ -188,6 +190,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "codex-audit",
                 "codex-audit-env-preflight",
                 "codex-audit-schema-smoke",
+                "decide",
                 "doctor",
                 "gemini-cli",
                 "gate-health",
@@ -1174,6 +1177,7 @@ jobs:
                         "CODE_MOWER_OWNER_SITTING_LABEL": "owner-sitting",
                         "CODE_MOWER_OWNER_LOGIN": owner_login,
                         "CODE_MOWER_GATE_OVERRIDE_LABEL": "gate:override",
+                        "CODE_MOWER_DECISION_AUTHORITIES": owner_login,
                         "GITHUB_REPOSITORY": "owner/repo",
                         "GH_TOKEN": "test-token",
                         "HEAD_SHA": head_sha,
@@ -1394,6 +1398,183 @@ jobs:
 
         self.assertEqual(result["gate_state"], "failure")
         self.assertEqual(result["gate_description"], "blocked audit: Claude")
+
+    def test_gate_decision_treats_decision_covered_blocked_verdict_as_done(self) -> None:
+        head_sha = "a" * 40
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "decision_coverage": True,
+                    "builder_label": "builder:codex",
+                    "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+                }
+            ],
+            labels={"codex-audit-done"},
+            comments=[
+                {
+                    "id": 1,
+                    "author_association": "MEMBER",
+                    "body": (
+                        '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
+                        'finding_id="codex:4c3d9d885482c8e63cca" by=owner ref=ADR-007 -->'
+                    ),
+                    "user": {"login": "owner"},
+                },
+                {
+                    "id": 2,
+                    "created_at": "2026-08-18T02:52:00Z",
+                    "body": (
+                        "Head SHA: `" + head_sha + "`\n"
+                        "Findings:\n\n"
+                        + code_mower_decisions.render_audit_findings_marker(
+                            lane="codex",
+                            findings=[
+                                {
+                                    "severity": "P2",
+                                    "title": "HOST_DISPLAY_NAME class-B finding repeats",
+                                    "file": "src/app.py",
+                                    "line": 1,
+                                }
+                            ],
+                            complete=True,
+                        )
+                        + "\n\n"
+                        "- [P2] HOST_DISPLAY_NAME class-B finding repeats -- `src/app.py:1`\n"
+                        "  ADR-007 already accepted this topic.\n\n"
+                        "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
+                    ),
+                    "user": {"login": "codex-audit-bot"},
+                },
+            ],
+            head_sha=head_sha,
+        )
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_decision_does_not_promote_free_text_findings(self) -> None:
+        head_sha = "a" * 40
+        title = "HOST_DISPLAY_NAME class-B finding repeats"
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "decision_coverage": True,
+                    "builder_label": "builder:codex",
+                    "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+                }
+            ],
+            labels={"codex-audit-done"},
+            comments=[
+                {
+                    "id": 1,
+                    "body": code_mower_decisions.render_decision_marker(
+                        code_mower_decisions.DecisionRecord(
+                            id="ADR-007",
+                            scope="finding",
+                            resolves="",
+                            by="owner",
+                            finding_id=code_mower_decisions.stable_finding_id(
+                                "codex",
+                                title,
+                                "src/app.py",
+                            ),
+                            ref="ADR-007",
+                        )
+                    ),
+                    "user": {"login": "owner"},
+                },
+                {
+                    "id": 2,
+                    "created_at": "2026-08-18T02:52:00Z",
+                    "body": (
+                        "Head SHA: `" + head_sha + "`\n"
+                        "Findings:\n\n"
+                        f"- [P2] {title} -- `src/app.py:1`\n"
+                        "  ADR-007 already accepted this topic.\n\n"
+                        "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
+                    ),
+                    "user": {"login": "codex-audit-bot"},
+                },
+            ],
+            head_sha=head_sha,
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(result["gate_description"], "blocked audit: Codex")
+
+    def test_gate_decision_does_not_promote_unopted_lane_findings(self) -> None:
+        head_sha = "a" * 40
+        title = "HOST_DISPLAY_NAME class-B finding repeats"
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "devin",
+                    "display_name": "Devin",
+                    "done": "devin-audit-done",
+                    "blocked": "devin-audit-blocked",
+                    "builder_label": "builder:devin",
+                    "bot_authors": "devin-ai-integration,devin-ai-integration[bot]",
+                }
+            ],
+            labels={"devin-audit-done"},
+            comments=[
+                {
+                    "id": 1,
+                    "body": code_mower_decisions.render_decision_marker(
+                        code_mower_decisions.DecisionRecord(
+                            id="ADR-007",
+                            scope="finding",
+                            resolves="",
+                            by="owner",
+                            finding_id=code_mower_decisions.stable_finding_id(
+                                "devin",
+                                title,
+                                "src/app.py",
+                            ),
+                            ref="ADR-007",
+                        )
+                    ),
+                    "user": {"login": "owner"},
+                },
+                {
+                    "id": 2,
+                    "created_at": "2026-08-18T02:52:00Z",
+                    "body": (
+                        "Head SHA: `" + head_sha + "`\n"
+                        "Findings:\n\n"
+                        + code_mower_decisions.render_audit_findings_marker(
+                            lane="devin",
+                            findings=[
+                                {
+                                    "severity": "P2",
+                                    "title": title,
+                                    "file": "src/app.py",
+                                    "line": 1,
+                                }
+                            ],
+                            complete=True,
+                        )
+                        + "\n\n"
+                        f"- [P2] {title} -- `src/app.py:1`\n"
+                        "  ADR-007 already accepted this topic.\n\n"
+                        "<!-- DEVIN_AUDIT_STATE: devin-audit-blocked -->"
+                    ),
+                    "user": {"login": "devin-ai-integration"},
+                },
+            ],
+            head_sha=head_sha,
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(result["gate_description"], "blocked audit: Devin")
 
     def test_gate_decision_uses_updated_comment_order_for_latest_verdict(self) -> None:
         head_sha = "a" * 40
@@ -2571,6 +2752,7 @@ jobs:
                 repo / "tools" / "code_mower_standalone_shadow.sh",
                 repo / "tools" / "run_codex_audit_pr.sh",
                 repo / "tools" / "audit_labeler_lib.py",
+                repo / "tools" / "decisions.py",
                 repo / "tools" / "safe_gh_comment.py",
             ]
             for path in support_paths:
@@ -2588,6 +2770,7 @@ jobs:
         self.assertEqual(payload["status"], "mirrors_removed")
         self.assertEqual(payload["mirrored_file_count"], 0)
         self.assertIn("tools/audit_labeler_lib.py", payload["product_support_files"])
+        self.assertIn("tools/decisions.py", payload["product_support_files"])
         self.assertIn("tools/run_codex_audit_pr.sh", payload["product_support_files"])
         self.assertIn("tools/safe_gh_comment.py", payload["product_support_files"])
 
@@ -2892,6 +3075,7 @@ jobs:
                 "actions/runs?event=pull_request_target&status={status}&per_page=100",
                 gate,
             )
+            self.assertIn('"decision_coverage":true', gate)
             self.assertNotIn("__GATE_LANES_JSON__", gate)
 
             gate_health = output_dir.joinpath(
@@ -3083,11 +3267,19 @@ jobs:
             self.assertIn('CODE_MOWER_OWNER_SITTING_LABEL: "owner-sitting"', gate)
             self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
             self.assertIn('CODE_MOWER_GATE_OVERRIDE_LABEL: "gate:override"', gate)
+            self.assertIn('CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"', gate)
             self.assertNotIn("permission=admin", gate)
             self.assertIn("override_actor != override_owner", gate)
             self.assertIn("Clear stale Code Mower gate override", gate)
             self.assertIn("CODE_MOWER_GATE_OVERRIDE_CLEAR_FAILED=true", gate)
             self.assertNotIn('CODE_MOWER_OWNER_LABEL: "needs-owner"', gate)
+            codex_labeler = output_dir.joinpath(
+                ".github/workflows/codex-audit-labeler.yml"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                'CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"',
+                codex_labeler,
+            )
 
             config["owner_surface"]["needs_owner_label"] = "needs: jeff # owner"
             special_plan = code_mower_init.render_init_plan(
@@ -3191,6 +3383,42 @@ jobs:
                 check=True,
                 text=True,
             )
+
+    def test_init_escapes_decision_authorities_in_workflow_env(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        config = dict(code_mower_config.load_config(config_path))
+        config["owner_surface"] = {"owner_login": "owner"}
+        config["decisions"] = {
+            "authorities": [
+                'quote"slash\\',
+                "line\nbreak",
+            ],
+        }
+        plan = code_mower_init.render_init_plan(
+            config,
+            package_mode=True,
+            package_command="code-mower",
+        )
+        expected = 'owner,quote"slash\\,line\nbreak'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / ".code-mower.generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+            gate = output_dir.joinpath(
+                ".github/workflows/code-mower-gate.yml"
+            ).read_text(encoding="utf-8")
+            codex_labeler = output_dir.joinpath(
+                ".github/workflows/codex-audit-labeler.yml"
+            ).read_text(encoding="utf-8")
+
+        self.assertEqual(
+            yaml.safe_load(gate)["env"]["CODE_MOWER_DECISION_AUTHORITIES"],
+            expected,
+        )
+        self.assertEqual(
+            yaml.safe_load(codex_labeler)["env"]["CODE_MOWER_DECISION_AUTHORITIES"],
+            expected,
+        )
 
     def test_safe_gh_comment_reports_gh_streams_on_failure(self) -> None:
         module_path = ROOT / "src/code_mower/templates/product-support/safe_gh_comment.py"
@@ -3494,6 +3722,7 @@ fi
                 "tools/run_codex_audit_pr.sh",
                 "tools/run_claude_audit_pr.sh",
                 "tools/audit_labeler_lib.py",
+                "tools/decisions.py",
                 "tools/safe_gh_comment.py",
                 "tools/status_report.py",
             }
@@ -3512,6 +3741,7 @@ fi
             non_executable_generated = {
                 "reviewer-value-report.example.md",
                 "tools/audit_labeler_lib.py",
+                "tools/decisions.py",
                 "tools/code_mower_standalone_pin.env",
             }
             for rel_path in generated - non_executable_generated:
@@ -3978,6 +4208,7 @@ printf '%s\\n' "${lane}"
             "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
             "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
             "src/code_mower/audit_labeler_lib.py",
+            "src/code_mower/decisions.py",
             "src/code_mower/templates/product-support/safe_gh_comment.py",
             "src/code_mower/templates/product-support/status_report.py",
         ):
@@ -6333,6 +6564,65 @@ def main():
             code_mower_versioning.release_tag_for_version("1.0.0"),
             "v1.0.0",
         )
+
+    def test_public_release_baseline_helpers_derive_announcement_links(self) -> None:
+        self.assertEqual(
+            code_mower_versioning.public_baseline_sentence(__version__),
+            (
+                "The current verified public beta baseline is `v0.5.0-beta.51`, "
+                "published on PyPI as `code-mower==0.5.0b51`."
+            ),
+        )
+        self.assertEqual(
+            code_mower_versioning.tagged_doc_url(__version__),
+            (
+                "https://github.com/codemower-ai/code-mower/blob/"
+                "v0.5.0-beta.51/docs/try-in-10-minutes.md"
+            ),
+        )
+
+    def test_public_announcement_docs_use_current_release_helpers(self) -> None:
+        baseline_sentence = code_mower_versioning.public_baseline_sentence(__version__)
+        install_command = (
+            "pipx install --python python3.12 "
+            f"{code_mower_versioning.public_package_spec(__version__)}"
+        )
+        announcement_url = code_mower_versioning.tagged_doc_url(__version__)
+
+        current_state = (ROOT / "docs/current-state-and-roadmap.md").read_text(
+            encoding="utf-8",
+        )
+        rollout = (ROOT / "docs/friendly-user-rollout-v05.md").read_text(
+            encoding="utf-8",
+        )
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn(baseline_sentence, current_state)
+        self.assertIn(baseline_sentence, rollout)
+        self.assertIn(install_command, rollout)
+        self.assertIn(announcement_url, readme)
+
+    def test_public_docs_have_no_stale_beta_baselines(self) -> None:
+        stale_baseline = re.compile(r"beta\.(39|50)")
+        docs = sorted((ROOT / "docs").rglob("*.md")) + [ROOT / "README.md"]
+
+        for path in docs:
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertIsNone(stale_baseline.search(path.read_text(encoding="utf-8")))
+
+    def test_readme_describes_calibration_limits_and_roles(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("## What Calibration Does And Does Not Prove", readme)
+        self.assertIn(
+            "It does not prove that a reviewer should gate merges.",
+            readme,
+        )
+        self.assertIn("[lane promotion policy](docs/lane-promotion-policy.md)", readme)
+        self.assertIn("## Roles", readme)
+        self.assertIn("Cursor/Claude/Codex-style builders", readme)
+        self.assertIn("not yet a product feature", readme)
+        self.assertIn("https://github.com/codemower-ai/code-mower/issues/409", readme)
 
     def test_package_command_inventory_derives_current_prerelease_spec(self) -> None:
         package_content_text = (ROOT / "src/code_mower/package_content.py").read_text(

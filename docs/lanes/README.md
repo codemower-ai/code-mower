@@ -13,8 +13,8 @@ new acceptance criteria.
 
 Dispatcher rules:
 - Ready means open, labeled `tier:R`, labeled for exactly one
-  builder lane, not assigned, not carrying `blocked-by:*`, and not carrying an
-  owner label such as `needs-owner` or `owner-sitting`.
+  builder lane, not assigned, not carrying `blocked-by:*`, and not carrying any
+  owner-blocking label: `needs-owner`, `owner-decision`, `owner-sitting`.
 - Dependencies listed under an issue `## Dependencies` section must be closed
   before dispatch.
 - A lane stops dispatching when its open PRs plus active dispatched issues reach

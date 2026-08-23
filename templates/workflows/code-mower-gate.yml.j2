@@ -31,6 +31,7 @@ env:
   CODE_MOWER_OWNER_SITTING_LABEL: __OWNER_SITTING_LABEL_JSON__
   CODE_MOWER_OWNER_LOGIN: __OWNER_LOGIN_JSON__
   CODE_MOWER_GATE_OVERRIDE_LABEL: __GATE_OVERRIDE_LABEL_JSON__
+  CODE_MOWER_DECISION_AUTHORITIES: __DECISION_AUTHORITIES__
   CODE_MOWER_AUTHOR_EXCLUSION_JSON: >-
     __AUTHOR_EXCLUSION_JSON__
   CODE_MOWER_GATE_LANES_JSON: >-
@@ -334,6 +335,11 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           comments = flatten_paginated_items(comments_payload)
           events = flatten_paginated_items(events_payload)
           audit_runs = audit_runs_payload if isinstance(audit_runs_payload, list) else []
+          decision_authorities = {
+              item.strip()
+              for item in os.environ.get("CODE_MOWER_DECISION_AUTHORITIES", "").split(",")
+              if item.strip()
+          }
           owner_label = os.environ.get("CODE_MOWER_OWNER_LABEL", "needs-owner")
           owner_sitting_label = os.environ.get("CODE_MOWER_OWNER_SITTING_LABEL", "owner-sitting")
           gate_override_label = os.environ.get("CODE_MOWER_GATE_OVERRIDE_LABEL", "gate:override")
@@ -391,6 +397,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   comments,
                   head_sha=head_sha,
                   trusted_comment_author=trusted_comment_author,
+                  decision_authorities=tuple(decision_authorities),
               )
 
           def latest_current_verdict_detail(lane):
@@ -399,6 +406,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   comments,
                   head_sha=head_sha,
                   trusted_comment_author=trusted_comment_author,
+                  decision_authorities=tuple(decision_authorities),
               )
 
           builder_matches = []

@@ -62,6 +62,7 @@ audit_needs_labels_json='__LANE_MAC_RUNNER_NEEDS_LABELS_JSON__'
 audit_block_filter='__LANE_MAC_RUNNER_BLOCKED_LABELS_JQ__'
 ready_label="__BUILD_LOOP_READY_LABEL__"
 owner_label="__NEEDS_OWNER_LABEL__"
+owner_labels_json='__LANE_MAC_RUNNER_OWNER_LABELS_JSON__'
 
 kind=""
 num=""
@@ -120,12 +121,13 @@ if [ -z "$kind" ]; then
     fi
   done < <(gh issue list -R "$REPO" --state open --label "$dispatch_label" --limit 100 \
     --json number,labels,assignees,author \
-    | jq -r --arg builder "$builder_label" --arg ready "$ready_label" --arg owner "$owner_label" --argjson trusted "$trusted_authors_json" '
+    | jq -r --arg builder "$builder_label" --arg ready "$ready_label" --argjson owner_labels "$owner_labels_json" --argjson trusted "$trusted_authors_json" '
       def trusted_author($login): any($trusted[]; . == $login);
+      def owner_blocking_label($name): any($owner_labels[]; . == $name) or ($name|startswith("blocked-by:"));
       .[] | select(
         any(.labels[]; .name==$ready) and
         any(.labels[]; .name==$builder) and
-        all(.labels[]; (.name!=$owner) and ((.name|startswith("blocked-by:"))|not)) and
+        all(.labels[]; (owner_blocking_label(.name)|not)) and
         ((.assignees // [])|length == 0) and
         trusted_author(.author.login // "")
       ) | .number' | sort -n)

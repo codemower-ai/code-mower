@@ -86,6 +86,8 @@ from typing import Any, Dict, List, Optional, Tuple
 if __package__ in {None, "", "tools"}:
     try:
         from tools import audit_limits as code_mower_audit_limits
+        from tools import code_mower_config
+        from tools import decisions as code_mower_decisions
         from tools import plan_context as code_mower_plan_context
         from tools import reviewer_spend
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
@@ -94,6 +96,7 @@ if __package__ in {None, "", "tools"}:
             bind_actions_run_comment_id,
             clip_text as _clip_text,
             edit_pr_comment,
+            fetch_issue_comments,
             fetch_pull_request,
             fetch_base_ref as _shared_fetch_base_ref,
             fetch_pr_head as _shared_fetch_pr_head,
@@ -116,6 +119,11 @@ if __package__ in {None, "", "tools"}:
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
         import audit_limits as code_mower_audit_limits  # type: ignore
+        try:
+            import code_mower_config  # type: ignore
+        except ImportError:
+            import config as code_mower_config  # type: ignore
+        import decisions as code_mower_decisions  # type: ignore
         import plan_context as code_mower_plan_context  # type: ignore
         import reviewer_spend  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
@@ -124,6 +132,7 @@ if __package__ in {None, "", "tools"}:
             bind_actions_run_comment_id,
             clip_text as _clip_text,
             edit_pr_comment,
+            fetch_issue_comments,
             fetch_pull_request,
             fetch_base_ref as _shared_fetch_base_ref,
             fetch_pr_head as _shared_fetch_pr_head,
@@ -146,6 +155,8 @@ if __package__ in {None, "", "tools"}:
         )
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_limits as code_mower_audit_limits
+    from . import config as code_mower_config
+    from . import decisions as code_mower_decisions
     from . import plan_context as code_mower_plan_context
     from . import reviewer_spend
     from .audit_progress import AuditProgress, run_subprocess_with_progress
@@ -156,6 +167,7 @@ else:  # pragma: no cover - exercised after package extraction.
         create_temp_worktree as _shared_create_temp_worktree,
         edit_pr_comment,
         fetch_base_ref as _shared_fetch_base_ref,
+        fetch_issue_comments,
         fetch_pull_request,
         fetch_pr_head as _shared_fetch_pr_head,
         fetch_pr_head_unless_local_matches as _shared_fetch_pr_head_unless_local_matches,
@@ -252,6 +264,8 @@ class AuditConfig:
     external_context_manifest: Optional[Path] = None
     max_plan_context_bytes: int = code_mower_plan_context.DEFAULT_MAX_TOTAL_BYTES
     max_plan_context_file_bytes: int = code_mower_plan_context.DEFAULT_MAX_FILE_BYTES
+    include_decision_context: bool = True
+    decision_authorities: Tuple[str, ...] = ()
     # Whether this lane is allowed to block the merge gate. Defaults to the
     # reference provider catalog's Codex audit posture; pass --informational
     # when replaying or calibrating a lane that is not a repository gate.
@@ -424,15 +438,43 @@ def _render_structured_prose(
         return "\n".join(lines)
 
     lines.extend(["Findings:", ""])
+    marker_index = len(lines)
+    marker_findings: List[Dict[str, Any]] = []
     for finding in findings:
         severity = finding["severity"]
         title = _one_line(finding["title"], MAX_FINDING_TITLE_CHARS)
         file_path = _one_line(finding["file"], MAX_FINDING_FILE_CHARS)
         line = finding["line"]
         detail = _clip_text(finding["detail"], MAX_FINDING_DETAIL_CHARS)
+        finding_id = code_mower_decisions.stable_finding_id(
+            "codex",
+            title,
+            file_path,
+        )
         lines.append(f"- [{severity}] {title} -- `{file_path}:{line}`")
+        if finding_id:
+            lines.append(f"  Finding ID: `{finding_id}`")
+            marker_findings.append(
+                {
+                    "severity": severity,
+                    "title": title,
+                    "file": file_path,
+                    "line": line,
+                }
+            )
         for detail_line in detail.splitlines():
             lines.append(f"  {detail_line}")
+
+    if marker_findings:
+        lines.insert(marker_index, "")
+        lines.insert(
+            marker_index,
+            code_mower_decisions.render_audit_findings_marker(
+                lane="codex",
+                findings=marker_findings,
+                complete=total_findings == len(findings),
+            ),
+        )
 
     omitted = total_findings - len(findings)
     if omitted > 0:
@@ -1235,12 +1277,113 @@ def run_codex_review(
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
 
+def _codex_review_context_prompt(
+    rendered_plan_context: Any,
+    decision_registry_context: str = "",
+) -> str:
+    blocks: list[str] = []
+    if (
+        rendered_plan_context is not None
+        and getattr(rendered_plan_context, "included_documents", 0) > 0
+    ):
+        blocks.append(str(getattr(rendered_plan_context, "text", "")).rstrip())
+    if decision_registry_context.strip():
+        blocks.append(
+            "Trusted Code Mower decision registry:\n"
+            "----- BEGIN TRUSTED DECISION REGISTRY -----\n"
+            f"{decision_registry_context.rstrip()}\n"
+            "----- END TRUSTED DECISION REGISTRY -----"
+        )
+    return "\n\n".join(block for block in blocks if block.strip())
+
+
 def _codex_review_plan_prompt(rendered_plan_context: Any) -> str:
-    if rendered_plan_context is None:
+    return _codex_review_context_prompt(rendered_plan_context)
+
+
+def _decision_registry_context(
+    repo: str,
+    pr_number: int,
+    *,
+    token: str,
+    authorities: Tuple[str, ...] = (),
+) -> str:
+    try:
+        comments = fetch_issue_comments(
+            repo,
+            pr_number,
+            token=token,
+            page_cap=code_mower_decisions.DEFAULT_DECISION_COMMENT_PAGE_CAP,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(
+            f"  decision registry: skipped ({exc})",
+            file=sys.stderr,
+            flush=True,
+        )
         return ""
-    if getattr(rendered_plan_context, "included_documents", 0) <= 0:
-        return ""
-    return str(getattr(rendered_plan_context, "text", ""))
+    decisions = code_mower_decisions.collect_decision_records_from_comments(
+        comments,
+        authorities=authorities,
+    )
+    unauthorized = code_mower_decisions.collect_unauthorized_decision_records_from_comments(
+        comments,
+        authorities=authorities,
+    )
+    return code_mower_decisions.render_decision_registry_context(
+        decisions,
+        unauthorized=unauthorized,
+    )
+
+
+def _decision_authorities_for_repo(
+    local_repo: Path,
+    configured_authorities: Tuple[str, ...],
+    *,
+    trusted_ref: str,
+) -> Tuple[str, ...]:
+    authorities: list[str] = []
+    authorities.extend(configured_authorities)
+    authorities.extend(code_mower_decisions.decision_authorities_from_env())
+    config_ref = f"{trusted_ref}:code-mower.yml"
+    try:
+        config_text = _run_git_text(local_repo, ["show", config_ref])
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(
+            f"  decision registry: could not load authorities from {config_ref}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                prefix="code-mower-config-",
+                suffix=".yml",
+                delete=False,
+            ) as handle:
+                handle.write(config_text)
+                temp_path = Path(handle.name)
+            authorities.extend(
+                code_mower_decisions.decision_authorities_from_config(
+                    code_mower_config.load_config(temp_path)
+                )
+            )
+        except Exception as exc:
+            print(
+                f"  decision registry: could not parse authorities from {config_ref}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+    return tuple(dict.fromkeys(authorities))
 
 
 def run_codex_verdict_structuring(
@@ -1424,7 +1567,6 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         )
     if config.progress is None:
         config = replace(config, progress=AuditProgress("codex-audit"))
-
     pr_meta = fetch_pull_request(repo, pr_number, token=config.github_token)
     head_sha_start = pr_meta["head"]["sha"]
 
@@ -1472,6 +1614,11 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     # before running the review. Stale base = wrong diff = wrong review.
     _fetch_pr_head(local_repo, pr_number, head_sha_start)
     _fetch_base_ref(local_repo, config.base_ref)
+    decision_authorities = _decision_authorities_for_repo(
+        local_repo,
+        config.decision_authorities,
+        trusted_ref=config.base_ref,
+    )
     review_context_summary = "review context diagnostics unavailable"
     review_context: ReviewContextDiagnostics | None = None
     try:
@@ -1633,11 +1780,24 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                     file=sys.stderr,
                     flush=True,
                 )
+            decision_registry_context = ""
+            if config.include_decision_context:
+                decision_registry_context = _decision_registry_context(
+                    repo,
+                    pr_number,
+                    token=config.github_token,
+                    authorities=decision_authorities,
+                )
+                if decision_registry_context.strip():
+                    print("  decision registry: included", file=sys.stderr, flush=True)
             t0 = time.time()
             review_text, review_stderr = run_codex_review(
                 config,
                 worktree_path,
-                _codex_review_plan_prompt(rendered_plan_context),
+                _codex_review_context_prompt(
+                    rendered_plan_context,
+                    decision_registry_context,
+                ),
             )
             dt = time.time() - t0
             print(f"  codex review completed in {dt:.0f}s", file=sys.stderr, flush=True)
@@ -1965,6 +2125,12 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Disable automatic plan-conformance context injection.",
     )
     ap.add_argument(
+        "--no-decision-context",
+        action="store_true",
+        default=_env_flag("CODE_MOWER_NO_DECISION_CONTEXT"),
+        help="Disable CODE_MOWER_DECISION registry injection from PR comments.",
+    )
+    ap.add_argument(
         "--read-token-from-stdin",
         action="store_true",
         help=(
@@ -2181,6 +2347,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         external_context_manifest=args.external_context_manifest,
         max_plan_context_bytes=args.max_plan_context_bytes,
         max_plan_context_file_bytes=args.max_plan_context_file_bytes,
+        include_decision_context=not args.no_decision_context,
         merge_authority=args.merge_authority,
         calibration_badge=args.calibration_badge,
     )

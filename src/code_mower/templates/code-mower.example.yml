@@ -50,6 +50,9 @@ owner_surface:
   reviewer_spend_path: .code-mower/reviewer-spend.json
   reviewer_value_report_path: .code-mower/reviewer-value-report.md
 
+decisions:
+  authorities: []
+
 merge_authority_excludes_author: true
 builder_identity:
   labels:

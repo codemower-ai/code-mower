@@ -91,6 +91,8 @@ class InitBuildLoopTests(unittest.TestCase):
         cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
         cfg["owner_surface"]["owner_login"] = "jeffhuber"
         cfg["owner_surface"]["needs_owner_label"] = "needs-jeff"
+        cfg["owner_surface"]["owner_decision_label"] = "decision-jeff"
+        cfg["owner_surface"]["owner_sitting_label"] = "sitting-jeff"
         cfg["owner_surface"]["builder_wip_cap"] = "2"
         cfg["owner_surface"]["lane_runner_labels"] = [
             "self-hosted",
@@ -121,15 +123,23 @@ class InitBuildLoopTests(unittest.TestCase):
         self.assertIn("DISPATCH_TOKEN secret is missing or empty", dispatch)
         self.assertIn('default_wip = int("2")', dispatch)
         self.assertNotIn("github.token", dispatch)
-        self.assertIn('"needs-jeff"', dispatch)
+        self.assertIn('"needs-jeff","decision-jeff","sitting-jeff"', dispatch)
         self.assertIn('runs-on: ["self-hosted", "macOS", "bridge-pro-lane"]', mac_runner)
         self.assertIn("vars.BRIDGE_PRO_LANE_ENABLED == 'true'", mac_runner)
         self.assertIn("`needs-jeff`", readme)
+        self.assertIn("`decision-jeff`", readme)
+        self.assertIn("`sitting-jeff`", readme)
         self.assertIn("default `2`", readme)
         self.assertIn(
             "LANE_TRUSTED_AUTHORS:-jeffhuber,github-actions[bot]",
             runner,
         )
+        self.assertIn(
+            """owner_labels_json='["needs-jeff","decision-jeff","sitting-jeff"]'""",
+            runner,
+        )
+        self.assertIn("def owner_blocking_label($name)", runner)
+        self.assertIn("owner_blocking_label(.name)|not", runner)
 
     def test_build_loop_rejects_invalid_builder_wip_cap(self) -> None:
         for value in ("unlimited", "5.0", "0"):

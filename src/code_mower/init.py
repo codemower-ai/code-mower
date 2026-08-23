@@ -20,6 +20,7 @@ if __package__ in {None, ""}:
 
 if __package__ in {None, "", "tools"}:
     from tools import audit_limits as code_mower_audit_limits
+    from tools import decisions as code_mower_decisions
     from tools import code_mower_secrets
     from tools.code_mower_config import (
         ConfigError,
@@ -41,6 +42,7 @@ if __package__ in {None, "", "tools"}:
     )
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_limits as code_mower_audit_limits
+    from . import decisions as code_mower_decisions
     from . import secrets as code_mower_secrets
     from .config import (
         ConfigError,
@@ -191,6 +193,12 @@ PRODUCT_SUPPORT_FILES = (
         # import tools.audit_labeler_lib without a separate package install.
         "tools/audit_labeler_lib.py",
         "audit_labeler_lib.py",
+        "product-support-helper",
+        "0644",
+    ),
+    (
+        "tools/decisions.py",
+        "decisions.py",
         "product-support-helper",
         "0644",
     ),
@@ -487,6 +495,11 @@ def _default_trailer_bot_authors(trailer_lane: str) -> str:
     return f"{stem}-audit-bot,{stem}-audit-bot[bot]"
 
 
+def _decision_coverage_for_trailer_lane(trailer_lane: str) -> bool:
+    lane_config = _load_trailer_lane_config(trailer_lane)
+    return bool(getattr(lane_config, "decision_coverage", False))
+
+
 def _configured_bot_authors(lane: Mapping[str, Any]) -> str:
     provider_config = lane.get("provider_config")
     if not isinstance(provider_config, Mapping):
@@ -513,6 +526,7 @@ def _workflow_entry_for_target(
     target: str,
     *,
     author_exclusion_json: str = '{"enabled":false}',
+    decision_authorities: str = "",
 ) -> dict[str, str]:
     driver = str(lane.get("driver"))
     labels = _labels_for(lane)
@@ -527,6 +541,7 @@ def _workflow_entry_for_target(
         "blocked_label": str(labels["blocked"]),
         "label_token_env": _audit_token_env(lane),
         "author_exclusion_json": author_exclusion_json,
+        "decision_authorities": decision_authorities,
     }
     if target.endswith("-bridge.yml"):
         return {
@@ -819,6 +834,15 @@ def _fix_round_dispatch_workflow_entry(
     }
 
 
+def _build_loop_owner_labels(owner_surface: Mapping[str, str]) -> list[str]:
+    labels = (
+        owner_surface["needs_owner_label"],
+        owner_surface["owner_decision_label"],
+        owner_surface["owner_sitting_label"],
+    )
+    return [label for label in labels if label]
+
+
 def _canonical_builder_lane(raw_name: str) -> str:
     normalized = raw_name.strip().replace("_", "-").lower()
     if not normalized:
@@ -918,11 +942,7 @@ def _dispatch_lanes_workflow_entry(
     builder_entries: Sequence[Mapping[str, str]],
     owner_surface: Mapping[str, str],
 ) -> dict[str, str]:
-    owner_labels = [
-        owner_surface["needs_owner_label"],
-        owner_surface["owner_decision_label"],
-        owner_surface["owner_sitting_label"],
-    ]
+    owner_labels = _build_loop_owner_labels(owner_surface)
     return {
         "path": BUILDER_DISPATCH_WORKFLOW_PATH,
         "source": "builder-dispatch-workflow-template",
@@ -1008,6 +1028,10 @@ def _lane_mac_runner_script_entry(
         )
         or "false",
         "lane_mac_runner_needs_labels_json": json.dumps(needs_labels, separators=(",", ":")),
+        "lane_mac_runner_owner_labels_json": json.dumps(
+            _build_loop_owner_labels(owner_surface),
+            separators=(",", ":"),
+        ),
         "lane_mac_runner_trusted_authors": ",".join(dict.fromkeys(trusted_authors)),
         "build_loop_ready_label": owner_surface["ready_label"],
         "needs_owner_label": owner_surface["needs_owner_label"],
@@ -1053,6 +1077,9 @@ def _lane_standing_readme_entry(
         "builder_lane_rows": rows,
         "build_loop_ready_label": owner_surface["ready_label"],
         "needs_owner_label": owner_surface["needs_owner_label"],
+        "owner_blocking_labels": ", ".join(
+            f"`{label}`" for label in _build_loop_owner_labels(owner_surface)
+        ),
         "build_loop_max_wip": owner_surface["builder_wip_cap"],
         "dispatch_token_env": owner_surface["dispatch_token_env"],
         "dispatch_token_expires_var": owner_surface["dispatch_token_expires_var"],
@@ -1060,7 +1087,7 @@ def _lane_standing_readme_entry(
     }
 
 
-def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
+def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, Any]:
     labels = _labels_for(lane)
     trailer_lane = _trailer_lane_name(lane_id, lane)
     github_actions_workflows = LOCAL_AUDIT_WORKFLOW_PATH if lane.get("driver") == "local_cli" else ""
@@ -1070,6 +1097,7 @@ def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
         "display_name": _display_name(trailer_lane),
         "done": str(labels["done"]),
         "blocked": str(labels["blocked"]),
+        "decision_coverage": _decision_coverage_for_trailer_lane(trailer_lane),
         "builder_label": f"builder:{trailer_lane}",
         "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
         "authors_env": _authors_env_for_lane(lane_id, lane),
@@ -1222,6 +1250,7 @@ def _gate_workflow_entry(
     owner_sitting_label: str = "owner-sitting",
     owner_login: str = "",
     gate_override_label: str = "gate:override",
+    decision_authorities: str = "",
 ) -> dict[str, str]:
     gate_lanes = [
         _gate_lane_entry(lane_id, lane)
@@ -1241,6 +1270,7 @@ def _gate_workflow_entry(
         "owner_sitting_label": owner_sitting_label,
         "owner_login": owner_login,
         "gate_override_label": gate_override_label,
+        "decision_authorities": decision_authorities,
         "author_exclusion_json": author_exclusion_json,
     }
 
@@ -1622,6 +1652,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
         "__GATE_OVERRIDE_LABEL_JSON__": json.dumps(str(gate_override_label)),
+        "__DECISION_AUTHORITIES__": json.dumps(
+            str(entry.get("decision_authorities") or "")
+        ),
         "__GITHUB_ACTIONS_WORKFLOWS__": str(entry.get("github_actions_workflows") or ""),
         "__LABEL_TOKEN_ENV__": str(entry.get("label_token_env") or ""),
         "__LANE_ID__": str(entry.get("lane_id") or ""),
@@ -1658,6 +1691,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__LANE_MAC_RUNNER_NEEDS_LABELS_JSON__": str(
             entry.get("lane_mac_runner_needs_labels_json") or "[]"
         ),
+        "__LANE_MAC_RUNNER_OWNER_LABELS_JSON__": str(
+            entry.get("lane_mac_runner_owner_labels_json") or "[]"
+        ),
         "__LANE_MAC_RUNNER_TRUSTED_AUTHORS__": str(
             entry.get("lane_mac_runner_trusted_authors") or ""
         ),
@@ -1665,6 +1701,10 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__OWNER_DECISION_LABEL__": str(entry.get("owner_decision_label") or ""),
         "__OWNER_SITTING_LABEL__": str(entry.get("owner_sitting_label") or ""),
         "__OWNER_LOGIN__": str(entry.get("owner_login") or ""),
+        "__OWNER_BLOCKING_LABELS__": str(
+            entry.get("owner_blocking_labels")
+            or "`needs-owner`, `owner-decision`, `owner-sitting`"
+        ),
         "__GATE_OVERRIDE_LABEL__": str(entry.get("gate_override_label") or ""),
         "__PHASE_LABELS__": str(entry.get("phase_labels") or ""),
         "__READY_LABEL__": str(entry.get("ready_label") or ""),
@@ -2078,6 +2118,9 @@ def render_init_plan(
     merge_authority_lanes: list[str] = []
     informational_lanes: list[str] = []
     owner_surface = _owner_surface_config(config)
+    decision_authorities = ",".join(
+        code_mower_decisions.decision_authorities_from_config(config)
+    )
     author_exclusion_json = _author_exclusion_json(config, selected_lanes)
     author_exclusion = json.loads(author_exclusion_json)
     audit_rearm_entries = _audit_rearm_entries(selected_lanes)
@@ -2124,6 +2167,7 @@ def render_init_plan(
                         lane,
                         target,
                         author_exclusion_json=author_exclusion_json,
+                        decision_authorities=decision_authorities,
                     )
                 )
         if lane.get("driver") in {"local_cli", "hosted_bridge", "api_model"}:
@@ -2263,6 +2307,7 @@ def render_init_plan(
                 owner_sitting_label=owner_surface["owner_sitting_label"],
                 owner_login=owner_surface["owner_login"],
                 gate_override_label=owner_surface["gate_override_label"],
+                decision_authorities=decision_authorities,
             )
         )
 
