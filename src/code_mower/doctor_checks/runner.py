@@ -25,6 +25,13 @@ from .runtime import (
 from .self_hosted_runner import check_self_hosted_runner
 
 
+def _provider_templates_source_root() -> Path:
+    source_root = Path(__file__).resolve().parents[3]
+    if (source_root / "templates/workflows").is_dir():
+        return source_root
+    return Path(__file__).resolve().parents[1]
+
+
 def _global_runtime_checks(
     *,
     probe_runtime: bool,
@@ -203,7 +210,7 @@ def run_doctor(
                 config_path=config_path,
                 lanes=effective_lanes,
                 repo_root=repo_root or config_path.parent,
-                provider_templates_root=Path(__file__).resolve().parents[2],
+                provider_templates_root=_provider_templates_source_root(),
                 http_timeout=http_timeout,
                 actionlint_bin=actionlint_bin,
             )

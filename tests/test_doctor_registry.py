@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from code_mower.doctor_checks import (
     build_doctor_run_plan,
@@ -100,6 +101,23 @@ class DoctorRegistryTests(unittest.TestCase):
                 for check in hygiene_checks
             )
         )
+
+    def test_runner_doctor_uses_repository_template_source_root(self) -> None:
+        from code_mower.doctor_checks import runner as doctor_runner
+
+        with mock.patch.object(
+            doctor_runner,
+            "check_self_hosted_runner",
+            return_value=(),
+        ) as runner_checks:
+            doctor_runner.run_doctor(
+                config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
+                provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
+                profile="recommended",
+                runner=True,
+            )
+
+        self.assertEqual(runner_checks.call_args.kwargs["provider_templates_root"], ROOT)
 
     def test_real_config_requires_configured_stale_workflow_file(self) -> None:
         with tempfile.TemporaryDirectory() as root:

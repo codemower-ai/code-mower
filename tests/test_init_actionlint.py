@@ -95,6 +95,39 @@ class InitActionlintTests(unittest.TestCase):
             result["actionlint"]["workflows"],
             [".github/workflows/generated.yml"],
         )
+        self.assertEqual(result["actionlint"]["status"], "passed")
+
+    def test_init_apply_skips_missing_default_actionlint_without_blocking_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            source.joinpath("workflow.yml").write_text(
+                "name: generated\non: push\njobs:\n  ok:\n    runs-on: ubuntu-latest\n",
+                encoding="utf-8",
+            )
+
+            result = code_mower_init.apply_init_plan(
+                _plan_for_workflow(),
+                root / "generated",
+                source_root=source,
+                actionlint_bin="missing-actionlint",
+            )
+
+            workflow = root / "generated/.github/workflows/generated.yml"
+            self.assertTrue(workflow.is_file())
+            self.assertEqual(result["actionlint"]["status"], "skipped")
+            self.assertIn("not found", result["actionlint"]["reason"])
+
+    def test_tools_workflow_actionlint_import_exposes_lint_helpers(self) -> None:
+        import tools.workflow_actionlint as legacy_actionlint
+
+        workflow = legacy_actionlint.GeneratedWorkflow(
+            ".github/workflows/generated.yml",
+            "name: generated\n",
+        )
+        self.assertEqual(workflow.path, ".github/workflows/generated.yml")
+        self.assertTrue(legacy_actionlint.is_github_workflow_path(workflow.path))
 
 
 if __name__ == "__main__":

@@ -522,38 +522,42 @@ def _runner_labels_from_github(
     repo_slug = _configured_repo_slug(config) or _remote_repo_slug(repo_root, run=run)
     if not repo_slug or which("gh") is None:
         return ()
-    try:
-        completed = run(
-            ["gh", "api", f"repos/{repo_slug}/actions/runners?per_page=100"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return ()
-    if completed.returncode != 0:
-        return ()
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        return ()
-    runners = payload.get("runners", []) if isinstance(payload, Mapping) else []
-    if not isinstance(runners, list):
-        return ()
-    for runner in runners:
-        if not isinstance(runner, Mapping) or str(runner.get("name") or "") != runner_name:
-            continue
-        labels = runner.get("labels", [])
-        if not isinstance(labels, list):
+    page = 1
+    while True:
+        try:
+            completed = run(
+                ["gh", "api", f"repos/{repo_slug}/actions/runners?per_page=100&page={page}"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
             return ()
-        return tuple(
-            str(label.get("name") or "")
-            for label in labels
-            if isinstance(label, Mapping) and str(label.get("name") or "")
-        )
-    return ()
+        if completed.returncode != 0:
+            return ()
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            return ()
+        runners = payload.get("runners", []) if isinstance(payload, Mapping) else []
+        if not isinstance(runners, list):
+            return ()
+        for runner in runners:
+            if not isinstance(runner, Mapping) or str(runner.get("name") or "") != runner_name:
+                continue
+            labels = runner.get("labels", [])
+            if not isinstance(labels, list):
+                return ()
+            return tuple(
+                str(label.get("name") or "")
+                for label in labels
+                if isinstance(label, Mapping) and str(label.get("name") or "")
+            )
+        if len(runners) < 100:
+            return ()
+        page += 1
 
 
 def _discover_runner_labels(
@@ -768,10 +772,19 @@ def _ps_runner_listener_processes(
 
 
 def _runner_root_from_command(command: str) -> Path | None:
-    match = re.search(r"(?P<path>/\S+/bin/Runner\.Listener)\b", command)
-    if not match:
+    marker = "/bin/Runner.Listener"
+    marker_index = command.find(marker)
+    if marker_index == -1:
         return None
-    return Path(match.group("path")).parent.parent
+    path_start = command[:marker_index].rfind(" /")
+    if path_start == -1:
+        path_start = command.find("/")
+    else:
+        path_start += 1
+    if path_start == -1:
+        return None
+    path_end = marker_index + len(marker)
+    return Path(command[path_start:path_end]).parent.parent
 
 
 def _runner_roots(
@@ -791,6 +804,29 @@ def _runner_roots(
     return tuple(dict.fromkeys(roots))
 
 
+def _env_file_for_process(
+    process: RunnerListenerProcess,
+    env_files_by_root: Mapping[Path, Path],
+    *,
+    listener_count: int,
+) -> Path | None:
+    root = _runner_root_from_command(process.command)
+    if root is not None:
+        env_path = env_files_by_root.get(root)
+        if env_path is not None:
+            return env_path
+        for candidate_root, candidate_env in env_files_by_root.items():
+            try:
+                if root.resolve() == candidate_root.resolve():
+                    return candidate_env
+            except OSError:
+                continue
+        return None
+    if listener_count == 1 and len(env_files_by_root) == 1:
+        return next(iter(env_files_by_root.values()))
+    return None
+
+
 def check_runner_listener_env_freshness(
     *,
     environ: Mapping[str, str] | None = None,
@@ -800,7 +836,8 @@ def check_runner_listener_env_freshness(
     env = os.environ if environ is None else environ
     listener_processes = tuple(processes) if processes is not None else _ps_runner_listener_processes(run=run)
     roots = _runner_roots(environ=env, processes=listener_processes)
-    env_files = tuple(root / ".env" for root in roots if (root / ".env").is_file())
+    env_files_by_root = {root: root / ".env" for root in roots if (root / ".env").is_file()}
+    env_files = tuple(env_files_by_root.values())
     if not env_files:
         return DoctorCheck(
             name="runtime.runner_listener_env",
@@ -816,11 +853,36 @@ def check_runner_listener_env_freshness(
             detail={"env_files": [str(path) for path in env_files]},
             remediation="Fully start the GitHub Actions runner listener, then rerun doctor.",
         )
-    newest_env = max(datetime.fromtimestamp(path.stat().st_mtime) for path in env_files)
+    env_mtimes = {path: datetime.fromtimestamp(path.stat().st_mtime) for path in env_files}
+    process_env_files = {
+        process: env_path
+        for process in listener_processes
+        if (
+            env_path := _env_file_for_process(
+                process,
+                env_files_by_root,
+                listener_count=len(listener_processes),
+            )
+        )
+        is not None
+    }
+    if not process_env_files:
+        return DoctorCheck(
+            name="runtime.runner_listener_env",
+            status=STATUS_SKIP,
+            message="no Runner.Listener process could be associated with a runner .env file",
+            detail={
+                "env_files": [str(path) for path in env_files],
+                "listener_start_times": {
+                    str(process.pid): process.start_time.isoformat()
+                    for process in listener_processes
+                },
+            },
+        )
     stale = [
         process
-        for process in listener_processes
-        if process.start_time < newest_env
+        for process, env_path in process_env_files.items()
+        if process.start_time < env_mtimes[env_path]
     ]
     if stale:
         return DoctorCheck(
@@ -829,7 +891,13 @@ def check_runner_listener_env_freshness(
             message="Runner.Listener started before the runner .env was last edited",
             detail={
                 "env_files": [str(path) for path in env_files],
-                "newest_env_mtime": newest_env.isoformat(),
+                "env_mtimes": {
+                    str(path): env_mtime.isoformat() for path, env_mtime in env_mtimes.items()
+                },
+                "listener_env_files": {
+                    str(process.pid): str(env_path)
+                    for process, env_path in process_env_files.items()
+                },
                 "stale_listener_pids": [process.pid for process in stale],
                 "listener_start_times": {
                     str(process.pid): process.start_time.isoformat()
@@ -844,10 +912,16 @@ def check_runner_listener_env_freshness(
     return DoctorCheck(
         name="runtime.runner_listener_env",
         status=STATUS_PASS,
-        message="Runner.Listener started after the runner .env mtime",
+        message="Runner.Listener processes started after their runner .env mtimes",
         detail={
             "env_files": [str(path) for path in env_files],
-            "newest_env_mtime": newest_env.isoformat(),
+            "env_mtimes": {
+                str(path): env_mtime.isoformat() for path, env_mtime in env_mtimes.items()
+            },
+            "listener_env_files": {
+                str(process.pid): str(env_path)
+                for process, env_path in process_env_files.items()
+            },
             "listener_start_times": {
                 str(process.pid): process.start_time.isoformat()
                 for process in listener_processes

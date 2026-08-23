@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import subprocess
@@ -18,6 +19,8 @@ from code_mower.doctor_checks.self_hosted_runner import (
     check_runner_listener_env_freshness,
     check_runner_required_env,
     check_runner_workflow_labels,
+    _runner_labels_from_github,
+    _runner_root_from_command,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -158,6 +161,43 @@ class SelfHostedRunnerDoctorTests(unittest.TestCase):
         self.assertEqual(check.status, "fail")
         self.assertEqual(check.detail["missing_labels"], ["bridge-pro-audit"])
 
+    def test_runner_labels_from_github_paginates_runner_inventory(self) -> None:
+        calls: list[str] = []
+
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            calls.append(command[-1])
+            if command[-1].endswith("page=1"):
+                runners = [{"name": f"other-{index}", "labels": []} for index in range(100)]
+            else:
+                runners = [
+                    {
+                        "name": "mac-runner",
+                        "labels": [
+                            {"name": "self-hosted"},
+                            {"name": "bridge-pro-audit"},
+                        ],
+                    }
+                ]
+            return subprocess.CompletedProcess(command, 0, json.dumps({"runners": runners}), "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            labels = _runner_labels_from_github(
+                config=_runner_config(),
+                repo_root=Path(tmp),
+                environ={"RUNNER_NAME": "mac-runner"},
+                run=fake_run,
+                which=lambda _command: "/usr/local/bin/gh",
+            )
+
+        self.assertEqual(labels, ("self-hosted", "bridge-pro-audit"))
+        self.assertEqual(
+            calls,
+            [
+                "repos/owner/repo/actions/runners?per_page=100&page=1",
+                "repos/owner/repo/actions/runners?per_page=100&page=2",
+            ],
+        )
+
     def test_runner_actionlint_available_fails_when_binary_is_missing(self) -> None:
         check = check_runner_actionlint_available(
             actionlint_bin="missing-actionlint",
@@ -207,6 +247,55 @@ class SelfHostedRunnerDoctorTests(unittest.TestCase):
 
         self.assertEqual(check.status, "fail")
         self.assertEqual(check.detail["stale_listener_pids"], [123])
+
+    def test_runner_listener_env_compares_each_process_to_its_own_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner_a = root / "runner-a"
+            runner_b = root / "runner-b"
+            runner_a.mkdir()
+            runner_b.mkdir()
+            env_a = runner_a / ".env"
+            env_b = runner_b / ".env"
+            env_a.write_text("USER=runner-a\n", encoding="utf-8")
+            env_b.write_text("USER=runner-b\n", encoding="utf-8")
+            now = datetime.now()
+            os.utime(env_a, (now.timestamp(), now.timestamp()))
+            older_env = now - timedelta(hours=2)
+            os.utime(env_b, (older_env.timestamp(), older_env.timestamp()))
+            processes = (
+                RunnerListenerProcess(
+                    pid=101,
+                    start_time=now + timedelta(minutes=1),
+                    command=f"{runner_a}/bin/Runner.Listener run",
+                ),
+                RunnerListenerProcess(
+                    pid=202,
+                    start_time=now - timedelta(hours=1),
+                    command=f"{runner_b}/bin/Runner.Listener run",
+                ),
+            )
+
+            check = check_runner_listener_env_freshness(
+                environ={},
+                processes=processes,
+            )
+
+        self.assertEqual(check.status, "pass")
+        self.assertEqual(
+            check.detail["listener_env_files"],
+            {
+                "101": str(env_a),
+                "202": str(env_b),
+            },
+        )
+
+    def test_runner_root_from_command_allows_spaces_in_runner_path(self) -> None:
+        root = Path("/tmp/John Doe/actions-runner")
+
+        resolved = _runner_root_from_command(f"{root}/bin/Runner.Listener run")
+
+        self.assertEqual(resolved, root)
 
 
 if __name__ == "__main__":

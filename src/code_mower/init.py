@@ -32,6 +32,8 @@ if __package__ in {None, "", "tools"}:
     from tools.workflow_actionlint import (
         GeneratedWorkflow,
         WorkflowLintError,
+        WorkflowLintUnavailable,
+        custom_self_hosted_runner_labels,
         is_github_workflow_path,
         run_actionlint_on_workflows,
     )
@@ -51,6 +53,8 @@ else:  # pragma: no cover - exercised after package extraction.
     from .workflow_actionlint import (
         GeneratedWorkflow,
         WorkflowLintError,
+        WorkflowLintUnavailable,
+        custom_self_hosted_runner_labels,
         is_github_workflow_path,
         run_actionlint_on_workflows,
     )
@@ -1386,6 +1390,23 @@ def _generated_workflows_for_actionlint(
     )
 
 
+def _skipped_actionlint_result(
+    workflows: Sequence[GeneratedWorkflow],
+    *,
+    actionlint_bin: str,
+    reason: str,
+) -> dict[str, object]:
+    workflow_items = tuple(workflows)
+    return {
+        "status": "skipped",
+        "actionlint_bin": actionlint_bin,
+        "reason": reason,
+        "workflow_count": len(workflow_items),
+        "workflows": [workflow.path for workflow in workflow_items],
+        "custom_runner_labels": list(custom_self_hosted_runner_labels(workflow_items)),
+    }
+
+
 def _previous_apply_paths(output_dir: Path) -> list[Path]:
     manifest_path = output_dir / APPLY_MANIFEST_FILENAME
     if not manifest_path.exists():
@@ -1459,14 +1480,22 @@ def apply_init_plan(
     ]
     actionlint_result: Mapping[str, object] | None = None
     if actionlint_bin:
+        workflows_for_lint = _generated_workflows_for_actionlint(materialized)
         try:
             lint_result = run_actionlint_on_workflows(
-                _generated_workflows_for_actionlint(materialized),
+                workflows_for_lint,
                 actionlint_bin=actionlint_bin,
+            )
+        except WorkflowLintUnavailable as exc:
+            actionlint_result = _skipped_actionlint_result(
+                workflows_for_lint,
+                actionlint_bin=actionlint_bin,
+                reason=str(exc),
             )
         except WorkflowLintError as exc:
             raise ConfigError(str(exc)) from exc
-        actionlint_result = lint_result.as_dict()
+        else:
+            actionlint_result = {"status": "passed", **lint_result.as_dict()}
 
     output_dir.mkdir(parents=True, exist_ok=True)
     _prune_previous_apply(output_dir)
@@ -2079,6 +2108,9 @@ def main(argv: list[str] | None = None) -> int:
     elif apply_result:
         print(f"Code Mower init apply wrote {len(apply_result['written_files'])} files")
         print(f"Output: {apply_result['output_dir']}")
+        actionlint_result = apply_result.get("actionlint")
+        if isinstance(actionlint_result, Mapping) and actionlint_result.get("status") == "skipped":
+            print(f"Warning: skipped actionlint: {actionlint_result.get('reason')}")
         if apply_result["placeholder_files"]:
             print("Placeholders:")
             for path in apply_result["placeholder_files"]:
