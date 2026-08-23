@@ -304,7 +304,7 @@ class PlanContextTests(unittest.TestCase):
             prompt,
         )
 
-    def test_codex_review_wrapper_refuses_truncated_diff(self) -> None:
+    def test_codex_review_wrapper_falls_back_when_diff_exceeds_hard_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -324,6 +324,24 @@ class PlanContextTests(unittest.TestCase):
             )
             subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-qm", "head"], cwd=repo, check=True)
+            commands: list[list[str]] = []
+
+            def fake_run_progress(
+                command: list[str],
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                self.assertEqual(Path(str(kwargs["cwd"])), repo)
+                self.assertIn("review", command)
+                self.assertIn("--base", command)
+                self.assertNotIn("-", command)
+                self.assertNotIn("input", kwargs)
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="review text",
+                    stderr="review stderr\n",
+                )
 
             with (
                 mock.patch.object(
@@ -334,22 +352,26 @@ class PlanContextTests(unittest.TestCase):
                 mock.patch.object(
                     codex_audit_pr,
                     "run_subprocess_with_progress",
-                ) as run_progress,
+                    side_effect=fake_run_progress,
+                ),
             ):
-                with self.assertRaisesRegex(RuntimeError, "exceeded the hard limit"):
-                    codex_audit_pr.run_codex_review(
-                        codex_audit_pr.AuditConfig(
-                            github_token="",
-                            repo_paths={},
-                            base_ref="base",
-                            max_diff_bytes=20,
-                            max_diff_hard_limit_bytes=40,
-                        ),
-                        repo,
-                        "trusted context\n",
-                    )
+                review_text, stderr = codex_audit_pr.run_codex_review(
+                    codex_audit_pr.AuditConfig(
+                        github_token="",
+                        repo_paths={},
+                        base_ref="base",
+                        max_diff_bytes=20,
+                        max_diff_hard_limit_bytes=40,
+                    ),
+                    repo,
+                    "trusted context\n",
+                )
 
-            run_progress.assert_not_called()
+            self.assertEqual(review_text, "review text")
+            self.assertEqual(len(commands), 1)
+            self.assertIn("review stderr", stderr)
+            self.assertIn("context omitted: diff over hard limit", stderr)
+            self.assertIn("hard limit 40 bytes", stderr)
 
     def test_codex_review_omits_plan_prompt_when_no_context_sections_rendered(self) -> None:
         rendered = plan_context.RenderedPlanContext(
