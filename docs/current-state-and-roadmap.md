@@ -25,7 +25,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.52`, published on PyPI as `code-mower==0.5.0b52`.
+The prepared public beta baseline is `v0.5.0-beta.53`; it is to be published and rehearsed as part of the `v0.5.0-beta.53` release execution, with evidence recorded on the release after the workflow runs complete. The pinned package-index install spec is `code-mower==0.5.0b53`.
 It is intended to be installed from the package index for friendly-user pilots,
 with GitHub tag/source installs kept as a fallback and development path. This
 baseline keeps the PyPI-first install path, trusted publishing, release
@@ -33,8 +33,8 @@ rehearsal, production dogfood upload shape, catch-up provenance, stale-audit
 inspection, AI tool/model source diagnostics, CodeMower.com trust guidance,
 generated gate hardening, owner-bound WIP hygiene, lane liveness checks,
 fix-round templates, human-token diagnostics, owner-decision escalation, and
-provider sandbox/live guardrails in one verified release line.
-It has proved:
+provider sandbox/live guardrails in one prepared release line.
+The beta line has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
 - `code-mower init --easy`, `doctor --preflight`, `next-steps`, and starter
@@ -107,7 +107,8 @@ It has proved:
 - a v0.5 friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- a public PyPI package-install rehearsal from `code-mower==0.5.0b52` with a
+- a public PyPI package-install rehearsal from beta.52
+  `code-mower==0.5.0b52` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout; and

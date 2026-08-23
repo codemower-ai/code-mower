@@ -4,6 +4,19 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.5.0-beta.53
+
+This beta prepares the tagged docs and package metadata for the Cursor lane
+rename follow-up.
+
+### Changed
+
+- The hosted Cursor builder lane id and label are now documented as `cursor`
+  instead of `grok-bot`, while the migration window still accepts the legacy
+  `grok-bot` inputs and labels (#429).
+- Tagged docs now include the getting-started and promotion-timing fixes, plus
+  the section 8 orchestrator prompt that the beta.52 tag predated (#428).
+
 ## v0.5.0-beta.52
 
 This beta packages the adoption-readiness work from the build-loop dogfood:

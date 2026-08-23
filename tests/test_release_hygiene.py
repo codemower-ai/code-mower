@@ -57,7 +57,7 @@ from scripts import guard_package_workflows, privacy_scan
 
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_current_v05_prerelease(self) -> None:
-        self.assertEqual(__version__, "0.5.0b52")
+        self.assertEqual(__version__, "0.5.0b53")
 
     def test_release_workflow_verifies_downloaded_distributions_before_publish(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
@@ -257,7 +257,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn(
             (
                 "code-mower migration package-install-rehearsal --package-spec "
-                "code-mower==0.5.0b52 --json"
+                "code-mower==0.5.0b53 --json"
             ),
             help_text,
         )
@@ -4453,8 +4453,8 @@ printf '%s\\n' "${lane}"
                     fromlist=["current_alpha_package_spec"],
                 )
                 self.assertEqual(
-                    legacy_module.current_alpha_package_spec("0.5.0b52"),
-                    "code-mower==0.5.0b52",
+                    legacy_module.current_alpha_package_spec("0.5.0b53"),
+                    "code-mower==0.5.0b53",
                 )
             finally:
                 sys.path[:] = original_path
@@ -4491,7 +4491,7 @@ printf '%s\\n' "${lane}"
                     "-c",
                     (
                         "from tools import code_mower_package_content as c; "
-                        "print(c.current_alpha_package_spec('0.5.0b52'))"
+                        "print(c.current_alpha_package_spec('0.5.0b53'))"
                     ),
                 ],
                 cwd=tmp_path,
@@ -4504,7 +4504,7 @@ printf '%s\\n' "${lane}"
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             completed.stdout.strip(),
-            "code-mower==0.5.0b52",
+            "code-mower==0.5.0b53",
         )
 
     def test_package_rendering_legacy_fallback_stays_valid_yaml_subset(self) -> None:
@@ -4580,11 +4580,11 @@ printf '%s\\n' "${lane}"
                 (output_dir / "src/code_mower/cloud_client/dogfood.py").is_file()
             )
             self.assertIn(
-                'version = "0.5.0b52"',
+                'version = "0.5.0b53"',
                 (output_dir / "pyproject.toml").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                '__version__ = "0.5.0b52"',
+                '__version__ = "0.5.0b53"',
                 (output_dir / "src/code_mower/__init__.py").read_text(
                     encoding="utf-8"
                 ),
@@ -6120,7 +6120,7 @@ def main():
             {
                 "status": "pass",
                 "package_spec": "code-mower",
-                "version": "code-mower 0.5.0b52",
+                "version": "code-mower 0.5.0b53",
                 "work_dir": "/tmp/code-mower-rehearsal",
                 "toy_repo": "/tmp/code-mower-rehearsal/toy-repo",
                 "step_count": 1,
@@ -6232,7 +6232,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b52",
+                version="code-mower 0.5.0b53",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -6311,7 +6311,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b52",
+                version="code-mower 0.5.0b53",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -6373,7 +6373,7 @@ def main():
             scorecard = code_mower_migration._first_user_readiness_scorecard(
                 toy_repo=toy_repo,
                 outputs=outputs,
-                version="code-mower 0.5.0b52",
+                version="code-mower 0.5.0b53",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -6439,17 +6439,17 @@ def main():
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.52",
+                    "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.53",
                     base_dir=package,
                 ),
-                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.52",
+                "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.53",
             )
             self.assertEqual(
                 code_mower_migration._resolve_install_package_spec(
-                    "code-mower==0.5.0b52",
+                    "code-mower==0.5.0b53",
                     base_dir=package,
                 ),
-                "code-mower==0.5.0b52",
+                "code-mower==0.5.0b53",
             )
 
     def test_wrapper_rehearsal_command_parser_preserves_quoted_spaces(self) -> None:
@@ -6473,7 +6473,7 @@ def main():
         self.assertEqual(
             code_mower_migration._pip_install_command(
                 Path("/tmp/venv/bin/python"),
-                "code-mower==0.5.0b52",
+                "code-mower==0.5.0b53",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
             ),
@@ -6486,7 +6486,7 @@ def main():
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
                 "https://pypi.org/simple/",
-                "code-mower==0.5.0b52",
+                "code-mower==0.5.0b53",
             ],
         )
 
@@ -6506,10 +6506,10 @@ def main():
         payload = release_readiness.render_release_readiness(ROOT)
 
         self.assertEqual(payload["status"], "pass")
-        self.assertEqual(payload["version"], "0.5.0b52")
-        self.assertEqual(payload["release_tag"], "v0.5.0-beta.52")
-        self.assertEqual(payload["alpha_tag"], "v0.5.0-beta.52")
-        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0b52")
+        self.assertEqual(payload["version"], "0.5.0b53")
+        self.assertEqual(payload["release_tag"], "v0.5.0-beta.53")
+        self.assertEqual(payload["alpha_tag"], "v0.5.0-beta.53")
+        self.assertEqual(payload["package_index_spec"], "code-mower==0.5.0b53")
         check_ids = {check["id"]: check for check in payload["checks"]}
         self.assertEqual(check_ids["package-version-consistency"]["status"], "pass")
         self.assertEqual(
@@ -6525,6 +6525,10 @@ def main():
         self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "pass")
         commands = {action["id"]: action["command"] for action in payload["next_actions"]}
         urls = {action["id"]: action.get("url", "") for action in payload["next_actions"]}
+        self.assertIn("--ref v0.5.0-beta.53", commands["dry-run-release-workflow"])
+        self.assertNotIn("--ref main", commands["dry-run-release-workflow"])
+        self.assertIn("--ref v0.5.0-beta.53", commands["publish-testpypi-candidate"])
+        self.assertNotIn("--ref main", commands["publish-testpypi-candidate"])
         self.assertIn("publish_testpypi=true", commands["publish-testpypi-candidate"])
         self.assertIn("publish_pypi=false", commands["publish-testpypi-candidate"])
         self.assertIn("--pip-index-url https://test.pypi.org/simple/", commands["testpypi-install-rehearsal"])
@@ -6558,7 +6562,7 @@ def main():
         check_ids = {check["id"]: check for check in payload["checks"]}
         check = check_ids["materialized-package-version-consistency"]
         self.assertEqual(check["status"], "fail")
-        self.assertEqual(check["detail"]["source_version"], "0.5.0b52")
+        self.assertEqual(check["detail"]["source_version"], "0.5.0b53")
         self.assertEqual(check["detail"]["generated_init_version"], "0.0.0")
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
@@ -6638,20 +6642,20 @@ def main():
 
     def test_release_readiness_tag_derivation_supports_release_stages(self) -> None:
         self.assertEqual(
-            release_readiness._release_tag_for_version("0.5.0b52"),
-            "v0.5.0-beta.52",
+            release_readiness._release_tag_for_version("0.5.0b53"),
+            "v0.5.0-beta.53",
         )
         self.assertEqual(
-            code_mower_versioning.release_tag_for_version("0.5.0b52"),
-            "v0.5.0-beta.52",
+            code_mower_versioning.release_tag_for_version("0.5.0b53"),
+            "v0.5.0-beta.53",
         )
         self.assertEqual(
-            release_readiness._release_tag_for_version("0.5.0b52"),
-            "v0.5.0-beta.52",
+            release_readiness._release_tag_for_version("0.5.0b53"),
+            "v0.5.0-beta.53",
         )
         self.assertEqual(
-            code_mower_versioning.release_tag_for_version("0.5.0b52"),
-            "v0.5.0-beta.52",
+            code_mower_versioning.release_tag_for_version("0.5.0b53"),
+            "v0.5.0-beta.53",
         )
         self.assertEqual(
             release_readiness._release_tag_for_version("1.0.0rc1"),
@@ -6674,15 +6678,18 @@ def main():
         self.assertEqual(
             code_mower_versioning.public_baseline_sentence(__version__),
             (
-                "The current verified public beta baseline is `v0.5.0-beta.52`, "
-                "published on PyPI as `code-mower==0.5.0b52`."
+                "The prepared public beta baseline is `v0.5.0-beta.53`; it is "
+                "to be published and rehearsed as part of the "
+                "`v0.5.0-beta.53` release execution, with evidence recorded on "
+                "the release after the workflow runs complete. The pinned "
+                "package-index install spec is `code-mower==0.5.0b53`."
             ),
         )
         self.assertEqual(
             code_mower_versioning.tagged_doc_url(__version__),
             (
                 "https://github.com/codemower-ai/code-mower/blob/"
-                "v0.5.0-beta.52/docs/try-in-10-minutes.md"
+                "v0.5.0-beta.53/docs/try-in-10-minutes.md"
             ),
         )
 
@@ -6714,6 +6721,108 @@ def main():
         for path in docs:
             with self.subTest(path=path.relative_to(ROOT).as_posix()):
                 self.assertIsNone(stale_baseline.search(path.read_text(encoding="utf-8")))
+
+    def test_beta53_release_docs_record_package_index_procedure_not_early_proof(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        oss_checklist = (ROOT / "docs" / "oss-v1-checklist.md").read_text(
+            encoding="utf-8",
+        )
+        first_user = (ROOT / "docs" / "first-user-install-rehearsal.md").read_text(
+            encoding="utf-8",
+        )
+        current_state = (
+            ROOT / "docs" / "current-state-and-roadmap.md"
+        ).read_text(encoding="utf-8")
+        rollout = (ROOT / "docs" / "friendly-user-rollout-v05.md").read_text(
+            encoding="utf-8",
+        )
+        public_release = (ROOT / "docs" / "public-release-checklist.md").read_text(
+            encoding="utf-8",
+        )
+
+        prepared_status = (
+            "published and rehearsed as part of the `v0.5.0-beta.53` release "
+            "execution, with evidence recorded on the release after the "
+            "workflow runs complete"
+        )
+        for text in (readme, current_state, rollout, public_release):
+            self.assertIn(prepared_status, " ".join(text.split()))
+
+        self.assertIn(
+            "The latest completed public-package rehearsal\n"
+            "remains beta.52: 10/10 first-user readiness for `code-mower==0.5.0b52`.",
+            readme,
+        )
+        self.assertIn(
+            "The latest completed package-index proof remains beta.52: 10/10 "
+            "first-user\nreadiness from `code-mower==0.5.0b52`",
+            rollout,
+        )
+        self.assertIn(
+            "a public PyPI package-install rehearsal from beta.52\n"
+            "  `code-mower==0.5.0b52` with a\n"
+            "  10/10 first-user readiness score",
+            current_state,
+        )
+
+        self.assertIn(
+            "The prepared public-release baseline is `v0.5.0-beta.53`",
+            oss_checklist,
+        )
+        self.assertIn(
+            "the `release.yml` workflow in two separate\n"
+            "  runs: TestPyPI first with `publish_testpypi=true`, `publish_pypi=false`,",
+            oss_checklist,
+        )
+        self.assertIn(
+            "then production PyPI with `publish_testpypi=false`, `publish_pypi=true`",
+            oss_checklist,
+        )
+        self.assertIn("workflow run\n  links recorded as release evidence", oss_checklist)
+        self.assertNotIn(
+            "public package installation from PyPI and TestPyPI as",
+            oss_checklist,
+        )
+
+        self.assertIn("## Beta.53 Package-Index Release Procedure", first_user)
+        self.assertIn(
+            "Do not record public package proof for `v0.5.0-beta.53` until the release\n"
+            "workflow runs and package-install rehearsals exist.",
+            first_user,
+        )
+        self.assertIn("dispatch both package-index publication runs", first_user)
+        self.assertIn("never substitute mutable `main`", first_user)
+        self.assertEqual(first_user.count("  --ref v0.5.0-beta.53 \\"), 2)
+        self.assertNotIn("  --ref main \\", first_user)
+        self.assertIn("-f publish_testpypi=true", first_user)
+        self.assertIn("-f publish_pypi=false", first_user)
+        self.assertIn("-f publish_testpypi=false", first_user)
+        self.assertIn("-f publish_pypi=true", first_user)
+        self.assertIn(
+            "The workflow run links are the publication\n"
+            "evidence; the rehearsal JSON is the install-path evidence.",
+            first_user,
+        )
+        self.assertNotIn(
+            "The latest public-package rehearsal for `v0.5.0-beta.53` was run",
+            first_user,
+        )
+        self.assertNotIn("TestPyPI is not\npublished for `0.5.0b53`", first_user)
+        for text in (readme, current_state, rollout):
+            self.assertNotIn(
+                "published on PyPI as `code-mower==0.5.0b53`",
+                text,
+            )
+            self.assertNotIn(
+                "latest 10/10 public-package readiness proof for "
+                "`code-mower==0.5.0b53`",
+                text,
+            )
+            self.assertNotIn(
+                "public PyPI package-install rehearsal from "
+                "`code-mower==0.5.0b53`",
+                text,
+            )
 
     def test_readme_describes_calibration_limits_and_roles(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -6799,8 +6908,8 @@ def main():
             next_steps.current_alpha_package_spec(),
         )
         self.assertEqual(
-            code_mower_package_content.current_alpha_package_spec("0.5.0b52"),
-            "code-mower==0.5.0b52",
+            code_mower_package_content.current_alpha_package_spec("0.5.0b53"),
+            "code-mower==0.5.0b53",
         )
         self.assertNotIn(next_steps.current_public_tag(), package_content_text)
         self.assertNotIn("v0.0.0", package_content_text)
@@ -6981,7 +7090,7 @@ def main():
             step for step in plan["steps"] if step["id"] == "package-install-rehearsal"
         )
         self.assertIn("doctor --v05", doctor_step["command"])
-        self.assertIn("code-mower==0.5.0b52", package_step["command"])
+        self.assertIn("code-mower==0.5.0b53", package_step["command"])
         self.assertIn("current published PyPI prerelease", package_step["why"])
         self.assertIn("first_user_readiness", package_step["why"])
         self.assertEqual(

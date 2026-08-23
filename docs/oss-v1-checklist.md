@@ -40,12 +40,17 @@ history opens the repository. They should be able to confirm:
 
 ## Current Beta Baseline
 
-The current public-release baseline is `v0.5.0-beta.52` of the standalone
-package. It has proved:
+The prepared public-release baseline is `v0.5.0-beta.53` of the standalone
+package. Before the release is treated as complete, record:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
-- public package installation from PyPI and TestPyPI as `code-mower==0.5.0b52`;
+- package-index publication through the `release.yml` workflow in two separate
+  runs: TestPyPI first with `publish_testpypi=true`, `publish_pypi=false`,
+  then production PyPI with `publish_testpypi=false`, `publish_pypi=true`;
+- package-install rehearsals against the exact TestPyPI and PyPI artifacts as
+  `code-mower==0.5.0b53` after those workflow runs finish, with workflow run
+  links recorded as release evidence;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
   private reference/product repos, with the current beta preserving the same
@@ -176,7 +181,7 @@ It has not yet proved:
 ## Easy Mode Flow
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b52
+pipx install --python python3.12 code-mower==0.5.0b53
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --v05
@@ -185,7 +190,7 @@ code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b52 \
+  --package-spec code-mower==0.5.0b53 \
   --repo-path /path/to/repo \
   --json
 code-mower audit pr 123

@@ -11,11 +11,12 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha/beta releases and reports its version with
   `code-mower --version`.
-- The v0.5 beta entrypoint is `code-mower==0.5.0b52` from
-  [PyPI](https://pypi.org/project/code-mower/), with `code-mower doctor
-  --preflight` as the first-run setup diagnostic. The corresponding GitHub tag
-  is `v0.5.0-beta.52`; `doctor --v05` remains the versioned equivalent for
-  scripts.
+- The v0.5 beta entrypoint for the prepared beta.53 release is
+  `code-mower==0.5.0b53`, with `code-mower doctor --preflight` as the first-run
+  setup diagnostic. It is to be published and rehearsed as part of the
+  `v0.5.0-beta.53` release execution, with evidence recorded on the release
+  after the workflow runs complete. The corresponding GitHub tag is
+  `v0.5.0-beta.53`; `doctor --v05` remains the versioned equivalent for scripts.
 - The README now shows a shortened `doctor --preflight` example so fresh users can
   see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and

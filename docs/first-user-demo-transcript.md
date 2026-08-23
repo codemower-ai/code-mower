@@ -5,15 +5,18 @@ designed for someone evaluating Code Mower for the first time: no private repo,
 no provider tokens, no uploads, and no hidden local machine assumptions.
 
 The transcript uses `$WORK_DIR` instead of a real local path.
+During beta.53 preparation, treat it as the expected output shape rather than
+release evidence; package publication and rehearsal evidence are recorded on the
+release after the workflow runs complete.
 
 ## Command
 
 ```bash
 python3.12 -m venv "$WORK_DIR/venv"
 "$WORK_DIR/venv/bin/python" -m pip install --upgrade pip
-"$WORK_DIR/venv/bin/python" -m pip install code-mower==0.5.0b52
+"$WORK_DIR/venv/bin/python" -m pip install code-mower==0.5.0b53
 "$WORK_DIR/venv/bin/code-mower" migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b52 \
+  --package-spec code-mower==0.5.0b53 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -25,7 +28,7 @@ python3.12 -m venv "$WORK_DIR/venv"
   "mode": "package-install-rehearsal",
   "status": "pass",
   "steps": 27,
-  "package_spec": "code-mower==0.5.0b52",
+  "package_spec": "code-mower==0.5.0b53",
   "toy_repo": "$WORK_DIR/toy-repo",
   "doctor_status": "warn",
   "generated_artifacts": {

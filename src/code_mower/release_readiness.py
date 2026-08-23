@@ -485,13 +485,15 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     warnings = sum(1 for check in checks if check["status"] == "warn")
     passed = sum(1 for check in checks if check["status"] == "pass")
     status = "pass" if failed == 0 else "fail"
+    release_workflow_ref = release_tag or "main"
     next_actions = [
         {
             "id": "dry-run-release-workflow",
             "title": "Run the release workflow without publishing",
             "command": (
                 "gh workflow run release.yml --repo codemower-ai/code-mower "
-                "--ref main -f publish_testpypi=false -f publish_pypi=false"
+                f"--ref {release_workflow_ref} "
+                "-f publish_testpypi=false -f publish_pypi=false"
             ),
             "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
@@ -500,7 +502,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "title": "Publish the verified distribution to TestPyPI",
             "command": (
                 "gh workflow run release.yml --repo codemower-ai/code-mower "
-                "--ref main -f publish_testpypi=true -f publish_pypi=false"
+                f"--ref {release_workflow_ref} "
+                "-f publish_testpypi=true -f publish_pypi=false"
             ),
             "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },

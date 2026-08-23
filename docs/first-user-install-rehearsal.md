@@ -43,7 +43,7 @@ Use the current public tag or release candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b52 \
+  --package-spec code-mower==0.5.0b53 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -66,7 +66,7 @@ For a fixed output directory:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b52 \
+  --package-spec code-mower==0.5.0b53 \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-first-user-rehearsal \
   --json
@@ -87,7 +87,7 @@ For a GitHub tag fallback, pass the tag URL explicitly:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.52" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.53" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -99,7 +99,7 @@ repository after the package install succeeds:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b52 \
+  --package-spec code-mower==0.5.0b53 \
   --repo-path /path/to/external-repo \
   --python "$(command -v python3.12)" \
   --json
@@ -180,7 +180,7 @@ When a product repository already has Code Mower wrapper files, the same
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b52 \
+  --package-spec code-mower==0.5.0b53 \
   --repo-path /path/to/product-repo \
   --python "$(command -v python3.12)" \
   --json
@@ -237,62 +237,79 @@ Treat the rehearsal as passing only when:
 
 If this fails, fix the first-user path before cutting or promoting a release.
 
-## Latest Public Package Proof
+## Beta.53 Package-Index Release Procedure
 
-The latest public-package rehearsal for `v0.5.0-beta.52` was run from PyPI with:
+Do not record public package proof for `v0.5.0-beta.53` until the release
+workflow runs and package-install rehearsals exist. Publish and rehearse the
+package-index artifacts in this order. After the release tag exists at the
+release commit, dispatch both package-index publication runs with
+`--ref v0.5.0-beta.53`; never substitute mutable `main`, because the TestPyPI
+and production PyPI builds must check out identical source.
+
+First, run `release.yml` for TestPyPI only:
+
+```bash
+gh workflow run release.yml \
+  --repo codemower-ai/code-mower \
+  --ref v0.5.0-beta.53 \
+  -f publish_testpypi=true \
+  -f publish_pypi=false
+```
+
+After that workflow run finishes, record its workflow run link and rehearse the
+candidate from TestPyPI:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b52 \
+  --package-spec code-mower==0.5.0b53 \
+  --pip-index-url https://test.pypi.org/simple/ \
+  --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \
-  --work-dir /tmp/code-mower-beta52-pypi-rehearsal \
+  --work-dir /tmp/code-mower-beta53-testpypi-rehearsal \
   --json
 ```
 
-Result:
+Then run `release.yml` for production PyPI only:
 
-- `status`: `pass`
-- `version`: `code-mower 0.5.0b52`
-- `first_user_readiness.status`: `pass`
-- `first_user_readiness`: 10 passed, 0 failed, 0 warnings
-- package source: [PyPI `code-mower==0.5.0b52`](https://pypi.org/project/code-mower/0.5.0b52/)
+```bash
+gh workflow run release.yml \
+  --repo codemower-ai/code-mower \
+  --ref v0.5.0-beta.53 \
+  -f publish_testpypi=false \
+  -f publish_pypi=true
+```
 
-That rehearsal proved the public install, generated setup, doctor, draft
-calibration corpus, starter value report, cloud export, cloud upload dry run,
-and CodeMower.com dogfood dry run without relying on a local checkout.
-
-The same beta was also rehearsed against the private
-[DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
-repository using:
+After that workflow run finishes, record its workflow run link and rehearse the
+production package from PyPI:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b52 \
+  --package-spec code-mower==0.5.0b53 \
+  --python "$(command -v python3.12)" \
+  --work-dir /tmp/code-mower-beta53-pypi-rehearsal \
+  --json
+```
+
+For each package-index run, record the workflow run link, rehearsal command,
+JSON output path, status, installed version, first-user readiness counts, and
+package source after execution. The workflow run links are the publication
+evidence; the rehearsal JSON is the install-path evidence.
+
+After production PyPI rehearsal passes, repeat the package-install rehearsal
+against the private
+[DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
+repository:
+
+```bash
+code-mower migration package-install-rehearsal \
+  --package-spec code-mower==0.5.0b53 \
   --repo-path "$REPO_PATH" \
   --work-dir "$WORK_DIR" \
   --json
 ```
 
-Result:
-
-- `status`: `pass`
-- `first_user_readiness`: 10 passed, 0 failed, 0 warnings
-- external repo readiness: `pass`
-- wrapper present: `false`, so no product support files were required
-- repository-native checks detected from `package.json`: `npm run lint`,
-  `npm run typecheck`, and `npm run test`
-
-The DrinkBetter run is the current proof that a private JavaScript/mobile repo
-can try Code Mower from PyPI, detect its native check surface, and preview setup
-without first adopting repo-local wrappers.
-
-For releases that publish a TestPyPI candidate before production PyPI, run the
-same rehearsal with the candidate package spec and:
-
-```bash
---pip-index-url https://test.pypi.org/simple/ \
---pip-extra-index-url https://pypi.org/simple/
-```
-
-The beta.52 release run published to production PyPI only; TestPyPI was not
-published for `0.5.0b52`.
+Record status, first-user readiness counts, external repo readiness, wrapper
+presence, and detected repository-native checks after execution. That run is
+the proof that a private JavaScript/mobile repo can try Code Mower from PyPI,
+detect its native check surface, and preview setup without first adopting
+repo-local wrappers.
