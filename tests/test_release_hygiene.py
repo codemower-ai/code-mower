@@ -1724,6 +1724,76 @@ jobs:
             "audit in flight: Claude (run 12346 job 'audit (claude)' queued since 2026-08-19T16:25:00Z)",
         )
 
+    def test_gate_decision_older_verdict_run_edited_after_in_flight_stays_pending(
+        self,
+    ) -> None:
+        head_sha = "a" * 40
+        body = self._bound_actions_body(
+            "Head SHA: `" + head_sha + "`\n"
+            "<!-- CODE_MOWER_AUDIT_RUN: run_id=12345 -->\n"
+            "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+            comment_id=222,
+        )
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "claude_audit",
+                    "author_lane": "claude",
+                    "display_name": "Claude",
+                    "done": "claude-audit-done",
+                    "blocked": "claude-audit-blocked",
+                    "builder_label": "builder:claude",
+                    "bot_authors": "github-actions[bot]",
+                    "github_actions_workflows": ".github/workflows/local-cli-audit.yml",
+                }
+            ],
+            labels={"claude-audit-done"},
+            comments=[
+                {
+                    "id": 222,
+                    "created_at": "2026-08-19T16:20:00Z",
+                    "updated_at": "2026-08-19T16:35:00Z",
+                    "body": body,
+                    "user": {"login": "github-actions[bot]"},
+                }
+            ],
+            head_sha=head_sha,
+            actions_runs={
+                "12345": {
+                    "path": ".github/workflows/local-cli-audit.yml",
+                    "event": "pull_request_target",
+                    "head_sha": head_sha,
+                    "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                },
+            },
+            audit_runs=[
+                {
+                    "run": {
+                        "id": 12346,
+                        "status": "in_progress",
+                        "path": ".github/workflows/local-cli-audit.yml",
+                        "head_sha": head_sha,
+                        "created_at": "2026-08-19T16:30:00Z",
+                        "pull_requests": [{"number": 7, "head": {"sha": head_sha}}],
+                    },
+                    "jobs": [
+                        {
+                            "name": "audit (claude)",
+                            "status": "in_progress",
+                            "conclusion": None,
+                            "started_at": "2026-08-19T16:30:00Z",
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(result["gate_state"], "pending")
+        self.assertEqual(
+            result["gate_description"],
+            "audit in flight: Claude (run 12346 job 'audit (claude)' queued since 2026-08-19T16:30:00Z)",
+        )
+
     def test_gate_decision_404_terminal_audit_runs_fixture_passes(self) -> None:
         head_sha = "7821693" + ("a" * 33)
         codex_body = self._bound_actions_body(

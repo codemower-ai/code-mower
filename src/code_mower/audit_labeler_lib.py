@@ -493,14 +493,20 @@ def audit_verdict_newer_than_in_flight(
         or not detail.queued_since
     ):
         return False
+    try:
+        verdict_run_id = int(verdict.run_id)
+        detail_run_id = int(detail.run_id)
+    except (TypeError, ValueError):
+        verdict_run_id = None
+        detail_run_id = None
+    if verdict_run_id is not None and detail_run_id is not None:
+        if verdict_run_id != detail_run_id:
+            return verdict_run_id > detail_run_id
     if verdict.updated_at > detail.queued_since:
         return True
     if verdict.updated_at != detail.queued_since:
         return False
-    try:
-        return int(verdict.run_id) > int(detail.run_id)
-    except (TypeError, ValueError):
-        return False
+    return False
 
 
 def attested_non_current_audit_heads(
