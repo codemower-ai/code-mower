@@ -275,6 +275,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   GitHubToken,
                   attested_non_current_audit_heads,
                   audit_run_in_flight_detail_for_lane,
+                  audit_verdict_newer_than_in_flight,
                   flatten_paginated_items,
                   github_actions_comment_attested,
                   latest_current_audit_verdict,
@@ -285,6 +286,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   GitHubToken,
                   attested_non_current_audit_heads,
                   audit_run_in_flight_detail_for_lane,
+                  audit_verdict_newer_than_in_flight,
                   flatten_paginated_items,
                   github_actions_comment_attested,
                   latest_current_audit_verdict,
@@ -413,15 +415,6 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           def lane_display(lane):
               return str(lane.get("display_name") or lane.get("id") or lane.get("done") or "")
 
-          def verdict_newer_than_in_flight(verdict, detail):
-              return (
-                  verdict is not None
-                  and verdict.verdict == "done"
-                  and bool(verdict.updated_at)
-                  and bool(detail.queued_since)
-                  and verdict.updated_at > detail.queued_since
-              )
-
           def in_flight_lanes(required):
               names = []
               for lane in required:
@@ -437,7 +430,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                       )
                       if detail is None:
                           continue
-                      if verdict_newer_than_in_flight(verdict, detail):
+                      if audit_verdict_newer_than_in_flight(verdict, detail):
                           continue
                       names.append(
                           lane_display(lane) + " (" + detail.description() + ")"

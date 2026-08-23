@@ -65,6 +65,7 @@ class AuditVerdict:
     created_at: str
     comment_id: int
     comment_index: int
+    run_id: str
 
     def sort_key(self) -> tuple[str, str, int, int]:
         return (self.updated_at, self.created_at, self.comment_id, self.comment_index)
@@ -473,11 +474,33 @@ def latest_current_audit_verdict_detail(
                     created_at=created,
                     comment_id=comment_id,
                     comment_index=index,
+                    run_id=parse_audit_run_id(body),
                 )
             )
     if verdicts:
         return max(verdicts, key=lambda item: item.sort_key())
     return None
+
+
+def audit_verdict_newer_than_in_flight(
+    verdict: AuditVerdict | None,
+    detail: AuditRunInFlight,
+) -> bool:
+    if (
+        verdict is None
+        or verdict.verdict != "done"
+        or not verdict.updated_at
+        or not detail.queued_since
+    ):
+        return False
+    if verdict.updated_at > detail.queued_since:
+        return True
+    if verdict.updated_at != detail.queued_since:
+        return False
+    try:
+        return int(verdict.run_id) > int(detail.run_id)
+    except (TypeError, ValueError):
+        return False
 
 
 def attested_non_current_audit_heads(
