@@ -154,18 +154,32 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn('          --python "$(command -v python)"\n', workflow)
         self.assertIn("          --json\n", workflow)
 
-    def test_pypi_runbook_marks_newest_beta_latest_for_release_endpoint(self) -> None:
+    def test_pypi_runbook_publishes_newest_beta_as_regular_release(self) -> None:
         runbook = (ROOT / "docs/pypi-release.md").read_text(encoding="utf-8")
+        rendered_text = re.sub(r"\s+", " ", runbook)
 
-        self.assertIn("The owner decided on 2026-08-23", runbook)
-        self.assertIn("newest beta release should be marked", runbook)
-        self.assertIn("**Latest**", runbook)
-        self.assertIn("GitHub's `/releases/latest` endpoint resolves", runbook)
+        self.assertIn("`DEC-427-LATEST` records the 2026-08-23 owner decision", runbook)
         self.assertIn(
-            "Latest badge can make a prerelease line look more stable than it is",
+            "https://github.com/codemower-ai/code-mower/pull/427#issuecomment-5388373205",
             runbook,
         )
+        self.assertIn(
+            "beta.52 (and future newest betas until 1.0) are published as "
+            "**regular releases** (prerelease flag off)",
+            rendered_text,
+        )
+        self.assertIn("GitHub's `/releases/latest` endpoint resolves", rendered_text)
+        self.assertIn(
+            "prerelease-flagged release cannot be returned by that endpoint",
+            rendered_text,
+        )
+        self.assertIn(
+            "publishing beta tags as regular GitHub releases makes the release line look",
+            rendered_text,
+        )
+        self.assertIn("install docs still pin explicit versions", rendered_text)
         self.assertNotIn("Do not manually mark beta releases", runbook)
+        self.assertNotIn("newest beta release should be marked", runbook)
         self.assertNotIn("`/releases/latest` endpoint to return `404`", runbook)
 
     def test_ci_workflow_actionlints_generated_workflows(self) -> None:

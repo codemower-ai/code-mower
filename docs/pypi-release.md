@@ -85,15 +85,23 @@ same artifact download path used by the optional PyPI publish job, then runs
 For beta releases, keep release metadata honest:
 
 ```bash
-gh release view v0.5.0-beta.52 --repo codemower-ai/code-mower
-gh api repos/codemower-ai/code-mower/releases/latest
+gh release view v0.5.0-beta.52 \
+  --repo codemower-ai/code-mower \
+  --json tagName,isPrerelease
+gh api repos/codemower-ai/code-mower/releases/latest \
+  --jq '{tag_name,prerelease}'
 ```
 
-The owner decided on 2026-08-23 that the newest beta release should be marked
-**Latest** so GitHub's `/releases/latest` endpoint resolves for early adopters,
-automation, and package-index release checks. The tradeoff is that GitHub's
-Latest badge can make a prerelease line look more stable than it is, so the
-release title, notes, README, and install docs must keep saying beta.
+`DEC-427-LATEST` records the 2026-08-23 owner decision in
+[PR #427](https://github.com/codemower-ai/code-mower/pull/427#issuecomment-5388373205):
+beta.52 (and future newest betas until 1.0) are published as **regular
+releases** (prerelease flag off), not prerelease-flagged releases, so GitHub's
+`/releases/latest` endpoint resolves for early adopters, automation, and
+package-index release checks. A prerelease-flagged release cannot be returned by
+that endpoint. The tradeoff is that publishing beta tags as regular GitHub
+releases makes the release line look more mature than it is; install docs still
+pin explicit versions, and the release title, notes, and README must keep saying
+beta.
 
 Before any package-index promotion, run the static release-readiness check from
 the repository root:
