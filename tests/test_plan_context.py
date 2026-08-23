@@ -99,6 +99,34 @@ class PlanContextTests(unittest.TestCase):
 
     def test_codex_review_writes_trusted_context_file_for_base_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            worktree = root / "worktree"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.name", "Code Mower"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "code-mower@example.com"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-qm", "base"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(worktree), "HEAD"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+            exclude_path = repo / ".git" / "info" / "exclude"
+            exclude_before = exclude_path.read_text(encoding="utf-8")
             trusted_context = (
                 "# Plan-Conformance Lens\n\n"
                 "Supported transports: GitHub only.\n\n"
@@ -112,20 +140,20 @@ class PlanContextTests(unittest.TestCase):
             ) -> subprocess.CompletedProcess[str]:
                 review_cwd = Path(str(kwargs["cwd"]))
                 review_cwds.append(review_cwd)
-                self.assertEqual(review_cwd, Path(tmp))
-                context_file = (
-                    review_cwd
-                    / ".code-mower"
-                    / "codex-audit"
-                    / "trusted-audit-context.md"
+                self.assertEqual(review_cwd, worktree)
+                worktree_context_file = (
+                    review_cwd / ".code-mower" / "codex-audit" / "trusted-audit-context.md"
                 )
                 agents_file = review_cwd / "AGENTS.md"
-                self.assertIn("Supported transports: GitHub only.", context_file.read_text())
                 agents_text = agents_file.read_text()
-                self.assertIn(
-                    "read `.code-mower/codex-audit/trusted-audit-context.md`",
-                    agents_text,
-                )
+                self.assertFalse(worktree_context_file.exists())
+                marker = "read `"
+                context_start = agents_text.index(marker) + len(marker)
+                context_end = agents_text.index("`", context_start)
+                context_file = Path(agents_text[context_start:context_end])
+                self.assertTrue(context_file.is_absolute())
+                self.assertNotIn(str(review_cwd), str(context_file))
+                self.assertIn("Supported transports: GitHub only.", context_file.read_text())
                 self.assertIn("decision registry", agents_text)
                 self.assertNotIn("-", command)
                 self.assertNotIn("input", kwargs)
@@ -145,12 +173,151 @@ class PlanContextTests(unittest.TestCase):
             ):
                 review_text, _stderr = codex_audit_pr.run_codex_review(
                     codex_audit_pr.AuditConfig(github_token="", repo_paths={}),
-                    Path(tmp),
+                    worktree,
                     trusted_context,
                 )
 
+            self.assertEqual(review_text, "review text")
+            self.assertEqual(len(review_cwds), 1)
+            self.assertEqual(exclude_path.read_text(encoding="utf-8"), exclude_before)
+
+    def test_codex_review_skips_trusted_context_for_symlinked_agents_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            outside = root / "outside.txt"
+            outside.write_text("do not overwrite\n", encoding="utf-8")
+            (worktree / "AGENTS.md").symlink_to(outside)
+
+            def fake_run_progress(
+                command: list[str],
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                review_cwd = Path(str(kwargs["cwd"]))
+                self.assertTrue((review_cwd / "AGENTS.md").is_symlink())
+                self.assertFalse(
+                    (
+                        review_cwd
+                        / ".code-mower"
+                        / "codex-audit"
+                        / "trusted-audit-context.md"
+                    ).exists()
+                )
+                return subprocess.CompletedProcess(command, 0, stdout="review text", stderr="")
+
+            with (
+                mock.patch.object(
+                    codex_audit_pr,
+                    "_resolve_executable_path",
+                    return_value="codex",
+                ),
+                mock.patch.object(
+                    codex_audit_pr,
+                    "run_subprocess_with_progress",
+                    side_effect=fake_run_progress,
+                ),
+            ):
+                _review_text, stderr = codex_audit_pr.run_codex_review(
+                    codex_audit_pr.AuditConfig(github_token="", repo_paths={}),
+                    worktree,
+                    "trusted context\n",
+                )
+
+            self.assertEqual(outside.read_text(encoding="utf-8"), "do not overwrite\n")
+            self.assertIn("trusted audit context: skipped", stderr)
+            self.assertIn("AGENTS.md is a symlink", stderr)
+
+    def test_codex_review_skips_trusted_context_for_symlinked_context_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            context_dir = worktree / ".code-mower" / "codex-audit"
+            context_dir.mkdir(parents=True)
+            outside = root / "outside-context.txt"
+            outside.write_text("do not overwrite\n", encoding="utf-8")
+            (context_dir / "trusted-audit-context.md").symlink_to(outside)
+
+            def fake_run_progress(
+                command: list[str],
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                review_cwd = Path(str(kwargs["cwd"]))
+                self.assertFalse((review_cwd / "AGENTS.md").exists())
+                return subprocess.CompletedProcess(command, 0, stdout="review text", stderr="")
+
+            with (
+                mock.patch.object(
+                    codex_audit_pr,
+                    "_resolve_executable_path",
+                    return_value="codex",
+                ),
+                mock.patch.object(
+                    codex_audit_pr,
+                    "run_subprocess_with_progress",
+                    side_effect=fake_run_progress,
+                ),
+            ):
+                _review_text, stderr = codex_audit_pr.run_codex_review(
+                    codex_audit_pr.AuditConfig(github_token="", repo_paths={}),
+                    worktree,
+                    "trusted context\n",
+                )
+
+            self.assertEqual(outside.read_text(encoding="utf-8"), "do not overwrite\n")
+            self.assertIn("trusted audit context: skipped", stderr)
+            self.assertIn("trusted-audit-context.md", stderr)
+
+    def test_codex_review_merges_generated_agents_with_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp)
+            old_generated = (
+                "<!-- CODE_MOWER_CODEX_AUDIT_CONTEXT_BEGIN -->\n"
+                "old generated text\n"
+                "<!-- CODE_MOWER_CODEX_AUDIT_CONTEXT_END -->\n"
+            )
+            (worktree / "AGENTS.md").write_text(
+                old_generated + "\nKeep repo instructions.\n",
+                encoding="utf-8",
+            )
+
+            def fake_run_progress(
+                command: list[str],
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                agents_text = (Path(str(kwargs["cwd"])) / "AGENTS.md").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn("Code Mower Audit Context", agents_text)
+                self.assertNotIn("old generated text", agents_text)
+                self.assertIn("Keep repo instructions.", agents_text)
+                self.assertLess(
+                    agents_text.index("Code Mower Audit Context"),
+                    agents_text.index("Keep repo instructions."),
+                )
+                return subprocess.CompletedProcess(command, 0, stdout="review text", stderr="")
+
+            with (
+                mock.patch.object(
+                    codex_audit_pr,
+                    "_resolve_executable_path",
+                    return_value="codex",
+                ),
+                mock.patch.object(
+                    codex_audit_pr,
+                    "run_subprocess_with_progress",
+                    side_effect=fake_run_progress,
+                ),
+            ):
+                review_text, stderr = codex_audit_pr.run_codex_review(
+                    codex_audit_pr.AuditConfig(github_token="", repo_paths={}),
+                    worktree,
+                    "trusted context\n",
+                )
+
         self.assertEqual(review_text, "review text")
-        self.assertEqual(len(review_cwds), 1)
+        self.assertEqual(stderr, "")
 
     def test_codex_review_omits_plan_prompt_when_no_context_sections_rendered(self) -> None:
         rendered = plan_context.RenderedPlanContext(

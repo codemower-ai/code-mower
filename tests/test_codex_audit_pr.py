@@ -58,6 +58,7 @@ class CodexAuditPrTests(unittest.TestCase):
         pytest_current_test: str,
         parsed: cap.CodexVerdict | None = None,
         review_context: cap.ReviewContextDiagnostics | None = None,
+        review_result: tuple[str, str] = ("review text", ""),
     ) -> tuple[cap.AuditResult, mock.Mock]:
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -110,7 +111,7 @@ class CodexAuditPrTests(unittest.TestCase):
             ),
             mock.patch.object(cap, "_create_temp_worktree", return_value=worktree),
             mock.patch.object(cap, "_remove_worktree"),
-            mock.patch.object(cap, "run_codex_review", return_value=("review text", "")),
+            mock.patch.object(cap, "run_codex_review", return_value=review_result),
             mock.patch.object(
                 cap,
                 "run_codex_verdict_structuring",
@@ -159,6 +160,23 @@ class CodexAuditPrTests(unittest.TestCase):
             artifact = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
             self.assertTrue(artifact["quarantined"])
             self.assertIn("PYTEST_CURRENT_TEST", artifact["quarantine_reason"])
+
+    def test_codex_audit_comment_includes_trusted_context_skip_notice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, _post_comment = self._run_mocked_audit(
+                tmp_path=Path(tmp),
+                pytest_current_test="",
+                review_result=(
+                    "review text",
+                    cap._CODEX_REVIEW_CONTEXT_NOTICE_PREFIX
+                    + "skipped (AGENTS.md is a symlink in the PR worktree)\n",
+                ),
+            )
+
+        self.assertIn(
+            "Context: skipped (AGENTS.md is a symlink in the PR worktree)",
+            result.comment_body,
+        )
 
     def test_codex_structured_fixture_pass_quarantines(self) -> None:
         fixture = cap.parse_structured_codex_verdict(
@@ -412,6 +430,22 @@ class CodexAuditPrTests(unittest.TestCase):
         self.assertEqual(first_line, "## Codex audit (merge-authority lane)")
         self.assertNotIn("calibration phase", first_line)
         self.assertIn("Calibration: calibration phase - informational only for CM-1", body)
+
+    def test_comment_header_reports_skipped_trusted_context(self) -> None:
+        body = cap.format_comment(
+            cap.CodexVerdict(
+                verdict="PASS",
+                prose="No merge-blocking regressions found.",
+            ),
+            "a" * 40,
+            context_notice="skipped (AGENTS.md is a symlink in the PR worktree)",
+        )
+
+        self.assertIn(
+            "Context: skipped (AGENTS.md is a symlink in the PR worktree)",
+            body,
+        )
+        self.assertLess(body.index("Context:"), body.index("Findings:"))
 
     def test_requeue_comments_include_machine_readable_kind_markers(self) -> None:
         unknown = cap.format_comment(
