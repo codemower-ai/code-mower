@@ -59,19 +59,22 @@ builder_identity:
   labels:
     builder:codex: codex
     builder:claude: claude
-    builder:grok-bot: grok-bot
+    builder:cursor: cursor
+    builder:grok-bot: cursor
   authors:
     chatgpt-codex-connector[bot]: codex
     claude[bot]: claude
-    grok-bot[bot]: grok-bot
+    cursor[bot]: cursor
+    grok-bot[bot]: cursor
   branch_prefixes:
-    cursor/: grok-bot
+    cursor/: cursor
   fix_round_mentions:
-    grok-bot: "@cursor"
+    cursor: "@cursor"
   trailers:
     CODE_MOWER_BUILDER:codex: codex
     CODE_MOWER_BUILDER:claude: claude
-    CODE_MOWER_BUILDER:grok-bot: grok-bot
+    CODE_MOWER_BUILDER:cursor: cursor
+    CODE_MOWER_BUILDER:grok-bot: cursor
 
 lanes:
   codex:

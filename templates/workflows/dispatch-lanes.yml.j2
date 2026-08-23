@@ -98,6 +98,39 @@ jobs:
           def label_names(item):
               return {label["name"] for label in item.get("labels", [])}
 
+          def unique_items(items):
+              return list(dict.fromkeys(str(item) for item in items if str(item)))
+
+          def lane_builder_labels(lane):
+              return unique_items(
+                  [lane.get("builder_label", ""), *(lane.get("builder_labels") or [])]
+              )
+
+          def lane_dispatch_labels(lane):
+              return unique_items(
+                  [lane.get("dispatch_label", ""), *(lane.get("dispatch_labels") or [])]
+              )
+
+          def lane_issue_list(lane, *, required_labels, json_fields):
+              seen = {}
+              for builder_label in lane_builder_labels(lane):
+                  args = [
+                      "issue",
+                      "list",
+                      "-R",
+                      repo,
+                      "--state",
+                      "open",
+                      "--label",
+                      builder_label,
+                  ]
+                  for label in required_labels:
+                      args.extend(["--label", label])
+                  args.extend(["--limit", "200", "--json", json_fields])
+                  for issue in gh(args, json_output=True) or []:
+                      seen.setdefault(issue["number"], issue)
+              return [seen[number] for number in sorted(seen)]
+
           def trusted_author(login):
               return str(login or "").strip().lower() in trusted_authors
 
@@ -309,81 +342,60 @@ jobs:
               return labeled[-1] if labeled else None
 
           def expire_stale_dispatches(lane):
-              dispatch_label = lane["dispatch_label"]
-              issues = gh(
-                  [
-                      "issue",
-                      "list",
-                      "-R",
-                      repo,
-                      "--state",
-                      "open",
-                      "--label",
-                      lane["builder_label"],
-                      "--label",
-                      dispatch_label,
-                      "--limit",
-                      "200",
-                      "--json",
-                      "number,title,author",
-                  ],
-                  json_output=True,
-              )
               now = dt.datetime.now(dt.UTC)
-              for issue in sorted(issues or [], key=lambda item: item["number"]):
-                  number = issue["number"]
-                  if has_open_pr_for_issue(number):
-                      continue
-                  gate = issue_work_order_gate(issue)
-                  if not gate["allowed"]:
-                      request_work_order(lane, issue, gate.get("comments") or [])
+              seen = set()
+              for dispatch_label in lane_dispatch_labels(lane):
+                  issues = lane_issue_list(
+                      lane,
+                      required_labels=[dispatch_label],
+                      json_fields="number,title,author",
+                  )
+                  for issue in issues:
+                      number = issue["number"]
+                      key = (number, dispatch_label)
+                      if key in seen:
+                          continue
+                      seen.add(key)
+                      if has_open_pr_for_issue(number):
+                          continue
+                      gate = issue_work_order_gate(issue)
+                      if not gate["allowed"]:
+                          request_work_order(lane, issue, gate.get("comments") or [])
+                          if dry_run:
+                              print(
+                                  f"{lane['lane']}: would remove dispatch from #{number}; "
+                                  "missing trusted work order"
+                              )
+                          else:
+                              print(
+                                  f"{lane['lane']}: remove dispatch from #{number}; "
+                                  "missing trusted work order"
+                              )
+                              gh(["issue", "edit", str(number), "-R", repo, "--remove-label", dispatch_label])
+                          continue
+                      added = dispatch_label_added_at(number, dispatch_label)
+                      if not added:
+                          continue
+                      added_at = dt.datetime.fromisoformat(added.replace("Z", "+00:00"))
+                      if (now - added_at).total_seconds() < 86400:
+                          continue
                       if dry_run:
-                          print(
-                              f"{lane['lane']}: would remove dispatch from #{number}; "
-                              "missing trusted work order"
-                          )
+                          print(f"{lane['lane']}: would expire stale dispatch on #{number}")
                       else:
-                          print(
-                              f"{lane['lane']}: remove dispatch from #{number}; "
-                              "missing trusted work order"
-                          )
+                          print(f"{lane['lane']}: expire stale dispatch on #{number}")
                           gh(["issue", "edit", str(number), "-R", repo, "--remove-label", dispatch_label])
-                      continue
-                  added = dispatch_label_added_at(number, dispatch_label)
-                  if not added:
-                      continue
-                  added_at = dt.datetime.fromisoformat(added.replace("Z", "+00:00"))
-                  if (now - added_at).total_seconds() < 86400:
-                      continue
-                  if dry_run:
-                      print(f"{lane['lane']}: would expire stale dispatch on #{number}")
-                  else:
-                      print(f"{lane['lane']}: expire stale dispatch on #{number}")
-                      gh(["issue", "edit", str(number), "-R", repo, "--remove-label", dispatch_label])
 
           def active_dispatch_count(lane):
-              dispatch_label = lane["dispatch_label"]
-              issues = gh(
-                  [
-                      "issue",
-                      "list",
-                      "-R",
-                      repo,
-                      "--state",
-                      "open",
-                      "--label",
-                      lane["builder_label"],
-                      "--label",
-                      dispatch_label,
-                      "--limit",
-                      "200",
-                      "--json",
-                      "number,labels,author",
-                  ],
-                  json_output=True,
-              )
+              issues_by_number = {}
+              for dispatch_label in lane_dispatch_labels(lane):
+                  for issue in lane_issue_list(
+                      lane,
+                      required_labels=[dispatch_label],
+                      json_fields="number,labels,author",
+                  ):
+                      issues_by_number.setdefault(issue["number"], issue)
               active = 0
-              for issue in issues or []:
+              for issue in (issues_by_number[number] for number in sorted(issues_by_number)):
                   labels = label_names(issue)
                   if any(label.startswith("blocked-by:") for label in labels):
                       continue
@@ -397,64 +409,53 @@ jobs:
 
           def open_pr_count(lane):
               limit = 200
-              prs = gh(
-                  [
-                      "pr",
-                      "list",
-                      "-R",
-                      repo,
-                      "--state",
-                      "open",
-                      "--label",
-                      lane["builder_label"],
-                      "--limit",
-                      str(limit),
-                      "--json",
-                      "number",
-                  ],
-                  json_output=True,
-              )
-              count = len(prs or [])
-              if count < limit:
-                  return count
-              label = urllib.parse.quote(lane["builder_label"], safe="")
-              pages = gh(
-                  [
-                      "api",
-                      "--paginate",
-                      "--slurp",
-                      f"repos/{repo}/issues?state=open&labels={label}&per_page=100",
-                  ],
-                  json_output=True,
-              )
-              return sum(
-                  1
-                  for page in pages or []
-                  for item in (page if isinstance(page, list) else [page])
-                  if "pull_request" in item
-              )
+              numbers = set()
+              for builder_label in lane_builder_labels(lane):
+                  prs = gh(
+                      [
+                          "pr",
+                          "list",
+                          "-R",
+                          repo,
+                          "--state",
+                          "open",
+                          "--label",
+                          builder_label,
+                          "--limit",
+                          str(limit),
+                          "--json",
+                          "number",
+                      ],
+                      json_output=True,
+                  )
+                  numbers.update(pr["number"] for pr in prs or [])
+                  if len(prs or []) < limit:
+                      continue
+                  label = urllib.parse.quote(builder_label, safe="")
+                  pages = gh(
+                      [
+                          "api",
+                          "--paginate",
+                          "--slurp",
+                          f"repos/{repo}/issues?state=open&labels={label}&per_page=100",
+                      ],
+                      json_output=True,
+                  )
+                  numbers.update(
+                      item["number"]
+                      for page in pages or []
+                      for item in (page if isinstance(page, list) else [page])
+                      if "pull_request" in item
+                  )
+              return len(numbers)
 
           def ready_issues(lane):
-              issues = gh(
-                  [
-                      "issue",
-                      "list",
-                      "-R",
-                      repo,
-                      "--state",
-                      "open",
-                      "--label",
-                      lane["builder_label"],
-                      "--label",
-                      ready_label,
-                      "--limit",
-                      "200",
-                      "--json",
-                      "number,title,labels,assignees,author",
-                  ],
-                  json_output=True,
+              issues = lane_issue_list(
+                  lane,
+                  required_labels=[ready_label],
+                  json_fields="number,title,labels,assignees,author",
               )
-              for issue in sorted(issues or [], key=lambda item: item["number"]):
+              for issue in issues:
                   labels = label_names(issue)
                   if issue.get("assignees"):
                       continue

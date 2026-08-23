@@ -102,19 +102,25 @@ LANE_STANDING_README_PATH = "docs/lanes/README.md"
 LANE_STANDING_README_TEMPLATE = "templates/lanes/README.md"
 BUILDER_LANE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 BUILDER_ALIAS_TO_LANE = {
-    "cursor": "grok-bot",
-    "grok": "grok-bot",
-    "grok-bot": "grok-bot",
+    "cursor": "cursor",
+    "grok": "cursor",
+    "grok-bot": "cursor",
+}
+BUILDER_LEGACY_BUILDER_LABELS = {
+    "cursor": ("builder:grok-bot",),
+}
+BUILDER_LEGACY_DISPATCH_LABELS = {
+    "cursor": ("dispatched:grok-bot",),
 }
 BUILDER_DEFAULT_MENTIONS = {
     "claude": "Claude lane -",
     "codex": "@codex",
-    "grok-bot": "@cursor",
+    "cursor": "@cursor",
 }
 BUILDER_DEFAULT_DOC_SLUGS = {
     "claude": "claude",
     "codex": "codex",
-    "grok-bot": "grok",
+    "cursor": "cursor",
 }
 MAC_RUNNER_BUILDER_LANES = {"claude", "codex"}
 
@@ -895,7 +901,7 @@ def _builder_doc_slug(builder_lane: str) -> str:
     return BUILDER_DEFAULT_DOC_SLUGS.get(builder_lane, builder_lane)
 
 
-def _builder_mention(builder_lane: str, fix_round_rules: Sequence[Mapping[str, str]]) -> str:
+def _builder_mention(builder_lane: str, fix_round_rules: Sequence[Mapping[str, Any]]) -> str:
     for rule in fix_round_rules:
         if str(rule.get("builder_lane") or "") == builder_lane:
             mention = str(rule.get("mention") or "").strip()
@@ -924,22 +930,26 @@ def _builder_dispatch_lane_entries(
     builder_lanes: Sequence[str],
     audit_lanes: Sequence[Mapping[str, str]],
     author_exclusion: Mapping[str, Any],
-    fix_round_rules: Sequence[Mapping[str, str]],
-) -> tuple[dict[str, str], ...]:
+    fix_round_rules: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
     labels_by_lane = _builder_labels_by_lane(author_exclusion)
-    entries: list[dict[str, str]] = []
+    entries: list[dict[str, Any]] = []
     for builder_lane in builder_lanes:
         doc_slug = _builder_doc_slug(builder_lane)
         audit_labels = _builder_audit_need_labels(builder_lane, audit_lanes)
         doc_template_slug = (
             doc_slug if builder_lane in BUILDER_DEFAULT_DOC_SLUGS else "generic"
         )
+        builder_label = labels_by_lane.get(builder_lane) or f"builder:{builder_lane}"
+        dispatch_label = f"dispatched:{builder_lane}"
         entries.append(
             {
                 "lane": builder_lane,
                 "display_name": _display_name(builder_lane),
-                "builder_label": labels_by_lane.get(builder_lane) or f"builder:{builder_lane}",
-                "dispatch_label": f"dispatched:{builder_lane}",
+                "builder_label": builder_label,
+                "builder_labels": list(_builder_label_aliases(author_exclusion, builder_lane)),
+                "dispatch_label": dispatch_label,
+                "dispatch_labels": list(_builder_dispatch_label_aliases(builder_lane)),
                 "mention": _builder_mention(builder_lane, fix_round_rules),
                 "doc": f"lanes/{doc_slug}.md",
                 "doc_target": f"docs/lanes/{doc_slug}.md",
@@ -964,7 +974,7 @@ def _build_loop_trusted_authors(
 
 
 def _dispatch_lanes_workflow_entry(
-    builder_entries: Sequence[Mapping[str, str]],
+    builder_entries: Sequence[Mapping[str, Any]],
     owner_surface: Mapping[str, str],
     *,
     decision_authorities: Sequence[str] = (),
@@ -1176,15 +1186,25 @@ def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _identity_section(raw_identity: Mapping[str, Any], section: str) -> dict[str, str]:
+def _identity_section(
+    raw_identity: Mapping[str, Any],
+    section: str,
+    *,
+    canonicalize_lanes: bool = False,
+) -> dict[str, str]:
     raw_section = raw_identity.get(section)
     if not isinstance(raw_section, Mapping):
         return {}
-    return {
-        str(key): str(value)
-        for key, value in raw_section.items()
-        if str(key) and str(value)
-    }
+    out: dict[str, str] = {}
+    for key, value in raw_section.items():
+        key_text = str(key)
+        lane = str(value)
+        if not key_text or not lane:
+            continue
+        if canonicalize_lanes:
+            lane = _canonical_builder_lane(lane)
+        out[key_text] = lane
+    return out
 
 
 def _author_exclusion_payload(
@@ -1195,14 +1215,20 @@ def _author_exclusion_payload(
     identity = raw_identity if isinstance(raw_identity, Mapping) else {}
     payload = {
         "enabled": bool(config.get("merge_authority_excludes_author", True)),
-        "labels": _identity_section(identity, "labels"),
-        "authors": _identity_section(identity, "authors"),
-        "trailers": _identity_section(identity, "trailers"),
+        "labels": _identity_section(identity, "labels", canonicalize_lanes=True),
+        "authors": _identity_section(identity, "authors", canonicalize_lanes=True),
+        "trailers": _identity_section(identity, "trailers", canonicalize_lanes=True),
     }
+    for label, lane in tuple(payload["labels"].items()):
+        if label in BUILDER_LEGACY_BUILDER_LABELS.get(lane, ()):
+            payload["labels"].setdefault(f"builder:{lane}", lane)
     for lane_id, lane in selected_lanes.items():
         if lane.get("type") == "audit":
-            author_lane = _author_lane_name(lane_id, lane)
+            raw_author_lane = _author_lane_name(lane_id, lane)
+            author_lane = _canonical_builder_lane(raw_author_lane)
             payload["labels"].setdefault(f"builder:{author_lane}", author_lane)
+            if raw_author_lane != author_lane:
+                payload["labels"].setdefault(f"builder:{raw_author_lane}", author_lane)
     return payload
 
 
@@ -1240,10 +1266,51 @@ def _audit_rearm_entries(
 def _builder_labels_by_lane(author_exclusion: Mapping[str, Any]) -> dict[str, str]:
     labels = _identity_section(author_exclusion, "labels")
     out: dict[str, str] = {}
+    labels_by_lane: dict[str, list[str]] = {}
     for label, lane in sorted(labels.items()):
         if label.startswith("builder:"):
-            out.setdefault(lane, label)
+            labels_by_lane.setdefault(lane, []).append(label)
+    for lane, lane_labels in sorted(labels_by_lane.items()):
+        default_label = f"builder:{lane}"
+        legacy_labels = set(BUILDER_LEGACY_BUILDER_LABELS.get(lane, ()))
+        if legacy_labels and default_label in lane_labels:
+            out[lane] = default_label
+            continue
+        custom_labels = [label for label in lane_labels if label not in legacy_labels]
+        out[lane] = custom_labels[0] if custom_labels else default_label
     return out
+
+
+def _builder_label_aliases(
+    author_exclusion: Mapping[str, Any],
+    builder_lane: str,
+) -> tuple[str, ...]:
+    labels = _identity_section(author_exclusion, "labels")
+    primary_label = _builder_labels_by_lane(author_exclusion).get(
+        builder_lane,
+        f"builder:{builder_lane}",
+    )
+    aliases = [
+        primary_label,
+        *(
+            label
+            for label, lane in sorted(labels.items())
+            if lane == builder_lane and label.startswith("builder:")
+        ),
+        *BUILDER_LEGACY_BUILDER_LABELS.get(builder_lane, ()),
+    ]
+    return tuple(dict.fromkeys(label for label in aliases if label))
+
+
+def _builder_dispatch_label_aliases(builder_lane: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            (
+                f"dispatched:{builder_lane}",
+                *BUILDER_LEGACY_DISPATCH_LABELS.get(builder_lane, ()),
+            )
+        )
+    )
 
 
 def _builder_identity_rule_warnings(
@@ -1258,10 +1325,20 @@ def _builder_identity_rule_warnings(
 
     warnings: list[str] = []
     for lane, lane_labels in sorted(labels_by_lane.items()):
-        if len(lane_labels) > 1:
+        primary_label = _builder_labels_by_lane(author_exclusion).get(lane)
+        allowed_aliases = {
+            label
+            for label in (
+                primary_label,
+                *BUILDER_LEGACY_BUILDER_LABELS.get(lane, ()),
+            )
+            if label
+        }
+        unexpected_labels = [label for label in lane_labels if label not in allowed_aliases]
+        if unexpected_labels:
             warnings.append(
                 f"builder_identity: lane {lane!r} maps multiple builder labels; "
-                f"generated automation uses {lane_labels[0]!r}"
+                f"generated automation uses {primary_label!r}"
             )
     for lane in sorted({str(rule.get("builder_lane") or "") for rule in rules}):
         if lane and lane not in labels_by_lane:
@@ -1278,14 +1355,19 @@ def _agent_pr_label_rules(
 ) -> tuple[dict[str, Any], ...]:
     identity = config.get("builder_identity")
     identity = identity if isinstance(identity, Mapping) else {}
-    prefixes = _identity_section(identity, "branch_prefixes")
+    prefixes = _identity_section(identity, "branch_prefixes", canonicalize_lanes=True)
     labels_by_lane = _builder_labels_by_lane(author_exclusion)
     rules_by_lane: dict[str, dict[str, Any]] = {}
     for prefix, lane in sorted(prefixes.items()):
         label = labels_by_lane.get(lane) or f"builder:{lane}"
         rule = rules_by_lane.setdefault(
             lane,
-            {"builder_lane": lane, "builder_label": label, "branch_prefixes": []},
+            {
+                "builder_lane": lane,
+                "builder_label": label,
+                "builder_labels": list(_builder_label_aliases(author_exclusion, lane)),
+                "branch_prefixes": [],
+            },
         )
         rule["branch_prefixes"].append(prefix)
     return tuple(rules_by_lane[lane] for lane in sorted(rules_by_lane))
@@ -1294,22 +1376,24 @@ def _agent_pr_label_rules(
 def _fix_round_rules(
     config: Mapping[str, Any],
     author_exclusion: Mapping[str, Any],
-) -> tuple[dict[str, str], ...]:
+) -> tuple[dict[str, Any], ...]:
     identity = config.get("builder_identity")
     identity = identity if isinstance(identity, Mapping) else {}
     mentions = _identity_section(identity, "fix_round_mentions")
     labels_by_lane = _builder_labels_by_lane(author_exclusion)
-    rules: list[dict[str, str]] = []
-    for lane, mention in sorted(mentions.items()):
+    rules_by_lane: dict[str, dict[str, Any]] = {}
+    for raw_lane, mention in sorted(mentions.items()):
+        lane = _canonical_builder_lane(raw_lane)
         label = labels_by_lane.get(lane) or f"builder:{lane}"
-        rules.append(
+        rules_by_lane[lane] = (
             {
                 "builder_lane": lane,
                 "builder_label": label,
+                "builder_labels": list(_builder_label_aliases(author_exclusion, lane)),
                 "mention": mention,
             }
         )
-    return tuple(rules)
+    return tuple(rules_by_lane[lane] for lane in sorted(rules_by_lane))
 
 
 def _gate_workflow_entry(

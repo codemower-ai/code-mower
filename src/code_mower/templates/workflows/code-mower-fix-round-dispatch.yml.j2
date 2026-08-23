@@ -46,6 +46,10 @@ jobs:
           audit_lanes = json.loads(os.environ["CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON"])
           rules = json.loads(os.environ["CODE_MOWER_FIX_ROUND_RULES_JSON"])
 
+          def builder_labels(rule):
+              labels = [rule.get("builder_label", ""), *(rule.get("builder_labels") or [])]
+              return set(dict.fromkeys(label for label in labels if label))
+
           audit_lane = next(
               (lane for lane in audit_lanes if lane.get("blocked") == event_label),
               None,
@@ -54,7 +58,7 @@ jobs:
               (
                   item
                   for item in rules
-                  if item.get("builder_label") in pr_labels and item.get("mention")
+                  if builder_labels(item).intersection(pr_labels) and item.get("mention")
               ),
               None,
           )

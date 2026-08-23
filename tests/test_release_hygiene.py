@@ -2861,7 +2861,8 @@ jobs:
         self.assertEqual(plan.data["audit"]["max_diff_bytes"], 180_000)
         self.assertEqual(plan.data["audit"]["max_diff_hard_limit_bytes"], 1_500_000)
         self.assertEqual(plan.data["audit"]["budget_usd"], "")
-        self.assertIn("builder:grok-bot", plan.data["labels"])
+        self.assertIn("builder:cursor", plan.data["labels"])
+        self.assertNotIn("builder:grok-bot", plan.data["labels"])
         self.assertIn("require `code-mower/gate` from Any source", plan.text)
         self.assertIn("Required setup next steps:", plan.text)
         self.assertIn("create human automation token secret DISPATCH_TOKEN", plan.text)
@@ -2955,7 +2956,11 @@ jobs:
             agent_rules = json.loads(agent_env["CODE_MOWER_AGENT_PR_RULES_JSON"])
             self.assertIn("CODE_MOWER_AGENT_PR_RULES_JSON", agent_labeler)
             self.assertEqual(agent_rules[0]["branch_prefixes"], ["cursor/"])
-            self.assertEqual(agent_rules[0]["builder_label"], "builder:grok-bot")
+            self.assertEqual(agent_rules[0]["builder_label"], "builder:cursor")
+            self.assertEqual(
+                agent_rules[0]["builder_labels"],
+                ["builder:cursor", "builder:grok-bot"],
+            )
             self.assertIn("secrets.DISPATCH_TOKEN", agent_labeler)
             self.assertIn("--remove-label", agent_labeler)
             self.assertIn("code_mower_backoff_rate_limit", agent_labeler)
@@ -2978,6 +2983,11 @@ jobs:
             fix_rules = json.loads(fix_env["CODE_MOWER_FIX_ROUND_RULES_JSON"])
             self.assertIn("CODE_MOWER_FIX_ROUND_RULES_JSON", fix_round)
             self.assertEqual(fix_rules[0]["mention"], "@cursor")
+            self.assertEqual(fix_rules[0]["builder_label"], "builder:cursor")
+            self.assertEqual(
+                fix_rules[0]["builder_labels"],
+                ["builder:cursor", "builder:grok-bot"],
+            )
             self.assertIn("CODE_MOWER_FIX_ROUND:", fix_round)
             self.assertIn("secrets.DISPATCH_TOKEN", fix_round)
             self.assertEqual(fix_env["NEEDS_OWNER_LABEL"], "needs-owner")
@@ -6756,7 +6766,7 @@ def main():
             "docs/lanes/README.md",
             "docs/lanes/codex.md",
             "docs/lanes/claude.md",
-            "docs/lanes/grok.md",
+            "docs/lanes/cursor.md",
         ):
             with self.subTest(link=link):
                 self.assertIn(link, docs_map)
@@ -6764,10 +6774,11 @@ def main():
         self.assertIn("Roles: Claude Code as orchestrator", build_loop_30)
         self.assertIn("builder:codex: codex", build_loop_30)
         self.assertIn("builder:claude: claude", build_loop_30)
-        self.assertIn("builder:grok-bot: grok-bot", build_loop_30)
+        self.assertIn("builder:cursor: cursor", build_loop_30)
+        self.assertIn("builder:grok-bot: cursor", build_loop_30)
         self.assertIn("dispatched:codex", build_loop_30)
         self.assertIn("dispatched:claude", build_loop_30)
-        self.assertIn("dispatched:grok-bot", build_loop_30)
+        self.assertIn("dispatched:cursor", build_loop_30)
 
         repo_path_truth = (
             "Use `--repo-path /path/to/repo` to validate the installed Code Mower "
