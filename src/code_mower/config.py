@@ -492,6 +492,26 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
                 issues.append(
                     ConfigIssue("owner_surface.lane_runner_max_minutes", str(exc))
                 )
+        if "lane_runner_trusted_authors" in owner_surface_map:
+            trusted_authors = owner_surface_map.get("lane_runner_trusted_authors")
+            if isinstance(trusted_authors, str):
+                pass
+            elif isinstance(trusted_authors, list):
+                for index, author in enumerate(trusted_authors):
+                    if not isinstance(author, str) or not author.strip():
+                        issues.append(
+                            ConfigIssue(
+                                f"owner_surface.lane_runner_trusted_authors[{index}]",
+                                "must be a non-empty string",
+                            )
+                        )
+            else:
+                issues.append(
+                    ConfigIssue(
+                        "owner_surface.lane_runner_trusted_authors",
+                        "must be a string or list of strings",
+                    )
+                )
 
     decisions = config.get("decisions")
     if decisions is not None:

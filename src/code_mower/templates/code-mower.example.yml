@@ -35,6 +35,7 @@ owner_surface:
   lane_runner_enabled_var: LANE_MAC_RUNNER_ENABLED
   lane_runner_cron: "*/15 * * * *"
   lane_runner_max_minutes: "90"
+  lane_runner_trusted_authors: []
   builder_dispatch_cron: "*/30 * * * *"
   builder_wip_cap: "5"
   dispatch_token_env: DISPATCH_TOKEN

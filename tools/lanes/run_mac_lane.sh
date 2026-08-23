@@ -44,17 +44,31 @@ builder_label="$(
     | jq -r --arg lane "$LANE" '.[$lane] // empty'
 )"
 [ -n "$builder_label" ] || { echo "missing builder label for lane: $LANE" >&2; exit 2; }
+branch_prefixes_json='{"claude":["claude/"],"codex":["codex/"]}'
+lane_branch_prefixes_json="$(
+  printf '%s\n' "$branch_prefixes_json" \
+    | jq -c --arg lane "$LANE" '.[$lane] // []'
+)"
+[ "$lane_branch_prefixes_json" != "[]" ] || { echo "missing branch prefixes for lane: $LANE" >&2; exit 2; }
 dispatch_label="dispatched:${LANE}"
 lane_doc="${repo_root}/docs/lanes/${LANE}.md"
 [ -f "$lane_doc" ] || { echo "missing ${lane_doc}" >&2; exit 1; }
 
+repo_owner="${REPO%%/*}"
+repo_name="${REPO#*/}"
+if [ "$repo_owner" = "$REPO" ] || [ -z "$repo_owner" ] || [ -z "$repo_name" ]; then
+  echo "--repo must be OWNER/REPO" >&2
+  exit 2
+fi
+case "$repo_owner" in *[!A-Za-z0-9_.-]*) echo "--repo owner contains unsupported characters" >&2; exit 2 ;; esac
+case "$repo_name" in *[!A-Za-z0-9_.-]*) echo "--repo name contains unsupported characters" >&2; exit 2 ;; esac
+repo_key="${repo_owner}__${repo_name}"
 work_root="${LANE_WORK_ROOT:-${HOME}/actions-runner/_work/lanes}"
-work="${work_root}/${LANE}/$(basename "$REPO")"
-log_dir="${HOME}/.cache/code-mower-lanes/${LANE}"
+work="${work_root}/${LANE}/${repo_key}"
+log_dir="${HOME}/.cache/code-mower-lanes/${LANE}/${repo_key}"
 mkdir -p "$work_root/${LANE}" "$log_dir"
 
-repo_owner="${REPO%%/*}"
-configured_trusted_authors="${LANE_TRUSTED_AUTHORS:-github-actions[bot],chatgpt-codex-connector[bot],claude[bot],grok-bot[bot],cursor[bot],cursor-agent[bot]}"
+configured_trusted_authors="${LANE_TRUSTED_AUTHORS:-}"
 trusted_authors="$repo_owner"
 if [ -n "$configured_trusted_authors" ]; then
   trusted_authors="${trusted_authors},${configured_trusted_authors}"
@@ -157,8 +171,92 @@ if [ -z "$kind" ]; then
 fi
 echo "${LANE}: selected ${mode} ${kind} #${num}"
 
+remote_repo_slug() {
+  local remote="$1"
+  local slug=""
+  remote="${remote%.git}"
+  remote="${remote%/}"
+  case "$remote" in
+    https://github.com/*) slug="${remote#https://github.com/}" ;;
+    http://github.com/*) slug="${remote#http://github.com/}" ;;
+    git@github.com:*) slug="${remote#git@github.com:}" ;;
+    ssh://git@github.com/*) slug="${remote#ssh://git@github.com/}" ;;
+  esac
+  printf '%s\n' "$slug" | tr '[:upper:]' '[:lower:]'
+}
+
+install_pre_push_guard() {
+  local target_branch="$1"
+  local guard_mode="$2"
+  local guard_config="${work}/.git/code-mower-lane-guard.json"
+  local hook="${work}/.git/hooks/pre-push"
+  mkdir -p "$(dirname "$hook")"
+  printf '%s\n' "$branch_prefixes_json" \
+    | jq -c --arg lane "$LANE" --arg target "$target_branch" --arg mode "$guard_mode" '
+      {
+        lane: $lane,
+        mode: $mode,
+        target_pr_branch: (if $mode == "audit" then "" else $target end),
+        allowed_prefixes: (if $mode == "audit" then [] else (.[$lane] // []) end)
+      }' > "$guard_config"
+  cat > "$hook" <<'HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+
+config="$(git rev-parse --git-path code-mower-lane-guard.json)"
+[ -f "$config" ] || {
+  echo "code-mower lane guard: missing pre-push config" >&2
+  exit 1
+}
+lane="$(jq -r '.lane' "$config")"
+summary="$(jq -r '
+  "prefixes=" + ((.allowed_prefixes // []) | join(",")) +
+  (if (.target_pr_branch // "") != "" then "; target=" + .target_pr_branch else "" end)
+' "$config")"
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/*) branch="${remote_ref#refs/heads/}" ;;
+    *)
+      echo "code-mower lane guard: refusing ${lane} push to non-branch ref ${remote_ref}" >&2
+      exit 1
+      ;;
+  esac
+  allowed="$(jq -r --arg branch "$branch" '
+    def allowed_prefix: any((.allowed_prefixes // [])[]; . as $prefix | ($branch | startswith($prefix)));
+    if ((.target_pr_branch // "") != "" and $branch == .target_pr_branch) or allowed_prefix
+    then "true"
+    else "false"
+    end
+  ' "$config")"
+  if [ "$allowed" != "true" ]; then
+    echo "code-mower lane guard: refusing ${lane} push to branch ${branch}; allowed ${summary}" >&2
+    exit 1
+  fi
+done
+HOOK
+  chmod +x "$hook"
+}
+
 default_branch="$(gh repo view "$REPO" --json defaultBranchRef -q '.defaultBranchRef.name' 2>/dev/null || echo main)"
+target_pr_branch=""
+if [ "$kind" = "pr" ]; then
+  target_pr_branch="$(gh pr view "$num" -R "$REPO" --json headRefName -q '.headRefName' 2>/dev/null || true)"
+fi
+expected_repo_slug="$(printf '%s\n' "$REPO" | tr '[:upper:]' '[:lower:]')"
+if [ -d "${work}/.git" ]; then
+  origin_url="$(git -C "$work" config --get remote.origin.url 2>/dev/null || true)"
+  origin_slug="$(remote_repo_slug "$origin_url")"
+  if [ "$origin_slug" != "$expected_repo_slug" ]; then
+    echo "${LANE}: replacing workspace ${work}; origin ${origin_url:-missing} does not match ${REPO}" >&2
+    rm -rf "$work"
+  fi
+elif [ -e "$work" ]; then
+  echo "${LANE}: replacing non-git workspace ${work}" >&2
+  rm -rf "$work"
+fi
 if [ ! -d "${work}/.git" ]; then
+  mkdir -p "$(dirname "$work")"
   git clone --quiet "https://github.com/${REPO}.git" "$work"
 fi
 git -C "$work" fetch --quiet --prune origin
@@ -167,6 +265,7 @@ git -C "$work" clean -fdxq -e .build -e node_modules -e .venv
 git -C "$work" checkout --quiet --force --detach "origin/${default_branch}"
 git -C "$work" reset --quiet --hard "origin/${default_branch}"
 git -C "$work" clean -fdxq -e .build -e node_modules -e .venv
+install_pre_push_guard "$target_pr_branch" "$mode"
 
 prompt_file="$(mktemp)"
 {
@@ -182,6 +281,7 @@ prompt_file="$(mktemp)"
   echo "- Working copy: ${work}, fresh at origin/${default_branch}. Create or checkout your branch there."
   echo "- Open exactly one PR per issue. Label it ${builder_label} plus the audit labels named in the standing file."
   echo "- Single-writer rule: only the owning builder pushes to its PR branch. Other lanes comment or audit."
+  echo "- A pre-push hook enforces the single-writer rule by rejecting pushes outside this lane's allowed branch prefixes or the exact targeted PR branch."
   echo "- Fix rounds: address every P0/P1/P2 in the latest audit verdicts, push to the same branch, and reply on the PR with the new head SHA. Do not force-push unless the branch owner must repair history, and then use --force-with-lease."
   echo "- Audit duty: if this target is an audit, run the lane audit wrapper for the PR and do not edit product code."
   echo "- Anything requiring the owner, credentials, UI clicks, or a product decision gets label ${owner_label} with an exact numbered action list, then stop this unit."

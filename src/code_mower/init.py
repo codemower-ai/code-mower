@@ -232,6 +232,7 @@ OWNER_SURFACE_DEFAULTS = {
     "lane_runner_enabled_var": "LANE_MAC_RUNNER_ENABLED",
     "lane_runner_cron": "*/15 * * * *",
     "lane_runner_max_minutes": "90",
+    "lane_runner_trusted_authors": "",
     "builder_dispatch_cron": "*/30 * * * *",
     "builder_wip_cap": "5",
     "ready_label": "tier:R",
@@ -243,14 +244,6 @@ OWNER_SURFACE_DEFAULTS = {
 }
 LANE_MAC_RUNNER_TIMEOUT_GRACE_MINUTES = 15
 
-DEFAULT_LANE_MAC_RUNNER_TRUSTED_AUTHORS = (
-    "github-actions[bot]",
-    "chatgpt-codex-connector[bot]",
-    "claude[bot]",
-    "grok-bot[bot]",
-    "cursor[bot]",
-    "cursor-agent[bot]",
-)
 HUMAN_AUTOMATION_TOKEN_SCOPES = (
     "Contents: read",
     "Issues: read/write",
@@ -600,7 +593,7 @@ def _owner_surface_config(config: Mapping[str, Any]) -> dict[str, str]:
     surface = raw if isinstance(raw, Mapping) else {}
     rendered: dict[str, str] = {}
     for key, default in OWNER_SURFACE_DEFAULTS.items():
-        if key in {"phase_labels", "lane_runner_labels"}:
+        if key in {"phase_labels", "lane_runner_labels", "lane_runner_trusted_authors"}:
             rendered[key] = _csv_value(surface.get(key), default)
             continue
         value = surface.get(key, default)
@@ -1003,6 +996,9 @@ def _lane_mac_runner_script_entry(
     builder_entries: Sequence[Mapping[str, str]],
     audit_lanes: Sequence[Mapping[str, str]],
     owner_surface: Mapping[str, str],
+    *,
+    config: Mapping[str, Any],
+    decision_authorities: Sequence[str],
 ) -> dict[str, str]:
     mac_lanes = [
         str(entry["lane"])
@@ -1027,10 +1023,19 @@ def _lane_mac_runner_script_entry(
         for entry in builder_entries
         if str(entry.get("mac_runner") or "") == "true"
     }
-    trusted_authors = list(DEFAULT_LANE_MAC_RUNNER_TRUSTED_AUTHORS)
-    owner_login = str(owner_surface.get("owner_login") or "").strip()
-    if owner_login and owner_login != OWNER_SURFACE_DEFAULTS["owner_login"]:
-        trusted_authors.insert(0, owner_login)
+    identity = config.get("builder_identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    configured_prefixes = _identity_section(identity, "branch_prefixes")
+    branch_prefixes: dict[str, list[str]] = {
+        lane: [f"{lane}/"] for lane in mac_lanes
+    }
+    for prefix, lane in sorted(configured_prefixes.items()):
+        if lane in branch_prefixes and prefix not in branch_prefixes[lane]:
+            branch_prefixes[lane].append(prefix)
+    trusted_authors = [
+        *decision_authorities,
+        *_csv_items(owner_surface["lane_runner_trusted_authors"], ""),
+    ]
     return {
         "path": LANE_MAC_RUNNER_SCRIPT_PATH,
         "source": "lane-mac-runner-script-template",
@@ -1041,6 +1046,11 @@ def _lane_mac_runner_script_entry(
         "lane_mac_runner_allowed_case": "|".join(mac_lanes) or "codex|claude",
         "lane_mac_runner_builder_labels_json": json.dumps(
             builder_labels,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "lane_mac_runner_branch_prefixes_json": json.dumps(
+            branch_prefixes,
             separators=(",", ":"),
             sort_keys=True,
         ),
@@ -1703,6 +1713,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__LANE_MAC_RUNNER_BUILDER_LABELS_JSON__": str(
             entry.get("lane_mac_runner_builder_labels_json") or "{}"
         ),
+        "__LANE_MAC_RUNNER_BRANCH_PREFIXES_JSON__": str(
+            entry.get("lane_mac_runner_branch_prefixes_json") or "{}"
+        ),
         "__LANE_MAC_RUNNER_AUDIT_LABELS_JSON__": str(
             entry.get("lane_mac_runner_audit_labels_json") or "{}"
         ),
@@ -2153,9 +2166,8 @@ def render_init_plan(
     merge_authority_lanes: list[str] = []
     informational_lanes: list[str] = []
     owner_surface = _owner_surface_config(config)
-    decision_authorities = ",".join(
-        code_mower_decisions.decision_authorities_from_config(config)
-    )
+    decision_authority_list = code_mower_decisions.decision_authorities_from_config(config)
+    decision_authorities = ",".join(decision_authority_list)
     author_exclusion_json = _author_exclusion_json(config, selected_lanes)
     author_exclusion = json.loads(author_exclusion_json)
     audit_rearm_entries = _audit_rearm_entries(selected_lanes)
@@ -2309,6 +2321,8 @@ def render_init_plan(
                 builder_entries,
                 audit_rearm_entries,
                 owner_surface,
+                config=config,
+                decision_authorities=decision_authority_list,
             )
         )
 

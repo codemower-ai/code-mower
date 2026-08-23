@@ -24,6 +24,8 @@ Dispatcher rules:
 - A dispatched issue that already has an open PR referencing it is skipped.
 - The branch owner is the single writer for that PR. Other lanes audit, comment,
   or request a fix round instead of pushing to the branch.
+- Mac runner checkouts install a pre-push guard that rejects pushes outside the
+  lane's branch prefixes or the exact targeted PR branch.
 - Owner-sitting work uses `needs-owner` with a numbered action list.
   Builder lanes stop that unit and move on.
 

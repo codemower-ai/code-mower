@@ -47,6 +47,11 @@ The branch owner is the only writer for a builder PR branch. The owning lane may
 push fix rounds to that branch. Other builder and audit lanes must comment,
 audit, or trigger a fix round instead of pushing.
 
+The Mac runner installs a `pre-push` hook in the lane checkout before invoking
+the builder CLI. The hook rejects pushes to branches outside the lane's allowed
+prefixes, such as `codex/` or `claude/`, and outside the exact targeted PR
+branch for fix rounds. Audit-duty runs reject all pushes.
+
 If the owning lane must rewrite history, it should use `--force-with-lease`.
 Unconditional force pushes are outside the build-loop contract.
 
@@ -71,6 +76,13 @@ credentials. The workflow intentionally unsets `GH_TOKEN` and `GITHUB_TOKEN`
 before starting lane work so PRs and comments are attributed to the runner user.
 The generated job timeout is `owner_surface.lane_runner_max_minutes` plus a
 15-minute cleanup grace period.
+
+The runner includes GitHub issue and PR text only from trusted authors. By
+default, that means the repository owner login plus the configured
+`decisions.authorities` values, including `owner_surface.owner_login` when set.
+Hosted builder bot accounts are not trusted by default because their comments can
+restate untrusted issue content. To opt in a specific bot account, add it to
+`owner_surface.lane_runner_trusted_authors`.
 
 Runner setup checklist:
 

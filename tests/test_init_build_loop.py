@@ -129,6 +129,16 @@ class InitBuildLoopTests(unittest.TestCase):
             )
             self.assertNotIn('builder_label="builder:${LANE}"', runner_text)
             self.assertIn('repo_owner="${REPO%%/*}"', runner_text)
+            self.assertIn('repo_key="${repo_owner}__${repo_name}"', runner_text)
+            self.assertIn(
+                """branch_prefixes_json='{"claude":["claude/"],"codex":["codex/"]}'""",
+                runner_text,
+            )
+            self.assertIn('configured_trusted_authors="${LANE_TRUSTED_AUTHORS:-}"', runner_text)
+            self.assertNotIn("grok-bot[bot]", runner_text)
+            self.assertNotIn("cursor[bot]", runner_text)
+            self.assertIn("remote_repo_slug()", runner_text)
+            self.assertIn('install_pre_push_guard "$target_pr_branch" "$mode"', runner_text)
             self.assertIn("[omitted: issue title author is not trusted]", runner_text)
             self.assertIn("[omitted: PR title author is not trusted]", runner_text)
             self.assertIn("has_open_pr_for_issue()", runner_text)
@@ -284,14 +294,87 @@ fi
         self.assertIn("codex: dispatch #13", completed.stdout)
         self.assertNotIn("codex: WIP 1 >= 1", completed.stdout)
 
+    def test_dispatcher_paginates_open_builder_prs_when_limit_is_hit(self) -> None:
+        plan = _builders_plan()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+            script = _dispatch_workflow_python(
+                output_dir.joinpath(".github/workflows/dispatch-lanes.yml").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+args=" $* "
+if [ "$cmd" = "issue list" ] && [[ "$args" == *"--label dispatched:codex"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
+  [[ "$args" == *"--limit 200"* ]] || { printf 'missing --limit 200\\n' >&2; exit 2; }
+  python3 - <<'PY'
+import json
+print(json.dumps([{"number": index} for index in range(1, 201)]))
+PY
+elif [ "$cmd" = "api --paginate" ] && [[ "$args" == *"issues?state=open&labels=builder%3Acodex&per_page=100"* ]]; then
+  python3 - <<'PY'
+import json
+print(json.dumps([[{"number": index, "pull_request": {}} for index in range(1, 202)]]))
+PY
+elif [ "$cmd" = "issue list" ] && [[ "$args" == *"--label tier:R"* ]]; then
+  printf '%s\\n' '[{"number":501,"title":"Should not dispatch","labels":[{"name":"builder:codex"},{"name":"tier:R"}],"assignees":[]}]'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            lane = {
+                "lane": "codex",
+                "builder_label": "builder:codex",
+                "dispatch_label": "dispatched:codex",
+                "mention": "@codex",
+                "doc": "lanes/codex.md",
+                "audit_labels_display": "needs-claude-audit",
+            }
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "CODE_MOWER_BUILDER_LANES_JSON": json.dumps([lane]),
+                    "CODE_MOWER_MAX_WIP": "201",
+                    "CODE_MOWER_OWNER_LABELS_JSON": "[]",
+                    "CODE_MOWER_READY_LABEL": "tier:R",
+                    "DRY_RUN": "true",
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "REPO": "owner/repo",
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+        self.assertIn("codex: WIP 201 >= 201 (201 PRs, 0 dispatches), skip", completed.stdout)
+        self.assertNotIn("codex: dispatch #501", completed.stdout)
+
     def test_mac_lane_runner_ignores_non_closing_pr_body_mentions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bin_dir = root / "bin"
             bin_dir.mkdir()
             work_root = root / "work"
-            work = work_root / "codex" / "repo"
-            work.joinpath(".git").mkdir(parents=True)
+            work = work_root / "codex" / "owner__repo"
+            work.joinpath(".git", "hooks").mkdir(parents=True)
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
@@ -328,7 +411,18 @@ fi
 
             fake_git = bin_dir / "git"
             fake_git.write_text(
-                "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "config" ]; then
+  printf '%s\\n' 'https://github.com/owner/repo.git'
+  exit 0
+fi
+if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--git-path" ]; then
+  printf '%s\\n' ".git/${3}"
+  exit 0
+fi
+exit 0
+""",
                 encoding="utf-8",
             )
             fake_git.chmod(0o755)
@@ -366,9 +460,37 @@ printf 'fake codex completed\\n'
                 capture_output=True,
                 check=True,
             )
+            hook = work / ".git" / "hooks" / "pre-push"
+            good_push = subprocess.run(
+                [str(hook)],
+                cwd=work,
+                env={
+                    **os.environ,
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                input=f"refs/heads/codex/test {'a' * 40} refs/heads/codex/test {'b' * 40}\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            bad_push = subprocess.run(
+                [str(hook)],
+                cwd=work,
+                env={
+                    **os.environ,
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                input=f"refs/heads/claude/test {'a' * 40} refs/heads/claude/test {'b' * 40}\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
 
         self.assertIn("codex: selected build issue #12", completed.stdout)
         self.assertIn("fake codex completed", completed.stdout)
+        self.assertEqual(good_push.returncode, 0, good_push.stderr)
+        self.assertNotEqual(bad_push.returncode, 0)
+        self.assertIn("refusing codex push to branch claude/test", bad_push.stderr)
 
     def test_build_loop_owner_surface_parameters_render_into_templates(self) -> None:
         cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
@@ -384,11 +506,13 @@ printf 'fake codex completed\\n'
         ]
         cfg["owner_surface"]["lane_runner_enabled_var"] = "BRIDGE_PRO_LANE_ENABLED"
         cfg["owner_surface"]["lane_runner_max_minutes"] = "180"
+        cfg["owner_surface"]["lane_runner_trusted_authors"] = ["github-actions[bot]"]
         cfg["lanes"]["claude_audit"]["labels"]["needs"] = "needs-jeff-audit"
         cfg["lanes"]["claude_audit"]["labels"]["done"] = "jeff-audit-done"
         cfg["lanes"]["claude_audit"]["labels"]["blocked"] = "jeff-audit-blocked"
         cfg["builder_identity"]["labels"].pop("builder:codex")
         cfg["builder_identity"]["labels"]["builder:code-mower-codex"] = "codex"
+        cfg["builder_identity"]["branch_prefixes"]["code-mower-codex/"] = "codex"
         plan = _builders_plan(cfg)
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -435,6 +559,10 @@ printf 'fake codex completed\\n'
         )
         self.assertIn(
             """builder_labels_json='{"claude":"builder:claude","codex":"builder:code-mower-codex"}'""",
+            runner,
+        )
+        self.assertIn(
+            """branch_prefixes_json='{"claude":["claude/"],"codex":["codex/","code-mower-codex/"]}'""",
             runner,
         )
         self.assertIn('--label "$builder_label"', runner)

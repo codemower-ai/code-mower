@@ -51,6 +51,7 @@ jobs:
           import subprocess
           import sys
           import tempfile
+          import urllib.parse
 
           repo = os.environ["REPO"]
           ready_label = os.environ["CODE_MOWER_READY_LABEL"]
@@ -271,6 +272,7 @@ jobs:
               return active
 
           def open_pr_count(lane):
+              limit = 200
               prs = gh(
                   [
                       "pr",
@@ -281,12 +283,32 @@ jobs:
                       "open",
                       "--label",
                       lane["builder_label"],
+                      "--limit",
+                      str(limit),
                       "--json",
                       "number",
                   ],
                   json_output=True,
               )
-              return len(prs or [])
+              count = len(prs or [])
+              if count < limit:
+                  return count
+              label = urllib.parse.quote(lane["builder_label"], safe="")
+              pages = gh(
+                  [
+                      "api",
+                      "--paginate",
+                      "--slurp",
+                      f"repos/{repo}/issues?state=open&labels={label}&per_page=100",
+                  ],
+                  json_output=True,
+              )
+              return sum(
+                  1
+                  for page in pages or []
+                  for item in (page if isinstance(page, list) else [page])
+                  if "pull_request" in item
+              )
 
           def ready_issues(lane):
               issues = gh(
