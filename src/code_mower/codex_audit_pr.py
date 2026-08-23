@@ -1490,160 +1490,174 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             flush=True,
         )
 
-    # Codex round 6 of #234 — P3: handle the force-push race where
-    # `head_sha_start` was read before the user force-pushed and our
-    # `pull/<N>/head` fetch now points at the new SHA. If the old SHA
-    # isn't locally available, treat it as a stale-head condition
-    # rather than crashing on the worktree create.
-    try:
-        worktree_path = _create_temp_worktree(local_repo, head_sha_start)
-    except subprocess.CalledProcessError:
-        # Worktree create failed — likely because the SHA isn't in the
-        # local repo anymore (force-push race). Refetch and compare;
-        # if the head has moved, emit the stale-requeue comment.
-        pr_meta_after = fetch_pull_request(repo, pr_number, token=config.github_token)
-        head_sha_after = pr_meta_after["head"]["sha"]
-        if head_sha_after != head_sha_start:
-            actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
-            print(f"  force-push race: head moved from {head_sha_start[:8]} "
-                  f"to {head_sha_after[:8]} during fetch; emitting STALE",
-                  file=sys.stderr, flush=True)
-            comment_body = format_comment(
-                CodexVerdict(verdict="UNKNOWN",
-                             prose="(force-push detected before worktree created)"),
-                head_sha_start,
-                is_stale=True,
-                stale_end_sha=head_sha_after,
-                merge_authority=config.merge_authority,
-                actions_run_id=actions_run_id,
-                calibration_badge=config.calibration_badge,
-            )
-            result = AuditResult(
-                repo=repo, pr_number=pr_number,
-                head_sha_start=head_sha_start, head_sha_end=head_sha_after,
-                verdict="STALE", trailer=STALE_TRAILER,
-                comment_body=comment_body, codex_stdout="", codex_stderr="",
-            )
-            if not config.dry_run:
-                quarantine_reason = _audit_runtime_quarantine_reason(
-                    comment_body=comment_body,
-                )
-                artifact_path = write_audit_verdict_artifact(
-                    lane_id="codex-audit",
-                    repo=repo,
-                    pr_number=pr_number,
-                    head_sha_start=head_sha_start,
-                    head_sha_end=head_sha_after,
-                    verdict=result.verdict,
-                    trailer=result.trailer,
-                    comment_body=comment_body,
-                    quarantine_reason=quarantine_reason,
-                    duration_seconds=time.monotonic() - audit_started,
-                )
-                result.verdict_artifact_path = artifact_path
-                if artifact_path is not None:
-                    print(
-                        f"  saved verdict artifact before posting: {artifact_path}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                # Loud-failure contract: post_pr_comment() raises on any
-                # HTTP error or network failure. DO NOT catch here. The
-                # packaged CLI/product-support wrapper relies on this
-                # script exiting non-zero when posting fails so its
-                # finish_lock trap can log status="failed" instead of
-                # "completed". A silent catch would re-create the
-                # reference-app#184 silent-failure mode where three audit
-                # runs reported exitCode=0 but never posted a GitHub
-                # comment. See generated product-support wrapper
-                # finish_lock handling for the wrapper-side history and
-                # the general silent-success/silent-failure lesson.
-                if quarantine_reason:
-                    print(
-                        "  runtime guard quarantined verdict artifact: "
-                        f"{quarantine_reason}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                if quarantine_reason and _quarantine_is_test_only(quarantine_reason):
-                    print("  skipped GitHub post for pytest-only quarantine", file=sys.stderr, flush=True)
-                else:
-                    if quarantine_reason:
-                        result.verdict = "UNKNOWN"
-                        result.trailer = STALE_TRAILER
-                        comment_body = _comment_with_runtime_quarantine_note(
-                            comment_body,
-                            quarantine_reason,
-                        )
-                        result.comment_body = comment_body
-                    posted, comment_body = _post_audit_comment(
-                        repo,
-                        pr_number,
-                        comment_body,
-                        token=config.github_token,
-                        actions_run_id=actions_run_id,
-                    )
-                    result.comment_body = comment_body
-                    result.posted_comment_url = posted.get("html_url")
-            config.progress.emit(
-                "audit",
-                status="finish",
-                detail=f"{repo}#{pr_number} verdict=STALE",
-            )
-            return result
-        # Same head; the worktree failure is for some other reason.
-        # Re-raise so the outer error path runs.
-        raise
-
-    try:
-        rendered_plan_context = None
-        if config.include_plan_context:
-            rendered_plan_context = code_mower_plan_context.render_plan_context(
-                repo_root=local_repo,
-                project_context_manifest=config.project_context_manifest,
-                external_context_manifest=config.external_context_manifest,
-                max_total_bytes=config.max_plan_context_bytes,
-                max_file_bytes=config.max_plan_context_file_bytes,
-                trusted_git_ref=config.base_ref,
-            )
-            print(
-                "  plan context: "
-                f"{rendered_plan_context.included_documents} section(s), "
-                f"{rendered_plan_context.included_bytes} bytes",
-                file=sys.stderr,
-                flush=True,
-            )
-        t0 = time.time()
-        review_text, review_stderr = run_codex_review(
-            config,
-            worktree_path,
-            _codex_review_plan_prompt(rendered_plan_context),
-        )
-        dt = time.time() - t0
-        print(f"  codex review completed in {dt:.0f}s", file=sys.stderr, flush=True)
-    finally:
-        _remove_worktree(local_repo, worktree_path)
-
-    # Convert Codex's prose review into a structured, schema-shaped
-    # verdict artifact. This second call runs outside the PR worktree and
-    # receives only the captured review prose.
-    t0 = time.time()
-    parsed, structure_stdout, structure_stderr = run_codex_verdict_structuring(
-        config,
-        review_text,
-    )
-    dt = time.time() - t0
-    print(
-        f"  codex verdict structuring completed in {dt:.0f}s",
-        file=sys.stderr,
-        flush=True,
-    )
-    if parsed.mismatch_note:
+    if review_context is not None and review_context.was_truncated:
+        unknown_reason = _codex_diff_truncation_unknown_reason(review_context)
+        parsed = _unknown_structured_verdict(unknown_reason)
+        review_text = ""
+        review_stderr = f"Codex review skipped: {unknown_reason}\n"
+        structure_stdout = ""
+        structure_stderr = ""
         print(
-            f"  structured-verdict mismatch: {parsed.mismatch_note}",
+            "  diff exceeded wrapper hard limit; emitting UNKNOWN instead of "
+            "asking Codex to review incomplete input",
             file=sys.stderr,
             flush=True,
         )
+    else:
+        # Codex round 6 of #234 — P3: handle the force-push race where
+        # `head_sha_start` was read before the user force-pushed and our
+        # `pull/<N>/head` fetch now points at the new SHA. If the old SHA
+        # isn't locally available, treat it as a stale-head condition
+        # rather than crashing on the worktree create.
+        try:
+            worktree_path = _create_temp_worktree(local_repo, head_sha_start)
+        except subprocess.CalledProcessError:
+            # Worktree create failed — likely because the SHA isn't in the
+            # local repo anymore (force-push race). Refetch and compare;
+            # if the head has moved, emit the stale-requeue comment.
+            pr_meta_after = fetch_pull_request(repo, pr_number, token=config.github_token)
+            head_sha_after = pr_meta_after["head"]["sha"]
+            if head_sha_after != head_sha_start:
+                actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
+                print(f"  force-push race: head moved from {head_sha_start[:8]} "
+                      f"to {head_sha_after[:8]} during fetch; emitting STALE",
+                      file=sys.stderr, flush=True)
+                comment_body = format_comment(
+                    CodexVerdict(verdict="UNKNOWN",
+                                 prose="(force-push detected before worktree created)"),
+                    head_sha_start,
+                    is_stale=True,
+                    stale_end_sha=head_sha_after,
+                    merge_authority=config.merge_authority,
+                    actions_run_id=actions_run_id,
+                    calibration_badge=config.calibration_badge,
+                )
+                result = AuditResult(
+                    repo=repo, pr_number=pr_number,
+                    head_sha_start=head_sha_start, head_sha_end=head_sha_after,
+                    verdict="STALE", trailer=STALE_TRAILER,
+                    comment_body=comment_body, codex_stdout="", codex_stderr="",
+                )
+                if not config.dry_run:
+                    quarantine_reason = _audit_runtime_quarantine_reason(
+                        comment_body=comment_body,
+                    )
+                    artifact_path = write_audit_verdict_artifact(
+                        lane_id="codex-audit",
+                        repo=repo,
+                        pr_number=pr_number,
+                        head_sha_start=head_sha_start,
+                        head_sha_end=head_sha_after,
+                        verdict=result.verdict,
+                        trailer=result.trailer,
+                        comment_body=comment_body,
+                        quarantine_reason=quarantine_reason,
+                        duration_seconds=time.monotonic() - audit_started,
+                    )
+                    result.verdict_artifact_path = artifact_path
+                    if artifact_path is not None:
+                        print(
+                            f"  saved verdict artifact before posting: {artifact_path}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    # Loud-failure contract: post_pr_comment() raises on any
+                    # HTTP error or network failure. DO NOT catch here. The
+                    # packaged CLI/product-support wrapper relies on this
+                    # script exiting non-zero when posting fails so its
+                    # finish_lock trap can log status="failed" instead of
+                    # "completed". A silent catch would re-create the
+                    # reference-app#184 silent-failure mode where three audit
+                    # runs reported exitCode=0 but never posted a GitHub
+                    # comment. See generated product-support wrapper
+                    # finish_lock handling for the wrapper-side history and
+                    # the general silent-success/silent-failure lesson.
+                    if quarantine_reason:
+                        print(
+                            "  runtime guard quarantined verdict artifact: "
+                            f"{quarantine_reason}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    if quarantine_reason and _quarantine_is_test_only(quarantine_reason):
+                        print("  skipped GitHub post for pytest-only quarantine", file=sys.stderr, flush=True)
+                    else:
+                        if quarantine_reason:
+                            result.verdict = "UNKNOWN"
+                            result.trailer = STALE_TRAILER
+                            comment_body = _comment_with_runtime_quarantine_note(
+                                comment_body,
+                                quarantine_reason,
+                            )
+                            result.comment_body = comment_body
+                        posted, comment_body = _post_audit_comment(
+                            repo,
+                            pr_number,
+                            comment_body,
+                            token=config.github_token,
+                            actions_run_id=actions_run_id,
+                        )
+                        result.comment_body = comment_body
+                        result.posted_comment_url = posted.get("html_url")
+                config.progress.emit(
+                    "audit",
+                    status="finish",
+                    detail=f"{repo}#{pr_number} verdict=STALE",
+                )
+                return result
+            # Same head; the worktree failure is for some other reason.
+            # Re-raise so the outer error path runs.
+            raise
+
+        try:
+            rendered_plan_context = None
+            if config.include_plan_context:
+                rendered_plan_context = code_mower_plan_context.render_plan_context(
+                    repo_root=local_repo,
+                    project_context_manifest=config.project_context_manifest,
+                    external_context_manifest=config.external_context_manifest,
+                    max_total_bytes=config.max_plan_context_bytes,
+                    max_file_bytes=config.max_plan_context_file_bytes,
+                    trusted_git_ref=config.base_ref,
+                )
+                print(
+                    "  plan context: "
+                    f"{rendered_plan_context.included_documents} section(s), "
+                    f"{rendered_plan_context.included_bytes} bytes",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            t0 = time.time()
+            review_text, review_stderr = run_codex_review(
+                config,
+                worktree_path,
+                _codex_review_plan_prompt(rendered_plan_context),
+            )
+            dt = time.time() - t0
+            print(f"  codex review completed in {dt:.0f}s", file=sys.stderr, flush=True)
+        finally:
+            _remove_worktree(local_repo, worktree_path)
+
+        # Convert Codex's prose review into a structured, schema-shaped
+        # verdict artifact. This second call runs outside the PR worktree and
+        # receives only the captured review prose.
+        t0 = time.time()
+        parsed, structure_stdout, structure_stderr = run_codex_verdict_structuring(
+            config,
+            review_text,
+        )
+        dt = time.time() - t0
+        print(
+            f"  codex verdict structuring completed in {dt:.0f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+        if parsed.mismatch_note:
+            print(
+                f"  structured-verdict mismatch: {parsed.mismatch_note}",
+                file=sys.stderr,
+                flush=True,
+            )
     codex_stdout = review_text
     codex_stderr = (
         "===== CODEX REVIEW CONTEXT =====\n"
