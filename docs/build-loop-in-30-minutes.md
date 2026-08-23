@@ -513,10 +513,13 @@ with `gh` authenticated as a repository admin:
 >    you enabled (the hosted Cursor lane's generated label is
 >    `builder:grok-bot`; the Mac lanes use `builder:codex` /
 >    `builder:claude` - confirm the exact names in the init output), watch it
->    get dispatched, the PR opened, both audits post verdicts,
->    drive fix rounds by relaying the verdicts, and merge when both post
->    PASS (during the pilot this is your manual merge criterion; the repo
->    gate enforces it only after lanes are promoted per the policy).
+>    get dispatched, the PR opened, the required audits post verdicts
+>    (author lanes never gate their own PR: a hosted Cursor PR gets both
+>    Codex and Claude verdicts; a Mac-built Codex or Claude PR gets only its
+>    peer's), drive fix rounds by relaying the verdicts, and merge when every
+>    required verdict is PASS (during the pilot this is your manual merge
+>    criterion; the repo gate enforces it only after lanes are promoted per
+>    the policy).
 > 8. Throughout: never argue an audit BLOCKED away - either fix the finding or
 >    record a decision with `code-mower decide` (I am the decision authority;
 >    configure my GitHub login as `owner_login`). Escalate to me only with
