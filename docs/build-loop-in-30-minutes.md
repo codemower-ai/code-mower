@@ -494,18 +494,20 @@ with `gh` authenticated as a repository admin:
 > (informational during the pilot, promoted to merge-gating only per
 > `docs/lane-promotion-policy.md`); Gitar as an informational reviewer.
 >
-> Work through it in this order, verifying each step before the next, and stop
-> with a numbered click-list whenever a step needs something only I can do
-> (tokens, GitHub settings, app installs):
+> Work on a setup branch and do not push generated workflow changes until you
+> have shown me the plan. Work through it in this order, verifying each step
+> before the next, and stop with a numbered click-list whenever a step needs
+> something only I can do (tokens, GitHub settings, app installs):
 >
 > 1. Pick the latest release tag of codemower-ai/code-mower (call it
 >    `vX.Y.Z-tag`, package version `X.Y.ZbN`). Read
 >    `docs/build-loop-in-30-minutes.md` and `docs/build-loop.md` **from that
 >    tag** and follow them rather than improvising.
-> 2. Install the package version derived from that same tag
->    (`pipx install --python python3.12 code-mower==<that version>`; for the
->    tag this guide shipped in, `code-mower==0.5.0b53`). Verify
->    `code-mower --version` matches the tag before continuing.
+> 2. Install the package version derived from that same tag with
+>    `pipx install --python python3.12 code-mower==<that version>`. For
+>    example, if the tag is `v0.5.0-beta.53`, install
+>    `code-mower==0.5.0b53`. Verify `code-mower --version` matches the tag
+>    before continuing.
 > 3. Reviewer gate first: `code-mower init --easy` (dry-run), review the plan,
 >    then `--apply`; run `code-mower doctor --preflight` and get every check
 >    green except the two promotion checks (required `code-mower/gate`
