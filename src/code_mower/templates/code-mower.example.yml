@@ -9,6 +9,13 @@ repositories:
     default_branch: main
     local_path_env: EXAMPLE_REPO_PATH
 
+audit:
+  # Leave blank to use the size-aware default: $2 base, +$1 per 150 KB
+  # above max_diff_bytes, capped at $10.
+  budget_usd: ""
+  max_diff_bytes: "180000"
+  max_diff_hard_limit_bytes: "1500000"
+
 owner_surface:
   owner_login: TODO_OWNER_LOGIN
   needs_owner_label: needs-owner

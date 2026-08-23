@@ -85,6 +85,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 if __package__ in {None, "", "tools"}:
     try:
+        from tools import audit_limits as code_mower_audit_limits
         from tools import plan_context as code_mower_plan_context
         from tools import reviewer_spend
         from tools.audit_progress import AuditProgress, run_subprocess_with_progress
@@ -112,6 +113,7 @@ if __package__ in {None, "", "tools"}:
             write_audit_verdict_artifact,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
+        import audit_limits as code_mower_audit_limits  # type: ignore
         import plan_context as code_mower_plan_context  # type: ignore
         import reviewer_spend  # type: ignore
         from audit_progress import AuditProgress, run_subprocess_with_progress  # type: ignore
@@ -139,6 +141,7 @@ if __package__ in {None, "", "tools"}:
             write_audit_verdict_artifact,
         )
 else:  # pragma: no cover - exercised after package extraction.
+    from . import audit_limits as code_mower_audit_limits
     from . import plan_context as code_mower_plan_context
     from . import reviewer_spend
     from .audit_progress import AuditProgress, run_subprocess_with_progress
@@ -174,7 +177,15 @@ DEFAULT_CODEX_TIMEOUT = 900  # 15 min; Codex review can take 5-10 min on a large
 DEFAULT_BASE_REF = "origin/main"
 DEFAULT_REPOS = "owner/repo,owner/other-repo"
 DEFAULT_IGNORE_USER_CONFIG = True
-DEFAULT_DIFF_DIAGNOSTIC_BUDGET_BYTES = 600_000
+DEFAULT_MAX_DIFF_BYTES = code_mower_audit_limits.DEFAULT_MAX_DIFF_BYTES
+DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES = (
+    code_mower_audit_limits.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES
+)
+DEFAULT_MAX_BUDGET_USD = code_mower_audit_limits.resolve_audit_budget_usd(
+    DEFAULT_MAX_DIFF_BYTES,
+    target_diff_bytes=DEFAULT_MAX_DIFF_BYTES,
+)
+DEFAULT_DIFF_DIAGNOSTIC_BUDGET_BYTES = DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES
 CODEX_AUDIT_SCHEMA_ID = "codeMower.codexAudit.v1"
 CODEX_AUDIT_VERDICT_SCHEMA_PATH = (
     Path(__file__).resolve().with_name("codex_audit_verdict.schema.json")
@@ -197,6 +208,9 @@ class AuditConfig:
     codex_cli_path: str = DEFAULT_CODEX_CLI_PATH
     base_ref: str = DEFAULT_BASE_REF
     timeout: int = DEFAULT_CODEX_TIMEOUT
+    max_budget_usd: Optional[str] = None
+    max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES
+    max_diff_hard_limit_bytes: Optional[int] = None
     dry_run: bool = False
     # Structured audits are automation, not an interactive Codex session.
     # Default to ignoring user config so personal model/reasoning/plugin
@@ -303,20 +317,30 @@ class ReviewContextDiagnostics:
     head_sha: str
     changed_file_count: int
     diff_bytes: int
-    diagnostic_budget_bytes: int = DEFAULT_DIFF_DIAGNOSTIC_BUDGET_BYTES
+    requested_max_bytes: int = DEFAULT_MAX_DIFF_BYTES
+    hard_limit_bytes: int = DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES
+    included_diff_bytes: int = DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES
+    effective_budget_usd: str = DEFAULT_MAX_BUDGET_USD
 
     @property
-    def over_diagnostic_budget(self) -> bool:
-        return self.diff_bytes > self.diagnostic_budget_bytes
+    def was_truncated(self) -> bool:
+        return self.diff_bytes > self.hard_limit_bytes
+
+    @property
+    def over_requested_max(self) -> bool:
+        return self.diff_bytes > self.requested_max_bytes
 
     def summary(self) -> str:
         return (
             f"base_ref={self.base_ref}; head={self.head_sha[:12]}; "
             f"changed_files={self.changed_file_count}; "
             f"full_diff={self.diff_bytes} bytes; "
-            f"diagnostic_budget={self.diagnostic_budget_bytes} bytes; "
-            f"wrapper_truncated=no; "
-            f"over_diagnostic_budget={'yes' if self.over_diagnostic_budget else 'no'}; "
+            f"requested={self.requested_max_bytes} bytes; "
+            f"hard_limit={self.hard_limit_bytes} bytes; "
+            f"included={self.included_diff_bytes} bytes; "
+            f"effective_budget=${self.effective_budget_usd}; "
+            f"wrapper_truncated={'yes' if self.was_truncated else 'no'}; "
+            f"over_requested={'yes' if self.over_requested_max else 'no'}; "
             "codex_cli_owns_review_context=yes"
         )
 
@@ -826,8 +850,23 @@ def _build_review_context_diagnostics(
     *,
     base_ref: str,
     head_sha: str,
-    diagnostic_budget_bytes: int = DEFAULT_DIFF_DIAGNOSTIC_BUDGET_BYTES,
+    max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES,
+    max_diff_hard_limit_bytes: Optional[int] = None,
+    max_budget_usd: str | None = None,
 ) -> ReviewContextDiagnostics:
+    if max_diff_bytes <= 0:
+        raise ValueError("max_diff_bytes must be greater than zero")
+    hard_limit = (
+        max(max_diff_bytes, DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES)
+        if max_diff_hard_limit_bytes is None
+        else max_diff_hard_limit_bytes
+    )
+    if hard_limit <= 0:
+        raise ValueError("max_diff_hard_limit_bytes must be greater than zero")
+    if hard_limit < max_diff_bytes:
+        raise ValueError(
+            "max_diff_hard_limit_bytes must be greater than or equal to max_diff_bytes"
+        )
     diff_range = f"{base_ref}...{head_sha}"
     names = _run_git_text(
         local_repo,
@@ -836,8 +875,14 @@ def _build_review_context_diagnostics(
     diff_bytes = _count_git_stdout_bytes(
         local_repo,
         ["diff", "--find-renames", "--unified=80", diff_range],
-        limit_bytes=diagnostic_budget_bytes,
+        limit_bytes=hard_limit,
         timeout=120,
+    )
+    included_diff_bytes = min(diff_bytes, hard_limit)
+    effective_budget_usd = code_mower_audit_limits.resolve_audit_budget_usd(
+        included_diff_bytes,
+        explicit_budget_usd=max_budget_usd,
+        target_diff_bytes=max_diff_bytes,
     )
     changed_file_count = len([line for line in names.splitlines() if line.strip()])
     return ReviewContextDiagnostics(
@@ -845,7 +890,10 @@ def _build_review_context_diagnostics(
         head_sha=head_sha,
         changed_file_count=changed_file_count,
         diff_bytes=diff_bytes,
-        diagnostic_budget_bytes=diagnostic_budget_bytes,
+        requested_max_bytes=max_diff_bytes,
+        hard_limit_bytes=hard_limit,
+        included_diff_bytes=included_diff_bytes,
+        effective_budget_usd=effective_budget_usd,
     )
 
 
@@ -1257,11 +1305,14 @@ def format_comment(
     merge_authority: bool = True,
     actions_run_id: Optional[str] = None,
     calibration_badge: str = "",
+    diff_notice: str = "",
 ) -> str:
     """Build the GitHub comment body with header, prose, and trailer."""
     posture = "merge-authority lane" if merge_authority else "informational only"
     header = f"## Codex audit ({posture})\n\n"
     header += f"Head SHA: `{head_sha}`\n"
+    if diff_notice:
+        header += f"Diff: {_one_line(diff_notice, 300)}\n"
     if badge := _normalize_calibration_badge(calibration_badge):
         header += f"Calibration: {badge}\n"
     if actions_run_id:
@@ -1323,6 +1374,28 @@ def format_comment(
 
 def _normalize_calibration_badge(value: str | None) -> str:
     return " ".join(str(value or "").strip().split())[:120]
+
+
+def _codex_diff_truncation_unknown_reason(
+    diagnostics: ReviewContextDiagnostics,
+) -> str:
+    return (
+        "PR diff exceeded the wrapper hard limit "
+        f"(measured at least {diagnostics.diff_bytes} bytes; hard limit "
+        f"{diagnostics.hard_limit_bytes} bytes). Increase "
+        "audit.max_diff_hard_limit_bytes or CODEX_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES "
+        "and requeue."
+    )
+
+
+def _codex_diff_truncation_notice(diagnostics: ReviewContextDiagnostics) -> str:
+    if not diagnostics.was_truncated:
+        return ""
+    return (
+        "exceeded wrapper hard limit; "
+        f"measured at least {diagnostics.diff_bytes} bytes; hard limit "
+        f"{diagnostics.hard_limit_bytes} bytes"
+    )
 
 
 # ----- Orchestration -----
@@ -1394,11 +1467,15 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     _fetch_pr_head(local_repo, pr_number, head_sha_start)
     _fetch_base_ref(local_repo, config.base_ref)
     review_context_summary = "review context diagnostics unavailable"
+    review_context: ReviewContextDiagnostics | None = None
     try:
         review_context = _build_review_context_diagnostics(
             local_repo,
             base_ref=config.base_ref,
             head_sha=head_sha_start,
+            max_diff_bytes=config.max_diff_bytes,
+            max_diff_hard_limit_bytes=config.max_diff_hard_limit_bytes,
+            max_budget_usd=config.max_budget_usd,
         )
         review_context_summary = review_context.summary()
         print(
@@ -1632,6 +1709,10 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
             merge_authority=config.merge_authority,
             actions_run_id=actions_run_id,
             calibration_badge=config.calibration_badge,
+            diff_notice=(
+                _codex_diff_truncation_notice(review_context)
+                if review_context is not None else ""
+            ),
         )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
@@ -1753,7 +1834,31 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                     default=os.environ.get("CODEX_AUDIT_REPO_PATHS", ""),
                     help="comma-separated owner/repo:/path entries. Required.")
     ap.add_argument("--timeout", type=int,
-                    default=int(os.environ.get("CODEX_AUDIT_TIMEOUT", DEFAULT_CODEX_TIMEOUT)))
+                    default=_env_int("CODEX_AUDIT_TIMEOUT", DEFAULT_CODEX_TIMEOUT))
+    ap.add_argument(
+        "--max-budget-usd",
+        default=_env_text("CODEX_AUDIT_MAX_BUDGET_USD"),
+        help=(
+            "Optional fixed audit budget for diagnostics. When unset, Code Mower "
+            "uses a size-aware default for audit reporting."
+        ),
+    )
+    ap.add_argument(
+        "--max-diff-bytes",
+        type=int,
+        default=_env_int("CODEX_AUDIT_MAX_DIFF_BYTES", DEFAULT_MAX_DIFF_BYTES),
+        help="Normal target diff size for budget diagnostics.",
+    )
+    ap.add_argument(
+        "--max-diff-hard-limit-bytes",
+        type=int,
+        default=(
+            int(_env_text("CODEX_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES") or "0")
+            if _env_text("CODEX_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES") is not None
+            else None
+        ),
+        help="Largest diff size before diagnostics report wrapper truncation.",
+    )
     ap.add_argument(
         "--dry-run",
         action="store_true",
@@ -1911,6 +2016,19 @@ def _env_flag_default(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_text(name: str) -> Optional[str]:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _env_int(name: str, default: int) -> int:
+    value = _env_text(name)
+    return int(value) if value is not None else default
+
+
 def _extract_and_clear_github_token() -> Optional[str]:
     """Legacy: read GITHUB_TOKEN from os.environ, then remove it (and
     GH_TOKEN) from os.environ.
@@ -2023,6 +2141,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         codex_cli_path=args.codex_cli_path,
         base_ref=args.base_ref,
         timeout=args.timeout,
+        max_budget_usd=str(args.max_budget_usd) if args.max_budget_usd else None,
+        max_diff_bytes=args.max_diff_bytes,
+        max_diff_hard_limit_bytes=args.max_diff_hard_limit_bytes,
         dry_run=args.dry_run,
         ignore_user_config=not args.use_user_config,
         venv_path=explicit_venv,

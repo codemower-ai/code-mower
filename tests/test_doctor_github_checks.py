@@ -2,6 +2,7 @@ import unittest
 from datetime import UTC, datetime
 from unittest import mock
 
+from code_mower.doctor_checks.audit_limits import check_recent_pr_diff_median
 from code_mower.doctor_checks.github_actions_permissions import check_actions_permissions
 from code_mower.doctor_checks.github_actions_failure_scan import (
     _check_run_id_from_actions_job,
@@ -395,6 +396,35 @@ class GitHubDoctorCheckTests(unittest.TestCase):
             check.detail["required_status_check_bindings"],
             [{"context": "code-mower/gate", "app_id": None}],
         )
+
+    def test_recent_pr_diff_median_warns_above_hard_limit(self) -> None:
+        with (
+            mock.patch(
+                "code_mower.doctor_checks.audit_limits._github_api_list",
+                return_value=(
+                    [{"number": 1}, {"number": 2}, {"number": 3}],
+                    {},
+                ),
+            ),
+            mock.patch(
+                "code_mower.doctor_checks.audit_limits._pull_request_diff_bytes",
+                side_effect=[
+                    (100_000, {}),
+                    (1_700_000, {}),
+                    (1_900_000, {}),
+                ],
+            ),
+        ):
+            check = check_recent_pr_diff_median(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                hard_limit_bytes=1_500_000,
+                http_timeout=1,
+            )
+
+        self.assertEqual(check.status, "warn")
+        self.assertEqual(check.detail["median_diff_bytes"], 1_700_000)
+        self.assertIn("above audit hard limit", check.message)
 
     def test_branch_protection_warns_when_gate_status_bound_to_actions(self) -> None:
         with mock.patch(

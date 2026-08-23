@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from code_mower import config as code_mower_config
 
+from .audit_limits import check_effective_audit_limits
 from .cloud import check_cloud_token_surface
 from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
 from .github import check_github_setup
@@ -132,6 +133,7 @@ def run_doctor(
         )
     )
     checks.append(check_repository_posture(config))
+    checks.append(check_effective_audit_limits(config))
     checks.append(provider_template_coverage(lanes, templates))
     checks.extend(
         _global_runtime_checks(

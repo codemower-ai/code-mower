@@ -5,12 +5,15 @@ from __future__ import annotations
 import shutil
 from typing import Any, Mapping, Sequence
 
+from code_mower import audit_limits as code_mower_audit_limits
+
 from .common import (
     ACTIONS_COST_SAMPLE_DEFAULT,
     DoctorCheck,
     STATUS_PASS,
     STATUS_WARN,
 )
+from .audit_limits import check_recent_pr_diff_median
 from .github_actions import (
     _check_actions_cost_sample,
     _check_recent_actions_billing_blocks,
@@ -76,6 +79,7 @@ def check_github_setup(
 
     selected_saas_or_hosted = selected_saas_or_hosted_lanes(lanes)
     has_merge_authority = any(bool(lane.get("merge_authority")) for _lane_id, lane in lanes)
+    audit_limit_settings = code_mower_audit_limits.audit_limits_from_config(config)
     private_repos: list[str] = []
     unknown_visibility_repos: list[str] = []
     for repo in repos:
@@ -122,6 +126,12 @@ def check_github_setup(
                     required_status_context=(
                         "code-mower/gate" if has_merge_authority else None
                     ),
+                ),
+                check_recent_pr_diff_median(
+                    gh_path=gh_path,
+                    slug=slug,
+                    hard_limit_bytes=audit_limit_settings.max_diff_hard_limit_bytes,
+                    http_timeout=http_timeout,
                 ),
             ]
         )

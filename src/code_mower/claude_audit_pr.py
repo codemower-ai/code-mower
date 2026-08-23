@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 if __package__ in {None, "", "tools"}:
     try:
+        from tools import audit_limits as code_mower_audit_limits
         from tools import code_mower_prompts
         from tools import plan_context as code_mower_plan_context
         from tools import reviewer_spend
@@ -54,6 +55,7 @@ if __package__ in {None, "", "tools"}:
             write_audit_verdict_artifact,
         )
     except ImportError:  # pragma: no cover - direct script execution fallback
+        import audit_limits as code_mower_audit_limits  # type: ignore
         try:
             import code_mower_prompts  # type: ignore
         except ImportError:
@@ -84,6 +86,7 @@ if __package__ in {None, "", "tools"}:
             write_audit_verdict_artifact,
         )
 else:  # pragma: no cover - exercised after package extraction.
+    from . import audit_limits as code_mower_audit_limits
     from . import prompts as code_mower_prompts
     from . import plan_context as code_mower_plan_context
     from . import reviewer_spend
@@ -116,9 +119,14 @@ DEFAULT_CLAUDE_CLI_PATH = "claude"
 DEFAULT_CLAUDE_MODEL = "sonnet"
 DEFAULT_CLAUDE_TIMEOUT = 900
 DEFAULT_BASE_REF = "origin/main"
-DEFAULT_MAX_DIFF_BYTES = 180_000
-DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES = 600_000
-DEFAULT_MAX_BUDGET_USD = "2.00"
+DEFAULT_MAX_DIFF_BYTES = code_mower_audit_limits.DEFAULT_MAX_DIFF_BYTES
+DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES = (
+    code_mower_audit_limits.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES
+)
+DEFAULT_MAX_BUDGET_USD = code_mower_audit_limits.resolve_audit_budget_usd(
+    DEFAULT_MAX_DIFF_BYTES,
+    target_diff_bytes=DEFAULT_MAX_DIFF_BYTES,
+)
 CLAUDE_AUDIT_SCHEMA_ID = "codeMower.claudeAudit.v1"
 MAX_RENDERED_FINDINGS = 50
 MAX_SUMMARY_CHARS = 4_000
@@ -191,7 +199,7 @@ class ClaudeAuditConfig:
     repo_paths: Dict[str, Path]
     claude_cli_path: str = DEFAULT_CLAUDE_CLI_PATH
     model: str = DEFAULT_CLAUDE_MODEL
-    max_budget_usd: str = DEFAULT_MAX_BUDGET_USD
+    max_budget_usd: Optional[str] = None
     base_ref: str = DEFAULT_BASE_REF
     timeout: int = DEFAULT_CLAUDE_TIMEOUT
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES
@@ -564,6 +572,40 @@ def _claude_cli_failure_reason(stdout: str, stderr: str) -> str:
     return f"Claude CLI: {reason}" if reason else ""
 
 
+def _claude_cli_budget_exhausted(stdout: str, stderr: str) -> bool:
+    payload = _claude_status_payload(stdout, stderr)
+    fields = [
+        payload.get("result"),
+        payload.get("terminal_reason"),
+        payload.get("api_error_status"),
+        stdout,
+        stderr,
+    ]
+    return any("budget_exhausted" in str(field or "").lower() for field in fields)
+
+
+def _diff_truncation_unknown_reason(diff_context: DiffContext) -> str:
+    return (
+        "PR diff was truncated by the wrapper "
+        f"(included {diff_context.included_diff_bytes} of at least "
+        f"{diff_context.full_diff_bytes} bytes; hard limit "
+        f"{diff_context.hard_limit_bytes} bytes). Increase "
+        "audit.max_diff_hard_limit_bytes or "
+        "CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES and requeue."
+    )
+
+
+def _diff_truncation_notice(diff_context: DiffContext) -> str:
+    if not diff_context.was_truncated:
+        return ""
+    return (
+        "truncated by wrapper; "
+        f"included {diff_context.included_diff_bytes} of at least "
+        f"{diff_context.full_diff_bytes} bytes; hard limit "
+        f"{diff_context.hard_limit_bytes} bytes"
+    )
+
+
 def _dump_claude_cli_failure(
     *,
     repo: str,
@@ -852,9 +894,9 @@ def _review_prompt(
     diff_begin = f"----- BEGIN UNTRUSTED PR DIFF [{nonce}] -----"
     diff_end = f"----- END UNTRUSTED PR DIFF [{nonce}] -----"
     truncation_note = (
-        "The diff was truncated by the wrapper. If truncation prevents a safe "
-        "review, return verdict 'blocked' with a P2 finding explaining that "
-        "the audit input was incomplete."
+        "The diff was truncated by the wrapper. The wrapper should publish an "
+        "UNKNOWN requeue instead of asking for a model finding from incomplete "
+        "input."
         if was_truncated else
         "The diff was not truncated by the wrapper."
     )
@@ -950,6 +992,7 @@ def run_claude_audit(
     config: ClaudeAuditConfig,
     prompt: str,
 ) -> Tuple[ClaudeVerdict, str, str]:
+    max_budget_usd = str(config.max_budget_usd or DEFAULT_MAX_BUDGET_USD)
     resolved_cli = shutil.which(config.claude_cli_path)
     if resolved_cli is not None:
         resolved_cli = str(Path(resolved_cli).expanduser().resolve())
@@ -980,7 +1023,7 @@ def run_claude_audit(
         "--model",
         config.model,
         "--max-budget-usd",
-        config.max_budget_usd,
+        max_budget_usd,
         "--json-schema",
         json.dumps(CLAUDE_VERDICT_SCHEMA, separators=(",", ":")),
     ]
@@ -1028,10 +1071,13 @@ def format_comment(
     actions_run_id: Optional[str] = None,
     unknown_reason: str = "",
     calibration_badge: str = "",
+    diff_notice: str = "",
 ) -> str:
     posture = "merge-authority lane" if merge_authority else "informational only"
     header = f"## Claude audit ({posture})\n\n"
     header += f"Head SHA: `{head_sha}`\n"
+    if diff_notice:
+        header += f"Diff: {_one_line(diff_notice, 300)}\n"
     if badge := _normalize_calibration_badge(calibration_badge):
         header += f"Calibration: {badge}\n"
     if actions_run_id:
@@ -1241,91 +1287,137 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
         file=sys.stderr,
         flush=True,
     )
-    rendered_plan_context = None
-    if config.include_plan_context:
-        rendered_plan_context = code_mower_plan_context.render_plan_context(
-            repo_root=local_repo,
-            project_context_manifest=config.project_context_manifest,
-            external_context_manifest=config.external_context_manifest,
-            max_total_bytes=config.max_plan_context_bytes,
-            max_file_bytes=config.max_plan_context_file_bytes,
-            trusted_git_ref=config.base_ref,
-        )
+    budget_was_explicit = bool(str(config.max_budget_usd or "").strip())
+    effective_budget_usd = code_mower_audit_limits.resolve_audit_budget_usd(
+        diff_context.included_diff_bytes,
+        explicit_budget_usd=config.max_budget_usd,
+        target_diff_bytes=config.max_diff_bytes,
+    )
+    if effective_budget_usd != str(config.max_budget_usd or ""):
         print(
-            "  plan context: "
-            f"{rendered_plan_context.included_documents} section(s), "
-            f"{rendered_plan_context.included_bytes} bytes",
+            f"  claude max budget: ${effective_budget_usd} "
+            f"({'explicit' if budget_was_explicit else 'size-aware default'})",
             file=sys.stderr,
             flush=True,
         )
-
-    prompt = _review_prompt(
-        repo=repo,
-        pr_number=pr_number,
-        head_sha=head_sha_start,
-        base_ref=config.base_ref,
-        branch_name=branch_name,
-        title=title,
-        diff_stat=diff_context.stat,
-        diff_text=diff_context.diff,
-        was_truncated=diff_context.was_truncated,
-        diff_diagnostics=diff_context.diagnostics(),
-        review_doctrine=code_mower_prompts.load_review_prompt(
-            config.prompt_lenses,
-            prompt_dir=config.prompt_dir,
-            trusted_git_ref=None if config.prompt_dir else config.base_ref,
-            repo_root=local_repo,
-            missing_ok=True,
-        ),
-        plan_context_text=(
-            rendered_plan_context.text if rendered_plan_context is not None else ""
-        ),
-    )
+    config = replace(config, max_budget_usd=effective_budget_usd)
 
     raw_output_attempts: List[Dict[str, Any]] = []
     parsed = _unknown_structured_verdict("Claude audit did not run")
     claude_stdout = ""
     claude_stderr = ""
-    attempt_prompt = prompt
     final_fixture_reason: Optional[str] = None
-    t0 = time.time()
-    for attempt in range(1, MAX_CLAUDE_AUDIT_ATTEMPTS + 1):
-        parsed_candidate, attempt_stdout, attempt_stderr = run_claude_audit(
-            config,
-            attempt_prompt,
+    unknown_reason = ""
+
+    if diff_context.was_truncated:
+        unknown_reason = _diff_truncation_unknown_reason(diff_context)
+        parsed = _unknown_structured_verdict(unknown_reason)
+        print(
+            "  diff truncated by wrapper; emitting UNKNOWN instead of "
+            "asking Claude to review incomplete input",
+            file=sys.stderr,
+            flush=True,
         )
-        claude_stdout = attempt_stdout
-        claude_stderr = attempt_stderr
-        parsed, guardrail_reason = _apply_claude_verdict_guardrails(
-            parsed_candidate,
-            diff_context.changed_files,
-        )
-        final_fixture_reason = _fixture_structured_quarantine_reason(parsed_candidate)
-        raw_output_attempts.append(
-            {
-                "attempt": attempt,
-                "stdout": attempt_stdout,
-                "stderr": attempt_stderr,
-                "verdict": parsed_candidate.verdict,
-                "guardrail_rejection": guardrail_reason,
-            }
-        )
-        if guardrail_reason and attempt < MAX_CLAUDE_AUDIT_ATTEMPTS:
+    else:
+        rendered_plan_context = None
+        if config.include_plan_context:
+            rendered_plan_context = code_mower_plan_context.render_plan_context(
+                repo_root=local_repo,
+                project_context_manifest=config.project_context_manifest,
+                external_context_manifest=config.external_context_manifest,
+                max_total_bytes=config.max_plan_context_bytes,
+                max_file_bytes=config.max_plan_context_file_bytes,
+                trusted_git_ref=config.base_ref,
+            )
             print(
-                "  structured-verdict guardrail rejected Claude output: "
-                f"{guardrail_reason}; retrying once",
+                "  plan context: "
+                f"{rendered_plan_context.included_documents} section(s), "
+                f"{rendered_plan_context.included_bytes} bytes",
                 file=sys.stderr,
                 flush=True,
             )
-            attempt_prompt = _guardrail_retry_prompt(
-                prompt,
-                guardrail_reason,
+
+        prompt = _review_prompt(
+            repo=repo,
+            pr_number=pr_number,
+            head_sha=head_sha_start,
+            base_ref=config.base_ref,
+            branch_name=branch_name,
+            title=title,
+            diff_stat=diff_context.stat,
+            diff_text=diff_context.diff,
+            was_truncated=diff_context.was_truncated,
+            diff_diagnostics=diff_context.diagnostics(),
+            review_doctrine=code_mower_prompts.load_review_prompt(
+                config.prompt_lenses,
+                prompt_dir=config.prompt_dir,
+                trusted_git_ref=None if config.prompt_dir else config.base_ref,
+                repo_root=local_repo,
+                missing_ok=True,
+            ),
+            plan_context_text=(
+                rendered_plan_context.text if rendered_plan_context is not None else ""
+            ),
+        )
+
+        attempt_prompt = prompt
+        t0 = time.time()
+        for attempt in range(1, MAX_CLAUDE_AUDIT_ATTEMPTS + 1):
+            parsed_candidate, attempt_stdout, attempt_stderr = run_claude_audit(
+                config,
+                attempt_prompt,
+            )
+            claude_stdout = attempt_stdout
+            claude_stderr = attempt_stderr
+            parsed, guardrail_reason = _apply_claude_verdict_guardrails(
+                parsed_candidate,
                 diff_context.changed_files,
             )
-            continue
-        break
-    dt = time.time() - t0
-    print(f"  claude audit completed in {dt:.0f}s", file=sys.stderr, flush=True)
+            final_fixture_reason = _fixture_structured_quarantine_reason(parsed_candidate)
+            raw_output_attempts.append(
+                {
+                    "attempt": attempt,
+                    "stdout": attempt_stdout,
+                    "stderr": attempt_stderr,
+                    "verdict": parsed_candidate.verdict,
+                    "guardrail_rejection": guardrail_reason,
+                    "max_budget_usd": config.max_budget_usd,
+                }
+            )
+            if (
+                parsed_candidate.verdict == "UNKNOWN"
+                and not budget_was_explicit
+                and _claude_cli_budget_exhausted(attempt_stdout, attempt_stderr)
+                and attempt < MAX_CLAUDE_AUDIT_ATTEMPTS
+            ):
+                raised_budget = code_mower_audit_limits.next_audit_budget_usd(
+                    str(config.max_budget_usd or DEFAULT_MAX_BUDGET_USD)
+                )
+                if raised_budget != config.max_budget_usd:
+                    print(
+                        "  Claude CLI reported budget_exhausted; retrying once "
+                        f"with max budget ${raised_budget}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    config = replace(config, max_budget_usd=raised_budget)
+                    continue
+            if guardrail_reason and attempt < MAX_CLAUDE_AUDIT_ATTEMPTS:
+                print(
+                    "  structured-verdict guardrail rejected Claude output: "
+                    f"{guardrail_reason}; retrying once",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                attempt_prompt = _guardrail_retry_prompt(
+                    prompt,
+                    guardrail_reason,
+                    diff_context.changed_files,
+                )
+                continue
+            break
+        dt = time.time() - t0
+        print(f"  claude audit completed in {dt:.0f}s", file=sys.stderr, flush=True)
     if parsed.mismatch_note:
         print(f"  structured-verdict mismatch: {parsed.mismatch_note}", file=sys.stderr, flush=True)
 
@@ -1333,7 +1425,10 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     head_sha_end = pr_meta_after["head"]["sha"]
     is_stale = head_sha_start != head_sha_end
     actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
-    claude_cli_reason = _claude_cli_failure_reason(claude_stdout, claude_stderr)
+    claude_cli_reason = unknown_reason or _claude_cli_failure_reason(
+        claude_stdout,
+        claude_stderr,
+    )
 
     if is_stale:
         comment_body = format_comment(
@@ -1356,6 +1451,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             actions_run_id=actions_run_id,
             unknown_reason=claude_cli_reason,
             calibration_badge=config.calibration_badge,
+            diff_notice=_diff_truncation_notice(diff_context),
         )
         result_verdict = "UNKNOWN"
         trailer = STALE_TRAILER
@@ -1478,6 +1574,19 @@ def _env_flag_default(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_text(name: str) -> Optional[str]:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _env_int(name: str, default: int) -> int:
+    value = _env_text(name)
+    return int(value) if value is not None else default
+
+
 def _resolve_github_token(read_from_stdin: bool) -> Optional[str]:
     return resolve_github_token_from_stdin_or_env(read_from_stdin)
 
@@ -1498,16 +1607,16 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--repo-paths", default=os.environ.get("CLAUDE_AUDIT_REPO_PATHS", ""))
     ap.add_argument("--claude-cli-path", default=os.environ.get("CLAUDE_CLI_PATH", DEFAULT_CLAUDE_CLI_PATH))
     ap.add_argument("--model", default=os.environ.get("CLAUDE_AUDIT_MODEL", DEFAULT_CLAUDE_MODEL))
-    ap.add_argument("--max-budget-usd", default=os.environ.get("CLAUDE_AUDIT_MAX_BUDGET_USD", DEFAULT_MAX_BUDGET_USD))
+    ap.add_argument("--max-budget-usd", default=_env_text("CLAUDE_AUDIT_MAX_BUDGET_USD"))
     ap.add_argument("--base-ref", default=os.environ.get("CLAUDE_AUDIT_BASE_REF", DEFAULT_BASE_REF))
-    ap.add_argument("--timeout", type=int, default=int(os.environ.get("CLAUDE_AUDIT_TIMEOUT", DEFAULT_CLAUDE_TIMEOUT)))
-    ap.add_argument("--max-diff-bytes", type=int, default=int(os.environ.get("CLAUDE_AUDIT_MAX_DIFF_BYTES", DEFAULT_MAX_DIFF_BYTES)))
+    ap.add_argument("--timeout", type=int, default=_env_int("CLAUDE_AUDIT_TIMEOUT", DEFAULT_CLAUDE_TIMEOUT))
+    ap.add_argument("--max-diff-bytes", type=int, default=_env_int("CLAUDE_AUDIT_MAX_DIFF_BYTES", DEFAULT_MAX_DIFF_BYTES))
     ap.add_argument(
         "--max-diff-hard-limit-bytes",
         type=int,
         default=(
-            int(os.environ["CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES"])
-            if "CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES" in os.environ
+            int(_env_text("CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES") or "0")
+            if _env_text("CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES") is not None
             else None
         ),
         help=(
@@ -1678,7 +1787,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             repo_paths=repo_paths,
             claude_cli_path=args.claude_cli_path,
             model=args.model,
-            max_budget_usd=str(args.max_budget_usd),
+            max_budget_usd=str(args.max_budget_usd) if args.max_budget_usd else None,
             base_ref=args.base_ref,
             timeout=args.timeout,
             max_diff_bytes=args.max_diff_bytes,
