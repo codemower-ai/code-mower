@@ -63,6 +63,7 @@ fi
 case "$repo_owner" in *[!A-Za-z0-9_.-]*) echo "--repo owner contains unsupported characters" >&2; exit 2 ;; esac
 case "$repo_name" in *[!A-Za-z0-9_.-]*) echo "--repo name contains unsupported characters" >&2; exit 2 ;; esac
 repo_key="${repo_owner}__${repo_name}"
+expected_repo_slug="$(printf '%s\n' "$REPO" | tr '[:upper:]' '[:lower:]')"
 work_root="${LANE_WORK_ROOT:-${HOME}/actions-runner/_work/lanes}"
 work="${work_root}/${LANE}/${repo_key}"
 log_dir="${HOME}/.cache/code-mower-lanes/${LANE}/${repo_key}"
@@ -106,9 +107,14 @@ elif [ -n "$TARGET" ]; then
 fi
 
 if [ -z "$kind" ]; then
-  jq_filter="[.[] | select(any(.labels[]; ${audit_block_filter}))] | sort_by(.updatedAt) | .[0].number // empty"
-  num="$(gh pr list -R "$REPO" --state open --label "$builder_label" --limit 100 \
-    --json number,labels,updatedAt -q "$jq_filter")"
+  num="$(
+    gh pr list -R "$REPO" --state open --label "$builder_label" --limit 100 \
+      --json number,labels,updatedAt,headRepository \
+      | jq -r --arg repo "$expected_repo_slug" '
+        def same_head_repo: ((.headRepository.nameWithOwner // "") | ascii_downcase) == $repo;
+        [.[] | select(same_head_repo) | select(any(.labels[]; '"${audit_block_filter}"'))]
+        | sort_by(.updatedAt) | .[0].number // empty'
+  )"
   [ -n "$num" ] && kind="pr" && mode="fix"
 fi
 
@@ -238,12 +244,23 @@ HOOK
   chmod +x "$hook"
 }
 
-default_branch="$(gh repo view "$REPO" --json defaultBranchRef -q '.defaultBranchRef.name' 2>/dev/null || echo main)"
 target_pr_branch=""
 if [ "$kind" = "pr" ]; then
-  target_pr_branch="$(gh pr view "$num" -R "$REPO" --json headRefName -q '.headRefName' 2>/dev/null || true)"
+  target_pr_json="$(gh pr view "$num" -R "$REPO" --json headRefName,headRepository 2>/dev/null || true)"
+  target_pr_repo=""
+  if [ -n "$target_pr_json" ]; then
+    target_pr_branch="$(printf '%s\n' "$target_pr_json" | jq -r '.headRefName // empty')"
+    target_pr_repo="$(printf '%s\n' "$target_pr_json" | jq -r '.headRepository.nameWithOwner // empty')"
+  fi
+  if [ "$mode" != "audit" ]; then
+    target_pr_repo_slug="$(printf '%s\n' "$target_pr_repo" | tr '[:upper:]' '[:lower:]')"
+    if [ -z "$target_pr_repo_slug" ] || [ "$target_pr_repo_slug" != "$expected_repo_slug" ]; then
+      echo "${LANE}: refusing ${mode} PR #${num}; head repository ${target_pr_repo:-missing} does not match ${REPO}" >&2
+      exit 1
+    fi
+  fi
 fi
-expected_repo_slug="$(printf '%s\n' "$REPO" | tr '[:upper:]' '[:lower:]')"
+default_branch="$(gh repo view "$REPO" --json defaultBranchRef -q '.defaultBranchRef.name' 2>/dev/null || echo main)"
 if [ -d "${work}/.git" ]; then
   origin_url="$(git -C "$work" config --get remote.origin.url 2>/dev/null || true)"
   origin_slug="$(remote_repo_slug "$origin_url")"

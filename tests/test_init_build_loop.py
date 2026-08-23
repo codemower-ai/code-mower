@@ -139,6 +139,12 @@ class InitBuildLoopTests(unittest.TestCase):
             self.assertNotIn("cursor[bot]", runner_text)
             self.assertIn("remote_repo_slug()", runner_text)
             self.assertIn('install_pre_push_guard "$target_pr_branch" "$mode"', runner_text)
+            self.assertIn("--json number,labels,updatedAt,headRepository", runner_text)
+            self.assertIn("def same_head_repo", runner_text)
+            self.assertIn(
+                "head repository ${target_pr_repo:-missing} does not match ${REPO}",
+                runner_text,
+            )
             self.assertIn("[omitted: issue title author is not trusted]", runner_text)
             self.assertIn("[omitted: PR title author is not trusted]", runner_text)
             self.assertIn("has_open_pr_for_issue()", runner_text)
@@ -383,7 +389,7 @@ set -euo pipefail
 cmd="${1:-} ${2:-}"
 args=" $* "
 if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
-  printf '\\n'
+  printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:codex"},{"name":"dispatched:codex"}],"assignees":[],"author":{"login":"owner"}}]'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
@@ -491,6 +497,107 @@ printf 'fake codex completed\\n'
         self.assertEqual(good_push.returncode, 0, good_push.stderr)
         self.assertNotEqual(bad_push.returncode, 0)
         self.assertIn("refusing codex push to branch claude/test", bad_push.stderr)
+
+    def test_mac_lane_runner_skips_fork_prs_when_selecting_fix_round(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
+  printf '%s\\n' '[{"number":21,"labels":[{"name":"builder:codex"},{"name":"codex-audit-blocked"}],"updatedAt":"2026-01-01T00:00:00Z","headRepository":{"nameWithOwner":"fork/repo"}}]'
+elif [ "$cmd" = "issue list" ]; then
+  printf '%s\\n' '[]'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(ROOT / "tools/lanes/run_mac_lane.sh"),
+                    "--lane",
+                    "codex",
+                    "--repo",
+                    "owner/repo",
+                    "--max-minutes",
+                    "1",
+                ],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+        self.assertIn("codex: nothing to do", completed.stdout)
+        self.assertNotIn("selected fix pr #21", completed.stdout)
+
+    def test_mac_lane_runner_rejects_fork_pr_target_before_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+if [ "$cmd" = "pr view" ]; then
+  printf '%s\\n' '{"headRefName":"codex/fix","headRepository":{"nameWithOwner":"fork/repo"}}'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(ROOT / "tools/lanes/run_mac_lane.sh"),
+                    "--lane",
+                    "codex",
+                    "--repo",
+                    "owner/repo",
+                    "--max-minutes",
+                    "1",
+                    "--target",
+                    "pr:21",
+                ],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("codex: selected target pr #21", completed.stdout)
+        self.assertIn(
+            "refusing target PR #21; head repository fork/repo does not match owner/repo",
+            completed.stderr,
+        )
 
     def test_build_loop_owner_surface_parameters_render_into_templates(self) -> None:
         cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
@@ -631,6 +738,12 @@ printf 'fake codex completed\\n'
         self.assertEqual(
             code_mower_init._github_repo_slug_from_remote(
                 "https://github.com/target/repo.git",
+            ),
+            "target/repo",
+        )
+        self.assertEqual(
+            code_mower_init._github_repo_slug_from_remote(
+                "ssh://git@github.com/target/repo.git",
             ),
             "target/repo",
         )

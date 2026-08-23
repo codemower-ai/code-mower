@@ -347,6 +347,8 @@ def _github_repo_slug_from_remote(remote_url: str) -> str:
         remote = remote.removeprefix("https://github.com/")
     elif remote.startswith("http://github.com/"):
         remote = remote.removeprefix("http://github.com/")
+    elif remote.startswith("ssh://git@github.com/"):
+        remote = remote.removeprefix("ssh://git@github.com/")
     else:
         return ""
     slug = remote.removesuffix(".git").strip("/")
