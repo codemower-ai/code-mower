@@ -404,6 +404,133 @@ class ClaudeAuditPrTests(unittest.TestCase):
             self.assertIn("# claude_api_error_status: 401", dump_text)
             self.assertIn("Not logged in", dump_text)
 
+    def test_claude_audit_uses_size_aware_default_budget_for_large_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            head_sha = "e" * 40
+            pr_payload = {"head": {"sha": head_sha, "ref": "human/large"}, "title": "Fix"}
+            clean = cap.parse_structured_claude_verdict(
+                {
+                    "schema": cap.CLAUDE_AUDIT_SCHEMA_ID,
+                    "verdict": "pass",
+                    "summary": "No merge-blocking regressions found in this review.",
+                    "findings": [],
+                }
+            )
+            diff_context = cap.DiffContext(
+                "src/large.py | 1000 +",
+                "diff --git a/src/large.py b/src/large.py\n" + ("+" * 999_950),
+                ("src/large.py",),
+                False,
+                cap.DEFAULT_MAX_DIFF_BYTES,
+                cap.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES,
+                1_000_000,
+                1_000_000,
+                True,
+            )
+            config = cap.ClaudeAuditConfig(
+                "token",
+                {"owner/repo": repo},
+                include_plan_context=False,
+            )
+
+            def fake_run(
+                run_config: cap.ClaudeAuditConfig,
+                _prompt: str,
+            ) -> tuple[cap.ClaudeVerdict, str, str]:
+                self.assertEqual(run_config.max_budget_usd, "8.00")
+                return clean, '{"structured_output":"pass"}', ""
+
+            with (
+                mock.patch.dict(
+                    "os.environ",
+                    {
+                        "PYTEST_CURRENT_TEST": "",
+                        "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                        "GITHUB_RUN_ID": "",
+                    },
+                ),
+                mock.patch.object(
+                    cap,
+                    "fetch_pull_request",
+                    side_effect=[pr_payload, pr_payload],
+                ),
+                mock.patch.object(cap, "_build_diff_context", return_value=diff_context),
+                mock.patch.object(
+                    cap.code_mower_prompts,
+                    "load_review_prompt",
+                    return_value="",
+                ),
+                mock.patch.object(cap, "run_claude_audit", side_effect=fake_run),
+                mock.patch.object(
+                    cap,
+                    "post_pr_comment",
+                    return_value={"html_url": "https://github.test/comment/1"},
+                ),
+            ):
+                result = cap.audit_pr(config, "owner/repo", 42)
+
+            self.assertEqual(result.verdict, "PASS")
+            self.assertNotIn("budget_exhausted", result.comment_body)
+
+    def test_claude_truncated_diff_posts_unknown_without_blocking_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            head_sha = "f" * 40
+            pr_payload = {"head": {"sha": head_sha, "ref": "human/huge"}, "title": "Fix"}
+            diff_context = cap.DiffContext(
+                "src/huge.py | 2000 +",
+                "diff --git a/src/huge.py b/src/huge.py\n[diff truncated]",
+                ("src/huge.py",),
+                True,
+                cap.DEFAULT_MAX_DIFF_BYTES,
+                cap.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES,
+                cap.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES + 1,
+                cap.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES,
+                False,
+            )
+            config = cap.ClaudeAuditConfig(
+                "token",
+                {"owner/repo": repo},
+                include_plan_context=False,
+            )
+
+            with (
+                mock.patch.dict(
+                    "os.environ",
+                    {
+                        "PYTEST_CURRENT_TEST": "",
+                        "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                        "GITHUB_RUN_ID": "",
+                    },
+                ),
+                mock.patch.object(cap, "DEFAULT_CLAUDE_CLI_FAILURE_DIR", tmp_path / "failures"),
+                mock.patch.object(
+                    cap,
+                    "fetch_pull_request",
+                    side_effect=[pr_payload, pr_payload],
+                ),
+                mock.patch.object(cap, "_build_diff_context", return_value=diff_context),
+                mock.patch.object(cap, "run_claude_audit") as run_claude,
+                mock.patch.object(
+                    cap,
+                    "post_pr_comment",
+                    return_value={"html_url": "https://github.test/comment/1"},
+                ),
+            ):
+                result = cap.audit_pr(config, "owner/repo", 42)
+
+            self.assertEqual(result.verdict, "UNKNOWN")
+            run_claude.assert_not_called()
+            self.assertIn("Diff: truncated by wrapper", result.comment_body)
+            self.assertIn(cap.UNKNOWN_REQUEUE_MARKER, result.comment_body)
+            self.assertNotIn("Claude Audit: BLOCKED", result.comment_body)
+            self.assertNotIn("- [P2]", result.comment_body)
+
     def test_audit_exit_code_keeps_stale_neutral_and_unknown_loud(self) -> None:
         self.assertEqual(cap._audit_exit_code("STALE"), 0)
         self.assertEqual(cap._audit_exit_code("stale"), 0)

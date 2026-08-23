@@ -16,11 +16,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+if __package__ in {None, "", "tools"}:
+    try:
+        from tools import audit_limits
+    except ImportError:  # pragma: no cover - direct script execution fallback.
+        import audit_limits  # type: ignore
+else:  # pragma: no cover - exercised after package extraction.
+    from . import audit_limits
+
 
 ALLOWED_LANE_TYPES = {"audit", "review"}
 ALLOWED_DRIVERS = {"local_cli", "manual", "hosted_bridge", "saas_event", "api_model"}
 ALLOWED_EVENTS = {"issue_comment", "pull_request_review", "check_run"}
 ALLOWED_SPEND_POLICIES = {"none", "local", "included", "paid"}
+ALLOWED_AUDIT_KEYS = {"budget_usd", "max_diff_bytes", "max_diff_hard_limit_bytes"}
 BUILDER_IDENTITY_SECTIONS = {
     "labels",
     "authors",
@@ -446,6 +455,40 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
         for key in ("dispatch_token_env", "dispatch_token_expires_var"):
             if key in owner_surface_map:
                 _require_env_name(owner_surface_map.get(key), f"owner_surface.{key}", issues)
+
+    raw_audit = config.get("audit")
+    if raw_audit is not None:
+        audit_map = _as_mapping(raw_audit, "audit", issues)
+        for key in audit_map:
+            if key not in ALLOWED_AUDIT_KEYS:
+                issues.append(
+                    ConfigIssue(
+                        f"audit.{key}",
+                        "must be budget_usd, max_diff_bytes, or max_diff_hard_limit_bytes",
+                    )
+                )
+        if "budget_usd" in audit_map:
+            try:
+                audit_limits.parse_budget_usd(
+                    audit_map.get("budget_usd"),
+                    field_name="audit.budget_usd",
+                )
+            except ValueError as exc:
+                issues.append(ConfigIssue("audit.budget_usd", str(exc)))
+        for key in ("max_diff_bytes", "max_diff_hard_limit_bytes"):
+            if key not in audit_map:
+                continue
+            try:
+                audit_limits.parse_positive_int(
+                    audit_map.get(key),
+                    field_name=f"audit.{key}",
+                )
+            except ValueError as exc:
+                issues.append(ConfigIssue(f"audit.{key}", str(exc)))
+        try:
+            audit_limits.audit_limits_from_config(config)
+        except ValueError as exc:
+            issues.append(ConfigIssue("audit", str(exc)))
 
     all_labels: dict[str, str] = {}
     for lane_id, lane in lanes.items():

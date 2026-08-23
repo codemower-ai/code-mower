@@ -72,6 +72,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_context_packs.py", "src/code_mower/code_mower_context_packs.py", "core"),
     ("tools/code_mower_doctor.py", "src/code_mower/doctor.py", "core"),
     ("src/code_mower/doctor_checks/__init__.py", "src/code_mower/doctor_checks/__init__.py", "core"),
+    ("src/code_mower/doctor_checks/audit_limits.py", "src/code_mower/doctor_checks/audit_limits.py", "core"),
     ("src/code_mower/doctor_checks/cloud.py", "src/code_mower/doctor_checks/cloud.py", "core"),
     ("src/code_mower/doctor_checks/common.py", "src/code_mower/doctor_checks/common.py", "core"),
     ("src/code_mower/doctor_checks/github_actions.py", "src/code_mower/doctor_checks/github_actions.py", "core"),
@@ -240,6 +241,7 @@ PACKAGE_FILES = (
     ("tools/blind_review_artifacts.py", "src/code_mower/blind_review_artifacts.py", "core"),
     ("tools/audit_handoff_log.py", "src/code_mower/audit_handoff_log.py", "core"),
     ("tools/audit_labeler_lib.py", "src/code_mower/audit_labeler_lib.py", "core"),
+    ("tools/audit_limits.py", "src/code_mower/audit_limits.py", "core"),
     ("tools/audit_progress.py", "src/code_mower/audit_progress.py", "core"),
     (
         "src/code_mower/provider_runners/__init__.py",

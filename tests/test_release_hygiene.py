@@ -2101,8 +2101,12 @@ jobs:
         self.assertIn("DISPATCH_TOKEN", plan.data["required_secrets"])
         self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", plan.data["required_variables"])
         self.assertEqual(plan.data["human_automation_token"]["secret"], "DISPATCH_TOKEN")
+        self.assertEqual(plan.data["audit"]["max_diff_bytes"], 180_000)
+        self.assertEqual(plan.data["audit"]["max_diff_hard_limit_bytes"], 1_500_000)
+        self.assertEqual(plan.data["audit"]["budget_usd"], "")
         self.assertIn("builder:grok-bot", plan.data["labels"])
         self.assertIn("require `code-mower/gate` from Any source", plan.text)
+        self.assertIn("Audit limits:", plan.text)
         self.assertIn("app_id: 15368", plan.text)
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2237,6 +2241,12 @@ jobs:
             self.assertIn("needs-codex-audit", local_cli_audit)
             self.assertIn("needs-claude-audit", local_cli_audit)
             self.assertIn("DISPATCH_TOKEN", local_cli_audit)
+            self.assertIn("CLAUDE_AUDIT_MAX_BUDGET_USD", local_cli_audit)
+            self.assertIn("CLAUDE_AUDIT_MAX_DIFF_BYTES", local_cli_audit)
+            self.assertIn("CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES", local_cli_audit)
+            self.assertIn("CODEX_AUDIT_MAX_BUDGET_USD", local_cli_audit)
+            self.assertIn("CODEX_AUDIT_MAX_DIFF_BYTES", local_cli_audit)
+            self.assertIn("CODEX_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES", local_cli_audit)
             self.assertNotIn("CODEX_AUDIT_LABEL_TOKEN", local_cli_audit)
             self.assertNotIn("CLAUDE_AUDIT_LABEL_TOKEN", local_cli_audit)
             self.assertIn("tools/run_codex_audit_pr.sh", local_cli_audit)
@@ -2305,12 +2315,24 @@ jobs:
             )
             self.assertTrue(audit_job["concurrency"]["cancel-in-progress"])
             self.assertIn("lane", audit_job["strategy"]["matrix"])
+            first_lane = audit_job["strategy"]["matrix"]["lane"][0]
+            self.assertEqual(first_lane["audit_budget_usd"], "")
+            self.assertEqual(first_lane["audit_max_diff_bytes"], "180000")
+            self.assertEqual(first_lane["audit_max_diff_hard_limit_bytes"], "1500000")
             run_step = next(
                 step
                 for step in audit_job["steps"]
                 if step["name"] == "Run matching local CLI audits"
             )
             self.assertEqual(run_step["id"], "run_audit")
+            self.assertEqual(
+                run_step["env"]["CLAUDE_AUDIT_MAX_BUDGET_USD"],
+                "${{ matrix.lane.audit_budget_usd }}",
+            )
+            self.assertEqual(
+                run_step["env"]["CODEX_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES"],
+                "${{ matrix.lane.audit_max_diff_hard_limit_bytes }}",
+            )
             self.assertIn("audited=false", run_step["run"])
             self.assertIn("audited=true", run_step["run"])
             self.assertIn(
