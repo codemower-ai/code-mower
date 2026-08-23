@@ -1111,6 +1111,12 @@ def _extract_structured_output(stdout: str) -> ClaudeVerdict:
         return _unknown_structured_verdict(
             f"Claude CLI reported error: {data.get('result') or data.get('subtype') or 'unknown'}"
         )
+    if data.get("schema") == CLAUDE_AUDIT_SCHEMA_ID and {
+        "verdict",
+        "summary",
+        "findings",
+    } <= data.keys():
+        return parse_structured_claude_verdict(data)
     structured = data.get("structured_output")
     if structured is None:
         result_payload = data.get("result")

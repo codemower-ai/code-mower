@@ -302,7 +302,11 @@ class ReleaseHygieneTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     command,
                     0,
-                    stdout="--output-schema\n--output-last-message\n",
+                    stdout=(
+                        "Usage: codex exec [OPTIONS] [PROMPT]\n"
+                        "If `-` is used, read from stdin\n"
+                        "--output-schema\n--output-last-message\n"
+                    ),
                     stderr="",
                 )
             if command == ["codex", "exec", "review", "--help"]:
@@ -332,6 +336,47 @@ class ReleaseHygieneTests(unittest.TestCase):
             mock.patch.object(codex_audit_pr.subprocess, "run", side_effect=fake_run),
         ):
             with self.assertRaisesRegex(RuntimeError, "--skip-git-repo-check"):
+                codex_audit_pr.preflight_codex_cli(config)
+
+    def test_codex_audit_preflight_requires_plain_exec_stdin_prompt(self) -> None:
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if command == ["codex", "--version"]:
+                return subprocess.CompletedProcess(command, 0, stdout="codex 0.140.0\n", stderr="")
+            if command == ["codex", "exec", "--help"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=(
+                        "Usage: codex exec [OPTIONS]\n"
+                        "--skip-git-repo-check\n"
+                        "--output-schema\n"
+                        "--output-last-message\n"
+                    ),
+                    stderr="",
+                )
+            if command == ["codex", "exec", "review", "--help"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="--base\n--output-last-message\n",
+                    stderr="",
+                )
+            raise AssertionError(f"unexpected command: {command}")
+
+        config = codex_audit_pr.AuditConfig(
+            github_token="",
+            repo_paths={},
+            codex_cli_path="codex",
+        )
+        with (
+            mock.patch.object(
+                codex_audit_pr,
+                "_resolve_executable_path",
+                return_value="codex",
+            ),
+            mock.patch.object(codex_audit_pr.subprocess, "run", side_effect=fake_run),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "codex exec - stdin prompt"):
                 codex_audit_pr.preflight_codex_cli(config)
 
     def test_internal_package_seams_keep_cli_first_surface(self) -> None:
