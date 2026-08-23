@@ -55,6 +55,32 @@ class GitHubPrHelperTests(unittest.TestCase):
             ]
         )
 
+    def test_fetch_pull_request_files_returns_accumulated_files_on_empty_page(self) -> None:
+        page_one = [{"filename": f"file_{index}.py"} for index in range(100)]
+        with mock.patch.object(
+            github_pr,
+            "_gh_request",
+            side_effect=[page_one, []],
+        ) as request:
+            files = github_pr.fetch_pull_request_files("owner/repo", 12, token="ghs_token")
+
+        self.assertEqual(files, page_one)
+        self.assertEqual(request.call_count, 2)
+        request.assert_has_calls(
+            [
+                mock.call(
+                    "GET",
+                    "/repos/owner/repo/pulls/12/files?per_page=100&page=1",
+                    token="ghs_token",
+                ),
+                mock.call(
+                    "GET",
+                    "/repos/owner/repo/pulls/12/files?per_page=100&page=2",
+                    token="ghs_token",
+                ),
+            ]
+        )
+
     def test_fetch_pull_request_files_rejects_non_list_payload(self) -> None:
         with mock.patch.object(github_pr, "_gh_request", return_value={"message": "bad"}):
             with self.assertRaisesRegex(ValueError, "files response was not a list"):

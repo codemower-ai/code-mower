@@ -96,7 +96,7 @@ def fetch_pull_request_files(
             token=token,
         )
         if not chunk:
-            return all_comments
+            return all_files
         if not isinstance(chunk, list):
             raise ValueError("GitHub pull request files response was not a list")
         all_files.extend(chunk)
