@@ -71,13 +71,33 @@ class DecisionMarkerTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].source, "https://example.test/c")
 
-    def test_decision_coverage_matches_identifier_and_phrase_forms(self) -> None:
+    def test_decision_coverage_matches_explicit_finding_id(self) -> None:
         record = decisions.DecisionRecord(
             id="ADR-007",
             scope="finding",
             resolves="HOST_DISPLAY_NAME",
             by="owner",
             ref="ADR-007",
+        )
+        body = """
+    Findings:
+
+    - [P2] HOST_DISPLAY_NAME class-B finding repeats -- `src/display.py:12`
+      The bridge exposes the configured host display name.
+    """
+
+        self.assertTrue(decisions.audit_blockers_are_decision_covered(body, (record,)))
+        self.assertEqual(
+            decisions.decision_covered_blocker_ids(body, (record,)),
+            ("ADR-007",),
+        )
+
+    def test_decision_coverage_matches_normalized_full_title(self) -> None:
+        record = decisions.DecisionRecord(
+            id="ADR-008",
+            scope="finding",
+            resolves="host display-name remains accepted: by policy",
+            by="owner",
         )
         body = """
 Findings:
@@ -87,10 +107,70 @@ Findings:
 """
 
         self.assertTrue(decisions.audit_blockers_are_decision_covered(body, (record,)))
-        self.assertEqual(
-            decisions.decision_covered_blocker_ids(body, (record,)),
-            ("ADR-007",),
+
+    def test_decision_coverage_matches_exact_file_line_location(self) -> None:
+        record = decisions.DecisionRecord(
+            id="ADR-009",
+            scope="finding",
+            resolves="src/display.py:12",
+            by="owner",
         )
+        body = """
+Findings:
+
+- [P2] Host display name remains accepted by policy -- `src/display.py:12`
+  The bridge exposes the configured host display name.
+"""
+
+        self.assertTrue(decisions.audit_blockers_are_decision_covered(body, (record,)))
+
+    def test_decision_coverage_rejects_unscoped_substrings(self) -> None:
+        record = decisions.DecisionRecord(
+            id="ADR-010",
+            scope="finding",
+            resolves="HOST_DISPLAY_NAME",
+            by="owner",
+        )
+        body = """
+Findings:
+
+- [P2] Later blocker mentions an accepted variable -- `src/other.py:9`
+  HOST_DISPLAY_NAME appears in the detail, but this is a different finding.
+"""
+
+        self.assertFalse(decisions.audit_blockers_are_decision_covered(body, (record,)))
+
+    def test_decision_coverage_rejects_interior_identifier_substrings(self) -> None:
+        record = decisions.DecisionRecord(
+            id="ADR-012",
+            scope="finding",
+            resolves="HOST_DISPLAY_NAME",
+            by="owner",
+        )
+        body = """
+Findings:
+
+- [P2] Later blocker mentions HOST_DISPLAY_NAME reuse -- `src/other.py:9`
+  This is a different finding with a different title identity.
+"""
+
+        self.assertFalse(decisions.audit_blockers_are_decision_covered(body, (record,)))
+
+    def test_decision_coverage_rejects_partial_title_substrings(self) -> None:
+        record = decisions.DecisionRecord(
+            id="ADR-011",
+            scope="finding",
+            resolves="display name",
+            by="owner",
+        )
+        body = """
+Findings:
+
+- [P2] Host display name remains accepted by policy -- `src/display.py:12`
+  The bridge exposes the configured host display name.
+"""
+
+        self.assertFalse(decisions.audit_blockers_are_decision_covered(body, (record,)))
 
     def test_bridge_pro_311_fixture_decision_covered_p2_yields_codex_done(self) -> None:
         os.environ.pop("CODEX_BOT_AUTHORS", None)

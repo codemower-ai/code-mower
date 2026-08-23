@@ -109,10 +109,12 @@ The command prints a PR-comment body containing
 `<!-- CODE_MOWER_DECISION: ... -->`; add `--repo OWNER/REPO --issue 123 --post`
 to post it directly. Codex and Claude audits collect trusted
 `CODE_MOWER_DECISION` markers from the PR comments into their audit context.
-Findings whose title, location, or detail matches the marker's `resolves` value
-must be reported as P3 `acknowledged by decision <id>` and must not block. The
-trailer labeler and merge gate also treat a blocked audit comment as done when
-all P0, P1, and P2 findings in that comment are covered by trusted decisions.
+The marker's `resolves` value must equal an explicit finding id in the title,
+the normalized full finding title, or the exact file:line location. Substring
+and detail-only matches are intentionally ignored. Covered findings must be
+reported as P3 `acknowledged by decision <id>` and must not block. The trailer
+labeler and merge gate also treat a blocked audit comment as done when all P0,
+P1, and P2 findings in that comment are covered by trusted decisions.
 Gate health also treats open PRs with a `builder:<lane>` label plus an
 unresolved `*-audit-blocked` label as stalled with work when that lane has not
 authored a PR commit or comment within `gate_health_liveness_minutes`; the

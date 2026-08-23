@@ -23,6 +23,14 @@ FINDING_HEADER_RE = re.compile(
     r"^\s*-\s+\[(P[0-3])\]\s+(.*?)(?:\s+--\s+`?([^`\n]+)`?)?\s*$",
     flags=re.IGNORECASE,
 )
+FINDING_ID_RE = re.compile(
+    r"^\s*(?:"
+    r"`(?P<backtick>[A-Za-z0-9][A-Za-z0-9._:/#_-]{1,120})`"
+    r"|\[(?P<bracket>[A-Za-z0-9][A-Za-z0-9._:/#_-]{1,120})\]"
+    r"|(?P<plain>[A-Z][A-Z0-9._:/#_-]{2,120})(?=\b|[\s:-])"
+    r")"
+)
+FILE_LINE_RE = re.compile(r"^.+:\d+(?::\d+)?$")
 TRUSTED_DECISION_AUTHOR_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 VALID_DECISION_SCOPES = frozenset({"finding", "topic"})
 VALID_DECISION_ACTORS = frozenset({"owner", "orchestrator"})
@@ -53,8 +61,8 @@ class AuditFinding:
         return self.severity.upper() in {"P0", "P1", "P2"}
 
     @property
-    def searchable_text(self) -> str:
-        return " ".join(part for part in (self.title, self.location, self.detail) if part)
+    def explicit_id(self) -> str:
+        return _explicit_finding_id(self.title)
 
 
 def _compact(value: object, max_chars: int = MAX_DECISION_FIELD_CHARS) -> str:
@@ -180,6 +188,8 @@ def render_decision_registry_context(decisions: Sequence[DecisionRecord]) -> str
         "Code Mower decision registry",
         "",
         "Recorded CODE_MOWER_DECISION markers from trusted PR or issue comments:",
+        "Coverage matching is exact: `resolves` must equal an explicit finding "
+        "id, the normalized full finding title, or the exact file:line location.",
         "",
     ]
     for decision in decisions[:MAX_DECISION_RENDERED]:
@@ -241,16 +251,48 @@ def _normalized_match_text(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
 
 
+def _normalized_identifier(text: str) -> str:
+    return _compact(text).strip("`[]").casefold()
+
+
+def _explicit_finding_id(title: str) -> str:
+    match = FINDING_ID_RE.match(title or "")
+    if not match:
+        return ""
+    value = match.group("backtick") or match.group("bracket") or match.group("plain") or ""
+    value = _compact(value)
+    if match.group("plain") and not re.search(r"[0-9._:/#_-]", value):
+        return ""
+    return value
+
+
+def _location_is_file_line(location: str) -> bool:
+    return bool(FILE_LINE_RE.fullmatch(_compact(location)))
+
+
 def decision_matches_text(decision: DecisionRecord, text: str) -> bool:
     needle = _compact(decision.resolves)
     if not needle:
         return False
-    haystack = text or ""
-    if needle.lower() in haystack.lower():
-        return True
     normalized_needle = _normalized_match_text(needle)
-    normalized_haystack = _normalized_match_text(haystack)
-    return bool(normalized_needle and normalized_needle in normalized_haystack)
+    normalized_haystack = _normalized_match_text(text or "")
+    return bool(normalized_needle and normalized_needle == normalized_haystack)
+
+
+def decision_matches_finding(decision: DecisionRecord, finding: AuditFinding) -> bool:
+    needle = _compact(decision.resolves)
+    if not needle:
+        return False
+    explicit_id = finding.explicit_id
+    if explicit_id and _normalized_identifier(needle) == _normalized_identifier(explicit_id):
+        return True
+    if decision_matches_text(decision, finding.title):
+        return True
+    return bool(
+        finding.location
+        and _location_is_file_line(finding.location)
+        and _compact(needle).casefold() == _compact(finding.location).casefold()
+    )
 
 
 def decision_for_finding(
@@ -260,7 +302,7 @@ def decision_for_finding(
     for decision in decisions:
         if decision.scope not in VALID_DECISION_SCOPES:
             continue
-        if decision_matches_text(decision, finding.searchable_text):
+        if decision_matches_finding(decision, finding):
             return decision
     return None
 
@@ -340,7 +382,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--resolves",
         required=True,
-        help="Finding/topic text auditors should match, for example HOST_DISPLAY_NAME.",
+        help=(
+            "Explicit finding id, normalized title, or file:line location, "
+            "for example HOST_DISPLAY_NAME."
+        ),
     )
     parser.add_argument(
         "--by",

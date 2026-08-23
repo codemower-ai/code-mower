@@ -123,7 +123,7 @@ def fetch_issue_comments(
             token=token,
         )
         if not chunk:
-            break
+            return all_comments
         if not isinstance(chunk, list):
             raise ValueError("GitHub issue comments response was not a list")
         all_comments.extend(comment for comment in chunk if isinstance(comment, dict))

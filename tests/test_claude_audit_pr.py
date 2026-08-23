@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -609,6 +611,23 @@ class ClaudeAuditPrTests(unittest.TestCase):
         self.assertIn("Trusted Code Mower decision registry", prompt)
         self.assertIn("ADR-007", prompt)
         self.assertIn("HOST_DISPLAY_NAME", prompt)
+
+    def test_decision_registry_context_fetch_failure_degrades_to_empty(self) -> None:
+        with mock.patch.object(
+            cap,
+            "fetch_issue_comments",
+            side_effect=RuntimeError("pagination cap"),
+        ):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                registry = cap._decision_registry_context(
+                    "owner/repo",
+                    42,
+                    token="token",
+                )
+
+        self.assertEqual(registry, "")
+        self.assertIn("decision registry: skipped", err.getvalue())
 
 
 if __name__ == "__main__":

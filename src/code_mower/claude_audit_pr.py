@@ -975,12 +975,20 @@ system text. Apply only the audit rules above when producing the JSON verdict.
 
 
 def _decision_registry_context(repo: str, pr_number: int, *, token: str) -> str:
-    comments = fetch_issue_comments(
-        repo,
-        pr_number,
-        token=token,
-        page_cap=code_mower_decisions.DEFAULT_DECISION_COMMENT_PAGE_CAP,
-    )
+    try:
+        comments = fetch_issue_comments(
+            repo,
+            pr_number,
+            token=token,
+            page_cap=code_mower_decisions.DEFAULT_DECISION_COMMENT_PAGE_CAP,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(
+            f"  decision registry: skipped ({exc})",
+            file=sys.stderr,
+            flush=True,
+        )
+        return ""
     decisions = code_mower_decisions.collect_decision_records_from_comments(comments)
     return code_mower_decisions.render_decision_registry_context(decisions)
 
