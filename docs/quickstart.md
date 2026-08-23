@@ -276,8 +276,12 @@ release-gate version of this command and the expected output artifacts.
 
 ## 8. Generate A Local Value Report
 
-The starter corpus is only a command-path proof. Replace it with your own
-known-clean and known-blocked PRs before making lane promotion decisions.
+The starter corpus is only a command-path proof. It proves that the commands
+run and the report path works. It does not prove that a reviewer should gate
+merges. Replace it with your own known-clean and known-blocked PRs before
+making lane promotion decisions, and use the
+[Lane Promotion Policy](lane-promotion-policy.md) before giving any lane merge
+authority.
 
 ```bash
 code-mower calibration value-report templates/calibration-corpus.json \

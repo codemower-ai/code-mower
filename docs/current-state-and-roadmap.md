@@ -22,17 +22,15 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current verified public beta baseline is `v0.5.0-beta.51`, published on
-PyPI as `code-mower==0.5.0b51`. It is intended to be installed from the package
-index for friendly-user pilots, with GitHub tag/source installs kept as a
-fallback and development path. Beta.50 is the current baseline after the
-Bridge Pro merge-gate dogfood follow-up: it keeps the PyPI-first install path,
-trusted publishing, release rehearsal, production dogfood upload shape,
-catch-up provenance, stale-audit inspection, AI tool/model source diagnostics,
-CodeMower.com trust guidance, generated gate hardening, owner-bound WIP
-hygiene, lane liveness checks, fix-round templates, human-token diagnostics,
-owner-decision escalation, and provider sandbox/live guardrails in one verified
-release line.
+The current verified public beta baseline is `v0.5.0-beta.51`, published on PyPI as `code-mower==0.5.0b51`.
+It is intended to be installed from the package index for friendly-user pilots,
+with GitHub tag/source installs kept as a fallback and development path. This
+baseline keeps the PyPI-first install path, trusted publishing, release
+rehearsal, production dogfood upload shape, catch-up provenance, stale-audit
+inspection, AI tool/model source diagnostics, CodeMower.com trust guidance,
+generated gate hardening, owner-bound WIP hygiene, lane liveness checks,
+fix-round templates, human-token diagnostics, owner-decision escalation, and
+provider sandbox/live guardrails in one verified release line.
 It has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
@@ -63,8 +61,8 @@ It has proved:
   prints the same plan near the header so support tooling and first-time users
   can see exactly which optional GitHub/cloud stages ran;
 - Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
-  private reference/product repos, with beta.39 preserving that client path for
-  the next rollout; and
+  private reference/product repos, with the current beta preserving that client
+  path for the next rollout; and
 - metadata-only AI tool/model provenance in cloud bundles and structured
   events, so dashboards can distinguish known provider/model/version signal
   from missing provenance before making benchmark claims. Local CLI provenance
@@ -85,10 +83,10 @@ It has proved:
   the OSS repo, hosted service repo, and two private reference/product repos,
   with imported history flagged as `history_only: true` and
   `calibration_evidence: false`; and
-- a package-installed beta.39 calibration/value-report pipeline target that
-  keeps reviewer metrics, lane policy, value-report artifacts, and sanitized
-  report upload in the release rehearsal path; and
-- a beta.39 private-repo install rehearsal target against
+- a package-installed calibration/value-report pipeline target that keeps
+  reviewer metrics, lane policy, value-report artifacts, and sanitized report
+  upload in the release rehearsal path; and
+- a private-repo install rehearsal target against
   [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
   that proved the package-installed CLI can detect and dry-run
   repository-native checks in an external-ish private repo without committing
@@ -121,8 +119,8 @@ It has proved:
   metadata, while historical imports must be run explicitly through
   `code-mower cloud catch-up` or `repo-sync --mode catch-up` and are displayed
   as imported history rather than calibrated reviewer evidence; and
-- a local Codex dogfood proof using a dashboard-issued token: beta.39 uploaded
-  current metadata for Code Mower OSS, CodeMower.com, and two private
+- a local Codex dogfood proof using a dashboard-issued token: the public beta
+  uploaded current metadata for Code Mower OSS, CodeMower.com, and two private
   reference/product repos, preserving metadata-only payloads and surfacing
   provider/model provenance gaps without blocking operational uploads; and
 - GitHub-first setup checks, including private-repo Actions cost visibility.

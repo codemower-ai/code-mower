@@ -4,6 +4,7 @@ import json
 import copy
 import importlib.util
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -6549,6 +6550,65 @@ def main():
             code_mower_versioning.release_tag_for_version("1.0.0"),
             "v1.0.0",
         )
+
+    def test_public_release_baseline_helpers_derive_announcement_links(self) -> None:
+        self.assertEqual(
+            code_mower_versioning.public_baseline_sentence(__version__),
+            (
+                "The current verified public beta baseline is `v0.5.0-beta.51`, "
+                "published on PyPI as `code-mower==0.5.0b51`."
+            ),
+        )
+        self.assertEqual(
+            code_mower_versioning.tagged_doc_url(__version__),
+            (
+                "https://github.com/codemower-ai/code-mower/blob/"
+                "v0.5.0-beta.51/docs/try-in-10-minutes.md"
+            ),
+        )
+
+    def test_public_announcement_docs_use_current_release_helpers(self) -> None:
+        baseline_sentence = code_mower_versioning.public_baseline_sentence(__version__)
+        install_command = (
+            "pipx install --python python3.12 "
+            f"{code_mower_versioning.public_package_spec(__version__)}"
+        )
+        announcement_url = code_mower_versioning.tagged_doc_url(__version__)
+
+        current_state = (ROOT / "docs/current-state-and-roadmap.md").read_text(
+            encoding="utf-8",
+        )
+        rollout = (ROOT / "docs/friendly-user-rollout-v05.md").read_text(
+            encoding="utf-8",
+        )
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn(baseline_sentence, current_state)
+        self.assertIn(baseline_sentence, rollout)
+        self.assertIn(install_command, rollout)
+        self.assertIn(announcement_url, readme)
+
+    def test_public_docs_have_no_stale_beta_baselines(self) -> None:
+        stale_baseline = re.compile(r"beta\.(39|50)")
+        docs = sorted((ROOT / "docs").rglob("*.md")) + [ROOT / "README.md"]
+
+        for path in docs:
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertIsNone(stale_baseline.search(path.read_text(encoding="utf-8")))
+
+    def test_readme_describes_calibration_limits_and_roles(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("## What Calibration Does And Does Not Prove", readme)
+        self.assertIn(
+            "It does not prove that a reviewer should gate merges.",
+            readme,
+        )
+        self.assertIn("[lane promotion policy](docs/lane-promotion-policy.md)", readme)
+        self.assertIn("## Roles", readme)
+        self.assertIn("Cursor/Claude/Codex-style builders", readme)
+        self.assertIn("not yet a product feature", readme)
+        self.assertIn("https://github.com/codemower-ai/code-mower/issues/409", readme)
 
     def test_package_command_inventory_derives_current_prerelease_spec(self) -> None:
         package_content_text = (ROOT / "src/code_mower/package_content.py").read_text(
