@@ -508,8 +508,11 @@ with `gh` authenticated as a repository admin:
 >    plainly that reviewer lanes stay informational until repository-specific
 >    evidence meets `docs/lane-promotion-policy.md`.
 > 7. Dry-run the loop end to end: file one small real issue, label it
->    `tier:R` plus `builder:cursor` (or `builder:codex` if the Mac runner is
->    up), watch it get dispatched, the PR opened, both audits post verdicts,
+>    `tier:R` plus the builder label `init --builders` created for the lane
+>    you enabled (the hosted Cursor lane's generated label is
+>    `builder:grok-bot`; the Mac lanes use `builder:codex` /
+>    `builder:claude` - confirm the exact names in the init output), watch it
+>    get dispatched, the PR opened, both audits post verdicts,
 >    drive fix rounds by relaying the verdicts, and merge on double PASS.
 > 8. Throughout: never argue an audit BLOCKED away - either fix the finding or
 >    record a decision with `code-mower decide` (I am the decision authority;
