@@ -2838,7 +2838,7 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-github-labels",
         action="store_true",
         help=(
-            "with --builders --apply, do not create missing GitHub labels in "
+            "with --apply label setup, do not create missing GitHub labels in "
             "the target repo via gh; --dry-run lists labels without mutating GitHub"
         ),
     )
@@ -2846,7 +2846,7 @@ def main(argv: list[str] | None = None) -> int:
         "--repo",
         metavar="OWNER/REPO",
         help=(
-            "explicit GitHub repository for --builders --apply label creation; "
+            "explicit GitHub repository for --apply label creation; "
             "defaults to the current checkout's origin remote"
         ),
     )
@@ -2887,7 +2887,12 @@ def main(argv: list[str] | None = None) -> int:
             builders=builder_lanes,
         )
         label_repo = ""
-        if args.apply and builder_lanes and not args.skip_github_labels:
+        should_ensure_github_labels = bool(
+            args.apply
+            and not args.skip_github_labels
+            and (builder_lanes or args.add_repo or label_repo_override)
+        )
+        if should_ensure_github_labels:
             label_repo = _target_repo_slug_for_labels(
                 Path.cwd(),
                 explicit_repo=label_repo_override,
@@ -2907,7 +2912,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.apply
             else None
         )
-        if apply_result is not None and builder_lanes and not args.skip_github_labels:
+        if apply_result is not None and should_ensure_github_labels:
             github_labels = ensure_github_labels(
                 plan.data["labels"],
                 repo=label_repo,
@@ -2941,21 +2946,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"- set variable CODE_MOWER_MAX_WIP or use default {builder_loop['wip_cap']}")
             if builder_loop["runner_enabled_var"] in plan.data["required_variables"]:
                 print(f"- set variable {builder_loop['runner_enabled_var']}=true after the Mac runner is ready")
-            label_result = apply_result.get("github_labels")
-            if isinstance(label_result, Mapping):
-                label_repo = label_result.get("repo")
-                label_scope = f" for {label_repo}" if label_repo else ""
-                if label_result.get("status") == "passed":
-                    print(
-                        f"GitHub labels{label_scope}: "
-                        f"{len(label_result.get('created', []))} created, "
-                        f"{len(label_result.get('existing', []))} already present"
-                    )
-                else:
-                    print(
-                        f"Warning: GitHub labels{label_scope} not fully ensured: "
-                        f"{label_result.get('reason') or label_result.get('failed')}"
-                    )
+        label_result = apply_result.get("github_labels")
+        if isinstance(label_result, Mapping):
+            label_repo = label_result.get("repo")
+            label_scope = f" for {label_repo}" if label_repo else ""
+            if label_result.get("status") == "passed":
+                print(
+                    f"GitHub labels{label_scope}: "
+                    f"{len(label_result.get('created', []))} created, "
+                    f"{len(label_result.get('existing', []))} already present"
+                )
+            else:
+                print(
+                    f"Warning: GitHub labels{label_scope} not fully ensured: "
+                    f"{label_result.get('reason') or label_result.get('failed')}"
+                )
     else:
         print(plan.text, end="")
     return 0

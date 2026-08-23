@@ -401,7 +401,8 @@ prompt_file="$(mktemp)"
     fi
     gh pr view "$num" -R "$REPO" --json title,body,headRefName,headRefOid,url,labels,author \
       | jq -r --argjson trusted "$trusted_authors_json" '
-        def trusted_author($login): any($trusted[]; . == $login);
+        def trusted_author($login):
+          any($trusted[]; (. | ascii_downcase) == (($login // "") | ascii_downcase));
         def trusted_title:
           if trusted_author(.author.login // "") then (.title // "") else "[omitted: PR title author is not trusted]" end;
         "Title: \(trusted_title)\nAuthor: \(.author.login // "unknown")\nURL: \(.url)\nBranch: \(.headRefName) @ \(.headRefOid)\nLabels: \([.labels[].name]|join(", "))\n\n" +
@@ -410,14 +411,16 @@ prompt_file="$(mktemp)"
     echo "## Latest audit verdicts"
     gh api --paginate --slurp "repos/${REPO}/issues/${num}/comments?per_page=100" \
       | jq -r --argjson trusted "$trusted_authors_json" '
-        def trusted_author($login): any($trusted[]; . == $login);
+        def trusted_author($login):
+          any($trusted[]; (. | ascii_downcase) == (($login // "") | ascii_downcase));
         [.[][] | select(trusted_author(.user.login // "")) | select(.body | test("^## (Codex|Claude|Grok) audit"))] |
         .[-4:][]? | "--- \(.user.login) \(.created_at)\n\(.body)"' || true
     echo
     echo "## Other recent trusted comments"
     gh api --paginate --slurp "repos/${REPO}/issues/${num}/comments?per_page=100" \
       | jq -r --argjson trusted "$trusted_authors_json" '
-        def trusted_author($login): any($trusted[]; . == $login);
+        def trusted_author($login):
+          any($trusted[]; (. | ascii_downcase) == (($login // "") | ascii_downcase));
         [.[][] | select(trusted_author(.user.login // "")) | select(.body | test("^## (Codex|Claude|Grok) audit") | not)] |
         .[-6:][]? | "--- \(.user.login) \(.created_at)\n\(.body[0:1500])"' || true
   fi

@@ -171,6 +171,14 @@ class InitBuildLoopTests(unittest.TestCase):
             self.assertIn("closingIssuesReferences", runner_text)
             self.assertNotIn("--json body,closingIssuesReferences", runner_text)
             self.assertNotIn('test("#" + $issue', runner_text)
+            self.assertNotIn(
+                "def trusted_author($login): any($trusted[]; . == $login);",
+                runner_text,
+            )
+            self.assertIn(
+                'any($trusted[]; (. | ascii_downcase) == (($login // "") | ascii_downcase));',
+                runner_text,
+            )
 
     def test_mac_lane_runner_rejects_forced_targets_without_single_lane(self) -> None:
         plan = _builders_plan()
@@ -1480,6 +1488,141 @@ fi
         self.assertIn("builder:codex", captured["labels"])
         self.assertIn('"repo": "target/repo"', stdout.getvalue())
 
+    def test_init_add_repo_apply_ensures_github_labels_in_explicit_repo(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_ensure(labels, *, repo=None, gh_bin="gh", color="ededed"):
+            captured["repo"] = repo
+            captured["labels"] = sorted(set(labels))
+            return {
+                "status": "passed",
+                "repo": repo or "",
+                "requested": sorted(set(labels)),
+                "created": [],
+                "existing": sorted(set(labels)),
+                "failed": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            code_mower_init,
+            "_detect_github_repo_slug",
+            side_effect=AssertionError("--repo must bypass checkout detection"),
+        ), mock.patch.object(
+            code_mower_init,
+            "ensure_github_labels",
+            side_effect=fake_ensure,
+        ):
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout):
+                result = code_mower_init.main(
+                    [
+                        str(CONFIG_PATH),
+                        "--add-repo",
+                        "owner/sibling",
+                        "--apply",
+                        "--repo",
+                        "target/repo",
+                        "--output-dir",
+                        str(Path(tmp) / "target"),
+                        "--skip-actionlint",
+                        "--json",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(captured["repo"], "target/repo")
+        self.assertIn("needs-codex-audit", captured["labels"])
+        self.assertIn('"repo": "target/repo"', stdout.getvalue())
+
+    def test_init_add_repo_apply_uses_checkout_remote_for_github_labels(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_ensure(labels, *, repo=None, gh_bin="gh", color="ededed"):
+            captured["repo"] = repo
+            captured["labels"] = sorted(set(labels))
+            return {
+                "status": "passed",
+                "repo": repo or "",
+                "requested": sorted(set(labels)),
+                "created": [],
+                "existing": sorted(set(labels)),
+                "failed": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            code_mower_init,
+            "_detect_github_repo_slug",
+            return_value="target/repo",
+        ) as detect, mock.patch.object(
+            code_mower_init,
+            "ensure_github_labels",
+            side_effect=fake_ensure,
+        ):
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout):
+                result = code_mower_init.main(
+                    [
+                        str(CONFIG_PATH),
+                        "--add-repo",
+                        "owner/sibling",
+                        "--apply",
+                        "--output-dir",
+                        str(Path(tmp) / "target"),
+                        "--skip-actionlint",
+                        "--json",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        detect.assert_called_once_with(Path.cwd())
+        self.assertEqual(captured["repo"], "target/repo")
+        self.assertIn("needs-codex-audit", captured["labels"])
+        self.assertIn('"repo": "target/repo"', stdout.getvalue())
+
+    def test_init_apply_with_repo_ensures_github_labels_without_builders_or_add_repo(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_ensure(labels, *, repo=None, gh_bin="gh", color="ededed"):
+            captured["repo"] = repo
+            captured["labels"] = sorted(set(labels))
+            return {
+                "status": "passed",
+                "repo": repo or "",
+                "requested": sorted(set(labels)),
+                "created": [],
+                "existing": sorted(set(labels)),
+                "failed": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            code_mower_init,
+            "_detect_github_repo_slug",
+            side_effect=AssertionError("--repo must bypass checkout detection"),
+        ), mock.patch.object(
+            code_mower_init,
+            "ensure_github_labels",
+            side_effect=fake_ensure,
+        ):
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout):
+                result = code_mower_init.main(
+                    [
+                        str(CONFIG_PATH),
+                        "--apply",
+                        "--repo",
+                        "target/repo",
+                        "--output-dir",
+                        str(Path(tmp) / "target"),
+                        "--skip-actionlint",
+                        "--json",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(captured["repo"], "target/repo")
+        self.assertIn("needs-codex-audit", captured["labels"])
+        self.assertIn('"repo": "target/repo"', stdout.getvalue())
+
     def test_init_apply_requires_label_repo_when_checkout_detection_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
             code_mower_init,
@@ -1498,6 +1641,36 @@ fi
                         str(CONFIG_PATH),
                         "--builders",
                         "codex",
+                        "--apply",
+                        "--output-dir",
+                        str(output_dir),
+                        "--skip-actionlint",
+                    ]
+                )
+
+        self.assertEqual(result, 1)
+        self.assertIn("pass --repo OWNER/REPO", stderr.getvalue())
+        self.assertIn("--skip-github-labels", stderr.getvalue())
+        self.assertFalse(output_dir.exists())
+
+    def test_init_add_repo_apply_requires_label_repo_when_checkout_detection_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            code_mower_init,
+            "_detect_github_repo_slug",
+            return_value="",
+        ), mock.patch.object(
+            code_mower_init,
+            "ensure_github_labels",
+            side_effect=AssertionError("label creation must not run without a target repo"),
+        ):
+            output_dir = Path(tmp) / "target"
+            stderr = io.StringIO()
+            with mock.patch("sys.stderr", stderr):
+                result = code_mower_init.main(
+                    [
+                        str(CONFIG_PATH),
+                        "--add-repo",
+                        "owner/sibling",
                         "--apply",
                         "--output-dir",
                         str(output_dir),
