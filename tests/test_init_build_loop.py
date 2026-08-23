@@ -44,6 +44,12 @@ def _workflow_on(workflow: dict) -> dict:
     return workflow.get("on") or workflow[True]
 
 
+def _mac_runner_selection_script(workflow_text: str) -> str:
+    workflow = yaml.safe_load(workflow_text)
+    run = workflow["jobs"]["run"]["steps"][0]["run"]
+    return run.replace("${{ github.event_name }}", "workflow_dispatch")
+
+
 class InitBuildLoopTests(unittest.TestCase):
     def test_builders_alias_cursor_to_existing_hosted_builder_identity(self) -> None:
         plan = _builders_plan()
@@ -165,6 +171,69 @@ class InitBuildLoopTests(unittest.TestCase):
             self.assertIn("closingIssuesReferences", runner_text)
             self.assertNotIn("--json body,closingIssuesReferences", runner_text)
             self.assertNotIn('test("#" + $issue', runner_text)
+
+    def test_mac_lane_runner_rejects_forced_targets_without_single_lane(self) -> None:
+        plan = _builders_plan()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+            script = _mac_runner_selection_script(
+                output_dir.joinpath(".github/workflows/lane-mac-runner.yml").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            for target, audit_target in (("issue:12", ""), ("", "pr:420")):
+                with self.subTest(target=target, audit_target=audit_target):
+                    github_output = root / f"github-output-{target or audit_target}.txt"
+                    completed = subprocess.run(
+                        ["bash", "-c", script],
+                        cwd=root,
+                        env={
+                            **os.environ,
+                            "GITHUB_OUTPUT": str(github_output),
+                            "LANE": "codex",
+                            "LANE_FILTER": "all",
+                            "TARGET": target,
+                            "AUDIT_TARGET": audit_target,
+                            "MAX_MINUTES": "90",
+                        },
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn(
+                        "forced target runs require a single explicit lane",
+                        completed.stderr,
+                    )
+                    self.assertIn(
+                        "set the lane input to one of: codex, claude",
+                        completed.stderr,
+                    )
+
+            github_output = root / "github-output-explicit-lane.txt"
+            completed = subprocess.run(
+                ["bash", "-c", script],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "GITHUB_OUTPUT": str(github_output),
+                    "LANE": "codex",
+                    "LANE_FILTER": "codex",
+                    "TARGET": "issue:12",
+                    "AUDIT_TARGET": "",
+                    "MAX_MINUTES": "90",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("skip=false", github_output.read_text(encoding="utf-8"))
 
     def test_dispatcher_expires_stale_dispatches_with_paginated_events_and_exact_closing_refs(self) -> None:
         plan = _builders_plan()

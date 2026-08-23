@@ -55,6 +55,13 @@ jobs:
         id: selection
         run: |
           set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${LANE_FILTER}" = "all" ]; then
+            if [ -n "${TARGET}" ] || [ -n "${AUDIT_TARGET}" ]; then
+              echo "::error::forced target runs require a single explicit lane; lane=all is not allowed with target or audit_target" >&2
+              echo "set the lane input to one of: codex, claude" >&2
+              exit 1
+            fi
+          fi
           if [ "${LANE_FILTER}" != "all" ] && [ "${LANE_FILTER}" != "${LANE}" ]; then
             echo "skip=true" >> "${GITHUB_OUTPUT}"
             echo "lane ${LANE} not selected"
