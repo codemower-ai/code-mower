@@ -489,8 +489,10 @@ with `gh` authenticated as a repository admin:
 > 1. Read `docs/build-loop-in-30-minutes.md` and `docs/build-loop.md` from the
 >    latest release tag of codemower-ai/code-mower and follow them rather than
 >    improvising.
-> 2. Install: `pipx install --python python3.12 code-mower` (allow
->    prereleases with `--pip-args="--pre"`). Verify `code-mower --version`.
+> 2. Install the version matching the release tag whose docs you are
+>    following (for this guide:
+>    `pipx install --python python3.12 code-mower==0.5.0b52`). Verify
+>    `code-mower --version` matches.
 > 3. Reviewer gate first: `code-mower init --easy` (dry-run), review the plan,
 >    then `--apply`; `code-mower doctor --preflight` must pass, including the
 >    human automation token. Tell me exactly which tokens to create, with
