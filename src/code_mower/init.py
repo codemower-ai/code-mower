@@ -1660,7 +1660,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__AUTHORS_ENV__": str(entry.get("authors_env") or ""),
         "__BLOCKED_LABEL__": str(entry.get("blocked_label") or ""),
         "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
-        "__BUILDER_DISPATCH_CRON__": str(entry.get("builder_dispatch_cron") or ""),
+        "__BUILDER_DISPATCH_CRON__": _yaml_scalar(
+            entry.get("builder_dispatch_cron") or ""
+        ),
         "__BUILDER_DISPATCH_LANES_JSON__": _yaml_scalar(
             entry.get("builder_dispatch_lanes_json") or "[]"
         ),
@@ -1692,7 +1694,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__FIX_ROUND_AUDIT_LANES_JSON__": _yaml_scalar(
             entry.get("fix_round_audit_lanes_json") or "[]"
         ),
-        "__GATE_HEALTH_CRON__": str(entry.get("gate_health_cron") or ""),
+        "__GATE_HEALTH_CRON__": _yaml_scalar(entry.get("gate_health_cron") or ""),
         "__GATE_HEALTH_LANES_JSON__": _yaml_scalar(
             entry.get("gate_health_lanes_json") or "[]"
         ),
@@ -1748,7 +1750,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__LANE_MAC_RUNNER_BLOCKED_LABELS_JQ__": str(
             _shell_literal(entry.get("lane_mac_runner_blocked_labels_jq") or "false")
         ),
-        "__LANE_MAC_RUNNER_CRON__": str(entry.get("lane_mac_runner_cron") or ""),
+        "__LANE_MAC_RUNNER_CRON__": _yaml_scalar(
+            entry.get("lane_mac_runner_cron") or ""
+        ),
         "__LANE_MAC_RUNNER_ENABLED_VAR__": str(
             entry.get("lane_mac_runner_enabled_var") or ""
         ),
@@ -1813,7 +1817,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__OWNER_LOGIN_JSON__": _yaml_scalar(str(entry.get("owner_login") or "")),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
         "__TRAILER_PREFIX__": str(entry.get("trailer_prefix") or ""),
-        "__WEEKLY_STATUS_CRON__": str(entry.get("weekly_status_cron") or ""),
+        "__WEEKLY_STATUS_CRON__": _yaml_scalar(entry.get("weekly_status_cron") or ""),
         "__WORKFLOW_NAME__": str(entry.get("workflow_name") or "Code Mower labeler"),
     }
     for placeholder, value in replacements.items():

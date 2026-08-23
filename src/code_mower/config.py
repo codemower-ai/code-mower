@@ -48,6 +48,7 @@ SAFE_WORKFLOW_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*\.ya?ml$")
 SAFE_GITHUB_LOGIN_RE = re.compile(
     r"^(?!-)(?!.*--)[A-Za-z0-9-]{1,39}(?<!-)(?:\[bot\])?$"
 )
+SAFE_CRON_FIELD_RE = re.compile(r"^[A-Za-z0-9*/,-]+$")
 UNSAFE_GENERATED_LABEL_CHARS = frozenset({"'", '"', "$", "`", "\n", "\r"})
 GENERATED_WORKFLOW_BY_DRIVER = {
     "api_model": "trailer-comment labeler + API/model runner",
@@ -360,6 +361,33 @@ def _require_safe_label(value: Any, path: str, issues: list[ConfigIssue]) -> str
     return text
 
 
+def _require_cron_expression(
+    value: Any,
+    path: str,
+    issues: list[ConfigIssue],
+) -> str | None:
+    text = _require_string(value, path, issues)
+    if text is None:
+        return None
+    fields = text.split()
+    if (
+        text != text.strip()
+        or "\n" in text
+        or "\r" in text
+        or len(fields) != 5
+        or any(not SAFE_CRON_FIELD_RE.fullmatch(field) for field in fields)
+    ):
+        issues.append(
+            ConfigIssue(
+                path,
+                "must be a single-line 5-field cron expression using only "
+                "alphanumerics, *, /, commas, and hyphens",
+            )
+        )
+        return None
+    return text
+
+
 def _validate_safe_label_items(
     value: Any,
     path: str,
@@ -574,6 +602,18 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
         for key in ("phase_labels", "lane_runner_labels"):
             if key in owner_surface_map:
                 _validate_safe_label_items(
+                    owner_surface_map.get(key),
+                    f"owner_surface.{key}",
+                    issues,
+                )
+        for key in (
+            "weekly_cron",
+            "gate_health_cron",
+            "builder_dispatch_cron",
+            "lane_runner_cron",
+        ):
+            if key in owner_surface_map:
+                _require_cron_expression(
                     owner_surface_map.get(key),
                     f"owner_surface.{key}",
                     issues,

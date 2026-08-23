@@ -40,6 +40,10 @@ def _dispatch_workflow_python(workflow_text: str) -> str:
     return "\n".join(lines[start:end]) + "\n"
 
 
+def _workflow_on(workflow: dict) -> dict:
+    return workflow.get("on") or workflow[True]
+
+
 class InitBuildLoopTests(unittest.TestCase):
     def test_builders_alias_cursor_to_existing_hosted_builder_identity(self) -> None:
         plan = _builders_plan()
@@ -615,6 +619,8 @@ fi
             "bridge-pro-lane",
         ]
         cfg["owner_surface"]["lane_runner_enabled_var"] = "BRIDGE_PRO_LANE_ENABLED"
+        cfg["owner_surface"]["builder_dispatch_cron"] = "5 6 * * 1"
+        cfg["owner_surface"]["lane_runner_cron"] = "10 7 * * MON-FRI"
         cfg["owner_surface"]["lane_runner_max_minutes"] = "180"
         cfg["owner_surface"]["lane_runner_trusted_authors"] = ["github-actions[bot]"]
         cfg["lanes"]["claude_audit"]["labels"]["needs"] = "needs-jeff-audit"
@@ -651,6 +657,10 @@ fi
         self.assertNotIn("github.token", dispatch)
         dispatch_workflow = yaml.safe_load(dispatch)
         self.assertEqual(
+            _workflow_on(dispatch_workflow)["schedule"][0]["cron"],
+            "5 6 * * 1",
+        )
+        self.assertEqual(
             json.loads(
                 dispatch_workflow["jobs"]["dispatch"]["env"][
                     "CODE_MOWER_OWNER_LABELS_JSON"
@@ -663,6 +673,10 @@ fi
         self.assertIn('configured = int("180")', mac_runner)
         self.assertIn("exceeds configured maximum", mac_runner)
         mac_runner_workflow = yaml.safe_load(mac_runner)
+        self.assertEqual(
+            _workflow_on(mac_runner_workflow)["schedule"][0]["cron"],
+            "10 7 * * MON-FRI",
+        )
         self.assertEqual(mac_runner_workflow["jobs"]["run"]["timeout-minutes"], 195)
         self.assertIn('default: "180"', mac_runner)
         self.assertIn("`needs-jeff`", readme)
@@ -808,6 +822,22 @@ fi
                     "owner_surface.lane_runner_max_minutes",
                 ):
                     _builders_plan(cfg)
+
+    def test_build_loop_rejects_invalid_cron_schedules(self) -> None:
+        cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
+        cfg["owner_surface"]["weekly_cron"] = "@weekly"
+        cfg["owner_surface"]["gate_health_cron"] = "*/15 * * * * # injected"
+        cfg["owner_surface"]["builder_dispatch_cron"] = "*/30 * * * *\"\njobs:"
+        cfg["owner_surface"]["lane_runner_cron"] = "0 12 * *"
+
+        with self.assertRaises(code_mower_config.ConfigError) as raised:
+            _builders_plan(cfg)
+
+        message = str(raised.exception)
+        self.assertIn("owner_surface.weekly_cron", message)
+        self.assertIn("owner_surface.gate_health_cron", message)
+        self.assertIn("owner_surface.builder_dispatch_cron", message)
+        self.assertIn("owner_surface.lane_runner_cron", message)
 
     def test_label_target_prefers_output_checkout_remote(self) -> None:
         cfg = code_mower_config.load_config(CONFIG_PATH)
