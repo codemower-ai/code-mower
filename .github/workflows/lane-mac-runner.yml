@@ -60,6 +60,11 @@ jobs:
             echo "lane ${LANE} not selected"
             exit 0
           fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${AUDIT_TARGET}" ] && [ "${LANE}" != "claude" ]; then
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            echo "audit target runs only use the claude lane"
+            exit 0
+          fi
           echo "skip=false" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout lane tools
@@ -85,7 +90,7 @@ jobs:
           if [ -n "${TARGET}" ]; then
             args+=(--target "${TARGET}")
           fi
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${AUDIT_TARGET}" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${AUDIT_TARGET}" ] && [ "${LANE}" = "claude" ]; then
             args+=(--audit-target "${AUDIT_TARGET}")
           fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${ENABLE_AUDIT_DUTY}" = "true" ]; then

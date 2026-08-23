@@ -103,6 +103,16 @@ class InitBuildLoopTests(unittest.TestCase):
                     self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
                 else:
                     self.assertEqual(workflow["jobs"]["run"]["timeout-minutes"], 105)
+                    selection_run = workflow["jobs"]["run"]["steps"][0]["run"]
+                    self.assertIn(
+                        '[ -n "${AUDIT_TARGET}" ] && [ "${LANE}" != "claude" ]',
+                        selection_run,
+                    )
+                    run_step = workflow["jobs"]["run"]["steps"][2]["run"]
+                    self.assertIn(
+                        '[ -n "${AUDIT_TARGET}" ] && [ "${LANE}" = "claude" ]',
+                        run_step,
+                    )
 
             runner = output_dir / "tools/lanes/run_mac_lane.sh"
             self.assertTrue(runner.stat().st_mode & 0o111)
