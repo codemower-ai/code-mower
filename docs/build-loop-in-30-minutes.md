@@ -390,58 +390,6 @@ ISSUE_URL="$(gh issue create \
   --body "## Goal
 Make one tiny docs or test-fixture change that proves the build loop can open a PR.
 
-## 8. Orchestrator Prompt (Copy-Paste)
-
-To bootstrap the reference configuration with an AI orchestrator, paste this
-prompt into a Claude Code session running in the repository you want to pilot,
-with `gh` authenticated as a repository admin:
-
-> You are my orchestrator for adopting Code Mower
-> (https://github.com/codemower-ai/code-mower) on this repository, in the
-> reference configuration: you (Claude Code) as orchestrator; Claude Code,
-> Codex, and Cursor as builder lanes; Claude Code and Codex as merge-gating
-> reviewers; Gitar as an informational reviewer.
->
-> Work through it in this order, verifying each step before the next, and stop
-> with a numbered click-list whenever a step needs something only I can do
-> (tokens, GitHub settings, app installs):
->
-> 1. Read `docs/build-loop-in-30-minutes.md` and `docs/build-loop.md` from the
->    latest release tag of codemower-ai/code-mower and follow them rather than
->    improvising.
-> 2. Install: `pipx install --python python3.12 code-mower` (allow
->    prereleases with `--pip-args="--pre"`). Verify `code-mower --version`.
-> 3. Reviewer gate first: `code-mower init --easy` (dry-run), review the plan,
->    then `--apply`; `code-mower doctor --preflight` must pass, including the
->    human automation token, branch protection requiring `code-mower/gate` as
->    an Any-source commit status, and repository `allow_auto_merge`. Tell me
->    exactly which tokens to create, with scopes, and where each goes.
-> 4. Builders: `code-mower init --builders codex,claude,cursor` (dry-run
->    first, then `--apply` from the repository checkout). If I have a Mac for
->    the self-hosted lane runner, walk me through
->    `docs/self-hosted-mac-runner.md` and verify with
->    `code-mower doctor --runner`; if not, enable only the Cursor lane for now
->    and say what the Mac would add.
-> 5. Gitar: enable the GitHub App if I have it; keep it informational (it is
->    quota-bound and may need a manual "Gitar review" comment) - never
->    required.
-> 6. Calibrate before trusting: run the starter value report, and tell me
->    plainly that reviewer lanes stay informational until repository-specific
->    evidence meets `docs/lane-promotion-policy.md`.
-> 7. Dry-run the loop end to end: file one small real issue, label it
->    `tier:R` plus `builder:cursor` (or `builder:codex` if the Mac runner is
->    up), watch it get dispatched, the PR opened, both audits post verdicts,
->    drive fix rounds by relaying the verdicts, and merge on double PASS.
-> 8. Throughout: never argue an audit BLOCKED away - either fix the finding or
->    record a decision with `code-mower decide` (I am the decision authority;
->    configure my GitHub login as `owner_login`). Escalate to me only with
->    owner-escalation asks that include options and a recommendation.
-> 9. This is a beta, bring-your-own-agent-loop tool: expect to supervise the
->    first days. Report progress after each numbered step.
-
-The prompt intentionally sends the orchestrator to the released docs first, so
-it stays correct as the guides evolve.
-
 ## Acceptance
 - Open exactly one PR.
 - Keep the PR small.
@@ -521,3 +469,54 @@ What remains manual: the owner still chooses the issue, resolves `needs-owner`
 items, rotates credentials, edits branch protection, calibrates whether Codex
 and Claude should stay merge-gating, and handles any provider or account UI
 steps that cannot safely run unattended.
+## 8. Orchestrator Prompt (Copy-Paste)
+
+To bootstrap the reference configuration with an AI orchestrator, paste this
+prompt into a Claude Code session running in the repository you want to pilot,
+with `gh` authenticated as a repository admin:
+
+> You are my orchestrator for adopting Code Mower
+> (https://github.com/codemower-ai/code-mower) on this repository, in the
+> reference configuration: you (Claude Code) as orchestrator; Claude Code,
+> Codex, and Cursor as builder lanes; Claude Code and Codex as merge-gating
+> reviewers; Gitar as an informational reviewer.
+>
+> Work through it in this order, verifying each step before the next, and stop
+> with a numbered click-list whenever a step needs something only I can do
+> (tokens, GitHub settings, app installs):
+>
+> 1. Read `docs/build-loop-in-30-minutes.md` and `docs/build-loop.md` from the
+>    latest release tag of codemower-ai/code-mower and follow them rather than
+>    improvising.
+> 2. Install: `pipx install --python python3.12 code-mower` (allow
+>    prereleases with `--pip-args="--pre"`). Verify `code-mower --version`.
+> 3. Reviewer gate first: `code-mower init --easy` (dry-run), review the plan,
+>    then `--apply`; `code-mower doctor --preflight` must pass, including the
+>    human automation token, branch protection requiring `code-mower/gate` as
+>    an Any-source commit status, and repository `allow_auto_merge`. Tell me
+>    exactly which tokens to create, with scopes, and where each goes.
+> 4. Builders: `code-mower init --builders codex,claude,cursor` (dry-run
+>    first, then `--apply` from the repository checkout). If I have a Mac for
+>    the self-hosted lane runner, walk me through
+>    `docs/self-hosted-mac-runner.md` and verify with
+>    `code-mower doctor --runner`; if not, enable only the Cursor lane for now
+>    and say what the Mac would add.
+> 5. Gitar: enable the GitHub App if I have it; keep it informational (it is
+>    quota-bound and may need a manual "Gitar review" comment) - never
+>    required.
+> 6. Calibrate before trusting: run the starter value report, and tell me
+>    plainly that reviewer lanes stay informational until repository-specific
+>    evidence meets `docs/lane-promotion-policy.md`.
+> 7. Dry-run the loop end to end: file one small real issue, label it
+>    `tier:R` plus `builder:cursor` (or `builder:codex` if the Mac runner is
+>    up), watch it get dispatched, the PR opened, both audits post verdicts,
+>    drive fix rounds by relaying the verdicts, and merge on double PASS.
+> 8. Throughout: never argue an audit BLOCKED away - either fix the finding or
+>    record a decision with `code-mower decide` (I am the decision authority;
+>    configure my GitHub login as `owner_login`). Escalate to me only with
+>    owner-escalation asks that include options and a recommendation.
+> 9. This is a beta, bring-your-own-agent-loop tool: expect to supervise the
+>    first days. Report progress after each numbered step.
+
+The prompt intentionally sends the orchestrator to the released docs first, so
+it stays correct as the guides evolve.
