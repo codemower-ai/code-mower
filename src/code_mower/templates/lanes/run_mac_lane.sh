@@ -109,11 +109,22 @@ PY
   [ -n "$num" ] && kind="pr" && mode="audit"
 fi
 
+has_open_pr_for_issue() {
+  local issue="$1"
+  gh pr list -R "$REPO" --state open --search "\"#${issue}\" in:body" --limit 100 \
+    --json body,closingIssuesReferences \
+    | jq -r --arg issue "$issue" '
+      any(.[]; (
+        any((.closingIssuesReferences // [])[]; ((.number // "") | tostring) == $issue) or
+        ((.body // "") | test("#" + $issue + "\\b"))
+      ))
+    '
+}
+
 if [ -z "$kind" ]; then
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
-    open="$(gh pr list -R "$REPO" --state open --search "\"#${candidate}\" in:body" --json number -q length)"
-    if [ "$open" = "0" ]; then
+    if [ "$(has_open_pr_for_issue "$candidate")" != "true" ]; then
       num="$candidate"
       kind="issue"
       mode="build"

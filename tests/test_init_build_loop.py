@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import io
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,6 +88,94 @@ class InitBuildLoopTests(unittest.TestCase):
             self.assertIn('repo_owner="${REPO%%/*}"', runner_text)
             self.assertIn("[omitted: issue title author is not trusted]", runner_text)
             self.assertIn("[omitted: PR title author is not trusted]", runner_text)
+            self.assertIn("has_open_pr_for_issue()", runner_text)
+            self.assertIn("closingIssuesReferences", runner_text)
+
+    def test_mac_lane_runner_does_not_treat_issue_prefix_pr_as_open_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            work_root = root / "work"
+            work = work_root / "codex" / "repo"
+            work.joinpath(".git").mkdir(parents=True)
+
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
+  printf '\\n'
+elif [ "$cmd" = "issue list" ]; then
+  printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:codex"},{"name":"dispatched:codex"}],"assignees":[],"author":{"login":"owner"}}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
+  if [[ "$args" == *"--json number"* ]]; then
+    printf '1\\n'
+  else
+    printf '%s\\n' '[{"number":99,"body":"Closes #123","closingIssuesReferences":[{"number":123}]}]'
+  fi
+elif [ "$cmd" = "repo view" ]; then
+  printf 'main\\n'
+elif [ "$cmd" = "issue view" ]; then
+  if [[ "$args" == *"--json comments"* ]]; then
+    printf '%s\\n' '{"comments":[]}'
+  else
+    printf '%s\\n' '{"title":"Issue 12","body":"Body","labels":[{"name":"tier:R"}],"url":"https://github.com/owner/repo/issues/12","author":{"login":"owner"}}'
+  fi
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            fake_git = bin_dir / "git"
+            fake_git.write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
+                encoding="utf-8",
+            )
+            fake_git.chmod(0o755)
+
+            fake_codex = bin_dir / "codex"
+            fake_codex.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cat >/dev/null
+printf 'fake codex completed\\n'
+""",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(ROOT / "tools/lanes/run_mac_lane.sh"),
+                    "--lane",
+                    "codex",
+                    "--repo",
+                    "owner/repo",
+                    "--max-minutes",
+                    "1",
+                ],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "LANE_CODEX_EXTRA_FLAGS": "--fake-extra",
+                    "LANE_WORK_ROOT": str(work_root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+        self.assertIn("codex: selected build issue #12", completed.stdout)
+        self.assertIn("fake codex completed", completed.stdout)
 
     def test_build_loop_owner_surface_parameters_render_into_templates(self) -> None:
         cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
