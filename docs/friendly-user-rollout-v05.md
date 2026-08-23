@@ -3,6 +3,9 @@
 This is the operating plan for the first 5-10 friendly users before Code Mower
 widens to 20-50 early adopters.
 
+Code Mower is beta, bring-your-own-agent-loop software for teams willing to
+calibrate reviewers. It is not a drop-in autonomous merge gate.
+
 ## Goal
 
 Prove that a fresh user can get value from the public package without knowing

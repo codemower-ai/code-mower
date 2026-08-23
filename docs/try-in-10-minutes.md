@@ -1,8 +1,9 @@
 # Try Code Mower In 10 Minutes
 
-This is the shortest v0.5 early-adopter path. It is local-first and safe to run
-on one GitHub repository before you enable any recurring workflows or paid
-reviewer lanes.
+This is path A from the README: get one repository to a merged, audited PR
+without enabling the build loop. It is local-first and manual-first. Use
+[Quickstart](quickstart.md) later as the reference for every command surface,
+token, and optional cloud path.
 
 If you want to see the output shape before installing, read the
 [Demo Calibration Example](../examples/demo-calibration/README.md) and
@@ -29,27 +30,39 @@ pipx install --python python3.12 --pip-args="--pre" code-mower
 
 ## 2. Authenticate GitHub
 
+Use an account that can read the repository, open a setup PR, add labels, and
+post audit comments.
+
 ```bash
 gh auth login -h github.com -s repo,workflow,read:org
 gh auth status
 gh repo view OWNER/REPO
 ```
 
+Set the repository slug once so the remaining commands can be copied:
+
+```bash
+export REPO=OWNER/REPO
+export DEFAULT_BRANCH=main
+```
+
 ## 3. Generate Reviewable Setup Output
 
-Run this from the repository you want to pilot:
+Run this from a clean checkout of the repository you want to pilot:
 
 ```bash
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 ```
 
-The generated tree is reviewable output. It does not mutate live workflows,
-create labels, trigger reviewers, or upload data. It includes owner-surface
-templates for the configurable `needs-owner` escalation label, the
-`owner-sitting` physical-step convention, and a weekly pinned-issue status
-digest; see [GitHub Setup](github-setup.md) before enabling the scheduled
-workflow.
+`init --easy` is non-mutating by default. `--apply` writes a generated tree for
+review in `.code-mower.generated`, creates the missing Code Mower labels when
+GitHub access allows it, and still does not trigger reviewers or upload data.
+
+The generated tree includes local Codex and Claude audit lanes, the
+`code-mower/gate` workflow, stale-audit cleanup, owner escalation labels, and
+starter calibration files. Keep this generated output reviewable: do not enable
+paid or hosted lanes until your own calibration data supports them.
 
 ## 4. Run The Preflight Doctor
 
@@ -68,121 +81,92 @@ It expands to the checks early adopters need:
   cost diagnostics; and
 - optional Code Mower Cloud token setup diagnostics.
 
-Warnings are setup guidance. They are only fatal when you pass `--strict`.
-If you want to see the shape of the output before installing, start with
-`docs/first-run-transcript.md` and `docs/sample-doctor-output.md`.
-
-In JSON mode, check the top-level `run_plan` field first. It tells you whether
-the preflight included GitHub and optional cloud checks before you inspect
+Warnings are setup guidance. They are only fatal when you pass `--strict`. In
+JSON mode, check the top-level `run_plan` field first. It tells you whether the
+preflight included GitHub and optional cloud checks before you inspect
 individual provider warnings.
 
-For merge-authority lanes such as Codex, Claude audit, or Devin, also look for
+For merge-authority lanes such as Codex or Claude audit, look for
 `provider.review_hygiene`. It should pass for lanes that can satisfy the merge
-bar. That check means Code Mower knows how to clear stale `*-audit-done` or
-`*-audit-blocked` labels when a PR receives new commits, so an old review cannot
-quietly approve a new head.
+bar, because it proves Code Mower can clear stale terminal labels after a PR
+receives new commits.
 
-## 5. Set Model Provenance For Better Benchmarks
+## 5. Open The Setup PR
 
-Code Mower can prove uploads and reviewer events without exact model names, but
-CodeMower.com will mark those rows as incomplete benchmark evidence. For the
-cleanest first run, set the model variables for the lanes you plan to compare:
+Create one small PR that installs the generated reviewer-gate support. This PR
+is the first audited PR.
 
 ```bash
-export CODE_MOWER_CODEX_MODEL="gpt-5"
-export CLAUDE_AUDIT_MODEL="claude-opus-4-8"
-export CODE_MOWER_ANTIGRAVITY_MODEL="gemini-3.5-flash"
-export CODE_MOWER_HERMES_MODEL="hermes-3-llama-3.1-405b"
+git switch -c chore/code-mower-reviewer-gate
+cp -R .code-mower.generated/. .
+git status --short
+git add .github tools calibration-corpus.json context-packs.json \
+  reviewer-spend.json reviewer-value-report.example.md
+git commit -m "chore: add code mower reviewer gate"
+git push -u origin HEAD
+gh pr create \
+  --repo "$REPO" \
+  --base "$DEFAULT_BRANCH" \
+  --head "$(git branch --show-current)" \
+  --title "chore: add Code Mower reviewer gate" \
+  --body "Install Code Mower generated reviewer-gate support for the first audited PR."
+export PR_NUMBER="$(gh pr view --repo "$REPO" --json number --jq .number)"
+gh pr edit "$PR_NUMBER" --repo "$REPO" \
+  --add-label needs-codex-audit \
+  --add-label needs-claude-audit
 ```
 
-Only set variables for tools you actually use. Model identifiers are benchmark
-metadata, not secrets. Do not put API keys, auth output, prompts, diffs, or raw
-model responses in provenance fields. If these are missing, `code-mower cloud
-doctor` and the CodeMower.com dashboard will tell you which provider/tool needs
-attention.
+If your repository already has files with the same names, review `git diff`
+before committing and keep only the generated support files you actually intend
+to enable.
 
-To generate a provider-specific setup checklist from the current Code Mower
-registry:
+## 6. Run The Audits
+
+The direct wrappers need a GitHub posting token and a separate checkout of the
+PR head. For this first local run, use the token already held by `gh`.
 
 ```bash
-code-mower providers provenance-env
-code-mower providers provenance-env --provider codex --shell
+export SUPPORT_PATH="$(pwd)"
+export PR_HEAD_PATH="$(mktemp -d)"
+gh repo clone "$REPO" "$PR_HEAD_PATH"
+git -C "$PR_HEAD_PATH" fetch origin "pull/${PR_NUMBER}/head:code-mower-pr-${PR_NUMBER}"
+git -C "$PR_HEAD_PATH" switch "code-mower-pr-${PR_NUMBER}"
+export GITHUB_TOKEN="$(gh auth token)"
+
+tools/run_codex_audit_pr.sh \
+  --repo "$REPO" \
+  --pr "$PR_NUMBER" \
+  --repo-paths "$REPO:$PR_HEAD_PATH" \
+  --merge-authority
+
+tools/run_claude_audit_pr.sh \
+  --repo "$REPO" \
+  --pr "$PR_NUMBER" \
+  --repo-paths "$REPO:$PR_HEAD_PATH" \
+  --merge-authority
 ```
 
-The plain-text report shows which model env vars are configured and whether
-Code Mower could probe each local CLI version. The `--shell` form prints only
-safe model-env export templates with `TODO_MODEL_NAME` placeholders.
+Each wrapper posts a structured audit comment tied to the current head SHA. A
+clean audit adds `codex-audit-done` or `claude-audit-done`; a blocking audit
+adds the matching `*-audit-blocked` label and explains the finding. Fix any
+P0, P1, or P2 findings on the same branch, push, and rerun the blocked lane.
 
-See [Provider Matrix](provider-matrix.md#benchmark-provenance-setup) and
-[Cloud Sharing](cloud-sharing.md#structured-events) for the full provider list.
-
-## 6. Detect Your Repo's Native Checks
+When both audits are clean and your normal CI is green, merge the setup PR:
 
 ```bash
-code-mower checks detect --json
-code-mower checks run --dry-run --json
+gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,mergeStateStatus,statusCheckRollup
+gh pr checks "$PR_NUMBER" --repo "$REPO" --watch
+gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch
 ```
 
-`checks detect` reads your repository's declared check surface. For
-JavaScript/TypeScript projects it uses `package.json` scripts and the lockfile
-to choose npm, pnpm, yarn, or bun. For Python projects it detects Ruff config,
-`tests/`, and a repo-local `.venv` before falling back to the current Python
-interpreter. This is intentionally not a replacement for your repo's own
-contract: TypeScript applications should still run their package-manager
-lint/test/build scripts, while Python projects should run Ruff/pytest when
-configured.
+You now have a merged PR with Code Mower audit evidence. Keep the audit lanes
+manual until several real known-clean and known-blocked PRs prove that the
+reviewers are useful on your repository.
 
-In Git worktrees, detection also includes the local `code-mower.pr-size` lint.
-It defaults to a 300 changed-line budget and a near-identical-file batch guard;
-tune it with `--max-pr-changed-lines`, `--pr-size-base-ref`, and
-`--near-identical-file-limit`. If the configured base ref is not fetched
-locally, the PR-size lint reports `skipped` instead of failing the whole check
-run.
+## 7. Optional: Rehearse The Package Install Path
 
-Use `checks run --dry-run` first to review commands before executing them.
-Then run selected checks explicitly, for example:
-
-```bash
-code-mower checks run --only lint,test --json
-```
-
-## 7. Optional: Plan One GitHub Issue Before Coding
-
-Use this when you want a GitHub issue to be the shared planning surface for
-local agents, cloud agents, and humans. The issue remains the source of truth;
-Code Mower writes local planning artifacts that can later connect builder and
-reviewer runs back to that issue on CodeMower.com.
-
-```bash
-code-mower plan from-github-issue OWNER/REPO#123 \
-  --output .code-mower/work-orders/feature-plan.md \
-  --post
-
-code-mower work-order draft \
-  --issue-plan .code-mower/work-orders/feature-plan.md \
-  --output .code-mower/work-orders/feature.md
-
-code-mower work-order attach-delivery \
-  .code-mower/work-orders/feature.cloud-event.json \
-  --pr OWNER/REPO#124 \
-  --from-github
-
-code-mower cloud export \
-  --event work_order=.code-mower/work-orders/feature.cloud-event.json \
-  --output-dir .code-mower/cloud-benchmark-bundle \
-  --repo-slug OWNER/REPO
-```
-
-The `work_order` cloud event is metadata only: repository, issue number/URL,
-role/lens names, review-lane names, Code Mower package provenance, and optional
-delivery fields such as PR URL, reviewer-check names/statuses, and merge SHA. It
-does not include source code, raw diffs, raw transcripts, stdout/stderr, auth
-output, secrets, or the issue body text.
-
-## 8. Generate The Starter Value Report
-
-If you want to prove the whole first-user path in one command, run the package
-install rehearsal instead:
+If you want to prove the public package can run the first-user path from a clean
+virtual environment, run:
 
 ```bash
 code-mower migration package-install-rehearsal \
@@ -191,19 +175,10 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
-`--python python3.12` also works when that command is on `PATH`; the
-`command -v` form makes the selected interpreter visible in copied logs.
-
-That rehearsal installs Code Mower into a clean virtual environment, creates a
-fresh toy repository, runs `init --easy`, runs doctor, generates a starter value
-report, and proves cloud upload/dogfood paths stay dry-run. See
-[First-User Install Rehearsal](first-user-install-rehearsal.md) for the
-release-gate checklist. The JSON includes `first_user_readiness`, a compact
-scorecard that shows which install, doctor, report, and privacy gates passed.
-
-To rehearse against a real repository that has not installed Code Mower yet,
-add `--repo-path /path/to/repo`. Code Mower will detect the repo-native check
-surface and dry-run it instead of trying product-wrapper parity:
+Use `--repo-path /path/to/repo` to validate the installed Code Mower CLI
+against a real repository; if `tools/code_mower` exists, the rehearsal also
+runs wrapper parity for mirror-removal, otherwise it detects and dry-runs the
+repo's native checks.
 
 ```bash
 code-mower migration package-install-rehearsal \
@@ -213,98 +188,10 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
-For the manual report path in your pilot repository:
+See [First-User Install Rehearsal](first-user-install-rehearsal.md) for the
+release-gate checklist and expected artifacts.
 
-```bash
-code-mower calibration evidence .code-mower.generated/calibration-corpus.json --json > calibration-evidence.json
-code-mower reviewer-metrics calibration-evidence.json --spend .code-mower.generated/reviewer-spend.json --json > reviewer-metrics.json
-code-mower calibration policy reviewer-metrics.json --json > lane-policy.json
-code-mower calibration value-report .code-mower.generated/calibration-corpus.json \
-  --spend .code-mower.generated/reviewer-spend.json \
-  --output reviewer-value-report.md \
-  --html-output reviewer-value-report.html
-```
+## 8. Next: Build Loop
 
-The starter corpus proves the command path. To bootstrap a project-specific
-draft from recent merged PRs, run:
-
-```bash
-code-mower calibration auto-discover \
-  --repo OWNER/REPO \
-  --last-n 20 \
-  --output .code-mower/draft-calibration-corpus.json
-
-code-mower calibration value-report .code-mower/draft-calibration-corpus.json \
-  --output .code-mower/draft-reviewer-value-report.md
-```
-
-Auto-discovery is deliberately conservative: it uses merged PR metadata,
-structured audit trailers, and review-request signals to propose known-clean
-and known-blocked cases. Review every disposition before promoting lanes to
-selective or merge-gating roles.
-
-## 8. Optional Cloud Dry Run
-
-Cloud sharing is optional. The default upload payload excludes source code, raw
-diffs, raw model transcripts, raw stdout/stderr, auth probe output, and secrets.
-
-```bash
-code-mower cloud export \
-  --report reviewer-metrics=reviewer-metrics.json \
-  --report lane-policy=lane-policy.json \
-  --report value-report=reviewer-value-report.md \
-  --spend .code-mower.generated/reviewer-spend.json \
-  --output-dir .code-mower/cloud-benchmark-bundle \
-  --anonymous \
-  --json
-
-code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
-code-mower cloud doctor .code-mower/cloud-benchmark-bundle --json
-```
-
-Nothing uploads unless you pass `--yes`.
-
-When you are ready to connect to CodeMower.com, add the service probe:
-
-```bash
-code-mower cloud doctor .code-mower/cloud-benchmark-bundle --probe-service --json
-```
-
-The service probe checks the upload endpoint's health route and reports the
-dashboard URL plus the next setup/upload commands without echoing your token.
-
-If you choose to connect Code Mower Cloud, create or receive a developer/team
-token, then store it locally without putting the token in shell history:
-
-```bash
-code-mower cloud setup \
-  --token-stdin \
-  --team-id "YOUR_TEAM_SLUG" \
-  --install-id "your-laptop" \
-  --out ~/.config/code-mower/tokens/your-laptop.env
-```
-
-Then preview the routine metadata upload path before sending anything:
-
-```bash
-source ~/.config/code-mower/tokens/your-laptop.env
-code-mower cloud dogfood --json
-```
-
-If the preview is clean, the confirmed command is:
-
-```bash
-code-mower cloud dogfood --yes --json
-```
-
-## What To Read Next
-
-- `docs/quickstart.md` for the fuller walkthrough.
-- `examples/demo-calibration/README.md` for a tiny known-clean/known-blocked
-  reviewer value example.
-- `docs/launch-command-surface.md` for the launch-safe command surface.
-- `docs/sample-doctor-output.md` for a sanitized example of doctor output.
-- `docs/github-setup.md` for private repositories, Actions cost, and branch
-  protection.
-- `docs/provider-matrix.md` for provider cost, privacy, and merge authority.
-- `docs/cloud-sharing.md` for opt-in cloud export/upload details.
+When the reviewer gate is useful, move to the builder-plus-orchestrator path.
+Next: build loop - [Build Loop In 30 Minutes](build-loop-in-30-minutes.md).
