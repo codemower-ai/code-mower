@@ -586,8 +586,12 @@ def _csv_items(value: Any, default: str = "") -> tuple[str, ...]:
     return tuple(item.strip() for item in default.split(",") if item.strip())
 
 
+def _yaml_scalar(value: Any) -> str:
+    return json.dumps(str(value))
+
+
 def _yaml_inline_list(items: Sequence[str]) -> str:
-    return ", ".join(json.dumps(str(item)) for item in items)
+    return ", ".join(_yaml_scalar(item) for item in items)
 
 
 def _owner_surface_config(config: Mapping[str, Any]) -> dict[str, str]:
@@ -1646,39 +1650,48 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         gate_override_label = "gate:override"
     replacements = {
         "__ADAPTER__": str(entry.get("adapter") or ""),
-        "__AUTHOR_EXCLUSION_JSON__": str(
+        "__AUTHOR_EXCLUSION_JSON__": _yaml_scalar(
             entry.get("author_exclusion_json") or '{"enabled":false}'
         ),
         "__AUTHORS_ENV__": str(entry.get("authors_env") or ""),
         "__BLOCKED_LABEL__": str(entry.get("blocked_label") or ""),
         "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
         "__BUILDER_DISPATCH_CRON__": str(entry.get("builder_dispatch_cron") or ""),
-        "__BUILDER_DISPATCH_LANES_JSON__": str(
+        "__BUILDER_DISPATCH_LANES_JSON__": _yaml_scalar(
             entry.get("builder_dispatch_lanes_json") or "[]"
         ),
         "__BUILDER_LANE_ROWS__": str(entry.get("builder_lane_rows") or ""),
         "__BUILDER_LABEL__": str(entry.get("builder_label") or ""),
         "__BUILD_LOOP_MAX_WIP__": str(entry.get("build_loop_max_wip") or "5"),
-        "__BUILD_LOOP_OWNER_LABELS_JSON__": str(
+        "__BUILD_LOOP_OWNER_LABELS_JSON__": _yaml_scalar(
             entry.get("build_loop_owner_labels_json") or "[]"
+        ),
+        "__BUILD_LOOP_READY_LABEL_YAML__": _yaml_scalar(
+            entry.get("build_loop_ready_label") or ""
         ),
         "__BUILD_LOOP_READY_LABEL__": str(entry.get("build_loop_ready_label") or ""),
         "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
-        "__AGENT_PR_RULES_JSON__": str(entry.get("agent_pr_rules_json") or "[]"),
-        "__AGENT_PR_AUDIT_LANES_JSON__": str(
+        "__AGENT_PR_RULES_JSON__": _yaml_scalar(
+            entry.get("agent_pr_rules_json") or "[]"
+        ),
+        "__AGENT_PR_AUDIT_LANES_JSON__": _yaml_scalar(
             entry.get("agent_pr_audit_lanes_json") or "[]"
         ),
         "__DISPATCH_TOKEN_ENV__": str(entry.get("dispatch_token_env") or "DISPATCH_TOKEN"),
         "__DISPATCH_TOKEN_EXPIRES_VAR__": str(
             entry.get("dispatch_token_expires_var") or "DISPATCH_TOKEN_EXPIRES_AT"
         ),
-        "__FIX_ROUND_RULES_JSON__": str(entry.get("fix_round_rules_json") or "[]"),
-        "__FIX_ROUND_AUDIT_LANES_JSON__": str(
+        "__FIX_ROUND_RULES_JSON__": _yaml_scalar(
+            entry.get("fix_round_rules_json") or "[]"
+        ),
+        "__FIX_ROUND_AUDIT_LANES_JSON__": _yaml_scalar(
             entry.get("fix_round_audit_lanes_json") or "[]"
         ),
         "__GATE_HEALTH_CRON__": str(entry.get("gate_health_cron") or ""),
-        "__GATE_HEALTH_LANES_JSON__": str(entry.get("gate_health_lanes_json") or "[]"),
+        "__GATE_HEALTH_LANES_JSON__": _yaml_scalar(
+            entry.get("gate_health_lanes_json") or "[]"
+        ),
         "__GATE_HEALTH_AUTHOR_ENV_ASSIGNMENTS__": str(
             entry.get("gate_health_author_env_assignments") or ""
         ),
@@ -1691,9 +1704,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__GATE_AUTHOR_ENV_ASSIGNMENTS__": str(
             entry.get("gate_author_env_assignments") or ""
         ),
-        "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
-        "__GATE_OVERRIDE_LABEL_JSON__": json.dumps(str(gate_override_label)),
-        "__DECISION_AUTHORITIES__": json.dumps(
+        "__GATE_LANES_JSON__": _yaml_scalar(entry.get("gate_lanes_json") or "[]"),
+        "__GATE_OVERRIDE_LABEL_JSON__": _yaml_scalar(str(gate_override_label)),
+        "__DECISION_AUTHORITIES__": _yaml_scalar(
             str(entry.get("decision_authorities") or "")
         ),
         "__GITHUB_ACTIONS_WORKFLOWS__": str(entry.get("github_actions_workflows") or ""),
@@ -1703,12 +1716,19 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__LOCAL_AUDIT_LABEL_MATCH__": str(entry.get("local_audit_label_match") or ""),
         "__LOCAL_AUDIT_LANES_JSON__": str(entry.get("local_audit_lanes_json") or "[]"),
         "__LOCAL_AUDIT_RUNNER_LABEL__": str(entry.get("local_audit_runner_label") or ""),
+        "__LOCAL_AUDIT_RUNNER_LABEL_YAML__": _yaml_scalar(
+            entry.get("local_audit_runner_label") or ""
+        ),
         "__LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__": str(
             entry.get("local_audit_token_env_assignments") or ""
         ),
         "__LANE_DISPLAY_NAME__": str(entry.get("lane_display_name") or ""),
         "__NEEDS_LABEL__": str(entry.get("needs_label") or ""),
+        "__NEEDS_LABEL_YAML__": _yaml_scalar(entry.get("needs_label") or ""),
         "__NEEDS_OWNER_LABEL__": str(entry.get("needs_owner_label") or ""),
+        "__NEEDS_OWNER_LABEL_YAML__": _yaml_scalar(
+            entry.get("needs_owner_label") or ""
+        ),
         "__LANE_MAC_RUNNER_ALLOWED_CASE__": str(
             entry.get("lane_mac_runner_allowed_case") or ""
         ),
@@ -1749,28 +1769,38 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__LANE_NAME__": str(entry.get("lane_name") or ""),
         "__OWNER_DECISION_LABEL__": str(entry.get("owner_decision_label") or ""),
+        "__OWNER_DECISION_LABEL_YAML__": _yaml_scalar(
+            entry.get("owner_decision_label") or ""
+        ),
         "__OWNER_SITTING_LABEL__": str(entry.get("owner_sitting_label") or ""),
+        "__OWNER_SITTING_LABEL_YAML__": _yaml_scalar(
+            entry.get("owner_sitting_label") or ""
+        ),
         "__OWNER_LOGIN__": str(entry.get("owner_login") or ""),
+        "__OWNER_LOGIN_YAML__": _yaml_scalar(entry.get("owner_login") or ""),
         "__OWNER_BLOCKING_LABELS__": str(
             entry.get("owner_blocking_labels")
             or "`needs-owner`, `owner-decision`, `owner-sitting`"
         ),
         "__GATE_OVERRIDE_LABEL__": str(entry.get("gate_override_label") or ""),
-        "__PHASE_LABELS__": str(entry.get("phase_labels") or ""),
-        "__READY_LABEL__": str(entry.get("ready_label") or ""),
+        "__GATE_OVERRIDE_LABEL_YAML__": _yaml_scalar(
+            entry.get("gate_override_label") or ""
+        ),
+        "__PHASE_LABELS__": _yaml_scalar(entry.get("phase_labels") or ""),
+        "__READY_LABEL__": _yaml_scalar(entry.get("ready_label") or ""),
         "__REQUIRED_AUDIT_LABELS__": str(entry.get("required_audit_labels") or ""),
-        "__REVIEWER_SPEND_PATH__": str(entry.get("reviewer_spend_path") or ""),
-        "__REVIEWER_VALUE_REPORT_PATH__": str(
+        "__REVIEWER_SPEND_PATH__": _yaml_scalar(entry.get("reviewer_spend_path") or ""),
+        "__REVIEWER_VALUE_REPORT_PATH__": _yaml_scalar(
             entry.get("reviewer_value_report_path") or ""
         ),
-        "__STATUS_ISSUE__": str(entry.get("status_issue") or ""),
-        "__OWNER_LABEL__": json.dumps(
+        "__STATUS_ISSUE__": _yaml_scalar(entry.get("status_issue") or ""),
+        "__OWNER_LABEL__": _yaml_scalar(
             str(entry.get("owner_label") or DEFAULT_OWNER_LABEL)
         ),
-        "__OWNER_SITTING_LABEL_JSON__": json.dumps(
+        "__OWNER_SITTING_LABEL_JSON__": _yaml_scalar(
             str(entry.get("owner_sitting_label") or "owner-sitting")
         ),
-        "__OWNER_LOGIN_JSON__": json.dumps(str(entry.get("owner_login") or "")),
+        "__OWNER_LOGIN_JSON__": _yaml_scalar(str(entry.get("owner_login") or "")),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
         "__TRAILER_PREFIX__": str(entry.get("trailer_prefix") or ""),
         "__WEEKLY_STATUS_CRON__": str(entry.get("weekly_status_cron") or ""),

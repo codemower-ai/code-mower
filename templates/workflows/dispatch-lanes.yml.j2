@@ -32,9 +32,9 @@ jobs:
       REPO: {% raw %}${{ github.repository }}{% endraw %}
       DRY_RUN: {% raw %}${{ github.event.inputs.dry_run || 'false' }}{% endraw %}
       CODE_MOWER_MAX_WIP: {% raw %}${{ github.event.inputs.max_wip || vars.CODE_MOWER_MAX_WIP || '__BUILD_LOOP_MAX_WIP__' }}{% endraw %}
-      CODE_MOWER_READY_LABEL: "__BUILD_LOOP_READY_LABEL__"
-      CODE_MOWER_OWNER_LABELS_JSON: '__BUILD_LOOP_OWNER_LABELS_JSON__'
-      CODE_MOWER_BUILDER_LANES_JSON: '__BUILDER_DISPATCH_LANES_JSON__'
+      CODE_MOWER_READY_LABEL: __BUILD_LOOP_READY_LABEL_YAML__
+      CODE_MOWER_OWNER_LABELS_JSON: __BUILD_LOOP_OWNER_LABELS_JSON__
+      CODE_MOWER_BUILDER_LANES_JSON: __BUILDER_DISPATCH_LANES_JSON__
     steps:
       - name: Dispatch ready issues per lane
         run: |

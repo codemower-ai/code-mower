@@ -646,7 +646,15 @@ fi
         self.assertIn("DISPATCH_TOKEN secret is missing or empty", dispatch)
         self.assertIn('default_wip = int("2")', dispatch)
         self.assertNotIn("github.token", dispatch)
-        self.assertIn('"needs-jeff","decision-jeff","sitting-jeff"', dispatch)
+        dispatch_workflow = yaml.safe_load(dispatch)
+        self.assertEqual(
+            json.loads(
+                dispatch_workflow["jobs"]["dispatch"]["env"][
+                    "CODE_MOWER_OWNER_LABELS_JSON"
+                ]
+            ),
+            ["needs-jeff", "decision-jeff", "sitting-jeff"],
+        )
         self.assertIn('runs-on: ["self-hosted", "macOS", "bridge-pro-lane"]', mac_runner)
         self.assertIn("vars.BRIDGE_PRO_LANE_ENABLED == 'true'", mac_runner)
         self.assertIn('configured = int("180")', mac_runner)
@@ -688,6 +696,78 @@ fi
         self.assertNotIn('.name!="claude-audit-blocked"', runner)
         self.assertIn("def owner_blocking_label($name)", runner)
         self.assertIn("owner_blocking_label(.name)|not", runner)
+
+    def test_build_loop_workflow_scalars_escape_label_quotes(self) -> None:
+        cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
+        cfg["owner_surface"]["ready_label"] = "tier:'R\""
+        cfg["owner_surface"]["needs_owner_label"] = "needs-owner's \"review\""
+        cfg["owner_surface"]["owner_decision_label"] = "owner\"decision"
+        cfg["owner_surface"]["owner_sitting_label"] = "owner's-sitting"
+        cfg["lanes"]["codex"]["labels"]["needs"] = "needs-codex's \"audit\""
+        cfg["lanes"]["codex"]["labels"]["done"] = "codex's \"done\""
+        cfg["lanes"]["codex"]["labels"]["blocked"] = "codex's \"blocked\""
+        cfg["lanes"]["claude_audit"]["labels"]["needs"] = "needs-claude's \"audit\""
+        cfg["lanes"]["claude_audit"]["labels"]["done"] = "claude's \"done\""
+        cfg["lanes"]["claude_audit"]["labels"]["blocked"] = "claude's \"blocked\""
+        cfg["builder_identity"]["labels"].pop("builder:codex")
+        cfg["builder_identity"]["labels"]["builder:co'd\"ex"] = "codex"
+        cfg["builder_identity"]["labels"].pop("builder:grok-bot")
+        cfg["builder_identity"]["labels"]["builder:grok's \"bot\""] = "grok-bot"
+        plan = _builders_plan(cfg)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+            dispatch = yaml.safe_load(
+                output_dir.joinpath(".github/workflows/dispatch-lanes.yml").read_text(
+                    encoding="utf-8"
+                )
+            )
+            agent_labeler = yaml.safe_load(
+                output_dir.joinpath(
+                    ".github/workflows/code-mower-agent-pr-labeler.yml"
+                ).read_text(encoding="utf-8")
+            )
+            fix_round = yaml.safe_load(
+                output_dir.joinpath(
+                    ".github/workflows/code-mower-fix-round-dispatch.yml"
+                ).read_text(encoding="utf-8")
+            )
+
+        dispatch_env = dispatch["jobs"]["dispatch"]["env"]
+        self.assertEqual(dispatch_env["CODE_MOWER_READY_LABEL"], "tier:'R\"")
+        self.assertEqual(
+            json.loads(dispatch_env["CODE_MOWER_OWNER_LABELS_JSON"]),
+            ["needs-owner's \"review\"", "owner\"decision", "owner's-sitting"],
+        )
+        builder_lanes = json.loads(dispatch_env["CODE_MOWER_BUILDER_LANES_JSON"])
+        codex_lane = next(lane for lane in builder_lanes if lane["lane"] == "codex")
+        self.assertEqual(codex_lane["builder_label"], "builder:co'd\"ex")
+        self.assertEqual(codex_lane["audit_labels"], "needs-claude's \"audit\"")
+
+        agent_rules = json.loads(agent_labeler["env"]["CODE_MOWER_AGENT_PR_RULES_JSON"])
+        self.assertIn(
+            "builder:grok's \"bot\"",
+            {rule["builder_label"] for rule in agent_rules},
+        )
+        agent_audit_lanes = json.loads(
+            agent_labeler["env"]["CODE_MOWER_AGENT_PR_AUDIT_LANES_JSON"]
+        )
+        self.assertIn(
+            "needs-codex's \"audit\"",
+            {lane["needs"] for lane in agent_audit_lanes},
+        )
+
+        self.assertEqual(fix_round["env"]["NEEDS_OWNER_LABEL"], "needs-owner's \"review\"")
+        fix_rules = json.loads(fix_round["env"]["CODE_MOWER_FIX_ROUND_RULES_JSON"])
+        self.assertIn(
+            "builder:grok's \"bot\"",
+            {rule["builder_label"] for rule in fix_rules},
+        )
+        fix_audit_lanes = json.loads(
+            fix_round["env"]["CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON"]
+        )
+        self.assertIn("codex's \"blocked\"", {lane["blocked"] for lane in fix_audit_lanes})
 
     def test_build_loop_rejects_invalid_builder_wip_cap(self) -> None:
         for value in ("unlimited", "5.0", "0"):

@@ -15,10 +15,8 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CODE_MOWER_FIX_ROUND_RULES_JSON: >-
-    [{"builder_label":"builder:grok-bot","builder_lane":"grok-bot","mention":"@cursor"}]
-  CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON: >-
-    [{"author_lane":"codex","blocked":"codex-audit-blocked","done":"codex-audit-done","id":"codex","needs":"needs-codex-audit"},{"author_lane":"claude","blocked":"claude-audit-blocked","done":"claude-audit-done","id":"claude_audit","needs":"needs-claude-audit"}]
+  CODE_MOWER_FIX_ROUND_RULES_JSON: "[{\"builder_label\":\"builder:grok-bot\",\"builder_lane\":\"grok-bot\",\"mention\":\"@cursor\"}]"
+  CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON: "[{\"author_lane\":\"codex\",\"blocked\":\"codex-audit-blocked\",\"done\":\"codex-audit-done\",\"id\":\"codex\",\"needs\":\"needs-codex-audit\"},{\"author_lane\":\"claude\",\"blocked\":\"claude-audit-blocked\",\"done\":\"claude-audit-done\",\"id\":\"claude_audit\",\"needs\":\"needs-claude-audit\"}]"
   CODE_MOWER_DISPATCH_TOKEN_ENV: "DISPATCH_TOKEN"
   NEEDS_OWNER_LABEL: "needs-owner"
 
