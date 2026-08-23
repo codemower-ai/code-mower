@@ -84,3 +84,18 @@ Private repositories need tokens and app installations that can read pull
 requests, comments, checks, and Actions metadata. If `doctor --github` reports
 recent Actions billing blocks or expensive labeler workflows, review
 [docs/github-setup.md](github-setup.md) before enabling hosted reviewer lanes.
+
+## Gate Reports Audit In Flight
+
+When the merge gate waits on an audit, the status log names the Actions run and
+job it still considers non-terminal, for example:
+
+```text
+audit in flight: Codex (run 123456 job 'audit (codex)' queued since 2026-08-19T16:18:09Z)
+```
+
+Open that run first. If the lane has a trusted current-head `*-audit-done`
+comment newer than the queued run, the gate treats the lane as complete on the
+next evaluation. If the gate still waits, rerun `code-mower-gate.yml` with the
+same PR number and head SHA, then check whether the named job is still queued or
+whether GitHub returned stale Actions metadata.

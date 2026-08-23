@@ -59,6 +59,34 @@ class ActionsRunMarker:
 
 
 @dataclass(frozen=True)
+class AuditVerdict:
+    verdict: str
+    updated_at: str
+    created_at: str
+    comment_id: int
+    comment_index: int
+
+    def sort_key(self) -> tuple[str, str, int, int]:
+        return (self.updated_at, self.created_at, self.comment_id, self.comment_index)
+
+
+@dataclass(frozen=True)
+class AuditRunInFlight:
+    run_id: str
+    job_name: str
+    queued_since: str
+    run_status: str
+    job_status: str
+    job_conclusion: str
+
+    def description(self) -> str:
+        run_id = self.run_id or "unknown"
+        job_name = self.job_name or "unknown"
+        queued_since = self.queued_since or "unknown"
+        return f"run {run_id} job {job_name!r} queued since {queued_since}"
+
+
+@dataclass(frozen=True)
 class LaneConfig:
     name: str
     display_name: str
@@ -399,7 +427,26 @@ def latest_current_audit_verdict(
         bool,
     ],
 ) -> str:
-    verdicts: list[tuple[tuple[str, str, int, int], str]] = []
+    verdict = latest_current_audit_verdict_detail(
+        lane,
+        comments,
+        head_sha=head_sha,
+        trusted_comment_author=trusted_comment_author,
+    )
+    return verdict.verdict if verdict else ""
+
+
+def latest_current_audit_verdict_detail(
+    lane: Mapping[str, Any],
+    comments: Sequence[Mapping[str, Any]],
+    *,
+    head_sha: str,
+    trusted_comment_author: Callable[
+        [Mapping[str, Any], str, str, object, str | None],
+        bool,
+    ],
+) -> AuditVerdict | None:
+    verdicts: list[AuditVerdict] = []
     for index, comment in enumerate(comments):
         author = str(((comment.get("user") or {}).get("login")) or "")
         body = str(comment.get("body") or "")
@@ -419,10 +466,18 @@ def latest_current_audit_verdict(
                 or ""
             )
             created = str(comment.get("created_at") or comment.get("createdAt") or "")
-            verdicts.append(((updated, created, comment_id, index), verdict))
+            verdicts.append(
+                AuditVerdict(
+                    verdict=verdict,
+                    updated_at=updated,
+                    created_at=created,
+                    comment_id=comment_id,
+                    comment_index=index,
+                )
+            )
     if verdicts:
-        return max(verdicts, key=lambda item: item[0])[1]
-    return ""
+        return max(verdicts, key=lambda item: item.sort_key())
+    return None
 
 
 def attested_non_current_audit_heads(
@@ -502,23 +557,68 @@ def audit_job_matches_lane(job: Mapping[str, Any], lane: Mapping[str, Any]) -> b
     return any(token in name for token in _audit_lane_match_tokens(lane))
 
 
-def audit_run_in_flight_for_lane(
+def _audit_mapping_timestamp(item: Mapping[str, Any], keys: Sequence[str]) -> str:
+    for key in keys:
+        value = str(item.get(key) or "")
+        if value:
+            return value
+    return ""
+
+
+def audit_run_queued_since(
+    run: Mapping[str, Any],
+    job: Mapping[str, Any] | None = None,
+) -> str:
+    run_time = _audit_mapping_timestamp(
+        run,
+        (
+            "created_at",
+            "createdAt",
+            "queued_at",
+            "queuedAt",
+            "run_started_at",
+            "runStartedAt",
+            "started_at",
+            "startedAt",
+            "updated_at",
+            "updatedAt",
+        ),
+    )
+    if run_time or job is None:
+        return run_time
+    return _audit_mapping_timestamp(
+        job,
+        (
+            "created_at",
+            "createdAt",
+            "queued_at",
+            "queuedAt",
+            "started_at",
+            "startedAt",
+            "completed_at",
+            "completedAt",
+        ),
+    )
+
+
+def audit_run_in_flight_detail_for_lane(
     entry: Mapping[str, Any],
     lane: Mapping[str, Any],
     *,
     head_sha: str,
     pr_number: int | str,
-) -> bool:
+) -> AuditRunInFlight | None:
     run = entry.get("run") if isinstance(entry.get("run"), Mapping) else entry
     if not isinstance(run, Mapping):
-        return False
-    if str(run.get("status") or "") not in AUDIT_RUN_NON_TERMINAL_STATUSES:
-        return False
+        return None
+    run_status = str(run.get("status") or "")
+    if run_status not in AUDIT_RUN_NON_TERMINAL_STATUSES:
+        return None
     workflows = parse_csv_set(str(lane.get("github_actions_workflows") or ""))
     if not workflow_path_matches(audit_run_workflow_path(run), workflows):
-        return False
+        return None
     if not audit_run_matches_pr_head(run, head_sha=head_sha, pr_number=pr_number):
-        return False
+        return None
     jobs = entry.get("jobs") if isinstance(entry.get("jobs"), list) else []
     non_terminal_jobs = [
         job
@@ -530,8 +630,45 @@ def audit_run_in_flight_for_lane(
         )
     ]
     if non_terminal_jobs:
-        return any(audit_job_matches_lane(job, lane) for job in non_terminal_jobs)
-    return bool(entry.get("jobs_fetch_failed") or not jobs)
+        for job in non_terminal_jobs:
+            if audit_job_matches_lane(job, lane):
+                return AuditRunInFlight(
+                    run_id=str(run.get("id") or ""),
+                    job_name=str(job.get("name") or ""),
+                    queued_since=audit_run_queued_since(run, job),
+                    run_status=run_status,
+                    job_status=str(job.get("status") or ""),
+                    job_conclusion=str(job.get("conclusion") or ""),
+                )
+        return None
+    if entry.get("jobs_fetch_failed") or not jobs:
+        return AuditRunInFlight(
+            run_id=str(run.get("id") or ""),
+            job_name="jobs unavailable",
+            queued_since=audit_run_queued_since(run),
+            run_status=run_status,
+            job_status="unknown",
+            job_conclusion="",
+        )
+    return None
+
+
+def audit_run_in_flight_for_lane(
+    entry: Mapping[str, Any],
+    lane: Mapping[str, Any],
+    *,
+    head_sha: str,
+    pr_number: int | str,
+) -> bool:
+    return (
+        audit_run_in_flight_detail_for_lane(
+            entry,
+            lane,
+            head_sha=head_sha,
+            pr_number=pr_number,
+        )
+        is not None
+    )
 
 
 def _pr_item_matches_head(
