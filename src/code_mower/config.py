@@ -459,6 +459,14 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
         ):
             if key in owner_surface_map:
                 _require_env_name(owner_surface_map.get(key), f"owner_surface.{key}", issues)
+        if "builder_wip_cap" in owner_surface_map:
+            try:
+                audit_limits.parse_positive_int(
+                    owner_surface_map.get("builder_wip_cap"),
+                    field_name="owner_surface.builder_wip_cap",
+                )
+            except ValueError as exc:
+                issues.append(ConfigIssue("owner_surface.builder_wip_cap", str(exc)))
 
     raw_audit = config.get("audit")
     if raw_audit is not None:

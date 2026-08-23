@@ -48,7 +48,12 @@ work="${work_root}/${LANE}/$(basename "$REPO")"
 log_dir="${HOME}/.cache/code-mower-lanes/${LANE}"
 mkdir -p "$work_root/${LANE}" "$log_dir"
 
-trusted_authors="${LANE_TRUSTED_AUTHORS:-__LANE_MAC_RUNNER_TRUSTED_AUTHORS__}"
+repo_owner="${REPO%%/*}"
+configured_trusted_authors="${LANE_TRUSTED_AUTHORS:-__LANE_MAC_RUNNER_TRUSTED_AUTHORS__}"
+trusted_authors="$repo_owner"
+if [ -n "$configured_trusted_authors" ]; then
+  trusted_authors="${trusted_authors},${configured_trusted_authors}"
+fi
 trusted_authors_json="$(
   printf '%s\n' "$trusted_authors" \
     | jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))'

@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GH_TOKEN: ${{ secrets.DISPATCH_TOKEN || github.token }}
+      GH_TOKEN: ${{ secrets.DISPATCH_TOKEN || '' }}
       REPO: ${{ github.repository }}
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
       CODE_MOWER_MAX_WIP: ${{ github.event.inputs.max_wip || vars.CODE_MOWER_MAX_WIP || '5' }}
@@ -35,6 +35,10 @@ jobs:
       - name: Dispatch ready issues per lane
         run: |
           set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::DISPATCH_TOKEN secret is missing or empty; dispatch comments must be posted by a human-owned token"
+            exit 1
+          fi
           python3 <<'PY'
           import datetime as dt
           import json
@@ -49,8 +53,9 @@ jobs:
           owner_labels = set(json.loads(os.environ["CODE_MOWER_OWNER_LABELS_JSON"]))
           lanes = json.loads(os.environ["CODE_MOWER_BUILDER_LANES_JSON"])
           dry_run = os.environ.get("DRY_RUN", "false").lower() == "true"
-          raw_wip = os.environ.get("CODE_MOWER_MAX_WIP") or "5"
-          max_wip = int(raw_wip) if raw_wip.isdecimal() and int(raw_wip) > 0 else 5
+          default_wip = int("5")
+          raw_wip = os.environ.get("CODE_MOWER_MAX_WIP") or str(default_wip)
+          max_wip = int(raw_wip) if raw_wip.isdecimal() and int(raw_wip) > 0 else default_wip
 
           def gh(args, *, json_output=False, allow_failure=False):
               completed = subprocess.run(

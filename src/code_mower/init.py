@@ -234,6 +234,14 @@ OWNER_SURFACE_DEFAULTS = {
     "dispatch_token_expires_var": "DISPATCH_TOKEN_EXPIRES_AT",
 }
 
+DEFAULT_LANE_MAC_RUNNER_TRUSTED_AUTHORS = (
+    "github-actions[bot]",
+    "chatgpt-codex-connector[bot]",
+    "claude[bot]",
+    "grok-bot[bot]",
+    "cursor[bot]",
+    "cursor-agent[bot]",
+)
 HUMAN_AUTOMATION_TOKEN_SCOPES = (
     "Contents: read",
     "Issues: read/write",
@@ -945,6 +953,10 @@ def _lane_mac_runner_script_entry(
         for entry in audit_lanes
         if str(entry.get("needs") or "")
     ]
+    trusted_authors = list(DEFAULT_LANE_MAC_RUNNER_TRUSTED_AUTHORS)
+    owner_login = str(owner_surface.get("owner_login") or "").strip()
+    if owner_login and owner_login != OWNER_SURFACE_DEFAULTS["owner_login"]:
+        trusted_authors.insert(0, owner_login)
     return {
         "path": LANE_MAC_RUNNER_SCRIPT_PATH,
         "source": "lane-mac-runner-script-template",
@@ -958,10 +970,7 @@ def _lane_mac_runner_script_entry(
         )
         or "false",
         "lane_mac_runner_needs_labels_json": json.dumps(needs_labels, separators=(",", ":")),
-        "lane_mac_runner_trusted_authors": (
-            "github-actions[bot],chatgpt-codex-connector[bot],claude[bot],"
-            "grok-bot[bot],cursor[bot],cursor-agent[bot]"
-        ),
+        "lane_mac_runner_trusted_authors": ",".join(dict.fromkeys(trusted_authors)),
         "build_loop_ready_label": owner_surface["ready_label"],
         "needs_owner_label": owner_surface["needs_owner_label"],
     }
