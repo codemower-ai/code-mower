@@ -3399,14 +3399,14 @@ jobs:
                 text=True,
             )
 
-    def test_init_escapes_decision_authorities_in_workflow_env(self) -> None:
+    def test_init_renders_valid_decision_authorities_in_workflow_env(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
         config = dict(code_mower_config.load_config(config_path))
         config["owner_surface"] = {"owner_login": "owner"}
         config["decisions"] = {
             "authorities": [
-                'quote"slash\\',
-                "line\nbreak",
+                "valid-maintainer",
+                "ci-bot[bot]",
             ],
         }
         plan = code_mower_init.render_init_plan(
@@ -3414,7 +3414,7 @@ jobs:
             package_mode=True,
             package_command="code-mower",
         )
-        expected = 'owner,quote"slash\\,line\nbreak'
+        expected = "owner,valid-maintainer,ci-bot[bot]"
 
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / ".code-mower.generated"

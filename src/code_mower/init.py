@@ -590,6 +590,10 @@ def _yaml_scalar(value: Any) -> str:
     return json.dumps(str(value))
 
 
+def _shell_literal(value: Any) -> str:
+    return shlex.quote(str(value))
+
+
 def _yaml_inline_list(items: Sequence[str]) -> str:
     return ", ".join(_yaml_scalar(item) for item in items)
 
@@ -1733,16 +1737,16 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
             entry.get("lane_mac_runner_allowed_case") or ""
         ),
         "__LANE_MAC_RUNNER_BUILDER_LABELS_JSON__": str(
-            entry.get("lane_mac_runner_builder_labels_json") or "{}"
+            _shell_literal(entry.get("lane_mac_runner_builder_labels_json") or "{}")
         ),
         "__LANE_MAC_RUNNER_BRANCH_PREFIXES_JSON__": str(
-            entry.get("lane_mac_runner_branch_prefixes_json") or "{}"
+            _shell_literal(entry.get("lane_mac_runner_branch_prefixes_json") or "{}")
         ),
         "__LANE_MAC_RUNNER_AUDIT_LABELS_JSON__": str(
-            entry.get("lane_mac_runner_audit_labels_json") or "{}"
+            _shell_literal(entry.get("lane_mac_runner_audit_labels_json") or "{}")
         ),
         "__LANE_MAC_RUNNER_BLOCKED_LABELS_JQ__": str(
-            entry.get("lane_mac_runner_blocked_labels_jq") or "false"
+            _shell_literal(entry.get("lane_mac_runner_blocked_labels_jq") or "false")
         ),
         "__LANE_MAC_RUNNER_CRON__": str(entry.get("lane_mac_runner_cron") or ""),
         "__LANE_MAC_RUNNER_ENABLED_VAR__": str(
@@ -1762,10 +1766,16 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
             entry.get("lane_mac_runner_timeout_minutes") or "105"
         ),
         "__LANE_MAC_RUNNER_OWNER_LABELS_JSON__": str(
-            entry.get("lane_mac_runner_owner_labels_json") or "[]"
+            _shell_literal(entry.get("lane_mac_runner_owner_labels_json") or "[]")
         ),
         "__LANE_MAC_RUNNER_TRUSTED_AUTHORS__": str(
-            entry.get("lane_mac_runner_trusted_authors") or ""
+            _shell_literal(entry.get("lane_mac_runner_trusted_authors") or "")
+        ),
+        "__BUILD_LOOP_READY_LABEL_SH__": str(
+            _shell_literal(entry.get("build_loop_ready_label") or "")
+        ),
+        "__NEEDS_OWNER_LABEL_SH__": str(
+            _shell_literal(entry.get("needs_owner_label") or "")
         ),
         "__LANE_NAME__": str(entry.get("lane_name") or ""),
         "__OWNER_DECISION_LABEL__": str(entry.get("owner_decision_label") or ""),

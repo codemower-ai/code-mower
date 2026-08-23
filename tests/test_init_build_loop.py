@@ -134,7 +134,10 @@ class InitBuildLoopTests(unittest.TestCase):
                 """branch_prefixes_json='{"claude":["claude/"],"codex":["codex/"]}'""",
                 runner_text,
             )
-            self.assertIn('configured_trusted_authors="${LANE_TRUSTED_AUTHORS:-}"', runner_text)
+            self.assertIn(
+                "configured_trusted_authors=${LANE_TRUSTED_AUTHORS:-''}",
+                runner_text,
+            )
             self.assertNotIn("grok-bot[bot]", runner_text)
             self.assertNotIn("cursor[bot]", runner_text)
             self.assertIn("remote_repo_slug()", runner_text)
@@ -669,7 +672,7 @@ fi
         self.assertNotIn("label the issue or PR ``", codex_doc)
         self.assertIn("default `2`", readme)
         self.assertIn(
-            "LANE_TRUSTED_AUTHORS:-jeffhuber,github-actions[bot]",
+            "LANE_TRUSTED_AUTHORS:-'jeffhuber,github-actions[bot]'",
             runner,
         )
         self.assertIn(
@@ -697,22 +700,51 @@ fi
         self.assertIn("def owner_blocking_label($name)", runner)
         self.assertIn("owner_blocking_label(.name)|not", runner)
 
-    def test_build_loop_workflow_scalars_escape_label_quotes(self) -> None:
+    def test_build_loop_rejects_shell_unsafe_labels_and_logins(self) -> None:
         cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
-        cfg["owner_surface"]["ready_label"] = "tier:'R\""
-        cfg["owner_surface"]["needs_owner_label"] = "needs-owner's \"review\""
-        cfg["owner_surface"]["owner_decision_label"] = "owner\"decision"
+        cfg["owner_surface"]["ready_label"] = "tier:$R"
+        cfg["owner_surface"]["needs_owner_label"] = "needs-owner`review`"
+        cfg["owner_surface"]["owner_decision_label"] = "owner\ndecision"
         cfg["owner_surface"]["owner_sitting_label"] = "owner's-sitting"
-        cfg["lanes"]["codex"]["labels"]["needs"] = "needs-codex's \"audit\""
-        cfg["lanes"]["codex"]["labels"]["done"] = "codex's \"done\""
-        cfg["lanes"]["codex"]["labels"]["blocked"] = "codex's \"blocked\""
-        cfg["lanes"]["claude_audit"]["labels"]["needs"] = "needs-claude's \"audit\""
-        cfg["lanes"]["claude_audit"]["labels"]["done"] = "claude's \"done\""
-        cfg["lanes"]["claude_audit"]["labels"]["blocked"] = "claude's \"blocked\""
+        cfg["owner_surface"]["lane_runner_trusted_authors"] = [
+            "maintainer",
+            'bad"$(whoami)',
+        ]
+        cfg["decisions"]["authorities"] = ["good-maintainer", "bad\nlogin"]
+        cfg["builder_identity"]["authors"]["evil$(id)"] = "codex"
         cfg["builder_identity"]["labels"].pop("builder:codex")
-        cfg["builder_identity"]["labels"]["builder:co'd\"ex"] = "codex"
-        cfg["builder_identity"]["labels"].pop("builder:grok-bot")
-        cfg["builder_identity"]["labels"]["builder:grok's \"bot\""] = "grok-bot"
+        cfg["builder_identity"]["labels"]['builder:co"dex'] = "codex"
+        cfg["lanes"]["codex"]["labels"]["needs"] = "needs-codex'audit"
+        cfg["lanes"]["codex"]["labels"]["done"] = "codex`done`"
+        cfg["lanes"]["codex"]["labels"]["blocked"] = "codex\nblocked"
+
+        with self.assertRaises(code_mower_config.ConfigError) as raised:
+            _builders_plan(cfg)
+
+        message = str(raised.exception)
+        self.assertIn("owner_surface.ready_label", message)
+        self.assertIn("owner_surface.needs_owner_label", message)
+        self.assertIn("owner_surface.owner_decision_label", message)
+        self.assertIn("owner_surface.owner_sitting_label", message)
+        self.assertIn("owner_surface.lane_runner_trusted_authors[1]", message)
+        self.assertIn("decisions.authorities[1]", message)
+        self.assertIn("builder_identity.authors.evil$(id)", message)
+        self.assertIn('builder_identity.labels.builder:co"dex', message)
+        self.assertIn("lanes.codex.labels.needs", message)
+        self.assertIn("lanes.codex.labels.done", message)
+        self.assertIn("lanes.codex.labels.blocked", message)
+
+    def test_build_loop_shell_quotes_mac_runner_template_values(self) -> None:
+        cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
+        cfg["owner_surface"]["owner_login"] = "jeffhuber"
+        cfg["owner_surface"]["ready_label"] = "tier R"
+        cfg["owner_surface"]["needs_owner_label"] = "needs owner"
+        cfg["owner_surface"]["owner_decision_label"] = "owner decision"
+        cfg["owner_surface"]["owner_sitting_label"] = "owner sitting"
+        cfg["owner_surface"]["lane_runner_trusted_authors"] = ["maintainer-bot"]
+        cfg["lanes"]["codex"]["labels"]["needs"] = "needs codex audit"
+        cfg["lanes"]["codex"]["labels"]["done"] = "codex audit done"
+        cfg["lanes"]["codex"]["labels"]["blocked"] = "codex audit blocked"
         plan = _builders_plan(cfg)
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -723,51 +755,35 @@ fi
                     encoding="utf-8"
                 )
             )
-            agent_labeler = yaml.safe_load(
-                output_dir.joinpath(
-                    ".github/workflows/code-mower-agent-pr-labeler.yml"
-                ).read_text(encoding="utf-8")
-            )
-            fix_round = yaml.safe_load(
-                output_dir.joinpath(
-                    ".github/workflows/code-mower-fix-round-dispatch.yml"
-                ).read_text(encoding="utf-8")
+            runner = output_dir.joinpath("tools/lanes/run_mac_lane.sh")
+            runner_text = runner.read_text(encoding="utf-8")
+            completed = subprocess.run(
+                ["bash", "-n", str(runner)],
+                text=True,
+                capture_output=True,
+                check=False,
             )
 
         dispatch_env = dispatch["jobs"]["dispatch"]["env"]
-        self.assertEqual(dispatch_env["CODE_MOWER_READY_LABEL"], "tier:'R\"")
+        self.assertEqual(dispatch_env["CODE_MOWER_READY_LABEL"], "tier R")
         self.assertEqual(
             json.loads(dispatch_env["CODE_MOWER_OWNER_LABELS_JSON"]),
-            ["needs-owner's \"review\"", "owner\"decision", "owner's-sitting"],
+            ["needs owner", "owner decision", "owner sitting"],
         )
         builder_lanes = json.loads(dispatch_env["CODE_MOWER_BUILDER_LANES_JSON"])
         codex_lane = next(lane for lane in builder_lanes if lane["lane"] == "codex")
-        self.assertEqual(codex_lane["builder_label"], "builder:co'd\"ex")
-        self.assertEqual(codex_lane["audit_labels"], "needs-claude's \"audit\"")
-
-        agent_rules = json.loads(agent_labeler["env"]["CODE_MOWER_AGENT_PR_RULES_JSON"])
+        self.assertEqual(codex_lane["audit_labels"], "needs-claude-audit")
+        self.assertIn("ready_label='tier R'", runner_text)
+        self.assertIn("owner_label='needs owner'", runner_text)
         self.assertIn(
-            "builder:grok's \"bot\"",
-            {rule["builder_label"] for rule in agent_rules},
-        )
-        agent_audit_lanes = json.loads(
-            agent_labeler["env"]["CODE_MOWER_AGENT_PR_AUDIT_LANES_JSON"]
+            """owner_labels_json='["needs owner","owner decision","owner sitting"]'""",
+            runner_text,
         )
         self.assertIn(
-            "needs-codex's \"audit\"",
-            {lane["needs"] for lane in agent_audit_lanes},
+            "configured_trusted_authors=${LANE_TRUSTED_AUTHORS:-jeffhuber,maintainer-bot}",
+            runner_text,
         )
-
-        self.assertEqual(fix_round["env"]["NEEDS_OWNER_LABEL"], "needs-owner's \"review\"")
-        fix_rules = json.loads(fix_round["env"]["CODE_MOWER_FIX_ROUND_RULES_JSON"])
-        self.assertIn(
-            "builder:grok's \"bot\"",
-            {rule["builder_label"] for rule in fix_rules},
-        )
-        fix_audit_lanes = json.loads(
-            fix_round["env"]["CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON"]
-        )
-        self.assertIn("codex's \"blocked\"", {lane["blocked"] for lane in fix_audit_lanes})
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_build_loop_rejects_invalid_builder_wip_cap(self) -> None:
         for value in ("unlimited", "5.0", "0"):

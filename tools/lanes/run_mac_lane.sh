@@ -69,7 +69,7 @@ work="${work_root}/${LANE}/${repo_key}"
 log_dir="${HOME}/.cache/code-mower-lanes/${LANE}/${repo_key}"
 mkdir -p "$work_root/${LANE}" "$log_dir"
 
-configured_trusted_authors="${LANE_TRUSTED_AUTHORS:-}"
+configured_trusted_authors=${LANE_TRUSTED_AUTHORS:-''}
 trusted_authors="$repo_owner"
 if [ -n "$configured_trusted_authors" ]; then
   trusted_authors="${trusted_authors},${configured_trusted_authors}"
@@ -80,8 +80,8 @@ trusted_authors_json="$(
 )"
 audit_labels_json='{"claude":{"blocked":"claude-audit-blocked","done":"claude-audit-done","needs":"needs-claude-audit"},"codex":{"blocked":"codex-audit-blocked","done":"codex-audit-done","needs":"needs-codex-audit"}}'
 audit_block_filter='.name=="codex-audit-blocked" or .name=="claude-audit-blocked"'
-ready_label="tier:R"
-owner_label="needs-owner"
+ready_label=tier:R
+owner_label=needs-owner
 owner_labels_json='["needs-owner","owner-decision","owner-sitting"]'
 
 kind=""

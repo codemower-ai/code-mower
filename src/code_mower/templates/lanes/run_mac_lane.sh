@@ -38,13 +38,13 @@ case "$MAX_MINUTES" in ''|*[!0-9]*) echo "--max-minutes must be an integer" >&2;
 
 here="$(CDPATH=; cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(CDPATH=; cd -- "${here}/../.." && pwd -P)"
-builder_labels_json='__LANE_MAC_RUNNER_BUILDER_LABELS_JSON__'
+builder_labels_json=__LANE_MAC_RUNNER_BUILDER_LABELS_JSON__
 builder_label="$(
   printf '%s\n' "$builder_labels_json" \
     | jq -r --arg lane "$LANE" '.[$lane] // empty'
 )"
 [ -n "$builder_label" ] || { echo "missing builder label for lane: $LANE" >&2; exit 2; }
-branch_prefixes_json='__LANE_MAC_RUNNER_BRANCH_PREFIXES_JSON__'
+branch_prefixes_json=__LANE_MAC_RUNNER_BRANCH_PREFIXES_JSON__
 lane_branch_prefixes_json="$(
   printf '%s\n' "$branch_prefixes_json" \
     | jq -c --arg lane "$LANE" '.[$lane] // []'
@@ -69,7 +69,7 @@ work="${work_root}/${LANE}/${repo_key}"
 log_dir="${HOME}/.cache/code-mower-lanes/${LANE}/${repo_key}"
 mkdir -p "$work_root/${LANE}" "$log_dir"
 
-configured_trusted_authors="${LANE_TRUSTED_AUTHORS:-__LANE_MAC_RUNNER_TRUSTED_AUTHORS__}"
+configured_trusted_authors=${LANE_TRUSTED_AUTHORS:-__LANE_MAC_RUNNER_TRUSTED_AUTHORS__}
 trusted_authors="$repo_owner"
 if [ -n "$configured_trusted_authors" ]; then
   trusted_authors="${trusted_authors},${configured_trusted_authors}"
@@ -78,11 +78,11 @@ trusted_authors_json="$(
   printf '%s\n' "$trusted_authors" \
     | jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))'
 )"
-audit_labels_json='__LANE_MAC_RUNNER_AUDIT_LABELS_JSON__'
-audit_block_filter='__LANE_MAC_RUNNER_BLOCKED_LABELS_JQ__'
-ready_label="__BUILD_LOOP_READY_LABEL__"
-owner_label="__NEEDS_OWNER_LABEL__"
-owner_labels_json='__LANE_MAC_RUNNER_OWNER_LABELS_JSON__'
+audit_labels_json=__LANE_MAC_RUNNER_AUDIT_LABELS_JSON__
+audit_block_filter=__LANE_MAC_RUNNER_BLOCKED_LABELS_JQ__
+ready_label=__BUILD_LOOP_READY_LABEL_SH__
+owner_label=__NEEDS_OWNER_LABEL_SH__
+owner_labels_json=__LANE_MAC_RUNNER_OWNER_LABELS_JSON__
 
 kind=""
 num=""
