@@ -237,9 +237,47 @@ Treat the rehearsal as passing only when:
 
 If this fails, fix the first-user path before cutting or promoting a release.
 
-## Latest Public Package Proof
+## Beta.53 Package-Index Release Procedure
 
-The latest public-package rehearsal for `v0.5.0-beta.53` was run from PyPI with:
+Do not record public package proof for `v0.5.0-beta.53` until the release
+workflow runs and package-install rehearsals exist. Publish and rehearse the
+package-index artifacts in this order.
+
+First, run `release.yml` for TestPyPI only:
+
+```bash
+gh workflow run release.yml \
+  --repo codemower-ai/code-mower \
+  --ref main \
+  -f publish_testpypi=true \
+  -f publish_pypi=false
+```
+
+After that workflow run finishes, record its workflow run link and rehearse the
+candidate from TestPyPI:
+
+```bash
+code-mower migration package-install-rehearsal \
+  --package-spec code-mower==0.5.0b53 \
+  --pip-index-url https://test.pypi.org/simple/ \
+  --pip-extra-index-url https://pypi.org/simple/ \
+  --python "$(command -v python3.12)" \
+  --work-dir /tmp/code-mower-beta53-testpypi-rehearsal \
+  --json
+```
+
+Then run `release.yml` for production PyPI only:
+
+```bash
+gh workflow run release.yml \
+  --repo codemower-ai/code-mower \
+  --ref main \
+  -f publish_testpypi=false \
+  -f publish_pypi=true
+```
+
+After that workflow run finishes, record its workflow run link and rehearse the
+production package from PyPI:
 
 ```bash
 code-mower migration package-install-rehearsal \
@@ -249,21 +287,15 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
-Result:
+For each package-index run, record the workflow run link, rehearsal command,
+JSON output path, status, installed version, first-user readiness counts, and
+package source after execution. The workflow run links are the publication
+evidence; the rehearsal JSON is the install-path evidence.
 
-- `status`: `pass`
-- `version`: `code-mower 0.5.0b53`
-- `first_user_readiness.status`: `pass`
-- `first_user_readiness`: 10 passed, 0 failed, 0 warnings
-- package source: [PyPI `code-mower==0.5.0b53`](https://pypi.org/project/code-mower/0.5.0b53/)
-
-That rehearsal proved the public install, generated setup, doctor, draft
-calibration corpus, starter value report, cloud export, cloud upload dry run,
-and CodeMower.com dogfood dry run without relying on a local checkout.
-
-The same beta was also rehearsed against the private
+After production PyPI rehearsal passes, repeat the package-install rehearsal
+against the private
 [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
-repository using:
+repository:
 
 ```bash
 code-mower migration package-install-rehearsal \
@@ -273,26 +305,8 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
-Result:
-
-- `status`: `pass`
-- `first_user_readiness`: 10 passed, 0 failed, 0 warnings
-- external repo readiness: `pass`
-- wrapper present: `false`, so no product support files were required
-- repository-native checks detected from `package.json`: `npm run lint`,
-  `npm run typecheck`, and `npm run test`
-
-The DrinkBetter run is the current proof that a private JavaScript/mobile repo
-can try Code Mower from PyPI, detect its native check surface, and preview setup
-without first adopting repo-local wrappers.
-
-For releases that publish a TestPyPI candidate before production PyPI, run the
-same rehearsal with the candidate package spec and:
-
-```bash
---pip-index-url https://test.pypi.org/simple/ \
---pip-extra-index-url https://pypi.org/simple/
-```
-
-The public beta release run publishes to production PyPI only; TestPyPI is not
-published for `0.5.0b53`.
+Record status, first-user readiness counts, external repo readiness, wrapper
+presence, and detected repository-native checks after execution. That run is
+the proof that a private JavaScript/mobile repo can try Code Mower from PyPI,
+detect its native check surface, and preview setup without first adopting
+repo-local wrappers.

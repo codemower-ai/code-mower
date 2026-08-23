@@ -6715,6 +6715,54 @@ def main():
             with self.subTest(path=path.relative_to(ROOT).as_posix()):
                 self.assertIsNone(stale_baseline.search(path.read_text(encoding="utf-8")))
 
+    def test_beta53_release_docs_record_package_index_procedure_not_early_proof(self) -> None:
+        oss_checklist = (ROOT / "docs" / "oss-v1-checklist.md").read_text(
+            encoding="utf-8",
+        )
+        first_user = (ROOT / "docs" / "first-user-install-rehearsal.md").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertIn(
+            "The prepared public-release baseline is `v0.5.0-beta.53`",
+            oss_checklist,
+        )
+        self.assertIn(
+            "the `release.yml` workflow in two separate\n"
+            "  runs: TestPyPI first with `publish_testpypi=true`, `publish_pypi=false`,",
+            oss_checklist,
+        )
+        self.assertIn(
+            "then production PyPI with `publish_testpypi=false`, `publish_pypi=true`",
+            oss_checklist,
+        )
+        self.assertIn("workflow run\n  links recorded as release evidence", oss_checklist)
+        self.assertNotIn(
+            "public package installation from PyPI and TestPyPI as",
+            oss_checklist,
+        )
+
+        self.assertIn("## Beta.53 Package-Index Release Procedure", first_user)
+        self.assertIn(
+            "Do not record public package proof for `v0.5.0-beta.53` until the release\n"
+            "workflow runs and package-install rehearsals exist.",
+            first_user,
+        )
+        self.assertIn("-f publish_testpypi=true", first_user)
+        self.assertIn("-f publish_pypi=false", first_user)
+        self.assertIn("-f publish_testpypi=false", first_user)
+        self.assertIn("-f publish_pypi=true", first_user)
+        self.assertIn(
+            "The workflow run links are the publication\n"
+            "evidence; the rehearsal JSON is the install-path evidence.",
+            first_user,
+        )
+        self.assertNotIn(
+            "The latest public-package rehearsal for `v0.5.0-beta.53` was run",
+            first_user,
+        )
+        self.assertNotIn("TestPyPI is not\npublished for `0.5.0b53`", first_user)
+
     def test_readme_describes_calibration_limits_and_roles(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
