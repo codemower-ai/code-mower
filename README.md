@@ -336,7 +336,7 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 - [Lane Standing Instructions](docs/lanes/README.md)
 - [Codex Lane Standing Instructions](docs/lanes/codex.md)
 - [Claude Lane Standing Instructions](docs/lanes/claude.md)
-- [Cursor Hosted Lane Standing Instructions](docs/lanes/grok.md)
+- [Cursor Hosted Lane Standing Instructions](docs/lanes/cursor.md)
 - [Provider Matrix](docs/provider-matrix.md)
 - [GitHub Setup](docs/github-setup.md)
 - [First Run Transcript](docs/first-run-transcript.md)

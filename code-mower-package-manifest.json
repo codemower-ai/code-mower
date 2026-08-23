@@ -1375,7 +1375,7 @@
     {
       "kind": "lane-template",
       "source": "generated",
-      "target": "templates/lanes/grok.md"
+      "target": "templates/lanes/cursor.md"
     },
     {
       "kind": "lane-template",
@@ -1405,7 +1405,7 @@
     {
       "kind": "lane-template",
       "source": "generated",
-      "target": "src/code_mower/templates/lanes/grok.md"
+      "target": "src/code_mower/templates/lanes/cursor.md"
     },
     {
       "kind": "lane-template",

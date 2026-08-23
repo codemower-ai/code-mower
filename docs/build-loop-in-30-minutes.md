@@ -228,19 +228,22 @@ builder_identity:
   labels:
     builder:codex: codex
     builder:claude: claude
-    builder:grok-bot: grok-bot
+    builder:cursor: cursor
+    builder:grok-bot: cursor
   authors:
     chatgpt-codex-connector[bot]: codex
     claude[bot]: claude
-    grok-bot[bot]: grok-bot
+    cursor[bot]: cursor
+    grok-bot[bot]: cursor
   branch_prefixes:
-    cursor/: grok-bot
+    cursor/: cursor
   fix_round_mentions:
-    grok-bot: "@cursor"
+    cursor: "@cursor"
   trailers:
     CODE_MOWER_BUILDER:codex: codex
     CODE_MOWER_BUILDER:claude: claude
-    CODE_MOWER_BUILDER:grok-bot: grok-bot
+    CODE_MOWER_BUILDER:cursor: cursor
+    CODE_MOWER_BUILDER:grok-bot: cursor
 
 lanes:
   codex:
@@ -285,17 +288,19 @@ code-mower init --builders codex,claude,cursor
 code-mower init --builders codex,claude,cursor --apply --output-dir .code-mower.generated
 ```
 
-The `cursor` input aliases to the existing hosted Cursor lane identity
-`grok-bot`, so the generated lane docs use `docs/lanes/grok.md` and dispatch
-comments mention `@cursor`.
+The `cursor` input uses the hosted Cursor lane identity, so the generated lane
+docs use `docs/lanes/cursor.md` and dispatch comments mention `@cursor`.
+Legacy `grok` and `grok-bot` builder inputs still normalize to `cursor`, and
+existing `builder:grok-bot` / `dispatched:grok-bot` labels are accepted during
+the migration window.
 
 The generated labels for this reference route include:
 
 - ready and owner labels: `tier:R`, `needs-owner`, `owner-decision`,
   `owner-sitting`, `gate:override`;
-- builder labels: `builder:codex`, `builder:claude`, `builder:grok-bot`;
+- builder labels: `builder:codex`, `builder:claude`, `builder:cursor`;
 - dispatch labels: `dispatched:codex`, `dispatched:claude`,
-  `dispatched:grok-bot`;
+  `dispatched:cursor`;
 - audit labels: `needs-codex-audit`, `codex-audit-done`,
   `codex-audit-blocked`, `needs-claude-audit`, `claude-audit-done`,
   `claude-audit-blocked`, `needs-gitar-audit`, `gitar-audit-done`,
@@ -530,7 +535,7 @@ with `gh` authenticated as a repository admin:
 > 7. Dry-run the loop end to end: file one small real issue, label it
 >    `tier:R` plus the builder label `init --builders` created for the lane
 >    you enabled (the hosted Cursor lane's generated label is
->    `builder:grok-bot`; the Mac lanes use `builder:codex` /
+>    `builder:cursor`; the Mac lanes use `builder:codex` /
 >    `builder:claude` - confirm the exact names in the init output), watch it
 >    get dispatched, the PR opened, the required audits post verdicts
 >    (author lanes never gate their own PR: a hosted Cursor PR gets both

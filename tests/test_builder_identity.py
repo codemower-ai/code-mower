@@ -119,9 +119,32 @@ class BuilderIdentityTests(unittest.TestCase):
         self.assertTrue(payload["enabled"])
         self.assertEqual(payload["labels"]["builder:codex"], "codex")
         self.assertEqual(payload["labels"]["builder:claude"], "claude")
-        self.assertEqual(payload["labels"]["builder:grok-bot"], "grok-bot")
+        self.assertEqual(payload["labels"]["builder:cursor"], "cursor")
+        self.assertEqual(payload["labels"]["builder:grok-bot"], "cursor")
         self.assertEqual(payload["authors"]["claude[bot]"], "claude")
+        self.assertEqual(payload["authors"]["cursor[bot]"], "cursor")
+        self.assertEqual(payload["authors"]["grok-bot[bot]"], "cursor")
         self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:claude"], "claude")
+        self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:cursor"], "cursor")
+        self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:grok-bot"], "cursor")
+
+    def test_legacy_grok_bot_identity_maps_to_cursor(self) -> None:
+        payload = code_mower_init._author_exclusion_payload(
+            {
+                "merge_authority_excludes_author": True,
+                "builder_identity": {
+                    "labels": {"builder:grok-bot": "grok-bot"},
+                    "authors": {"grok-bot[bot]": "grok-bot"},
+                    "trailers": {"CODE_MOWER_BUILDER:grok-bot": "grok-bot"},
+                },
+            },
+            {},
+        )
+
+        self.assertEqual(payload["labels"]["builder:cursor"], "cursor")
+        self.assertEqual(payload["labels"]["builder:grok-bot"], "cursor")
+        self.assertEqual(payload["authors"]["grok-bot[bot]"], "cursor")
+        self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:grok-bot"], "cursor")
 
     def test_author_exclusion_defaults_include_informational_audit_builders(self) -> None:
         payload = code_mower_init._author_exclusion_payload(
@@ -142,7 +165,7 @@ class BuilderIdentityTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["labels"]["builder:codex"], "codex")
-        self.assertEqual(payload["labels"]["builder:grok-bot"], "grok-bot")
+        self.assertEqual(payload["labels"]["builder:grok-bot"], "cursor")
 
     def test_config_validation_rejects_malformed_builder_identity(self) -> None:
         cfg = dict(

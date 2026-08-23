@@ -565,7 +565,7 @@ The recommended three-builder pattern is:
   so Claude audit gates them.
 - Claude-built PRs carry `builder:claude` or are opened by a mapped Claude
   author, so Codex audit gates them.
-- Hosted-built PRs carry a third builder identity such as `builder:grok-bot`,
+- Hosted-built PRs carry a third builder identity such as `builder:cursor`,
   so both Codex and Claude audit gates still apply.
 
 Use a single-writer rule for PR branches: only the lane named by the owning
@@ -582,14 +582,17 @@ builder_identity:
   labels:
     builder:codex: codex
     builder:claude: claude
-    builder:grok-bot: grok-bot
+    builder:cursor: cursor
+    builder:grok-bot: cursor
   authors:
     chatgpt-codex-connector[bot]: codex
     claude[bot]: claude
+    cursor[bot]: cursor
+    grok-bot[bot]: cursor
   branch_prefixes:
-    cursor/: grok-bot
+    cursor/: cursor
   fix_round_mentions:
-    grok-bot: "@cursor"
+    cursor: "@cursor"
 ```
 
 PR-body trailer mappings remain configuration-valid for non-gating provenance

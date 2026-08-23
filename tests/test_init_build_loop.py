@@ -51,15 +51,17 @@ def _mac_runner_selection_script(workflow_text: str) -> str:
 
 
 class InitBuildLoopTests(unittest.TestCase):
-    def test_builders_alias_cursor_to_existing_hosted_builder_identity(self) -> None:
+    def test_builders_use_cursor_as_hosted_builder_identity(self) -> None:
         plan = _builders_plan()
 
-        self.assertEqual(plan.data["builder_loop"]["builders"], ["codex", "claude", "grok-bot"])
+        self.assertEqual(plan.data["builder_loop"]["builders"], ["codex", "claude", "cursor"])
         self.assertIn("builder:codex", plan.data["labels"])
         self.assertIn("builder:claude", plan.data["labels"])
-        self.assertIn("builder:grok-bot", plan.data["labels"])
+        self.assertIn("builder:cursor", plan.data["labels"])
+        self.assertNotIn("builder:grok-bot", plan.data["labels"])
         self.assertIn("dispatched:codex", plan.data["labels"])
-        self.assertIn("dispatched:grok-bot", plan.data["labels"])
+        self.assertIn("dispatched:cursor", plan.data["labels"])
+        self.assertNotIn("dispatched:grok-bot", plan.data["labels"])
         self.assertIn("tier:R", plan.data["labels"])
         self.assertIn("DISPATCH_TOKEN", plan.data["required_secrets"])
         self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", plan.data["required_variables"])
@@ -68,9 +70,24 @@ class InitBuildLoopTests(unittest.TestCase):
         lanes = {entry["lane"]: entry for entry in plan.data["builder_loop"]["lanes"]}
         self.assertEqual(lanes["codex"]["audit_labels_display"], "needs-claude-audit")
         self.assertEqual(lanes["claude"]["audit_labels_display"], "needs-codex-audit")
-        self.assertEqual(lanes["grok-bot"]["mention"], "@cursor")
-        self.assertEqual(lanes["grok-bot"]["doc_target"], "docs/lanes/grok.md")
+        self.assertEqual(lanes["cursor"]["mention"], "@cursor")
+        self.assertEqual(lanes["cursor"]["builder_label"], "builder:cursor")
+        self.assertEqual(
+            lanes["cursor"]["builder_labels"],
+            ["builder:cursor", "builder:grok-bot"],
+        )
+        self.assertEqual(lanes["cursor"]["dispatch_label"], "dispatched:cursor")
+        self.assertEqual(
+            lanes["cursor"]["dispatch_labels"],
+            ["dispatched:cursor", "dispatched:grok-bot"],
+        )
+        self.assertEqual(lanes["cursor"]["doc_target"], "docs/lanes/cursor.md")
         self.assertIn("Builder loop:", plan.text)
+
+    def test_builders_accept_legacy_grok_bot_aliases_for_cursor(self) -> None:
+        lanes = code_mower_init._parse_builder_lanes("cursor,grok,grok-bot")
+
+        self.assertEqual(lanes, ("cursor",))
 
     def test_init_apply_renders_build_loop_workflows_script_and_lane_docs(self) -> None:
         plan = _builders_plan()
@@ -85,7 +102,7 @@ class InitBuildLoopTests(unittest.TestCase):
                 "docs/lanes/README.md",
                 "docs/lanes/codex.md",
                 "docs/lanes/claude.md",
-                "docs/lanes/grok.md",
+                "docs/lanes/cursor.md",
             )
             for rel_path in expected:
                 path = output_dir / rel_path

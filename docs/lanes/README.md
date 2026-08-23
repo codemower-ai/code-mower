@@ -9,7 +9,7 @@ new acceptance criteria.
 | --- | --- | --- | --- | --- |
 | Codex | `lanes/codex.md` | `builder:codex` | `dispatched:codex` | Mac runner |
 | Claude | `lanes/claude.md` | `builder:claude` | `dispatched:claude` | Mac runner |
-| Grok Bot | `lanes/grok.md` | `builder:grok-bot` | `dispatched:grok-bot` | @cursor dispatch comment |
+| Cursor | `lanes/cursor.md` | `builder:cursor` | `dispatched:cursor` | @cursor dispatch comment |
 
 Dispatcher rules:
 - Ready means open, labeled `tier:R`, labeled for exactly one

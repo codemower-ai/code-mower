@@ -68,7 +68,7 @@ peer audit lanes must gate the PR.
 |---|---|---|---|
 | `codex` | Codex CLI on the self-hosted Mac lane runner | `tier:R` plus `builder:codex`; `lane-mac-runner.yml` opens `codex/...` PRs | First-class local builder identity. The owning Codex branch is single-writer; Claude audit gates Codex-authored PRs. |
 | `claude` | Claude Code CLI on the self-hosted Mac lane runner | `tier:R` plus `builder:claude`; `lane-mac-runner.yml` opens `claude/...` PRs | First-class local builder identity. The owning Claude branch is single-writer; Codex audit gates Claude-authored PRs. |
-| `grok_bot` | Cursor Cloud Agents through an `@cursor` dispatch comment | `tier:R` plus `builder:grok-bot`; `dispatch-lanes.yml` posts the configured `@cursor` mention | Hosted builder identity for the reference Cursor path. Codex and Claude audits both gate before merge. |
+| `grok_bot` | Cursor Cloud Agents through an `@cursor` dispatch comment | `tier:R` plus `builder:cursor`; `dispatch-lanes.yml` posts the configured `@cursor` mention | Hosted builder identity for the reference Cursor path. `builder:grok-bot` remains accepted as a legacy label during migration. Codex and Claude audits both gate before merge. |
 | `cursor_cloud_agent` | Cursor Cloud Agents | Usually represented by `grok_bot` in Code Mower build-loop config; standalone provenance can still use `builder record` | Hosted async executor. Treat source access, cost, and branch writes as explicit opt-in; never count it as reviewer approval. |
 | `devin` | Devin session | External hosted dispatch or manual handoff, then `builder record` once a PR exists | Explicit opt-in. Use separate reviewer evidence for merge policy; do not rely on Devin builder output as gate evidence. |
 
