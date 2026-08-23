@@ -392,6 +392,11 @@ def _default_trailer_bot_authors(trailer_lane: str) -> str:
     return f"{stem}-audit-bot,{stem}-audit-bot[bot]"
 
 
+def _decision_coverage_for_trailer_lane(trailer_lane: str) -> bool:
+    lane_config = _load_trailer_lane_config(trailer_lane)
+    return bool(getattr(lane_config, "decision_coverage", False))
+
+
 def _configured_bot_authors(lane: Mapping[str, Any]) -> str:
     provider_config = lane.get("provider_config")
     if not isinstance(provider_config, Mapping):
@@ -714,7 +719,7 @@ def _fix_round_dispatch_workflow_entry(
     }
 
 
-def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
+def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, Any]:
     labels = _labels_for(lane)
     trailer_lane = _trailer_lane_name(lane_id, lane)
     github_actions_workflows = LOCAL_AUDIT_WORKFLOW_PATH if lane.get("driver") == "local_cli" else ""
@@ -724,6 +729,7 @@ def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, str]:
         "display_name": _display_name(trailer_lane),
         "done": str(labels["done"]),
         "blocked": str(labels["blocked"]),
+        "decision_coverage": _decision_coverage_for_trailer_lane(trailer_lane),
         "builder_label": f"builder:{trailer_lane}",
         "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
         "authors_env": _authors_env_for_lane(lane_id, lane),

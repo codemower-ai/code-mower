@@ -92,10 +92,13 @@ def classify_audit_comment(
         if label == config.done_label:
             return "done"
         if label == config.blocked_label:
-            if code_mower_decisions.audit_blockers_are_decision_covered(
-                body,
-                decision_records,
-                lane=config.name,
+            if (
+                config.decision_coverage
+                and code_mower_decisions.audit_blockers_are_decision_covered(
+                    body,
+                    decision_records,
+                    lane=config.name,
+                )
             ):
                 return "done"
             return "blocked"

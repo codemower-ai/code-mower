@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -20,10 +22,11 @@ DECISION_MARKER_RE = re.compile(
     r"<!--\s*CODE_MOWER_DECISION:\s*(.*?)\s*-->",
     flags=re.IGNORECASE | re.DOTALL,
 )
-FINDING_HEADER_RE = re.compile(
-    r"^\s*-\s+\[(P[0-3])\]\s+(.*?)(?:\s+--\s+`?([^`\n]+)`?)?\s*$",
-    flags=re.IGNORECASE,
+AUDIT_FINDINGS_MARKER_RE = re.compile(
+    r"<!--\s*CODE_MOWER_AUDIT_FINDINGS:\s*(.*?)\s*-->",
+    flags=re.IGNORECASE | re.DOTALL,
 )
+AUDIT_FINDINGS_SCHEMA = "codeMower.auditFindings.v1"
 VALID_DECISION_SCOPES = frozenset({"finding", "topic"})
 VALID_DECISION_ACTORS = frozenset({"owner", "orchestrator"})
 DEFAULT_DECISION_COMMENT_PAGE_CAP = 10
@@ -57,6 +60,7 @@ class AuditFinding:
     location: str
     detail: str
     lane: str = ""
+    finding_id: str = ""
 
     @property
     def blocker(self) -> bool:
@@ -68,6 +72,8 @@ class AuditFinding:
 
     @property
     def stable_finding_id(self) -> str:
+        if self.finding_id:
+            return self.finding_id
         return stable_finding_id(
             self.lane,
             self.title,
@@ -377,41 +383,126 @@ def render_decision_registry_context(
     return "\n".join(lines) + "\n"
 
 
-def extract_audit_findings(body: str, *, lane: str = "") -> tuple[AuditFinding, ...]:
-    findings: list[AuditFinding] = []
-    current: dict[str, str] | None = None
-    detail_lines: list[str] = []
+def _normalized_lane(value: str) -> str:
+    return _normalized_identifier(value).replace("_", "-")
 
-    def finish_current() -> None:
-        if current is None:
-            return
+
+def render_audit_findings_marker(
+    *,
+    lane: str,
+    findings: Sequence[Mapping[str, Any]],
+    complete: bool,
+) -> str:
+    lane_text = _normalized_lane(lane)
+    entries: list[dict[str, Any]] = []
+    for finding in findings:
+        severity = _compact(finding.get("severity")).upper()
+        title = _compact(finding.get("title"), 1_000)
+        file_path = _compact(finding.get("file"), 1_000)
+        if severity not in {"P0", "P1", "P2", "P3"}:
+            continue
+        finding_id = stable_finding_id(lane_text, title, file_path)
+        if not finding_id:
+            continue
+        entry: dict[str, Any] = {
+            "severity": severity,
+            "title": title,
+            "file": file_path,
+            "finding_id": finding_id,
+        }
+        line = finding.get("line")
+        if isinstance(line, int) and not isinstance(line, bool) and line >= 1:
+            entry["line"] = line
+        entries.append(entry)
+
+    payload = {
+        "schema": AUDIT_FINDINGS_SCHEMA,
+        "lane": lane_text,
+        "complete": bool(complete),
+        "findings": entries,
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    return f"<!-- CODE_MOWER_AUDIT_FINDINGS: {encoded} -->"
+
+
+def _decode_audit_findings_payload(raw_payload: str) -> Mapping[str, Any] | None:
+    token = "".join(str(raw_payload or "").split())
+    if not token or not re.fullmatch(r"[A-Za-z0-9_\-=]+", token):
+        return None
+    token += "=" * (-len(token) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("ascii"))
+        payload = json.loads(decoded.decode("utf-8"))
+    except (
+        binascii.Error,
+        json.JSONDecodeError,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+    ):
+        return None
+    return payload if isinstance(payload, Mapping) else None
+
+
+def extract_audit_findings(body: str, *, lane: str = "") -> tuple[AuditFinding, ...]:
+    """Extract machine-readable findings from a structured audit marker only."""
+
+    marker_matches = list(AUDIT_FINDINGS_MARKER_RE.finditer(body or ""))
+    if len(marker_matches) != 1:
+        return ()
+
+    payload = _decode_audit_findings_payload(marker_matches[0].group(1))
+    if payload is None:
+        return ()
+    if payload.get("schema") != AUDIT_FINDINGS_SCHEMA:
+        return ()
+    if payload.get("complete") is not True:
+        return ()
+
+    marker_lane = _normalized_lane(str(payload.get("lane") or ""))
+    expected_lane = _normalized_lane(lane)
+    if not marker_lane or (expected_lane and marker_lane != expected_lane):
+        return ()
+
+    raw_findings = payload.get("findings")
+    if not isinstance(raw_findings, list):
+        return ()
+
+    findings: list[AuditFinding] = []
+    for raw_finding in raw_findings:
+        if not isinstance(raw_finding, Mapping):
+            return ()
+        severity = _compact(raw_finding.get("severity")).upper()
+        title = _compact(raw_finding.get("title"), 1_000)
+        file_path = _compact(raw_finding.get("file"), 1_000)
+        finding_id = _compact(raw_finding.get("finding_id"), 1_000)
+        expected_finding_id = stable_finding_id(marker_lane, title, file_path)
+        if (
+            severity not in {"P0", "P1", "P2", "P3"}
+            or not title
+            or not file_path
+            or not expected_finding_id
+            or finding_id != expected_finding_id
+        ):
+            return ()
+        line = raw_finding.get("line")
+        location = file_path
+        if line is not None:
+            if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+                return ()
+            location = f"{file_path}:{line}"
         findings.append(
             AuditFinding(
-                severity=current["severity"].upper(),
-                title=_compact(current["title"], 1_000),
-                location=_compact(current.get("location", ""), 1_000),
-                detail="\n".join(detail_lines).strip(),
-                lane=_compact(lane),
+                severity=severity,
+                title=title,
+                location=location,
+                detail="",
+                lane=marker_lane,
+                finding_id=finding_id,
             )
         )
-
-    for raw_line in (body or "").splitlines():
-        match = FINDING_HEADER_RE.match(raw_line)
-        if match:
-            finish_current()
-            current = {
-                "severity": match.group(1).upper(),
-                "title": match.group(2).strip(),
-                "location": (match.group(3) or "").strip(),
-            }
-            detail_lines = []
-            continue
-        if current is None:
-            continue
-        if DECISION_MARKER_RE.search(raw_line):
-            continue
-        detail_lines.append(raw_line.strip())
-    finish_current()
     return tuple(findings)
 
 

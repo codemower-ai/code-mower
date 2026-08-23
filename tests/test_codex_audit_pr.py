@@ -209,6 +209,12 @@ class CodexAuditPrTests(unittest.TestCase):
             ),
             parsed.prose,
         )
+        findings = cap.code_mower_decisions.extract_audit_findings(
+            parsed.prose,
+            lane="codex",
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].title, title)
 
     def test_codex_truncated_diff_posts_unknown_without_running_codex(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -425,6 +431,34 @@ class CodexAuditPrTests(unittest.TestCase):
 
         self.assertEqual(registry, "")
         self.assertIn("decision registry: skipped", err.getvalue())
+
+    def test_decision_authorities_load_from_trusted_ref_not_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            repo.joinpath("code-mower.yml").write_text(
+                "owner_surface:\n  owner_login: attacker\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(
+                    cap,
+                    "_run_git_text",
+                    return_value="owner_surface:\n  owner_login: owner\n",
+                ) as run_git,
+                mock.patch.object(
+                    cap.code_mower_decisions,
+                    "decision_authorities_from_env",
+                    return_value=(),
+                ),
+            ):
+                authorities = cap._decision_authorities_for_repo(
+                    repo,
+                    ("configured",),
+                    trusted_ref="origin/main",
+                )
+
+        self.assertEqual(authorities, ("configured", "owner"))
+        run_git.assert_called_once_with(repo, ["show", "origin/main:code-mower.yml"])
 
 
 if __name__ == "__main__":

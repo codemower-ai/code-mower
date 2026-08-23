@@ -24,6 +24,37 @@ def _event(author: str, body: str, *, comment_id: int = 9001) -> dict:
     }
 
 
+def _structured_audit_body(
+    *,
+    lane: str,
+    title: str,
+    file_path: str,
+    severity: str = "P2",
+    line: int = 12,
+    complete: bool = True,
+) -> str:
+    marker = decisions.render_audit_findings_marker(
+        lane=lane,
+        findings=[
+            {
+                "severity": severity,
+                "title": title,
+                "file": file_path,
+                "line": line,
+            }
+        ],
+        complete=complete,
+    )
+    return f"""
+Findings:
+
+- [{severity}] {title} -- `{file_path}:{line}`
+  The bridge exposes the configured host display name.
+
+{marker}
+"""
+
+
 class DecisionMarkerTests(unittest.TestCase):
     def test_decide_renders_parseable_marker(self) -> None:
         out = io.StringIO()
@@ -176,12 +207,11 @@ class DecisionMarkerTests(unittest.TestCase):
             finding_id=decisions.stable_finding_id("codex", title, "src/display.py"),
             ref="ADR-007",
         )
-        body = f"""
-    Findings:
-
-    - [P2] {title} -- `src/display.py:12`
-      The bridge exposes the configured host display name.
-    """
+        body = _structured_audit_body(
+            lane="codex",
+            title=title,
+            file_path="src/display.py",
+        )
 
         self.assertTrue(
             decisions.audit_blockers_are_decision_covered(
@@ -202,6 +232,81 @@ class DecisionMarkerTests(unittest.TestCase):
             )
         )
 
+    def test_decision_coverage_ignores_free_text_findings_without_marker(self) -> None:
+        title = "HOST_DISPLAY_NAME class-B finding repeats"
+        record = decisions.DecisionRecord(
+            id="ADR-007",
+            scope="finding",
+            resolves="",
+            by="owner",
+            finding_id=decisions.stable_finding_id("codex", title, "src/display.py"),
+            ref="ADR-007",
+        )
+        body = f"""
+Findings:
+
+- [P2] {title} -- `src/display.py:12`
+  The bridge exposes the configured host display name.
+"""
+
+        self.assertFalse(
+            decisions.audit_blockers_are_decision_covered(
+                body,
+                (record,),
+                lane="codex",
+            )
+        )
+
+    def test_decision_coverage_rejects_unparseable_structured_marker(self) -> None:
+        title = "HOST_DISPLAY_NAME class-B finding repeats"
+        record = decisions.DecisionRecord(
+            id="ADR-007",
+            scope="finding",
+            resolves="",
+            by="owner",
+            finding_id=decisions.stable_finding_id("codex", title, "src/display.py"),
+            ref="ADR-007",
+        )
+        body = """
+Findings:
+
+<!-- CODE_MOWER_AUDIT_FINDINGS: not-json -->
+<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->
+"""
+
+        self.assertFalse(
+            decisions.audit_blockers_are_decision_covered(
+                body,
+                (record,),
+                lane="codex",
+            )
+        )
+
+    def test_decision_coverage_rejects_incomplete_structured_marker(self) -> None:
+        title = "HOST_DISPLAY_NAME class-B finding repeats"
+        record = decisions.DecisionRecord(
+            id="ADR-007",
+            scope="finding",
+            resolves="",
+            by="owner",
+            finding_id=decisions.stable_finding_id("codex", title, "src/display.py"),
+            ref="ADR-007",
+        )
+        body = _structured_audit_body(
+            lane="codex",
+            title=title,
+            file_path="src/display.py",
+            complete=False,
+        )
+
+        self.assertFalse(
+            decisions.audit_blockers_are_decision_covered(
+                body,
+                (record,),
+                lane="codex",
+            )
+        )
+
     def test_decision_coverage_matches_exact_topic_title(self) -> None:
         title = "Host display name remains accepted by policy"
         record = decisions.DecisionRecord(
@@ -210,12 +315,11 @@ class DecisionMarkerTests(unittest.TestCase):
             resolves=title,
             by="owner",
         )
-        body = f"""
-Findings:
-
-- [P2] {title} -- `src/display.py:12`
-  The bridge exposes the configured host display name.
-"""
+        body = _structured_audit_body(
+            lane="codex",
+            title=title,
+            file_path="src/display.py",
+        )
 
         self.assertTrue(
             decisions.audit_blockers_are_decision_covered(
@@ -233,12 +337,11 @@ Findings:
             resolves=title,
             by="owner",
         )
-        body = f"""
-Findings:
-
-- [P2] {title} -- `src/display.py:12`
-  The bridge exposes the configured host display name.
-"""
+        body = _structured_audit_body(
+            lane="codex",
+            title=title,
+            file_path="src/display.py",
+        )
 
         self.assertFalse(
             decisions.audit_blockers_are_decision_covered(
@@ -255,12 +358,11 @@ Findings:
             resolves="src/display.py:12",
             by="owner",
         )
-        body = """
-Findings:
-
-- [P2] Host display name remains accepted by policy -- `src/display.py:12`
-  The bridge exposes the configured host display name.
-"""
+        body = _structured_audit_body(
+            lane="codex",
+            title="Host display name remains accepted by policy",
+            file_path="src/display.py",
+        )
 
         self.assertFalse(
             decisions.audit_blockers_are_decision_covered(
@@ -277,12 +379,12 @@ Findings:
             resolves="HOST_DISPLAY_NAME",
             by="owner",
         )
-        body = """
-Findings:
-
-- [P2] Later blocker mentions an accepted variable -- `src/other.py:9`
-  HOST_DISPLAY_NAME appears in the detail, but this is a different finding.
-"""
+        body = _structured_audit_body(
+            lane="codex",
+            title="Later blocker mentions an accepted variable",
+            file_path="src/other.py",
+            line=9,
+        )
 
         self.assertFalse(decisions.audit_blockers_are_decision_covered(body, (record,)))
 
@@ -293,12 +395,13 @@ Findings:
             resolves="DEBUG_MODE",
             by="owner",
         )
-        body = """
-Findings:
-
-- [P1] DEBUG_MODE leaks stack traces to end users -- `src/settings.py:44`
-  This is unrelated to the earlier DEBUG_MODE decision.
-"""
+        body = _structured_audit_body(
+            lane="claude",
+            title="DEBUG_MODE leaks stack traces to end users",
+            file_path="src/settings.py",
+            severity="P1",
+            line=44,
+        )
 
         self.assertFalse(
             decisions.audit_blockers_are_decision_covered(
@@ -315,12 +418,12 @@ Findings:
             resolves="HOST_DISPLAY_NAME",
             by="owner",
         )
-        body = """
-Findings:
-
-- [P2] Later blocker mentions HOST_DISPLAY_NAME reuse -- `src/other.py:9`
-  This is a different finding with a different title identity.
-"""
+        body = _structured_audit_body(
+            lane="codex",
+            title="Later blocker mentions HOST_DISPLAY_NAME reuse",
+            file_path="src/other.py",
+            line=9,
+        )
 
         self.assertFalse(decisions.audit_blockers_are_decision_covered(body, (record,)))
 
@@ -331,12 +434,11 @@ Findings:
             resolves="display name",
             by="owner",
         )
-        body = """
-Findings:
-
-- [P2] Host display name remains accepted by policy -- `src/display.py:12`
-  The bridge exposes the configured host display name.
-"""
+        body = _structured_audit_body(
+            lane="codex",
+            title="Host display name remains accepted by policy",
+            file_path="src/display.py",
+        )
 
         self.assertFalse(decisions.audit_blockers_are_decision_covered(body, (record,)))
 

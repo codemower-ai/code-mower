@@ -432,6 +432,8 @@ def _render_structured_prose(
         return "\n".join(lines)
 
     lines.extend(["Findings:", ""])
+    marker_index = len(lines)
+    marker_findings: List[Dict[str, Any]] = []
     for finding in findings:
         severity = finding["severity"]
         title = _one_line(finding["title"], MAX_FINDING_TITLE_CHARS)
@@ -446,8 +448,27 @@ def _render_structured_prose(
         lines.append(f"- [{severity}] {title} -- `{file_path}:{line}`")
         if finding_id:
             lines.append(f"  Finding ID: `{finding_id}`")
+            marker_findings.append(
+                {
+                    "severity": severity,
+                    "title": title,
+                    "file": file_path,
+                    "line": line,
+                }
+            )
         for detail_line in detail.splitlines():
             lines.append(f"  {detail_line}")
+
+    if marker_findings:
+        lines.insert(marker_index, "")
+        lines.insert(
+            marker_index,
+            code_mower_decisions.render_audit_findings_marker(
+                lane="codex",
+                findings=marker_findings,
+                complete=total_findings == len(findings),
+            ),
+        )
 
     omitted = total_findings - len(findings)
     if omitted > 0:
@@ -1312,24 +1333,50 @@ def _decision_registry_context(
 def _decision_authorities_for_repo(
     local_repo: Path,
     configured_authorities: Tuple[str, ...],
+    *,
+    trusted_ref: str,
 ) -> Tuple[str, ...]:
     authorities: list[str] = []
     authorities.extend(configured_authorities)
     authorities.extend(code_mower_decisions.decision_authorities_from_env())
-    config_path = local_repo / "code-mower.yml"
-    if config_path.is_file():
+    config_ref = f"{trusted_ref}:code-mower.yml"
+    try:
+        config_text = _run_git_text(local_repo, ["show", config_ref])
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(
+            f"  decision registry: could not load authorities from {config_ref}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        temp_path: Path | None = None
         try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                prefix="code-mower-config-",
+                suffix=".yml",
+                delete=False,
+            ) as handle:
+                handle.write(config_text)
+                temp_path = Path(handle.name)
             authorities.extend(
                 code_mower_decisions.decision_authorities_from_config(
-                    code_mower_config.load_config(config_path)
+                    code_mower_config.load_config(temp_path)
                 )
             )
         except Exception as exc:
             print(
-                f"  decision registry: could not load authorities from {config_path}: {exc}",
+                f"  decision registry: could not parse authorities from {config_ref}: {exc}",
                 file=sys.stderr,
                 flush=True,
             )
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
     return tuple(dict.fromkeys(authorities))
 
 
@@ -1514,11 +1561,6 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         )
     if config.progress is None:
         config = replace(config, progress=AuditProgress("codex-audit"))
-    decision_authorities = _decision_authorities_for_repo(
-        local_repo,
-        config.decision_authorities,
-    )
-
     pr_meta = fetch_pull_request(repo, pr_number, token=config.github_token)
     head_sha_start = pr_meta["head"]["sha"]
 
@@ -1566,6 +1608,11 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     # before running the review. Stale base = wrong diff = wrong review.
     _fetch_pr_head(local_repo, pr_number, head_sha_start)
     _fetch_base_ref(local_repo, config.base_ref)
+    decision_authorities = _decision_authorities_for_repo(
+        local_repo,
+        config.decision_authorities,
+        trusted_ref=config.base_ref,
+    )
     review_context_summary = "review context diagnostics unavailable"
     review_context: ReviewContextDiagnostics | None = None
     try:

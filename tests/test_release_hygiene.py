@@ -33,6 +33,7 @@ from code_mower import code_mower_calibration
 from code_mower import codex_audit_pr
 from code_mower import cli as code_mower_cli
 from code_mower import cloud_client
+from code_mower import decisions as code_mower_decisions
 from code_mower import doctor
 from code_mower import doctor_checks
 from code_mower import init as code_mower_init
@@ -1404,6 +1405,7 @@ jobs:
                     "display_name": "Codex",
                     "done": "codex-audit-done",
                     "blocked": "codex-audit-blocked",
+                    "decision_coverage": True,
                     "builder_label": "builder:codex",
                     "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
                 }
@@ -1425,6 +1427,19 @@ jobs:
                     "body": (
                         "Head SHA: `" + head_sha + "`\n"
                         "Findings:\n\n"
+                        + code_mower_decisions.render_audit_findings_marker(
+                            lane="codex",
+                            findings=[
+                                {
+                                    "severity": "P2",
+                                    "title": "HOST_DISPLAY_NAME class-B finding repeats",
+                                    "file": "src/app.py",
+                                    "line": 1,
+                                }
+                            ],
+                            complete=True,
+                        )
+                        + "\n\n"
                         "- [P2] HOST_DISPLAY_NAME class-B finding repeats -- `src/app.py:1`\n"
                         "  ADR-007 already accepted this topic.\n\n"
                         "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
@@ -1437,6 +1452,126 @@ jobs:
 
         self.assertEqual(result["gate_state"], "success")
         self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_decision_does_not_promote_free_text_findings(self) -> None:
+        head_sha = "a" * 40
+        title = "HOST_DISPLAY_NAME class-B finding repeats"
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "codex",
+                    "display_name": "Codex",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked",
+                    "decision_coverage": True,
+                    "builder_label": "builder:codex",
+                    "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+                }
+            ],
+            labels={"codex-audit-done"},
+            comments=[
+                {
+                    "id": 1,
+                    "body": code_mower_decisions.render_decision_marker(
+                        code_mower_decisions.DecisionRecord(
+                            id="ADR-007",
+                            scope="finding",
+                            resolves="",
+                            by="owner",
+                            finding_id=code_mower_decisions.stable_finding_id(
+                                "codex",
+                                title,
+                                "src/app.py",
+                            ),
+                            ref="ADR-007",
+                        )
+                    ),
+                    "user": {"login": "owner"},
+                },
+                {
+                    "id": 2,
+                    "created_at": "2026-08-18T02:52:00Z",
+                    "body": (
+                        "Head SHA: `" + head_sha + "`\n"
+                        "Findings:\n\n"
+                        f"- [P2] {title} -- `src/app.py:1`\n"
+                        "  ADR-007 already accepted this topic.\n\n"
+                        "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
+                    ),
+                    "user": {"login": "codex-audit-bot"},
+                },
+            ],
+            head_sha=head_sha,
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(result["gate_description"], "blocked audit: Codex")
+
+    def test_gate_decision_does_not_promote_unopted_lane_findings(self) -> None:
+        head_sha = "a" * 40
+        title = "HOST_DISPLAY_NAME class-B finding repeats"
+        result = self._run_gate_template_decision(
+            lanes=[
+                {
+                    "id": "devin",
+                    "display_name": "Devin",
+                    "done": "devin-audit-done",
+                    "blocked": "devin-audit-blocked",
+                    "builder_label": "builder:devin",
+                    "bot_authors": "devin-ai-integration,devin-ai-integration[bot]",
+                }
+            ],
+            labels={"devin-audit-done"},
+            comments=[
+                {
+                    "id": 1,
+                    "body": code_mower_decisions.render_decision_marker(
+                        code_mower_decisions.DecisionRecord(
+                            id="ADR-007",
+                            scope="finding",
+                            resolves="",
+                            by="owner",
+                            finding_id=code_mower_decisions.stable_finding_id(
+                                "devin",
+                                title,
+                                "src/app.py",
+                            ),
+                            ref="ADR-007",
+                        )
+                    ),
+                    "user": {"login": "owner"},
+                },
+                {
+                    "id": 2,
+                    "created_at": "2026-08-18T02:52:00Z",
+                    "body": (
+                        "Head SHA: `" + head_sha + "`\n"
+                        "Findings:\n\n"
+                        + code_mower_decisions.render_audit_findings_marker(
+                            lane="devin",
+                            findings=[
+                                {
+                                    "severity": "P2",
+                                    "title": title,
+                                    "file": "src/app.py",
+                                    "line": 1,
+                                }
+                            ],
+                            complete=True,
+                        )
+                        + "\n\n"
+                        f"- [P2] {title} -- `src/app.py:1`\n"
+                        "  ADR-007 already accepted this topic.\n\n"
+                        "<!-- DEVIN_AUDIT_STATE: devin-audit-blocked -->"
+                    ),
+                    "user": {"login": "devin-ai-integration"},
+                },
+            ],
+            head_sha=head_sha,
+        )
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertEqual(result["gate_description"], "blocked audit: Devin")
 
     def test_gate_decision_uses_updated_comment_order_for_latest_verdict(self) -> None:
         head_sha = "a" * 40
@@ -2934,6 +3069,7 @@ jobs:
                 "actions/runs?event=pull_request_target&status={status}&per_page=100",
                 gate,
             )
+            self.assertIn('"decision_coverage":true', gate)
             self.assertNotIn("__GATE_LANES_JSON__", gate)
 
             gate_health = output_dir.joinpath(

@@ -31,5 +31,6 @@ CONFIG = LaneConfig(
             flags=re.IGNORECASE,
         ),
     ),
+    decision_coverage=True,
     token_env_vars=("DISPATCH_TOKEN", "CLAUDE_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"),
 )

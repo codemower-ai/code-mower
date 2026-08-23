@@ -108,6 +108,7 @@ class LaneConfig:
     pass_patterns: tuple[Pattern[str], ...]
     blocked_patterns: tuple[Pattern[str], ...]
     label_state_fallbacks: bool = False
+    decision_coverage: bool = False
     token_env_vars: tuple[str, ...] = ("GITHUB_TOKEN",)
 
     @functools.lru_cache(maxsize=1)
@@ -418,10 +419,14 @@ def terminal_audit_trailer_verdict(
     if not candidates:
         return ""
     verdict = max(candidates, key=lambda item: item[0])[1]
-    if verdict == "blocked" and code_mower_decisions.audit_blockers_are_decision_covered(
-        body,
-        decisions,
-        lane=str(lane.get("author_lane") or lane.get("id") or ""),
+    if (
+        verdict == "blocked"
+        and lane.get("decision_coverage") is True
+        and code_mower_decisions.audit_blockers_are_decision_covered(
+            body,
+            decisions,
+            lane=str(lane.get("author_lane") or lane.get("id") or ""),
+        )
     ):
         return "done"
     return verdict
