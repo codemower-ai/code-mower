@@ -1,5 +1,8 @@
 # Local Audit Runner
 
+For the full macOS service setup, use
+[Self-Hosted Mac Runner](self-hosted-mac-runner.md).
+
 Use `./run.sh` first from the macOS account that owns `gh`, Codex, and Claude
 logins. Install the GitHub runner as a service only after the generated local
 audit workflow passes the same smoke checks.

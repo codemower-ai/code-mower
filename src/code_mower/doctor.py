@@ -112,6 +112,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="check optional Code Mower Cloud token setup without reading or printing token values",
     )
+    parser.add_argument(
+        "--runner",
+        action="store_true",
+        help="check self-hosted macOS local audit runner readiness",
+    )
     parser.add_argument("--http-timeout", type=int, default=5)
     parser.add_argument(
         "--actions-cost-sample",
@@ -121,6 +126,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "number of recent Actions runs to sample for private-repo cost "
             f"diagnostics, capped at {ACTIONS_COST_SAMPLE_MAX}"
         ),
+    )
+    parser.add_argument(
+        "--actionlint-bin",
+        default="actionlint",
+        help="actionlint executable used by --runner generated-workflow checks",
     )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -139,8 +149,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             probe_runtime=args.probe_runtime,
             github=args.github,
             cloud=args.cloud,
+            runner=args.runner,
             http_timeout=args.http_timeout,
             actions_cost_sample=args.actions_cost_sample,
+            actionlint_bin=args.actionlint_bin,
         )
     except code_mower_config.ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)

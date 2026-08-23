@@ -53,6 +53,12 @@ OPTIONAL_DOCTOR_STAGES = (
         "Inspect optional CodeMower.com token setup",
         optional=True,
     ),
+    DoctorCheckStage(
+        "runner",
+        "runtime",
+        "Inspect a self-hosted macOS local audit runner",
+        optional=True,
+    ),
 )
 
 
@@ -60,10 +66,15 @@ def default_check_group_ids() -> tuple[str, ...]:
     return tuple(group.id for group in DEFAULT_CHECK_GROUPS)
 
 
-def build_doctor_run_plan(*, github: bool = False, cloud: bool = False) -> tuple[DoctorCheckStage, ...]:
+def build_doctor_run_plan(
+    *,
+    github: bool = False,
+    cloud: bool = False,
+    runner: bool = False,
+) -> tuple[DoctorCheckStage, ...]:
     """Return the named stages that a doctor run will execute."""
 
     stages = list(BASE_DOCTOR_STAGES)
-    optional_flags = {"github": github, "cloud": cloud}
+    optional_flags = {"github": github, "cloud": cloud, "runner": runner}
     stages.extend(stage for stage in OPTIONAL_DOCTOR_STAGES if optional_flags.get(stage.id, False))
     return tuple(stages)
