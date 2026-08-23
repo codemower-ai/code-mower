@@ -123,6 +123,12 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
           CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL: {% raw %}${{ matrix.lane.needs_label }}{% endraw %}
           CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV: {% raw %}${{ matrix.lane.token_env }}{% endraw %}
           CODE_MOWER_LOCAL_AUDIT_SCRIPT: {% raw %}${{ matrix.lane.script }}{% endraw %}
+          CLAUDE_AUDIT_MAX_BUDGET_USD: {% raw %}${{ matrix.lane.audit_budget_usd }}{% endraw %}
+          CLAUDE_AUDIT_MAX_DIFF_BYTES: {% raw %}${{ matrix.lane.audit_max_diff_bytes }}{% endraw %}
+          CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES: {% raw %}${{ matrix.lane.audit_max_diff_hard_limit_bytes }}{% endraw %}
+          CODEX_AUDIT_MAX_BUDGET_USD: {% raw %}${{ matrix.lane.audit_budget_usd }}{% endraw %}
+          CODEX_AUDIT_MAX_DIFF_BYTES: {% raw %}${{ matrix.lane.audit_max_diff_bytes }}{% endraw %}
+          CODEX_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES: {% raw %}${{ matrix.lane.audit_max_diff_hard_limit_bytes }}{% endraw %}
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"

@@ -72,6 +72,13 @@ class DoctorRegistryTests(unittest.TestCase):
             profile="recommended",
         )
 
+        limits_check = next(
+            check for check in report.checks if check.name == "config.audit_limits"
+        )
+        self.assertEqual(limits_check.status, "pass")
+        self.assertEqual(limits_check.detail["max_diff_hard_limit_bytes"], 1_500_000)
+        self.assertIn("size-aware default", limits_check.message)
+
         hygiene_checks = [
             check for check in report.checks if check.name == "provider.review_hygiene"
         ]

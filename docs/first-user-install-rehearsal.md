@@ -72,11 +72,11 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
-For a TestPyPI candidate:
+For a TestPyPI candidate, use the exact version published to TestPyPI:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b51 \
+  --package-spec code-mower==<candidate-version> \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \
@@ -190,7 +190,7 @@ The latest public-package rehearsal for `v0.5.0-beta.51` was run from PyPI with:
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.5.0b51 \
   --python "$(command -v python3.12)" \
-  --work-dir /tmp/code-mower-beta50-pypi-rehearsal \
+  --work-dir /tmp/code-mower-beta51-pypi-rehearsal \
   --json
 ```
 
@@ -231,13 +231,13 @@ The DrinkBetter run is the current proof that a private JavaScript/mobile repo
 can try Code Mower from PyPI, detect its native check surface, and preview setup
 without first adopting repo-local wrappers.
 
-The same release was also verified from TestPyPI before production PyPI publish
-using the same package spec and:
+For releases that publish a TestPyPI candidate before production PyPI, run the
+same rehearsal with the candidate package spec and:
 
 ```bash
 --pip-index-url https://test.pypi.org/simple/ \
 --pip-extra-index-url https://pypi.org/simple/
 ```
 
-TestPyPI artifact:
-[https://test.pypi.org/project/code-mower/0.5.0b51/](https://test.pypi.org/project/code-mower/0.5.0b51/).
+The beta.51 release run published to production PyPI only; TestPyPI was not
+published for `0.5.0b51`.

@@ -16,6 +16,7 @@ class CodexAuditPrTests(unittest.TestCase):
         tmp_path: Path,
         pytest_current_test: str,
         parsed: cap.CodexVerdict | None = None,
+        review_context: cap.ReviewContextDiagnostics | None = None,
     ) -> tuple[cap.AuditResult, mock.Mock]:
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -31,6 +32,19 @@ class CodexAuditPrTests(unittest.TestCase):
             "token",
             {"owner/repo": repo},
             include_plan_context=False,
+        )
+        review_context = review_context or cap.ReviewContextDiagnostics(
+            base_ref=config.base_ref,
+            head_sha=head_sha,
+            changed_file_count=1,
+            diff_bytes=128,
+            requested_max_bytes=config.max_diff_bytes,
+            hard_limit_bytes=(
+                config.max_diff_hard_limit_bytes
+                or cap.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES
+            ),
+            included_diff_bytes=128,
+            effective_budget_usd=config.max_budget_usd or cap.DEFAULT_MAX_BUDGET_USD,
         )
 
         with (
@@ -50,7 +64,7 @@ class CodexAuditPrTests(unittest.TestCase):
             mock.patch.object(
                 cap,
                 "_build_review_context_diagnostics",
-                return_value=mock.Mock(summary=lambda: "review context ok"),
+                return_value=review_context,
             ),
             mock.patch.object(cap, "_create_temp_worktree", return_value=worktree),
             mock.patch.object(cap, "_remove_worktree"),
@@ -163,6 +177,105 @@ class CodexAuditPrTests(unittest.TestCase):
             artifact = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
             self.assertTrue(artifact["quarantined"])
             self.assertIn("fixture-shaped structured verdict", artifact["quarantine_reason"])
+
+    def test_codex_truncated_diff_posts_unknown_without_running_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            worktree = tmp_path / "worktree"
+            worktree.mkdir()
+            head_sha = "d" * 40
+            pr_payload = {
+                "head": {"sha": head_sha, "ref": "human/fix"},
+                "title": "Fix",
+            }
+            review_context = cap.ReviewContextDiagnostics(
+                base_ref="origin/main",
+                head_sha=head_sha,
+                changed_file_count=2,
+                diff_bytes=151,
+                requested_max_bytes=100,
+                hard_limit_bytes=150,
+                included_diff_bytes=150,
+                effective_budget_usd="3.00",
+            )
+            config = cap.AuditConfig(
+                "token",
+                {"owner/repo": repo},
+                include_plan_context=False,
+                max_diff_bytes=100,
+                max_diff_hard_limit_bytes=150,
+            )
+
+            with (
+                mock.patch.dict(
+                    "os.environ",
+                    {
+                        "PYTEST_CURRENT_TEST": "",
+                        "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(tmp_path / "verdicts"),
+                        "GITHUB_RUN_ID": "",
+                    },
+                ),
+                mock.patch.object(
+                    cap,
+                    "fetch_pull_request",
+                    side_effect=[pr_payload, pr_payload],
+                ),
+                mock.patch.object(cap, "preflight_codex_cli", return_value="codex-test"),
+                mock.patch.object(cap, "_discover_venv", return_value=None),
+                mock.patch.object(cap, "_fetch_pr_head"),
+                mock.patch.object(cap, "_fetch_base_ref"),
+                mock.patch.object(
+                    cap,
+                    "_build_review_context_diagnostics",
+                    return_value=review_context,
+                ),
+                mock.patch.object(
+                    cap,
+                    "_create_temp_worktree",
+                    return_value=worktree,
+                ) as create_worktree,
+                mock.patch.object(cap, "_remove_worktree") as remove_worktree,
+                mock.patch.object(
+                    cap,
+                    "run_codex_review",
+                    return_value=("review text", ""),
+                ) as run_review,
+                mock.patch.object(
+                    cap,
+                    "run_codex_verdict_structuring",
+                ) as structure_verdict,
+                mock.patch.object(
+                    cap,
+                    "dump_cli_failure",
+                    return_value=tmp_path / "cli.log",
+                ) as dump_failure,
+                mock.patch.object(
+                    cap,
+                    "post_pr_comment",
+                    return_value={"html_url": "https://github.test/comment/1"},
+                ) as post_comment,
+            ):
+                result = cap.audit_pr(config, "owner/repo", 42)
+
+            self.assertEqual(result.verdict, "UNKNOWN")
+            self.assertEqual(result.trailer, cap.STALE_TRAILER)
+            self.assertEqual(result.posted_comment_url, "https://github.test/comment/1")
+            self.assertIn(cap.UNKNOWN_REQUEUE_MARKER, result.comment_body)
+            self.assertIn("Diff: exceeded wrapper hard limit", result.comment_body)
+            self.assertIn(
+                "measured at least 151 bytes; hard limit 150 bytes",
+                result.comment_body,
+            )
+            self.assertIn("Codex review skipped", result.codex_stderr)
+            self.assertIn("wrapper_truncated=yes", result.codex_stderr)
+            create_worktree.assert_not_called()
+            remove_worktree.assert_not_called()
+            run_review.assert_not_called()
+            structure_verdict.assert_not_called()
+            dump_failure.assert_called_once()
+            post_comment.assert_called_once()
 
     def test_workflow_audit_comment_is_edited_with_bound_marker(self) -> None:
         body = (

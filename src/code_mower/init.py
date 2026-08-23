@@ -18,6 +18,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if __package__ in {None, "", "tools"}:
+    from tools import audit_limits as code_mower_audit_limits
     from tools import code_mower_secrets
     from tools.code_mower_config import (
         ConfigError,
@@ -30,6 +31,7 @@ if __package__ in {None, "", "tools"}:
     )
     from tools.doctor_checks.github_human_token import human_automation_token_required
 else:  # pragma: no cover - exercised after package extraction.
+    from . import audit_limits as code_mower_audit_limits
     from . import secrets as code_mower_secrets
     from .config import (
         ConfigError,
@@ -507,7 +509,9 @@ def _owner_surface_workflow_entry(
 
 def _local_audit_entries(
     selected_lanes: Mapping[str, Mapping[str, Any]],
+    audit_settings: code_mower_audit_limits.AuditLimitSettings | None = None,
 ) -> tuple[dict[str, str], ...]:
+    settings = audit_settings or code_mower_audit_limits.AuditLimitSettings()
     entries: list[dict[str, str]] = []
     for lane_id, lane in selected_lanes.items():
         if lane.get("driver") != "local_cli":
@@ -524,6 +528,11 @@ def _local_audit_entries(
                 "needs_label": str(labels["needs"]),
                 "token_env": _audit_token_env(lane),
                 "script": wrapper,
+                "audit_budget_usd": settings.budget_usd,
+                "audit_max_diff_bytes": str(settings.max_diff_bytes),
+                "audit_max_diff_hard_limit_bytes": str(
+                    settings.max_diff_hard_limit_bytes
+                ),
             }
         )
     return tuple(entries)
@@ -1563,7 +1572,8 @@ def render_init_plan(
         if label:
             labels.append(label)
 
-    local_audit_entries = _local_audit_entries(selected_lanes)
+    audit_settings = code_mower_audit_limits.audit_limits_from_config(config)
+    local_audit_entries = _local_audit_entries(selected_lanes, audit_settings)
     human_token_required = human_automation_token_required(
         config,
         tuple(selected_lanes.items()),
@@ -1779,6 +1789,12 @@ def render_init_plan(
         },
         "repositories": _repository_entries(config),
         "additional_repositories": list(add_repositories),
+        "audit": {
+            "budget_usd": audit_settings.budget_usd,
+            "budget_description": audit_settings.budget_description,
+            "max_diff_bytes": audit_settings.max_diff_bytes,
+            "max_diff_hard_limit_bytes": audit_settings.max_diff_hard_limit_bytes,
+        },
         "merge_authority_lanes": merge_authority_lanes,
         "informational_lanes": informational_lanes,
         "merge_authority_excludes_author": json.loads(author_exclusion_json)["enabled"],
@@ -1827,6 +1843,13 @@ def render_init_plan(
     if add_repositories:
         lines.extend(["", "Additional repository targets from --add-repo:"])
         lines.extend(f"- {slug}" for slug in add_repositories)
+
+    lines.extend(["", "Audit limits:"])
+    lines.append(f"- budget: {data['audit']['budget_description']}")
+    lines.append(f"- max diff bytes: {data['audit']['max_diff_bytes']}")
+    lines.append(
+        f"- max diff hard limit bytes: {data['audit']['max_diff_hard_limit_bytes']}"
+    )
 
     if merge_authority_lanes:
         lines.extend(

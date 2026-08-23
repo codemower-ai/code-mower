@@ -38,6 +38,44 @@ Matrix lanes whose `needs-*-audit` label is absent exit without uploading audit
 metadata, so optional lanes do not duplicate cached reviewer-run or dogfood
 events.
 
+## Budgets and diff limits
+
+`code-mower.yml` can set local audit defaults under `audit`:
+
+```yaml
+audit:
+  budget_usd: ""
+  max_diff_bytes: "180000"
+  max_diff_hard_limit_bytes: "1500000"
+```
+
+Leave `audit.budget_usd` blank or omit it to use the size-aware default. Claude
+audit starts at $2, adds $1 for each 150 KB above `audit.max_diff_bytes`, and
+caps the default at $10. Set `audit.budget_usd` only when you want a fixed
+provider budget instead of that scaling.
+
+`audit.max_diff_bytes` is the normal target. Complete diffs larger than that
+target may still be included when they fit under
+`audit.max_diff_hard_limit_bytes`. The generated local-audit workflow passes
+these values to both wrappers as:
+
+- `CLAUDE_AUDIT_MAX_BUDGET_USD`
+- `CLAUDE_AUDIT_MAX_DIFF_BYTES`
+- `CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES`
+- `CODEX_AUDIT_MAX_BUDGET_USD`
+- `CODEX_AUDIT_MAX_DIFF_BYTES`
+- `CODEX_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES`
+
+If Claude audit must truncate a diff at the hard limit, it posts an UNKNOWN
+requeue with the truncation reason in the verdict header instead of posting a
+blocking finding whose only content is that the diff was truncated. Raise
+`audit.max_diff_hard_limit_bytes` for repositories whose normal PRs exceed the
+hard limit, then regenerate the local-audit workflow.
+
+`code-mower doctor` reports the effective local audit limits. With
+`code-mower doctor --github`, it also samples recent PR diff sizes and warns
+when the median sampled diff is above the configured hard limit.
+
 After regenerating `.github/workflows/local-cli-audit.yml`, run `actionlint` on
 the generated workflow. If GitHub reports a failed workflow run with no jobs,
 treat it as workflow syntax or context validation failure before debugging the
