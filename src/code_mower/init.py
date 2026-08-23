@@ -2669,7 +2669,7 @@ def main(argv: list[str] | None = None) -> int:
         metavar="LANES",
         help=(
             "render the build-loop dispatcher for comma-separated builder lanes "
-            "(for example: codex,claude,cursor); implies --apply when no mode is set"
+            "(for example: codex,claude,cursor); defaults to --dry-run when no mode is set"
         ),
     )
     parser.add_argument(
@@ -2723,7 +2723,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.dry_run and not args.apply:
             args.dry_run = True
     if args.builders and not args.dry_run and not args.apply:
-        args.apply = True
+        args.dry_run = True
     if args.apply and args.dry_run:
         print("error: choose either --dry-run or --apply", file=sys.stderr)
         return 1

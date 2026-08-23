@@ -78,6 +78,19 @@ jobs:
           def label_names(item):
               return {label["name"] for label in item.get("labels", [])}
 
+          def pr_closes_issue(pr, issue_number):
+              issue = str(issue_number)
+              for ref in pr.get("closingIssuesReferences") or []:
+                  if str(ref.get("number") or "") != issue:
+                      continue
+                  ref_repo = ref.get("repository") or {}
+                  ref_owner = (ref_repo.get("owner") or {}).get("login")
+                  ref_name = ref_repo.get("name")
+                  if ref_owner and ref_name and f"{ref_owner}/{ref_name}".lower() != repo.lower():
+                      continue
+                  return True
+              return False
+
           def has_open_pr_for_issue(issue_number):
               prs = gh(
                   [
@@ -89,12 +102,14 @@ jobs:
                       "open",
                       "--search",
                       f'"#{issue_number}" in:body',
+                      "--limit",
+                      "100",
                       "--json",
-                      "number",
+                      "number,closingIssuesReferences",
                   ],
                   json_output=True,
               )
-              return bool(prs)
+              return any(pr_closes_issue(pr, issue_number) for pr in prs or [])
 
           def dependency_open(dep):
               if dep.startswith("#"):
@@ -158,14 +173,24 @@ jobs:
               return True
 
           def dispatch_label_added_at(issue_number, dispatch_label):
-              events = gh(
-                  ["api", f"repos/{repo}/issues/{issue_number}/events"],
+              pages = gh(
+                  [
+                      "api",
+                      "--paginate",
+                      "--slurp",
+                      f"repos/{repo}/issues/{issue_number}/events",
+                  ],
                   json_output=True,
                   allow_failure=True,
               )
+              events = [
+                  event
+                  for page in pages or []
+                  for event in (page if isinstance(page, list) else [page])
+              ]
               labeled = [
                   event.get("created_at")
-                  for event in events or []
+                  for event in events
                   if event.get("event") == "labeled"
                   and (event.get("label") or {}).get("name") == dispatch_label
               ]

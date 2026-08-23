@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import io
+import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +29,15 @@ def _builders_plan(config: dict | None = None):
         package_command="code-mower",
         builders=code_mower_init._parse_builder_lanes("codex,claude,cursor"),
     )
+
+
+def _dispatch_workflow_python(workflow_text: str) -> str:
+    workflow = yaml.safe_load(workflow_text)
+    run = workflow["jobs"]["dispatch"]["steps"][0]["run"]
+    lines = run.splitlines()
+    start = lines.index("python3 <<'PY'") + 1
+    end = lines.index("PY", start)
+    return "\n".join(lines[start:end]) + "\n"
 
 
 class InitBuildLoopTests(unittest.TestCase):
@@ -90,6 +101,84 @@ class InitBuildLoopTests(unittest.TestCase):
             self.assertIn("[omitted: PR title author is not trusted]", runner_text)
             self.assertIn("has_open_pr_for_issue()", runner_text)
             self.assertIn("closingIssuesReferences", runner_text)
+
+    def test_dispatcher_expires_stale_dispatches_with_paginated_events_and_exact_closing_refs(self) -> None:
+        plan = _builders_plan()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+            script = _dispatch_workflow_python(
+                output_dir.joinpath(".github/workflows/dispatch-lanes.yml").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            gh_log = root / "gh.log"
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+args=" $* "
+if [ "$cmd" = "issue list" ] && [[ "$args" == *"--label dispatched:codex"* ]]; then
+  printf '%s\\n' '[{"number":12,"title":"Stale dispatch"}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
+  printf '%s\\n' '[{"number":99,"body":"Discusses #12 but closes #123","closingIssuesReferences":[{"number":123,"repository":{"name":"repo","owner":{"login":"owner"}}}]}]'
+elif [ "$cmd" = "api --paginate" ] && [[ "$args" == *"--slurp"* ]]; then
+  printf '%s\\n' '[[{"event":"labeled","created_at":"2020-01-01T00:00:00Z","label":{"name":"other"}}],[{"event":"labeled","created_at":"2020-01-02T00:00:00Z","label":{"name":"dispatched:codex"}}]]'
+elif [ "$cmd" = "api repos/owner/repo/issues/12/events" ]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "issue edit" ]; then
+  printf '%s\\n' "$*" >> "$GH_LOG"
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "issue list" ] && [[ "$args" == *"--label tier:R"* ]]; then
+  printf '%s\\n' '[]'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            lane = {
+                "lane": "codex",
+                "builder_label": "builder:codex",
+                "dispatch_label": "dispatched:codex",
+                "mention": "@codex",
+                "doc": "lanes/codex.md",
+                "audit_labels_display": "needs-claude-audit",
+            }
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "CODE_MOWER_BUILDER_LANES_JSON": json.dumps([lane]),
+                    "CODE_MOWER_MAX_WIP": "2",
+                    "CODE_MOWER_OWNER_LABELS_JSON": "[]",
+                    "CODE_MOWER_READY_LABEL": "tier:R",
+                    "DRY_RUN": "false",
+                    "GH_LOG": str(gh_log),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "REPO": "owner/repo",
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            gh_log_text = gh_log.read_text(encoding="utf-8")
+
+        self.assertIn("codex: expire stale dispatch on #12", completed.stdout)
+        self.assertIn(
+            "issue edit 12 -R owner/repo --remove-label dispatched:codex",
+            gh_log_text,
+        )
 
     def test_mac_lane_runner_does_not_treat_issue_prefix_pr_as_open_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -335,6 +424,31 @@ printf 'fake codex completed\\n'
         self.assertIn("builder:codex", captured["labels"])
         self.assertIn("dispatched:codex", captured["labels"])
         self.assertIn('"repo": "target/repo"', stdout.getvalue())
+
+    def test_init_builders_without_mode_defaults_to_dry_run_without_github_label_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            code_mower_init,
+            "ensure_github_labels",
+            side_effect=AssertionError("dry-run must not ensure GitHub labels"),
+        ):
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout):
+                result = code_mower_init.main(
+                    [
+                        str(CONFIG_PATH),
+                        "--builders",
+                        "codex",
+                        "--output-dir",
+                        str(Path(tmp) / "generated"),
+                        "--skip-actionlint",
+                        "--json",
+                    ]
+                )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(result, 0)
+        self.assertEqual(payload["builder_loop"]["builders"], ["codex"])
+        self.assertIn("builder:codex", payload["labels"])
 
 
 if __name__ == "__main__":

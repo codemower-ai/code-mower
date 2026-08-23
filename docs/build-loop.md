@@ -21,8 +21,8 @@ Product repos can rename these through `owner_surface` and `builder_identity` in
 For each configured builder lane, it searches for open issues that have both the
 ready label and that lane's builder label. It skips issues with assignees, open
 `blocked-by:*` labels, owner labels such as `needs-owner` or `owner-sitting`,
-active dispatch labels, open dependencies, or an open PR that already references
-the issue.
+active dispatch labels, open dependencies, or an open PR that already closes the
+issue.
 
 Dependencies are read from an issue section named `## Dependencies`. Items like
 `#123` must be closed. External keys such as `PROJ-123` are matched by title
