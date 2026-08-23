@@ -147,9 +147,16 @@ class InitBuildLoopTests(unittest.TestCase):
             self.assertIn("remote_repo_slug()", runner_text)
             self.assertIn('install_pre_push_guard "$target_pr_branch" "$mode"', runner_text)
             self.assertIn("--json number,labels,updatedAt,headRepository", runner_text)
+            self.assertIn("--json headRefName,headRepository,labels", runner_text)
+            self.assertIn("def has_builder_label", runner_text)
+            self.assertIn("def has_lane_prefix", runner_text)
             self.assertIn("def same_head_repo", runner_text)
             self.assertIn(
                 "head repository ${target_pr_repo:-missing} does not match ${REPO}",
+                runner_text,
+            )
+            self.assertIn(
+                "expected label ${builder_label} or branch prefix ${lane_branch_prefixes_display}",
                 runner_text,
             )
             self.assertIn("[omitted: issue title author is not trusted]", runner_text)
@@ -603,6 +610,62 @@ fi
         self.assertIn("codex: selected target pr #21", completed.stdout)
         self.assertIn(
             "refusing target PR #21; head repository fork/repo does not match owner/repo",
+            completed.stderr,
+        )
+
+    def test_mac_lane_runner_rejects_manual_pr_target_owned_by_other_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+if [ "$cmd" = "pr view" ]; then
+  printf '%s\\n' '{"headRefName":"claude/fix","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:claude"}]}'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(ROOT / "tools/lanes/run_mac_lane.sh"),
+                    "--lane",
+                    "codex",
+                    "--repo",
+                    "owner/repo",
+                    "--max-minutes",
+                    "1",
+                    "--target",
+                    "pr:21",
+                ],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("codex: selected target pr #21", completed.stdout)
+        self.assertIn(
+            "refusing target PR #21; head branch claude/fix is not owned by this lane",
+            completed.stderr,
+        )
+        self.assertIn(
+            "expected label builder:codex or branch prefix codex/",
             completed.stderr,
         )
 

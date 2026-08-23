@@ -50,6 +50,9 @@ lane_branch_prefixes_json="$(
     | jq -c --arg lane "$LANE" '.[$lane] // []'
 )"
 [ "$lane_branch_prefixes_json" != "[]" ] || { echo "missing branch prefixes for lane: $LANE" >&2; exit 2; }
+lane_branch_prefixes_display="$(
+  printf '%s\n' "$lane_branch_prefixes_json" | jq -r 'join(", ")'
+)"
 dispatch_label="dispatched:${LANE}"
 lane_doc="${repo_root}/docs/lanes/${LANE}.md"
 [ -f "$lane_doc" ] || { echo "missing ${lane_doc}" >&2; exit 1; }
@@ -246,7 +249,7 @@ HOOK
 
 target_pr_branch=""
 if [ "$kind" = "pr" ]; then
-  target_pr_json="$(gh pr view "$num" -R "$REPO" --json headRefName,headRepository 2>/dev/null || true)"
+  target_pr_json="$(gh pr view "$num" -R "$REPO" --json headRefName,headRepository,labels 2>/dev/null || true)"
   target_pr_repo=""
   if [ -n "$target_pr_json" ]; then
     target_pr_branch="$(printf '%s\n' "$target_pr_json" | jq -r '.headRefName // empty')"
@@ -256,6 +259,21 @@ if [ "$kind" = "pr" ]; then
     target_pr_repo_slug="$(printf '%s\n' "$target_pr_repo" | tr '[:upper:]' '[:lower:]')"
     if [ -z "$target_pr_repo_slug" ] || [ "$target_pr_repo_slug" != "$expected_repo_slug" ]; then
       echo "${LANE}: refusing ${mode} PR #${num}; head repository ${target_pr_repo:-missing} does not match ${REPO}" >&2
+      exit 1
+    fi
+    target_pr_owned_by_lane="$(
+      printf '%s\n' "$target_pr_json" \
+        | jq -r --arg builder "$builder_label" --argjson prefixes "$lane_branch_prefixes_json" '
+          def has_builder_label:
+            any((.labels // [])[]; (.name // "") == $builder);
+          def has_lane_prefix:
+            (.headRefName // "") as $branch
+            | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
+          if has_builder_label or has_lane_prefix then "true" else "false" end
+        '
+    )"
+    if [ "$target_pr_owned_by_lane" != "true" ]; then
+      echo "${LANE}: refusing ${mode} PR #${num}; head branch ${target_pr_branch:-missing} is not owned by this lane (expected label ${builder_label} or branch prefix ${lane_branch_prefixes_display})" >&2
       exit 1
     fi
   fi
