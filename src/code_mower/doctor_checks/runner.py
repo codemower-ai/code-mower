@@ -22,6 +22,7 @@ from .runtime import (
     check_python_runtime,
     check_ripgrep,
 )
+from .self_hosted_runner import check_self_hosted_runner
 
 
 def _global_runtime_checks(
@@ -74,10 +75,12 @@ def run_doctor(
     probe_runtime: bool = False,
     github: bool = False,
     cloud: bool = False,
+    runner: bool = False,
     http_timeout: int = 5,
     actions_cost_sample: int = ACTIONS_COST_SAMPLE_DEFAULT,
+    actionlint_bin: str = "actionlint",
 ) -> DoctorReport:
-    plan = build_doctor_run_plan(github=github, cloud=cloud)
+    plan = build_doctor_run_plan(github=github, cloud=cloud, runner=runner)
     enabled_stages = {stage.id for stage in plan}
     # `doctor --easy` can inspect the packaged example before a repo has written
     # code-mower.yml. In that mode the example should teach the user about stale
@@ -191,6 +194,20 @@ def run_doctor(
 
     if "cloud" in enabled_stages:
         checks.append(check_cloud_token_surface())
+
+    if "runner" in enabled_stages:
+        checks.extend(
+            check_self_hosted_runner(
+                config=config,
+                profile=profile,
+                config_path=config_path,
+                lanes=effective_lanes,
+                repo_root=repo_root or config_path.parent,
+                provider_templates_root=Path(__file__).resolve().parents[2],
+                http_timeout=http_timeout,
+                actionlint_bin=actionlint_bin,
+            )
+        )
 
     return DoctorReport(
         config_path=str(config_path),

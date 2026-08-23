@@ -36,6 +36,16 @@ class DoctorRegistryTests(unittest.TestCase):
             {"github", "cloud"},
         )
 
+        runner_plan = build_doctor_run_plan(runner=True)
+        self.assertEqual(
+            tuple(stage.id for stage in runner_plan),
+            ("load-inputs", "select-profile", "runtime", "providers", "runner"),
+        )
+        self.assertEqual(
+            {stage.id for stage in runner_plan if stage.optional},
+            {"runner"},
+        )
+
     def test_runner_emits_sanitized_run_plan_check_even_when_inputs_fail(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)

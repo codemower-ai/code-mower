@@ -65,6 +65,16 @@ from .runtime import (
     check_python_runtime,
     check_ripgrep,
 )
+from .self_hosted_runner import (
+    check_runner_actionlint_available,
+    check_runner_cli_auth,
+    check_runner_generated_workflows_actionlint,
+    check_runner_launchagent,
+    check_runner_listener_env_freshness,
+    check_runner_required_env,
+    check_runner_workflow_labels,
+    check_self_hosted_runner,
+)
 from .runner import run_doctor
 
 __all__ = [
@@ -95,6 +105,14 @@ __all__ = [
     "check_repository_posture",
     "check_lane_runtime",
     "check_review_hygiene",
+    "check_runner_actionlint_available",
+    "check_runner_cli_auth",
+    "check_runner_generated_workflows_actionlint",
+    "check_runner_launchagent",
+    "check_runner_listener_env_freshness",
+    "check_runner_required_env",
+    "check_runner_workflow_labels",
+    "check_self_hosted_runner",
     "check_pytest",
     "check_python_runtime",
     "check_ripgrep",
