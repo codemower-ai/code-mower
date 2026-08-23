@@ -1,7 +1,8 @@
 # Self-Hosted Mac Runner
 
 This guide is for the macOS GitHub Actions runner that executes Code Mower
-local CLI audit lanes such as Codex and Claude.
+local CLI audit lanes such as Codex and Claude and, in the build loop, local
+builder lanes such as Codex and Claude Code.
 
 ## Install
 
@@ -11,10 +12,11 @@ Create the runner from the repository settings page:
 2. Choose macOS and the CPU architecture for the machine.
 3. Run the GitHub-provided `config.sh` commands from the macOS user account
    that owns `gh`, `codex`, and `claude` logins.
-4. Add the custom runner label configured in
-   `owner_surface.local_audit_runner_label`. The default is
-   `code-mower-audit`; product repos can use a machine-specific label such as
-   `bridge-pro-audit`.
+4. Add the custom runner label configured by the generated workflow. The local
+   audit workflow uses `owner_surface.local_audit_runner_label`, default
+   `code-mower-audit`. The build-loop lane runner uses
+   `owner_surface.lane_runner_labels`, default `self-hosted`, `macOS`,
+   `code-mower-lane`.
 
 The generated local audit workflow must match that label:
 
@@ -24,6 +26,9 @@ runs-on: [self-hosted, macOS, code-mower-audit]
 
 After changing `owner_surface.local_audit_runner_label`, regenerate workflows
 with `code-mower init --easy --apply` and run `code-mower doctor --runner`.
+After changing `owner_surface.lane_runner_labels`, regenerate workflows with
+`code-mower init --builders codex,claude,cursor --apply` and run
+`code-mower doctor --runner`.
 
 ## LaunchAgent
 

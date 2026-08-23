@@ -15,10 +15,8 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CODE_MOWER_AGENT_PR_RULES_JSON: >-
-    __AGENT_PR_RULES_JSON__
-  CODE_MOWER_AGENT_PR_AUDIT_LANES_JSON: >-
-    __AGENT_PR_AUDIT_LANES_JSON__
+  CODE_MOWER_AGENT_PR_RULES_JSON: __AGENT_PR_RULES_JSON__
+  CODE_MOWER_AGENT_PR_AUDIT_LANES_JSON: __AGENT_PR_AUDIT_LANES_JSON__
   CODE_MOWER_DISPATCH_TOKEN_ENV: "__DISPATCH_TOKEN_ENV__"
 
 jobs:
@@ -88,51 +86,107 @@ jobs:
             echo "::error::${CODE_MOWER_DISPATCH_TOKEN_ENV} secret is missing; labels must be applied by a human-owned token so audit workflows trigger"
             exit 1
           fi
-          code_mower_handle_rate_limit() {
-            rate_limited=false
+          code_mower_error_is_rate_limited() {
             for file in "$@"; do
-              if [ -s "${file}" ] && grep -qiE 'API rate limit exceeded|rate limit' "${file}"; then
-                rate_limited=true
+              if [ -s "${file}" ] && grep -qiE 'API rate limit exceeded|secondary rate limit|rate limit|HTTP (403|429)|status code:? (403|429)' "${file}"; then
+                return 0
               fi
             done
-            [ "${rate_limited}" = "true" ] || return 1
+            return 1
+          }
 
+          code_mower_backoff_rate_limit() {
+            code_mower_error_is_rate_limited "$@" || return 1
             reset_epoch="$(gh api rate_limit --jq '.resources.core.reset // .rate.reset // ""' 2>/dev/null || true)"
+            reset_iso=""
             if [[ "${reset_epoch}" =~ ^[0-9]+$ ]]; then
               now_epoch="$(date -u +%s)"
               wait_seconds=$((reset_epoch - now_epoch + 5))
               reset_iso="$(date -u -d "@${reset_epoch}" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "${reset_epoch}")"
-              if [ "${wait_seconds}" -gt 0 ] && [ "${wait_seconds}" -le 240 ]; then
-                echo "::notice::GitHub API rate limit hit; backing off until ${reset_iso}."
-                sleep "${wait_seconds}"
-              else
-                echo "::notice::GitHub API rate limit hit; reset at ${reset_iso}; exiting cleanly so a later event can retry."
+              if [ "${wait_seconds}" -le 0 ]; then
+                wait_seconds=5
+              fi
+              if [ "${wait_seconds}" -gt 240 ]; then
+                echo "::error::GitHub API rate limit hit; reset at ${reset_iso}; operation did not complete."
+                return 2
               fi
             else
-              echo "::notice::GitHub API rate limit hit; reset time unavailable; exiting cleanly so a later event can retry."
+              wait_seconds=30
             fi
+            if [ -n "${reset_iso}" ]; then
+              echo "::notice::GitHub API rate limit hit; backing off until ${reset_iso} before retry."
+            else
+              echo "::notice::GitHub API rate limit hit; backing off for ${wait_seconds} seconds before retry."
+            fi
+            sleep "${wait_seconds}"
             return 0
+          }
+
+          code_mower_pr_view_labels_retry() {
+            output_file="$1"
+            attempt=1
+            max_attempts=3
+            while true; do
+              label_error="$(mktemp)"
+              if gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json labels --jq '.labels[].name' >"${output_file}" 2>"${label_error}"; then
+                rm -f "${label_error}"
+                return 0
+              fi
+              if [ "${attempt}" -lt "${max_attempts}" ] && code_mower_backoff_rate_limit "${label_error}"; then
+                attempt=$((attempt + 1))
+                rm -f "${label_error}"
+                echo "::notice::Retrying PR label lookup after rate-limit backoff (attempt ${attempt}/${max_attempts})."
+                continue
+              fi
+              echo "::error::Failed to look up current PR labels."
+              cat "${label_error}" >&2
+              rm -f "${label_error}"
+              return 1
+            done
+          }
+
+          code_mower_pr_edit_retry() {
+            description="$1"
+            shift
+            attempt=1
+            max_attempts=3
+            while true; do
+              label_error="$(mktemp)"
+              if gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" "$@" 2>"${label_error}"; then
+                rm -f "${label_error}"
+                return 0
+              fi
+              if [ "${attempt}" -lt "${max_attempts}" ] && code_mower_backoff_rate_limit "${label_error}"; then
+                attempt=$((attempt + 1))
+                rm -f "${label_error}"
+                echo "::notice::Retrying ${description} after rate-limit backoff (attempt ${attempt}/${max_attempts})."
+                continue
+              fi
+              echo "::error::Failed to ${description}."
+              cat "${label_error}" >&2
+              rm -f "${label_error}"
+              return 1
+            done
           }
 
           mapfile -t remove_labels < .code-mower-agent-remove-labels.txt
           mapfile -t add_labels < .code-mower-agent-add-labels.txt
-          remove_args=()
+          current_labels_file="$(mktemp)"
+          trap 'rm -f "${current_labels_file:-}"' EXIT
+          code_mower_pr_view_labels_retry "${current_labels_file}"
           for label in "${remove_labels[@]}"; do
-            [ -n "${label}" ] && remove_args+=(--remove-label "${label}")
+            [ -n "${label}" ] || continue
+            if grep -Fxq -- "${label}" "${current_labels_file}"; then
+              code_mower_pr_edit_retry "remove label ${label}" --remove-label "${label}"
+            else
+              echo "::notice::Label ${label} is already absent; nothing to remove."
+            fi
           done
-          if [ "${#remove_args[@]}" -gt 0 ]; then
-            gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" "${remove_args[@]}" >/dev/null 2>&1 || true
-          fi
           add_args=()
           for label in "${add_labels[@]}"; do
             [ -n "${label}" ] && add_args+=(--add-label "${label}")
           done
-          label_error="$(mktemp)"
-          if ! gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" "${add_args[@]}" 2>"${label_error}"; then
-            if code_mower_handle_rate_limit "${label_error}"; then
-              exit 0
-            fi
-            cat "${label_error}" >&2
-            exit 1
+          if [ "${#add_args[@]}" -gt 0 ]; then
+            code_mower_pr_edit_retry "add requested labels" "${add_args[@]}"
           fi
           printf '#%s (%s): %s\n' "${PR_NUMBER}" "${PR_ACTION}" "$(paste -sd ', ' .code-mower-agent-add-labels.txt)"

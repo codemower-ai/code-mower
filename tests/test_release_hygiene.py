@@ -933,7 +933,9 @@ exit 1
             "code-mower-fix-round-dispatch.yml.j2",
             "code-mower-gate-health.yml.j2",
             "code-mower-gate.yml.j2",
+            "dispatch-lanes.yml.j2",
             "hosted-bridge.yml.j2",
+            "lane-mac-runner.yml.j2",
             "local-cli-audit.yml.j2",
             "self-hosted-local-audit.yml.j2",
             "saas-reviewer-labeler.yml.j2",
@@ -2921,12 +2923,21 @@ jobs:
             agent_labeler = output_dir.joinpath(
                 ".github/workflows/code-mower-agent-pr-labeler.yml"
             ).read_text(encoding="utf-8")
+            agent_env = yaml.safe_load(agent_labeler)["env"]
+            agent_rules = json.loads(agent_env["CODE_MOWER_AGENT_PR_RULES_JSON"])
             self.assertIn("CODE_MOWER_AGENT_PR_RULES_JSON", agent_labeler)
-            self.assertIn('"branch_prefixes":["cursor/"]', agent_labeler)
-            self.assertIn('"builder_label":"builder:grok-bot"', agent_labeler)
+            self.assertEqual(agent_rules[0]["branch_prefixes"], ["cursor/"])
+            self.assertEqual(agent_rules[0]["builder_label"], "builder:grok-bot")
             self.assertIn("secrets.DISPATCH_TOKEN", agent_labeler)
             self.assertIn("--remove-label", agent_labeler)
-            self.assertIn("code_mower_handle_rate_limit", agent_labeler)
+            self.assertIn("code_mower_backoff_rate_limit", agent_labeler)
+            self.assertIn("code_mower_pr_view_labels_retry", agent_labeler)
+            self.assertIn("code_mower_pr_edit_retry", agent_labeler)
+            self.assertIn('grep -Fxq -- "${label}"', agent_labeler)
+            self.assertIn('code_mower_pr_edit_retry "remove label ${label}" --remove-label "${label}"', agent_labeler)
+            self.assertIn('code_mower_pr_edit_retry "add requested labels" "${add_args[@]}"', agent_labeler)
+            self.assertIn("Retrying ${description} after rate-limit backoff", agent_labeler)
+            self.assertNotIn('gh pr edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" "${remove_args[@]}" >/dev/null 2>&1 || true', agent_labeler)
             self.assertIn("GitHub API rate limit hit", agent_labeler)
             self.assertIn("needs-codex-audit", agent_labeler)
             self.assertIn("needs-claude-audit", agent_labeler)
@@ -2935,11 +2946,13 @@ jobs:
             fix_round = output_dir.joinpath(
                 ".github/workflows/code-mower-fix-round-dispatch.yml"
             ).read_text(encoding="utf-8")
+            fix_env = yaml.safe_load(fix_round)["env"]
+            fix_rules = json.loads(fix_env["CODE_MOWER_FIX_ROUND_RULES_JSON"])
             self.assertIn("CODE_MOWER_FIX_ROUND_RULES_JSON", fix_round)
-            self.assertIn('"mention":"@cursor"', fix_round)
+            self.assertEqual(fix_rules[0]["mention"], "@cursor")
             self.assertIn("CODE_MOWER_FIX_ROUND:", fix_round)
             self.assertIn("secrets.DISPATCH_TOKEN", fix_round)
-            self.assertIn('NEEDS_OWNER_LABEL: "needs-owner"', fix_round)
+            self.assertEqual(fix_env["NEEDS_OWNER_LABEL"], "needs-owner")
             self.assertIn("codex-audit-blocked", fix_round)
             self.assertIn("claude-audit-blocked", fix_round)
             self.assertIn("code_mower_handle_rate_limit", fix_round)
@@ -3073,6 +3086,8 @@ jobs:
             gate = output_dir.joinpath(
                 ".github/workflows/code-mower-gate.yml"
             ).read_text(encoding="utf-8")
+            gate_env = yaml.safe_load(gate)["env"]
+            gate_lanes = json.loads(gate_env["CODE_MOWER_GATE_LANES_JSON"])
             self.assertIn("CODE_MOWER_GATE_CONTEXT: code-mower/gate", gate)
             self.assertIn("name: publish Code Mower gate status", gate)
             self.assertNotIn("name: code-mower/gate", gate)
@@ -3118,21 +3133,30 @@ jobs:
                 "actions/runs?event=pull_request_target&status={status}&per_page=100",
                 gate,
             )
-            self.assertIn('"decision_coverage":true', gate)
+            self.assertTrue(all(lane["decision_coverage"] for lane in gate_lanes))
             self.assertNotIn("__GATE_LANES_JSON__", gate)
 
             gate_health = output_dir.joinpath(
                 ".github/workflows/code-mower-gate-health.yml"
             ).read_text(encoding="utf-8")
+            gate_health_env = yaml.safe_load(gate_health)["env"]
+            gate_health_lanes = json.loads(
+                gate_health_env["CODE_MOWER_GATE_HEALTH_LANES_JSON"]
+            )
             self.assertIn("CODE_MOWER_GATE_HEALTH_LANES_JSON", gate_health)
             self.assertIn("CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES", gate_health)
             self.assertIn("CODE_MOWER_GATE_HEALTH_LIVENESS_MINUTES", gate_health)
-            self.assertIn('NEEDS_OWNER_LABEL: "needs-owner"', gate_health)
+            self.assertEqual(gate_health_env["NEEDS_OWNER_LABEL"], "needs-owner")
             self.assertIn("needs-codex-audit", gate_health)
             self.assertIn("needs-claude-audit", gate_health)
-            self.assertIn('"author_lane":"codex"', gate_health)
-            self.assertIn('"builder_authors":"chatgpt-codex-connector[bot]"', gate_health)
-            self.assertIn('"builder_label":"builder:codex"', gate_health)
+            codex_health = next(
+                lane for lane in gate_health_lanes if lane["author_lane"] == "codex"
+            )
+            self.assertEqual(
+                codex_health["builder_authors"],
+                "chatgpt-codex-connector[bot]",
+            )
+            self.assertEqual(codex_health["builder_label"], "builder:codex")
             self.assertIn("github-actions[bot]", gate_health)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS: ${{ vars.CLAUDE_AUDIT_BOT_AUTHORS || '' }}", gate_health)
             self.assertIn("CODEX_BOT_AUTHORS: ${{ vars.CODEX_BOT_AUTHORS || '' }}", gate_health)
@@ -3427,14 +3451,14 @@ jobs:
                 text=True,
             )
 
-    def test_init_escapes_decision_authorities_in_workflow_env(self) -> None:
+    def test_init_renders_valid_decision_authorities_in_workflow_env(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
         config = dict(code_mower_config.load_config(config_path))
         config["owner_surface"] = {"owner_login": "owner"}
         config["decisions"] = {
             "authorities": [
-                'quote"slash\\',
-                "line\nbreak",
+                "valid-maintainer",
+                "ci-bot[bot]",
             ],
         }
         plan = code_mower_init.render_init_plan(
@@ -3442,7 +3466,7 @@ jobs:
             package_mode=True,
             package_command="code-mower",
         )
-        expected = 'owner,quote"slash\\,line\nbreak'
+        expected = "owner,valid-maintainer,ci-bot[bot]"
 
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / ".code-mower.generated"
@@ -4290,6 +4314,18 @@ printf '%s\\n' "${lane}"
         )
         self.assertIn(
             "src/code_mower/templates/workflows/code-mower-fix-round-dispatch.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/dispatch-lanes.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/workflows/lane-mac-runner.yml.j2",
+            packaged_template_targets,
+        )
+        self.assertIn(
+            "src/code_mower/templates/lanes/run_mac_lane.sh",
             packaged_template_targets,
         )
 
@@ -6650,10 +6686,69 @@ def main():
             readme,
         )
         self.assertIn("[lane promotion policy](docs/lane-promotion-policy.md)", readme)
+        self.assertIn("## Start Here", readme)
+        self.assertIn("beta, bring-your-own-agent-loop software", readme)
+        self.assertIn("not a drop-in autonomous merge gate", readme)
         self.assertIn("## Roles", readme)
-        self.assertIn("Cursor/Claude/Codex-style builders", readme)
-        self.assertIn("not yet a product feature", readme)
-        self.assertIn("https://github.com/codemower-ai/code-mower/issues/409", readme)
+        self.assertIn("Claude Code, Codex, Cursor-style", readme)
+        self.assertIn("templates now support that loop end to end", readme)
+
+    def test_start_here_docs_cover_reviewer_gate_and_build_loop_routes(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        try_in_10 = (ROOT / "docs" / "try-in-10-minutes.md").read_text(
+            encoding="utf-8",
+        )
+        build_loop_30 = (ROOT / "docs" / "build-loop-in-30-minutes.md").read_text(
+            encoding="utf-8",
+        )
+        quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+
+        self.assertIn("[Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)", readme)
+        self.assertIn("[Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)", readme)
+        self.assertEqual(len(re.findall(r"^## 8\.", try_in_10, re.MULTILINE)), 1)
+        self.assertTrue(try_in_10.rstrip().endswith("](build-loop-in-30-minutes.md)."))
+        self.assertIn("[Quickstart](quickstart.md)", try_in_10)
+        self.assertIn("[Quickstart](quickstart.md)", build_loop_30)
+        self.assertIn("write a PATCH payload from", build_loop_30)
+        self.assertIn("existing source-app bindings", build_loop_30)
+        self.assertIn("python3.12 - <<'PY'", build_loop_30)
+        self.assertIn('preserved_checks.append({"context": check["context"], "app_id": app_id})', build_loop_30)
+        self.assertIn('"checks": preserved_checks + [{"context": "code-mower/gate", "app_id": -1}]', build_loop_30)
+        self.assertIn("--input /tmp/required-status-checks-patch.json", build_loop_30)
+        self.assertNotIn("-F contexts[]=", build_loop_30)
+
+        docs_map = readme.split("## Docs Map", 1)[1]
+        for link in (
+            "docs/build-loop-in-30-minutes.md",
+            "docs/planning-work-orders.md",
+            "docs/builders-grok-cursor.md",
+            "docs/local-audit-runner.md",
+            "docs/self-hosted-mac-runner.md",
+            "docs/build-loop.md",
+            "docs/lanes/README.md",
+            "docs/lanes/codex.md",
+            "docs/lanes/claude.md",
+            "docs/lanes/grok.md",
+        ):
+            with self.subTest(link=link):
+                self.assertIn(link, docs_map)
+
+        self.assertIn("Roles: Claude Code as orchestrator", build_loop_30)
+        self.assertIn("builder:codex: codex", build_loop_30)
+        self.assertIn("builder:claude: claude", build_loop_30)
+        self.assertIn("builder:grok-bot: grok-bot", build_loop_30)
+        self.assertIn("dispatched:codex", build_loop_30)
+        self.assertIn("dispatched:claude", build_loop_30)
+        self.assertIn("dispatched:grok-bot", build_loop_30)
+
+        repo_path_truth = (
+            "Use `--repo-path /path/to/repo` to validate the installed Code Mower "
+            "CLI against a real repository; if `tools/code_mower` exists, the "
+            "rehearsal also runs wrapper parity for mirror-removal, otherwise it "
+            "detects and dry-runs the repo's native checks."
+        )
+        self.assertIn(repo_path_truth, " ".join(try_in_10.split()))
+        self.assertIn(repo_path_truth, " ".join(quickstart.split()))
 
     def test_package_command_inventory_derives_current_prerelease_spec(self) -> None:
         package_content_text = (ROOT / "src/code_mower/package_content.py").read_text(

@@ -1,0 +1,151 @@
+# Code Mower workflow template: dispatch fix rounds when audit lanes block.
+name: Code Mower fix-round dispatch
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: code-mower-fix-round-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_FIX_ROUND_RULES_JSON: "[{\"builder_label\":\"builder:grok-bot\",\"builder_lane\":\"grok-bot\",\"mention\":\"@cursor\"}]"
+  CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON: "[{\"author_lane\":\"codex\",\"blocked\":\"codex-audit-blocked\",\"done\":\"codex-audit-done\",\"id\":\"codex\",\"needs\":\"needs-codex-audit\"},{\"author_lane\":\"claude\",\"blocked\":\"claude-audit-blocked\",\"done\":\"claude-audit-done\",\"id\":\"claude_audit\",\"needs\":\"needs-claude-audit\"}]"
+  CODE_MOWER_DISPATCH_TOKEN_ENV: "DISPATCH_TOKEN"
+  NEEDS_OWNER_LABEL: "needs-owner"
+
+jobs:
+  dispatch:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.DISPATCH_TOKEN || '' }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Plan fix-round dispatch
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          pr = event["pull_request"]
+          event_label = (event.get("label") or {}).get("name", "")
+          pr_labels = {item.get("name", "") for item in pr.get("labels") or []}
+          audit_lanes = json.loads(os.environ["CODE_MOWER_FIX_ROUND_AUDIT_LANES_JSON"])
+          rules = json.loads(os.environ["CODE_MOWER_FIX_ROUND_RULES_JSON"])
+
+          audit_lane = next(
+              (lane for lane in audit_lanes if lane.get("blocked") == event_label),
+              None,
+          )
+          rule = next(
+              (
+                  item
+                  for item in rules
+                  if item.get("builder_label") in pr_labels and item.get("mention")
+              ),
+              None,
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              if not audit_lane or not rule:
+                  print("matched=false", file=out)
+                  raise SystemExit(0)
+              head_sha = pr["head"]["sha"]
+              marker = (
+                  f"<!-- CODE_MOWER_FIX_ROUND:{head_sha}:"
+                  f"{audit_lane['id']}:{rule['builder_lane']} -->"
+              )
+              print("matched=true", file=out)
+              print(f"audit_lane={audit_lane['id']}", file=out)
+              print(f"builder_lane={rule['builder_lane']}", file=out)
+              print(f"mention={rule['mention']}", file=out)
+              print(f"head_sha={head_sha}", file=out)
+              print(f"marker={marker}", file=out)
+          needs_labels = [lane["needs"] for lane in audit_lanes if lane.get("needs")]
+          Path(".code-mower-fix-round-needs-labels.txt").write_text(
+              "\n".join(needs_labels) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Post fix-round mention
+        if: steps.plan.outputs.matched == 'true'
+        shell: bash
+        env:
+          AUDIT_LANE: ${{ steps.plan.outputs.audit_lane }}
+          BUILDER_LANE: ${{ steps.plan.outputs.builder_lane }}
+          FIX_ROUND_MENTION: ${{ steps.plan.outputs.mention }}
+          HEAD_SHA: ${{ steps.plan.outputs.head_sha }}
+          MARKER: ${{ steps.plan.outputs.marker }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::${CODE_MOWER_DISPATCH_TOKEN_ENV} secret is missing or empty; fix-round mentions must be posted by a human-owned token"
+            exit 1
+          fi
+          code_mower_handle_rate_limit() {
+            rate_limited=false
+            for file in "$@"; do
+              if [ -s "${file}" ] && grep -qiE 'API rate limit exceeded|rate limit' "${file}"; then
+                rate_limited=true
+              fi
+            done
+            [ "${rate_limited}" = "true" ] || return 1
+
+            reset_epoch="$(gh api rate_limit --jq '.resources.core.reset // .rate.reset // ""' 2>/dev/null || true)"
+            if [[ "${reset_epoch}" =~ ^[0-9]+$ ]]; then
+              now_epoch="$(date -u +%s)"
+              wait_seconds=$((reset_epoch - now_epoch + 5))
+              reset_iso="$(date -u -d "@${reset_epoch}" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "${reset_epoch}")"
+              if [ "${wait_seconds}" -gt 0 ] && [ "${wait_seconds}" -le 240 ]; then
+                echo "::notice::GitHub API rate limit hit; backing off until ${reset_iso}."
+                sleep "${wait_seconds}"
+              else
+                echo "::notice::GitHub API rate limit hit; reset at ${reset_iso}; exiting cleanly so a later event can retry."
+              fi
+            else
+              echo "::notice::GitHub API rate limit hit; reset time unavailable; exiting cleanly so a later event can retry."
+            fi
+            return 0
+          }
+
+          comments_output="$(mktemp)"
+          comments_error="$(mktemp)"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate -q '.[].body' >"${comments_output}" 2>"${comments_error}"; then
+            if code_mower_handle_rate_limit "${comments_error}" "${comments_output}"; then
+              exit 0
+            fi
+            cat "${comments_error}" >&2
+            exit 1
+          fi
+          bodies="$(cat "${comments_output}")"
+          if printf '%s' "${bodies}" | grep -qF -- "${MARKER}"; then
+            echo "fix round already dispatched for ${HEAD_SHA} (${AUDIT_LANE}/${BUILDER_LANE})"
+            exit 0
+          fi
+          needs_labels="$(paste -sd ', ' .code-mower-fix-round-needs-labels.txt)"
+          short_sha="${HEAD_SHA:0:7}"
+          body="${FIX_ROUND_MENTION} The **${AUDIT_LANE}** audit lane BLOCKED this PR (head ${short_sha}). Read the latest Code Mower audit comments on this PR, address every blocking finding without scope additions, push to this branch, then re-add: \`${needs_labels}\`. If a finding is wrong, reply with evidence and add \`${NEEDS_OWNER_LABEL}\`.
+
+          ${MARKER}"
+          comment_error="$(mktemp)"
+          if ! gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "${body}" 2>"${comment_error}"; then
+            if code_mower_handle_rate_limit "${comment_error}"; then
+              exit 0
+            fi
+            cat "${comment_error}" >&2
+            exit 1
+          fi
+          echo "dispatched fix round for #${PR_NUMBER} (${AUDIT_LANE}/${BUILDER_LANE}, ${short_sha})"

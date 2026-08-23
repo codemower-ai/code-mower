@@ -8,6 +8,8 @@ import json
 import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,6 +92,31 @@ AGENT_PR_LABELER_WORKFLOW_PATH = ".github/workflows/code-mower-agent-pr-labeler.
 AGENT_PR_LABELER_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-agent-pr-labeler.yml.j2"
 FIX_ROUND_DISPATCH_WORKFLOW_PATH = ".github/workflows/code-mower-fix-round-dispatch.yml"
 FIX_ROUND_DISPATCH_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-fix-round-dispatch.yml.j2"
+BUILDER_DISPATCH_WORKFLOW_PATH = ".github/workflows/dispatch-lanes.yml"
+BUILDER_DISPATCH_WORKFLOW_TEMPLATE = "templates/workflows/dispatch-lanes.yml.j2"
+LANE_MAC_RUNNER_WORKFLOW_PATH = ".github/workflows/lane-mac-runner.yml"
+LANE_MAC_RUNNER_WORKFLOW_TEMPLATE = "templates/workflows/lane-mac-runner.yml.j2"
+LANE_MAC_RUNNER_SCRIPT_PATH = "tools/lanes/run_mac_lane.sh"
+LANE_MAC_RUNNER_SCRIPT_TEMPLATE = "templates/lanes/run_mac_lane.sh"
+LANE_STANDING_README_PATH = "docs/lanes/README.md"
+LANE_STANDING_README_TEMPLATE = "templates/lanes/README.md"
+BUILDER_LANE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+BUILDER_ALIAS_TO_LANE = {
+    "cursor": "grok-bot",
+    "grok": "grok-bot",
+    "grok-bot": "grok-bot",
+}
+BUILDER_DEFAULT_MENTIONS = {
+    "claude": "Claude lane -",
+    "codex": "@codex",
+    "grok-bot": "@cursor",
+}
+BUILDER_DEFAULT_DOC_SLUGS = {
+    "claude": "claude",
+    "codex": "codex",
+    "grok-bot": "grok",
+}
+MAC_RUNNER_BUILDER_LANES = {"claude", "codex"}
 
 DEFAULT_APPLY_OUTPUT_DIR = ".code-mower.generated"
 APPLY_MANIFEST_FILENAME = "code-mower-init-plan.json"
@@ -201,6 +228,13 @@ OWNER_SURFACE_DEFAULTS = {
     "gate_health_max_wait_minutes": "30",
     "gate_health_liveness_minutes": "45",
     "local_audit_runner_label": LOCAL_AUDIT_RUNNER_LABEL,
+    "lane_runner_labels": "self-hosted,macOS,code-mower-lane",
+    "lane_runner_enabled_var": "LANE_MAC_RUNNER_ENABLED",
+    "lane_runner_cron": "*/15 * * * *",
+    "lane_runner_max_minutes": "90",
+    "lane_runner_trusted_authors": "",
+    "builder_dispatch_cron": "*/30 * * * *",
+    "builder_wip_cap": "5",
     "ready_label": "tier:R",
     "phase_labels": "phase:0,phase:1,phase:2,phase:3,phase:4,phase:5",
     "reviewer_spend_path": ".code-mower/reviewer-spend.json",
@@ -208,6 +242,7 @@ OWNER_SURFACE_DEFAULTS = {
     "dispatch_token_env": "DISPATCH_TOKEN",
     "dispatch_token_expires_var": "DISPATCH_TOKEN_EXPIRES_AT",
 }
+LANE_MAC_RUNNER_TIMEOUT_GRACE_MINUTES = 15
 
 HUMAN_AUTOMATION_TOKEN_SCOPES = (
     "Contents: read",
@@ -297,11 +332,53 @@ def _workflow_name_for_target(target: str) -> str:
     return stem[:1].upper() + stem[1:]
 
 
-def _normalize_repo_slug(value: str) -> str:
+def _normalize_repo_slug(value: str, *, option: str = "--add-repo") -> str:
     slug = value.strip().strip("/")
     if not OWNER_REPO_RE.fullmatch(slug):
-        raise ConfigError("--add-repo expects an OWNER/REPO slug")
+        raise ConfigError(f"{option} expects an OWNER/REPO slug")
     return slug
+
+
+def _github_repo_slug_from_remote(remote_url: str) -> str:
+    remote = remote_url.strip()
+    if remote.startswith("git@github.com:"):
+        remote = remote.removeprefix("git@github.com:")
+    elif remote.startswith("https://github.com/"):
+        remote = remote.removeprefix("https://github.com/")
+    elif remote.startswith("http://github.com/"):
+        remote = remote.removeprefix("http://github.com/")
+    elif remote.startswith("ssh://git@github.com/"):
+        remote = remote.removeprefix("ssh://git@github.com/")
+    else:
+        return ""
+    slug = remote.removesuffix(".git").strip("/")
+    return slug if OWNER_REPO_RE.fullmatch(slug) else ""
+
+
+def _detect_github_repo_slug(repo_path: Path, *, git_bin: str = "git") -> str:
+    try:
+        completed = subprocess.run(
+            [git_bin, "-C", str(repo_path), "config", "--get", "remote.origin.url"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return _github_repo_slug_from_remote(completed.stdout)
+
+
+def _target_repo_slug_for_labels(
+    checkout_dir: Path,
+    *,
+    explicit_repo: str | None = None,
+) -> str:
+    if explicit_repo:
+        return _normalize_repo_slug(explicit_repo, option="--repo")
+    return _detect_github_repo_slug(checkout_dir)
 
 
 def config_with_added_repositories(
@@ -503,12 +580,40 @@ def _csv_value(value: Any, default: str) -> str:
     return default
 
 
+def _csv_items(value: Any, default: str = "") -> tuple[str, ...]:
+    if isinstance(value, list):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, str):
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+    return tuple(item.strip() for item in default.split(",") if item.strip())
+
+
+def _lane_runner_label_items(value: Any) -> tuple[str, ...]:
+    default = OWNER_SURFACE_DEFAULTS["lane_runner_labels"]
+    return _csv_items(value, default) or _csv_items(default)
+
+
+def _yaml_scalar(value: Any) -> str:
+    return json.dumps(str(value))
+
+
+def _shell_literal(value: Any) -> str:
+    return shlex.quote(str(value))
+
+
+def _yaml_inline_list(items: Sequence[str]) -> str:
+    return ", ".join(_yaml_scalar(item) for item in items)
+
+
 def _owner_surface_config(config: Mapping[str, Any]) -> dict[str, str]:
     raw = config.get("owner_surface")
     surface = raw if isinstance(raw, Mapping) else {}
     rendered: dict[str, str] = {}
     for key, default in OWNER_SURFACE_DEFAULTS.items():
-        if key == "phase_labels":
+        if key == "lane_runner_labels":
+            rendered[key] = ",".join(_lane_runner_label_items(surface.get(key)))
+            continue
+        if key in {"phase_labels", "lane_runner_trusted_authors"}:
             rendered[key] = _csv_value(surface.get(key), default)
             continue
         value = surface.get(key, default)
@@ -743,6 +848,316 @@ def _fix_round_dispatch_workflow_entry(
     }
 
 
+def _build_loop_owner_labels(owner_surface: Mapping[str, str]) -> list[str]:
+    labels = (
+        owner_surface["needs_owner_label"],
+        owner_surface["owner_decision_label"],
+        owner_surface["owner_sitting_label"],
+    )
+    return [label for label in labels if label]
+
+
+def _canonical_builder_lane(raw_name: str) -> str:
+    normalized = raw_name.strip().replace("_", "-").lower()
+    if not normalized:
+        raise ConfigError("--builders requires at least one lane name")
+    lane = BUILDER_ALIAS_TO_LANE.get(normalized, normalized)
+    if not BUILDER_LANE_NAME_RE.fullmatch(lane):
+        raise ConfigError(
+            f"builder lane {raw_name!r} must match [A-Za-z0-9][A-Za-z0-9_-]*"
+        )
+    return lane
+
+
+def _parse_builder_lanes(raw_builders: str | None) -> tuple[str, ...]:
+    if raw_builders is None:
+        return ()
+    raw_items = [
+        item.strip()
+        for chunk in raw_builders.split(",")
+        for item in chunk.split()
+        if item.strip()
+    ]
+    if not raw_items:
+        raise ConfigError("--builders requires at least one lane name")
+    lanes: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        lane = _canonical_builder_lane(item)
+        if lane in seen:
+            continue
+        seen.add(lane)
+        lanes.append(lane)
+    return tuple(lanes)
+
+
+def _builder_doc_slug(builder_lane: str) -> str:
+    return BUILDER_DEFAULT_DOC_SLUGS.get(builder_lane, builder_lane)
+
+
+def _builder_mention(builder_lane: str, fix_round_rules: Sequence[Mapping[str, str]]) -> str:
+    for rule in fix_round_rules:
+        if str(rule.get("builder_lane") or "") == builder_lane:
+            mention = str(rule.get("mention") or "").strip()
+            if mention:
+                return mention
+    return BUILDER_DEFAULT_MENTIONS.get(builder_lane, f"{_display_name(builder_lane)} lane -")
+
+
+def _builder_audit_need_labels(
+    builder_lane: str,
+    audit_lanes: Sequence[Mapping[str, str]],
+) -> tuple[str, ...]:
+    labels: list[str] = []
+    for lane in audit_lanes:
+        if str(lane.get("author_lane") or lane.get("id") or "") == builder_lane:
+            continue
+        needs = str(lane.get("needs") or "")
+        if needs:
+            labels.append(needs)
+    if not labels:
+        labels.extend(str(lane.get("needs") or "") for lane in audit_lanes if lane.get("needs"))
+    return tuple(dict.fromkeys(labels))
+
+
+def _builder_dispatch_lane_entries(
+    builder_lanes: Sequence[str],
+    audit_lanes: Sequence[Mapping[str, str]],
+    author_exclusion: Mapping[str, Any],
+    fix_round_rules: Sequence[Mapping[str, str]],
+) -> tuple[dict[str, str], ...]:
+    labels_by_lane = _builder_labels_by_lane(author_exclusion)
+    entries: list[dict[str, str]] = []
+    for builder_lane in builder_lanes:
+        doc_slug = _builder_doc_slug(builder_lane)
+        audit_labels = _builder_audit_need_labels(builder_lane, audit_lanes)
+        doc_template_slug = (
+            doc_slug if builder_lane in BUILDER_DEFAULT_DOC_SLUGS else "generic"
+        )
+        entries.append(
+            {
+                "lane": builder_lane,
+                "display_name": _display_name(builder_lane),
+                "builder_label": labels_by_lane.get(builder_lane) or f"builder:{builder_lane}",
+                "dispatch_label": f"dispatched:{builder_lane}",
+                "mention": _builder_mention(builder_lane, fix_round_rules),
+                "doc": f"lanes/{doc_slug}.md",
+                "doc_target": f"docs/lanes/{doc_slug}.md",
+                "doc_template": f"templates/lanes/{doc_template_slug}.md",
+                "audit_labels": ",".join(audit_labels),
+                "audit_labels_display": ", ".join(audit_labels) if audit_labels else "none",
+                "mac_runner": "true" if builder_lane in MAC_RUNNER_BUILDER_LANES else "false",
+            }
+        )
+    return tuple(entries)
+
+
+def _build_loop_trusted_authors(
+    owner_surface: Mapping[str, str],
+    decision_authorities: Sequence[str],
+) -> tuple[str, ...]:
+    trusted_authors = [
+        *decision_authorities,
+        *_csv_items(owner_surface["lane_runner_trusted_authors"], ""),
+    ]
+    return tuple(dict.fromkeys(trusted_authors))
+
+
+def _dispatch_lanes_workflow_entry(
+    builder_entries: Sequence[Mapping[str, str]],
+    owner_surface: Mapping[str, str],
+    *,
+    decision_authorities: Sequence[str] = (),
+) -> dict[str, str]:
+    owner_labels = _build_loop_owner_labels(owner_surface)
+    return {
+        "path": BUILDER_DISPATCH_WORKFLOW_PATH,
+        "source": "builder-dispatch-workflow-template",
+        "copy_from": BUILDER_DISPATCH_WORKFLOW_TEMPLATE,
+        "package_copy_from": BUILDER_DISPATCH_WORKFLOW_TEMPLATE,
+        "builder_dispatch_lanes_json": json.dumps(
+            list(builder_entries),
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "builder_dispatch_cron": owner_surface["builder_dispatch_cron"],
+        "build_loop_ready_label": owner_surface["ready_label"],
+        "build_loop_owner_labels_json": json.dumps(
+            [label for label in owner_labels if label],
+            separators=(",", ":"),
+        ),
+        "build_loop_max_wip": owner_surface["builder_wip_cap"],
+        "dispatch_token_env": owner_surface["dispatch_token_env"],
+        "build_loop_trusted_authors_json": json.dumps(
+            _build_loop_trusted_authors(owner_surface, decision_authorities),
+            separators=(",", ":"),
+        ),
+    }
+
+
+def _lane_mac_runner_workflow_entry(
+    builder_entries: Sequence[Mapping[str, str]],
+    owner_surface: Mapping[str, str],
+) -> dict[str, str]:
+    mac_lanes = [
+        str(entry["lane"])
+        for entry in builder_entries
+        if str(entry.get("mac_runner") or "") == "true"
+    ]
+    labels = _lane_runner_label_items(owner_surface["lane_runner_labels"])
+    max_minutes = code_mower_audit_limits.parse_positive_int(
+        owner_surface["lane_runner_max_minutes"],
+        field_name="owner_surface.lane_runner_max_minutes",
+    )
+    return {
+        "path": LANE_MAC_RUNNER_WORKFLOW_PATH,
+        "source": "lane-mac-runner-workflow-template",
+        "copy_from": LANE_MAC_RUNNER_WORKFLOW_TEMPLATE,
+        "package_copy_from": LANE_MAC_RUNNER_WORKFLOW_TEMPLATE,
+        "lane_mac_runner_lanes_yaml": _yaml_inline_list(mac_lanes),
+        "lane_mac_runner_lanes_display": ", ".join(mac_lanes),
+        "lane_mac_runner_labels": _yaml_inline_list(labels),
+        "lane_mac_runner_enabled_var": owner_surface["lane_runner_enabled_var"],
+        "lane_mac_runner_cron": owner_surface["lane_runner_cron"],
+        "lane_mac_runner_max_minutes": owner_surface["lane_runner_max_minutes"],
+        "lane_mac_runner_timeout_minutes": str(
+            max_minutes + LANE_MAC_RUNNER_TIMEOUT_GRACE_MINUTES
+        ),
+    }
+
+
+def _lane_mac_runner_script_entry(
+    builder_entries: Sequence[Mapping[str, str]],
+    audit_lanes: Sequence[Mapping[str, str]],
+    owner_surface: Mapping[str, str],
+    *,
+    config: Mapping[str, Any],
+    decision_authorities: Sequence[str],
+) -> dict[str, str]:
+    mac_lanes = [
+        str(entry["lane"])
+        for entry in builder_entries
+        if str(entry.get("mac_runner") or "") == "true"
+    ]
+    blocked_labels = [
+        str(entry.get("blocked") or "")
+        for entry in audit_lanes
+        if str(entry.get("blocked") or "")
+    ]
+    audit_labels = {
+        str(entry["author_lane"]): {
+            "blocked": str(entry.get("blocked") or ""),
+            "done": str(entry.get("done") or ""),
+            "needs": str(entry.get("needs") or ""),
+        }
+        for entry in audit_lanes
+    }
+    builder_labels = {
+        str(entry["lane"]): str(entry["builder_label"])
+        for entry in builder_entries
+        if str(entry.get("mac_runner") or "") == "true"
+    }
+    identity = config.get("builder_identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    configured_prefixes = _identity_section(identity, "branch_prefixes")
+    branch_prefixes: dict[str, list[str]] = {
+        lane: [f"{lane}/"] for lane in mac_lanes
+    }
+    for prefix, lane in sorted(configured_prefixes.items()):
+        if lane in branch_prefixes and prefix not in branch_prefixes[lane]:
+            branch_prefixes[lane].append(prefix)
+    return {
+        "path": LANE_MAC_RUNNER_SCRIPT_PATH,
+        "source": "lane-mac-runner-script-template",
+        "copy_from": LANE_MAC_RUNNER_SCRIPT_TEMPLATE,
+        "package_copy_from": LANE_MAC_RUNNER_SCRIPT_TEMPLATE,
+        "package_copy_first": True,
+        "mode": "0755",
+        "lane_mac_runner_allowed_case": "|".join(mac_lanes) or "codex|claude",
+        "lane_mac_runner_builder_labels_json": json.dumps(
+            builder_labels,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "lane_mac_runner_branch_prefixes_json": json.dumps(
+            branch_prefixes,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "lane_mac_runner_blocked_labels_jq": " or ".join(
+            f'.name=={json.dumps(label)}' for label in blocked_labels
+        )
+        or "false",
+        "lane_mac_runner_audit_labels_json": json.dumps(
+            audit_labels,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "lane_mac_runner_owner_labels_json": json.dumps(
+            _build_loop_owner_labels(owner_surface),
+            separators=(",", ":"),
+        ),
+        "lane_mac_runner_trusted_authors": ",".join(
+            _build_loop_trusted_authors(owner_surface, decision_authorities)
+        ),
+        "build_loop_ready_label": owner_surface["ready_label"],
+        "needs_owner_label": owner_surface["needs_owner_label"],
+    }
+
+
+def _lane_standing_file_entry(
+    entry: Mapping[str, str],
+    owner_surface: Mapping[str, str],
+) -> dict[str, str]:
+    return {
+        "path": str(entry["doc_target"]),
+        "source": "lane-standing-instructions-template",
+        "copy_from": str(entry["doc_template"]),
+        "package_copy_from": str(entry["doc_template"]),
+        "lane_name": str(entry["lane"]),
+        "lane_display_name": str(entry["display_name"]),
+        "builder_label": str(entry["builder_label"]),
+        "required_audit_labels": str(entry["audit_labels_display"]),
+        "needs_owner_label": owner_surface["needs_owner_label"],
+    }
+
+
+def _lane_standing_readme_entry(
+    builder_entries: Sequence[Mapping[str, str]],
+    owner_surface: Mapping[str, str],
+) -> dict[str, str]:
+    rows = "\n".join(
+        "| {display} | `{doc}` | `{builder_label}` | `{dispatch_label}` | {trigger} |".format(
+            display=entry["display_name"],
+            doc=entry["doc"],
+            builder_label=entry["builder_label"],
+            dispatch_label=entry["dispatch_label"],
+            trigger=(
+                "Mac runner"
+                if str(entry.get("mac_runner") or "") == "true"
+                else f"{entry['mention']} dispatch comment"
+            ),
+        )
+        for entry in builder_entries
+    )
+    return {
+        "path": LANE_STANDING_README_PATH,
+        "source": "lane-standing-readme-template",
+        "copy_from": LANE_STANDING_README_TEMPLATE,
+        "package_copy_from": LANE_STANDING_README_TEMPLATE,
+        "builder_lane_rows": rows,
+        "build_loop_ready_label": owner_surface["ready_label"],
+        "needs_owner_label": owner_surface["needs_owner_label"],
+        "owner_blocking_labels": ", ".join(
+            f"`{label}`" for label in _build_loop_owner_labels(owner_surface)
+        ),
+        "build_loop_max_wip": owner_surface["builder_wip_cap"],
+        "dispatch_token_env": owner_surface["dispatch_token_env"],
+        "dispatch_token_expires_var": owner_surface["dispatch_token_expires_var"],
+        "lane_mac_runner_enabled_var": owner_surface["lane_runner_enabled_var"],
+    }
+
+
 def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, Any]:
     labels = _labels_for(lane)
     trailer_lane = _trailer_lane_name(lane_id, lane)
@@ -813,6 +1228,7 @@ def _audit_rearm_entries(
         entries.append(
             {
                 "id": lane_id,
+                "author_lane": _author_lane_name(lane_id, lane),
                 "needs": str(labels["needs"]),
                 "done": str(labels["done"]),
                 "blocked": str(labels["blocked"]),
@@ -1260,25 +1676,53 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         gate_override_label = "gate:override"
     replacements = {
         "__ADAPTER__": str(entry.get("adapter") or ""),
-        "__AUTHOR_EXCLUSION_JSON__": str(
+        "__AUTHOR_EXCLUSION_JSON__": _yaml_scalar(
             entry.get("author_exclusion_json") or '{"enabled":false}'
         ),
         "__AUTHORS_ENV__": str(entry.get("authors_env") or ""),
         "__BLOCKED_LABEL__": str(entry.get("blocked_label") or ""),
         "__BOT_AUTHORS__": str(entry.get("bot_authors") or ""),
+        "__BUILDER_DISPATCH_CRON__": _yaml_scalar(
+            entry.get("builder_dispatch_cron") or ""
+        ),
+        "__BUILDER_DISPATCH_LANES_JSON__": _yaml_scalar(
+            entry.get("builder_dispatch_lanes_json") or "[]"
+        ),
+        "__BUILDER_LANE_ROWS__": str(entry.get("builder_lane_rows") or ""),
+        "__BUILDER_LABEL__": str(entry.get("builder_label") or ""),
+        "__BUILD_LOOP_MAX_WIP__": str(entry.get("build_loop_max_wip") or "5"),
+        "__BUILD_LOOP_OWNER_LABELS_JSON__": _yaml_scalar(
+            entry.get("build_loop_owner_labels_json") or "[]"
+        ),
+        "__BUILD_LOOP_READY_LABEL_YAML__": _yaml_scalar(
+            entry.get("build_loop_ready_label") or ""
+        ),
+        "__BUILD_LOOP_READY_LABEL__": str(entry.get("build_loop_ready_label") or ""),
+        "__BUILD_LOOP_TRUSTED_AUTHORS_JSON__": _yaml_scalar(
+            entry.get("build_loop_trusted_authors_json") or "[]"
+        ),
         "__DISPLAY_NAME__": str(entry.get("display_name") or ""),
         "__DONE_LABEL__": str(entry.get("done_label") or ""),
-        "__AGENT_PR_RULES_JSON__": str(entry.get("agent_pr_rules_json") or "[]"),
-        "__AGENT_PR_AUDIT_LANES_JSON__": str(
+        "__AGENT_PR_RULES_JSON__": _yaml_scalar(
+            entry.get("agent_pr_rules_json") or "[]"
+        ),
+        "__AGENT_PR_AUDIT_LANES_JSON__": _yaml_scalar(
             entry.get("agent_pr_audit_lanes_json") or "[]"
         ),
         "__DISPATCH_TOKEN_ENV__": str(entry.get("dispatch_token_env") or "DISPATCH_TOKEN"),
-        "__FIX_ROUND_RULES_JSON__": str(entry.get("fix_round_rules_json") or "[]"),
-        "__FIX_ROUND_AUDIT_LANES_JSON__": str(
+        "__DISPATCH_TOKEN_EXPIRES_VAR__": str(
+            entry.get("dispatch_token_expires_var") or "DISPATCH_TOKEN_EXPIRES_AT"
+        ),
+        "__FIX_ROUND_RULES_JSON__": _yaml_scalar(
+            entry.get("fix_round_rules_json") or "[]"
+        ),
+        "__FIX_ROUND_AUDIT_LANES_JSON__": _yaml_scalar(
             entry.get("fix_round_audit_lanes_json") or "[]"
         ),
-        "__GATE_HEALTH_CRON__": str(entry.get("gate_health_cron") or ""),
-        "__GATE_HEALTH_LANES_JSON__": str(entry.get("gate_health_lanes_json") or "[]"),
+        "__GATE_HEALTH_CRON__": _yaml_scalar(entry.get("gate_health_cron") or ""),
+        "__GATE_HEALTH_LANES_JSON__": _yaml_scalar(
+            entry.get("gate_health_lanes_json") or "[]"
+        ),
         "__GATE_HEALTH_AUTHOR_ENV_ASSIGNMENTS__": str(
             entry.get("gate_health_author_env_assignments") or ""
         ),
@@ -1291,9 +1735,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__GATE_AUTHOR_ENV_ASSIGNMENTS__": str(
             entry.get("gate_author_env_assignments") or ""
         ),
-        "__GATE_LANES_JSON__": str(entry.get("gate_lanes_json") or "[]"),
-        "__GATE_OVERRIDE_LABEL_JSON__": json.dumps(str(gate_override_label)),
-        "__DECISION_AUTHORITIES__": json.dumps(
+        "__GATE_LANES_JSON__": _yaml_scalar(entry.get("gate_lanes_json") or "[]"),
+        "__GATE_OVERRIDE_LABEL_JSON__": _yaml_scalar(str(gate_override_label)),
+        "__DECISION_AUTHORITIES__": _yaml_scalar(
             str(entry.get("decision_authorities") or "")
         ),
         "__GITHUB_ACTIONS_WORKFLOWS__": str(entry.get("github_actions_workflows") or ""),
@@ -1303,32 +1747,102 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__LOCAL_AUDIT_LABEL_MATCH__": str(entry.get("local_audit_label_match") or ""),
         "__LOCAL_AUDIT_LANES_JSON__": str(entry.get("local_audit_lanes_json") or "[]"),
         "__LOCAL_AUDIT_RUNNER_LABEL__": str(entry.get("local_audit_runner_label") or ""),
+        "__LOCAL_AUDIT_RUNNER_LABEL_YAML__": _yaml_scalar(
+            entry.get("local_audit_runner_label") or ""
+        ),
         "__LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__": str(
             entry.get("local_audit_token_env_assignments") or ""
         ),
+        "__LANE_DISPLAY_NAME__": str(entry.get("lane_display_name") or ""),
         "__NEEDS_LABEL__": str(entry.get("needs_label") or ""),
+        "__NEEDS_LABEL_YAML__": _yaml_scalar(entry.get("needs_label") or ""),
         "__NEEDS_OWNER_LABEL__": str(entry.get("needs_owner_label") or ""),
+        "__NEEDS_OWNER_LABEL_YAML__": _yaml_scalar(
+            entry.get("needs_owner_label") or ""
+        ),
+        "__LANE_MAC_RUNNER_ALLOWED_CASE__": str(
+            entry.get("lane_mac_runner_allowed_case") or ""
+        ),
+        "__LANE_MAC_RUNNER_BUILDER_LABELS_JSON__": str(
+            _shell_literal(entry.get("lane_mac_runner_builder_labels_json") or "{}")
+        ),
+        "__LANE_MAC_RUNNER_BRANCH_PREFIXES_JSON__": str(
+            _shell_literal(entry.get("lane_mac_runner_branch_prefixes_json") or "{}")
+        ),
+        "__LANE_MAC_RUNNER_AUDIT_LABELS_JSON__": str(
+            _shell_literal(entry.get("lane_mac_runner_audit_labels_json") or "{}")
+        ),
+        "__LANE_MAC_RUNNER_BLOCKED_LABELS_JQ__": str(
+            _shell_literal(entry.get("lane_mac_runner_blocked_labels_jq") or "false")
+        ),
+        "__LANE_MAC_RUNNER_CRON__": _yaml_scalar(
+            entry.get("lane_mac_runner_cron") or ""
+        ),
+        "__LANE_MAC_RUNNER_ENABLED_VAR__": str(
+            entry.get("lane_mac_runner_enabled_var") or ""
+        ),
+        "__LANE_MAC_RUNNER_LABELS__": str(entry.get("lane_mac_runner_labels") or ""),
+        "__LANE_MAC_RUNNER_LANES_DISPLAY__": str(
+            entry.get("lane_mac_runner_lanes_display") or ""
+        ),
+        "__LANE_MAC_RUNNER_LANES_YAML__": str(
+            entry.get("lane_mac_runner_lanes_yaml") or ""
+        ),
+        "__LANE_MAC_RUNNER_MAX_MINUTES__": str(
+            entry.get("lane_mac_runner_max_minutes") or "90"
+        ),
+        "__LANE_MAC_RUNNER_TIMEOUT_MINUTES__": str(
+            entry.get("lane_mac_runner_timeout_minutes") or "105"
+        ),
+        "__LANE_MAC_RUNNER_OWNER_LABELS_JSON__": str(
+            _shell_literal(entry.get("lane_mac_runner_owner_labels_json") or "[]")
+        ),
+        "__LANE_MAC_RUNNER_TRUSTED_AUTHORS__": str(
+            _shell_literal(entry.get("lane_mac_runner_trusted_authors") or "")
+        ),
+        "__BUILD_LOOP_READY_LABEL_SH__": str(
+            _shell_literal(entry.get("build_loop_ready_label") or "")
+        ),
+        "__NEEDS_OWNER_LABEL_SH__": str(
+            _shell_literal(entry.get("needs_owner_label") or "")
+        ),
+        "__LANE_NAME__": str(entry.get("lane_name") or ""),
         "__OWNER_DECISION_LABEL__": str(entry.get("owner_decision_label") or ""),
+        "__OWNER_DECISION_LABEL_YAML__": _yaml_scalar(
+            entry.get("owner_decision_label") or ""
+        ),
         "__OWNER_SITTING_LABEL__": str(entry.get("owner_sitting_label") or ""),
+        "__OWNER_SITTING_LABEL_YAML__": _yaml_scalar(
+            entry.get("owner_sitting_label") or ""
+        ),
         "__OWNER_LOGIN__": str(entry.get("owner_login") or ""),
+        "__OWNER_LOGIN_YAML__": _yaml_scalar(entry.get("owner_login") or ""),
+        "__OWNER_BLOCKING_LABELS__": str(
+            entry.get("owner_blocking_labels")
+            or "`needs-owner`, `owner-decision`, `owner-sitting`"
+        ),
         "__GATE_OVERRIDE_LABEL__": str(entry.get("gate_override_label") or ""),
-        "__PHASE_LABELS__": str(entry.get("phase_labels") or ""),
-        "__READY_LABEL__": str(entry.get("ready_label") or ""),
-        "__REVIEWER_SPEND_PATH__": str(entry.get("reviewer_spend_path") or ""),
-        "__REVIEWER_VALUE_REPORT_PATH__": str(
+        "__GATE_OVERRIDE_LABEL_YAML__": _yaml_scalar(
+            entry.get("gate_override_label") or ""
+        ),
+        "__PHASE_LABELS__": _yaml_scalar(entry.get("phase_labels") or ""),
+        "__READY_LABEL__": _yaml_scalar(entry.get("ready_label") or ""),
+        "__REQUIRED_AUDIT_LABELS__": str(entry.get("required_audit_labels") or ""),
+        "__REVIEWER_SPEND_PATH__": _yaml_scalar(entry.get("reviewer_spend_path") or ""),
+        "__REVIEWER_VALUE_REPORT_PATH__": _yaml_scalar(
             entry.get("reviewer_value_report_path") or ""
         ),
-        "__STATUS_ISSUE__": str(entry.get("status_issue") or ""),
-        "__OWNER_LABEL__": json.dumps(
+        "__STATUS_ISSUE__": _yaml_scalar(entry.get("status_issue") or ""),
+        "__OWNER_LABEL__": _yaml_scalar(
             str(entry.get("owner_label") or DEFAULT_OWNER_LABEL)
         ),
-        "__OWNER_SITTING_LABEL_JSON__": json.dumps(
+        "__OWNER_SITTING_LABEL_JSON__": _yaml_scalar(
             str(entry.get("owner_sitting_label") or "owner-sitting")
         ),
-        "__OWNER_LOGIN_JSON__": json.dumps(str(entry.get("owner_login") or "")),
+        "__OWNER_LOGIN_JSON__": _yaml_scalar(str(entry.get("owner_login") or "")),
         "__TRAILER_LANE__": str(entry.get("trailer_lane") or ""),
         "__TRAILER_PREFIX__": str(entry.get("trailer_prefix") or ""),
-        "__WEEKLY_STATUS_CRON__": str(entry.get("weekly_status_cron") or ""),
+        "__WEEKLY_STATUS_CRON__": _yaml_scalar(entry.get("weekly_status_cron") or ""),
         "__WORKFLOW_NAME__": str(entry.get("workflow_name") or "Code Mower labeler"),
     }
     for placeholder, value in replacements.items():
@@ -1339,11 +1853,16 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
 def _workflow_template_needs_render(source: str) -> bool:
     return source in {
         "agent-pr-labeler-workflow-template",
+        "builder-dispatch-workflow-template",
         "shared-cleanup-template",
         "code-mower-gate-health-workflow-template",
         "code-mower-gate-workflow-template",
         "fix-round-dispatch-workflow-template",
         "hosted-bridge-workflow-template",
+        "lane-mac-runner-script-template",
+        "lane-mac-runner-workflow-template",
+        "lane-standing-instructions-template",
+        "lane-standing-readme-template",
         "owner-notify-workflow-template",
         "self-hosted-local-audit-workflow-template",
         "saas-reviewer-labeler-workflow-template",
@@ -1562,6 +2081,104 @@ def apply_init_plan(
     return result
 
 
+def ensure_github_labels(
+    labels: Sequence[str],
+    *,
+    repo: str | None = None,
+    gh_bin: str = "gh",
+    color: str = "ededed",
+) -> dict[str, Any]:
+    unique_labels = sorted({label for label in labels if label})
+    if not unique_labels:
+        return {
+            "status": "skipped",
+            "reason": "no labels requested",
+            "repo": repo or "",
+            "requested": [],
+            "created": [],
+        }
+    if shutil.which(gh_bin) is None and not Path(gh_bin).expanduser().is_file():
+        return {
+            "status": "skipped",
+            "reason": f"{gh_bin} executable not found",
+            "repo": repo or "",
+            "requested": unique_labels,
+            "created": [],
+        }
+
+    repo_args = ["--repo", repo] if repo else []
+    try:
+        existing_result = subprocess.run(
+            [
+                gh_bin,
+                "label",
+                "list",
+                *repo_args,
+                "--limit",
+                "1000",
+                "--json",
+                "name",
+                "-q",
+                ".[].name",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        return {
+            "status": "failed",
+            "reason": (exc.stderr or exc.stdout or str(exc)).strip(),
+            "repo": repo or "",
+            "requested": unique_labels,
+            "created": [],
+        }
+
+    existing = {line.strip() for line in existing_result.stdout.splitlines() if line.strip()}
+    created: list[str] = []
+    failed: list[dict[str, str]] = []
+    for label in unique_labels:
+        if label in existing:
+            continue
+        try:
+            subprocess.run(
+                [
+                    gh_bin,
+                    "label",
+                    "create",
+                    label,
+                    *repo_args,
+                    "--color",
+                    color,
+                    "--description",
+                    "Code Mower generated label",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            failed.append(
+                {
+                    "label": label,
+                    "reason": (exc.stderr or exc.stdout or str(exc)).strip(),
+                }
+            )
+            continue
+        created.append(label)
+
+    return {
+        "status": "failed" if failed else "passed",
+        "repo": repo or "",
+        "requested": unique_labels,
+        "created": created,
+        "existing": sorted(existing.intersection(unique_labels)),
+        "failed": failed,
+    }
+
+
 def render_init_plan(
     config: Mapping[str, Any],
     profile_id: str = "recommended",
@@ -1570,6 +2187,7 @@ def render_init_plan(
     package_mode: bool | None = None,
     package_command: str | None = None,
     add_repositories: tuple[str, ...] = (),
+    builders: tuple[str, ...] = (),
 ) -> RenderedPlan:
     issues = validate_config(config)
     if issues:
@@ -1619,14 +2237,19 @@ def render_init_plan(
     merge_authority_lanes: list[str] = []
     informational_lanes: list[str] = []
     owner_surface = _owner_surface_config(config)
-    decision_authorities = ",".join(
-        code_mower_decisions.decision_authorities_from_config(config)
-    )
+    decision_authority_list = code_mower_decisions.decision_authorities_from_config(config)
+    decision_authorities = ",".join(decision_authority_list)
     author_exclusion_json = _author_exclusion_json(config, selected_lanes)
     author_exclusion = json.loads(author_exclusion_json)
     audit_rearm_entries = _audit_rearm_entries(selected_lanes)
     agent_pr_rules = _agent_pr_label_rules(config, author_exclusion)
     fix_round_rules = _fix_round_rules(config, author_exclusion)
+    builder_entries = _builder_dispatch_lane_entries(
+        builders,
+        audit_rearm_entries,
+        author_exclusion,
+        fix_round_rules,
+    )
     warnings.extend(
         _builder_identity_rule_warnings(
             author_exclusion,
@@ -1696,6 +2319,11 @@ def render_init_plan(
         label = str(rule.get("builder_label") or "")
         if label:
             labels.append(label)
+    if builder_entries:
+        labels.append(owner_surface["ready_label"])
+        for entry in builder_entries:
+            labels.append(str(entry["builder_label"]))
+            labels.append(str(entry["dispatch_label"]))
 
     audit_settings = code_mower_audit_limits.audit_limits_from_config(config)
     local_audit_entries = _local_audit_entries(selected_lanes, audit_settings)
@@ -1706,6 +2334,11 @@ def render_init_plan(
     if human_token_required:
         required_secrets.add(owner_surface["dispatch_token_env"])
         required_variables.add(owner_surface["dispatch_token_expires_var"])
+    if builder_entries:
+        required_secrets.add(owner_surface["dispatch_token_env"])
+        required_variables.add(owner_surface["dispatch_token_expires_var"])
+        if any(str(entry.get("mac_runner") or "") == "true" for entry in builder_entries):
+            required_variables.add(owner_surface["lane_runner_enabled_var"])
     if local_audit_entries and LOCAL_AUDIT_WORKFLOW_PATH not in generated_paths:
         workflow_targets.add(LOCAL_AUDIT_WORKFLOW_PATH)
         workflows.append(
@@ -1722,6 +2355,64 @@ def render_init_plan(
                 local_audit_runner_label=owner_surface["local_audit_runner_label"],
             )
         )
+
+    if builder_entries and BUILDER_DISPATCH_WORKFLOW_PATH not in generated_paths:
+        workflow_targets.add(BUILDER_DISPATCH_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "builder-dispatch",
+                "driver": "builder_dispatch",
+                "target": BUILDER_DISPATCH_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(BUILDER_DISPATCH_WORKFLOW_PATH)
+        generated_files.append(
+            _dispatch_lanes_workflow_entry(
+                builder_entries,
+                owner_surface,
+                decision_authorities=decision_authority_list,
+            )
+        )
+
+    mac_runner_entries = tuple(
+        entry
+        for entry in builder_entries
+        if str(entry.get("mac_runner") or "") == "true"
+    )
+    if mac_runner_entries and LANE_MAC_RUNNER_WORKFLOW_PATH not in generated_paths:
+        workflow_targets.add(LANE_MAC_RUNNER_WORKFLOW_PATH)
+        workflows.append(
+            {
+                "lane": "lane-mac-runner",
+                "driver": "lane_mac_runner",
+                "target": LANE_MAC_RUNNER_WORKFLOW_PATH,
+            }
+        )
+        generated_paths.add(LANE_MAC_RUNNER_WORKFLOW_PATH)
+        generated_files.append(_lane_mac_runner_workflow_entry(builder_entries, owner_surface))
+
+    if mac_runner_entries and LANE_MAC_RUNNER_SCRIPT_PATH not in generated_paths:
+        generated_paths.add(LANE_MAC_RUNNER_SCRIPT_PATH)
+        generated_files.append(
+            _lane_mac_runner_script_entry(
+                builder_entries,
+                audit_rearm_entries,
+                owner_surface,
+                config=config,
+                decision_authorities=decision_authority_list,
+            )
+        )
+
+    if builder_entries and LANE_STANDING_README_PATH not in generated_paths:
+        generated_paths.add(LANE_STANDING_README_PATH)
+        generated_files.append(_lane_standing_readme_entry(builder_entries, owner_surface))
+    for entry in builder_entries:
+        target = str(entry["doc_target"])
+        if target in generated_paths:
+            warnings.append(f"lane standing instruction target {target} collides")
+            continue
+        generated_paths.add(target)
+        generated_files.append(_lane_standing_file_entry(entry, owner_surface))
 
     if merge_authority_lanes and GATE_WORKFLOW_PATH not in generated_paths:
         workflow_targets.add(GATE_WORKFLOW_PATH)
@@ -1908,10 +2599,32 @@ def render_init_plan(
         "required_secrets": sorted(required_secrets),
         "required_variables": sorted(required_variables),
         "human_automation_token": {
-            "required": human_token_required,
+            "required": human_token_required or bool(builder_entries),
             "secret": owner_surface["dispatch_token_env"],
             "expires_var": owner_surface["dispatch_token_expires_var"],
             "scopes": list(HUMAN_AUTOMATION_TOKEN_SCOPES),
+        },
+        "builder_loop": {
+            "enabled": bool(builder_entries),
+            "builders": list(builders),
+            "lanes": list(builder_entries),
+            "ready_label": owner_surface["ready_label"],
+            "owner_labels": json.loads(
+                _dispatch_lanes_workflow_entry(
+                    builder_entries,
+                    owner_surface,
+                    decision_authorities=decision_authority_list,
+                )[
+                    "build_loop_owner_labels_json"
+                ]
+            )
+            if builder_entries
+            else [],
+            "wip_cap": owner_surface["builder_wip_cap"],
+            "runner_labels": list(
+                _lane_runner_label_items(owner_surface["lane_runner_labels"])
+            ),
+            "runner_enabled_var": owner_surface["lane_runner_enabled_var"],
         },
         "repositories": _repository_entries(config),
         "additional_repositories": list(add_repositories),
@@ -1998,6 +2711,32 @@ def render_init_plan(
         lines.extend(["", "Required setup next steps:"])
         lines.extend(f"- {step}" for step in required_setup)
 
+    if builder_entries:
+        lines.extend(["", "Builder loop:"])
+        lines.append(f"- ready label: {owner_surface['ready_label']}")
+        lines.append(f"- owner labels skipped: {', '.join(data['builder_loop']['owner_labels'])}")
+        lines.append(f"- per-lane WIP cap: {owner_surface['builder_wip_cap']}")
+        lines.append(f"- dispatch token secret: {owner_surface['dispatch_token_env']}")
+        lines.append(f"- token expiry variable: {owner_surface['dispatch_token_expires_var']}")
+        if mac_runner_entries:
+            lines.append(
+                f"- Mac runner variable: {owner_surface['lane_runner_enabled_var']}=true"
+            )
+            lines.append(
+                "- Mac runner labels: "
+                + ", ".join(data["builder_loop"]["runner_labels"])
+            )
+        for entry in builder_entries:
+            lines.append(
+                "- {lane}: {label} -> {dispatch_label}, docs/{doc}, audits: {audits}".format(
+                    lane=entry["lane"],
+                    label=entry["builder_label"],
+                    dispatch_label=entry["dispatch_label"],
+                    doc=entry["doc"],
+                    audits=entry["audit_labels_display"],
+                )
+            )
+
     if merge_authority_lanes:
         lines.extend(
             [
@@ -2053,6 +2792,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("config", nargs="?", default="code-mower.example.yml")
     parser.add_argument("--profile", default="recommended")
     parser.add_argument(
+        "--builders",
+        metavar="LANES",
+        help=(
+            "render the build-loop dispatcher for comma-separated builder lanes "
+            "(for example: codex,claude,cursor); defaults to --dry-run when no mode is set"
+        ),
+    )
+    parser.add_argument(
         "--easy",
         action="store_true",
         help=(
@@ -2087,6 +2834,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="write generated workflows without actionlint validation",
     )
+    parser.add_argument(
+        "--skip-github-labels",
+        action="store_true",
+        help=(
+            "with --apply label setup, do not create missing GitHub labels in "
+            "the target repo via gh; --dry-run lists labels without mutating GitHub"
+        ),
+    )
+    parser.add_argument(
+        "--repo",
+        metavar="OWNER/REPO",
+        help=(
+            "explicit GitHub repository for --apply label creation; "
+            "defaults to the current checkout's origin remote"
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="emit dry-run plan as JSON")
     args = parser.parse_args(argv)
 
@@ -2094,6 +2857,8 @@ def main(argv: list[str] | None = None) -> int:
         args.profile = "recommended"
         if not args.dry_run and not args.apply:
             args.dry_run = True
+    if args.builders and not args.dry_run and not args.apply:
+        args.dry_run = True
     if args.apply and args.dry_run:
         print("error: choose either --dry-run or --apply", file=sys.stderr)
         return 1
@@ -2102,6 +2867,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        label_repo_override = (
+            _normalize_repo_slug(args.repo, option="--repo") if args.repo else None
+        )
+        builder_lanes = _parse_builder_lanes(args.builders)
         config_source = _resolve_config_path(args.config)
         rendered_config_path = (
             str(config_source) if config_source != Path(args.config) else args.config
@@ -2115,7 +2884,25 @@ def main(argv: list[str] | None = None) -> int:
             profile_id=args.profile,
             config_path=rendered_config_path,
             add_repositories=added_repos,
+            builders=builder_lanes,
         )
+        label_repo = ""
+        should_ensure_github_labels = bool(
+            args.apply
+            and not args.skip_github_labels
+            and (builder_lanes or args.add_repo or label_repo_override)
+        )
+        if should_ensure_github_labels:
+            label_repo = _target_repo_slug_for_labels(
+                Path.cwd(),
+                explicit_repo=label_repo_override,
+            )
+            if not label_repo:
+                raise ConfigError(
+                    "target GitHub repository could not be determined from "
+                    "the current checkout; rerun from a GitHub checkout, "
+                    "pass --repo OWNER/REPO, or pass --skip-github-labels"
+                )
         apply_result = (
             apply_init_plan(
                 plan,
@@ -2125,6 +2912,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.apply
             else None
         )
+        if apply_result is not None and should_ensure_github_labels:
+            github_labels = ensure_github_labels(
+                plan.data["labels"],
+                repo=label_repo,
+            )
+            apply_result = {
+                **apply_result,
+                "github_labels": github_labels,
+            }
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -2141,6 +2937,30 @@ def main(argv: list[str] | None = None) -> int:
             print("Placeholders:")
             for path in apply_result["placeholder_files"]:
                 print(f"- {path}")
+        if args.builders:
+            print("Builder loop next steps:")
+            token = plan.data["human_automation_token"]
+            print(f"- set secret {token['secret']}")
+            print(f"- set variable {token['expires_var']} (YYYY-MM-DD)")
+            builder_loop = plan.data["builder_loop"]
+            print(f"- set variable CODE_MOWER_MAX_WIP or use default {builder_loop['wip_cap']}")
+            if builder_loop["runner_enabled_var"] in plan.data["required_variables"]:
+                print(f"- set variable {builder_loop['runner_enabled_var']}=true after the Mac runner is ready")
+        label_result = apply_result.get("github_labels")
+        if isinstance(label_result, Mapping):
+            label_repo = label_result.get("repo")
+            label_scope = f" for {label_repo}" if label_repo else ""
+            if label_result.get("status") == "passed":
+                print(
+                    f"GitHub labels{label_scope}: "
+                    f"{len(label_result.get('created', []))} created, "
+                    f"{len(label_result.get('existing', []))} already present"
+                )
+            else:
+                print(
+                    f"Warning: GitHub labels{label_scope} not fully ensured: "
+                    f"{label_result.get('reason') or label_result.get('failed')}"
+                )
     else:
         print(plan.text, end="")
     return 0

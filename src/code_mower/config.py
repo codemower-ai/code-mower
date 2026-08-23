@@ -37,9 +37,19 @@ BUILDER_IDENTITY_SECTIONS = {
     "branch_prefixes",
     "fix_round_mentions",
 }
+SELF_HOSTED_ACTIONS_JOB_TIMEOUT_MAX_MINUTES = 5 * 24 * 60
+LANE_MAC_RUNNER_TIMEOUT_GRACE_MINUTES = 15
+LANE_MAC_RUNNER_MAX_MINUTES_LIMIT = (
+    SELF_HOSTED_ACTIONS_JOB_TIMEOUT_MAX_MINUTES - LANE_MAC_RUNNER_TIMEOUT_GRACE_MINUTES
+)
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 SAFE_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_WORKFLOW_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*\.ya?ml$")
+SAFE_GITHUB_LOGIN_RE = re.compile(
+    r"^(?!-)(?!.*--)[A-Za-z0-9-]{1,39}(?<!-)(?:\[bot\])?$"
+)
+SAFE_CRON_FIELD_RE = re.compile(r"^[A-Za-z0-9*/,-]+$")
+UNSAFE_GENERATED_LABEL_CHARS = frozenset({"'", '"', "$", "`", "\n", "\r"})
 GENERATED_WORKFLOW_BY_DRIVER = {
     "api_model": "trailer-comment labeler + API/model runner",
     "hosted_bridge": "hosted bridge + trailer-comment labeler",
@@ -336,6 +346,110 @@ def _require_env_name(value: Any, path: str, issues: list[ConfigIssue]) -> str |
     return text
 
 
+def _require_safe_label(value: Any, path: str, issues: list[ConfigIssue]) -> str | None:
+    text = _require_string(value, path, issues)
+    if text is None:
+        return None
+    if any(char in UNSAFE_GENERATED_LABEL_CHARS for char in text):
+        issues.append(
+            ConfigIssue(
+                path,
+                "must not contain quotes, $, backticks, or newlines for generated shell safety",
+            )
+        )
+        return None
+    return text
+
+
+def _require_cron_expression(
+    value: Any,
+    path: str,
+    issues: list[ConfigIssue],
+) -> str | None:
+    text = _require_string(value, path, issues)
+    if text is None:
+        return None
+    fields = text.split()
+    if (
+        text != text.strip()
+        or "\n" in text
+        or "\r" in text
+        or len(fields) != 5
+        or any(not SAFE_CRON_FIELD_RE.fullmatch(field) for field in fields)
+    ):
+        issues.append(
+            ConfigIssue(
+                path,
+                "must be a single-line 5-field cron expression using only "
+                "alphanumerics, *, /, commas, and hyphens",
+            )
+        )
+        return None
+    return text
+
+
+def _validate_safe_label_items(
+    value: Any,
+    path: str,
+    issues: list[ConfigIssue],
+) -> None:
+    if value is None or value == "":
+        return
+    if isinstance(value, str):
+        for index, item in enumerate(part.strip() for part in value.split(",")):
+            if item:
+                _require_safe_label(item, f"{path}[{index}]", issues)
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _require_safe_label(item, f"{path}[{index}]", issues)
+        return
+    issues.append(ConfigIssue(path, "must be a string or list of strings"))
+
+
+def _require_github_login(
+    value: Any,
+    path: str,
+    issues: list[ConfigIssue],
+    *,
+    allow_owner_placeholder: bool = False,
+) -> str | None:
+    text = _require_string(value, path, issues)
+    if text is None:
+        return None
+    if allow_owner_placeholder and text.lower() == "todo_owner_login":
+        return text
+    if not SAFE_GITHUB_LOGIN_RE.fullmatch(text):
+        issues.append(
+            ConfigIssue(
+                path,
+                "must be a GitHub login using alphanumerics or single hyphens, "
+                "optionally ending in [bot]",
+            )
+        )
+        return None
+    return text
+
+
+def _validate_github_login_items(
+    value: Any,
+    path: str,
+    issues: list[ConfigIssue],
+) -> None:
+    if value is None or value == "":
+        return
+    if isinstance(value, str):
+        for index, item in enumerate(part.strip() for part in value.split(",")):
+            if item:
+                _require_github_login(item, f"{path}[{index}]", issues)
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _require_github_login(item, f"{path}[{index}]", issues)
+        return
+    issues.append(ConfigIssue(path, "must be a string or list of strings"))
+
+
 def _require_workflow_path(value: Any, path: str, issues: list[ConfigIssue]) -> str | None:
     text = _require_string(value, path, issues)
     if text is None:
@@ -446,15 +560,99 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
                     _require_string(mention, f"{section_path}.{lane_name}", issues)
                 continue
             for key, lane_name in _as_mapping(values, section_path, issues).items():
-                _require_string(str(key), f"{section_path}.{key}", issues)
+                if section == "labels":
+                    _require_safe_label(str(key), f"{section_path}.{key}", issues)
+                elif section == "authors":
+                    _require_github_login(str(key), f"{section_path}.{key}", issues)
+                else:
+                    _require_string(str(key), f"{section_path}.{key}", issues)
                 _require_identifier(lane_name, f"{section_path}.{key}", issues)
 
     owner_surface = config.get("owner_surface")
     if owner_surface is not None:
         owner_surface_map = _as_mapping(owner_surface, "owner_surface", issues)
-        for key in ("dispatch_token_env", "dispatch_token_expires_var"):
+        for key in (
+            "dispatch_token_env",
+            "dispatch_token_expires_var",
+            "lane_runner_enabled_var",
+        ):
             if key in owner_surface_map:
                 _require_env_name(owner_surface_map.get(key), f"owner_surface.{key}", issues)
+        if "owner_login" in owner_surface_map:
+            owner_login = owner_surface_map.get("owner_login")
+            if owner_login is not None and owner_login != "":
+                _require_github_login(
+                    owner_login,
+                    "owner_surface.owner_login",
+                    issues,
+                    allow_owner_placeholder=True,
+                )
+        for key in (
+            "needs_owner_label",
+            "owner_decision_label",
+            "owner_sitting_label",
+            "gate_override_label",
+            "local_audit_runner_label",
+            "ready_label",
+        ):
+            if key in owner_surface_map:
+                label_value = owner_surface_map.get(key)
+                if label_value is not None and label_value != "":
+                    _require_safe_label(label_value, f"owner_surface.{key}", issues)
+        for key in ("phase_labels", "lane_runner_labels"):
+            if key in owner_surface_map:
+                _validate_safe_label_items(
+                    owner_surface_map.get(key),
+                    f"owner_surface.{key}",
+                    issues,
+                )
+        for key in (
+            "weekly_cron",
+            "gate_health_cron",
+            "builder_dispatch_cron",
+            "lane_runner_cron",
+        ):
+            if key in owner_surface_map:
+                _require_cron_expression(
+                    owner_surface_map.get(key),
+                    f"owner_surface.{key}",
+                    issues,
+                )
+        if "builder_wip_cap" in owner_surface_map:
+            try:
+                audit_limits.parse_positive_int(
+                    owner_surface_map.get("builder_wip_cap"),
+                    field_name="owner_surface.builder_wip_cap",
+                )
+            except ValueError as exc:
+                issues.append(ConfigIssue("owner_surface.builder_wip_cap", str(exc)))
+        if "lane_runner_max_minutes" in owner_surface_map:
+            try:
+                lane_runner_max_minutes = audit_limits.parse_positive_int(
+                    owner_surface_map.get("lane_runner_max_minutes"),
+                    field_name="owner_surface.lane_runner_max_minutes",
+                )
+                if lane_runner_max_minutes > LANE_MAC_RUNNER_MAX_MINUTES_LIMIT:
+                    issues.append(
+                        ConfigIssue(
+                            "owner_surface.lane_runner_max_minutes",
+                            "must be no greater than "
+                            f"{LANE_MAC_RUNNER_MAX_MINUTES_LIMIT} so the generated "
+                            "job timeout stays within the self-hosted GitHub Actions "
+                            f"{SELF_HOSTED_ACTIONS_JOB_TIMEOUT_MAX_MINUTES}-minute maximum",
+                        )
+                    )
+            except ValueError as exc:
+                issues.append(
+                    ConfigIssue("owner_surface.lane_runner_max_minutes", str(exc))
+                )
+        if "lane_runner_trusted_authors" in owner_surface_map:
+            trusted_authors = owner_surface_map.get("lane_runner_trusted_authors")
+            _validate_github_login_items(
+                trusted_authors,
+                "owner_surface.lane_runner_trusted_authors",
+                issues,
+            )
 
     decisions = config.get("decisions")
     if decisions is not None:
@@ -472,13 +670,11 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
             for index, authority in enumerate(
                 _as_sequence(authorities, "decisions.authorities", issues)
             ):
-                if not isinstance(authority, str) or not authority.strip():
-                    issues.append(
-                        ConfigIssue(
-                            f"decisions.authorities[{index}]",
-                            "must be a non-empty string",
-                        )
-                    )
+                _require_github_login(
+                    authority,
+                    f"decisions.authorities[{index}]",
+                    issues,
+                )
 
     raw_audit = config.get("audit")
     if raw_audit is not None:
@@ -533,7 +729,11 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
 
         labels = _as_mapping(lane_map.get("labels"), f"{path}.labels", issues)
         for label_key in ("needs", "done", "blocked"):
-            label = _require_string(labels.get(label_key), f"{path}.labels.{label_key}", issues)
+            label = _require_safe_label(
+                labels.get(label_key),
+                f"{path}.labels.{label_key}",
+                issues,
+            )
             if not label:
                 continue
             owner = all_labels.setdefault(label, f"{lane_id}.{label_key}")
