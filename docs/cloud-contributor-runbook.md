@@ -122,8 +122,8 @@ code-mower cloud repo-sync \
 Use the modes deliberately:
 
 - `dogfood` uploads current repo metadata and current shareable reports;
-- `reviewer-runs` uploads existing local verdict artifacts and the default
-  reviewer spend ledger when present; and
+- `reviewer-runs` uploads existing local verdict artifacts and merges matching
+  default reviewer spend rows when present; and
 - `catch-up` uploads sanitized GitHub Actions history.
 
 `repo-sync` output includes a `data_class_summary` that separates current

@@ -235,7 +235,7 @@ def _acquire_venv_lock(
                 raise RuntimeError(
                     "timed out waiting for Code Mower venv lock: "
                     f"{lock_dir}"
-                )
+                ) from None
             time.sleep(poll_seconds)
             continue
         owner_id = f"{os.getpid()}-{uuid.uuid4().hex}"

@@ -29,6 +29,7 @@ from code_mower.cloud_client import (
     run_cloud_setup,
     safe_config_stem,
     token_prefix,
+    validate_cloud_event,
 )
 from code_mower import cloud as cloud_cli
 
@@ -172,6 +173,42 @@ def test_cloud_event_normalization_rejects_unsafe_metadata() -> None:
         assert "unsafe field" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected unsafe metadata rejection")
+
+
+def test_cloud_event_boundary_accepts_normalized_event() -> None:
+    event = normalize_event(
+        {
+            "event_type": "reviewer_run",
+            "repo_slug": "owner/repo",
+            "provider": "codex",
+            "status": "pass",
+            "metrics": {"wall_seconds": 12.0},
+            "dimensions": {"lane_id": "codex-audit"},
+        },
+        "reviewer_run",
+    )
+
+    validated = validate_cloud_event(event)
+
+    assert validated is event
+    assert event["schema"] == EVENT_SCHEMA
+    assert isinstance(event["tool"], dict)
+
+
+def test_cloud_event_boundary_rejects_secret_like_value() -> None:
+    try:
+        normalize_event(
+            {
+                "repo_slug": "owner/repo",
+                "status": "observed",
+                "dimensions": {"note": "GITHUB_" + "TOKEN=ghp_hidden_value"},
+            },
+            "reviewer_run",
+        )
+    except CloudBundleError as exc:
+        assert "secret-like value" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected secret-like metadata rejection")
 
 
 def test_cloud_repo_slug_from_remote_supports_common_github_forms() -> None:

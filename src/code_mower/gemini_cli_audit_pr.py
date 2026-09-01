@@ -459,11 +459,15 @@ def _audit_input_insufficient_result(findings: list[Mapping[str, Any]]) -> bool:
     )
 
 
-def _validate_verdict(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+def _validate_verdict(
+    payload: Mapping[str, Any] | None,
+    *,
+    display_name: str = DEFAULT_GEMINI_DISPLAY_NAME,
+) -> dict[str, Any]:
     if not payload:
         return {
             "verdict": "unknown",
-            "summary": "Gemini response did not contain parseable verdict JSON.",
+            "summary": f"{display_name} response did not contain parseable verdict JSON.",
             "findings": [],
             "blocker_count": 0,
             "parse_failed": True,
@@ -583,7 +587,7 @@ def run_gemini_cli_audit(
             )
     if not diff.strip():
         raise ValueError(
-            "Gemini CLI calibration diff is empty; check --repo-path and --base-ref"
+            f"{display_name} calibration diff is empty; check --repo-path and --base-ref"
         )
     prompt, diagnostics = build_prompt(
         repo=repo,
@@ -710,20 +714,20 @@ def run_gemini_cli_audit(
             parsed_response = raw_payload
     if parsed_response is None:
         parsed_response = parse_response_json(response_text)
-    verdict = _validate_verdict(parsed_response)
+    verdict = _validate_verdict(parsed_response, display_name=display_name)
     if repo_path is None:
         head_after_meta = fetch_pull_request(repo, pr_number, token=github_token)
         head_after = str(head_after_meta.get("head", {}).get("sha") or "")
         if head_after != head_sha:
             raise GeminiCliHeadChangedError(
-                "PR head changed during Gemini CLI audit; "
+                f"PR head changed during {display_name} audit; "
                 f"start={head_sha} end={head_after}. Discard this run and rerun."
             )
     else:
         head_after = _local_head_sha(repo_path.expanduser().resolve())
         if head_after != head_sha:
             raise GeminiCliHeadChangedError(
-                "local checkout head changed during Gemini CLI audit; "
+                f"local checkout head changed during {display_name} audit; "
                 f"start={head_sha} end={head_after}. Discard this run and rerun."
             )
 

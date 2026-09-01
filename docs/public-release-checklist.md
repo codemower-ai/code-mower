@@ -88,9 +88,9 @@ not know the original reference repos.
   easy-mode flow without reference-repo assumptions.
 - Source-checkout and release-rehearsal commands use `scripts/dev-python` or
   `.venv/bin/python`; docs and gates do not rely on ambient `python`/`python3`
-  resolving to a safe interpreter.
-- Ruff linting runs in CI with a deliberately small `E`/`F` rule set before
-  broader formatting/type-checking decisions.
+  resolving to a safe interpreter or on raw source-path environment imports.
+- Ruff linting runs in CI with a deliberately small `E`/`F`/`W`/`B` rule set
+  before broader formatting/type-checking decisions.
 - Core behavior has direct tests for verdict parsing, calibration/value-report
   math, cloud bundle privacy, and at least one provider-runner stub path.
 - CodeMower.com has a published retention policy and user-visible deletion or

@@ -223,6 +223,9 @@ def build_auto_discovered_corpus(
             "review_signal_count": review_signals,
             "audit_run_count": len(reviewer_runs),
         }
+        pr_base_ref = str(raw.get("baseRefName") or "")
+        pr_changed_files = raw.get("changedFiles")
+        pr_title = str(raw.get("title") or "")
 
         def make_item(
             *,
@@ -231,13 +234,17 @@ def build_auto_discovered_corpus(
             expectation: str,
             runs: list[dict[str, Any]],
             signal_summary: Mapping[str, Any],
+            current_pr_number: int = pr_number,
+            current_base_ref: str = pr_base_ref,
+            current_changed_files: Any = pr_changed_files,
+            current_title: str = pr_title,
         ) -> dict[str, Any]:
             return {
                 "repo": repo,
-                "pr_number": pr_number,
+                "pr_number": current_pr_number,
                 "head_sha": head_sha,
-                "base_ref": str(raw.get("baseRefName") or ""),
-                "difficulty": _difficulty_from_changed_files(raw.get("changedFiles")),
+                "base_ref": current_base_ref,
+                "difficulty": _difficulty_from_changed_files(current_changed_files),
                 "review_class": "auto-discovered",
                 "source": source,
                 "truth": {
@@ -250,7 +257,7 @@ def build_auto_discovered_corpus(
                 "expected_findings": [],
                 "reviewer_runs": runs,
                 "notes": (
-                    f"PR title: {raw.get('title') or ''}. "
+                    f"PR title: {current_title}. "
                     f"Discovery signals: {json.dumps(dict(signal_summary), sort_keys=True)}"
                 ),
                 "auto_discovery": dict(signal_summary),

@@ -5,8 +5,13 @@ from __future__ import annotations
 import hashlib
 import re
 
+from .text_schema import one_line
+
 
 MAX_GITHUB_COMMENT_CHARS = 64_000
+AUDIT_RUN_TRAILER_PREFIX = "<!-- CODE_MOWER_AUDIT_RUN:"
+STALE_REQUEUE_MARKER = "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=stale -->"
+UNKNOWN_REQUEUE_MARKER = "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=unknown -->"
 AUDIT_RUN_TRAILER_RE = re.compile(
     r"<!--\s*CODE_MOWER_AUDIT_RUN:\s*run_id=([0-9]+)"
     r"(?:\s+comment_id=([0-9]+))?"
@@ -37,6 +42,37 @@ def limit_comment_body(
 
     prefix = body.rsplit(trailer, 1)[0] if trailer in body else body
     return prefix[:allowed_prefix_len].rstrip() + suffix
+
+
+def audit_comment_posture(merge_authority: bool) -> str:
+    return "merge-authority lane" if merge_authority else "informational only"
+
+
+def normalize_calibration_badge(value: str | None) -> str:
+    return " ".join(str(value or "").strip().split())[:120]
+
+
+def format_audit_comment_header(
+    *,
+    provider_name: str,
+    head_sha: str,
+    merge_authority: bool,
+    actions_run_id: str | None = None,
+    calibration_badge: str = "",
+    diff_notice: str = "",
+    context_notice: str = "",
+) -> str:
+    header = f"## {provider_name} audit ({audit_comment_posture(merge_authority)})\n\n"
+    header += f"Head SHA: `{head_sha}`\n"
+    if diff_notice:
+        header += f"Diff: {one_line(diff_notice, 300)}\n"
+    if context_notice:
+        header += f"Context: {one_line(context_notice, 300)}\n"
+    if badge := normalize_calibration_badge(calibration_badge):
+        header += f"Calibration: {badge}\n"
+    if actions_run_id:
+        header += f"{AUDIT_RUN_TRAILER_PREFIX} run_id={actions_run_id} -->\n"
+    return header
 
 
 def bind_actions_run_comment_id(body: str, comment_id: object) -> str:

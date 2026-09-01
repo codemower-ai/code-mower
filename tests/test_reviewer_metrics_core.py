@@ -189,6 +189,58 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             self.assertNotIn("abcdef0123456789", serialized)
             self.assertNotIn("Findings:", serialized)
 
+    def test_verdict_artifact_boundary_accepts_current_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_artifact(root, duration_seconds=1.25)
+
+            payload = verdict_artifacts.load_audit_verdict_artifact(path)
+
+            self.assertEqual(
+                payload["schema"],
+                code_mower_telemetry.VERDICT_ARTIFACT_SCHEMA,
+            )
+            self.assertEqual(payload["repo"], "owner/repo")
+            self.assertEqual(payload["pr_number"], 42)
+
+    def test_verdict_artifact_boundary_rejects_malformed_provider_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_artifact(root)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["pr_number"] = "not-a-number"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "pr_number"):
+                verdict_artifacts.load_audit_verdict_artifact(path)
+
+    def test_verdict_artifact_boundary_accepts_existing_verdict_synonyms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_artifact(root, verdict="passed")
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+            event = code_mower_telemetry.reviewer_run_event_from_verdict_artifact(
+                payload,
+                path=path,
+            )
+
+            self.assertEqual(event["status"], "pass")
+
+    def test_verdict_artifact_export_skips_malformed_cache_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_artifact(root, pr_number=41)
+            invalid = self._write_artifact(root, pr_number=42)
+            payload = json.loads(invalid.read_text(encoding="utf-8"))
+            payload["pr_number"] = "not-a-number"
+            invalid.write_text(json.dumps(payload), encoding="utf-8")
+
+            events = code_mower_telemetry.export_reviewer_run_events_from_verdicts(root)
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["dimensions"]["pr_number"], 41)
+
     def test_verdict_artifacts_export_skips_fixture_shaped_cache_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -583,7 +635,7 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             self.assertEqual(event["metrics"]["total_tokens"], 1234)
             self.assertEqual(event["dimensions"]["spend_run_id"], "spend-run-1")
 
-    def test_cloud_reviewer_runs_uploads_default_spend_without_verdicts(self) -> None:
+    def test_cloud_reviewer_runs_can_backfill_default_spend_without_verdicts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             spend_dir = root / ".code-mower"
@@ -624,15 +676,17 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
                 yes=False,
                 timeout=1,
                 include_git_ref=False,
+                include_unmatched_spend=True,
             )
 
             payload = code_mower_cloud.build_upload_payload(bundle_dir=output_dir)
             self.assertEqual(result["status"], "dry_run")
+            self.assertTrue(result["include_unmatched_spend"])
             self.assertEqual(result["event_count"], 1)
             self.assertEqual(payload["events"][0]["event_id"], "spend-run-1")
             self.assertEqual(payload["events"][0]["metrics"]["cost_usd"], 0.031)
 
-    def test_cloud_reviewer_runs_keeps_fallback_spend_collisions(self) -> None:
+    def test_cloud_reviewer_runs_does_not_append_unmatched_spend_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             verdicts = root / "verdicts"
@@ -689,6 +743,70 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             )
 
             payload = code_mower_cloud.build_upload_payload(bundle_dir=output_dir)
+            self.assertFalse(result["include_unmatched_spend"])
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(payload["events"][0]["dimensions"]["spend_run_id"], "spend-run-1")
+            self.assertEqual(len(payload["events"]), 1)
+
+    def test_cloud_reviewer_runs_can_append_unmatched_spend_for_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            verdicts = root / "verdicts"
+            self._write_artifact(verdicts)
+            spend_dir = root / ".code-mower"
+            spend_dir.mkdir()
+            (spend_dir / "reviewer-spend.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "code_mower.reviewerSpend.v1",
+                        "runs": [
+                            {
+                                "run_id": "spend-run-1",
+                                "created_at": "2026-06-15T12:00:01Z",
+                                "lane": "codex-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 42,
+                                "model": "gpt-5",
+                                "wall_seconds": 15.0,
+                                "verdict": "BLOCKED",
+                                "cost_usd": 0.031,
+                            },
+                            {
+                                "run_id": "spend-run-2",
+                                "created_at": "2026-06-15T12:05:01Z",
+                                "lane": "codex-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 42,
+                                "model": "gpt-5",
+                                "wall_seconds": 16.0,
+                                "verdict": "BLOCKED",
+                                "cost_usd": 0.041,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output_dir = root / "bundle"
+
+            result = code_mower_cloud._reviewer_runs_upload(
+                repo_path=root,
+                verdicts=verdicts,
+                output_dir=output_dir,
+                repo_slug="owner/repo",
+                team_id="team-test",
+                install_id="install-test",
+                limit=10,
+                endpoint="https://codemower.com/api/ingest",
+                token_env="MISSING_TOKEN_FOR_TEST",
+                yes=False,
+                timeout=1,
+                include_git_ref=False,
+                include_unmatched_spend=True,
+            )
+
+            payload = code_mower_cloud.build_upload_payload(bundle_dir=output_dir)
+            self.assertTrue(result["include_unmatched_spend"])
             self.assertEqual(result["event_count"], 2)
             self.assertEqual(payload["events"][0]["dimensions"]["spend_run_id"], "spend-run-1")
             self.assertEqual(payload["events"][1]["event_id"], "spend-run-2")
