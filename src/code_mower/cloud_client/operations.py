@@ -153,6 +153,8 @@ def _merge_spend_metrics(
 def _merge_reviewer_spend_events(
     events: list[dict[str, Any]],
     spend_events: list[dict[str, Any]],
+    *,
+    include_unmatched_spend: bool = False,
 ) -> list[dict[str, Any]]:
     if not spend_events:
         return events
@@ -184,6 +186,8 @@ def _merge_reviewer_spend_events(
             continue
         merged_targets.add(target_index)
         merged[target_index] = _merge_spend_metrics(merged[target_index], spend_event)
+    if not include_unmatched_spend:
+        return merged
     remaining = max(0, MAX_EVENT_COUNT - len(merged))
     return [*merged, *unmatched[:remaining]]
 
@@ -422,6 +426,7 @@ def reviewer_runs_upload(
     timeout: float,
     include_git_ref: bool,
     spend_path: Path | None = None,
+    include_unmatched_spend: bool = False,
 ) -> dict[str, Any]:
     if limit < 1 or limit > MAX_EVENT_COUNT:
         raise CloudBundleError(f"--limit must be between 1 and {MAX_EVENT_COUNT}")
@@ -453,7 +458,11 @@ def reviewer_runs_upload(
         install_id=resolved_install_id,
         source="code-mower cloud reviewer-runs spend",
     )
-    events = _merge_reviewer_spend_events(events, spend_events)
+    events = _merge_reviewer_spend_events(
+        events,
+        spend_events,
+        include_unmatched_spend=include_unmatched_spend,
+    )
     if not events:
         return {
             "mode": "cloud-reviewer-runs",
@@ -463,6 +472,7 @@ def reviewer_runs_upload(
             "verdicts": str(verdicts.expanduser()),
             "git_ref_included": include_git_ref,
             "offset": offset,
+            "include_unmatched_spend": include_unmatched_spend,
         }
     export_result = build_cloud_bundle(
         reports=[],
@@ -486,6 +496,7 @@ def reviewer_runs_upload(
             "repo_slug": detected_repo_slug,
             "event_count": len(events),
             "offset": offset,
+            "include_unmatched_spend": include_unmatched_spend,
             "export": export_result,
             "doctor": doctor_result,
         }
@@ -497,6 +508,7 @@ def reviewer_runs_upload(
             "repo_slug": detected_repo_slug,
             "event_count": len(events),
             "offset": offset,
+            "include_unmatched_spend": include_unmatched_spend,
             "export": export_result,
             "doctor": doctor_result,
             "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
@@ -512,6 +524,7 @@ def reviewer_runs_upload(
         "repo_slug": detected_repo_slug,
         "event_count": len(events),
         "offset": offset,
+        "include_unmatched_spend": include_unmatched_spend,
         "export": export_result,
         "doctor": doctor_result,
         "upload": post_upload_payload(
