@@ -147,6 +147,10 @@ The OSS package can export and upload a cloud bundle, but the hosted service is
 optional. Default bundles exclude source code, raw diffs, raw model
 transcripts, raw stdout/stderr, auth output, and secrets.
 
+Provider verdict artifacts and cloud events are validated at Code Mower-owned
+boundaries before repost/export/upload. Validation checks required field shapes
+and privacy-safety patterns while still allowing additive beta metadata fields.
+
 See `docs/cloud-data-contract.md` for the public upload contract.
 
 ## Release Hygiene
