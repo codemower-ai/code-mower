@@ -79,6 +79,14 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("pytest>=8.0", extras["test"])
         self.assertIn("ruff>=0.8", extras["test"])
 
+    def test_ruff_static_rule_stage_is_intentional(self) -> None:
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+        lint = pyproject["tool"]["ruff"]["lint"]
+        self.assertEqual(lint["select"], ["E", "F", "W", "B"])
+        self.assertIn("E501", lint["ignore"])
+        self.assertIn("B019", lint["ignore"])
+
     def test_release_workflow_has_separate_testpypi_publish_gate(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("      publish_testpypi:\n", workflow)
