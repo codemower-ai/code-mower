@@ -234,6 +234,7 @@ PACKAGE_FILES = (
     ("src/code_mower/migration_readiness.py", "src/code_mower/migration_readiness.py", "core"),
     ("src/code_mower/migration_rehearsal.py", "src/code_mower/migration_rehearsal.py", "core"),
     ("tools/code_mower_next_steps.py", "src/code_mower/next_steps.py", "core"),
+    ("src/code_mower/observe.py", "src/code_mower/observe.py", "core"),
     ("tools/code_mower_package.py", "src/code_mower/package.py", "core"),
     ("tools/code_mower_package_content.py", "src/code_mower/package_content.py", "core"),
     ("tools/code_mower_package_manifest.py", "src/code_mower/package_manifest.py", "core"),

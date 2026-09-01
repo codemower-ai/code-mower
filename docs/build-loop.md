@@ -115,6 +115,44 @@ Runner setup checklist:
 - Set `LANE_CODEX_EXTRA_FLAGS` or `LANE_CLAUDE_EXTRA_FLAGS` in the runner
   environment only when the owner wants to widen the default sandbox.
 
+## Optional Live Lane View
+
+AgentTrail can be useful as a local-only view of what Claude Code, Codex, Cursor,
+or another file-editing lane is touching while Code Mower waits for PR, audit,
+and gate evidence. Code Mower does not depend on AgentTrail and does not upload
+AgentTrail traces to CodeMower.com.
+
+Start it through the Code Mower wrapper so the first run is observe-only:
+
+```bash
+code-mower observe agenttrail --repo /path/to/lane-checkout --dry-run
+code-mower observe agenttrail --repo /path/to/lane-checkout
+```
+
+The wrapper pins a reviewed AgentTrail version, launches it with `--no-open`,
+does not call `agenttrail init`, and checks whether repository status changed
+for the first five seconds after launch. If the launch changes tracked or
+untracked files, the wrapper signals the AgentTrail process group, waits for it
+to stop, and asks you to inspect the checkout before rerunning with
+`--allow-repo-changes`. This is a startup guard, not a continuous file monitor.
+
+For richer Claude Code run cards, opt in explicitly:
+
+```bash
+code-mower observe agenttrail --repo /path/to/lane-checkout --claude-hooks --allow-repo-changes
+```
+
+That path uses AgentTrail's `init --hooks-only` mode and may write the local
+`.claude/settings.local.json` hook file. Keep it out of repository defaults
+unless the owner has inspected the local hook change.
+
+Do not use AgentTrail's component-map init as part of Code Mower setup yet.
+Today AgentTrail's map convention uses top-level `PLAN.md` plus appended
+`AGENTS.md` and `CLAUDE.md` instructions. Code Mower component-map guidance
+should wait for upstream alternate plan-file support, such as
+`.code-mower/agenttrail-plan.md`, so adoption does not step on repository
+planning or agent-instruction files.
+
 ## Required Tokens
 
 `DISPATCH_TOKEN` should be a human-owned fine-grained PAT or delegated machine

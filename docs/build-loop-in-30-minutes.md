@@ -19,6 +19,21 @@ operating model behind the labels and WIP cap, use
 [Build Loop Operations](build-loop.md). For the macOS service details, use
 [Self-Hosted Mac Runner](self-hosted-mac-runner.md).
 
+Optional live observability: if you want a local board showing which files each
+lane checkout is touching while Code Mower waits for PR and audit evidence, use
+the safe AgentTrail wrapper:
+
+```bash
+code-mower observe agenttrail --repo /path/to/lane-checkout --dry-run
+code-mower observe agenttrail --repo /path/to/lane-checkout
+```
+
+The wrapper is observe-only by default. It does not call `agenttrail init`, does
+not edit `PLAN.md`, `AGENTS.md`, or `CLAUDE.md`, launches with `--no-open`, and
+fails if repository status changes during the startup guard window. Component-map
+mode waits for upstream alternate plan-file support; see
+[Build Loop Operations](build-loop.md#optional-live-lane-view).
+
 ## 1. Set Repository Variables
 
 Run from the repository checkout that already completed the reviewer-gate path:
