@@ -316,6 +316,9 @@ compatibility with earlier local runs.
 The Antigravity doctor probe is currently a version check, not a paid model
 call. Run a full calibration or audit command when you want evidence about the
 authenticated review path.
+Antigravity failure summaries and head-change errors name the Antigravity CLI
+lane even though Code Mower reuses the shared Google/Gemini CLI transport
+helper internally.
 
 The Hermes CLI lane uses local Hermes Agent authentication created by
 `hermes setup`. Because Hermes currently relies on local session/config state,
