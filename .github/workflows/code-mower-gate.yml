@@ -29,9 +29,9 @@ env:
   CODE_MOWER_GATE_ENABLE_AUTO_MERGE: "true"
   CODE_MOWER_OWNER_LABEL: "needs-owner"
   CODE_MOWER_OWNER_SITTING_LABEL: "owner-sitting"
-  CODE_MOWER_OWNER_LOGIN: "TODO_OWNER_LOGIN"
+  CODE_MOWER_OWNER_LOGIN: "jeffhuber"
   CODE_MOWER_GATE_OVERRIDE_LABEL: "gate:override"
-  CODE_MOWER_DECISION_AUTHORITIES: ""
+  CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"
   CODE_MOWER_AUTHOR_EXCLUSION_JSON: "{\"authors\":{\"chatgpt-codex-connector[bot]\":\"codex\",\"claude[bot]\":\"claude\",\"cursor[bot]\":\"cursor\",\"grok-bot[bot]\":\"cursor\"},\"enabled\":true,\"labels\":{\"builder:claude\":\"claude\",\"builder:codex\":\"codex\",\"builder:cursor\":\"cursor\",\"builder:gitar\":\"gitar\",\"builder:grok-bot\":\"cursor\"},\"trailers\":{\"CODE_MOWER_BUILDER:claude\":\"claude\",\"CODE_MOWER_BUILDER:codex\":\"codex\",\"CODE_MOWER_BUILDER:cursor\":\"cursor\",\"CODE_MOWER_BUILDER:grok-bot\":\"cursor\"}}"
   CODE_MOWER_GATE_LANES_JSON: "[{\"author_lane\":\"codex\",\"authors_env\":\"CODEX_BOT_AUTHORS\",\"blocked\":\"codex-audit-blocked\",\"bot_authors\":\"codex-audit-bot,codex-audit-bot[bot],github-actions[bot]\",\"builder_label\":\"builder:codex\",\"decision_coverage\":true,\"display_name\":\"Codex\",\"done\":\"codex-audit-done\",\"github_actions_workflows\":\".github/workflows/local-cli-audit.yml\",\"id\":\"codex\"},{\"author_lane\":\"claude\",\"authors_env\":\"CLAUDE_AUDIT_BOT_AUTHORS\",\"blocked\":\"claude-audit-blocked\",\"bot_authors\":\"claude-audit-bot,claude-audit-bot[bot],github-actions[bot]\",\"builder_label\":\"builder:claude\",\"decision_coverage\":true,\"display_name\":\"Claude\",\"done\":\"claude-audit-done\",\"github_actions_workflows\":\".github/workflows/local-cli-audit.yml\",\"id\":\"claude_audit\"}]"
 
