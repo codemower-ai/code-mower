@@ -221,6 +221,16 @@ If the selected profile has merge-authority lanes, Code Mower publishes the
 `code-mower/gate` commit status and asks GitHub to enable auto-merge only after
 that status is green. Two GitHub settings must match that behavior.
 
+For unattended merges, add a merge-capable machine-user or GitHub App token as
+`CODE_MOWER_GATE_AUTOMERGE_TOKEN`. If this secret is absent, the generated gate
+falls back to `DISPATCH_TOKEN` and then to the default Actions token, which may
+publish the green status but fail to enable auto-merge.
+
+If you enable local CLI audit lanes, also set
+`CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED=true` only after the self-hosted runner
+is online and authenticated. Leaving it unset keeps those jobs skipped instead
+of queued.
+
 First, enable repository auto-merge:
 
 ```bash
