@@ -185,6 +185,10 @@ The beta line has proved:
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
+The v0.6 provider-contract hardening queue starts from the dated
+[v0.6 truth baseline](v06-truth-baseline.md), which records the current
+release, provider-runner, Gemini/Antigravity, SDK-research, and privacy-boundary
+facts that future refactors must preserve.
 
 ## Current CodeMower.com State
 

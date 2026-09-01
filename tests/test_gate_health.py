@@ -974,7 +974,7 @@ class GateHealthTests(unittest.TestCase):
                         "--lanes-json",
                         json.dumps(lanes),
                         "--stale-minutes",
-                        "9999",
+                        "999999",
                         "--runner-check",
                         "disabled",
                         "--dry-run",
