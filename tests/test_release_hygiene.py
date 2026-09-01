@@ -6839,6 +6839,24 @@ def main():
         self.assertIn("## Roles", readme)
         self.assertIn("Claude Code, Codex, Cursor-style", readme)
         self.assertIn("templates now support that loop end to end", readme)
+        self.assertIn("[docs/v06-truth-baseline.md](docs/v06-truth-baseline.md)", readme)
+
+    def test_v06_truth_baseline_records_provider_contract_scope(self) -> None:
+        baseline = (ROOT / "docs" / "v06-truth-baseline.md").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertIn("Last verified: 2026-08-31 PT.", baseline)
+        self.assertIn("`v0.5.0-beta.53`", baseline)
+        self.assertIn("`code-mower==0.5.0b53`", baseline)
+        self.assertIn("`src/code_mower/provider_runners/`", baseline)
+        self.assertIn("avoid a flag-day `BaseProviderRunner` rewrite", baseline)
+        self.assertIn("| Gemini CLI | `gemini_cli`", baseline)
+        self.assertIn("| Antigravity CLI | `antigravity_cli`", baseline)
+        self.assertIn("| Antigravity SDK | Future `antigravity_sdk`", baseline)
+        self.assertIn("`ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1`", baseline)
+        self.assertIn("metadata only", baseline)
+        self.assertIn("must not contain source code, raw diffs", baseline)
 
     def test_start_here_docs_cover_reviewer_gate_and_build_loop_routes(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -6876,6 +6894,7 @@ def main():
             "docs/lanes/codex.md",
             "docs/lanes/claude.md",
             "docs/lanes/cursor.md",
+            "docs/v06-truth-baseline.md",
         ):
             with self.subTest(link=link):
                 self.assertIn(link, docs_map)

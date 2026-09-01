@@ -120,6 +120,8 @@ every disposition before using it for lane promotion or merge policy.
 
 Full walkthrough: [docs/try-in-10-minutes.md](docs/try-in-10-minutes.md).
 First-time command map: [docs/launch-command-surface.md](docs/launch-command-surface.md).
+Provider-contract baseline for the next release train:
+[docs/v06-truth-baseline.md](docs/v06-truth-baseline.md).
 
 The beta.53 package-index release is prepared:
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
@@ -348,6 +350,7 @@ The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
 - [First-User Demo Transcript](docs/first-user-demo-transcript.md)
 - [First-User Install Rehearsal](docs/first-user-install-rehearsal.md)
 - [Launch Command Surface](docs/launch-command-surface.md)
+- [v0.6 Truth Baseline](docs/v06-truth-baseline.md)
 - [Demo Calibration Example](examples/demo-calibration/README.md)
 - [PyPI Release Runbook](docs/pypi-release.md)
 - [Sample Doctor Output](docs/sample-doctor-output.md)
