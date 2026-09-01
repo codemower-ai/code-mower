@@ -229,6 +229,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "migration",
                 "merge-plan",
                 "next-steps",
+                "observe",
                 "package",
                 "plan",
                 "project-context",
@@ -288,6 +289,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("claude-bounce", help_text)
         self.assertIn("builder-experiment", help_text)
         self.assertIn("context", help_text)
+        self.assertIn("observe", help_text)
         self.assertIn("work-order", help_text)
         self.assertIn("providers", help_text)
         self.assertIn("migration", help_text)
