@@ -58,6 +58,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
           CLAUDE_AUDIT_BOT_AUTHORS: ${{ vars.CLAUDE_AUDIT_BOT_AUTHORS }}
+          PYTHONPATH: src
           TRAILER_LANE: claude
           CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml"
         run: scripts/dev-python -m code_mower.cli trailer-comment-labeler --lane "${TRAILER_LANE}"

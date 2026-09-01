@@ -23,6 +23,7 @@ jobs:
   audit:
     name: audit (${{ matrix.lane.lane }})
     if: >-
+      vars.CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED == 'true' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (
         github.event.action != 'labeled' ||
@@ -89,6 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
+          export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"
           actual_head="$(git -C "${PR_HEAD_PATH}" rev-parse HEAD)"
           if [ "${actual_head}" != "${PR_HEAD_SHA}" ]; then
             echo "::error::PR checkout resolved ${actual_head}, expected ${PR_HEAD_SHA}"
@@ -132,6 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
+          export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
           labels_file="${RUNNER_TEMP}/code-mower-local-audit-labels.txt"
           gh pr view "${PR_NUMBER}" \

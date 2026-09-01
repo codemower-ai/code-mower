@@ -158,6 +158,11 @@ that must trigger labeler workflows. This should be a human-owned fine-grained
 PAT or GitHub App token with the documented repository scopes and an expiry
 recorded in `DISPATCH_TOKEN_EXPIRES_AT`.
 
+Set `CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED=true` only after the runner is
+registered, labeled, online, and authenticated. Until then the generated local
+audit workflow skips matching events instead of leaving jobs queued for a
+missing self-hosted runner.
+
 Treat the token as a shared rate-limit budget:
 
 - Use one runner lane job per provider, not unbounded parallel jobs.

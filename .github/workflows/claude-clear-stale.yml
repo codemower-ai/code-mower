@@ -51,6 +51,7 @@ jobs:
       - name: Clear stale Code Mower audit labels
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONPATH: src
         run: |
           set -euo pipefail
 
