@@ -277,6 +277,17 @@ versioned `doctor --v05` preset. Use `--strict` only when warnings should fail
 a bootstrap job. For auth-specific doctor failures, see
 [Troubleshooting](troubleshooting.md).
 
+When setup is visible enough to start work, use one command to check live lane
+state:
+
+```bash
+code-mower lanes status --repo OWNER/REPO
+```
+
+It reports open Code Mower PR lanes, audit/gate labels, major checks, recent
+Code Mower workflows, local AgentTrail boards when present, and the next
+operator action. It does not upload data or require AgentTrail to be running.
+
 ## 7. Rehearse The Package Install Path
 
 This proves Code Mower can be installed fresh and run the starter workflow in a

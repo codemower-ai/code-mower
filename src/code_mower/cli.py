@@ -48,6 +48,7 @@ from . import gate_health as code_mower_gate_health
 from . import grok_build_audit_pr
 from . import hermes_cli_audit_pr
 from . import init as code_mower_init
+from . import lane_status as code_mower_lane_status
 from . import local_llm_audit_pr
 from . import local_llm_bakeoff
 from . import local_llm_calibration
@@ -433,6 +434,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "grok-build": "Run a Grok Build informational audit lane.",
     "hermes-cli": "Run a Hermes CLI structured audit lane.",
     "init": "Render safe easy-mode setup output.",
+    "lanes": "Show active PR lanes, gate state, local boards, and next action.",
     "local-llm": "Probe and run local OpenAI-compatible model lanes.",
     "migration": "Rehearse standalone package and wrapper migration paths.",
     "merge-plan": "Inspect merge-readiness signals and lane labels.",
@@ -460,6 +462,7 @@ FIRST_USER_COMMANDS = (
     "reviewer-metrics",
     "cloud",
     "config",
+    "lanes",
     "project-context",
 )
 
@@ -567,6 +570,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "grok-build": grok_build_audit_pr.main,
     "hermes-cli": hermes_cli_audit_pr.main,
     "init": _init_main,
+    "lanes": code_mower_lane_status.main,
     "local-llm": _local_llm_main,
     "migration": code_mower_migration.main,
     "merge-plan": code_mower_merge.main,

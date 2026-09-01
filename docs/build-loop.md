@@ -117,6 +117,18 @@ Runner setup checklist:
 
 ## Optional Live Lane View
 
+Use Code Mower's lane-status command first when you need the pasteable operator
+snapshot:
+
+```bash
+code-mower lanes status --repo OWNER/REPO
+code-mower lanes status --repo OWNER/REPO --json
+```
+
+It summarizes open PR lanes, audit/gate labels, major checks, recent Code Mower
+workflows, local AgentTrail boards when visible, local likely lane processes,
+and the next action. It is read-only and metadata-only.
+
 AgentTrail can be useful as a local-only view of what Claude Code, Codex, Cursor,
 or another file-editing lane is touching while Code Mower waits for PR, audit,
 and gate evidence. Code Mower does not depend on AgentTrail and does not upload
