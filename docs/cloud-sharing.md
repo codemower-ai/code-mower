@@ -450,7 +450,10 @@ code-mower cloud reviewer-runs --repo-slug owner/repo --yes --json
 ```
 
 `reviewer-runs` also reads `.code-mower/reviewer-spend.json` when present and
-merges spend metrics into matching verdict events before upload. Use `--spend`
+merges spend metrics into matching verdict events before upload. If `--verdicts`
+or `--limit` narrows the exported artifacts, unmatched spend rows are ignored by
+default so a one-PR upload stays one PR. Add `--include-unmatched-spend` only
+when you deliberately want to backfill spend-only reviewer rows. Use `--spend`
 to point at a non-default ledger, `--verdicts` to point at a non-default
 artifact directory, and `--include-git-ref` only after deciding that head SHA
 metadata is acceptable for your team.
@@ -498,8 +501,8 @@ code-mower cloud repo-sync \
 ```
 
 By default, `repo-sync` runs `dogfood` plus `reviewer-runs` for each repo and
-stays dry-run; the reviewer-runs step includes the default spend ledger when
-present. After inspecting the preview:
+stays dry-run; the reviewer-runs step merges matching default spend rows into
+verdict events when the ledger is present. After inspecting the preview:
 
 ```bash
 source ~/.config/code-mower/tokens/your-install-id.env

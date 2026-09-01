@@ -28,6 +28,7 @@ owner_surface:
   gate_health_max_wait_minutes: "30"
   gate_health_liveness_minutes: "45"
   local_audit_runner_label: code-mower-audit
+  local_audit_runner_enabled_var: CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED
   lane_runner_labels:
     - self-hosted
     - macOS

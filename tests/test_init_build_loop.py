@@ -65,6 +65,10 @@ class InitBuildLoopTests(unittest.TestCase):
         self.assertIn("tier:R", plan.data["labels"])
         self.assertIn("DISPATCH_TOKEN", plan.data["required_secrets"])
         self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", plan.data["required_variables"])
+        self.assertIn(
+            "CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED",
+            plan.data["required_variables"],
+        )
         self.assertIn("LANE_MAC_RUNNER_ENABLED", plan.data["required_variables"])
 
         lanes = {entry["lane"]: entry for entry in plan.data["builder_loop"]["lanes"]}

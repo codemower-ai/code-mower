@@ -66,6 +66,7 @@ owner_surface:
   gate_health_max_wait_minutes: "30"
   gate_health_liveness_minutes: "45"
   local_audit_runner_label: code-mower-audit
+  local_audit_runner_enabled_var: CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED
   dispatch_token_env: DISPATCH_TOKEN
   dispatch_token_expires_var: DISPATCH_TOKEN_EXPIRES_AT
   ready_label: "tier:R"
@@ -400,6 +401,12 @@ branch, checks out the PR head separately as audit context, and runs the repo-lo
 `tools/run_codex_audit_pr.sh` or `tools/run_claude_audit_pr.sh` wrapper for
 each present `needs-*-audit` label.
 
+In product repositories, those wrappers and companion labeler/stale-clear
+workflows normally delegate to the pinned standalone `tools/code_mower` shim. In
+the Code Mower repository itself, the dogfood workflows use the trusted
+default-branch checkout with `scripts/dev-python -m code_mower.cli` so gate
+decisions exercise the source that just landed on `main`.
+
 Runner setup recipe:
 
 1. Register a macOS self-hosted runner from repository settings, using the
@@ -422,7 +429,11 @@ Runner setup recipe:
 6. Verify local auth from that same account: `gh auth status`,
    `codex --version`, `claude auth status`, and
    `claude -p "Reply with exactly: ok" --output-format json`.
-7. Add the shared posting-token secret `DISPATCH_TOKEN` and expiry variable
+7. Set the repository variable named by
+   `owner_surface.local_audit_runner_enabled_var` to `true` only after the
+   runner is registered, labeled, online, and authenticated. Until then the
+   workflow is skipped instead of queueing self-hosted jobs that cannot start.
+8. Add the shared posting-token secret `DISPATCH_TOKEN` and expiry variable
    `DISPATCH_TOKEN_EXPIRES_AT`. The workflow can post with `GITHUB_TOKEN`, but
    GitHub does not fire `issue_comment` workflows for comments created by the
    built-in token, so runner lanes need a human-owned PAT/App token for trailer
@@ -446,8 +457,8 @@ other on the same PR push.
 
 If `CODE_MOWER_CLOUD_TOKEN` is configured, the generated workflow also uploads
 metadata-only reviewer evidence after every audit attempt. It sends saved
-verdict artifacts and runner-temp `reviewer-spend.json` rows with
-`code-mower cloud reviewer-runs`, plus trusted default-branch work-order
+verdict artifacts with `code-mower cloud reviewer-runs`, merging matching
+runner-temp `reviewer-spend.json` rows, plus trusted default-branch work-order
 `*.cloud-event.json` sidecars through `cloud dogfood`. The generated template
 sets the runner-temp spend path at step scope because GitHub Actions does not
 allow the `runner` context in job-level `env`. The upload step runs with
@@ -558,6 +569,13 @@ Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
 call in the repository gate workflow. If GitHub rejects that optional
 auto-merge call after a green gate, the workflow logs a notice and leaves the
 published gate status green.
+For unattended merges, configure a dedicated machine-user or GitHub App token in
+the `CODE_MOWER_GATE_AUTOMERGE_TOKEN` secret; `DISPATCH_TOKEN` is accepted as a
+fallback when it already belongs to the same trusted automation identity. The
+gate still uses the default `github.token` for repository reads and status
+publication, and uses the merge-capable token only for the final
+`enablePullRequestAutoMerge` GraphQL call. Do not use hosted builder tokens as
+merge tokens.
 
 The recommended three-builder pattern is:
 
