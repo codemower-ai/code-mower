@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(CDPATH= cd -- "${script_dir}/.." && pwd -P)"
+export PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset CODE_MOWER_USE_LOCAL
 unset CODE_MOWER_USE_STANDALONE
 

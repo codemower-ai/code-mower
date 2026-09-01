@@ -1069,6 +1069,7 @@ exit 1
             ROOT / "templates/workflows/self-hosted-local-audit.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("pull-requests: write", local_audit)
+        self.assertIn("vars.__LOCAL_AUDIT_RUNNER_ENABLED_VAR__ == 'true'", local_audit)
         self.assertIn("Verify local runner environment", local_audit)
         self.assertIn("for name in USER LOGNAME SHELL LANG", local_audit)
         self.assertIn("CODE_MOWER_REVIEWER_SPEND_PATH", local_audit)
@@ -1121,7 +1122,12 @@ exit 1
         )
 
         self.assertIn("name: Code Mower Local CLI Audits", workflow)
+        self.assertIn("vars.CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED == 'true'", workflow)
         self.assertIn("runs-on: [self-hosted, macOS, code-mower-audit]", workflow)
+        self.assertIn(
+            'export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"',
+            workflow,
+        )
         self.assertIn("tools/run_codex_audit_pr.sh", workflow)
         self.assertIn("tools/run_claude_audit_pr.sh", workflow)
         self.assertIn(
@@ -1142,10 +1148,16 @@ exit 1
             wrapper = (ROOT / relative_path).read_text(encoding="utf-8")
             self.assertIn("scripts/dev-python", wrapper)
             self.assertIn(f"code_mower.cli {command}", wrapper)
+            self.assertIn('export PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}"', wrapper)
             self.assertNotIn('${script_dir}/code_mower', wrapper)
 
         self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
         self.assertIn('CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"', gate)
+        self.assertIn(
+            "CODE_MOWER_GATE_AUTOMERGE_TOKEN: ${{ secrets.CODE_MOWER_GATE_AUTOMERGE_TOKEN || secrets.DISPATCH_TOKEN || '' }}",
+            gate,
+        )
+        self.assertIn('GH_TOKEN="${automerge_token}" gh api graphql', gate)
         self.assertNotIn("TODO_OWNER_LOGIN", gate)
 
         workflow_commands = {
@@ -1157,6 +1169,7 @@ exit 1
         for relative_path, command in workflow_commands.items():
             installed = (ROOT / relative_path).read_text(encoding="utf-8")
             self.assertIn(f"scripts/dev-python -m code_mower.cli {command}", installed)
+            self.assertIn("PYTHONPATH: src", installed)
             self.assertNotIn("tools/code_mower", installed)
 
     def test_package_workflow_guard_rejects_runner_context_in_job_env(self) -> None:
@@ -2921,6 +2934,10 @@ jobs:
         self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", plan.data["required_secrets"])
         self.assertIn("DISPATCH_TOKEN", plan.data["required_secrets"])
         self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", plan.data["required_variables"])
+        self.assertIn(
+            "CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED",
+            plan.data["required_variables"],
+        )
         self.assertEqual(plan.data["human_automation_token"]["secret"], "DISPATCH_TOKEN")
         self.assertEqual(plan.data["audit"]["max_diff_bytes"], 180_000)
         self.assertEqual(plan.data["audit"]["max_diff_hard_limit_bytes"], 1_500_000)
@@ -2960,6 +2977,7 @@ jobs:
                 encoding="utf-8"
             )
             self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", required_variables)
+            self.assertIn("CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED", required_variables)
             for rel_path in expected:
                 text = output_dir.joinpath(rel_path).read_text(encoding="utf-8")
                 self.assertNotIn("__WORKFLOW_NAME__", text)
@@ -3004,6 +3022,7 @@ jobs:
                 ".github/workflows/local-cli-audit.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("pull_request_target:\n    types: [opened, synchronize, labeled]", local_cli_audit)
+            self.assertIn("vars.CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED == 'true'", local_cli_audit)
             self.assertIn("runs-on: [self-hosted, macOS, code-mower-audit]", local_cli_audit)
             self.assertIn("pull-requests: write", local_cli_audit)
             self.assertIn("Verify local runner environment", local_cli_audit)
@@ -3082,6 +3101,7 @@ jobs:
                 local_cli_audit,
             )
             self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", local_cli_audit)
+            self.assertIn("CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED", local_cli_audit)
             self.assertIn("github.event.action != 'labeled'", local_cli_audit)
             self.assertIn("needs-codex-audit", local_cli_audit)
             self.assertIn("needs-claude-audit", local_cli_audit)
@@ -3199,8 +3219,12 @@ jobs:
             self.assertIn("claude-audit-done", gate)
             self.assertIn("builder:codex", gate)
             self.assertIn("builder:claude", gate)
-            self.assertIn("if ! gh api graphql", gate)
             self.assertIn("enablePullRequestAutoMerge", gate)
+            self.assertIn("CODE_MOWER_GATE_AUTOMERGE_TOKEN", gate)
+            self.assertIn("secrets.CODE_MOWER_GATE_AUTOMERGE_TOKEN", gate)
+            self.assertIn("secrets.DISPATCH_TOKEN", gate)
+            self.assertIn('automerge_token="${CODE_MOWER_GATE_AUTOMERGE_TOKEN:-${GH_TOKEN:-}}"', gate)
+            self.assertIn('GH_TOKEN="${automerge_token}" gh api graphql', gate)
             self.assertNotIn("enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:SQUASH}){pullRequest{id}}}' >/dev/null || {", gate)
             self.assertIn("gh api -X POST", gate)
             self.assertIn("CODE_MOWER_AUDIT_RUN", gate)
