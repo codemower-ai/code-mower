@@ -129,6 +129,41 @@ def test_labeler_ignores_older_current_head_verdict_when_newer_exists(monkeypatc
     assert reason == "newer current-head audit verdict already exists"
 
 
+def test_labeler_counts_event_comment_when_history_omits_it(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
+    config = load_lane_config("codex")
+    older_block = (
+        "Codex Audit - BLOCKED\n"
+        f"Head SHA: `{HEAD_SHA}`\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-blocked -->"
+    )
+    newer_pass = (
+        "Codex Audit - PASS\n"
+        f"Head SHA: `{HEAD_SHA}`\n"
+        "<!-- CODEX_AUDIT_STATE: codex-audit-done -->"
+    )
+    event = _event("codex-audit-bot", newer_pass, comment_id=1002)
+    event["comment"]["created_at"] = "2026-08-18T03:01:00Z"
+
+    decision, reason = resolve_label_decision(
+        event,
+        current_head_sha=HEAD_SHA,
+        config=config,
+        issue_comments=[
+            {
+                "id": 1001,
+                "created_at": "2026-08-18T02:52:00Z",
+                "user": {"login": "codex-audit-bot"},
+                "body": older_block,
+            },
+        ],
+    )
+
+    assert decision is not None
+    assert decision.add_label == "codex-audit-done"
+    assert reason == "label done"
+
+
 def test_labeler_later_blocked_demotes_earlier_done(monkeypatch) -> None:
     monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
     config = load_lane_config("codex")
