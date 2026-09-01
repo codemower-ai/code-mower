@@ -439,6 +439,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     reviewer_runs.add_argument(
+        "--include-unmatched-spend",
+        action="store_true",
+        help=(
+            "append spend rows that do not match exported verdict artifacts; "
+            "use only for explicit reviewer-spend backfill"
+        ),
+    )
+    reviewer_runs.add_argument(
         "--endpoint",
         default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
     )
@@ -696,6 +704,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 include_git_ref=args.include_git_ref,
                 spend_path=args.spend,
+                include_unmatched_spend=args.include_unmatched_spend,
             )
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))

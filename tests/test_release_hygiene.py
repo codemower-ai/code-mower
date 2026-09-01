@@ -14,7 +14,7 @@ import tomllib
 import unittest
 import urllib.error
 from argparse import Namespace
-from contextlib import nullcontext, redirect_stdout
+from contextlib import ExitStack, nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -904,6 +904,44 @@ exit 1
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("Python 3.12+", completed.stderr)
 
+    def test_direct_cli_execution_points_to_package_or_dev_wrapper(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "src/code_mower/cli.py"), "--version"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("pipx install code-mower==0.5.0b53", completed.stderr)
+        self.assertIn("scripts/dev-python -m venv .venv", completed.stderr)
+        self.assertIn(".venv/bin/code-mower", completed.stderr)
+        self.assertNotIn("PYTHONPATH=src", completed.stderr)
+
+    def test_public_source_checkout_guidance_uses_dev_wrapper_not_pythonpath(self) -> None:
+        public_docs = [
+            ROOT / "README.md",
+            ROOT / "docs/quickstart.md",
+            ROOT / "docs/architecture.md",
+            ROOT / "docs/public-release-checklist.md",
+        ]
+
+        for path in public_docs:
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("scripts/dev-python", text)
+                self.assertNotIn("PYTHONPATH=src", text)
+
+    def test_provider_registry_uses_package_relative_profile_import(self) -> None:
+        text = (ROOT / "src/code_mower/provider_registry.py").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertIn("from . import local_llm_profiles", text)
+        self.assertNotIn("from tools import local_llm_profiles", text)
+        self.assertNotIn("direct repo execution fallback", text)
+
     def test_shared_templates_match_packaged_templates(self) -> None:
         shared_templates = [
             "builder-experiment.example.json",
@@ -1077,6 +1115,7 @@ exit 1
             ROOT / "templates/workflows/self-hosted-local-audit.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("pull-requests: write", local_audit)
+        self.assertIn("vars.__LOCAL_AUDIT_RUNNER_ENABLED_VAR__ == 'true'", local_audit)
         self.assertIn("Verify local runner environment", local_audit)
         self.assertIn("for name in USER LOGNAME SHELL LANG", local_audit)
         self.assertIn("CODE_MOWER_REVIEWER_SPEND_PATH", local_audit)
@@ -1119,6 +1158,65 @@ exit 1
             expression,
         )
         self.assertNotIn("join(", expression)
+
+    def test_repository_local_audit_workflow_uses_source_cli(self) -> None:
+        workflow = (ROOT / ".github/workflows/local-cli-audit.yml").read_text(
+            encoding="utf-8"
+        )
+        gate = (ROOT / ".github/workflows/code-mower-gate.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("name: Code Mower Local CLI Audits", workflow)
+        self.assertIn("vars.CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED == 'true'", workflow)
+        self.assertIn("runs-on: [self-hosted, macOS, code-mower-audit]", workflow)
+        self.assertIn(
+            'export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"',
+            workflow,
+        )
+        self.assertIn("tools/run_codex_audit_pr.sh", workflow)
+        self.assertIn("tools/run_claude_audit_pr.sh", workflow)
+        self.assertIn(
+            '"${SUPPORT_PATH}/scripts/dev-python" -m code_mower.cli cloud reviewer-runs',
+            workflow,
+        )
+        self.assertIn(
+            '"${SUPPORT_PATH}/scripts/dev-python" -m code_mower.cli cloud dogfood',
+            workflow,
+        )
+        self.assertNotIn('"${SUPPORT_PATH}/tools/code_mower" cloud', workflow)
+
+        wrappers = {
+            "tools/run_codex_audit_pr.sh": "codex-audit",
+            "tools/run_claude_audit_pr.sh": "claude-audit",
+        }
+        for relative_path, command in wrappers.items():
+            wrapper = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn("scripts/dev-python", wrapper)
+            self.assertIn(f"code_mower.cli {command}", wrapper)
+            self.assertIn('export PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}"', wrapper)
+            self.assertNotIn('${script_dir}/code_mower', wrapper)
+
+        self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
+        self.assertIn('CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"', gate)
+        self.assertIn(
+            "CODE_MOWER_GATE_AUTOMERGE_TOKEN: ${{ secrets.CODE_MOWER_GATE_AUTOMERGE_TOKEN || secrets.DISPATCH_TOKEN || '' }}",
+            gate,
+        )
+        self.assertIn('GH_TOKEN="${automerge_token}" gh api graphql', gate)
+        self.assertNotIn("TODO_OWNER_LOGIN", gate)
+
+        workflow_commands = {
+            ".github/workflows/claude-audit-labeler.yml": "trailer-comment-labeler",
+            ".github/workflows/codex-audit-labeler.yml": "trailer-comment-labeler",
+            ".github/workflows/claude-clear-stale.yml": "clear-stale",
+            ".github/workflows/codex-clear-stale.yml": "clear-stale",
+        }
+        for relative_path, command in workflow_commands.items():
+            installed = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn(f"scripts/dev-python -m code_mower.cli {command}", installed)
+            self.assertIn("PYTHONPATH: src", installed)
+            self.assertNotIn("tools/code_mower", installed)
 
     def test_package_workflow_guard_rejects_runner_context_in_job_env(self) -> None:
         bad_workflow = """
@@ -1242,11 +1340,26 @@ jobs:
                     return (commit_pull_requests or {}).get(head) or []
                 raise AssertionError(f"unexpected gh api endpoint: {path}")
 
-            action_patch = mock.patch.object(
-                audit_labeler_lib,
-                "github_request_with_fallback",
-                fake_github_request,
+            action_patch = ExitStack()
+            action_patch.enter_context(
+                mock.patch.object(
+                    audit_labeler_lib,
+                    "github_request_with_fallback",
+                    fake_github_request,
+                )
             )
+            try:
+                from tools import audit_labeler_lib as tools_audit_labeler_lib
+            except ImportError:
+                tools_audit_labeler_lib = None
+            if tools_audit_labeler_lib is not None:
+                action_patch.enter_context(
+                    mock.patch.object(
+                        tools_audit_labeler_lib,
+                        "github_request_with_fallback",
+                        fake_github_request,
+                    )
+                )
         try:
             with (
                 mock.patch.dict(
@@ -2867,6 +2980,10 @@ jobs:
         self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", plan.data["required_secrets"])
         self.assertIn("DISPATCH_TOKEN", plan.data["required_secrets"])
         self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", plan.data["required_variables"])
+        self.assertIn(
+            "CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED",
+            plan.data["required_variables"],
+        )
         self.assertEqual(plan.data["human_automation_token"]["secret"], "DISPATCH_TOKEN")
         self.assertEqual(plan.data["audit"]["max_diff_bytes"], 180_000)
         self.assertEqual(plan.data["audit"]["max_diff_hard_limit_bytes"], 1_500_000)
@@ -2906,6 +3023,7 @@ jobs:
                 encoding="utf-8"
             )
             self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", required_variables)
+            self.assertIn("CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED", required_variables)
             for rel_path in expected:
                 text = output_dir.joinpath(rel_path).read_text(encoding="utf-8")
                 self.assertNotIn("__WORKFLOW_NAME__", text)
@@ -2950,6 +3068,7 @@ jobs:
                 ".github/workflows/local-cli-audit.yml"
             ).read_text(encoding="utf-8")
             self.assertIn("pull_request_target:\n    types: [opened, synchronize, labeled]", local_cli_audit)
+            self.assertIn("vars.CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED == 'true'", local_cli_audit)
             self.assertIn("runs-on: [self-hosted, macOS, code-mower-audit]", local_cli_audit)
             self.assertIn("pull-requests: write", local_cli_audit)
             self.assertIn("Verify local runner environment", local_cli_audit)
@@ -3028,6 +3147,7 @@ jobs:
                 local_cli_audit,
             )
             self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", local_cli_audit)
+            self.assertIn("CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED", local_cli_audit)
             self.assertIn("github.event.action != 'labeled'", local_cli_audit)
             self.assertIn("needs-codex-audit", local_cli_audit)
             self.assertIn("needs-claude-audit", local_cli_audit)
@@ -3145,13 +3265,21 @@ jobs:
             self.assertIn("claude-audit-done", gate)
             self.assertIn("builder:codex", gate)
             self.assertIn("builder:claude", gate)
-            self.assertIn("if ! gh api graphql", gate)
             self.assertIn("enablePullRequestAutoMerge", gate)
+            self.assertIn("CODE_MOWER_GATE_AUTOMERGE_TOKEN", gate)
+            self.assertIn("secrets.CODE_MOWER_GATE_AUTOMERGE_TOKEN", gate)
+            self.assertIn("secrets.DISPATCH_TOKEN", gate)
+            self.assertIn('automerge_token="${CODE_MOWER_GATE_AUTOMERGE_TOKEN:-${GH_TOKEN:-}}"', gate)
+            self.assertIn('GH_TOKEN="${automerge_token}" gh api graphql', gate)
             self.assertNotIn("enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:SQUASH}){pullRequest{id}}}' >/dev/null || {", gate)
             self.assertIn("gh api -X POST", gate)
             self.assertIn("CODE_MOWER_AUDIT_RUN", gate)
             self.assertIn("comment_id", gate)
             self.assertIn("body_sha256", gate)
+            self.assertIn("  pull_request_target:", gate)
+            self.assertNotIn("  pull_request:\n", gate)
+            self.assertIn("github.event_name == 'pull_request_target'", gate)
+            self.assertNotIn("github.event_name == 'pull_request' &&", gate)
             self.assertIn("Clear stale Code Mower gate override", gate)
             self.assertIn("github_actions_comment_attested", gate)
             self.assertIn("github_actions_workflows", gate)

@@ -153,6 +153,18 @@ def _comment_sort_key(comment: Mapping[str, Any]) -> tuple[str, int]:
     )
 
 
+def _comments_with_event_comment(
+    issue_comments: Sequence[Mapping[str, Any]],
+    event_comment: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    event_id = str(event_comment.get("id") or "")
+    if not event_id:
+        return tuple(issue_comments)
+    if any(str(comment.get("id") or "") == event_id for comment in issue_comments):
+        return tuple(issue_comments)
+    return (*issue_comments, event_comment)
+
+
 def _is_latest_current_terminal_comment(
     *,
     event_comment: Mapping[str, Any],
@@ -173,7 +185,9 @@ def _is_latest_current_terminal_comment(
         authorities=decision_authorities,
     )
     latest: Mapping[str, Any] | None = None
-    for comment in issue_comments:
+    # GitHub webhooks can arrive before the comments API snapshot includes the
+    # event comment; freshness checks still need to compare against that event.
+    for comment in _comments_with_event_comment(issue_comments, event_comment):
         author = str(((comment.get("user") or {}).get("login")) or "")
         if author.lower() not in config.comment_authors():
             continue

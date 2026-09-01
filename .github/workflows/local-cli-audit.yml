@@ -21,32 +21,32 @@ env:
 
 jobs:
   audit:
-    name: audit ({% raw %}${{ matrix.lane.lane }}{% endraw %})
+    name: audit (${{ matrix.lane.lane }})
     if: >-
-      vars.__LOCAL_AUDIT_RUNNER_ENABLED_VAR__ == 'true' &&
+      vars.CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED == 'true' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (
         github.event.action != 'labeled' ||
-        (__LOCAL_AUDIT_LABEL_MATCH__)
+        (github.event.label.name == 'needs-codex-audit' || github.event.label.name == 'needs-claude-audit')
       ) &&
       (
-        (__LOCAL_AUDIT_LABEL_MATCH__) ||
-        (__LOCAL_AUDIT_LABEL_CONTAINS__)
+        (github.event.label.name == 'needs-codex-audit' || github.event.label.name == 'needs-claude-audit') ||
+        (contains(github.event.pull_request.labels.*.name, 'needs-codex-audit') || contains(github.event.pull_request.labels.*.name, 'needs-claude-audit'))
       )
-    runs-on: [self-hosted, macOS, __LOCAL_AUDIT_RUNNER_LABEL__]
+    runs-on: [self-hosted, macOS, code-mower-audit]
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        lane: __LOCAL_AUDIT_LANES_JSON__
+        lane: [{"audit_budget_usd": "", "audit_max_diff_bytes": "180000", "audit_max_diff_hard_limit_bytes": "1500000", "display_name": "Codex", "lane": "codex", "needs_label": "needs-codex-audit", "script": "tools/run_codex_audit_pr.sh", "token_env": "DISPATCH_TOKEN"}, {"audit_budget_usd": "", "audit_max_diff_bytes": "180000", "audit_max_diff_hard_limit_bytes": "1500000", "display_name": "Claude", "lane": "claude", "needs_label": "needs-claude-audit", "script": "tools/run_claude_audit_pr.sh", "token_env": "DISPATCH_TOKEN"}]
     concurrency:
-      group: {% raw %}${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ matrix.lane.lane }}{% endraw %}
+      group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ matrix.lane.lane }}
       cancel-in-progress: true
     env:
-      PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
-      PR_HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha }}{% endraw %}
-      PR_HEAD_PATH: {% raw %}${{ github.workspace }}/pr-head{% endraw %}
-      SUPPORT_PATH: {% raw %}${{ github.workspace }}/code-mower-support{% endraw %}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_HEAD_PATH: ${{ github.workspace }}/pr-head
+      SUPPORT_PATH: ${{ github.workspace }}/code-mower-support
     steps:
       - name: Verify local runner environment
         run: |
@@ -61,12 +61,12 @@ jobs:
           if [ "${missing}" -ne 0 ]; then
             exit 1
           fi
-          echo "Using Code Mower runner label __LOCAL_AUDIT_RUNNER_LABEL__"
+          echo "Using Code Mower runner label code-mower-audit"
 
       - name: Check out trusted Code Mower support files from default branch
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
-          ref: {% raw %}${{ github.event.repository.default_branch }}{% endraw %}
+          ref: ${{ github.event.repository.default_branch }}
           path: code-mower-support
           persist-credentials: false
 
@@ -78,7 +78,7 @@ jobs:
       - name: Check out pull request head
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
-          ref: {% raw %}${{ github.event.pull_request.head.sha }}{% endraw %}
+          ref: ${{ github.event.pull_request.head.sha }}
           path: pr-head
           fetch-depth: 0
           persist-credentials: false
@@ -86,10 +86,11 @@ jobs:
       - name: Verify pull request checkout
         id: verify_pr_head
         env:
-          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
+          export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"
           actual_head="$(git -C "${PR_HEAD_PATH}" rev-parse HEAD)"
           if [ "${actual_head}" != "${PR_HEAD_SHA}" ]; then
             echo "::error::PR checkout resolved ${actual_head}, expected ${PR_HEAD_SHA}"
@@ -115,24 +116,25 @@ jobs:
           steps.verify_pr_head.conclusion == 'success' &&
           steps.verify_pr_head.outputs.superseded != 'true'
         env:
-          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
-          GITHUB_TOKEN: {% raw %}${{ github.token }}{% endraw %}
-          CODE_MOWER_REVIEWER_SPEND_PATH: {% raw %}${{ runner.temp }}/code-mower-reviewer-spend.json{% endraw %}
-__LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
-          CODE_MOWER_LOCAL_AUDIT_LANE: {% raw %}${{ matrix.lane.lane }}{% endraw %}
-          CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME: {% raw %}${{ matrix.lane.display_name }}{% endraw %}
-          CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL: {% raw %}${{ matrix.lane.needs_label }}{% endraw %}
-          CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV: {% raw %}${{ matrix.lane.token_env }}{% endraw %}
-          CODE_MOWER_LOCAL_AUDIT_SCRIPT: {% raw %}${{ matrix.lane.script }}{% endraw %}
-          CLAUDE_AUDIT_MAX_BUDGET_USD: {% raw %}${{ matrix.lane.audit_budget_usd }}{% endraw %}
-          CLAUDE_AUDIT_MAX_DIFF_BYTES: {% raw %}${{ matrix.lane.audit_max_diff_bytes }}{% endraw %}
-          CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES: {% raw %}${{ matrix.lane.audit_max_diff_hard_limit_bytes }}{% endraw %}
-          CODEX_AUDIT_MAX_BUDGET_USD: {% raw %}${{ matrix.lane.audit_budget_usd }}{% endraw %}
-          CODEX_AUDIT_MAX_DIFF_BYTES: {% raw %}${{ matrix.lane.audit_max_diff_bytes }}{% endraw %}
-          CODEX_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES: {% raw %}${{ matrix.lane.audit_max_diff_hard_limit_bytes }}{% endraw %}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CODE_MOWER_REVIEWER_SPEND_PATH: ${{ runner.temp }}/code-mower-reviewer-spend.json
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          CODE_MOWER_LOCAL_AUDIT_LANE: ${{ matrix.lane.lane }}
+          CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME: ${{ matrix.lane.display_name }}
+          CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL: ${{ matrix.lane.needs_label }}
+          CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV: ${{ matrix.lane.token_env }}
+          CODE_MOWER_LOCAL_AUDIT_SCRIPT: ${{ matrix.lane.script }}
+          CLAUDE_AUDIT_MAX_BUDGET_USD: ${{ matrix.lane.audit_budget_usd }}
+          CLAUDE_AUDIT_MAX_DIFF_BYTES: ${{ matrix.lane.audit_max_diff_bytes }}
+          CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES: ${{ matrix.lane.audit_max_diff_hard_limit_bytes }}
+          CODEX_AUDIT_MAX_BUDGET_USD: ${{ matrix.lane.audit_budget_usd }}
+          CODEX_AUDIT_MAX_DIFF_BYTES: ${{ matrix.lane.audit_max_diff_bytes }}
+          CODEX_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES: ${{ matrix.lane.audit_max_diff_hard_limit_bytes }}
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
+          export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
           labels_file="${RUNNER_TEMP}/code-mower-local-audit-labels.txt"
           gh pr view "${PR_NUMBER}" \
@@ -183,10 +185,10 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
           steps.verify_pr_head.outputs.superseded != 'true' &&
           steps.run_audit.outputs.audited == 'true'
         env:
-          CODE_MOWER_CLOUD_TOKEN: {% raw %}${{ secrets.CODE_MOWER_CLOUD_TOKEN }}{% endraw %}
-          CODE_MOWER_CLOUD_TEAM_ID: {% raw %}${{ vars.CODE_MOWER_CLOUD_TEAM_ID }}{% endraw %}
-          CODE_MOWER_INSTALL_ID: {% raw %}${{ vars.CODE_MOWER_INSTALL_ID }}{% endraw %}
-          CODE_MOWER_REVIEWER_SPEND_PATH: {% raw %}${{ runner.temp }}/code-mower-reviewer-spend.json{% endraw %}
+          CODE_MOWER_CLOUD_TOKEN: ${{ secrets.CODE_MOWER_CLOUD_TOKEN }}
+          CODE_MOWER_CLOUD_TEAM_ID: ${{ vars.CODE_MOWER_CLOUD_TEAM_ID }}
+          CODE_MOWER_INSTALL_ID: ${{ vars.CODE_MOWER_INSTALL_ID }}
+          CODE_MOWER_REVIEWER_SPEND_PATH: ${{ runner.temp }}/code-mower-reviewer-spend.json
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
@@ -201,7 +203,7 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
           verdict_dir="${HOME}/.cache/code-mower-audits/verdicts/${repo_cache_slug}/pr-${PR_NUMBER}"
           upload_failed=0
 
-          "${SUPPORT_PATH}/tools/code_mower" cloud reviewer-runs \
+          "${SUPPORT_PATH}/scripts/dev-python" -m code_mower.cli cloud reviewer-runs \
             --repo-path "${PR_HEAD_PATH}" \
             --repo-slug "${GITHUB_REPOSITORY}" \
             --verdicts "${verdict_dir}" \
@@ -220,7 +222,7 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
             done < <(find "${work_order_dir}" -type f -name '*.cloud-event.json' -print0)
           fi
 
-          "${SUPPORT_PATH}/tools/code_mower" cloud dogfood \
+          "${SUPPORT_PATH}/scripts/dev-python" -m code_mower.cli cloud dogfood \
             --repo-path "${SUPPORT_PATH}" \
             --repo-slug "${GITHUB_REPOSITORY}" \
             --source local-cli-audit \
