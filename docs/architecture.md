@@ -157,4 +157,6 @@ git diff --check
 
 `scripts/dev-python` is the preferred source-checkout Python entrypoint. It
 refuses stale or old Python interpreters so release work does not accidentally
-run under an unsafe ambient `python3`.
+run under an unsafe ambient `python3`. Public docs and shipped entrypoints
+should point source-checkout users at that wrapper plus an installed editable
+venv, not raw source-path environment commands.

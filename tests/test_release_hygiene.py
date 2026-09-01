@@ -896,6 +896,44 @@ exit 1
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("Python 3.12+", completed.stderr)
 
+    def test_direct_cli_execution_points_to_package_or_dev_wrapper(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "src/code_mower/cli.py"), "--version"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("pipx install code-mower==0.5.0b53", completed.stderr)
+        self.assertIn("scripts/dev-python -m venv .venv", completed.stderr)
+        self.assertIn(".venv/bin/code-mower", completed.stderr)
+        self.assertNotIn("PYTHONPATH=src", completed.stderr)
+
+    def test_public_source_checkout_guidance_uses_dev_wrapper_not_pythonpath(self) -> None:
+        public_docs = [
+            ROOT / "README.md",
+            ROOT / "docs/quickstart.md",
+            ROOT / "docs/architecture.md",
+            ROOT / "docs/public-release-checklist.md",
+        ]
+
+        for path in public_docs:
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("scripts/dev-python", text)
+                self.assertNotIn("PYTHONPATH=src", text)
+
+    def test_provider_registry_uses_package_relative_profile_import(self) -> None:
+        text = (ROOT / "src/code_mower/provider_registry.py").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertIn("from . import local_llm_profiles", text)
+        self.assertNotIn("from tools import local_llm_profiles", text)
+        self.assertNotIn("direct repo execution fallback", text)
+
     def test_shared_templates_match_packaged_templates(self) -> None:
         shared_templates = [
             "builder-experiment.example.json",
