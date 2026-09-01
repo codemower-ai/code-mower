@@ -137,6 +137,12 @@ executor records timing, status, builder, branch/PR, and command-hash metadata
 only; it writes no source, diffs, transcripts, raw stdout/stderr, auth output,
 or secrets.
 
+Upload the same authoring-run artifact as structured provenance with
+`code-mower cloud export --event builder_run=.code-mower/authoring-runs/RUN_ID.json`.
+The uploader converts it to a normalized `builder_run` event and carries only
+safe fields such as provider, branch/PR, elapsed time, command hash, and
+`command_output_capture: disabled`.
+
 ## Run Result Example
 
 Builder run results can be written by an agent or by a thin wrapper around the

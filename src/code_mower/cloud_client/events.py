@@ -7,7 +7,7 @@ import json
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from code_mower import __version__
 from code_mower.provider_registry import REFERENCE_PROVIDERS
@@ -24,6 +24,7 @@ from .git_metadata import run_git
 
 
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
+AUTHORING_RUN_SCHEMA = "code_mower.authoringRun.v1"
 CLOUD_EVENT_STRING_FIELDS = (
     "schema",
     "event_type",
@@ -299,6 +300,108 @@ def validate_cloud_event(value: Any) -> dict[str, Any]:
     return value
 
 
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _optional_number(value: Any) -> float | int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return value
+    return None
+
+
+def _authoring_run_event_id(value: Mapping[str, Any]) -> str:
+    parts = [
+        "authoring-run",
+        _text(value.get("repo")),
+        _text(value.get("experiment_id")),
+        _text(value.get("run_id")),
+        _text(value.get("branch")),
+        _text(value.get("pull_request")),
+    ]
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, ":".join(parts)))
+
+
+def _builder_event_from_authoring_run(
+    value: Mapping[str, Any],
+    event_type: str,
+) -> dict[str, Any] | None:
+    if event_type != "builder_run" or value.get("schema") != AUTHORING_RUN_SCHEMA:
+        return None
+
+    builder = _as_mapping(value.get("builder"))
+    executor = _as_mapping(value.get("executor"))
+    command = _as_mapping(executor.get("command"))
+    provider = _text(builder.get("provider"))
+    tool_name = _text(builder.get("tool")) or provider
+    elapsed_seconds = _optional_number(value.get("elapsed_seconds"))
+    status = _text(value.get("status")) or "observed"
+    event = {
+        "schema": EVENT_SCHEMA,
+        "event_id": _authoring_run_event_id(value),
+        "event_type": "builder_run",
+        "created_at": _text(value.get("started_at")) or utc_now(),
+        "repo_slug": _text(value.get("repo")),
+        "team_id": "",
+        "install_id": "",
+        "source": "code-mower-builder-experiment",
+        "provider": provider,
+        "lens": "implementation",
+        "status": status,
+        "tool": {
+            "role": "builder",
+            "tool_name": tool_name,
+            "tool_version": "",
+            "provider": provider,
+            "model": _text(builder.get("model")),
+            "model_source": "planned" if _text(builder.get("model")) else "missing",
+            "version_source": "missing",
+            "integration": "local_authoring_experiment",
+            "lens": "implementation",
+            "source": "code-mower-builder-experiment",
+            "executor": _text(executor.get("type")),
+            "code_mower_version": __version__,
+        },
+        "metrics": {},
+        "dimensions": {
+            "run_id": _text(value.get("run_id")),
+            "experiment_id": _text(value.get("experiment_id")),
+            "task_id": _text(value.get("task_id")),
+            "task_class": _text(value.get("task_class")),
+            "branch": _text(value.get("branch")),
+            "pr_url": _text(value.get("pull_request")),
+            "executor_type": _text(executor.get("type")),
+            "executor_dry_run": bool(executor.get("dry_run")),
+            "executor_exit_code": executor.get("exit_code"),
+            "command_executable": _text(command.get("executable")),
+            "command_arg_count": command.get("arg_count"),
+            "command_argv_sha256": _text(command.get("argv_sha256")),
+            "command_output_capture": "disabled",
+            "privacy_excluded_content": [
+                "source_code",
+                "raw_diffs",
+                "raw_model_transcripts",
+                "raw_stdout_stderr",
+                "auth_probe_output",
+                "secrets",
+            ],
+            "review_policy": (
+                "builder experiment provenance is authoring evidence; Code Mower "
+                "reviewer lanes still decide merge readiness"
+            ),
+        },
+    }
+    if elapsed_seconds is not None:
+        event["metrics"]["elapsed_seconds"] = elapsed_seconds
+    return validate_cloud_event(event)
+
+
 def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
     validate_metadata_payload(value)
     normalized = dict(value)
@@ -389,7 +492,10 @@ def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
             raise CloudBundleError(
                 f"event file contains a non-object event: {source}"
             )
-        events.append(normalize_event(item, event_type))
+        events.append(
+            _builder_event_from_authoring_run(item, event_type)
+            or normalize_event(item, event_type)
+        )
     return events
 
 
