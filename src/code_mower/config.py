@@ -574,6 +574,7 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
         for key in (
             "dispatch_token_env",
             "dispatch_token_expires_var",
+            "local_audit_runner_enabled_var",
             "lane_runner_enabled_var",
         ):
             if key in owner_surface_map:

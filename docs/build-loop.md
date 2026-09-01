@@ -182,6 +182,9 @@ To rehearse a fresh repository:
    checkout, pass `--repo OWNER/REPO` explicitly.
 3. Copy or commit the generated workflows, lane docs, and `tools/lanes` script.
 4. Set `DISPATCH_TOKEN`, `DISPATCH_TOKEN_EXPIRES_AT`, and any runner variables.
+   For local audit runner workflows, set
+   `CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED=true` only after the runner is online
+   and authenticated.
 5. Create a test issue with `tier:R` and `builder:codex`.
 6. Run the dispatcher manually with `dry_run=true` first.
 7. Remove `dry_run` and confirm the issue receives `dispatched:codex` and the

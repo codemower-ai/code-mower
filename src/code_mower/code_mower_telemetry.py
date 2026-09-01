@@ -19,16 +19,28 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(module_dir.parent))
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower import audit_handoff_log
-        from code_mower.provider_runners import is_fixture_verdict_artifact
+        from code_mower.provider_runners import (
+            is_fixture_verdict_artifact,
+            validate_audit_verdict_artifact_payload,
+        )
     else:
         from tools import audit_handoff_log
-        from tools.provider_runners import is_fixture_verdict_artifact
+        from tools.provider_runners import (
+            is_fixture_verdict_artifact,
+            validate_audit_verdict_artifact_payload,
+        )
 elif __package__ == "tools":
     from tools import audit_handoff_log
-    from tools.provider_runners import is_fixture_verdict_artifact
+    from tools.provider_runners import (
+        is_fixture_verdict_artifact,
+        validate_audit_verdict_artifact_payload,
+    )
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_handoff_log
-    from .provider_runners import is_fixture_verdict_artifact
+    from .provider_runners import (
+        is_fixture_verdict_artifact,
+        validate_audit_verdict_artifact_payload,
+    )
 
 
 PASS_VERDICTS = {"completed", "done", "pass", "passed", "success", "succeeded"}
@@ -183,11 +195,7 @@ def reviewer_run_event_from_verdict_artifact(
     path: Path,
     include_git_ref: bool = False,
 ) -> dict[str, Any]:
-    if payload.get("schema") != VERDICT_ARTIFACT_SCHEMA:
-        raise ValueError(
-            f"unsupported verdict artifact schema {payload.get('schema')!r}; "
-            f"expected {VERDICT_ARTIFACT_SCHEMA!r}"
-        )
+    payload = validate_audit_verdict_artifact_payload(dict(payload))
     lane_id = str(payload.get("lane_id") or "unknown")
     repo_slug = _normalize_repo_slug(
         str(payload.get("repo") or _repo_slug_from_artifact_path(path))
@@ -265,9 +273,11 @@ def export_reviewer_run_events_from_verdicts(
 ) -> list[dict[str, Any]]:
     if offset < 0:
         raise ValueError("offset must be non-negative")
+    source = root.expanduser()
+    strict_single_artifact = source.is_file()
     repo_filter = _normalize_repo_slug(repo) if repo else ""
     events: list[dict[str, Any]] = []
-    for path in _iter_verdict_artifact_paths(root.expanduser()):
+    for path in _iter_verdict_artifact_paths(source):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -277,6 +287,13 @@ def export_reviewer_run_events_from_verdicts(
         if payload.get("schema") != VERDICT_ARTIFACT_SCHEMA:
             continue
         if is_fixture_verdict_artifact(payload):
+            continue
+        try:
+            validate_audit_verdict_artifact_payload(payload)
+        except ValueError as exc:
+            if strict_single_artifact:
+                raise ValueError(f"{path}: invalid verdict artifact: {exc}") from exc
+            print(f"warning: skipped invalid verdict artifact {path}: {exc}", file=sys.stderr)
             continue
         artifact_repo = _normalize_repo_slug(
             str(payload.get("repo") or _repo_slug_from_artifact_path(path))

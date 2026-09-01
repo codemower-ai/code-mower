@@ -267,6 +267,11 @@ PACKAGE_FILES = (
         "reviewer",
     ),
     (
+        "src/code_mower/provider_runners/exit_codes.py",
+        "src/code_mower/provider_runners/exit_codes.py",
+        "reviewer",
+    ),
+    (
         "src/code_mower/provider_runners/git.py",
         "src/code_mower/provider_runners/git.py",
         "reviewer",

@@ -11,10 +11,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
 
-try:
-    from . import local_llm_profiles
-except ImportError:  # pragma: no cover - direct repo execution fallback.
-    from tools import local_llm_profiles
+from . import local_llm_profiles
 
 
 @dataclass(frozen=True)

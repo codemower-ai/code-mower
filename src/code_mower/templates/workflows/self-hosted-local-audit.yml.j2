@@ -23,6 +23,7 @@ jobs:
   audit:
     name: audit ({% raw %}${{ matrix.lane.lane }}{% endraw %})
     if: >-
+      vars.__LOCAL_AUDIT_RUNNER_ENABLED_VAR__ == 'true' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (
         github.event.action != 'labeled' ||
