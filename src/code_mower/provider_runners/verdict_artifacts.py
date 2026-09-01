@@ -17,6 +17,7 @@ from .github_pr import edit_pr_comment, post_pr_comment
 VERDICT_ARTIFACT_SCHEMA = "code_mower.auditVerdictArtifact.v1"
 VERDICT_ARTIFACT_DIR_ENV = "CODE_MOWER_VERDICT_ARTIFACT_DIR"
 VERDICT_QUARANTINE_DIR_ENV = "CODE_MOWER_VERDICT_QUARANTINE_DIR"
+AUDIT_VERDICT_VALUES = frozenset({"PASS", "BLOCKED", "STALE", "UNKNOWN"})
 FIXTURE_VERDICT_TEXT = frozenset({"test", "example", "placeholder", "t", "d"})
 FIXTURE_VERDICT_PATHS = frozenset(
     {
@@ -164,6 +165,77 @@ def audit_runtime_quarantine_reason(
     return "; ".join(reasons) if reasons else None
 
 
+def _artifact_text(payload: dict[str, Any], key: str, *, required: bool = False) -> str:
+    if key not in payload:
+        if required:
+            raise ValueError(f"verdict artifact missing {key}")
+        return ""
+    value = payload.get(key)
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"verdict artifact field {key} must be a string")
+    if required and not value.strip():
+        raise ValueError(f"verdict artifact field {key} must not be empty")
+    return value
+
+
+def _artifact_pr_number(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("verdict artifact field pr_number must be an integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("verdict artifact field pr_number must be an integer") from exc
+    if parsed <= 0:
+        raise ValueError("verdict artifact field pr_number must be positive")
+    return parsed
+
+
+def validate_audit_verdict_artifact_payload(payload: Any) -> dict[str, Any]:
+    """Validate the local provider verdict artifact contract.
+
+    Unknown additive fields are allowed so older and newer beta artifacts remain
+    readable. Required fields still get type checks before repost/export code
+    turns them into GitHub comments or cloud metadata.
+    """
+
+    if not isinstance(payload, dict):
+        raise ValueError("verdict artifact must contain a JSON object")
+    if payload.get("schema") != VERDICT_ARTIFACT_SCHEMA:
+        raise ValueError(
+            f"unsupported verdict artifact schema: {payload.get('schema')!r}"
+        )
+    _artifact_text(payload, "repo", required=True)
+    _artifact_pr_number(payload.get("pr_number"))
+    verdict = _artifact_text(payload, "verdict", required=True).upper()
+    if verdict not in AUDIT_VERDICT_VALUES:
+        allowed = ", ".join(sorted(AUDIT_VERDICT_VALUES))
+        raise ValueError(f"verdict artifact field verdict must be one of {allowed}")
+    _artifact_text(payload, "comment_body", required=True)
+    for key in (
+        "lane_id",
+        "head_sha_start",
+        "head_sha_end",
+        "trailer",
+        "created_at",
+        "posted_comment_url",
+        "quarantine_reason",
+    ):
+        _artifact_text(payload, key)
+    if "quarantined" in payload and not isinstance(payload.get("quarantined"), bool):
+        raise ValueError("verdict artifact field quarantined must be a boolean")
+    if "duration_seconds" in payload:
+        duration = payload.get("duration_seconds")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            raise ValueError("verdict artifact field duration_seconds must be numeric")
+        if not math.isfinite(float(duration)) or float(duration) < 0:
+            raise ValueError(
+                "verdict artifact field duration_seconds must be finite and non-negative"
+            )
+    return payload
+
+
 def write_audit_verdict_artifact(
     *,
     lane_id: str,
@@ -224,16 +296,7 @@ def write_audit_verdict_artifact(
 
 def load_audit_verdict_artifact(path: Path) -> dict[str, Any]:
     payload = json.loads(path.expanduser().read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("verdict artifact must contain a JSON object")
-    if payload.get("schema") != VERDICT_ARTIFACT_SCHEMA:
-        raise ValueError(
-            f"unsupported verdict artifact schema: {payload.get('schema')!r}"
-        )
-    for key in ("repo", "pr_number", "comment_body"):
-        if key not in payload:
-            raise ValueError(f"verdict artifact missing {key}")
-    return payload
+    return validate_audit_verdict_artifact_payload(payload)
 
 
 def repost_audit_verdict_artifact(path: Path, *, token: str) -> dict[str, Any]:

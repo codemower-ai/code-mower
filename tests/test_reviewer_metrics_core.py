@@ -189,6 +189,28 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             self.assertNotIn("abcdef0123456789", serialized)
             self.assertNotIn("Findings:", serialized)
 
+    def test_verdict_artifact_boundary_accepts_current_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_artifact(root, duration_seconds=1.25)
+
+            payload = verdict_artifacts.load_audit_verdict_artifact(path)
+
+            self.assertEqual(payload["schema"], code_mower_telemetry.VERDICT_ARTIFACT_SCHEMA)
+            self.assertEqual(payload["repo"], "owner/repo")
+            self.assertEqual(payload["pr_number"], 42)
+
+    def test_verdict_artifact_boundary_rejects_malformed_provider_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_artifact(root)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["pr_number"] = "not-a-number"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "pr_number"):
+                code_mower_telemetry.export_reviewer_run_events_from_verdicts(root)
+
     def test_verdict_artifacts_export_skips_fixture_shaped_cache_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

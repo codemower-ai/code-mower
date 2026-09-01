@@ -53,6 +53,7 @@ from .verdict_artifacts import (
     is_fixture_verdict_comment,
     load_audit_verdict_artifact,
     repost_audit_verdict_artifact,
+    validate_audit_verdict_artifact_payload,
     write_audit_verdict_artifact,
 )
 from .workspace import (
@@ -101,6 +102,7 @@ __all__ = [
     "resolve_github_token_from_stdin_or_env",
     "run_git",
     "run_git_text",
+    "validate_audit_verdict_artifact_payload",
     "validate_repo_path_for_wrapper",
     "create_temp_worktree",
     "remove_worktree",

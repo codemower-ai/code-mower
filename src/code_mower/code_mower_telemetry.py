@@ -19,16 +19,28 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(module_dir.parent))
     if module_dir.name == "code_mower":  # pragma: no cover - extracted direct CLI.
         from code_mower import audit_handoff_log
-        from code_mower.provider_runners import is_fixture_verdict_artifact
+        from code_mower.provider_runners import (
+            is_fixture_verdict_artifact,
+            validate_audit_verdict_artifact_payload,
+        )
     else:
         from tools import audit_handoff_log
-        from tools.provider_runners import is_fixture_verdict_artifact
+        from tools.provider_runners import (
+            is_fixture_verdict_artifact,
+            validate_audit_verdict_artifact_payload,
+        )
 elif __package__ == "tools":
     from tools import audit_handoff_log
-    from tools.provider_runners import is_fixture_verdict_artifact
+    from tools.provider_runners import (
+        is_fixture_verdict_artifact,
+        validate_audit_verdict_artifact_payload,
+    )
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_handoff_log
-    from .provider_runners import is_fixture_verdict_artifact
+    from .provider_runners import (
+        is_fixture_verdict_artifact,
+        validate_audit_verdict_artifact_payload,
+    )
 
 
 PASS_VERDICTS = {"completed", "done", "pass", "passed", "success", "succeeded"}
@@ -183,11 +195,7 @@ def reviewer_run_event_from_verdict_artifact(
     path: Path,
     include_git_ref: bool = False,
 ) -> dict[str, Any]:
-    if payload.get("schema") != VERDICT_ARTIFACT_SCHEMA:
-        raise ValueError(
-            f"unsupported verdict artifact schema {payload.get('schema')!r}; "
-            f"expected {VERDICT_ARTIFACT_SCHEMA!r}"
-        )
+    payload = validate_audit_verdict_artifact_payload(dict(payload))
     lane_id = str(payload.get("lane_id") or "unknown")
     repo_slug = _normalize_repo_slug(
         str(payload.get("repo") or _repo_slug_from_artifact_path(path))
@@ -278,6 +286,7 @@ def export_reviewer_run_events_from_verdicts(
             continue
         if is_fixture_verdict_artifact(payload):
             continue
+        validate_audit_verdict_artifact_payload(payload)
         artifact_repo = _normalize_repo_slug(
             str(payload.get("repo") or _repo_slug_from_artifact_path(path))
         )

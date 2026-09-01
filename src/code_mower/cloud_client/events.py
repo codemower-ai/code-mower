@@ -24,6 +24,19 @@ from .git_metadata import run_git
 
 
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
+CLOUD_EVENT_STRING_FIELDS = (
+    "schema",
+    "event_type",
+    "event_id",
+    "created_at",
+    "repo_slug",
+    "team_id",
+    "install_id",
+    "source",
+    "provider",
+    "lens",
+    "status",
+)
 GITHUB_RUN_LIST_FIELDS = (
     "databaseId",
     "name",
@@ -261,6 +274,32 @@ def build_provider_catalog_snapshot_events(
     return events
 
 
+def validate_cloud_event(value: Any) -> dict[str, Any]:
+    """Validate Code Mower's metadata-only cloud event boundary.
+
+    The validator is intentionally additive-friendly: unknown fields are allowed,
+    but required normalized fields, nested objects, and privacy-safe metadata are
+    enforced before events are written into upload bundles.
+    """
+
+    if not isinstance(value, dict):
+        raise CloudBundleError("structured cloud event must be a JSON object")
+    validate_metadata_payload(value)
+    if value.get("schema") != EVENT_SCHEMA:
+        raise CloudBundleError(
+            f"unsupported event schema {value.get('schema')!r}; expected {EVENT_SCHEMA}"
+        )
+    safe_event_type(str(value.get("event_type") or ""))
+    for key in CLOUD_EVENT_STRING_FIELDS:
+        if not isinstance(value.get(key), str):
+            raise CloudBundleError(f"structured event field {key} must be a string")
+    for key in ("metrics", "dimensions", "tool"):
+        if not isinstance(value.get(key), dict):
+            raise CloudBundleError(f"structured event field {key} must be an object")
+    validate_metadata_payload(value)
+    return value
+
+
 def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
     validate_metadata_payload(value)
     normalized = dict(value)
@@ -309,8 +348,7 @@ def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
         normalized["provider"] = tool["provider"]
     if not normalized["lens"] and tool.get("lens"):
         normalized["lens"] = tool["lens"]
-    validate_metadata_payload(normalized)
-    return normalized
+    return validate_cloud_event(normalized)
 
 
 def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
