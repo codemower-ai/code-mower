@@ -105,6 +105,11 @@ Provider integrations should expose setup docs, auth/runtime doctor checks,
 source/diff exposure posture, local/hosted/manual/automatic posture, and
 cost/latency fields when available.
 
+Provider parser and verdict-artifact fixtures live under `tests/fixtures/` and
+lock the current reviewer output contract before shared provider-runner code is
+extracted. Keep those fixtures sanitized: no source, raw diffs, transcripts,
+issue bodies, stdout/stderr, auth output, or secrets.
+
 ## Builder And Orchestrator Boundary
 
 Code Mower can learn from orchestrator systems without becoming one by default.
