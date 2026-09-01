@@ -141,11 +141,13 @@ transcripts, stdout/stderr, issue bodies, auth output, or secrets.
 `cloud reviewer-runs` convert spend `runs` into `reviewer_run` events.
 `reviewer-runs` reads `.code-mower/reviewer-spend.json` automatically when the
 ledger is present and merges spend metrics into matching verdict events before
-upload so dashboards do not double-count reviewer attempts. The derived event
-places latency/cost/token numbers under `metrics`, PR/SHA/lane identifiers
-under `dimensions`, and model/tool identity under `tool`. CodeMower.com should
-accept uploads without these fields from beta.40 clients and treat missing
-spend rows as unknown, not zero measured spend.
+upload so dashboards do not double-count reviewer attempts. When `--verdicts`
+narrows the exported artifacts, unmatched spend rows are ignored by default; use
+`--include-unmatched-spend` only for deliberate reviewer-spend backfill. The
+derived event places latency/cost/token numbers under `metrics`, PR/SHA/lane
+identifiers under `dimensions`, and model/tool identity under `tool`.
+CodeMower.com should accept uploads without these fields from beta.40 clients
+and treat missing spend rows as unknown, not zero measured spend.
 
 Generated self-hosted local audit workflows may automatically call
 `cloud reviewer-runs` and `cloud dogfood` after audit attempts when a team

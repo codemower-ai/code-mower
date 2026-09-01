@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - code-mower-audit
+    - code-mower-lane
