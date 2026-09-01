@@ -10,6 +10,7 @@ from pathlib import Path
 import code_mower.cloud_client.operations as cloud_operations
 from code_mower.cloud_client import (
     BUNDLE_MANIFEST_FILENAME,
+    CURRENT_PROFILE_FILENAME,
     CloudBundleError,
     DEFAULT_SETUP_INSTALL_ID,
     EVENT_SCHEMA,
@@ -25,6 +26,7 @@ from code_mower.cloud_client import (
     repo_slug_from_remote,
     repo_sync_output_name,
     render_cloud_doctor_text,
+    resolve_cloud_token,
     run_cloud_doctor,
     run_cloud_setup,
     safe_config_stem,
@@ -119,6 +121,8 @@ def test_cloud_setup_round_trip_writes_private_file() -> None:
         text = target.read_text(encoding="utf-8")
         assert "CODE_MOWER_CLOUD_TOKEN" in text
         assert "cmw_live_test_secret_token" in text
+        current = target.parent / CURRENT_PROFILE_FILENAME
+        assert current.read_text(encoding="utf-8").strip() == "install.env"
 
 
 def test_cloud_setup_helpers_keep_safe_defaults() -> None:
@@ -127,6 +131,115 @@ def test_cloud_setup_helpers_keep_safe_defaults() -> None:
     rendered = str(default_setup_path("agent@local"))
     assert rendered.endswith("/.config/code-mower/tokens/agent-local.env")
     assert "sixteen-char-tok" not in token_prefix("sixteen-char-tok")
+
+
+def test_cloud_token_resolver_env_wins_over_stored_file(monkeypatch, tmp_path) -> None:
+    token_env = "CODE_MOWER_TEST_RESOLVE_TOKEN"
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    (token_dir / "install.env").write_text(
+        f"export {token_env}='cmw_live_file_secret'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(token_env, "cmw_live_env_secret")
+
+    resolution = resolve_cloud_token(token_env=token_env, token_dir=token_dir)
+
+    assert resolution.status == "ok"
+    assert resolution.source == "env"
+    assert resolution.token == "cmw_live_env_secret"
+
+
+def test_cloud_token_resolver_uses_install_id_after_restart(monkeypatch, tmp_path) -> None:
+    token_env = "CODE_MOWER_TEST_INSTALL_TOKEN"
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    (token_dir / "codex-code-mower.env").write_text(
+        "\n".join(
+            [
+                f"export {token_env}='cmw_live_install_secret'",
+                "export CODE_MOWER_CLOUD_TEAM_ID='team'",
+                "export CODE_MOWER_INSTALL_ID='codex-code-mower'",
+                "export CODE_MOWER_CLOUD_ENDPOINT='https://codemower.com/api/ingest'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(token_env, raising=False)
+
+    resolution = resolve_cloud_token(
+        token_env=token_env,
+        token_dir=token_dir,
+        install_id="codex-code-mower",
+    )
+
+    assert resolution.status == "ok"
+    assert resolution.source == "install_id"
+    assert resolution.token == "cmw_live_install_secret"
+    assert resolution.team_id == "team"
+    assert resolution.install_id == "codex-code-mower"
+
+
+def test_cloud_token_resolver_refuses_ambiguous_profiles(monkeypatch, tmp_path) -> None:
+    token_env = "CODE_MOWER_TEST_AMBIGUOUS_TOKEN"
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    for name in ("one.env", "two.env"):
+        (token_dir / name).write_text(
+            f"export {token_env}='cmw_live_{name}_secret'\n",
+            encoding="utf-8",
+        )
+    monkeypatch.delenv(token_env, raising=False)
+
+    resolution = resolve_cloud_token(token_env=token_env, token_dir=token_dir)
+    encoded = json.dumps(resolution.safe_detail())
+
+    assert resolution.status == "ambiguous"
+    assert resolution.token == ""
+    assert resolution.token_files == ("one.env", "two.env")
+    assert "cmw_live_" not in encoded
+
+
+def test_cloud_token_resolver_rejects_wrong_env_file(monkeypatch, tmp_path) -> None:
+    token_env = "CODE_MOWER_TEST_EXPECTED_TOKEN"
+    token_file = tmp_path / "token.env"
+    wrong_token = "cmw_live_" + "wrong_secret"
+    token_file.write_text(
+        f"export OTHER_TOKEN='{wrong_token}'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(token_env, raising=False)
+
+    resolution = resolve_cloud_token(token_env=token_env, token_file=token_file)
+    encoded = json.dumps(resolution.safe_detail()) + resolution.message
+
+    assert resolution.status == "malformed"
+    assert resolution.token == ""
+    assert "OTHER_TOKEN" not in encoded
+    assert wrong_token not in encoded
+
+
+def test_cloud_token_resolver_uses_current_profile(monkeypatch, tmp_path) -> None:
+    token_env = "CODE_MOWER_TEST_CURRENT_TOKEN"
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    (token_dir / "one.env").write_text(
+        f"export {token_env}='cmw_live_one_secret'\n",
+        encoding="utf-8",
+    )
+    (token_dir / "two.env").write_text(
+        f"export {token_env}='cmw_live_two_secret'\n",
+        encoding="utf-8",
+    )
+    (token_dir / CURRENT_PROFILE_FILENAME).write_text("two.env\n", encoding="utf-8")
+    monkeypatch.delenv(token_env, raising=False)
+
+    resolution = resolve_cloud_token(token_env=token_env, token_dir=token_dir)
+
+    assert resolution.status == "ok"
+    assert resolution.source == "current_profile"
+    assert resolution.token == "cmw_live_two_secret"
 
 
 def test_cloud_event_args_accept_jsonl_and_normalize_schema() -> None:
@@ -613,6 +726,82 @@ def test_dogfood_dry_run_preserves_version_probe(monkeypatch, tmp_path: Path) ->
     assert reviewer_event["dimensions"]["head_sha"] == "abc123"
 
 
+def test_dogfood_upload_doctor_uses_original_token_selector(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    token_env = "CODE_MOWER_TEST_DOGFOOD_CURRENT_TOKEN"
+    token = "cmw_live_dogfood_secret"
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    (token_dir / "renamed.env").write_text(
+        "\n".join(
+            [
+                f"export {token_env}='{token}'",
+                "export CODE_MOWER_INSTALL_ID='profile-install'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (token_dir / CURRENT_PROFILE_FILENAME).write_text("renamed.env\n", encoding="utf-8")
+    monkeypatch.delenv(token_env, raising=False)
+    monkeypatch.setattr(
+        "code_mower.cloud_client.operations.build_provider_catalog_snapshot_events",
+        lambda **kwargs: [],
+    )
+    captured: dict[str, str] = {}
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    def fake_post_upload_payload(**kwargs):
+        captured["token"] = kwargs["token"]
+        return {
+            "mode": "cloud-upload",
+            "endpoint": kwargs["endpoint"],
+            "status": 200,
+            "response": {"ok": True},
+        }
+
+    monkeypatch.setattr(cloud_operations, "post_upload_payload", fake_post_upload_payload)
+
+    result = dogfood_upload(
+        repo_path=tmp_path,
+        output_dir=tmp_path / "bundle",
+        reports=[],
+        events=[],
+        spend_path=None,
+        repo_slug="owner/repo",
+        team_id="",
+        install_id="",
+        source="unit-test",
+        endpoint="https://codemower.com/api/ingest",
+        token_env=token_env,
+        token_dir=token_dir,
+        include_reports=False,
+        yes=True,
+        timeout=0.1,
+    )
+
+    assert result["status"] == "uploaded"
+    assert result["doctor"]["status"] == "pass"
+    assert captured["token"] == token
+
+
 def test_cloud_doctor_runs_from_client_module() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         report = run_cloud_doctor(
@@ -628,6 +817,177 @@ def test_cloud_doctor_runs_from_client_module() -> None:
         rendered = render_cloud_doctor_text(report)
         assert "Code Mower cloud doctor" in rendered
         assert "http://localhost:3000" in rendered
+
+
+def test_cloud_doctor_uses_stored_install_profile_after_restart(monkeypatch, tmp_path) -> None:
+    token_env = "CODE_MOWER_TEST_DOCTOR_STORED_TOKEN"
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    (token_dir / "codex-code-mower.env").write_text(
+        f"export {token_env}='cmw_live_doctor_secret'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(token_env, raising=False)
+
+    build_cloud_bundle(
+        reports=[],
+        events=[],
+        output_dir=tmp_path / "bundle",
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="codex-code-mower",
+        anonymous=False,
+    )
+
+    report = run_cloud_doctor(
+        bundle_dir=tmp_path / "bundle",
+        endpoint="https://codemower.com/api/ingest",
+        token_env=token_env,
+        token_dir=token_dir,
+        install_id="codex-code-mower",
+    )
+    token_check = next(check for check in report["checks"] if check["name"] == "token")
+
+    assert report["status"] == "pass"
+    assert token_check["status"] == "pass"
+    assert token_check["detail"]["source"] == "install_id"
+    assert token_check["detail"]["shell"].startswith("source /")
+    assert "cmw_live_doctor_secret" not in json.dumps(report)
+
+
+def test_cloud_doctor_reports_ambiguous_profiles_without_secrets(monkeypatch, tmp_path) -> None:
+    token_env = "CODE_MOWER_TEST_DOCTOR_AMBIGUOUS_TOKEN"
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    for name in ("one.env", "two.env"):
+        (token_dir / name).write_text(
+            f"export {token_env}='cmw_live_{name}_doctor_secret'\n",
+            encoding="utf-8",
+        )
+    monkeypatch.delenv(token_env, raising=False)
+
+    report = run_cloud_doctor(
+        bundle_dir=tmp_path / "bundle",
+        endpoint="https://codemower.com/api/ingest",
+        token_env=token_env,
+        token_dir=token_dir,
+        require_token=False,
+    )
+    token_check = next(check for check in report["checks"] if check["name"] == "token")
+    encoded = json.dumps(report)
+
+    assert report["status"] == "pass"
+    assert token_check["status"] == "warn"
+    assert token_check["detail"]["token_files"] == ["one.env", "two.env"]
+    assert "cmw_live_" not in encoded
+
+
+def test_cloud_upload_uses_token_file_after_restart(monkeypatch, tmp_path) -> None:
+    token_env = "CODE_MOWER_TEST_UPLOAD_STORED_TOKEN"
+    token = "cmw_live_upload_secret"
+    token_file = tmp_path / "token.env"
+    token_file.write_text(f"export {token_env}='{token}'\n", encoding="utf-8")
+    monkeypatch.delenv(token_env, raising=False)
+    captured: dict[str, str] = {}
+
+    build_cloud_bundle(
+        reports=[],
+        events=[],
+        output_dir=tmp_path / "bundle",
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        anonymous=False,
+    )
+
+    def fake_post_upload_payload(**kwargs):
+        captured["token"] = kwargs["token"]
+        return {
+            "mode": "cloud-upload",
+            "endpoint": kwargs["endpoint"],
+            "status": 200,
+            "response": {"ok": True},
+        }
+
+    monkeypatch.setattr(cloud_cli, "post_upload_payload", fake_post_upload_payload)
+    out = StringIO()
+    with redirect_stdout(out):
+        status = cloud_cli.main(
+            [
+                "upload",
+                str(tmp_path / "bundle"),
+                "--endpoint",
+                "https://codemower.com/api/ingest",
+                "--token-env",
+                token_env,
+                "--token-file",
+                str(token_file),
+                "--yes",
+                "--json",
+            ]
+        )
+
+    assert status == 0
+    assert captured["token"] == token
+    assert token not in out.getvalue()
+
+
+def test_cloud_upload_current_profile_not_bundle_install_id(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    token_env = "CODE_MOWER_TEST_UPLOAD_CURRENT_TOKEN"
+    token = "cmw_live_current_secret"
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    (token_dir / "actual.env").write_text(
+        f"export {token_env}='{token}'\n",
+        encoding="utf-8",
+    )
+    (token_dir / CURRENT_PROFILE_FILENAME).write_text("actual.env\n", encoding="utf-8")
+    monkeypatch.delenv(token_env, raising=False)
+    captured: dict[str, str] = {}
+
+    build_cloud_bundle(
+        reports=[],
+        events=[],
+        output_dir=tmp_path / "bundle",
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="bundle-install",
+        anonymous=False,
+    )
+
+    def fake_post_upload_payload(**kwargs):
+        captured["token"] = kwargs["token"]
+        return {
+            "mode": "cloud-upload",
+            "endpoint": kwargs["endpoint"],
+            "status": 200,
+            "response": {"ok": True},
+        }
+
+    monkeypatch.setattr(cloud_cli, "post_upload_payload", fake_post_upload_payload)
+    out = StringIO()
+    with redirect_stdout(out):
+        status = cloud_cli.main(
+            [
+                "upload",
+                str(tmp_path / "bundle"),
+                "--endpoint",
+                "https://codemower.com/api/ingest",
+                "--token-env",
+                token_env,
+                "--token-dir",
+                str(token_dir),
+                "--yes",
+                "--json",
+            ]
+        )
+
+    assert status == 0
+    assert captured["token"] == token
+    assert token not in out.getvalue()
 
 
 def test_cloud_doctor_warns_when_model_provenance_is_missing() -> None:

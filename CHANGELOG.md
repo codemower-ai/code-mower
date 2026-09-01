@@ -4,6 +4,21 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## v0.6.0-beta.2
+
+This beta hardens optional CodeMower.com uploads for first-week adopters by
+making local cloud token setup survive shell and app restarts.
+
+### Changed
+
+- `code-mower cloud setup` now records the just-written token file as the current
+  local cloud profile, and upload-style cloud commands can resolve the token from
+  live env, an explicit token file, an install-id profile, the current profile,
+  or one unambiguous stored profile (#474).
+- `cloud doctor` reports token-profile ambiguity or malformed stored profiles
+  without printing token values, and every network upload path still requires
+  explicit `--yes` before sending metadata (#474).
+
 ## v0.6.0-beta.1
 
 This beta finishes the v0.6 provider-contract hardening workstream and makes

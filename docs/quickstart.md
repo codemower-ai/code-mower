@@ -17,11 +17,11 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.6.0b1
+pipx install --python python3.12 code-mower==0.6.0b2
 code-mower --version
 ```
 
-`0.6.0b1` is a beta release. If you want the newest prerelease instead of this
+`0.6.0b2` is a beta release. If you want the newest prerelease instead of this
 exact verified beta, use:
 
 ```bash
@@ -297,7 +297,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.6.0b1 \
+  --package-spec code-mower==0.6.0b2 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -385,13 +385,16 @@ code-mower cloud setup \
   --install-id "your-laptop" \
   --out ~/.config/code-mower/tokens/your-laptop.env
 
-source ~/.config/code-mower/tokens/your-laptop.env
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 ```
 
 `cloud setup` writes a private `0600` env file and prints only a token prefix.
-Paste the dashboard token when prompted by stdin, then press Ctrl-D. Use
-`--force` only when intentionally replacing an existing token file.
+Paste the dashboard token when prompted by stdin, then press Ctrl-D. The command
+also records the file as the current local cloud profile, so future cloud upload
+commands can load it after a shell or app restart. If the machine has multiple
+stored profiles and no current profile, pass `--install-id your-laptop`,
+`--token-file ~/.config/code-mower/tokens/your-laptop.env`, or source the file
+before rerunning. Use `--force` only when intentionally replacing an existing token file.
 Operator-issued tokens remain a fallback for teams that cannot use the
 self-service dashboard yet.
 

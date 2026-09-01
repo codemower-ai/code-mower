@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -21,7 +20,13 @@ from .events import (
 )
 from .export import build_cloud_bundle
 from .git_metadata import detect_repo_slug
-from .setup import DEFAULT_INSTALL_ID_ENV, DEFAULT_TEAM_ID_ENV
+from .tokens import (
+    CloudTokenResolution,
+    require_upload_token,
+    resolve_cloud_endpoint,
+    resolve_cloud_identity,
+    resolve_cloud_token,
+)
 from .upload import build_upload_payload, post_upload_payload
 
 
@@ -33,6 +38,23 @@ CATCH_UP_TRUST_GUIDANCE = {
         "before making provider/lens decisions"
     ),
 }
+
+
+def _resolve_upload_profile(
+    *,
+    endpoint: str,
+    token_env: str,
+    token_file: Path | None,
+    token_dir: Path | None,
+    install_id: str,
+) -> tuple[CloudTokenResolution, str]:
+    token_resolution = resolve_cloud_token(
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    return token_resolution, resolve_cloud_endpoint(endpoint, token_resolution)
 
 
 def build_catch_up_summary(
@@ -205,6 +227,8 @@ def dogfood_upload(
     source: str,
     endpoint: str,
     token_env: str,
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
     include_reports: bool,
     yes: bool,
     timeout: float,
@@ -215,8 +239,18 @@ def dogfood_upload(
         raise CloudBundleError(
             "unable to detect repo slug; pass --repo-slug OWNER/REPO"
         )
-    resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
-    resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
+    token_resolution, resolved_endpoint = _resolve_upload_profile(
+        endpoint=endpoint,
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    resolved_team_id, resolved_install_id = resolve_cloud_identity(
+        team_id=team_id,
+        install_id=install_id,
+        resolution=token_resolution,
+    )
     resolved_reports = reports or default_dogfood_reports(repo_path)
     spend_events = _reviewer_spend_events(
         repo_path=repo_path,
@@ -261,8 +295,11 @@ def dogfood_upload(
     )
     doctor_result = run_cloud_doctor(
         bundle_dir=output_dir,
-        endpoint=endpoint,
+        endpoint=resolved_endpoint,
         token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
         require_token=yes,
     )
     if doctor_result["failures"]:
@@ -282,13 +319,16 @@ def dogfood_upload(
             "status": "dry_run",
             "export": export_result,
             "doctor": doctor_result,
-            "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
+            "upload": build_dogfood_dry_run_preview(
+                endpoint=resolved_endpoint,
+                payload=payload,
+            ),
         }
-    token = os.environ.get(token_env, "")
-    if not token and not is_local_http_endpoint(endpoint):
-        raise CloudBundleError(
-            f"{token_env} is not set; refusing non-local upload without a token"
-        )
+    token = require_upload_token(
+        endpoint=resolved_endpoint,
+        resolution=token_resolution,
+        local_endpoint=is_local_http_endpoint(resolved_endpoint),
+    )
     return {
         "mode": "cloud-dogfood",
         "status": "uploaded",
@@ -296,7 +336,7 @@ def dogfood_upload(
         "doctor": doctor_result,
         "upload": post_upload_payload(
             payload=payload,
-            endpoint=endpoint,
+            endpoint=resolved_endpoint,
             token=token,
             timeout=timeout,
         ),
@@ -314,6 +354,8 @@ def catch_up_upload(
     limit: int,
     endpoint: str,
     token_env: str,
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
     yes: bool,
     timeout: float,
     include_git_ref: bool,
@@ -326,8 +368,18 @@ def catch_up_upload(
         raise CloudBundleError(
             "unable to detect repo slug; pass --repo-slug OWNER/REPO"
         )
-    resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
-    resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
+    token_resolution, resolved_endpoint = _resolve_upload_profile(
+        endpoint=endpoint,
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    resolved_team_id, resolved_install_id = resolve_cloud_identity(
+        team_id=team_id,
+        install_id=install_id,
+        resolution=token_resolution,
+    )
     runs = run_gh_run_list(
         repo_slug=detected_repo_slug,
         limit=limit,
@@ -362,8 +414,11 @@ def catch_up_upload(
     )
     doctor_result = run_cloud_doctor(
         bundle_dir=output_dir,
-        endpoint=endpoint,
+        endpoint=resolved_endpoint,
         token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
         require_token=yes,
     )
     if doctor_result["failures"]:
@@ -386,13 +441,16 @@ def catch_up_upload(
             "catch_up": catch_up_summary,
             "export": export_result,
             "doctor": doctor_result,
-            "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
+            "upload": build_dogfood_dry_run_preview(
+                endpoint=resolved_endpoint,
+                payload=payload,
+            ),
         }
-    token = os.environ.get(token_env, "")
-    if not token and not is_local_http_endpoint(endpoint):
-        raise CloudBundleError(
-            f"{token_env} is not set; refusing non-local upload without a token"
-        )
+    token = require_upload_token(
+        endpoint=resolved_endpoint,
+        resolution=token_resolution,
+        local_endpoint=is_local_http_endpoint(resolved_endpoint),
+    )
     return {
         "mode": "cloud-catch-up",
         "status": "uploaded",
@@ -403,7 +461,7 @@ def catch_up_upload(
         "doctor": doctor_result,
         "upload": post_upload_payload(
             payload=payload,
-            endpoint=endpoint,
+            endpoint=resolved_endpoint,
             token=token,
             timeout=timeout,
         ),
@@ -422,6 +480,8 @@ def reviewer_runs_upload(
     offset: int = 0,
     endpoint: str,
     token_env: str,
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
     yes: bool,
     timeout: float,
     include_git_ref: bool,
@@ -438,8 +498,18 @@ def reviewer_runs_upload(
         raise CloudBundleError(
             "unable to detect repo slug; pass --repo-slug OWNER/REPO"
         )
-    resolved_team_id = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
-    resolved_install_id = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
+    token_resolution, resolved_endpoint = _resolve_upload_profile(
+        endpoint=endpoint,
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    resolved_team_id, resolved_install_id = resolve_cloud_identity(
+        team_id=team_id,
+        install_id=install_id,
+        resolution=token_resolution,
+    )
     try:
         events = code_mower_telemetry.export_reviewer_run_events_from_verdicts(
             verdicts,
@@ -485,8 +555,11 @@ def reviewer_runs_upload(
     )
     doctor_result = run_cloud_doctor(
         bundle_dir=output_dir,
-        endpoint=endpoint,
+        endpoint=resolved_endpoint,
         token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
         require_token=yes,
     )
     if doctor_result["failures"]:
@@ -511,13 +584,16 @@ def reviewer_runs_upload(
             "include_unmatched_spend": include_unmatched_spend,
             "export": export_result,
             "doctor": doctor_result,
-            "upload": build_dogfood_dry_run_preview(endpoint=endpoint, payload=payload),
+            "upload": build_dogfood_dry_run_preview(
+                endpoint=resolved_endpoint,
+                payload=payload,
+            ),
         }
-    token = os.environ.get(token_env, "")
-    if not token and not is_local_http_endpoint(endpoint):
-        raise CloudBundleError(
-            f"{token_env} is not set; refusing non-local upload without a token"
-        )
+    token = require_upload_token(
+        endpoint=resolved_endpoint,
+        resolution=token_resolution,
+        local_endpoint=is_local_http_endpoint(resolved_endpoint),
+    )
     return {
         "mode": "cloud-reviewer-runs",
         "status": "uploaded",
@@ -529,7 +605,7 @@ def reviewer_runs_upload(
         "doctor": doctor_result,
         "upload": post_upload_payload(
             payload=payload,
-            endpoint=endpoint,
+            endpoint=resolved_endpoint,
             token=token,
             timeout=timeout,
         ),
@@ -620,6 +696,8 @@ def repo_sync_upload(
     limit: int,
     endpoint: str,
     token_env: str,
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
     include_reports: bool,
     include_git_ref: bool,
     yes: bool,
@@ -656,6 +734,8 @@ def repo_sync_upload(
                         source=f"{source_prefix}-dogfood",
                         endpoint=endpoint,
                         token_env=token_env,
+                        token_file=token_file,
+                        token_dir=token_dir,
                         include_reports=include_reports,
                         yes=yes,
                         timeout=timeout,
@@ -671,6 +751,8 @@ def repo_sync_upload(
                         limit=limit,
                         endpoint=endpoint,
                         token_env=token_env,
+                        token_file=token_file,
+                        token_dir=token_dir,
                         yes=yes,
                         timeout=timeout,
                         include_git_ref=include_git_ref,
@@ -686,6 +768,8 @@ def repo_sync_upload(
                         limit=limit,
                         endpoint=endpoint,
                         token_env=token_env,
+                        token_file=token_file,
+                        token_dir=token_dir,
                         yes=yes,
                         timeout=timeout,
                         include_git_ref=include_git_ref,

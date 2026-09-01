@@ -273,9 +273,14 @@ code-mower cloud setup \
   --install-id "your-install-id" \
   --out ~/.config/code-mower/tokens/your-install-id.env
 
-source ~/.config/code-mower/tokens/your-install-id.env
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 ```
+
+`cloud setup` writes a sourceable private env file and records it as the current
+local cloud profile. Later upload commands can use that profile automatically
+after a restart. If several token profiles exist and none is current, pass
+`--install-id your-install-id`, pass `--token-file`, or source one profile before
+rerunning.
 
 To include report file contents:
 
@@ -309,8 +314,8 @@ The intended early-adopter flow is:
 1. sign in to CodeMower.com with GitHub, Google, or Apple;
 2. create or join a team;
 3. issue a team ingest token from the dashboard;
-4. run `code-mower cloud setup --token-stdin` to store it locally, or store it
-   directly in a CI secret; and
+4. run `code-mower cloud setup --token-stdin` to store it locally as the current
+   profile, or store it directly in a CI secret; and
 5. run `cloud doctor`, `cloud upload --dry-run`, then `cloud upload --yes`.
 
 The local OSS package does not require login for local export, local value
@@ -421,11 +426,15 @@ Use this checklist before turning on `--yes`:
 3. Keep `--include-git-ref` off unless your team has decided that branch names
    and head SHAs are acceptable metadata.
 4. Use a small `--limit` first, then widen if the dashboard value is useful.
-5. Upload only after loading a team token:
+5. Upload only after configuring a team token:
 
    ```bash
-   source ~/.config/code-mower/tokens/your-install-id.env
-   code-mower cloud catch-up --repo-slug owner/repo --limit 50 --yes --json
+   code-mower cloud catch-up \
+     --repo-slug owner/repo \
+     --install-id your-install-id \
+     --limit 50 \
+     --yes \
+     --json
    ```
 
 6. After the one-time catch-up, prefer `code-mower cloud dogfood --yes --json`
@@ -445,8 +454,11 @@ code-mower cloud reviewer-runs --repo-slug owner/repo --json
 After inspecting the dry run:
 
 ```bash
-source ~/.config/code-mower/tokens/your-install-id.env
-code-mower cloud reviewer-runs --repo-slug owner/repo --yes --json
+code-mower cloud reviewer-runs \
+  --repo-slug owner/repo \
+  --install-id your-install-id \
+  --yes \
+  --json
 ```
 
 `reviewer-runs` also reads `.code-mower/reviewer-spend.json` when present and

@@ -8,7 +8,7 @@ same provider warnings.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.6.0b1
+pipx install --python python3.12 code-mower==0.6.0b2
 code-mower --version
 ```
 
@@ -16,7 +16,7 @@ Expected shape:
 
 ```text
 Python 3.12.x
-code-mower 0.6.0b1
+code-mower 0.6.0b2
 ```
 
 ## Generate Local Setup

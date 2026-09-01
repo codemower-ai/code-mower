@@ -42,6 +42,9 @@ if __package__ in {None, ""}:
         read_token_file as _read_token_file,
         render_bundle_readme,
         render_cloud_doctor_text,
+        require_upload_token,
+        resolve_cloud_endpoint,
+        resolve_cloud_token,
         render_setup_env,
         repo_slug_from_remote as _repo_slug_from_remote,
         repo_sync_output_name as _repo_sync_output_name,
@@ -92,6 +95,9 @@ else:  # pragma: no cover - exercised after package extraction.
         read_token_file as _read_token_file,
         render_bundle_readme,
         render_cloud_doctor_text,
+        require_upload_token,
+        resolve_cloud_endpoint,
+        resolve_cloud_token,
         render_setup_env,
         repo_slug_from_remote as _repo_slug_from_remote,
         repo_sync_output_name as _repo_sync_output_name,
@@ -137,8 +143,11 @@ __all__ = [
     "build_cloud_bundle",
     "build_upload_payload",
     "post_upload_payload",
+    "require_upload_token",
     "render_bundle_readme",
     "render_setup_env",
+    "resolve_cloud_endpoint",
+    "resolve_cloud_token",
     "run_cloud_doctor",
     "run_cloud_setup",
     "validate_metadata_payload",
@@ -290,6 +299,23 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
     )
     upload.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    upload.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help="token env file or raw token file to use when token env is not set",
+    )
+    upload.add_argument(
+        "--token-dir",
+        type=Path,
+        default=None,
+        help="directory with Code Mower Cloud token profiles",
+    )
+    upload.add_argument(
+        "--install-id",
+        default="",
+        help="stored token profile name to use when token env is not set",
+    )
     upload.add_argument("--include-reports", action="store_true")
     upload.add_argument("--dry-run", action="store_true")
     upload.add_argument(
@@ -312,6 +338,23 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
     )
     doctor.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    doctor.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help="token env file or raw token file to check when token env is not set",
+    )
+    doctor.add_argument(
+        "--token-dir",
+        type=Path,
+        default=None,
+        help="directory with Code Mower Cloud token profiles",
+    )
+    doctor.add_argument(
+        "--install-id",
+        default="",
+        help="stored token profile name to check when token env is not set",
+    )
     doctor.add_argument(
         "--probe-service",
         action="store_true",
@@ -354,6 +397,18 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
     )
     dogfood.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    dogfood.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help="token env file or raw token file to use when token env is not set",
+    )
+    dogfood.add_argument(
+        "--token-dir",
+        type=Path,
+        default=None,
+        help="directory with Code Mower Cloud token profiles",
+    )
     dogfood.add_argument("--include-reports", action="store_true")
     dogfood.add_argument(
         "--yes",
@@ -389,6 +444,18 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
     )
     catch_up.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    catch_up.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help="token env file or raw token file to use when token env is not set",
+    )
+    catch_up.add_argument(
+        "--token-dir",
+        type=Path,
+        default=None,
+        help="directory with Code Mower Cloud token profiles",
+    )
     catch_up.add_argument(
         "--yes",
         action="store_true",
@@ -452,6 +519,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     reviewer_runs.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
     reviewer_runs.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help="token env file or raw token file to use when token env is not set",
+    )
+    reviewer_runs.add_argument(
+        "--token-dir",
+        type=Path,
+        default=None,
+        help="directory with Code Mower Cloud token profiles",
+    )
+    reviewer_runs.add_argument(
         "--yes",
         action="store_true",
         help="perform the network upload; without this, reviewer-runs is a dry run",
@@ -498,6 +577,18 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
     )
     repo_sync.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    repo_sync.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help="token env file or raw token file to use when token env is not set",
+    )
+    repo_sync.add_argument(
+        "--token-dir",
+        type=Path,
+        default=None,
+        help="directory with Code Mower Cloud token profiles",
+    )
     repo_sync.add_argument("--include-reports", action="store_true")
     repo_sync.add_argument(
         "--yes",
@@ -535,6 +626,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Token: {result['token_prefix']}")
                 if result["status"] == "written":
                     print(f"Load it with: {result['shell']}")
+                    print(f"Current profile: {result['current_profile']}")
             return 0
         if args.command == "export":
             events = [
@@ -569,11 +661,18 @@ def main(argv: list[str] | None = None) -> int:
                 bundle_dir=args.bundle_dir,
                 include_reports=args.include_reports,
             )
+            token_resolution = resolve_cloud_token(
+                token_env=args.token_env,
+                token_file=args.token_file,
+                token_dir=args.token_dir,
+                install_id=args.install_id,
+            )
+            resolved_endpoint = resolve_cloud_endpoint(args.endpoint, token_resolution)
             dry_run = args.dry_run or not args.yes
             if dry_run:
                 preview = {
                     "mode": "cloud-upload-dry-run",
-                    "endpoint": args.endpoint,
+                    "endpoint": resolved_endpoint,
                     "would_upload": False,
                     "requires_yes": not args.yes,
                     "upload_mode": payload["upload_mode"],
@@ -592,14 +691,14 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Events: {preview['event_count']}")
                     print("Network: skipped (pass --yes to upload)")
                 return 0
-            token = os.environ.get(args.token_env, "")
-            if not token and not _is_local_http_endpoint(args.endpoint):
-                raise CloudBundleError(
-                    f"{args.token_env} is not set; refusing non-local upload without a token"
-                )
+            token = require_upload_token(
+                endpoint=resolved_endpoint,
+                resolution=token_resolution,
+                local_endpoint=_is_local_http_endpoint(resolved_endpoint),
+            )
             result = post_upload_payload(
                 payload=payload,
-                endpoint=args.endpoint,
+                endpoint=resolved_endpoint,
                 token=token,
                 timeout=args.timeout,
             )
@@ -615,6 +714,9 @@ def main(argv: list[str] | None = None) -> int:
                 bundle_dir=args.bundle_dir,
                 endpoint=args.endpoint,
                 token_env=args.token_env,
+                token_file=args.token_file,
+                token_dir=args.token_dir,
+                install_id=args.install_id,
                 probe_service=args.probe_service,
                 timeout=args.timeout,
             )
@@ -636,6 +738,8 @@ def main(argv: list[str] | None = None) -> int:
                 source=args.source,
                 endpoint=args.endpoint,
                 token_env=args.token_env,
+                token_file=args.token_file,
+                token_dir=args.token_dir,
                 include_reports=args.include_reports,
                 yes=args.yes,
                 timeout=args.timeout,
@@ -664,6 +768,8 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.limit,
                 endpoint=args.endpoint,
                 token_env=args.token_env,
+                token_file=args.token_file,
+                token_dir=args.token_dir,
                 yes=args.yes,
                 timeout=args.timeout,
                 include_git_ref=args.include_git_ref,
@@ -700,6 +806,8 @@ def main(argv: list[str] | None = None) -> int:
                 offset=args.offset,
                 endpoint=args.endpoint,
                 token_env=args.token_env,
+                token_file=args.token_file,
+                token_dir=args.token_dir,
                 yes=args.yes,
                 timeout=args.timeout,
                 include_git_ref=args.include_git_ref,
@@ -733,6 +841,8 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.limit,
                 endpoint=args.endpoint,
                 token_env=args.token_env,
+                token_file=args.token_file,
+                token_dir=args.token_dir,
                 include_reports=args.include_reports,
                 include_git_ref=args.include_git_ref,
                 yes=args.yes,

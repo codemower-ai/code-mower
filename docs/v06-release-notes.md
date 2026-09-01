@@ -1,7 +1,7 @@
-# Code Mower v0.6.0-beta.1 Release Notes
+# Code Mower v0.6.0-beta.2 Release Notes
 
 This release finishes the v0.6 provider-contract hardening workstream. Install
-the pinned beta with `pipx install --python python3.12 code-mower==0.6.0b1`.
+the pinned beta with `pipx install --python python3.12 code-mower==0.6.0b2`.
 
 ## Headline
 
@@ -40,6 +40,9 @@ runtimes, and capture builder/reviewer metadata without uploading source.
   snapshot of active PR lanes, audit/gate labels, major checks, recent Code
   Mower workflows, local AgentTrail boards, likely local lane processes, and
   the next action. `--json` emits a stable metadata-only shape.
+- `code-mower cloud setup` now records the current local cloud token profile,
+  and upload-style cloud commands can resolve it after shell or app restarts
+  while still refusing ambiguous profiles and requiring explicit `--yes`.
 - Public docs now steer cold adopters through the reviewer gate first, then the
   build loop, then builder experiments and optional provider research.
 

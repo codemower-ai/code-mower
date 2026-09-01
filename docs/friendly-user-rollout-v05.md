@@ -23,10 +23,10 @@ Use the current beta install pin unless a newer release is explicitly called out
 in the invite:
 
 ```bash
-pipx install --python python3.12 code-mower==0.6.0b1
+pipx install --python python3.12 code-mower==0.6.0b2
 ```
 
-The current public beta baseline is `v0.6.0-beta.1`, with pinned package-index install spec `code-mower==0.6.0b1`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
+The current public beta baseline is `v0.6.0-beta.2`, with pinned package-index install spec `code-mower==0.6.0b2`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
 
 ## Invite Criteria
 

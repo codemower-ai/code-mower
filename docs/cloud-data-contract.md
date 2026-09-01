@@ -251,6 +251,12 @@ code-mower cloud setup \
   --out ~/.config/code-mower/tokens/your-install-id.env
 ```
 
+`cloud setup` writes a sourceable `0600` env file and records it as the current
+local cloud profile. Upload commands resolve tokens from the live env first,
+then explicit `--token-file`, then `--install-id`, then the current profile, then
+one unambiguous stored profile. If multiple stored token files exist without a
+current selection, Code Mower refuses to guess and reports filenames only.
+
 The hosted service stores token hashes and short prefixes, not full token
 values. A token can be revoked without rotating every team credential.
 
@@ -271,7 +277,6 @@ code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
 Nothing uploads unless `--yes` is supplied:
 
 ```bash
-source ~/.config/code-mower/tokens/your-install-id.env
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 ```
 

@@ -193,10 +193,16 @@ def run_cloud_setup(
     )
     if not dry_run:
         write_setup_env_file(path=target, text=env_text, force=force)
+        from .tokens import write_current_token_profile
+
+        current_profile = write_current_token_profile(target)
+    else:
+        current_profile = target.parent / ".current-profile"
     return {
         "mode": "cloud-setup",
         "status": "dry_run" if dry_run else "written",
         "path": str(target),
+        "current_profile": str(current_profile),
         "endpoint": endpoint,
         "team_id": team_id,
         "install_id": resolved_install_id,
