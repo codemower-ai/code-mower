@@ -98,6 +98,13 @@ intervention count. They exist so CodeMower.com can connect
 without receiving source, issue bodies, diffs, prompts, transcripts,
 stdout/stderr, auth output, or secrets.
 
+Local `code_mower.authoringRun.v1` artifacts from `builder-experiment run` may
+also be passed as `--event builder_run=PATH`. The OSS uploader converts them to
+the normalized `builder_run` event shape and uploads only metadata such as
+provider, model, branch/PR, elapsed time, command hash, and
+`command_output_capture: disabled`; local privacy markers and executor details
+that use raw-output vocabulary are not uploaded as event keys.
+
 Calibration and value-report uploads may add optional automated-vs-manual
 metadata to reviewer summaries and `reviewer_run`-shaped rows:
 `manual_outcome` (`pass`, `blocked`, or `unknown`), `automated_vs_manual`

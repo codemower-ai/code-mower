@@ -9,6 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from code_mower import builder_experiment
+from code_mower.cloud_client import EVENT_SCHEMA, parse_event_args
 
 SPEC = {
     "version": 1,
@@ -76,6 +77,21 @@ class BuilderExperimentExecutorTest(unittest.TestCase):
             self.assertEqual(success["branch"], "codex/example")
             self.assertEqual(success["executor"]["exit_code"], 0)  # type: ignore[index]
             self.assertFalse(success["privacy"]["raw_stdout_stderr"])  # type: ignore[index]
+            cloud_events = parse_event_args([f"builder_run={success_path}"])
+            self.assertEqual(len(cloud_events), 1)
+            self.assertEqual(cloud_events[0]["schema"], EVENT_SCHEMA)
+            self.assertEqual(cloud_events[0]["event_type"], "builder_run")
+            self.assertEqual(cloud_events[0]["source"], "code-mower-builder-experiment")
+            self.assertEqual(cloud_events[0]["metrics"]["elapsed_seconds"], success["elapsed_seconds"])
+            self.assertEqual(
+                cloud_events[0]["dimensions"]["command_output_capture"],
+                "disabled",
+            )
+            self.assertNotIn("SECRET_OUTPUT", json.dumps(cloud_events[0]))
+            normalized_cloud_event = json.dumps(cloud_events[0])
+            self.assertNotIn("command_executable", normalized_cloud_event)
+            self.assertNotIn('"stdout_stderr":', normalized_cloud_event)
+            self.assertNotIn('"raw_stdout_stderr":', normalized_cloud_event)
 
             failure = invoke(
                 root / "failure.json",
