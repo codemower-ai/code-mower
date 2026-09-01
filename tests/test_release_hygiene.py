@@ -14,7 +14,7 @@ import tomllib
 import unittest
 import urllib.error
 from argparse import Namespace
-from contextlib import nullcontext, redirect_stdout
+from contextlib import ExitStack, nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -1234,11 +1234,26 @@ jobs:
                     return (commit_pull_requests or {}).get(head) or []
                 raise AssertionError(f"unexpected gh api endpoint: {path}")
 
-            action_patch = mock.patch.object(
-                audit_labeler_lib,
-                "github_request_with_fallback",
-                fake_github_request,
+            action_patch = ExitStack()
+            action_patch.enter_context(
+                mock.patch.object(
+                    audit_labeler_lib,
+                    "github_request_with_fallback",
+                    fake_github_request,
+                )
             )
+            try:
+                from tools import audit_labeler_lib as tools_audit_labeler_lib
+            except ImportError:
+                tools_audit_labeler_lib = None
+            if tools_audit_labeler_lib is not None:
+                action_patch.enter_context(
+                    mock.patch.object(
+                        tools_audit_labeler_lib,
+                        "github_request_with_fallback",
+                        fake_github_request,
+                    )
+                )
         try:
             with (
                 mock.patch.dict(
@@ -3144,6 +3159,10 @@ jobs:
             self.assertIn("CODE_MOWER_AUDIT_RUN", gate)
             self.assertIn("comment_id", gate)
             self.assertIn("body_sha256", gate)
+            self.assertIn("  pull_request_target:", gate)
+            self.assertNotIn("  pull_request:\n", gate)
+            self.assertIn("github.event_name == 'pull_request_target'", gate)
+            self.assertNotIn("github.event_name == 'pull_request' &&", gate)
             self.assertIn("Clear stale Code Mower gate override", gate)
             self.assertIn("github_actions_comment_attested", gate)
             self.assertIn("github_actions_workflows", gate)

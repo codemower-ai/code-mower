@@ -2,7 +2,7 @@
 name: Code Mower gate
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
   workflow_run:
     workflows: ["Code Mower Local CLI Audits"]
@@ -49,7 +49,7 @@ jobs:
 
       - name: Clear stale Code Mower gate override
         if: >-
-          github.event_name == 'pull_request' &&
+          github.event_name == 'pull_request_target' &&
           github.event.action == 'synchronize' &&
           env.CODE_MOWER_GATE_OVERRIDE_LABEL != ''
         env:
