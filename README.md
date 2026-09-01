@@ -309,6 +309,8 @@ scripts/dev-python -m venv .venv
 ```
 
 The wrapper resolves Python 3.12+ and refuses stale or old system Python shims.
+Do not run the CLI by hand-wiring source import paths; install the editable venv
+first so local work exercises the same package entrypoint users install.
 
 ## Known Limitations
 
