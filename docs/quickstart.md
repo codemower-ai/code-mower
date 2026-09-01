@@ -38,6 +38,9 @@ scripts/dev-python -m venv .venv
 .venv/bin/python -m pip install -e .
 ```
 
+Avoid hand-wiring source import paths to run the CLI; use the editable venv so
+your checkout follows the same package-first path as the public install.
+
 If `code-mower` is not on your path:
 
 ```bash
