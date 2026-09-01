@@ -1,6 +1,6 @@
 # Code Mower v0.6 Truth Baseline
 
-Last verified: 2026-08-31 PT.
+Last verified: 2026-09-01 PT.
 
 This note is the starting baseline for the v0.6 provider-contract hardening
 queue. It records facts that later refactors should preserve, especially where
@@ -8,13 +8,11 @@ external reviewer feedback has been plausible but stale or too broad.
 
 ## Release Baseline
 
-- The current public GitHub release observed for the OSS package is
-  `v0.5.0-beta.53`.
-- The matching package-index spec observed for installation is
-  `code-mower==0.5.0b53`.
-- The beta line stays active while v0.6 work lands. Do not rename generated
-  workflow files or break package-backed product-repo consumption while the
-  v0.5 betas remain the adoption path.
+- The current v0.6 release target for the OSS package is `v0.6.0-beta.1`.
+- The matching package-index spec for installation is `code-mower==0.6.0b1`.
+- The beta line stays active while v0.6 proves adoption. Do not rename
+  generated workflow files or break package-backed product-repo consumption
+  while beta installs remain the adoption path.
 
 ## Provider Runner Facts
 

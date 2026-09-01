@@ -14,8 +14,9 @@ environment before they are treated as shareable.
 schema-structuring phase inherited a repository check that only made sense from
 an editable source checkout. `v0.5.0-beta.8` fixed that by making the
 installed-package transport path explicit and then validating it from the public
-tag. `v0.5.0-beta.53` keeps that installed-package gate and carries the same
-provenance discipline into stale-audit, catch-up, and dashboard trust work.
+tag. `v0.6.0-beta.1` keeps that installed-package gate and carries the same
+provenance discipline into provider-contract, stale-audit, catch-up, and
+dashboard trust work.
 
 Going forward, package-install rehearsal is release-gating, not optional polish.
 
@@ -32,13 +33,13 @@ workflow history as reviewer-value evidence.
 
 `v0.5.0-beta.49` added a dedicated authenticated lineage drilldown for the
 planning and execution chain: issue -> posted plan -> work order -> pull
-request -> reviewer checks -> merge -> upload. `v0.5.0-beta.53` carries that
+request -> reviewer checks -> merge -> upload. `v0.6.0-beta.1` carries that
 trust surface forward while adding the owner-bound WIP, lane-liveness,
-fix-round, human-token, owner-decision, and provider-namespace hardening from
-the #391 follow-up. The lineage page shows which chain stages are present,
-which metadata class each upload belongs to, and what still needs
-instrumentation before CodeMower.com can claim stronger builder/reviewer
-benchmark conclusions.
+fix-round, human-token, owner-decision, provider-namespace, builder-experiment,
+and lane-status hardening from the later dogfood follow-ups. The lineage page
+shows which chain stages are present, which metadata class each upload belongs
+to, and what still needs instrumentation before CodeMower.com can claim
+stronger builder/reviewer benchmark conclusions.
 
 ## Dogfood Is Not Historical Backfill
 

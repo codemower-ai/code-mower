@@ -50,7 +50,7 @@ audit evidence, skip to section 2.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b53
+pipx install --python python3.12 code-mower==0.6.0b1
 gh auth status
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
@@ -62,12 +62,15 @@ git add .github tools calibration-corpus.json context-packs.json \
   reviewer-spend.json reviewer-value-report.example.md
 git commit -m "chore: add code mower reviewer gate"
 git push -u origin HEAD
+cat > /tmp/code-mower-reviewer-gate-pr.md <<'CM_BODY'
+Install Code Mower generated reviewer-gate support.
+CM_BODY
 gh pr create \
   --repo "$REPO" \
   --base "$DEFAULT_BRANCH" \
   --head "$(git branch --show-current)" \
   --title "chore: add Code Mower reviewer gate" \
-  --body "Install Code Mower generated reviewer-gate support."
+  --body-file /tmp/code-mower-reviewer-gate-pr.md
 export PR_NUMBER="$(gh pr view --repo "$REPO" --json number --jq .number)"
 gh pr edit "$PR_NUMBER" --repo "$REPO" \
   --add-label needs-codex-audit \
@@ -334,12 +337,15 @@ git add .github tools docs/lanes calibration-corpus.json context-packs.json \
   reviewer-spend.json reviewer-value-report.example.md
 git commit -m "chore: add code mower build loop"
 git push -u origin HEAD
+cat > /tmp/code-mower-build-loop-pr.md <<'CM_BODY'
+Add generated Code Mower build-loop workflows, runner script, and lane standing instructions.
+CM_BODY
 gh pr create \
   --repo "$REPO" \
   --base "$DEFAULT_BRANCH" \
   --head "$(git branch --show-current)" \
   --title "chore: add Code Mower build loop" \
-  --body "Add generated Code Mower build-loop workflows, runner script, and lane standing instructions."
+  --body-file /tmp/code-mower-build-loop-pr.md
 export PR_NUMBER="$(gh pr view --repo "$REPO" --json number --jq .number)"
 gh pr edit "$PR_NUMBER" --repo "$REPO" \
   --add-label needs-codex-audit \
@@ -411,17 +417,20 @@ gh variable set LANE_MAC_RUNNER_ENABLED --repo "$REPO" --body true
 Create a small, low-risk issue. Pick one builder lane. This example uses Codex.
 
 ```bash
-ISSUE_URL="$(gh issue create \
-  --repo "$REPO" \
-  --title "Code Mower build-loop smoke" \
-  --body "## Goal
+cat > /tmp/code-mower-build-loop-smoke.md <<'CM_BODY'
+## Goal
 Make one tiny docs or test-fixture change that proves the build loop can open a PR.
 
 ## Acceptance
 - Open exactly one PR.
 - Keep the PR small.
 - Do not deploy, publish, change credentials, or touch releases.
-- Request the configured peer audit before exiting." \
+- Request the configured peer audit before exiting.
+CM_BODY
+ISSUE_URL="$(gh issue create \
+  --repo "$REPO" \
+  --title "Code Mower build-loop smoke" \
+  --body-file /tmp/code-mower-build-loop-smoke.md \
   --label "tier:R" \
   --label "builder:codex")"
 export ISSUE_NUMBER="${ISSUE_URL##*/}"
@@ -520,8 +529,8 @@ with `gh` authenticated as a repository admin:
 >    tag** and follow them rather than improvising.
 > 2. Install the package version derived from that same tag with
 >    `pipx install --python python3.12 code-mower==<that version>`. For
->    example, if the tag is `v0.5.0-beta.53`, install
->    `code-mower==0.5.0b53`. Verify `code-mower --version` matches the tag
+>    example, if the tag is `v0.6.0-beta.1`, install
+>    `code-mower==0.6.0b1`. Verify `code-mower --version` matches the tag
 >    before continuing.
 > 3. Reviewer gate first: `code-mower init --easy` (dry-run), review the plan,
 >    then `--apply`; run `code-mower doctor --preflight` and get every check

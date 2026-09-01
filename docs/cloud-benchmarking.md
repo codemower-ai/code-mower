@@ -29,11 +29,11 @@ observability/evaluation backend.
 
 ## Release Stages
 
-### v0.5: Early-Adopter Upload Alpha
+### v0.6: Early-Adopter Upload Beta
 
-The v0.5 path adds an opt-in upload client for early adopters who explicitly
-want to share sanitized benchmark metadata with Code Mower Cloud. The OSS tool
-is still local-first:
+The current beta path keeps cloud sharing opt-in for early adopters who
+explicitly want to share sanitized benchmark metadata with Code Mower Cloud.
+The OSS tool is still local-first:
 
 ```bash
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json

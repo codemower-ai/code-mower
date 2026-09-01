@@ -4,18 +4,41 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
-## v0.5.0-beta.53
+## v0.6.0-beta.1
 
-This beta prepares the tagged docs and package metadata for the Cursor lane
-rename follow-up.
+This beta finishes the v0.6 provider-contract hardening workstream and makes
+the cold-adopter loop clearer: install, preflight, observe active lanes, run
+manual reviewer gates, calibrate before promotion, and optionally upload
+metadata-only evidence to CodeMower.com.
+
+### Added
+
+- `code-mower lanes status --repo OWNER/REPO` gives operators one concise,
+  read-only snapshot of active PR lanes, labels/checks, recent Code Mower
+  workflows, gate alerts, local AgentTrail boards, likely local lane processes,
+  and the next action (#470, #471).
+- `code-mower builder-experiment run` records source-free authoring-run
+  metadata around an explicit local command, including timing, status,
+  branch/PR, command hash, and builder provenance (#458, #459).
+- `code-mower providers antigravity-sdk-probe` adds an optional metadata-only
+  SDK readiness probe for future Antigravity SDK work without calling auth or a
+  model by default (#456, #457).
 
 ### Changed
 
-- The hosted Cursor builder lane id and label are now documented as `cursor`
-  instead of `grok-bot`, while the migration window still accepts the legacy
-  `grok-bot` inputs and labels (#429).
-- Tagged docs now include the getting-started and promotion-timing fixes, plus
-  the section 8 orchestrator prompt that the beta.52 tag predated (#428).
+- Provider output parsing is fixture-locked, schema-validated, and backed by
+  incremental `code_mower.provider_runners` helpers for comments, exit codes,
+  worktrees, PR metadata, subprocess handling, and verdict artifacts (#442,
+  #444, #445, #447).
+- Static checks are stricter in low-noise areas while keeping the beta package
+  lightweight (#449).
+- Antigravity CLI stays manual/informational, with clearer lane identity,
+  doctor/auth posture, and provenance separation from Gemini CLI (#451, #453).
+- Builder-run upload mapping now accepts local `authoringRun` artifacts as
+  normalized metadata-only `builder_run` cloud events (#468, #469).
+- README, quickstart, build-loop, release, and rollout docs now describe the
+  v0.6 adoption path, lane-status command, safe GitHub Markdown posting, and
+  release procedure consistently (#467, #470, #472).
 
 ## v0.5.0-beta.52
 

@@ -1,8 +1,7 @@
-# Code Mower v0.6 Release Notes Draft
+# Code Mower v0.6.0-beta.1 Release Notes
 
-This is the draft release note for the v0.6 provider-contract hardening
-workstream. The package beta line remains `0.5.0b53` until the next tagged beta
-is cut; update the concrete version and release link during release execution.
+This release finishes the v0.6 provider-contract hardening workstream. Install
+the pinned beta with `pipx install --python python3.12 code-mower==0.6.0b1`.
 
 ## Headline
 
@@ -37,6 +36,10 @@ runtimes, and capture builder/reviewer metadata without uploading source.
 - `code-mower builder-experiment run` wraps an explicit local command and writes
   a source-free `code_mower.authoringRun.v1` artifact with timing, status,
   builder, branch/PR, and command-hash metadata.
+- `code-mower lanes status --repo OWNER/REPO` gives operators one read-only
+  snapshot of active PR lanes, audit/gate labels, major checks, recent Code
+  Mower workflows, local AgentTrail boards, likely local lane processes, and
+  the next action. `--json` emits a stable metadata-only shape.
 - Public docs now steer cold adopters through the reviewer gate first, then the
   build loop, then builder experiments and optional provider research.
 
@@ -44,6 +47,8 @@ runtimes, and capture builder/reviewer metadata without uploading source.
 
 - Start with [Try Code Mower In 10 Minutes](try-in-10-minutes.md), then move to
   [Build Loop In 30 Minutes](build-loop-in-30-minutes.md).
+- After `init` and `doctor`, run `code-mower lanes status --repo OWNER/REPO` to
+  see what is active and what is waiting.
 - During a pilot, keep reviewer lanes informational and merge manually.
 - Promote reviewer lanes only when local known-clean and known-blocked evidence
   meets [Lane Promotion Policy](lane-promotion-policy.md).

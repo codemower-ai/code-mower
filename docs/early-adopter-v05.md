@@ -137,7 +137,7 @@ Cut a v0.5 alpha or beta only after:
 
 ## Current Beta
 
-`v0.5.0-beta.53` is the current friendly-user beta. It keeps the
+`v0.6.0-beta.1` is the current friendly-user beta. It keeps the
 local-first package path from alpha.1, the cloud doctor service-readiness check
 from alpha.5, the hardened provider-auth doctor diagnostics needed for
 early-adopter troubleshooting, the dogfood dry-run path that feeds the
@@ -147,10 +147,12 @@ It also adds a first-user readiness scorecard to the package-install rehearsal
 so install, doctor, report, and cloud dry-run privacy gates can be checked at a
 glance, and it carries provider/model/version provenance through cloud bundles
 so CodeMower.com can separate benchmark-grade evidence from operational
-dogfood. The current beta also renames the hosted Cursor lane id and label to
-`cursor`, while accepting legacy `grok-bot` inputs during the migration window.
-The beta.52 dogfood follow-up keeps owner-bound work out of lane WIP, adds
-lane-liveness and fix-round template support, makes human-token posture
+dogfood. The current beta also adds the v0.6 provider-contract hardening queue,
+the `code-mower lanes status` operator snapshot, Antigravity/Gemini lane
+separation, builder-experiment metadata capture, and the hosted Cursor lane id
+as `cursor` while accepting legacy `grok-bot` inputs during the migration
+window. The beta.52 dogfood follow-up keeps owner-bound work out of lane WIP,
+adds lane-liveness and fix-round template support, makes human-token posture
 first-class in setup/doctor, separates owner-decision escalation from raw owner
 notifications, and teaches provider-integration prompts to avoid ambiguous
 sandbox/live shared namespaces. Earlier alpha hardening also keeps the package

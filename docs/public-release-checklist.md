@@ -11,12 +11,11 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha/beta releases and reports its version with
   `code-mower --version`.
-- The v0.5 beta entrypoint for the prepared beta.53 release is
-  `code-mower==0.5.0b53`, with `code-mower doctor --preflight` as the first-run
-  setup diagnostic. It is to be published and rehearsed as part of the
-  `v0.5.0-beta.53` release execution, with evidence recorded on the release
-  after the workflow runs complete. The corresponding GitHub tag is
-  `v0.5.0-beta.53`; `doctor --v05` remains the versioned equivalent for scripts.
+- The v0.6 beta entrypoint is `code-mower==0.6.0b1`, with
+  `code-mower doctor --preflight` as the first-run setup diagnostic and
+  `code-mower lanes status --repo OWNER/REPO` as the operator snapshot. The
+  corresponding GitHub tag is `v0.6.0-beta.1`; `doctor --v05` remains a
+  compatibility alias for scripts.
 - The README now shows a shortened `doctor --preflight` example so fresh users can
   see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and
@@ -123,9 +122,10 @@ interpreter.
 ## Recommended Before v1.0
 
 - Publish a short "easy mode" walkthrough using a toy repo.
-- Publish a GitHub Release for the current public release tag, mark alpha/beta
-  tags as prereleases in GitHub, and explicitly mark the newest beta as the
-  latest release so GitHub does not keep advertising an older alpha.
+- Publish a GitHub Release for the current public release tag, keep the title
+  and notes explicit that it is beta software, and leave the prerelease flag off
+  for the newest beta until v1.0 so GitHub's latest-release endpoint resolves
+  for early adopters.
 - Confirm the release workflow builds source/wheel distributions for every
   public alpha.
 - Configure PyPI trusted publishing before widening beyond friendly alpha users,

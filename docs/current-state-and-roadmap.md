@@ -1,7 +1,7 @@
 # Code Mower Current State And Roadmap
 
 This is the short source-of-truth snapshot for the public OSS package, the
-hosted CodeMower.com surface, and the near-term path to a shareable v0.5.
+hosted CodeMower.com surface, and the near-term path from v0.6 beta to v1.0.
 
 ## Positioning
 
@@ -25,7 +25,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The prepared public beta baseline is `v0.5.0-beta.53`; it is to be published and rehearsed as part of the `v0.5.0-beta.53` release execution, with evidence recorded on the release after the workflow runs complete. The pinned package-index install spec is `code-mower==0.5.0b53`.
+The current public beta baseline is `v0.6.0-beta.1`, with pinned package-index install spec `code-mower==0.6.0b1`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
 It is intended to be installed from the package index for friendly-user pilots,
 with GitHub tag/source installs kept as a fallback and development path. This
 baseline keeps the PyPI-first install path, trusted publishing, release
@@ -33,7 +33,7 @@ rehearsal, production dogfood upload shape, catch-up provenance, stale-audit
 inspection, AI tool/model source diagnostics, CodeMower.com trust guidance,
 generated gate hardening, owner-bound WIP hygiene, lane liveness checks,
 fix-round templates, human-token diagnostics, owner-decision escalation, and
-provider sandbox/live guardrails in one prepared release line.
+provider sandbox/live guardrails in one coherent beta release line.
 The beta line has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
@@ -104,7 +104,7 @@ The beta line has proved:
 - provider-vs-lens effect-report output cleanup, so `--output` writes a
   human-readable report while `--json` remains structured stdout for automation;
   and
-- a v0.5 friendly-user rollout plan that turns install, doctor, first report,
+- a friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
 - a public PyPI package-install rehearsal from beta.52
@@ -164,7 +164,7 @@ The beta line has proved:
 - provider metadata helpers now live under `code_mower.providers`, including
   local CLI version probes used by doctor and cloud provenance. This is the
   start of the broader provider-adapter cleanup while keeping the CLI-first API
-  stable for v0.5 users.
+  stable for beta users.
 - Package materialization has started the same intentional split:
   package file manifests now live under `code_mower.package_manifest`, and
   generated package content builders and CLI command inventory now live under
@@ -185,7 +185,7 @@ The beta line has proved:
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
-The v0.6 provider-contract hardening queue starts from the dated
+The v0.6 provider-contract hardening queue started from the dated
 [v0.6 truth baseline](v06-truth-baseline.md), which records the current
 release, provider-runner, Gemini/Antigravity, SDK-research, and privacy-boundary
 facts that future refactors must preserve.
@@ -237,12 +237,12 @@ OAuth, Supabase, Vercel, DNS, and hosted-secret setup are CodeMower.com
 operator responsibilities. OSS users should only need a dashboard-issued or
 operator-issued developer/team token when they opt into cloud sharing.
 
-## v0.5 Early-Adopter Goal
+## v0.6 Early-Adopter Goal
 
-v0.5 should be shareable with 20-50 early OSS users who can follow a guide
+v0.6 should be shareable with 20-50 early OSS users who can follow a guide
 without knowing the original reference repos.
 
-The v0.5 experience should be:
+The v0.6 experience should be:
 
 1. install Code Mower from PyPI;
 2. run `code-mower init --easy`;
@@ -271,7 +271,7 @@ these questions in the first few minutes:
 - Where is the code intentionally structured, and where is it still being
   refactored from extraction-era shape?
 
-The v0.5-to-v1.0 work should optimize for that trust test. More provider
+The v0.6-to-v1.0 work should optimize for that trust test. More provider
 adapters are useful only after install, doctor, first report, privacy, and code
 structure feel boring and credible.
 
@@ -353,11 +353,12 @@ v1.0 should be "easy mode with a path to power":
   wholesale.
 
 GitLab, Bitbucket, ACP bridges, hosted builder harnesses that launch sessions,
-and fully automated authoring-run capture remain post-v1.0 work. v0.5 includes
-the first source-free builder provenance path via `code-mower builder record`:
-hosted builders can open a PR, then Code Mower records provider/executor,
-issue, work order, PR, branch, model/version hints, cost, latency, and
-intervention counts as metadata only.
+and fully automated authoring-run capture remain post-v1.0 work. v0.6 includes
+source-free builder provenance through `code-mower builder record` and the
+first subprocess-backed `code-mower builder-experiment run` path: hosted or
+local builders can open a PR, then Code Mower records provider/executor, issue,
+work order, PR, branch, model/version hints, timing, status, and intervention
+metadata without source, diffs, or transcripts.
 
 ## Builder And Orchestrator Direction
 
@@ -390,9 +391,9 @@ leaving room for future orchestrator adapters.
 
 1. Pass the senior-engineer readiness gate: README, quickstart, architecture,
    privacy, install, and first report should tell one coherent story.
-2. Finish the public/installable v0.5 path: docs, package install, doctor,
-   native checks, first audit, first value report, and optional cloud token
-   setup.
+2. Keep the public/installable v0.6 path boring: docs, package install, doctor,
+   lane status, native checks, first audit, first value report, and optional
+   cloud token setup.
 3. Make the public repository the unambiguous source of truth: keep public docs
    and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
    compatibility shims where they confuse contributors, and keep private
