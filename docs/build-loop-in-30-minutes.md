@@ -50,7 +50,7 @@ audit evidence, skip to section 2.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.6.0b1
+pipx install --python python3.12 code-mower==0.6.0b2
 gh auth status
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
@@ -529,8 +529,8 @@ with `gh` authenticated as a repository admin:
 >    tag** and follow them rather than improvising.
 > 2. Install the package version derived from that same tag with
 >    `pipx install --python python3.12 code-mower==<that version>`. For
->    example, if the tag is `v0.6.0-beta.1`, install
->    `code-mower==0.6.0b1`. Verify `code-mower --version` matches the tag
+>    example, if the tag is `v0.6.0-beta.2`, install
+>    `code-mower==0.6.0b2`. Verify `code-mower --version` matches the tag
 >    before continuing.
 > 3. Reviewer gate first: `code-mower init --easy` (dry-run), review the plan,
 >    then `--apply`; run `code-mower doctor --preflight` and get every check

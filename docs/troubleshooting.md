@@ -105,6 +105,29 @@ output, treat it as audit infrastructure, not a code-review BLOCKED verdict.
 Retry once on the same head; if it repeats, keep the lane informational or
 record an owner decision before relying on it.
 
+## Cloud Upload Says The Token Is Missing After Restart
+
+`code-mower cloud setup --token-stdin` writes a private token profile under
+`~/.config/code-mower/tokens/` and records the newest setup as the current local
+profile. Current `cloud doctor`, `cloud upload`, `cloud dogfood`,
+`cloud reviewer-runs`, and `cloud repo-sync` commands can load that profile even
+when `CODE_MOWER_CLOUD_TOKEN` is not set in the shell.
+
+If the machine has several token profiles and no current profile marker, Code
+Mower refuses to guess. Rerun with one of:
+
+```bash
+code-mower cloud doctor --install-id your-install-id
+code-mower cloud upload .code-mower/cloud-benchmark-bundle \
+  --token-file ~/.config/code-mower/tokens/your-install-id.env \
+  --yes \
+  --json
+source ~/.config/code-mower/tokens/your-install-id.env
+```
+
+Doctor output lists token filenames and safe source commands only. It never
+prints token values.
+
 ## Gate Is Green But Auto-Merge Does Not Turn On
 
 The default GitHub Actions token can publish `code-mower/gate`, but it may not

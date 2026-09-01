@@ -102,7 +102,7 @@ observable.
 | C. Builder experiment | You want to compare authoring loops before trusting them broadly. | Use a work order or experiment spec, run `code-mower builder-experiment run` around an explicit command, then review the source-free `authoringRun` artifact and normal audit evidence. | [Builder Experiments](docs/builder-experiments.md) |
 
 The v0.6 beta announcement entry point is the tagged
-[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.6.0-beta.1/docs/try-in-10-minutes.md)
+[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.6.0-beta.2/docs/try-in-10-minutes.md)
 guide.
 
 ## What Calibration Does And Does Not Prove
@@ -132,7 +132,7 @@ Provider-contract baseline for the next release train:
 
 For release verification,
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the package-index procedure for `v0.6.0-beta.1` / `code-mower==0.6.0b1`. The
+the package-index procedure for `v0.6.0-beta.2` / `code-mower==0.6.0b2`. The
 GitHub release records the workflow and rehearsal evidence for the exact tag.
 
 ## Optional: Plan Before Coding
@@ -257,6 +257,12 @@ code-mower cloud setup \
   --out ~/.config/code-mower/tokens/your-laptop.env
 ```
 
+`cloud setup` stores a private `0600` token env file and records it as the
+current local cloud profile. Future `cloud doctor`, `cloud upload`, `cloud
+dogfood`, `cloud reviewer-runs`, and `cloud repo-sync` commands can load that
+profile automatically; pass `--install-id` or `--token-file` when a machine has
+multiple stored profiles.
+
 Cloud sharing details, historical catch-up, and repo-sync commands live in
 [docs/cloud-sharing.md](docs/cloud-sharing.md).
 
@@ -307,8 +313,8 @@ measurement work.
 
 ## Installation Status
 
-The current public beta baseline is `v0.6.0-beta.1`, with pinned package-index
-install spec `code-mower==0.6.0b1`. Release evidence is recorded on the GitHub
+The current public beta baseline is `v0.6.0-beta.2`, with pinned package-index
+install spec `code-mower==0.6.0b2`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. The public repository is
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), and
 GitHub releases remain the auditable source for tags, build artifacts, and

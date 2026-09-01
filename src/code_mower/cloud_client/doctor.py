@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shlex
 from pathlib import Path
 from typing import Any
@@ -18,6 +17,10 @@ from .endpoints import (
     validate_upload_endpoint,
 )
 from .errors import CloudBundleError
+from .tokens import (
+    resolve_cloud_endpoint,
+    resolve_cloud_token,
+)
 from .upload import build_upload_payload
 
 
@@ -84,12 +87,22 @@ def run_cloud_doctor(
     bundle_dir: Path,
     endpoint: str,
     token_env: str,
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
+    install_id: str = "",
     require_token: bool = True,
     probe_service: bool = False,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     endpoint_is_valid = False
+    token_resolution = resolve_cloud_token(
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    endpoint = resolve_cloud_endpoint(endpoint, token_resolution)
 
     try:
         _validate_upload_endpoint(endpoint)
@@ -122,13 +135,13 @@ def run_cloud_doctor(
             }
         )
 
-    token_present = bool(os.environ.get(token_env, ""))
-    if token_present:
+    if token_resolution.has_token:
         checks.append(
             {
                 "name": "token",
                 "status": "pass",
-                "message": f"{token_env} is set",
+                "message": token_resolution.message,
+                "detail": token_resolution.safe_detail(),
             }
         )
     elif is_local_http_endpoint(endpoint):
@@ -137,8 +150,9 @@ def run_cloud_doctor(
                 "name": "token",
                 "status": "warn",
                 "message": (
-                    f"{token_env} is not set; local configless ingest may still work"
+                    f"{token_resolution.message}; local configless ingest may still work"
                 ),
+                "detail": token_resolution.safe_detail(),
             }
         )
     elif not require_token:
@@ -146,11 +160,9 @@ def run_cloud_doctor(
             {
                 "name": "token",
                 "status": "warn",
-                "message": f"{token_env} is not set; upload will remain disabled",
-                "remediation": (
-                    "Run `code-mower cloud setup --token-stdin` or export "
-                    f"{token_env} before using --yes."
-                ),
+                "message": f"{token_resolution.message}; upload will remain disabled",
+                "detail": token_resolution.safe_detail(),
+                "remediation": token_resolution.remediation,
             }
         )
     else:
@@ -158,11 +170,9 @@ def run_cloud_doctor(
             {
                 "name": "token",
                 "status": "fail",
-                "message": f"{token_env} is not set",
-                "remediation": (
-                    "Set CODE_MOWER_CLOUD_TOKEN to a team ingest token before "
-                    "running cloud upload --yes."
-                ),
+                "message": token_resolution.message,
+                "detail": token_resolution.safe_detail(),
+                "remediation": token_resolution.remediation,
             }
         )
 
