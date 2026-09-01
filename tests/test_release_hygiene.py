@@ -490,7 +490,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertTrue(easy_config.exists())
         self.assertEqual(
             doctor_checks.default_check_group_ids(),
-            ("runtime", "github", "providers", "cloud", "output"),
+            ("runtime", "setup", "github", "providers", "cloud", "output"),
         )
         self.assertEqual(
             cloud_client.dashboard_url_for_endpoint("https://codemower.com/api/ingest"),
@@ -7299,7 +7299,10 @@ def main():
         package_step = next(
             step for step in plan["steps"] if step["id"] == "package-install-rehearsal"
         )
-        self.assertIn("doctor --preflight", doctor_step["command"])
+        self.assertIn(
+            "doctor --adoption --repo codemower-ai/code-mower",
+            doctor_step["command"],
+        )
         self.assertIn("code-mower==0.6.0b2", package_step["command"])
         self.assertIn("current published PyPI prerelease", package_step["why"])
         self.assertIn("first_user_readiness", package_step["why"])

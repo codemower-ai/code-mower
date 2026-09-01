@@ -67,12 +67,14 @@ paid or hosted lanes until your own calibration data supports them.
 ## 4. Run The Preflight Doctor
 
 ```bash
-code-mower doctor --preflight --json
+code-mower doctor --adoption --repo "$REPO" --json
 ```
 
-`--preflight` is the friendly first-run preset. `doctor --v05` remains the
-versioned compatibility alias for scripts. The preset expands to the checks
-early adopters need:
+`--adoption` is the friendly first-run preset for a real repository target.
+It includes preflight checks and reports when doctor is using packaged starter
+defaults before `code-mower.yml` exists. `doctor --v05` remains the versioned
+compatibility alias for scripts. The preset expands to the checks early
+adopters need:
 
 - recommended profile selection;
 - Python/runtime checks;

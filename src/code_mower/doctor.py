@@ -47,6 +47,8 @@ resolve_doctor_provider_templates_path = _doctor_checks.resolve_doctor_provider_
 run_doctor = _doctor_checks.run_doctor
 _token_file_mentions_cloud_token = _doctor_checks.token_file_mentions_cloud_token
 _apply_first_run_defaults = _doctor_checks.apply_first_run_defaults
+detect_repo_slug = _doctor_checks.detect_repo_slug
+normalize_repo_slug = _doctor_checks.normalize_repo_slug
 
 
 _DOCTOR_COMPAT_EXPORTS = (
@@ -101,6 +103,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--profile recommended --probe-runtime --github --cloud"
         ),
     )
+    parser.add_argument(
+        "--adoption",
+        action="store_true",
+        help=(
+            "first-run adoption preset: run preflight checks against the "
+            "explicit or inferred GitHub repository and surface setup gaps"
+        ),
+    )
+    parser.add_argument(
+        "--repo",
+        metavar="OWNER/REPO",
+        help=(
+            "GitHub repository to inspect; adoption mode infers remote.origin "
+            "when omitted"
+        ),
+    )
     parser.add_argument("--probe-runtime", action="store_true")
     parser.add_argument(
         "--github",
@@ -136,16 +154,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.adoption:
+        args.preflight = True
     _apply_first_run_defaults(args)
     if args.easy and args.profile is None:
         args.profile = "recommended"
 
     try:
+        repo_slug = ""
+        repo_source = ""
+        if args.repo:
+            repo_slug = normalize_repo_slug(args.repo, option="--repo")
+            repo_source = "explicit"
+        elif args.adoption:
+            repo_slug = detect_repo_slug(Path.cwd())
+            repo_source = "git_remote" if repo_slug else ""
         provider_templates_path = resolve_doctor_provider_templates_path(args.provider_templates)
         report = run_doctor(
             config_path=resolve_doctor_config_path(args.config, easy=args.easy),
             provider_templates_path=provider_templates_path,
             profile=args.profile,
+            repo_slug=repo_slug,
+            repo_source=repo_source,
+            adoption=args.adoption,
             probe_runtime=args.probe_runtime,
             github=args.github,
             cloud=args.cloud,
@@ -154,7 +185,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             actions_cost_sample=args.actions_cost_sample,
             actionlint_bin=args.actionlint_bin,
         )
-    except code_mower_config.ConfigError as exc:
+    except (code_mower_config.ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
