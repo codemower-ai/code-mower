@@ -7,8 +7,11 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
+import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -16,6 +19,7 @@ BUILDER_PLAN_MODE = "code-mower-builder-experiment-plan"
 BUILDER_PLAN_SCHEMA = "code_mower.builderExperimentPlan.v1"
 BUILDER_REPORT_MODE = "code-mower-builder-experiment-report"
 BUILDER_REPORT_SCHEMA = "code_mower.builderExperimentReport.v1"
+AUTHORING_RUN_SCHEMA = "code_mower.authoringRun.v1"
 SAFE_SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 DEFAULT_METRICS = (
     "elapsed_seconds",
@@ -37,6 +41,16 @@ def _safe_slug(value: Any, fallback: str = "item") -> str:
 
 def _stable_suffix(value: Any, length: int = 8) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:length]
+
+
+def _sha256_text(value: Any) -> str:
+    return "sha256:" + hashlib.sha256(
+        json.dumps(value, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _identity_slug(value: Any, fallback: str) -> str:
@@ -494,6 +508,111 @@ def render_report_text(report: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _load_plan_or_spec(
+    path: Path,
+    *,
+    output_dir: Path = Path(".code-mower/builder-experiments"),
+    replicates: int = 1,
+) -> dict[str, Any]:
+    payload = dict(_load_json(path))
+    if payload.get("schema") == BUILDER_PLAN_SCHEMA or payload.get("runs"):
+        return payload
+    return build_plan(normalize_spec(payload), output_dir=output_dir, replicates=replicates)
+
+
+def _planned_run(plan: Mapping[str, Any], run_id: str) -> Mapping[str, Any]:
+    for run in plan.get("runs", []) or []:
+        if isinstance(run, Mapping) and str(run.get("run_id") or "") == run_id:
+            return run
+    raise ValueError(f"run_id not found in builder experiment plan: {run_id}")
+
+
+def _safe_command_metadata(command: Sequence[str]) -> dict[str, Any]:
+    executable = Path(str(command[0])).name if command else ""
+    return {
+        "executable": executable,
+        "arg_count": len(command),
+        "argv_sha256": _sha256_text(list(command)),
+        "stdout_stderr": "not_captured",
+    }
+
+
+def run_authoring_subprocess(
+    planned_run: Mapping[str, Any],
+    *,
+    command: Sequence[str],
+    dry_run: bool = False,
+    cwd: Path | None = None,
+    timeout: float | None = None,
+    branch: str = "",
+    pull_request: str = "",
+) -> dict[str, Any]:
+    if not command:
+        raise ValueError("builder-experiment run requires an explicit command after --")
+    if cwd is not None and not cwd.is_dir():
+        raise ValueError(f"--cwd must be an existing directory: {cwd}")
+    started_at = _utc_now()
+    ended_at = started_at
+    elapsed_seconds = 0.0
+    status = "planned"
+    exit_code: int | None = None
+    if not dry_run:
+        started = time.monotonic()
+        try:
+            result = subprocess.run(
+                list(command),
+                cwd=str(cwd) if cwd is not None else None,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
+            )
+            exit_code = result.returncode
+            status = "completed" if exit_code == 0 else "failed"
+        except subprocess.TimeoutExpired:
+            status = "timeout"
+        except OSError as exc:
+            raise ValueError(
+                f"unable to start builder command {Path(str(command[0])).name!r}: "
+                f"{getattr(exc, 'strerror', '') or exc}"
+            ) from None
+        elapsed_seconds = round(time.monotonic() - started, 3)
+        ended_at = _utc_now()
+
+    return {
+        "schema": AUTHORING_RUN_SCHEMA,
+        "run_id": str(planned_run.get("run_id") or ""),
+        "experiment_id": str(planned_run.get("experiment_id") or ""),
+        "repo": str(planned_run.get("repo") or ""),
+        "task_id": str(planned_run.get("task_id") or ""),
+        "task_class": str(planned_run.get("task_class") or ""),
+        "builder": {
+            "provider": str(planned_run.get("provider") or ""),
+            "tool": str(planned_run.get("tool") or ""),
+            "model": str(planned_run.get("model") or ""),
+        },
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "elapsed_seconds": elapsed_seconds,
+        "status": status,
+        "branch": branch,
+        "pull_request": pull_request,
+        "executor": {
+            "type": "subprocess",
+            "dry_run": dry_run,
+            "exit_code": exit_code,
+            "command": _safe_command_metadata(command),
+        },
+        "privacy": {
+            "source_or_diff": False,
+            "transcript": False,
+            "raw_stdout_stderr": False,
+            "auth_output": False,
+            "secrets": False,
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower builder-experiment")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -510,16 +629,59 @@ def main(argv: list[str] | None = None) -> int:
     report_parser.add_argument("--replicates", type=int, default=1)
     report_parser.add_argument("--output", type=Path)
     report_parser.add_argument("--json", action="store_true")
-    args = parser.parse_args(argv)
+    run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("spec", type=Path)
+    run_parser.add_argument("--run-id", required=True)
+    run_parser.add_argument("--output-dir", type=Path, default=Path(".code-mower/builder-experiments"))
+    run_parser.add_argument("--replicates", type=int, default=1)
+    run_parser.add_argument("--output", type=Path)
+    run_parser.add_argument("--cwd", type=Path)
+    run_parser.add_argument("--timeout", type=float)
+    run_parser.add_argument("--dry-run", action="store_true")
+    run_parser.add_argument("--branch", default="")
+    run_parser.add_argument("--pull-request", default="")
+    run_parser.add_argument("--json", action="store_true")
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    builder_command: list[str] = []
+    parse_argv = raw_argv
+    if raw_argv[:1] == ["run"] and "--" in raw_argv:
+        command_index = raw_argv.index("--")
+        builder_command = raw_argv[command_index + 1 :]
+        parse_argv = raw_argv[:command_index]
+    args = parser.parse_args(parse_argv)
 
     try:
-        spec = load_spec(args.spec)
-        plan = build_plan(spec, output_dir=args.output_dir, replicates=args.replicates)
         if args.command == "plan":
+            spec = load_spec(args.spec)
+            plan = build_plan(spec, output_dir=args.output_dir, replicates=args.replicates)
             if args.output:
                 _write_json(args.output, plan)
             print(json.dumps(plan, indent=2, sort_keys=True) if args.json else render_plan_text(plan))
             return 0
+        if args.command == "run":
+            plan = _load_plan_or_spec(
+                args.spec,
+                output_dir=args.output_dir,
+                replicates=args.replicates,
+            )
+            command = builder_command
+            planned = _planned_run(plan, args.run_id)
+            artifact = run_authoring_subprocess(
+                planned,
+                command=command,
+                dry_run=args.dry_run,
+                cwd=args.cwd,
+                timeout=args.timeout,
+                branch=args.branch,
+                pull_request=args.pull_request,
+            )
+            run_dir = Path(str(planned.get("output_dir") or ".code-mower/authoring-runs"))
+            output = args.output or run_dir / f"{_safe_slug(args.run_id)}.json"
+            _write_json(output, artifact)
+            print(json.dumps(artifact, indent=2, sort_keys=True) if args.json else f"wrote {output}")
+            return 0
+        spec = load_spec(args.spec)
+        plan = build_plan(spec, output_dir=args.output_dir, replicates=args.replicates)
         run_results = load_run_results(args.runs)
         report = build_report(plan, run_results)
         if args.output:
