@@ -233,6 +233,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "grok-build",
                 "hermes-cli",
                 "init",
+                "lanes",
                 "local-llm",
                 "migration",
                 "merge-plan",
@@ -275,6 +276,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("  checks", help_text)
         self.assertIn("  calibration", help_text)
         self.assertIn("  cloud", help_text)
+        self.assertIn("  lanes", help_text)
         self.assertIn("  project-context", help_text)
         self.assertNotIn("trailer-comment-labeler", help_text)
         self.assertNotIn("codex-audit-env-preflight", help_text)

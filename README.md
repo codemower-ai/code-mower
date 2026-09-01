@@ -71,6 +71,10 @@ boundaries visible before you promote any reviewer lane.
 
 See a fuller static transcript: [docs/first-run-transcript.md](docs/first-run-transcript.md).
 
+After `init` and `doctor`, use `code-mower lanes status --repo OWNER/REPO` to
+see active builder/reviewer lanes, gate/check state, recent Code Mower
+workflows, local AgentTrail boards when present, and the next operator action.
+
 ## See The Value Shape First
 
 If you want to understand the product before installing anything, start with
@@ -288,12 +292,13 @@ engineer can:
 1. install Code Mower in a clean repo;
 2. understand the local/cloud trust boundary;
 3. run `init --easy` and `doctor --preflight`;
-4. detect and run the repo's native lint/test/build surface instead of assuming
+4. run `lanes status --repo OWNER/REPO` to see active lanes and gate state;
+5. detect and run the repo's native lint/test/build surface instead of assuming
    every project uses the same tools;
-5. produce a local value report from known PR outcomes;
-6. decide which lanes should stay informational, selective, or merge-gating;
+6. produce a local value report from known PR outcomes;
+7. decide which lanes should stay informational, selective, or merge-gating;
    and
-7. optionally upload sanitized metadata to CodeMower.com and see useful team
+8. optionally upload sanitized metadata to CodeMower.com and see useful team
    dashboard signal.
 
 Build-loop templates extend the same loop from "who reviews best?" to "which AI
