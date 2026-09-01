@@ -144,8 +144,10 @@ jobs:
           body="${FIX_ROUND_MENTION} The **${AUDIT_LANE}** audit lane BLOCKED this PR (head ${short_sha}). Read the latest Code Mower audit comments on this PR, address every blocking finding without scope additions, push to this branch, then re-add: \`${needs_labels}\`. If a finding is wrong, reply with evidence and add \`${NEEDS_OWNER_LABEL}\`.
 
           ${MARKER}"
+          body_file="$(mktemp)"
+          printf '%s\n' "${body}" > "${body_file}"
           comment_error="$(mktemp)"
-          if ! gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "${body}" 2>"${comment_error}"; then
+          if ! gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body-file "${body_file}" 2>"${comment_error}"; then
             if code_mower_handle_rate_limit "${comment_error}"; then
               exit 0
             fi

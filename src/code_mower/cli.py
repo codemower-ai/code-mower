@@ -1,20 +1,35 @@
 #!/usr/bin/env python3
 """Command dispatcher for the packaged Code Mower CLI."""
+# ruff: noqa: E402
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+
+
+def _source_checkout_install_spec() -> str:
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        text = pyproject.read_text(encoding="utf-8")
+    except OSError:
+        return "code-mower"
+    match = re.search(r"^version\s*=\s*[\"']([^\"']+)[\"']", text, re.MULTILINE)
+    version = match.group(1) if match else ""
+    return f"code-mower=={version}" if version else "code-mower"
+
+
 if __package__ in {None, ""}:
     raise SystemExit(
         "code_mower.cli is a packaged entrypoint. Install Code Mower with "
-        "`pipx install code-mower==0.5.0b53`. For source checkouts, create "
+        f"`pipx install {_source_checkout_install_spec()}`. For source checkouts, create "
         "the supported development venv with `scripts/dev-python -m venv "
         ".venv && .venv/bin/python -m pip install -e .`, then run "
         "`.venv/bin/code-mower`."

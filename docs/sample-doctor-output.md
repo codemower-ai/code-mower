@@ -3,8 +3,8 @@
 This page shows the kind of signal `code-mower doctor --preflight` is meant to
 produce before you enable reviewer lanes.
 
-`--preflight` is the friendly alias for the versioned v0.5 preset; `doctor
---v05` remains equivalent for scripts.
+`--preflight` is the friendly first-run preset; `doctor --v05` remains
+equivalent for older scripts.
 
 The exact checks depend on your repository, GitHub auth, provider CLIs, and
 optional cloud-token setup. This sample is sanitized and intentionally generic.

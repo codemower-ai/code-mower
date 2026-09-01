@@ -43,7 +43,7 @@ Use the current public tag or release candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -66,7 +66,7 @@ For a fixed output directory:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-first-user-rehearsal \
   --json
@@ -87,7 +87,7 @@ For a GitHub tag fallback, pass the tag URL explicitly:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.5.0-beta.53" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v0.6.0-beta.1" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -99,7 +99,7 @@ repository after the package install succeeds:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --repo-path /path/to/external-repo \
   --python "$(command -v python3.12)" \
   --json
@@ -180,7 +180,7 @@ When a product repository already has Code Mower wrapper files, the same
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --repo-path /path/to/product-repo \
   --python "$(command -v python3.12)" \
   --json
@@ -237,13 +237,12 @@ Treat the rehearsal as passing only when:
 
 If this fails, fix the first-user path before cutting or promoting a release.
 
-## Beta.53 Package-Index Release Procedure
+## v0.6 Beta Package-Index Release Procedure
 
-Do not record public package proof for `v0.5.0-beta.53` until the release
-workflow runs and package-install rehearsals exist. Publish and rehearse the
-package-index artifacts in this order. After the release tag exists at the
-release commit, dispatch both package-index publication runs with
-`--ref v0.5.0-beta.53`; never substitute mutable `main`, because the TestPyPI
+Publish and rehearse the package-index artifacts in this order. After the
+release tag exists at the release commit, dispatch both package-index
+publication runs with
+`--ref v0.6.0-beta.1`; never substitute mutable `main`, because the TestPyPI
 and production PyPI builds must check out identical source.
 
 First, run `release.yml` for TestPyPI only:
@@ -251,7 +250,7 @@ First, run `release.yml` for TestPyPI only:
 ```bash
 gh workflow run release.yml \
   --repo codemower-ai/code-mower \
-  --ref v0.5.0-beta.53 \
+  --ref v0.6.0-beta.1 \
   -f publish_testpypi=true \
   -f publish_pypi=false
 ```
@@ -261,11 +260,11 @@ candidate from TestPyPI:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \
-  --work-dir /tmp/code-mower-beta53-testpypi-rehearsal \
+  --work-dir /tmp/code-mower-v06-beta1-testpypi-rehearsal \
   --json
 ```
 
@@ -274,7 +273,7 @@ Then run `release.yml` for production PyPI only:
 ```bash
 gh workflow run release.yml \
   --repo codemower-ai/code-mower \
-  --ref v0.5.0-beta.53 \
+  --ref v0.6.0-beta.1 \
   -f publish_testpypi=false \
   -f publish_pypi=true
 ```
@@ -284,9 +283,9 @@ production package from PyPI:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --python "$(command -v python3.12)" \
-  --work-dir /tmp/code-mower-beta53-pypi-rehearsal \
+  --work-dir /tmp/code-mower-v06-beta1-pypi-rehearsal \
   --json
 ```
 
@@ -302,7 +301,7 @@ repository:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --repo-path "$REPO_PATH" \
   --work-dir "$WORK_DIR" \
   --json

@@ -44,9 +44,8 @@ Code Mower should feel like an engineering tool, not a demo harness:
 
 `code-mower doctor --preflight` is the first useful command. It checks your
 runtime, GitHub setup, provider CLIs, token posture, optional cloud setup, and
-private-repo Actions cost traps. `--preflight` is the friendly name for the
-versioned v0.5 first-run preset, so `doctor --v05` remains equivalent for
-scripts.
+private-repo Actions cost traps. `--preflight` is the friendly first-run preset;
+`doctor --v05` remains an equivalent compatibility alias for older scripts.
 
 Example, shortened:
 
@@ -102,8 +101,8 @@ observable.
 | B. Build loop in 30 minutes | You want builders plus an orchestrator pattern after the reviewer gate works. | Complete path A, then add the automation token, require `code-mower/gate` from Any source, enable repository auto-merge, prove the self-hosted Mac lane runner with `doctor --runner`, run `init --builders`, and dispatch the first issue. | [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md) |
 | C. Builder experiment | You want to compare authoring loops before trusting them broadly. | Use a work order or experiment spec, run `code-mower builder-experiment run` around an explicit command, then review the source-free `authoringRun` artifact and normal audit evidence. | [Builder Experiments](docs/builder-experiments.md) |
 
-The beta.53 announcement entry point is the tagged
-[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.5.0-beta.53/docs/try-in-10-minutes.md)
+The v0.6 beta announcement entry point is the tagged
+[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.6.0-beta.1/docs/try-in-10-minutes.md)
 guide.
 
 ## What Calibration Does And Does Not Prove
@@ -131,12 +130,10 @@ First-time command map: [docs/launch-command-surface.md](docs/launch-command-sur
 Provider-contract baseline for the next release train:
 [docs/v06-truth-baseline.md](docs/v06-truth-baseline.md).
 
-The beta.53 package-index release is prepared:
+For release verification,
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the release procedure. It is to be published and rehearsed as part of the
-`v0.5.0-beta.53` release execution, with evidence recorded on the release after
-the workflow runs complete. The latest completed public-package rehearsal
-remains beta.52: 10/10 first-user readiness for `code-mower==0.5.0b52`.
+the package-index procedure for `v0.6.0-beta.1` / `code-mower==0.6.0b1`. The
+GitHub release records the workflow and rehearsal evidence for the exact tag.
 
 ## Optional: Plan Before Coding
 
@@ -310,11 +307,10 @@ measurement work.
 
 ## Installation Status
 
-The prepared public beta is `v0.5.0-beta.53` from
-[codemower-ai/code-mower](https://github.com/codemower-ai/code-mower). It is to
-be published and rehearsed as part of the `v0.5.0-beta.53` release execution,
-with evidence recorded on the release after the workflow runs complete. The
-pinned package-index install spec is `code-mower==0.5.0b53`.
+The current public beta baseline is `v0.6.0-beta.1`, with pinned package-index
+install spec `code-mower==0.6.0b1`. Release evidence is recorded on the GitHub
+release and in the first-user install rehearsal. The public repository is
+[codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), and
 GitHub releases remain the auditable source for tags, build artifacts, and
 release notes.
 
@@ -371,7 +367,7 @@ first so local work exercises the same package entrypoint users install.
 - [First-User Install Rehearsal](docs/first-user-install-rehearsal.md)
 - [Launch Command Surface](docs/launch-command-surface.md)
 - [v0.6 Truth Baseline](docs/v06-truth-baseline.md)
-- [v0.6 Release Notes Draft](docs/v06-release-notes.md)
+- [v0.6 Release Notes](docs/v06-release-notes.md)
 - [Demo Calibration Example](examples/demo-calibration/README.md)
 - [PyPI Release Runbook](docs/pypi-release.md)
 - [Sample Doctor Output](docs/sample-doctor-output.md)

@@ -3,7 +3,7 @@
 This is the reference for Code Mower's first-user command surface. For the two
 guided starts, use [Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the
 reviewer gate or [Build Loop In 30 Minutes](build-loop-in-30-minutes.md) for
-builders plus orchestrator convention. Code Mower v0.5 is beta software; start
+builders plus orchestrator convention. Code Mower v0.6 is beta software; start
 on one repository and keep all reviewer lanes manual until the output is useful
 on your codebase.
 
@@ -17,11 +17,11 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b53
+pipx install --python python3.12 code-mower==0.6.0b1
 code-mower --version
 ```
 
-`0.5.0b53` is a beta release. If you want the newest prerelease instead of this
+`0.6.0b1` is a beta release. If you want the newest prerelease instead of this
 exact verified beta, use:
 
 ```bash
@@ -55,7 +55,7 @@ reviewer signal until local calibration supports promotion.
 
 ## 2. Authenticate GitHub
 
-Code Mower v0.5 is GitHub-first.
+Code Mower v0.6 is GitHub-first.
 
 ```bash
 gh auth login -h github.com -s repo,workflow,read:org
@@ -297,7 +297,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --python "$(command -v python3.12)" \
   --json
 ```

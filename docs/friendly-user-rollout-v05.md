@@ -1,4 +1,4 @@
-# v0.5 Friendly-User Rollout Plan
+# Friendly-User Rollout Plan
 
 This is the operating plan for the first 5-10 friendly users before Code Mower
 widens to 20-50 early adopters.
@@ -19,17 +19,14 @@ the private history behind Code Mower:
 
 ## Current Baseline
 
-Use the prepared beta.53 install pin after the release publishes unless a newer
-release is explicitly called out in the invite:
+Use the current beta install pin unless a newer release is explicitly called out
+in the invite:
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b53
+pipx install --python python3.12 code-mower==0.6.0b1
 ```
 
-The prepared public beta baseline is `v0.5.0-beta.53`; it is to be published and rehearsed as part of the `v0.5.0-beta.53` release execution, with evidence recorded on the release after the workflow runs complete. The pinned package-index install spec is `code-mower==0.5.0b53`.
-The latest completed package-index proof remains beta.52: 10/10 first-user
-readiness from `code-mower==0.5.0b52`, plus the private JavaScript/mobile
-repository rehearsal without requiring committed support files.
+The current public beta baseline is `v0.6.0-beta.1`, with pinned package-index install spec `code-mower==0.6.0b1`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
 
 ## Invite Criteria
 
@@ -50,6 +47,7 @@ Ask each user to run:
 ```bash
 code-mower init --easy
 code-mower doctor --preflight --json
+code-mower lanes status --repo OWNER/REPO
 code-mower next-steps --profile recommended
 ```
 
@@ -101,9 +99,9 @@ For each friendly user, capture:
 Do not collect source code, raw diffs, raw model transcripts, auth output, or
 secrets.
 
-## Exit Criteria For v0.5
+## Exit Criteria For v0.6
 
-The friendly-user loop is good enough for a wider v0.5 push when:
+The friendly-user loop is good enough for a wider v0.6 push when:
 
 - at least 5 fresh users complete install, doctor, and first report;
 - at least 3 private repositories complete package-install rehearsal or
@@ -115,7 +113,7 @@ The friendly-user loop is good enough for a wider v0.5 push when:
 
 ## Known Limits To Say Out Loud
 
-- Code Mower v0.5 is GitHub-first.
+- Code Mower is GitHub-first.
 - Provider setup varies by CLI and account.
 - Cloud sharing is optional and metadata-only by default.
 - Auto-discovered calibration cases are starter dispositions, not benchmark

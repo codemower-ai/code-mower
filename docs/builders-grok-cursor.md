@@ -11,7 +11,7 @@ This distinction matters:
 - `cursor_cloud_agent` is a hosted async builder/executor identity.
 - `cursor_bugbot` is Cursor's reviewer service and remains informational/manual.
 
-## Recommended v0.5 Flow
+## Recommended Current-Beta Flow
 
 Use GitHub Issues as the source of truth:
 

@@ -3,7 +3,8 @@
 Code Mower Cloud sharing is optional. The local OSS package remains useful
 without a CodeMower.com account or token.
 
-This document defines the public v0.5 data boundary for metadata uploads.
+This document defines the public metadata-only data boundary for Code Mower
+Cloud uploads.
 
 ## Personas
 
@@ -274,17 +275,17 @@ source ~/.config/code-mower/tokens/your-install-id.env
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 ```
 
-## Hosted Storage In v0.5
+## Hosted Storage In The Current Beta
 
-The v0.5 hosted service stores upload ids and timestamps, token/team linkage,
-repository slug when supplied, report summaries and counts, structured metadata
-events, cost/latency/usefulness fields when supplied, and recommendation inputs
-derived from metadata.
+The current hosted service stores upload ids and timestamps, token/team
+linkage, repository slug when supplied, report summaries and counts, structured
+metadata events, cost/latency/usefulness fields when supplied, and
+recommendation inputs derived from metadata.
 
 It should not store source, raw diffs, raw transcripts, stdout/stderr, auth
 output, or secrets by default.
 
-## Data Controls In v0.5
+## Data Controls In The Current Beta
 
 Current controls:
 

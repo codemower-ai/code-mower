@@ -521,8 +521,11 @@ if [ "$rc" -eq 124 ]; then
   echo "${LANE}: hit the ${MAX_MINUTES}-minute cap on ${kind} #${num}"
   subcommand="issue"
   [ "$kind" = "pr" ] && subcommand="pr"
+  body_file="$(mktemp)"
+  printf 'Mac lane runner (%s): hit the %s-minute cap on this %s; pushed work will be picked up again next cycle.\n' \
+    "$LANE" "$MAX_MINUTES" "$kind" > "$body_file"
   gh "$subcommand" comment "$num" -R "$REPO" \
-    --body "Mac lane runner (${LANE}): hit the ${MAX_MINUTES}-minute cap on this ${kind}; pushed work will be picked up again next cycle." >/dev/null || true
+    --body-file "$body_file" >/dev/null || true
   exit 0
 fi
 echo "${LANE}: CLI exit ${rc} for ${kind} #${num}"

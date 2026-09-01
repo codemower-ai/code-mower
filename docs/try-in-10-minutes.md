@@ -17,11 +17,11 @@ Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.5.0b53
+pipx install --python python3.12 code-mower==0.6.0b1
 code-mower --version
 ```
 
-`0.5.0b53` is a beta release. To follow the newest beta line instead of
+`0.6.0b1` is a beta release. To follow the newest beta line instead of
 pinning this exact build:
 
 ```bash
@@ -70,8 +70,9 @@ paid or hosted lanes until your own calibration data supports them.
 code-mower doctor --preflight --json
 ```
 
-`--preflight` is the friendly alias for the versioned v0.5 first-run preset.
-It expands to the checks early adopters need:
+`--preflight` is the friendly first-run preset. `doctor --v05` remains the
+versioned compatibility alias for scripts. The preset expands to the checks
+early adopters need:
 
 - recommended profile selection;
 - Python/runtime checks;
@@ -109,7 +110,9 @@ gh pr create \
   --base "$DEFAULT_BRANCH" \
   --head "$(git branch --show-current)" \
   --title "chore: add Code Mower reviewer gate" \
-  --body "Install Code Mower generated reviewer-gate support for the first audited PR."
+  --body-file - <<'CM_BODY'
+Install Code Mower generated reviewer-gate support for the first audited PR.
+CM_BODY
 export PR_NUMBER="$(gh pr view --repo "$REPO" --json number --jq .number)"
 gh pr edit "$PR_NUMBER" --repo "$REPO" \
   --add-label needs-codex-audit \
@@ -170,7 +173,7 @@ virtual environment, run:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -182,7 +185,7 @@ repo's native checks.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --repo-path /path/to/repo \
   --python "$(command -v python3.12)" \
   --json

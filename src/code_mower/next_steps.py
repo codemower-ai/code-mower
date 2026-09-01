@@ -146,7 +146,7 @@ def build_next_steps(
     if profile == DEFAULT_PROFILE:
         init_plan_command = "code-mower init --easy"
         init_apply_command = "code-mower init --easy --apply --output-dir .code-mower.generated"
-        doctor_command = "code-mower doctor --v05 --json"
+        doctor_command = "code-mower doctor --preflight --json"
     else:
         init_plan_command = f"code-mower init --profile {quoted_profile} --dry-run"
         init_apply_command = (

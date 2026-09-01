@@ -75,7 +75,12 @@ owner_surface:
 Create and pin the status issue with GitHub CLI:
 
 ```bash
-gh issue create --title "Code Mower status" --label code-mower --body "Weekly Code Mower status will appear here."
+gh issue create \
+  --title "Code Mower status" \
+  --label code-mower \
+  --body-file - <<'CM_BODY'
+Weekly Code Mower status will appear here.
+CM_BODY
 gh issue pin 123
 ```
 

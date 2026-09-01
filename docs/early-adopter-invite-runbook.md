@@ -8,8 +8,8 @@ to 20-50 early OSS users.
 The first invite cohort should prove that a new user can get value without
 knowing the history of the reference repos:
 
-1. install Code Mower from the tagged alpha;
-2. run `init --easy` and the v0.5 doctor preset;
+1. install Code Mower from the tagged beta;
+2. run `init --easy` and the preflight doctor preset;
 3. generate the starter calibration/value report;
 4. optionally connect a CodeMower.com team token; and
 5. upload sanitized metadata after reviewing the local bundle.
@@ -38,7 +38,7 @@ It is an OSS local-first tool for setting up AI peer-programmer/reviewer lanes
 on your real codebase, with optional privacy-first cloud reporting.
 
 Start here:
-https://github.com/codemower-ai/code-mower/blob/v0.5.0-beta.53/docs/try-in-10-minutes.md
+https://github.com/codemower-ai/code-mower/blob/v0.6.0-beta.1/docs/try-in-10-minutes.md
 
 Cloud sharing is optional. The default bundle excludes source code, raw diffs,
 model transcripts, raw stdout/stderr, auth output, and secrets.
@@ -51,7 +51,7 @@ Before inviting a user:
 1. Verify the tagged install command in a fresh repo:
 
    ```bash
-   pipx install --python python3.12 code-mower==0.5.0b53
+   pipx install --python python3.12 code-mower==0.6.0b1
    code-mower --version
    ```
 
@@ -74,7 +74,7 @@ Before inviting a user:
 The user is successful when they can send back:
 
 - `code-mower --version` output;
-- `code-mower doctor --v05 --json` status;
+- `code-mower doctor --preflight --json` status;
 - the generated `reviewer-value-report.md`; and
 - if they opted into cloud, the upload ID from `code-mower cloud upload
   --yes --json`.

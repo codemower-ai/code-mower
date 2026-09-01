@@ -40,8 +40,8 @@ history opens the repository. They should be able to confirm:
 
 ## Current Beta Baseline
 
-The prepared public-release baseline is `v0.5.0-beta.53` of the standalone
-package. Before the release is treated as complete, record:
+The current public-release baseline is `v0.6.0-beta.1` of the standalone
+package. Before widening the release, record:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;
@@ -49,7 +49,7 @@ package. Before the release is treated as complete, record:
   runs: TestPyPI first with `publish_testpypi=true`, `publish_pypi=false`,
   then production PyPI with `publish_testpypi=false`, `publish_pypi=true`;
 - package-install rehearsals against the exact TestPyPI and PyPI artifacts as
-  `code-mower==0.5.0b53` after those workflow runs finish, with workflow run
+  `code-mower==0.6.0b1` after those workflow runs finish, with workflow run
   links recorded as release evidence;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
@@ -81,7 +81,7 @@ package. Before the release is treated as complete, record:
   for activity/backfill without being confused for calibrated reviewer-quality
   evidence;
 - `code-mower init --easy` smoke behavior;
-- `doctor --v05` provider probes for configured local CLIs, GitHub setup,
+- `doctor --preflight` provider probes for configured local CLIs, GitHub setup,
   Actions cost traps, and optional cloud-token setup;
 - product-wrapper rehearsal with zero mismatches against the repo-local mirror;
 - pinned standalone consumption from both private reference/product repos;
@@ -136,7 +136,7 @@ package. Before the release is treated as complete, record:
 - dashboard trust depends on stable row-level evidence links, provenance labels,
   and a clear distinction between current dogfood metadata, imported history,
   and calibrated reviewer/lens evidence.
-- `code-mower doctor --v05` as the early-adopter preset for easy profile,
+- `code-mower doctor --preflight` as the early-adopter preset for easy profile,
   runtime probes, GitHub setup, private-repo caveats, Actions cost diagnostics,
   and optional cloud-token setup.
 - repository-native check detection and execution, so TypeScript/React repos use
@@ -154,7 +154,7 @@ It has not yet proved:
 - enough repeated friendly-user proof that the current first-user path is
   boring across multiple private repos and machines;
 - a completed friendly-user rollout loop following
-  [v0.5 Friendly-User Rollout Plan](friendly-user-rollout-v05.md), with at
+  [Friendly-User Rollout Plan](friendly-user-rollout-v05.md), with at
   least 5 users proving install, doctor, first report, and optional cloud
   sharing;
 - historical catch-up UX that is obvious on the dashboard, not just documented:
@@ -181,16 +181,17 @@ It has not yet proved:
 ## Easy Mode Flow
 
 ```bash
-pipx install --python python3.12 code-mower==0.5.0b53
+pipx install --python python3.12 code-mower==0.6.0b1
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower doctor --v05
+code-mower doctor --preflight
+code-mower lanes status --repo OWNER/REPO
 code-mower --help
 code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.5.0b53 \
+  --package-spec code-mower==0.6.0b1 \
   --repo-path /path/to/repo \
   --json
 code-mower audit pr 123
@@ -435,7 +436,7 @@ private repo can complete this sequence from a clean machine:
 1. install package
 2. run `code-mower init --easy`
 3. run generated smoke tests
-4. run `code-mower doctor --v05`
+4. run `code-mower doctor --preflight`
 5. run `code-mower next-steps --profile recommended`
 6. run at least one local/CLI audit lane in dry-run or PR-comment mode
 7. generate a value report
@@ -464,7 +465,7 @@ next?"
 
 ## Required Docs
 
-- `docs/current-state-and-roadmap.md`: current OSS/cloud state, v0.5 target,
+- `docs/current-state-and-roadmap.md`: current OSS/cloud state, v0.6 beta,
   v1.0 direction, and near-term roadmap.
 - `docs/github-setup.md`: GitHub auth, public/private repos, fork PRs, branch
   protection, token fallbacks, and the v1.0 GitHub-only scope.

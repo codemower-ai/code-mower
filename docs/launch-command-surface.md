@@ -1,7 +1,7 @@
 # Launch Command Surface
 
 Code Mower has more machinery than a first-time user should need to think
-about. This page separates the v0.5 launch-safe path from advanced/operator
+about. This page separates the launch-safe path from advanced/operator
 commands.
 
 ## Launch-Safe Commands
@@ -22,6 +22,7 @@ session.
 | `code-mower work-order draft ...` | Create an implementation contract from a plan or prompt, plus a metadata-only `*.cloud-event.json` sidecar. | yes, local only | no |
 | `code-mower work-order attach-delivery ...` | Attach PR, reviewer-check, and merge identifiers to a work-order sidecar without source, diffs, transcripts, or issue bodies. | yes, local only | no |
 | `code-mower builder record --provider grok_bot --executor cursor_cloud_agent ...` | Record source-free builder provenance after an agent opens a branch or PR. | yes, local only | no |
+| `code-mower lanes status --repo OWNER/REPO` | Show active PR lanes, gate/check state, local AgentTrail boards, and the next action. | no | GitHub optional |
 | `code-mower doctor --preflight --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
 | `code-mower next-steps --profile recommended --repo OWNER/REPO` | Print the next recommended setup actions. | no | no |
 | `code-mower migration package-install-rehearsal ...` | Prove install, toy repo, starter report, and cloud dry-run path. | yes, scratch workspace | no uploads |
