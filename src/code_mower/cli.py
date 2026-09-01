@@ -22,6 +22,7 @@ if __package__ in {None, ""}:
 
 from . import __version__
 from . import antigravity_cli_audit_pr
+from . import antigravity_sdk_probe
 from . import blind_review_coordinator
 from . import bootstrap as code_mower_bootstrap
 from . import builder_experiment as code_mower_builder_experiment
@@ -127,6 +128,13 @@ def _providers_main(argv: list[str]) -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("list")
+    sdk_probe = subparsers.add_parser("antigravity-sdk-probe")
+    sdk_probe.add_argument(
+        "--import-api",
+        action="store_true",
+        help="Import google.antigravity and report expected public API names.",
+    )
+    sdk_probe.add_argument("--json", action="store_true")
     show = subparsers.add_parser("show")
     show.add_argument("provider")
     show.add_argument("--json", action="store_true")
@@ -212,6 +220,23 @@ def _providers_main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 1
+        return 0
+
+    if args.command == "antigravity-sdk-probe":
+        report = antigravity_sdk_probe.probe_antigravity_sdk(
+            import_api=args.import_api,
+        )
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print("Code Mower Antigravity SDK probe")
+            print(f"Status: {report['status']}")
+            print(f"Package: {report['package']}")
+            print(f"Installed: {report['installed']}")
+            if report["package_version"]:
+                print(f"Version: {report['package_version']}")
+            print(f"Importable: {report['importable']}")
+            print(f"Message: {report['message']}")
         return 0
 
     if args.command == "show":
