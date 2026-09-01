@@ -4,6 +4,15 @@ All notable public Code Mower OSS changes should be summarized here. The
 project uses alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop are still hardening.
 
+## Unreleased
+
+### Changed
+
+- Generated GitHub workflow templates, package fallback builders, and
+  Code Mower-owned checked-in workflows now use the pinned `actions/checkout`
+  v7.0.1 commit SHA; release hygiene guards reject the previous v6 pin or
+  mutable checkout tags returning to these surfaces (#476).
+
 ## v0.6.0-beta.2
 
 This beta hardens optional CodeMower.com uploads for first-week adopters by
