@@ -131,9 +131,10 @@ code-mower observe agenttrail --repo /path/to/lane-checkout
 
 The wrapper pins a reviewed AgentTrail version, launches it with `--no-open`,
 does not call `agenttrail init`, and checks whether repository status changed
-after launch. If the launch changes tracked or untracked files, the wrapper
-stops the daemon and asks you to inspect the checkout before rerunning with
-`--allow-repo-changes`.
+for the first five seconds after launch. If the launch changes tracked or
+untracked files, the wrapper signals the AgentTrail process group, waits for it
+to stop, and asks you to inspect the checkout before rerunning with
+`--allow-repo-changes`. This is a startup guard, not a continuous file monitor.
 
 For richer Claude Code run cards, opt in explicitly:
 

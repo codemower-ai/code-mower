@@ -30,8 +30,8 @@ code-mower observe agenttrail --repo /path/to/lane-checkout
 
 The wrapper is observe-only by default. It does not call `agenttrail init`, does
 not edit `PLAN.md`, `AGENTS.md`, or `CLAUDE.md`, launches with `--no-open`, and
-fails if repository status changes unexpectedly. Component-map mode waits for
-upstream alternate plan-file support; see
+fails if repository status changes during the startup guard window. Component-map
+mode waits for upstream alternate plan-file support; see
 [Build Loop Operations](build-loop.md#optional-live-lane-view).
 
 ## 1. Set Repository Variables

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -29,7 +31,7 @@ class AgentTrailConfig:
     dry_run: bool = False
     allow_repo_changes: bool = False
     claude_hooks: bool = False
-    settle_seconds: float = 1.0
+    settle_seconds: float = 5.0
 
 
 def _package(version: str) -> str:
@@ -110,6 +112,68 @@ def _start_background(command: list[str], repo: Path) -> subprocess.Popen[bytes]
     )
 
 
+def _terminate_process_group(process: subprocess.Popen[bytes], *, timeout: float = 5.0) -> bool:
+    if process.poll() is not None:
+        return True
+
+    try:
+        pgid = os.getpgid(process.pid)
+    except OSError:
+        pgid = None
+
+    try:
+        if pgid is None:
+            process.terminate()
+        else:
+            os.killpg(pgid, signal.SIGTERM)
+    except OSError:
+        pass
+
+    try:
+        process.wait(timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        try:
+            if pgid is None:
+                process.kill()
+            else:
+                os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+
+def _watch_launch_status(
+    process: subprocess.Popen[bytes],
+    repo: Path,
+    before_status: str | None,
+    settle_seconds: float,
+) -> tuple[int | None, str | None, bool, int]:
+    poll_interval_seconds = 0.25
+    attempts = max(1, math.ceil(max(0.0, settle_seconds) / poll_interval_seconds))
+    after_status = before_status
+
+    for attempt in range(attempts):
+        if process.poll() is not None:
+            return process.returncode or 1, after_status, False, attempt + 1
+        if before_status is not None:
+            observed_status = _git_status(repo)
+            if observed_status is not None:
+                after_status = observed_status
+                if observed_status != before_status:
+                    return None, after_status, True, attempt + 1
+        if attempt < attempts - 1:
+            time.sleep(poll_interval_seconds)
+
+    if process.poll() is not None:
+        return process.returncode or 1, after_status, False, attempts
+    return None, after_status, False, attempts
+
+
 def _base_payload(config: AgentTrailConfig, status: str) -> dict[str, Any]:
     return {
         "mode": "observe-agenttrail",
@@ -153,21 +217,31 @@ def run_agenttrail(config: AgentTrailConfig) -> tuple[int, dict[str, Any]]:
 
     try:
         if config.claude_hooks:
-            subprocess.run(hooks_command, cwd=config.repo, check=True, stdin=subprocess.DEVNULL)
+            subprocess.run(
+                hooks_command,
+                cwd=config.repo,
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         process = _start_background(launch_command, config.repo)
     except (OSError, subprocess.CalledProcessError) as exc:
         payload = _base_payload(config, "error")
         payload["error"] = f"could not start AgentTrail: {exc}"
         return 1, payload
 
-    time.sleep(config.settle_seconds)
-    if process.poll() is not None:
+    exit_code, after_status, repo_changed, settle_attempts = _watch_launch_status(
+        process,
+        config.repo,
+        before_status,
+        config.settle_seconds,
+    )
+    if exit_code is not None:
         payload = _base_payload(config, "error")
         payload["error"] = "AgentTrail exited immediately after launch."
-        return process.returncode or 1, payload
+        return exit_code, payload
 
-    after_status = _git_status(config.repo)
-    repo_changed = before_status is not None and after_status is not None and before_status != after_status
     payload = _base_payload(config, "started")
     payload.update(
         command=launch_command,
@@ -175,10 +249,13 @@ def run_agenttrail(config: AgentTrailConfig) -> tuple[int, dict[str, Any]]:
         board_url=_board_url(config),
         repo_status_checked=before_status is not None and after_status is not None,
         repo_changed=repo_changed,
+        settle_seconds=config.settle_seconds,
+        settle_attempts=settle_attempts,
     )
     if repo_changed and not config.allow_repo_changes:
-        process.terminate()
+        terminated = _terminate_process_group(process)
         payload["status"] = "blocked"
+        payload["terminated"] = terminated
         payload["error"] = (
             "AgentTrail launch changed repository status. Inspect `git status`, then rerun "
             "with --allow-repo-changes only if the change was intentional."
@@ -216,7 +293,7 @@ def _agenttrail_main(argv: list[str]) -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-repo-changes", action="store_true")
     parser.add_argument("--claude-hooks", action="store_true")
-    parser.add_argument("--settle-seconds", type=float, default=1.0)
+    parser.add_argument("--settle-seconds", type=float, default=5.0)
     args = parser.parse_args(argv)
     config = AgentTrailConfig(
         repo=Path(args.repo).expanduser().resolve(),
