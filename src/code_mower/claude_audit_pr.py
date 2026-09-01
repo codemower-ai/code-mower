@@ -37,12 +37,14 @@ if __package__ in {None, "", "tools"}:
         from tools.claude_cli_environment import clean_claude_cli_env, env_flag
         from tools.provider_runners import (
             audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
+            audit_exit_code as _audit_exit_code,
             bind_actions_run_comment_id,
             clip_text as _clip_text,
             edit_pr_comment,
             fetch_issue_comments,
             fetch_pull_request,
             fetch_base_ref_sha as _shared_fetch_base_ref_sha,
+            format_audit_comment_header as _format_audit_comment_header,
             fetch_pr_head_sha as _shared_fetch_pr_head_sha,
             fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
             is_fixture_structured_verdict as _is_fixture_structured_verdict,
@@ -56,6 +58,8 @@ if __package__ in {None, "", "tools"}:
             require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
             run_git_text as _shared_run_git_text,
+            STALE_REQUEUE_MARKER,
+            UNKNOWN_REQUEUE_MARKER,
             validate_repo_path_for_wrapper as _validate_repo_path_for_wrapper,
             write_audit_verdict_artifact,
         )
@@ -76,12 +80,14 @@ if __package__ in {None, "", "tools"}:
         from claude_cli_environment import clean_claude_cli_env, env_flag  # type: ignore
         from provider_runners import (  # type: ignore
             audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
+            audit_exit_code as _audit_exit_code,
             bind_actions_run_comment_id,
             clip_text as _clip_text,
             edit_pr_comment,
             fetch_issue_comments,
             fetch_pull_request,
             fetch_base_ref_sha as _shared_fetch_base_ref_sha,
+            format_audit_comment_header as _format_audit_comment_header,
             fetch_pr_head_sha as _shared_fetch_pr_head_sha,
             fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
             is_fixture_structured_verdict as _is_fixture_structured_verdict,
@@ -95,6 +101,8 @@ if __package__ in {None, "", "tools"}:
             require_exact_keys as _require_exact_keys,
             resolve_github_token_from_stdin_or_env,
             run_git_text as _shared_run_git_text,
+            STALE_REQUEUE_MARKER,
+            UNKNOWN_REQUEUE_MARKER,
             validate_repo_path_for_wrapper as _validate_repo_path_for_wrapper,
             write_audit_verdict_artifact,
         )
@@ -110,12 +118,14 @@ else:  # pragma: no cover - exercised after package extraction.
     from .provider_runners import (
         FetchedHeadMismatch,
         audit_runtime_quarantine_reason as _audit_runtime_quarantine_reason,
+        audit_exit_code as _audit_exit_code,
         bind_actions_run_comment_id,
         clip_text as _clip_text,
         edit_pr_comment,
         fetch_issue_comments,
         fetch_base_ref_sha as _shared_fetch_base_ref_sha,
         fetch_pull_request,
+        format_audit_comment_header as _format_audit_comment_header,
         fetch_pr_head_sha as _shared_fetch_pr_head_sha,
         fetch_pr_head_sha_unless_local_matches as _shared_fetch_pr_head_sha_unless_local_matches,
         is_fixture_structured_verdict as _is_fixture_structured_verdict,
@@ -128,6 +138,8 @@ else:  # pragma: no cover - exercised after package extraction.
         require_exact_keys as _require_exact_keys,
         resolve_github_token_from_stdin_or_env,
         run_git_text as _shared_run_git_text,
+        STALE_REQUEUE_MARKER,
+        UNKNOWN_REQUEUE_MARKER,
         validate_repo_path_for_wrapper as _validate_repo_path_for_wrapper,
         write_audit_verdict_artifact,
     )
@@ -163,9 +175,6 @@ DEFAULT_CLAUDE_CLI_FAILURE_DIR = (
 STALE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: needs-claude-audit -->"
 DONE_TRAILER = "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->"
 BLOCKED_TRAILER = "<!-- CLAUDE_AUDIT_STATE: claude-audit-blocked -->"
-AUDIT_RUN_TRAILER_PREFIX = "<!-- CODE_MOWER_AUDIT_RUN:"
-STALE_REQUEUE_MARKER = "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=stale -->"
-UNKNOWN_REQUEUE_MARKER = "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=unknown -->"
 
 
 def _post_audit_comment(
@@ -1222,15 +1231,14 @@ def format_comment(
     calibration_badge: str = "",
     diff_notice: str = "",
 ) -> str:
-    posture = "merge-authority lane" if merge_authority else "informational only"
-    header = f"## Claude audit ({posture})\n\n"
-    header += f"Head SHA: `{head_sha}`\n"
-    if diff_notice:
-        header += f"Diff: {_one_line(diff_notice, 300)}\n"
-    if badge := _normalize_calibration_badge(calibration_badge):
-        header += f"Calibration: {badge}\n"
-    if actions_run_id:
-        header += f"{AUDIT_RUN_TRAILER_PREFIX} run_id={actions_run_id} -->\n"
+    header = _format_audit_comment_header(
+        provider_name="Claude",
+        head_sha=head_sha,
+        merge_authority=merge_authority,
+        actions_run_id=actions_run_id,
+        calibration_badge=calibration_badge,
+        diff_notice=diff_notice,
+    )
     if is_stale:
         body = (
             header
@@ -1276,10 +1284,6 @@ def format_comment(
         trailer,
     ]) + "\n"
     return limit_comment_body(body, trailer, provider_name="Claude")
-
-
-def _normalize_calibration_badge(value: str | None) -> str:
-    return " ".join(str(value or "").strip().split())[:120]
 
 
 def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAuditResult:
@@ -2023,10 +2027,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         except (OSError, ValueError) as exc:
             print(f"warning: failed to append spend metadata: {exc}", file=sys.stderr)
     return _audit_exit_code(result.verdict)
-
-
-def _audit_exit_code(verdict: str) -> int:
-    return 2 if str(verdict or "").upper() == "UNKNOWN" else 0
 
 
 if __name__ == "__main__":
