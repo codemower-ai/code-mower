@@ -105,6 +105,11 @@ Provider integrations should expose setup docs, auth/runtime doctor checks,
 source/diff exposure posture, local/hosted/manual/automatic posture, and
 cost/latency fields when available.
 
+Provider parser and verdict-artifact fixtures live under `tests/fixtures/` and
+lock the current reviewer output contract before shared provider-runner code is
+extracted. Keep those fixtures sanitized: no source, raw diffs, transcripts,
+issue bodies, stdout/stderr, auth output, or secrets.
+
 ## Builder And Orchestrator Boundary
 
 Code Mower can learn from orchestrator systems without becoming one by default.
@@ -157,4 +162,6 @@ git diff --check
 
 `scripts/dev-python` is the preferred source-checkout Python entrypoint. It
 refuses stale or old Python interpreters so release work does not accidentally
-run under an unsafe ambient `python3`.
+run under an unsafe ambient `python3`. Public docs and shipped entrypoints
+should point source-checkout users at that wrapper plus an installed editable
+venv, not raw source-path environment commands.
