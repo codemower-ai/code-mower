@@ -121,6 +121,22 @@ code-mower builder-experiment plan tools/builder_experiment.example.json \
   --json
 ```
 
+Run one local authoring command from that plan and write a source-free
+`code_mower.authoringRun.v1` artifact:
+
+```bash
+code-mower builder-experiment run .code-mower/builder-experiment-plan.json \
+  --run-id RUN_ID \
+  --output .code-mower/authoring-runs/RUN_ID.json \
+  --branch codex/example \
+  -- python scripts/dev-python -m pytest tests/test_example.py
+```
+
+Add `--dry-run` to verify the artifact shape without running the command. The
+executor records timing, status, builder, branch/PR, and command-hash metadata
+only; it writes no source, diffs, transcripts, raw stdout/stderr, auth output,
+or secrets.
+
 ## Run Result Example
 
 Builder run results can be written by an agent or by a thin wrapper around the
