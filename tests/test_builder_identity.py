@@ -212,6 +212,7 @@ class BuilderIdentityTests(unittest.TestCase):
         cfg["owner_surface"] = {
             "dispatch_token_env": "BAD TOKEN",
             "dispatch_token_expires_var": "1_BAD",
+            "local_audit_runner_enabled_var": "BAD ENABLED VAR",
             "builder_wip_cap": "unlimited",
             "lane_runner_trusted_authors": ["owner", ""],
         }
@@ -221,6 +222,12 @@ class BuilderIdentityTests(unittest.TestCase):
         self.assertTrue(any(issue.path == "owner_surface.dispatch_token_env" for issue in issues))
         self.assertTrue(
             any(issue.path == "owner_surface.dispatch_token_expires_var" for issue in issues)
+        )
+        self.assertTrue(
+            any(
+                issue.path == "owner_surface.local_audit_runner_enabled_var"
+                for issue in issues
+            )
         )
         self.assertTrue(any(issue.path == "owner_surface.builder_wip_cap" for issue in issues))
         self.assertTrue(

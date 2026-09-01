@@ -1,0 +1,89 @@
+{
+  "schema": "code_mower.providerFixtureContracts.v1",
+  "codex": {
+    "pass": {
+      "schema": "codeMower.codexAudit.v1",
+      "verdict": "pass",
+      "summary": "No merge-blocking regressions found in this review.",
+      "findings": []
+    },
+    "blocked": {
+      "schema": "codeMower.codexAudit.v1",
+      "verdict": "blocked",
+      "summary": "A permission regression can bypass the configured review gate.",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "Bypass skips required reviewer verdict",
+          "file": "src/app.py",
+          "line": 12,
+          "detail": "The new branch treats a missing required reviewer result as success."
+        }
+      ]
+    },
+    "placeholder": {
+      "schema": "codeMower.codexAudit.v1",
+      "verdict": "blocked",
+      "summary": "test",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "test",
+          "file": "a.py",
+          "line": 1,
+          "detail": "test"
+        }
+      ]
+    },
+    "malformed_extra_key": {
+      "schema": "codeMower.codexAudit.v1",
+      "verdict": "pass",
+      "summary": "No merge-blocking regressions found in this review.",
+      "findings": [],
+      "extra": true
+    }
+  },
+  "claude": {
+    "pass": {
+      "schema": "codeMower.claudeAudit.v1",
+      "verdict": "pass",
+      "summary": "No merge-blocking regressions found in this review.",
+      "findings": []
+    },
+    "blocked": {
+      "schema": "codeMower.claudeAudit.v1",
+      "verdict": "blocked",
+      "summary": "A permission regression can bypass the configured review gate.",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "Bypass skips required reviewer verdict",
+          "file": "src/app.py",
+          "line": 12,
+          "detail": "The new branch treats a missing required reviewer result as success."
+        }
+      ]
+    },
+    "placeholder": {
+      "schema": "codeMower.claudeAudit.v1",
+      "verdict": "blocked",
+      "summary": "test",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "test",
+          "file": "src/app.py",
+          "line": 12,
+          "detail": "test"
+        }
+      ]
+    },
+    "malformed_extra_key": {
+      "schema": "codeMower.claudeAudit.v1",
+      "verdict": "pass",
+      "summary": "No merge-blocking regressions found in this review.",
+      "findings": [],
+      "extra": true
+    }
+  }
+}

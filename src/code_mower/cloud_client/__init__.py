@@ -57,6 +57,7 @@ from .events import (
     safe_event_type,
     safe_kind,
     utc_now,
+    validate_cloud_event,
 )
 from .git_metadata import (
     detect_repo_slug,
@@ -171,6 +172,7 @@ __all__ = [
     "token_prefix",
     "unexpected_bundle_entries",
     "utc_now",
+    "validate_cloud_event",
     "validate_metadata_payload",
     "validate_upload_endpoint",
     "write_setup_env_file",
