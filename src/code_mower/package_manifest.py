@@ -343,6 +343,7 @@ PACKAGE_FILES = (
     ("tools/local_llm_profiles.py", "src/code_mower/local_llm_profiles.py", "reviewer"),
     ("tools/gemini_cli_audit_pr.py", "src/code_mower/gemini_cli_audit_pr.py", "reviewer"),
     ("tools/antigravity_cli_audit_pr.py", "src/code_mower/antigravity_cli_audit_pr.py", "reviewer"),
+    ("src/code_mower/antigravity_sdk_probe.py", "src/code_mower/antigravity_sdk_probe.py", "core"),
     ("tools/hermes_cli_audit_pr.py", "src/code_mower/hermes_cli_audit_pr.py", "reviewer"),
     ("tools/coderabbit_cli_audit_pr.py", "src/code_mower/coderabbit_cli_audit_pr.py", "reviewer"),
     ("src/code_mower/grok_build_audit_pr.py", "src/code_mower/grok_build_audit_pr.py", "reviewer"),

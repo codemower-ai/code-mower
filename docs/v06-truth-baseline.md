@@ -67,8 +67,11 @@ or Gemini credentials.
 ## Antigravity SDK Research Posture
 
 The `google-antigravity` package and `google.antigravity` import path are real
-enough to justify a spike, but SDK work should not replace the CLI lane until
-Code Mower proves the exact API, auth, sandboxing, structured verdict,
+enough to justify a spike. As of the 2026-08-31 PT v0.6 probe,
+`google-antigravity` 0.1.15 is an alpha package with a bundled local harness,
+Gemini API or Vertex/ADC auth, response-schema support, read-only tool
+defaults, and token usage metadata. SDK work should not replace the CLI lane
+until Code Mower proves the exact API, auth, sandboxing, structured verdict,
 usage-metadata, timeout, and failure semantics.
 
 Treat SDK-based review as a separate optional lane with its own fixtures and
