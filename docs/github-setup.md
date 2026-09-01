@@ -333,7 +333,9 @@ lane-specific posting tokens or remove
 separation between Actions jobs and merge-gating audit verdicts.
 If the labeler cannot fetch enough comment history to identify the latest
 trusted current-head verdict, it leaves labels unchanged so an older delayed
-comment cannot overwrite a newer audit result.
+comment cannot overwrite a newer audit result. When a webhook event comment is
+not yet visible in the comments API snapshot, the labeler still includes that
+event comment in the same freshness comparison.
 
 When one operator or shared machine user posts multiple local-lane comments,
 each configured-author comment must carry the matching hidden
