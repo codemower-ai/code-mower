@@ -59,6 +59,11 @@ The package intentionally keeps provider-specific behavior in adapters and lane
 configs. Generic orchestration should not know provider-specific auth quirks
 unless they are part of the declared provider contract.
 
+`code_mower.provider_runners` is the incremental shared contract layer for
+provider wrappers. Keep broad prompt execution, parser behavior, and provider
+quirks in the Codex/Claude/Gemini/Antigravity modules until tests prove a
+smaller primitive is stable enough to share.
+
 ## Local Runner And Optional Cloud
 
 Code Mower's security model depends on a simple split:
