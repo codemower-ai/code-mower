@@ -1112,6 +1112,53 @@ exit 1
         )
         self.assertNotIn("join(", expression)
 
+    def test_repository_local_audit_workflow_uses_source_cli(self) -> None:
+        workflow = (ROOT / ".github/workflows/local-cli-audit.yml").read_text(
+            encoding="utf-8"
+        )
+        gate = (ROOT / ".github/workflows/code-mower-gate.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("name: Code Mower Local CLI Audits", workflow)
+        self.assertIn("runs-on: [self-hosted, macOS, code-mower-audit]", workflow)
+        self.assertIn("tools/run_codex_audit_pr.sh", workflow)
+        self.assertIn("tools/run_claude_audit_pr.sh", workflow)
+        self.assertIn(
+            '"${SUPPORT_PATH}/scripts/dev-python" -m code_mower.cli cloud reviewer-runs',
+            workflow,
+        )
+        self.assertIn(
+            '"${SUPPORT_PATH}/scripts/dev-python" -m code_mower.cli cloud dogfood',
+            workflow,
+        )
+        self.assertNotIn('"${SUPPORT_PATH}/tools/code_mower" cloud', workflow)
+
+        wrappers = {
+            "tools/run_codex_audit_pr.sh": "codex-audit",
+            "tools/run_claude_audit_pr.sh": "claude-audit",
+        }
+        for relative_path, command in wrappers.items():
+            wrapper = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn("scripts/dev-python", wrapper)
+            self.assertIn(f"code_mower.cli {command}", wrapper)
+            self.assertNotIn('${script_dir}/code_mower', wrapper)
+
+        self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
+        self.assertIn('CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"', gate)
+        self.assertNotIn("TODO_OWNER_LOGIN", gate)
+
+        workflow_commands = {
+            ".github/workflows/claude-audit-labeler.yml": "trailer-comment-labeler",
+            ".github/workflows/codex-audit-labeler.yml": "trailer-comment-labeler",
+            ".github/workflows/claude-clear-stale.yml": "clear-stale",
+            ".github/workflows/codex-clear-stale.yml": "clear-stale",
+        }
+        for relative_path, command in workflow_commands.items():
+            installed = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn(f"scripts/dev-python -m code_mower.cli {command}", installed)
+            self.assertNotIn("tools/code_mower", installed)
+
     def test_package_workflow_guard_rejects_runner_context_in_job_env(self) -> None:
         bad_workflow = """
 name: bad

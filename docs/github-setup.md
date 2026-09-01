@@ -400,6 +400,12 @@ branch, checks out the PR head separately as audit context, and runs the repo-lo
 `tools/run_codex_audit_pr.sh` or `tools/run_claude_audit_pr.sh` wrapper for
 each present `needs-*-audit` label.
 
+In product repositories, those wrappers and companion labeler/stale-clear
+workflows normally delegate to the pinned standalone `tools/code_mower` shim. In
+the Code Mower repository itself, the dogfood workflows use the trusted
+default-branch checkout with `scripts/dev-python -m code_mower.cli` so gate
+decisions exercise the source that just landed on `main`.
+
 Runner setup recipe:
 
 1. Register a macOS self-hosted runner from repository settings, using the

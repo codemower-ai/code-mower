@@ -1,0 +1,234 @@
+# Code Mower workflow template: dispatch local CLI audits on a self-hosted runner.
+#
+# The workflow checks out trusted support scripts from the default branch and
+# the pull request head as separate read-only audit context. It only runs for
+# same-repository pull requests because local provider CLIs execute on the
+# runner user's machine.
+name: Code Mower Local CLI Audits
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, labeled]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_LOCAL_AUDIT_PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+jobs:
+  audit:
+    name: audit (${{ matrix.lane.lane }})
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.action != 'labeled' ||
+        (github.event.label.name == 'needs-codex-audit' || github.event.label.name == 'needs-claude-audit')
+      ) &&
+      (
+        (github.event.label.name == 'needs-codex-audit' || github.event.label.name == 'needs-claude-audit') ||
+        (contains(github.event.pull_request.labels.*.name, 'needs-codex-audit') || contains(github.event.pull_request.labels.*.name, 'needs-claude-audit'))
+      )
+    runs-on: [self-hosted, macOS, code-mower-audit]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [{"audit_budget_usd": "", "audit_max_diff_bytes": "180000", "audit_max_diff_hard_limit_bytes": "1500000", "display_name": "Codex", "lane": "codex", "needs_label": "needs-codex-audit", "script": "tools/run_codex_audit_pr.sh", "token_env": "DISPATCH_TOKEN"}, {"audit_budget_usd": "", "audit_max_diff_bytes": "180000", "audit_max_diff_hard_limit_bytes": "1500000", "display_name": "Claude", "lane": "claude", "needs_label": "needs-claude-audit", "script": "tools/run_claude_audit_pr.sh", "token_env": "DISPATCH_TOKEN"}]
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ matrix.lane.lane }}
+      cancel-in-progress: true
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_HEAD_PATH: ${{ github.workspace }}/pr-head
+      SUPPORT_PATH: ${{ github.workspace }}/code-mower-support
+    steps:
+      - name: Verify local runner environment
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in USER LOGNAME SHELL LANG; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing ${name}; set it in the self-hosted runner .env file."
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Using Code Mower runner label code-mower-audit"
+
+      - name: Check out trusted Code Mower support files from default branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: code-mower-support
+          persist-credentials: false
+
+      - name: Reset pull request checkout path
+        run: |
+          set -euo pipefail
+          rm -rf "${PR_HEAD_PATH}"
+
+      - name: Check out pull request head
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr-head
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify pull request checkout
+        id: verify_pr_head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
+          actual_head="$(git -C "${PR_HEAD_PATH}" rev-parse HEAD)"
+          if [ "${actual_head}" != "${PR_HEAD_SHA}" ]; then
+            echo "::error::PR checkout resolved ${actual_head}, expected ${PR_HEAD_SHA}"
+            exit 1
+          fi
+          if ! current_head="$(
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+              --jq '.head.sha'
+          )"; then
+            echo "::warning::Unable to verify current PR head via gh api; continuing with checkout head ${PR_HEAD_SHA}."
+            current_head="${PR_HEAD_SHA}"
+          fi
+          if [ "${current_head}" != "${PR_HEAD_SHA}" ]; then
+            echo "::notice::PR #${PR_NUMBER} head moved to ${current_head}; this run for ${PR_HEAD_SHA} is superseded."
+            echo "superseded=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "superseded=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Run matching local CLI audits
+        id: run_audit
+        if: >-
+          steps.verify_pr_head.conclusion == 'success' &&
+          steps.verify_pr_head.outputs.superseded != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CODE_MOWER_REVIEWER_SPEND_PATH: ${{ runner.temp }}/code-mower-reviewer-spend.json
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          CODE_MOWER_LOCAL_AUDIT_LANE: ${{ matrix.lane.lane }}
+          CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME: ${{ matrix.lane.display_name }}
+          CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL: ${{ matrix.lane.needs_label }}
+          CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV: ${{ matrix.lane.token_env }}
+          CODE_MOWER_LOCAL_AUDIT_SCRIPT: ${{ matrix.lane.script }}
+          CLAUDE_AUDIT_MAX_BUDGET_USD: ${{ matrix.lane.audit_budget_usd }}
+          CLAUDE_AUDIT_MAX_DIFF_BYTES: ${{ matrix.lane.audit_max_diff_bytes }}
+          CLAUDE_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES: ${{ matrix.lane.audit_max_diff_hard_limit_bytes }}
+          CODEX_AUDIT_MAX_BUDGET_USD: ${{ matrix.lane.audit_budget_usd }}
+          CODEX_AUDIT_MAX_DIFF_BYTES: ${{ matrix.lane.audit_max_diff_bytes }}
+          CODEX_AUDIT_MAX_DIFF_HARD_LIMIT_BYTES: ${{ matrix.lane.audit_max_diff_hard_limit_bytes }}
+        run: |
+          set -euo pipefail
+          export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
+
+          labels_file="${RUNNER_TEMP}/code-mower-local-audit-labels.txt"
+          gh pr view "${PR_NUMBER}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json labels \
+            --jq '.labels[].name' > "${labels_file}"
+
+          has_label() {
+            grep -Fxq "$1" "${labels_file}"
+          }
+
+          if ! has_label "${CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL}"; then
+            echo "No ${CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL} label is present for ${CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME}."
+            echo "audited=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          wrapper="${SUPPORT_PATH}/${CODE_MOWER_LOCAL_AUDIT_SCRIPT}"
+          if [ ! -x "${wrapper}" ]; then
+            echo "::error::Missing executable audit wrapper: ${CODE_MOWER_LOCAL_AUDIT_SCRIPT}"
+            exit 1
+          fi
+
+          token="${!CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV:-}"
+          if [ -z "${token}" ]; then
+            token="${GITHUB_TOKEN:-}"
+          fi
+          if [ -z "${token}" ]; then
+            echo "::error::No GitHub token available for ${CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME} audit"
+            exit 1
+          fi
+
+          echo "Running ${CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME} local CLI audit for PR #${PR_NUMBER}"
+          echo "audited=true" >> "${GITHUB_OUTPUT}"
+          # PR_HEAD_PATH was checked out and verified at PR_HEAD_SHA above.
+          # Code Mower's PR-head fetch helper skips the private pull/N/head
+          # fetch when --repo-paths already points at that exact head.
+          printf '%s\n' "${token}" | "${wrapper}" \
+            --read-token-from-stdin \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pr "${PR_NUMBER}" \
+            --repo-paths "${GITHUB_REPOSITORY}:${PR_HEAD_PATH}"
+
+      - name: Upload Code Mower audit metadata
+        if: >-
+          always() &&
+          steps.verify_pr_head.conclusion == 'success' &&
+          steps.verify_pr_head.outputs.superseded != 'true' &&
+          steps.run_audit.outputs.audited == 'true'
+        env:
+          CODE_MOWER_CLOUD_TOKEN: ${{ secrets.CODE_MOWER_CLOUD_TOKEN }}
+          CODE_MOWER_CLOUD_TEAM_ID: ${{ vars.CODE_MOWER_CLOUD_TEAM_ID }}
+          CODE_MOWER_INSTALL_ID: ${{ vars.CODE_MOWER_INSTALL_ID }}
+          CODE_MOWER_REVIEWER_SPEND_PATH: ${{ runner.temp }}/code-mower-reviewer-spend.json
+        run: |
+          set -euo pipefail
+          export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
+
+          if [ -z "${CODE_MOWER_CLOUD_TOKEN:-}" ]; then
+            echo "::notice::CODE_MOWER_CLOUD_TOKEN is not configured; skipping audit metadata upload."
+            exit 0
+          fi
+
+          install_id="${CODE_MOWER_INSTALL_ID:-github-actions-local-cli-audit}"
+          repo_cache_slug="${GITHUB_REPOSITORY//\//__}"
+          verdict_dir="${HOME}/.cache/code-mower-audits/verdicts/${repo_cache_slug}/pr-${PR_NUMBER}"
+          upload_failed=0
+
+          "${SUPPORT_PATH}/scripts/dev-python" -m code_mower.cli cloud reviewer-runs \
+            --repo-path "${PR_HEAD_PATH}" \
+            --repo-slug "${GITHUB_REPOSITORY}" \
+            --verdicts "${verdict_dir}" \
+            --spend "${CODE_MOWER_REVIEWER_SPEND_PATH}" \
+            --output-dir "${RUNNER_TEMP}/code-mower-reviewer-runs" \
+            --install-id "${install_id}" \
+            --include-git-ref \
+            --yes \
+            --json || upload_failed=1
+
+          event_args=()
+          work_order_dir="${SUPPORT_PATH}/.code-mower/work-orders"
+          if [ -d "${work_order_dir}" ]; then
+            while IFS= read -r -d '' event_file; do
+              event_args+=(--event "work_order=${event_file}")
+            done < <(find "${work_order_dir}" -type f -name '*.cloud-event.json' -print0)
+          fi
+
+          "${SUPPORT_PATH}/scripts/dev-python" -m code_mower.cli cloud dogfood \
+            --repo-path "${SUPPORT_PATH}" \
+            --repo-slug "${GITHUB_REPOSITORY}" \
+            --source local-cli-audit \
+            --output-dir "${RUNNER_TEMP}/code-mower-dogfood" \
+            --install-id "${install_id}" \
+            --yes \
+            --json \
+            ${event_args[@]+"${event_args[@]}"} || upload_failed=1
+
+          if [ "${upload_failed}" -ne 0 ]; then
+            echo "::warning::Code Mower audit metadata upload failed; audit verdict remains authoritative."
+          fi
