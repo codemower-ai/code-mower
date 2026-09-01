@@ -89,6 +89,7 @@ class BuilderExperimentExecutorTest(unittest.TestCase):
             )
             self.assertNotIn("SECRET_OUTPUT", json.dumps(cloud_events[0]))
             normalized_cloud_event = json.dumps(cloud_events[0])
+            self.assertNotIn("command_executable", normalized_cloud_event)
             self.assertNotIn('"stdout_stderr":', normalized_cloud_event)
             self.assertNotIn('"raw_stdout_stderr":', normalized_cloud_event)
 

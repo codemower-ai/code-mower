@@ -379,7 +379,6 @@ def _builder_event_from_authoring_run(
             "executor_type": _text(executor.get("type")),
             "executor_dry_run": bool(executor.get("dry_run")),
             "executor_exit_code": executor.get("exit_code"),
-            "command_executable": _text(command.get("executable")),
             "command_arg_count": command.get("arg_count"),
             "command_argv_sha256": _text(command.get("argv_sha256")),
             "command_output_capture": "disabled",
