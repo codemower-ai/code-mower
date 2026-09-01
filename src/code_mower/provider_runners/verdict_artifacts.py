@@ -17,7 +17,15 @@ from .github_pr import edit_pr_comment, post_pr_comment
 VERDICT_ARTIFACT_SCHEMA = "code_mower.auditVerdictArtifact.v1"
 VERDICT_ARTIFACT_DIR_ENV = "CODE_MOWER_VERDICT_ARTIFACT_DIR"
 VERDICT_QUARANTINE_DIR_ENV = "CODE_MOWER_VERDICT_QUARANTINE_DIR"
-AUDIT_VERDICT_VALUES = frozenset({"PASS", "BLOCKED", "STALE", "UNKNOWN"})
+AUDIT_PASS_VERDICT_VALUES = frozenset(
+    {"completed", "done", "pass", "passed", "success", "succeeded"}
+)
+AUDIT_BLOCKED_VERDICT_VALUES = frozenset(
+    {"block", "blocked", "fail", "failed", "failure"}
+)
+AUDIT_VERDICT_VALUES = frozenset(
+    {*AUDIT_PASS_VERDICT_VALUES, *AUDIT_BLOCKED_VERDICT_VALUES, "stale", "unknown"}
+)
 FIXTURE_VERDICT_TEXT = frozenset({"test", "example", "placeholder", "t", "d"})
 FIXTURE_VERDICT_PATHS = frozenset(
     {
@@ -208,7 +216,7 @@ def validate_audit_verdict_artifact_payload(payload: Any) -> dict[str, Any]:
         )
     _artifact_text(payload, "repo", required=True)
     _artifact_pr_number(payload.get("pr_number"))
-    verdict = _artifact_text(payload, "verdict", required=True).upper()
+    verdict = _artifact_text(payload, "verdict", required=True).strip().lower()
     if verdict not in AUDIT_VERDICT_VALUES:
         allowed = ", ".join(sorted(AUDIT_VERDICT_VALUES))
         raise ValueError(f"verdict artifact field verdict must be one of {allowed}")

@@ -196,7 +196,10 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
 
             payload = verdict_artifacts.load_audit_verdict_artifact(path)
 
-            self.assertEqual(payload["schema"], code_mower_telemetry.VERDICT_ARTIFACT_SCHEMA)
+            self.assertEqual(
+                payload["schema"],
+                code_mower_telemetry.VERDICT_ARTIFACT_SCHEMA,
+            )
             self.assertEqual(payload["repo"], "owner/repo")
             self.assertEqual(payload["pr_number"], 42)
 
@@ -209,7 +212,34 @@ class VerdictArtifactEventExportTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "pr_number"):
-                code_mower_telemetry.export_reviewer_run_events_from_verdicts(root)
+                verdict_artifacts.load_audit_verdict_artifact(path)
+
+    def test_verdict_artifact_boundary_accepts_existing_verdict_synonyms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_artifact(root, verdict="passed")
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+            event = code_mower_telemetry.reviewer_run_event_from_verdict_artifact(
+                payload,
+                path=path,
+            )
+
+            self.assertEqual(event["status"], "pass")
+
+    def test_verdict_artifact_export_skips_malformed_cache_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_artifact(root, pr_number=41)
+            invalid = self._write_artifact(root, pr_number=42)
+            payload = json.loads(invalid.read_text(encoding="utf-8"))
+            payload["pr_number"] = "not-a-number"
+            invalid.write_text(json.dumps(payload), encoding="utf-8")
+
+            events = code_mower_telemetry.export_reviewer_run_events_from_verdicts(root)
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["dimensions"]["pr_number"], 41)
 
     def test_verdict_artifacts_export_skips_fixture_shaped_cache_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

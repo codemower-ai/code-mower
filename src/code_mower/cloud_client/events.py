@@ -296,7 +296,6 @@ def validate_cloud_event(value: Any) -> dict[str, Any]:
     for key in ("metrics", "dimensions", "tool"):
         if not isinstance(value.get(key), dict):
             raise CloudBundleError(f"structured event field {key} must be an object")
-    validate_metadata_payload(value)
     return value
 
 

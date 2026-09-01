@@ -273,9 +273,11 @@ def export_reviewer_run_events_from_verdicts(
 ) -> list[dict[str, Any]]:
     if offset < 0:
         raise ValueError("offset must be non-negative")
+    source = root.expanduser()
+    strict_single_artifact = source.is_file()
     repo_filter = _normalize_repo_slug(repo) if repo else ""
     events: list[dict[str, Any]] = []
-    for path in _iter_verdict_artifact_paths(root.expanduser()):
+    for path in _iter_verdict_artifact_paths(source):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -286,7 +288,13 @@ def export_reviewer_run_events_from_verdicts(
             continue
         if is_fixture_verdict_artifact(payload):
             continue
-        validate_audit_verdict_artifact_payload(payload)
+        try:
+            validate_audit_verdict_artifact_payload(payload)
+        except ValueError as exc:
+            if strict_single_artifact:
+                raise ValueError(f"{path}: invalid verdict artifact: {exc}") from exc
+            print(f"warning: skipped invalid verdict artifact {path}: {exc}", file=sys.stderr)
+            continue
         artifact_repo = _normalize_repo_slug(
             str(payload.get("repo") or _repo_slug_from_artifact_path(path))
         )
