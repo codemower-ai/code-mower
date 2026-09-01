@@ -7055,6 +7055,32 @@ def main():
         self.assertIn(repo_path_truth, " ".join(try_in_10.split()))
         self.assertIn(repo_path_truth, " ".join(quickstart.split()))
 
+    def test_v06_adoption_polish_docs_cover_cold_start_surface(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+        troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(
+            encoding="utf-8",
+        )
+        release_notes = (ROOT / "docs" / "v06-release-notes.md").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertIn("Cold adopters should start with the reviewer gate", readme)
+        self.assertIn("code-mower builder-experiment run", readme)
+        self.assertIn("[v0.6 Release Notes Draft](docs/v06-release-notes.md)", readme)
+        self.assertIn("Gemini CLI and Antigravity are distinct lane ids", readme)
+        self.assertIn("Claude Code/Codex/Cursor as builders", quickstart)
+        self.assertIn("Gitar plus Antigravity as informational", quickstart)
+        self.assertIn("CODE_MOWER_GATE_AUTOMERGE_TOKEN", quickstart)
+        self.assertIn("Manual Audit Wrapper Fails Before Reviewing", troubleshooting)
+        self.assertIn("OWNER/REPO:/absolute/path/to/pr-head-checkout", troubleshooting)
+        self.assertIn("structured output", " ".join(troubleshooting.split()))
+        self.assertIn("Code Mower v0.6 Release Notes Draft", release_notes)
+        self.assertIn("`code_mower.provider_runners`", release_notes)
+        self.assertIn("code_mower.authoringRun.v1", release_notes)
+        self.assertIn("metadata-only", release_notes)
+        self.assertIn("no source code, raw diffs", release_notes)
+
     def test_package_command_inventory_derives_current_prerelease_spec(self) -> None:
         package_content_text = (ROOT / "src/code_mower/package_content.py").read_text(
             encoding="utf-8",
