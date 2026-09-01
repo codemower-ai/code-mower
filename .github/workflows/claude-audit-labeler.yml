@@ -1,0 +1,77 @@
+# Code Mower workflow template: apply labels from trusted audit-result comments.
+name: Claude audit labeler
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"
+  CODE_MOWER_AUTHOR_EXCLUSION_JSON: "{\"authors\":{\"chatgpt-codex-connector[bot]\":\"codex\",\"claude[bot]\":\"claude\",\"cursor[bot]\":\"cursor\",\"grok-bot[bot]\":\"cursor\"},\"enabled\":true,\"labels\":{\"builder:claude\":\"claude\",\"builder:codex\":\"codex\",\"builder:cursor\":\"cursor\",\"builder:gitar\":\"gitar\",\"builder:grok-bot\":\"cursor\"},\"trailers\":{\"CODE_MOWER_BUILDER:claude\":\"claude\",\"CODE_MOWER_BUILDER:codex\":\"codex\",\"CODE_MOWER_BUILDER:cursor\":\"cursor\",\"CODE_MOWER_BUILDER:grok-bot\":\"cursor\"}}"
+
+jobs:
+  label:
+    if: >-
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        (
+          (
+            contains(',claude-audit-bot,claude-audit-bot[bot],github-actions[bot],', format(',{0},', github.event.comment.user.login)) &&
+            (
+              contains(github.event.comment.body, 'CLAUDE_AUDIT_STATE') ||
+              contains(github.event.comment.body, 'Claude Audit') ||
+              contains(github.event.comment.body, 'HEAD_CHANGED_DURING_REVIEW') ||
+              contains(github.event.comment.body, 'Label state:') ||
+              contains(github.event.comment.body, 'Intended label state:') ||
+              contains(github.event.comment.body, 'Expected labels:') ||
+              contains(github.event.comment.body, 'Intended labels:') ||
+              contains(github.event.comment.body, 'needs-claude-audit') ||
+              contains(github.event.comment.body, 'claude-audit-done') ||
+              contains(github.event.comment.body, 'claude-audit-blocked')
+            )
+          ) ||
+          (
+            contains(format(',{0},', vars.CLAUDE_AUDIT_BOT_AUTHORS), format(',{0},', github.event.comment.user.login)) &&
+            contains(github.event.comment.body, 'CLAUDE_AUDIT_STATE')
+          )
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out Code Mower support files from default branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Apply Claude audit labels
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          CLAUDE_AUDIT_BOT_AUTHORS: ${{ vars.CLAUDE_AUDIT_BOT_AUTHORS }}
+          PYTHONPATH: src
+          TRAILER_LANE: claude
+          CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml"
+        run: scripts/dev-python -m code_mower.cli trailer-comment-labeler --lane "${TRAILER_LANE}"
+
+      - name: Recompute Code Mower gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          head_sha="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          gh workflow run code-mower-gate.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${{ github.event.repository.default_branch }}" \
+            -f "pr_number=${PR_NUMBER}" \
+            -f "head_sha=${head_sha}"

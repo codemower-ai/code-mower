@@ -234,6 +234,7 @@ OWNER_SURFACE_DEFAULTS = {
     "gate_health_max_wait_minutes": "30",
     "gate_health_liveness_minutes": "45",
     "local_audit_runner_label": LOCAL_AUDIT_RUNNER_LABEL,
+    "local_audit_runner_enabled_var": "CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED",
     "lane_runner_labels": "self-hosted,macOS,code-mower-lane",
     "lane_runner_enabled_var": "LANE_MAC_RUNNER_ENABLED",
     "lane_runner_cron": "*/15 * * * *",
@@ -711,6 +712,7 @@ def _local_audit_workflow_entry(
     entries: tuple[dict[str, str], ...],
     *,
     local_audit_runner_label: str = LOCAL_AUDIT_RUNNER_LABEL,
+    local_audit_runner_enabled_var: str = "CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED",
 ) -> dict[str, str]:
     token_envs = sorted({entry["token_env"] for entry in entries if entry["token_env"]})
     token_assignments = "\n".join(
@@ -725,6 +727,7 @@ def _local_audit_workflow_entry(
         "local_audit_label_match": _local_audit_label_expression(entries, "event"),
         "local_audit_label_contains": _local_audit_label_expression(entries, "pull_request"),
         "local_audit_runner_label": local_audit_runner_label,
+        "local_audit_runner_enabled_var": local_audit_runner_enabled_var,
         "local_audit_token_env_assignments": token_assignments,
     }
 
@@ -1834,6 +1837,10 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__LOCAL_AUDIT_RUNNER_LABEL_YAML__": _yaml_scalar(
             entry.get("local_audit_runner_label") or ""
         ),
+        "__LOCAL_AUDIT_RUNNER_ENABLED_VAR__": str(
+            entry.get("local_audit_runner_enabled_var")
+            or "CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED"
+        ),
         "__LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__": str(
             entry.get("local_audit_token_env_assignments") or ""
         ),
@@ -2424,6 +2431,7 @@ def render_init_plan(
         if any(str(entry.get("mac_runner") or "") == "true" for entry in builder_entries):
             required_variables.add(owner_surface["lane_runner_enabled_var"])
     if local_audit_entries and LOCAL_AUDIT_WORKFLOW_PATH not in generated_paths:
+        required_variables.add(owner_surface["local_audit_runner_enabled_var"])
         workflow_targets.add(LOCAL_AUDIT_WORKFLOW_PATH)
         workflows.append(
             {
@@ -2437,6 +2445,9 @@ def render_init_plan(
             _local_audit_workflow_entry(
                 local_audit_entries,
                 local_audit_runner_label=owner_surface["local_audit_runner_label"],
+                local_audit_runner_enabled_var=owner_surface[
+                    "local_audit_runner_enabled_var"
+                ],
             )
         )
 

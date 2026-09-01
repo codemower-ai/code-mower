@@ -68,6 +68,12 @@ counts, false-positive counts, repository slug, install id, and coarse runtime
 metadata. They must not include source code, raw diffs, raw transcripts,
 stdout/stderr, auth output, or secrets.
 
+The OSS uploader normalizes and validates every structured event before it is
+written into a bundle. Required fields use simple JSON object/string shapes,
+`metrics`, `dimensions`, and `tool` remain objects, event types come from the
+supported list above, and additive fields are allowed as long as they pass the
+same metadata-only privacy scan.
+
 `provider_catalog_snapshot` events are special: they describe configured
 provider lanes and safe tool/model/version coverage. They are useful for setup
 and benchmark trust diagnostics, but they are not reviewer accuracy evidence and
@@ -135,11 +141,13 @@ transcripts, stdout/stderr, issue bodies, auth output, or secrets.
 `cloud reviewer-runs` convert spend `runs` into `reviewer_run` events.
 `reviewer-runs` reads `.code-mower/reviewer-spend.json` automatically when the
 ledger is present and merges spend metrics into matching verdict events before
-upload so dashboards do not double-count reviewer attempts. The derived event
-places latency/cost/token numbers under `metrics`, PR/SHA/lane identifiers
-under `dimensions`, and model/tool identity under `tool`. CodeMower.com should
-accept uploads without these fields from beta.40 clients and treat missing
-spend rows as unknown, not zero measured spend.
+upload so dashboards do not double-count reviewer attempts. When `--verdicts`
+narrows the exported artifacts, unmatched spend rows are ignored by default; use
+`--include-unmatched-spend` only for deliberate reviewer-spend backfill. The
+derived event places latency/cost/token numbers under `metrics`, PR/SHA/lane
+identifiers under `dimensions`, and model/tool identity under `tool`.
+CodeMower.com should accept uploads without these fields from beta.40 clients
+and treat missing spend rows as unknown, not zero measured spend.
 
 Generated self-hosted local audit workflows may automatically call
 `cloud reviewer-runs` and `cloud dogfood` after audit attempts when a team
@@ -156,6 +164,10 @@ diffs, prompts, transcripts, stdout/stderr, issue body text, or secrets.
 Fixture-shaped or quarantined audit verdict artifacts are excluded from
 `reviewer_run` export and upload so local wrapper tests cannot become dashboard
 or calibration evidence.
+Before conversion, provider verdict artifacts are checked for the local
+`code_mower.auditVerdictArtifact.v1` shape: repository, PR number, verdict, and
+comment body are required, known verdict values are enforced, and timing fields
+must be finite non-negative metadata when present.
 
 `reviewer_run` events may include per-lane audit comment attribution in
 `dimensions.audit_comment_lane_id`, `dimensions.audit_comment_identity_source`,

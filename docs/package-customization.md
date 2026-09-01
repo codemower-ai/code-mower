@@ -316,6 +316,26 @@ compatibility with earlier local runs.
 The Antigravity doctor probe is currently a version check, not a paid model
 call. Run a full calibration or audit command when you want evidence about the
 authenticated review path.
+Antigravity failure summaries and head-change errors name the Antigravity CLI
+lane even though Code Mower reuses the shared Google/Gemini CLI transport
+helper internally.
+
+The Antigravity SDK is separate from the CLI lane. As of the 2026-08-31 PT
+v0.6 spike, `google-antigravity` 0.1.15 is an alpha PyPI package exposing the
+`google.antigravity` import path, a bundled local harness binary, Gemini API or
+Vertex/ADC auth, response-schema support, read-only tool defaults, and usage
+metadata. Code Mower does not depend on it by default. Use the metadata-only
+probe before any SDK lane work:
+
+```bash
+code-mower providers antigravity-sdk-probe --json
+code-mower providers antigravity-sdk-probe --import-api --json
+```
+
+The default probe does not import the SDK, start the harness, read source, call
+auth, or call a model. Treat any future `antigravity_sdk` lane as research-only
+until it has explicit sandboxing, structured-verdict, timeout, usage-metadata,
+spend, and calibration evidence.
 
 The Hermes CLI lane uses local Hermes Agent authentication created by
 `hermes setup`. Because Hermes currently relies on local session/config state,

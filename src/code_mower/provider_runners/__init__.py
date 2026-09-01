@@ -6,10 +6,17 @@ Gemini/Antigravity, Hermes, and local reviewer lanes.
 """
 
 from .comments import (
+    AUDIT_RUN_TRAILER_PREFIX,
     MAX_GITHUB_COMMENT_CHARS,
+    STALE_REQUEUE_MARKER,
+    UNKNOWN_REQUEUE_MARKER,
+    audit_comment_posture,
     bind_actions_run_comment_id,
+    format_audit_comment_header,
     limit_comment_body,
+    normalize_calibration_badge,
 )
+from .exit_codes import audit_exit_code
 from .git import fetch_local_checkout_diff, local_head_sha, run_git
 from .github_auth import (
     pop_github_token_env,
@@ -53,6 +60,7 @@ from .verdict_artifacts import (
     is_fixture_verdict_comment,
     load_audit_verdict_artifact,
     repost_audit_verdict_artifact,
+    validate_audit_verdict_artifact_payload,
     write_audit_verdict_artifact,
 )
 from .workspace import (
@@ -67,6 +75,9 @@ __all__ = [
     "fetch_pull_request_files",
     "fetch_issue_comments",
     "edit_pr_comment",
+    "AUDIT_RUN_TRAILER_PREFIX",
+    "audit_comment_posture",
+    "audit_exit_code",
     "FetchedHeadMismatch",
     "fetch_base_ref",
     "fetch_base_ref_sha",
@@ -77,6 +88,7 @@ __all__ = [
     "fetch_pr_head_sha_unless_local_matches",
     "fetch_pr_head_unless_local_matches",
     "fixture_verdict_comment_reason",
+    "format_audit_comment_header",
     "is_fixture_verdict_artifact",
     "is_fixture_verdict_comment",
     "is_fixture_structured_verdict",
@@ -101,6 +113,10 @@ __all__ = [
     "resolve_github_token_from_stdin_or_env",
     "run_git",
     "run_git_text",
+    "validate_audit_verdict_artifact_payload",
+    "STALE_REQUEUE_MARKER",
+    "UNKNOWN_REQUEUE_MARKER",
+    "normalize_calibration_badge",
     "validate_repo_path_for_wrapper",
     "create_temp_worktree",
     "remove_worktree",

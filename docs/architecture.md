@@ -59,6 +59,11 @@ The package intentionally keeps provider-specific behavior in adapters and lane
 configs. Generic orchestration should not know provider-specific auth quirks
 unless they are part of the declared provider contract.
 
+`code_mower.provider_runners` is the incremental shared contract layer for
+provider wrappers. Keep broad prompt execution, parser behavior, and provider
+quirks in the Codex/Claude/Gemini/Antigravity modules until tests prove a
+smaller primitive is stable enough to share.
+
 ## Local Runner And Optional Cloud
 
 Code Mower's security model depends on a simple split:
@@ -105,6 +110,11 @@ Provider integrations should expose setup docs, auth/runtime doctor checks,
 source/diff exposure posture, local/hosted/manual/automatic posture, and
 cost/latency fields when available.
 
+Provider parser and verdict-artifact fixtures live under `tests/fixtures/` and
+lock the current reviewer output contract before shared provider-runner code is
+extracted. Keep those fixtures sanitized: no source, raw diffs, transcripts,
+issue bodies, stdout/stderr, auth output, or secrets.
+
 ## Builder And Orchestrator Boundary
 
 Code Mower can learn from orchestrator systems without becoming one by default.
@@ -137,6 +147,10 @@ The OSS package can export and upload a cloud bundle, but the hosted service is
 optional. Default bundles exclude source code, raw diffs, raw model
 transcripts, raw stdout/stderr, auth output, and secrets.
 
+Provider verdict artifacts and cloud events are validated at Code Mower-owned
+boundaries before repost/export/upload. Validation checks required field shapes
+and privacy-safety patterns while still allowing additive beta metadata fields.
+
 See `docs/cloud-data-contract.md` for the public upload contract.
 
 ## Release Hygiene
@@ -157,4 +171,6 @@ git diff --check
 
 `scripts/dev-python` is the preferred source-checkout Python entrypoint. It
 refuses stale or old Python interpreters so release work does not accidentally
-run under an unsafe ambient `python3`.
+run under an unsafe ambient `python3`. Public docs and shipped entrypoints
+should point source-checkout users at that wrapper plus an installed editable
+venv, not raw source-path environment commands.

@@ -5,8 +5,10 @@ import os
 import subprocess
 from pathlib import Path
 
+from code_mower import antigravity_cli_audit_pr
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 from code_mower import cli as code_mower_cli
+from code_mower import gemini_cli_audit_pr
 from code_mower import grok_build_audit_pr
 from code_mower.providers import build_provider_lane_tool_provenance
 from code_mower.providers.provenance import (
@@ -332,6 +334,108 @@ def test_antigravity_does_not_inherit_gemini_model_env(
     assert tool["model"] == ""
     assert tool["model_source"] == "missing"
     assert detail["model_known"] is False
+
+
+def test_google_cli_parse_failure_uses_lane_display_name() -> None:
+    antigravity_verdict = gemini_cli_audit_pr._validate_verdict(
+        None,
+        display_name="Antigravity CLI",
+    )
+    gemini_verdict = gemini_cli_audit_pr._validate_verdict(None)
+
+    assert (
+        antigravity_verdict["summary"]
+        == "Antigravity CLI response did not contain parseable verdict JSON."
+    )
+    assert (
+        gemini_verdict["summary"]
+        == "Gemini CLI response did not contain parseable verdict JSON."
+    )
+
+
+def test_antigravity_empty_diff_error_names_lane(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        gemini_cli_audit_pr,
+        "fetch_pull_request",
+        lambda repo, pr_number, *, token: {"head": {"sha": "abc123"}},
+    )
+    monkeypatch.setattr(
+        gemini_cli_audit_pr,
+        "fetch_local_checkout_diff",
+        lambda repo_path, *, base_ref: ("abc123", ""),
+    )
+
+    try:
+        antigravity_cli_audit_pr.run_antigravity_cli_audit(
+            repo="owner/repo",
+            pr_number=7,
+            github_token="token",
+            command="agy",
+            repo_path=tmp_path,
+            allow_ambient_home=True,
+        )
+    except ValueError as exc:
+        assert "Antigravity CLI calibration diff is empty" in str(exc)
+    else:
+        raise AssertionError("expected empty-diff ValueError")
+
+
+def test_antigravity_head_changed_error_names_lane(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        gemini_cli_audit_pr,
+        "fetch_pull_request",
+        lambda repo, pr_number, *, token: {"head": {"sha": "abc123"}},
+    )
+    monkeypatch.setattr(
+        gemini_cli_audit_pr,
+        "fetch_local_checkout_diff",
+        lambda repo_path, *, base_ref: ("abc123", "diff --git a/a b/a\n"),
+    )
+    monkeypatch.setattr(
+        gemini_cli_audit_pr,
+        "_local_head_sha",
+        lambda repo_path: "def456",
+    )
+    monkeypatch.setattr(
+        gemini_cli_audit_pr,
+        "build_prompt",
+        lambda **kwargs: ("review prompt", {}),
+    )
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps(
+                {
+                    "verdict": "pass",
+                    "summary": "No findings.",
+                    "findings": [],
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(gemini_cli_audit_pr.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        gemini_cli_audit_pr,
+        "verify_prompt_file_contract",
+        lambda *args, **kwargs: None,
+    )
+
+    try:
+        antigravity_cli_audit_pr.run_antigravity_cli_audit(
+            repo="owner/repo",
+            pr_number=7,
+            github_token="token",
+            command="agy",
+            repo_path=tmp_path,
+            allow_ambient_home=True,
+        )
+    except antigravity_cli_audit_pr.AntigravityCliHeadChangedError as exc:
+        assert "local checkout head changed during Antigravity CLI audit" in str(exc)
+    else:
+        raise AssertionError("expected Antigravity head-changed error")
 
 
 def test_provider_lane_tool_provenance_uses_available_alternate_command(
