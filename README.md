@@ -88,11 +88,15 @@ fast, or eligible for stronger merge policy on your actual codebase.
 ## Start Here
 
 Choose one path. Each path has one guide and gets to one visible outcome.
+Cold adopters should start with the reviewer gate, then add builders, then
+measure builder experiments; provider experiments come after that base loop is
+observable.
 
 | Path | Use When | Route | Guide |
 | --- | --- | --- | --- |
 | A. Reviewer gate in 10 minutes | You want one audited PR before recurring workflows or builder dispatch. | Install, run `init --easy`, run `doctor --preflight`, open a small setup PR, run Codex and Claude audits, then merge manually when the audit evidence is clean. | [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md) |
 | B. Build loop in 30 minutes | You want builders plus an orchestrator pattern after the reviewer gate works. | Complete path A, then add the automation token, require `code-mower/gate` from Any source, enable repository auto-merge, prove the self-hosted Mac lane runner with `doctor --runner`, run `init --builders`, and dispatch the first issue. | [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md) |
+| C. Builder experiment | You want to compare authoring loops before trusting them broadly. | Use a work order or experiment spec, run `code-mower builder-experiment run` around an explicit command, then review the source-free `authoringRun` artifact and normal audit evidence. | [Builder Experiments](docs/builder-experiments.md) |
 
 The beta.53 announcement entry point is the tagged
 [Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.5.0-beta.53/docs/try-in-10-minutes.md)
@@ -187,6 +191,11 @@ optional work order, single-writer branch, reviewer lanes, and fix rounds. Code
 Mower's templates now support that loop end to end; humans still own
 credentials, branch protection, calibration, and owner decisions.
 
+The reference adoption shape is Claude Code as orchestrator; Claude Code,
+Codex, and Cursor as builder lanes; Claude Code and Codex as reviewer lanes;
+and Gitar or Antigravity as informational reviewer signal until local
+calibration says otherwise.
+
 ## Why Not Just Run Codex Or Claude Yourself?
 
 You should, at first. Code Mower is not a replacement for a good local agent or
@@ -263,6 +272,10 @@ The first recommended lanes are local/manual:
 Everything else starts manual or informational until your own calibration data
 proves it is useful: Antigravity/Gemini, Hermes, CodeRabbit CLI, Cursor BugBot,
 Qodo, Greptile, Devin, local LLMs, and future ACP bridges.
+
+Gemini CLI and Antigravity are distinct lane ids even though both are Google
+surfaces and may use Gemini model infrastructure. Keep their auth, model
+provenance, calibration evidence, and release notes separate.
 
 Provider details: [docs/provider-matrix.md](docs/provider-matrix.md).
 Setup/auth fixes: [docs/troubleshooting.md](docs/troubleshooting.md).
@@ -353,6 +366,7 @@ first so local work exercises the same package entrypoint users install.
 - [First-User Install Rehearsal](docs/first-user-install-rehearsal.md)
 - [Launch Command Surface](docs/launch-command-surface.md)
 - [v0.6 Truth Baseline](docs/v06-truth-baseline.md)
+- [v0.6 Release Notes Draft](docs/v06-release-notes.md)
 - [Demo Calibration Example](examples/demo-calibration/README.md)
 - [PyPI Release Runbook](docs/pypi-release.md)
 - [Sample Doctor Output](docs/sample-doctor-output.md)

@@ -48,6 +48,11 @@ pipx ensurepath
 exec "$SHELL" -l
 ```
 
+For the reference multi-agent adoption loop, use Claude Code as the
+orchestrator convention, Claude Code/Codex/Cursor as builders, Claude
+Code/Codex as reviewer lanes, and Gitar plus Antigravity as informational
+reviewer signal until local calibration supports promotion.
+
 ## 2. Authenticate GitHub
 
 Code Mower v0.5 is GitHub-first.
@@ -415,6 +420,9 @@ One repository is ready for broader Code Mower use when:
 - Cloud export output has been inspected before any upload.
 - If cloud upload is enabled, the team token was created intentionally and is
   stored outside source control.
+- If unattended merges are enabled, `code-mower/gate` is required from Any
+  source, repository auto-merge is enabled, and a dedicated
+  `CODE_MOWER_GATE_AUTOMERGE_TOKEN` or GitHub App token can request auto-merge.
 
 For a concise map of which commands are launch-safe versus advanced/operator
 surfaces, see [Launch Command Surface](launch-command-surface.md).

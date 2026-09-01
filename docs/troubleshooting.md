@@ -85,6 +85,39 @@ requests, comments, checks, and Actions metadata. If `doctor --github` reports
 recent Actions billing blocks or expensive labeler workflows, review
 [docs/github-setup.md](github-setup.md) before enabling hosted reviewer lanes.
 
+## Manual Audit Wrapper Fails Before Reviewing
+
+Direct Codex and Claude audit wrapper runs need two things that are easy to
+miss on a cold setup:
+
+- a GitHub posting token, either `GITHUB_TOKEN` in the environment or
+  `--read-token-from-stdin`; and
+- `--repo-paths` in the exact form
+  `OWNER/REPO:/absolute/path/to/pr-head-checkout`.
+
+The PR-head checkout must be separate from the Code Mower support checkout and
+must already be at the pull request head. If the wrapper says the path is
+missing, relative, or the current working directory, create a detached checkout
+for the PR and retry. See [Local Audit Runner](local-audit-runner.md).
+
+If the wrapper posts `UNKNOWN` because a provider could not produce structured
+output, treat it as audit infrastructure, not a code-review BLOCKED verdict.
+Retry once on the same head; if it repeats, keep the lane informational or
+record an owner decision before relying on it.
+
+## Gate Is Green But Auto-Merge Does Not Turn On
+
+The default GitHub Actions token can publish `code-mower/gate`, but it may not
+be allowed to call GitHub's `enablePullRequestAutoMerge` mutation. For
+unattended merges, configure a dedicated machine-user or GitHub App token as
+`CODE_MOWER_GATE_AUTOMERGE_TOKEN`. `DISPATCH_TOKEN` remains a compatibility
+fallback, but it should not be overloaded with broader permissions unless the
+repo owner explicitly accepts that policy.
+
+Also verify that branch protection requires `code-mower/gate` from Any source.
+If it is bound to GitHub Actions instead, GitHub may show green workflow checks
+while the required commit status remains pending.
+
 ## Gate Reports Audit In Flight
 
 When the merge gate waits on an audit, the status log names the Actions run and
