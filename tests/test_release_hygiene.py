@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+CHECKOUT_V6_PIN = "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10"
+CHECKOUT_V7_0_1_PIN = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+
 from code_mower import __version__
 from code_mower import audit_labeler_lib
 from code_mower import audit_progress
@@ -989,7 +992,7 @@ exit 1
             ),
         )
         self.assertIn(
-            "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
             template,
         )
         self.assertNotIn("actions/checkout@v4", template)
@@ -1047,6 +1050,25 @@ exit 1
                         f"CODE_MOWER_PACKAGE_SPEC: {next_steps.current_alpha_package_spec()}",
                         template,
                     )
+
+    def test_generated_workflows_use_checkout_v7_pin(self) -> None:
+        workflow_paths = [
+            *sorted((ROOT / ".github/workflows").glob("*.yml")),
+            *sorted((ROOT / "templates/workflows").glob("*.yml.j2")),
+            *sorted((ROOT / "src/code_mower/templates/workflows").glob("*.yml.j2")),
+            ROOT / "src/code_mower/package_content.py",
+            ROOT / "src/code_mower/package_static.py",
+        ]
+        self.assertGreater(len(workflow_paths), 0)
+        checkout_users = []
+        for path in workflow_paths:
+            text = path.read_text(encoding="utf-8")
+            if "actions/checkout@" not in text:
+                continue
+            checkout_users.append(path.relative_to(ROOT).as_posix())
+            self.assertNotIn(CHECKOUT_V6_PIN, text)
+            self.assertIn(CHECKOUT_V7_0_1_PIN, text)
+        self.assertGreater(len(checkout_users), 0)
 
     def test_generated_templates_do_not_inline_github_markdown_bodies(self) -> None:
         templates = [
@@ -3490,7 +3512,7 @@ jobs:
             self.assertIn('PHASE_LABELS: "phase:0,phase:1"', weekly)
             self.assertIn("python3 tools/status_report.py", weekly)
             self.assertIn(
-                "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
+                "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
                 weekly,
             )
             self.assertIn(
