@@ -216,7 +216,7 @@ def event_report(
     store_path = Path(path)
     try:
         events, malformed = _read_valid_events(store_path)
-    except OSError as exc:
+    except OSError:
         return {
             "schema": BOARD_EVENT_STORE_SCHEMA,
             "available": False,
@@ -227,7 +227,7 @@ def event_report(
             "events": [],
             "event_count": 0,
             "malformed": 0,
-            "message": f"could not read local board event store: {exc.strerror or exc}",
+            "message": "could not read local board event store",
         }
     available = store_path.exists()
     selected = events[-limit:] if limit > 0 else []

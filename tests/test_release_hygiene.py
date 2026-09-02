@@ -7402,6 +7402,8 @@ def main():
         self.assertIn(repo_path_truth, " ".join(quickstart.split()))
         self.assertIn("code-mower board serve --repo OWNER/REPO", readme)
         self.assertIn("code-mower board serve --repo OWNER/REPO", quickstart)
+        self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", readme)
+        self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", quickstart)
 
         for path, text in (
             ("README.md", readme),
@@ -7427,6 +7429,9 @@ def main():
 
         self.assertIn("[Board Data Contract](docs/board-data-contract.md)", readme)
         self.assertIn("code-mower board record --repo OWNER/REPO", readme)
+        self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", readme)
+        self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", launch_surface)
+        self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", board_contract)
         self.assertIn("code-mower board record --repo OWNER/REPO", launch_surface)
         self.assertIn("code-mower board events", launch_surface)
         for schema_name in (
@@ -7443,6 +7448,7 @@ def main():
             with self.subTest(retention_doc=text[:20]):
                 self.assertIn(".code-mower/board/events.jsonl", text)
         self.assertIn("14 days", board_contract)
+        self.assertIn("60 seconds", board_contract)
         self.assertIn("500 events", board_contract)
 
         board_flat = " ".join(board_contract.split())

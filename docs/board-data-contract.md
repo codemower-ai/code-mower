@@ -17,7 +17,8 @@ different contract from CodeMower.com cloud uploads.
 embeds the lane-status snapshot unchanged.
 
 `code_mower.boardEvent.v1` is the local history event emitted by
-`code-mower board record --repo OWNER/REPO`.
+`code-mower board record --repo OWNER/REPO` and by
+`code-mower board serve --repo OWNER/REPO --record-events`.
 
 `code_mower.boardEventStore.v1` is the read response emitted by
 `code-mower board events` and the board's `/api/events` endpoint.
@@ -77,23 +78,34 @@ include them for same-machine debugging only.
 The board wrapper adds:
 
 - `board.schema`: always `code_mower.board.v1`.
-- `board.mode`: currently `local_read_only`.
+- `board.mode`: `local_read_only` by default, or `local_recording` when
+  `--record-events` is explicitly requested.
 - `board.refresh_seconds`: browser refresh interval.
 - `board.local_paths`: `redacted` by default, or `shown` when
   `--show-local-paths` is explicitly requested.
+- `board.recording`: live local-history recording metadata. Recording is
+  disabled by default. When `--record-events` is explicitly requested, this
+  includes the configured interval and a safe status such as `recorded`,
+  `skipped`, or `error`.
 
 The browser UI fetches `/api/status` from a loopback-only HTTP server. It does
-not mutate GitHub or local repository state and does not upload payloads.
+not mutate GitHub and does not upload payloads. Plain `board serve` does not
+mutate local repository state. `board serve --record-events` is the explicit
+local-only write mode for filling board history while the browser view is open.
 
 ## Local Event Store
 
 `code-mower board record --repo OWNER/REPO` appends one redacted status snapshot
 to `.code-mower/board/events.jsonl` under the repository checkout unless
-`--store-path` points somewhere else.
+`--store-path` points somewhere else. `code-mower board serve --repo OWNER/REPO
+--record-events` appends the same event shape while the board polls, throttled
+to at most one stored snapshot every 60 seconds unless
+`--record-interval-seconds` is set.
 
 The default retention policy keeps 14 days and at most 500 events. Retention is
-applied only by explicit write commands such as `board record`; `board serve`,
-`board events`, and `/api/events` are read-only.
+applied only by explicit write commands such as `board record` and
+`board serve --record-events`; plain `board serve`, `board events`, and
+`/api/events` are read-only.
 
 Each stored `code_mower.boardEvent.v1` event includes:
 
@@ -108,7 +120,8 @@ Each stored `code_mower.boardEvent.v1` event includes:
 `code_mower.boardEventStore.v1` read responses include store availability,
 recent events, total valid event count, malformed-line count, and a message when
 no store exists yet. Malformed JSONL lines are skipped instead of failing the
-board.
+board. Event store errors use safe generic messages and do not expose local
+paths.
 
 `code_mower.boardRecord.v1` write acknowledgements include `status`, the redacted
 store path, the stored event, retained/pruned counts, and malformed-line count.

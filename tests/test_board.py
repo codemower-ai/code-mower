@@ -236,6 +236,142 @@ class BoardTests(TestCase):
         self.assertEqual(code, 2)
         self.assertIn("--retention-days", err.getvalue())
 
+    def test_status_payload_marks_live_recording_disabled_by_default(self) -> None:
+        payload = board.status_payload(
+            board.BoardConfig(repo="owner/repo"),
+            gh_json_runner=_gh_json,
+            command_runner=_command_runner,
+        )
+
+        self.assertEqual(
+            payload["board"]["recording"],
+            {"enabled": False, "interval_seconds": 60},
+        )
+
+    def test_http_status_does_not_write_events_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            handler = board.make_handler(
+                board.BoardConfig(repo="owner/repo", store_path=str(store_path)),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+            server = board.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+                with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        self.assertFalse(store_path.exists())
+        self.assertFalse(payload["board"]["recording"]["enabled"])
+
+    def test_http_status_records_events_when_explicitly_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            handler = board.make_handler(
+                board.BoardConfig(
+                    repo="owner/repo",
+                    store_path=str(store_path),
+                    record_events=True,
+                    record_interval_seconds=0,
+                ),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+            server = board.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+                with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+            report = board_store.event_report(path=store_path, limit=10)
+
+        self.assertEqual(report["event_count"], 1)
+        self.assertEqual(payload["board"]["recording"]["status"], "recorded")
+        self.assertEqual(payload["board"]["recording"]["kept"], 1)
+
+    def test_http_status_throttles_live_recording_by_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            handler = board.make_handler(
+                board.BoardConfig(
+                    repo="owner/repo",
+                    store_path=str(store_path),
+                    record_events=True,
+                    record_interval_seconds=3600,
+                ),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+            server = board.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+                with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
+                    first = json.loads(response.read().decode("utf-8"))
+                with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
+                    second = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+            report = board_store.event_report(path=store_path, limit=10)
+
+        self.assertEqual(report["event_count"], 1)
+        self.assertEqual(first["board"]["recording"]["status"], "recorded")
+        self.assertEqual(second["board"]["recording"]["status"], "skipped")
+
+    def test_http_status_live_record_error_is_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            handler = board.make_handler(
+                board.BoardConfig(repo="owner/repo", store_path=str(store_path), record_events=True),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+            server = board.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+                with patch(
+                    "code_mower.board._record_live_snapshot",
+                    side_effect=board_store.BoardStoreError("secret /tmp/private/path"),
+                ):
+                    with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        serialized = json.dumps(payload)
+        self.assertEqual(payload["board"]["recording"]["status"], "error")
+        self.assertIn("could not update local board event store", serialized)
+        self.assertNotIn("secret", serialized)
+        self.assertNotIn("/tmp/private/path", serialized)
+
+    def test_serve_rejects_invalid_recording_options_before_binding_port(self) -> None:
+        err = StringIO()
+
+        with redirect_stderr(err):
+            code = board.main(["serve", "--repo", "owner/repo", "--record-events", "--max-events", "0"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("--max-events", err.getvalue())
+
     def test_http_handler_serves_page_status_and_health(self) -> None:
         handler = board.make_handler(
             board.BoardConfig(repo="owner/repo"),
