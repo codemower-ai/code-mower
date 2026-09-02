@@ -29,20 +29,22 @@ observability/evaluation backend.
 
 ## Release Stages
 
-### v0.6: Early-Adopter Upload Beta
+### Current Beta: Metadata-Only Upload And Board Mirror
 
-The current beta path keeps cloud sharing opt-in for early adopters who
-explicitly want to share sanitized benchmark metadata with Code Mower Cloud.
-The OSS tool is still local-first:
+The current v0.8 beta keeps cloud sharing opt-in for early adopters who
+explicitly want to share sanitized benchmark metadata or a summarized Board
+mirror with Code Mower Cloud. The OSS tool is still local-first:
 
 ```bash
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
+code-mower cloud dogfood --json
+code-mower cloud board-snapshot --repo-slug OWNER/REPO --json
 ```
 
 Dry run is the first-class experience. A network upload only happens when the
 caller passes `--yes`, and the default payload is metadata-only. Rich report
-text requires `--include-reports`.
+text requires `--include-reports`; Board snapshot uploads contain zero reports.
 
 ### v1.0: Local-First, Cloud-Ready
 
@@ -78,10 +80,10 @@ Reports and future bundle extensions should use the cloud vocabulary:
 The current v1.0 manifest remains intentionally small. Do not document a field
 as part of the manifest until the exporter emits it and tests cover it.
 
-### v1.1: Opt-In Upload Beta
+### v1.1: Broader Opt-In Upload
 
-Promote upload beyond alpha only after the bundle schema and hosted ingestion
-path have real early-adopter mileage:
+Promote upload beyond friendly-user beta only after the bundle schema, Board
+snapshot event, and hosted ingestion path have real early-adopter mileage:
 
 ```bash
 open https://codemower.com/login

@@ -9,7 +9,7 @@ Install the pinned beta with
 Code Mower v0.8 is a better first install for supervised multi-agent adoption:
 clearer Python/install expectations, less noisy doctor output for hosted
 builders, a one-command lane status snapshot, and a native local Board for
-operator visibility without AgentTrail or hook setup.
+operator visibility without third-party hook setup.
 
 ## What's New
 

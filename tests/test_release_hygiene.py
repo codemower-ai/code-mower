@@ -207,7 +207,7 @@ class ReleaseHygieneTests(unittest.TestCase):
             runbook,
         )
         self.assertIn(
-            "beta.52 (and future newest betas until 1.0) are published as "
+            "beta.52 established that future newest betas until 1.0 are published as "
             "**regular releases** (prerelease flag off)",
             rendered_text,
         )
@@ -7156,10 +7156,7 @@ def main():
 
     def test_public_announcement_docs_use_current_release_helpers(self) -> None:
         baseline_sentence = code_mower_versioning.public_baseline_sentence(__version__)
-        install_command = (
-            "pipx install --python python3.12 "
-            f"{code_mower_versioning.public_package_spec(__version__)}"
-        )
+        package_spec = code_mower_versioning.public_package_spec(__version__)
         announcement_url = code_mower_versioning.tagged_doc_url(__version__)
 
         current_state = (ROOT / "docs/current-state-and-roadmap.md").read_text(
@@ -7173,7 +7170,9 @@ def main():
 
         self.assertIn(normalized_baseline, " ".join(current_state.split()))
         self.assertIn(normalized_baseline, " ".join(rollout.split()))
-        self.assertIn(install_command, rollout)
+        self.assertIn(package_spec, rollout)
+        self.assertIn('export CODE_MOWER_PYTHON="$(command -v python3.12)"', rollout)
+        self.assertIn('pipx install --python "$CODE_MOWER_PYTHON"', rollout)
         self.assertIn(announcement_url, readme)
 
     def test_public_docs_have_no_stale_beta_baselines(self) -> None:
@@ -7605,6 +7604,36 @@ def main():
                 for pattern in stale_patterns:
                     self.assertNotIn(pattern, text)
 
+    def test_active_docs_use_current_beta_release_language(self) -> None:
+        active_docs = {
+            "docs/build-loop.md": ROOT / "docs" / "build-loop.md",
+            "docs/cloud-benchmarking.md": ROOT / "docs" / "cloud-benchmarking.md",
+            "docs/current-state-and-roadmap.md": ROOT / "docs" / "current-state-and-roadmap.md",
+            "docs/early-adopter-invite-runbook.md": ROOT
+            / "docs"
+            / "early-adopter-invite-runbook.md",
+            "docs/friendly-user-rollout-v05.md": ROOT / "docs" / "friendly-user-rollout-v05.md",
+            "docs/pypi-release.md": ROOT / "docs" / "pypi-release.md",
+            "docs/v08-release-notes.md": ROOT / "docs" / "v08-release-notes.md",
+        }
+        stale_phrases = (
+            "Use only after TestPyPI passes.",
+            "beta.52 (and future newest betas until 1.0)",
+            "during v0.7 adoption",
+            "Exit Criteria For v0.6",
+            "wider v0.6 push",
+            "without AgentTrail or hook setup",
+            "doctor --preflight --json` status",
+            "preflight doctor preset",
+        )
+
+        for label, path in active_docs.items():
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=label):
+                self.assertIn("0.8", text)
+                for phrase in stale_phrases:
+                    self.assertNotIn(phrase, text)
+
     def test_orchestrator_prompt_pack_preserves_adoption_guardrails(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
@@ -7628,7 +7657,7 @@ def main():
         self.assertIn("metadata-only", prompt_pack)
         self.assertIn("Do not upload source, raw diffs, transcripts", prompt_pack)
 
-    def test_v06_adoption_polish_docs_cover_cold_start_surface(self) -> None:
+    def test_v08_adoption_polish_docs_cover_cold_start_surface(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
         troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(

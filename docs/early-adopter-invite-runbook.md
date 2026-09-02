@@ -9,7 +9,7 @@ The first invite cohort should prove that a new user can get value without
 knowing the history of the reference repos:
 
 1. install Code Mower from the tagged beta;
-2. run `init --easy` and the preflight doctor preset;
+2. run `init --easy` and the repository-targeted adoption doctor preset;
 3. generate the starter calibration/value report;
 4. optionally connect a CodeMower.com team token; and
 5. upload sanitized metadata after reviewing the local bundle.
@@ -51,7 +51,9 @@ Before inviting a user:
 1. Verify the tagged install command in a fresh repo:
 
    ```bash
-   pipx install --python python3.12 code-mower==0.8.0b1
+   python3.12 --version
+   export CODE_MOWER_PYTHON="$(command -v python3.12)"
+   pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
    code-mower --version
    ```
 
@@ -74,7 +76,7 @@ Before inviting a user:
 The user is successful when they can send back:
 
 - `code-mower --version` output;
-- `code-mower doctor --preflight --json` status;
+- `code-mower doctor --adoption --repo OWNER/REPO --json` status;
 - the generated `reviewer-value-report.md`; and
 - if they opted into cloud, the upload ID from `code-mower cloud upload
   --yes --json`.

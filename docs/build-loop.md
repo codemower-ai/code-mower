@@ -132,7 +132,8 @@ and the next action. It is read-only and metadata-only.
 Local cwd paths are redacted by default; pass `--show-local-paths` only when you
 are debugging locally.
 
-Use `lanes status` as the pasteable visibility surface during v0.7 adoption.
+Use `lanes status` as the pasteable visibility surface during v0.8 adoption and
+later.
 Use `board serve` when you want the same state in a local browser. The board is
 read-only, serves on loopback by default, and does not require a separate
 observer setup.
@@ -151,8 +152,9 @@ Minimum token permissions:
 - Issues: read/write
 - Pull requests: read/write
 
-Set `DISPATCH_TOKEN_EXPIRES_AT` as a repository variable in `YYYY-MM-DD` format
-so `code-mower doctor --github` can report expiry posture.
+Set `DISPATCH_TOKEN_EXPIRES_AT` as a repository variable in `YYYY-MM-DD` format,
+or `never` for a non-expiring token, so `code-mower doctor --github` can report
+expiry posture.
 
 ## Rehearsal
 

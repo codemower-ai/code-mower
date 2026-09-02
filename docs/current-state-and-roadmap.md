@@ -121,11 +121,12 @@ The beta line has proved:
 - a friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- a public PyPI package-install rehearsal from beta.52
-  `code-mower==0.5.0b52` with a
+- the current public PyPI package-install rehearsal from `v0.8.0-beta.1` /
+  `code-mower==0.8.0b1` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
-  local Code Mower checkout; and
+  local Code Mower checkout. The earlier beta.52 package rehearsal remains
+  historical evidence, not the current adoption proof; and
 - stable CodeMower.com evidence URLs for signed-in users, with per-upload and
   per-event detail pages plus token-safe JSON export links for support,
   debugging, and dashboard trust checks; and
@@ -257,8 +258,8 @@ operator-issued developer/team token when they opt into cloud sharing.
 
 ## Current Early-Adopter Goal
 
-The next beta should be shareable with 20-50 early OSS users who can follow a
-guide without knowing the original reference repos.
+The current v0.8 beta is the shareable package line for 20-50 early OSS users
+who can follow a guide without knowing the original reference repos.
 
 The early-adopter experience should be:
 

@@ -1,15 +1,21 @@
-# Code Mower v0.5 Early Adopter Guide
+# Code Mower Early Adopter Guide
 
-The v0.5 goal is to make Code Mower useful for 20-50 early OSS users without
-requiring them to understand every provider or lane.
+This document records the historical v0.5 early-adopter product plan. The
+current public install path is the v0.8 package beta; use
+[Install And Bootstrap](install.md), [Try Code Mower In 10 Minutes](try-in-10-minutes.md),
+and [Quickstart](quickstart.md) for live adoption steps.
+
+The original v0.5 goal was to make Code Mower useful for 20-50 early OSS users
+without requiring them to understand every provider or lane.
 
 ## Two Setup Personas
 
 Code Mower has two setup paths, and v0.5 docs should keep them separate.
 
 **Code Mower OSS user setup** is the early-adopter path. A user installs Code
-Mower, runs `code-mower init --easy`, runs `code-mower doctor --preflight`,
-runs a local audit or value report, and optionally pastes a CodeMower.com
+Mower, runs `code-mower init --easy`, runs
+`code-mower doctor --adoption --repo OWNER/REPO`, runs a local audit or value
+report, and optionally pastes a CodeMower.com
 developer/team token into `code-mower cloud setup --token-stdin`. OSS users do
 not configure Supabase, Vercel, OAuth apps, DNS, service-role keys, database
 migrations, or hosted secrets.
@@ -36,13 +42,14 @@ The one-command first-run diagnostic is:
 code-mower doctor --v05 --json
 ```
 
-For friendlier user-facing docs, prefer the equivalent alias:
+For current user-facing docs, prefer the repository-targeted adoption preset:
 
 ```bash
-code-mower doctor --preflight --json
+code-mower doctor --adoption --repo OWNER/REPO --json
 ```
 
-Both expand to `--easy --profile recommended --probe-runtime --github --cloud`.
+`doctor --preflight` and `doctor --v05` remain compatibility aliases for
+scripts and older runbooks.
 
 ## Recommended First-Run Profile
 
@@ -82,8 +89,8 @@ Before inviting users:
   migration, or hosted-secret setup.
 - CodeMower.com operator docs clearly own hosted setup, token administration,
   and production secrets.
-- `code-mower doctor --preflight --json` works as the recommended early-adopter
-  preset.
+- `code-mower doctor --adoption --repo OWNER/REPO --json` works as the
+  recommended early-adopter preset.
 - `code-mower cloud upload --dry-run` previews without network transfer.
 - `code-mower cloud doctor --probe-service` verifies CodeMower.com health and
   returns dashboard/setup guidance without echoing tokens.
@@ -152,8 +159,8 @@ dogfood. The current beta also carries the provider-contract hardening queue,
 the `code-mower lanes status` operator snapshot, Antigravity/Gemini lane
 separation, builder-experiment metadata capture, and the hosted Cursor lane id
 as `cursor` while accepting legacy `grok-bot` inputs during the migration
-window. The beta.52 dogfood follow-up keeps owner-bound work out of lane WIP,
-adds lane-liveness and fix-round template support, makes human-token posture
+window. Later v0.5 beta dogfood follow-ups keep owner-bound work out of lane WIP,
+add lane-liveness and fix-round template support, make human-token posture
 first-class in setup/doctor, separates owner-decision escalation from raw owner
 notifications, and teaches provider-integration prompts to avoid ambiguous
 sandbox/live shared namespaces. Earlier alpha hardening also keeps the package
