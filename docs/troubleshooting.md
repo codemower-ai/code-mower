@@ -71,6 +71,46 @@ scripts/dev-python -m unittest discover -s tests
 
 The wrapper resolves Python 3.12+ and refuses old system Python shims.
 
+## Installed Version Or Command Path Looks Wrong
+
+After an upgrade, first check which installer is actually winning on `PATH`:
+
+```bash
+command -v code-mower
+code-mower --version
+```
+
+If pipx should own the command, reinstall the exact beta with cache bypass:
+
+```bash
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
+hash -r
+code-mower --version
+```
+
+If uv should own the command, avoid leaving an older pipx command earlier on
+`PATH`. Either uninstall the pipx copy or call the uv binary by its absolute
+path:
+
+```bash
+pipx uninstall code-mower
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.8.0b1
+hash -r
+command -v code-mower
+code-mower --version
+```
+
+For sandboxed agents using pipx, keep tool files out of the product checkout
+unless that directory is intentionally ignored:
+
+```bash
+export CODE_MOWER_AGENT_TOOLS="${RUNNER_TEMP:-$HOME/.cache}/code-mower-tools"
+export PIPX_HOME="$CODE_MOWER_AGENT_TOOLS/pipx"
+export PIPX_BIN_DIR="$CODE_MOWER_AGENT_TOOLS/bin"
+export PIPX_LOG_DIR="$CODE_MOWER_AGENT_TOOLS/logs"
+```
+
 ## GitHub Auth Or Private Repo Checks Fail
 
 Verify the GitHub CLI independently:
@@ -104,6 +144,15 @@ If the wrapper posts `UNKNOWN` because a provider could not produce structured
 output, treat it as audit infrastructure, not a code-review BLOCKED verdict.
 Retry once on the same head; if it repeats, keep the lane informational or
 record an owner decision before relying on it.
+
+## Board URL Does Not Open From Another Machine
+
+`code-mower board serve --repo OWNER/REPO` binds to loopback by default. The
+printed localhost URL is local to that laptop, runner, VM, or hosted-agent
+container. Open it from the same environment, or create your own tunnel when
+you intentionally want to view it elsewhere. The Board remains read-only and
+does not upload data unless you separately run a cloud command such as
+`code-mower cloud board-snapshot --yes`.
 
 ## Cloud Upload Says The Token Is Missing After Restart
 

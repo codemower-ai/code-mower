@@ -136,7 +136,9 @@ observable.
 
 Install first from the [Install And Bootstrap](docs/install.md) matrix: pipx for
 laptops, uv tool installs for hosted agents or CI boxes, and an editable venv
-for Code Mower contributors. All paths require Python 3.12 or newer.
+for Code Mower contributors. All paths require Python 3.12 or newer. For
+upgrades, record `command -v code-mower` and `code-mower --version` before and
+after reinstalling, especially when switching between pipx and uv.
 
 | Path | Use When | Route | Guide |
 | --- | --- | --- | --- |
