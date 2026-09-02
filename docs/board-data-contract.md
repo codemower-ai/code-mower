@@ -58,7 +58,9 @@ Top-level fields:
   detection code.
 - `local_processes`: best-effort local lane process hints.
 - `next_action`: concise operator action such as `fix BLOCKED audit`,
-  `waiting for checks`, `ready for merge or auto-merge`, or `no active lanes`.
+  `waiting for checks`, `ready for merge or auto-merge`,
+  `remote unavailable; fix GitHub access`, or `no active lanes`. `no active
+  lanes` is emitted only when GitHub PR/workflow state was available.
 
 `remote.pull_requests[]` includes metadata useful to an operator:
 

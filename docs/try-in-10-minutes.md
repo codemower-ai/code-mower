@@ -103,9 +103,10 @@ postures skip local-wrapper probes and keep missing local wrapper env vars out
 of the warning list.
 
 For merge-authority lanes such as Codex or Claude audit, look for
-`provider.review_hygiene`. It should pass for lanes that can satisfy the merge
-bar, because it proves Code Mower can clear stale terminal labels after a PR
-receives new commits.
+`provider.review_hygiene`. Before generated workflows are applied, it may warn
+that workflow file presence was not verified. After the setup PR lands, it
+should pass for lanes that can satisfy the merge bar, because it proves Code
+Mower can clear stale terminal labels after a PR receives new commits.
 
 ## 5. Open The Setup PR
 

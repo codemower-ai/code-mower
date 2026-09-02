@@ -154,6 +154,28 @@ class LaneStatusTests(TestCase):
         self.assertNotIn("AgentTrail boards:", rendered)
         self.assertNotIn("/tmp/lane-checkout", rendered)
 
+    def test_collect_status_never_reports_no_active_lanes_when_github_unavailable(
+        self,
+    ) -> None:
+        def gh_json(_args: list[str]) -> object:
+            raise lane_status.LaneStatusUnavailable("gh pr failed")
+
+        report = lane_status.collect_status(
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        self.assertFalse(report["remote"]["available"])
+        self.assertEqual(report["next_action"], "remote unavailable; fix GitHub access")
+        rendered = lane_status.render_text(report)
+        self.assertIn("Open PRs: unavailable", rendered)
+        self.assertIn("Recent Code Mower workflows: unavailable", rendered)
+        self.assertIn("Gate alerts: unavailable", rendered)
+        self.assertNotIn("Open PRs: none", rendered)
+        self.assertNotIn("Next: no active lanes", rendered)
+
     def test_collect_status_can_include_local_paths_for_debugging(self) -> None:
         def gh_json(_args: list[str]) -> object:
             raise lane_status.LaneStatusUnavailable("gh pr failed")
