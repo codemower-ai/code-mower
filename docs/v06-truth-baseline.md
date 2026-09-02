@@ -8,8 +8,8 @@ external reviewer feedback has been plausible but stale or too broad.
 
 ## Release Baseline
 
-- The current v0.6 release target for the OSS package is `v0.6.0-beta.2`.
-- The matching package-index spec for installation is `code-mower==0.6.0b2`.
+- The current v0.6 release target for the OSS package is `v0.6.0-beta.3`.
+- The matching package-index spec for installation is `code-mower==0.6.0b3`.
 - The beta line stays active while v0.6 proves adoption. Do not rename
   generated workflow files or break package-backed product-repo consumption
   while beta installs remain the adoption path.

@@ -50,7 +50,7 @@ audit evidence, skip to section 2.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.6.0b2
+pipx install --python python3.12 code-mower==0.6.0b3
 gh auth status
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated

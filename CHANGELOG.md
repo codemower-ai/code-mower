@@ -6,12 +6,41 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
+No unreleased changes yet.
+
+## v0.6.0-beta.3
+
+This beta focuses on cold-adoption hardening from the first real v0.6
+rehearsals: clearer setup state, fewer first-PR surprises, safer manual gate
+reruns, and a copy-pasteable prompt pack for agent orchestrators.
+
+### Added
+
+- `doctor --adoption --repo OWNER/REPO` now targets the real repository during
+  first setup and reports repo/config mismatch clearly (#479).
+- `init --easy --apply` now emits an editable `code-mower.yml` alongside the
+  generated workflows so owner login, decision authorities, and trusted audit
+  authors are visible before the first setup PR (#481).
+- `code-mower lanes status --repo OWNER/REPO` now includes the current PR head
+  SHA and a copy-pasteable `code-mower-gate.yml` workflow dispatch command when
+  a PR needs a manual gate recompute (#487).
+- `docs/orchestrator-prompt-pack.md` gives early adopters prompts for Claude
+  Code orchestration, builder handoffs, reviewer handoffs, and owner status
+  snapshots while preserving single-writer and metadata-only boundaries (#489).
+
 ### Changed
 
 - Generated GitHub workflow templates, package fallback builders, and
   Code Mower-owned checked-in workflows now use the pinned `actions/checkout`
   v7.0.1 commit SHA; release hygiene guards reject the previous v6 pin or
   mutable checkout tags returning to these surfaces (#476).
+- Generated smoke tests now avoid writing Python bytecode caches into the first
+  setup PR workspace (#483).
+- Generated Claude and Codex audit wrappers now use the installed `code-mower`
+  CLI while the standalone pin file is still a placeholder, with explicit
+  standalone override behavior preserved (#485).
+- Pilot auto-merge doctor remediation now points to lane-promotion policy and
+  treats disabled auto-merge as expected until a lane is promoted (#487).
 
 ## v0.6.0-beta.2
 
