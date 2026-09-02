@@ -288,7 +288,8 @@ code-mower doctor --adoption --repo OWNER/REPO --json
 ```
 
 `doctor --adoption` is the recommended early-adopter preset for GitHub auth,
-Python/runtime checks, provider CLI probes, private-repo caveats, Actions cost
+Python/runtime checks, provider CLI probes for machines that run local lanes,
+private-repo caveats, Actions cost
 diagnostics, branch-protection source, repository auto-merge, human automation
 token metadata, optional cloud-token setup, and first-run setup gaps such as
 starter config or missing owner/trusted-author posture. Use `--strict` only
@@ -297,7 +298,8 @@ when warnings should fail a bootstrap job. For auth-specific doctor failures, se
 If this machine observes or dispatches hosted builders but does not run local
 Codex/Claude audits, use `--hosted-builders` or `--orchestrator-only` with
 `doctor --adoption`; those postures keep GitHub, cloud, setup, and privacy
-checks visible while marking local CLI probes skipped.
+checks visible while marking local CLI probes skipped and treating local wrapper
+env gaps as setup tasks for the machine that will execute those lanes.
 
 When setup is visible enough to start work, use one command to check live lane
 state:

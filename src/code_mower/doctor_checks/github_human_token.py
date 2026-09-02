@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any, Mapping, Sequence
 
-from .common import DoctorCheck, STATUS_FAIL, STATUS_PASS, STATUS_SKIP, STATUS_WARN
+from .common import (
+    OBSERVER_ADOPTION_POSTURES,
+    DoctorCheck,
+    STATUS_FAIL,
+    STATUS_PASS,
+    STATUS_SKIP,
+    STATUS_WARN,
+)
 from .github_api import _github_api_json
 
 DEFAULT_HUMAN_TOKEN_SECRET = "DISPATCH_TOKEN"
@@ -93,6 +100,18 @@ def _is_expiry_placeholder(value: str) -> bool:
     return value.strip().upper() in EXPIRY_PLACEHOLDER_VALUES
 
 
+def _blocking_status_for_posture(adoption_posture: str) -> str:
+    return STATUS_WARN if adoption_posture in OBSERVER_ADOPTION_POSTURES else STATUS_FAIL
+
+
+def _token_readiness_context(adoption_posture: str) -> str:
+    if adoption_posture == "hosted-builders":
+        return "hosted-builder observer posture"
+    if adoption_posture == "orchestrator-only":
+        return "orchestrator-only posture"
+    return "reviewer-gate posture"
+
+
 def check_human_automation_token(
     *,
     gh_path: str,
@@ -100,6 +119,7 @@ def check_human_automation_token(
     config: Mapping[str, Any],
     lanes: Sequence[tuple[str, Mapping[str, Any]]],
     http_timeout: int,
+    adoption_posture: str = "reviewer-gate",
     now: datetime | None = None,
 ) -> DoctorCheck:
     token = human_automation_token_config(config)
@@ -110,6 +130,7 @@ def check_human_automation_token(
         "secret": secret_name,
         "expires_var": expires_var,
         "required": human_automation_token_required(config, lanes),
+        "adoption_posture": adoption_posture,
     }
     if not detail["required"]:
         return DoctorCheck(
@@ -125,15 +146,24 @@ def check_human_automation_token(
         http_timeout=http_timeout,
     )
     if secret_payload is None:
+        status = _blocking_status_for_posture(adoption_posture)
         return DoctorCheck(
             name="github.human_automation_token",
-            status=STATUS_FAIL,
-            message=f"{slug} is missing the {secret_name} human automation token secret",
+            status=status,
+            message=(
+                f"{slug} is missing the {secret_name} human automation token secret"
+                + (
+                    f" for {_token_readiness_context(adoption_posture)}"
+                    if status == STATUS_WARN
+                    else ""
+                )
+            ),
             detail={**detail, "secret_check": secret_detail},
             remediation=(
                 f"Create one human-owned fine-grained PAT secret with "
                 f"`gh secret set {secret_name}`. Grant repository Contents read, "
-                "Issues read/write, and Pull requests read/write."
+                "Issues read/write, and Pull requests read/write before relying "
+                "on unattended dispatch, labels, or fix-round mentions."
             ),
         )
 
@@ -143,9 +173,10 @@ def check_human_automation_token(
         http_timeout=http_timeout,
     )
     if variable_payload is None:
+        status = _blocking_status_for_posture(adoption_posture)
         return DoctorCheck(
             name="github.human_automation_token",
-            status=STATUS_FAIL,
+            status=status,
             message=f"{slug} is missing the {expires_var} human token expiry variable",
             detail={
                 **detail,
@@ -188,9 +219,10 @@ def check_human_automation_token(
         )
     expiry = _parse_expiry(expiry_text)
     if expiry is None:
+        status = _blocking_status_for_posture(adoption_posture)
         return DoctorCheck(
             name="github.human_automation_token",
-            status=STATUS_FAIL,
+            status=status,
             message=f"{slug} has an invalid {expires_var} value",
             detail={**detail, "expires_at": expiry_text},
             remediation=(
@@ -203,7 +235,7 @@ def check_human_automation_token(
     days_remaining = (expiry - today).days
     status = STATUS_PASS
     if days_remaining < 0:
-        status = STATUS_FAIL
+        status = _blocking_status_for_posture(adoption_posture)
     elif days_remaining <= EXPIRY_WARNING_DAYS:
         status = STATUS_WARN
 

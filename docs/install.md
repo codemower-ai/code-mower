@@ -191,6 +191,12 @@ code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json
 code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
 ```
 
+In those observer/coordinator postures, missing local wrapper environment
+variables and missing `DISPATCH_TOKEN` setup are surfaced as owner setup or
+promotion tasks, not as proof the install is broken. Use the default
+reviewer-gate posture on the machine that will actually run local audit
+wrappers or unattended dispatch.
+
 Then follow [Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the first
 audited PR or [Build Loop In 30 Minutes](build-loop-in-30-minutes.md) after the
 reviewer gate is working.

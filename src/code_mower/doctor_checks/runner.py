@@ -84,6 +84,7 @@ def run_doctor(
     profile: str | None,
     repo_slug: str = "",
     repo_source: str = "",
+    config_source: str = "",
     adoption: bool = False,
     adoption_posture: str = "reviewer-gate",
     probe_runtime: bool = False,
@@ -114,6 +115,7 @@ def run_doctor(
             adoption=adoption,
             repo_slug=repo_slug,
             repo_source=repo_source,
+            config_source=config_source,
             using_packaged_example=using_packaged_example,
         )
     )
@@ -223,6 +225,7 @@ def run_doctor(
                 lanes=effective_lanes,
                 http_timeout=http_timeout,
                 actions_cost_sample=actions_cost_sample,
+                adoption_posture=adoption_posture,
             )
         )
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .common import (
+    OBSERVER_ADOPTION_POSTURES,
     DoctorCheck,
     STATUS_FAIL,
     STATUS_PASS,
@@ -38,7 +39,7 @@ __all__ = [
     "selected_lanes",
 ]
 
-LOCAL_CLI_SKIP_POSTURES = {"hosted-builders", "orchestrator-only"}
+LOCAL_CLI_SKIP_POSTURES = OBSERVER_ADOPTION_POSTURES
 
 
 def selected_lanes(
@@ -185,11 +186,15 @@ def check_lane_runtime(
             repo_root=repo_root,
         )
     ]
-    checks.extend(check_token_env(lane_id, lane))
-    checks.extend(check_required_env(lane_id, lane))
     driver = str(lane.get("driver", ""))
+    skip_local_cli_runtime = (
+        driver == "local_cli" and adoption_posture in LOCAL_CLI_SKIP_POSTURES
+    )
+    if not skip_local_cli_runtime:
+        checks.extend(check_token_env(lane_id, lane))
+        checks.extend(check_required_env(lane_id, lane))
     if driver == "local_cli":
-        if adoption_posture in LOCAL_CLI_SKIP_POSTURES:
+        if skip_local_cli_runtime:
             checks.extend(
                 _skip_local_cli_checks(
                     lane_id,
