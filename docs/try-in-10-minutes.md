@@ -66,6 +66,8 @@ paid or hosted lanes until your own calibration data supports them.
 It also includes `.code-mower.generated/code-mower.yml`; edit the repository
 slug, owner login, decision authorities, status issue, and trusted audit-comment
 authors before copying it to the repository root.
+The generated `smoke-tests.sh` should run without leaving bytecode caches or
+other setup noise in your first PR.
 
 ## 4. Run The Preflight Doctor
 

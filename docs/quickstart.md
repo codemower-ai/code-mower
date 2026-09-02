@@ -195,6 +195,8 @@ and a weekly pinned-issue status digest.
 It also includes `.code-mower.generated/code-mower.yml`; edit the repository
 slug, owner login, decision authorities, status issue, and trusted audit-comment
 authors before copying it to the repository root.
+The generated `smoke-tests.sh` should run without leaving bytecode caches or
+other setup noise in your first PR.
 
 For direct local audit wrapper runs, pass a GitHub posting token with
 `GITHUB_TOKEN` or `--read-token-from-stdin`, and pass repository paths as

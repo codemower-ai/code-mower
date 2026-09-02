@@ -627,6 +627,16 @@ def _shell_literal(value: Any) -> str:
     return shlex.quote(str(value))
 
 
+def _python_syntax_check_command(path_expression: str) -> str:
+    code = (
+        "from pathlib import Path; "
+        "import sys; "
+        "path = Path(sys.argv[1]); "
+        "compile(path.read_text(encoding='utf-8'), str(path), 'exec')"
+    )
+    return f"python3 -c {shlex.quote(code)} {path_expression}"
+
+
 def _yaml_inline_list(items: Sequence[str]) -> str:
     return ", ".join(_yaml_scalar(item) for item in items)
 
@@ -2698,8 +2708,9 @@ def render_init_plan(
             }
         )
     smoke_tests.append(
-        "python3 -m py_compile "
-        '"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/status_report.py"'
+        _python_syntax_check_command(
+            '"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/status_report.py"'
+        )
     )
     trusted_author_variables = _trusted_author_variables_for_generated_files(
         generated_files
