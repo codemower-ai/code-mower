@@ -461,6 +461,7 @@ Read in this order when moving from a first reviewer gate to a real build loop:
 
 - [Try Code Mower In 10 Minutes](try-in-10-minutes.md)
 - [Build Loop In 30 Minutes](build-loop-in-30-minutes.md)
+- [Orchestrator Prompt Pack](orchestrator-prompt-pack.md)
 - [Quickstart Reference](quickstart.md)
 - [Planning And Work Orders](planning-work-orders.md)
 - [Builder Providers: Grok And Cursor](builders-grok-cursor.md)

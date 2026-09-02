@@ -358,6 +358,7 @@ first so local work exercises the same package entrypoint users install.
 - [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
 - [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)
 - [Quickstart Reference](docs/quickstart.md)
+- [Orchestrator Prompt Pack](docs/orchestrator-prompt-pack.md)
 - [Planning And Work Orders](docs/planning-work-orders.md)
 - [Builder Providers: Grok And Cursor](docs/builders-grok-cursor.md)
 - [Build Loop Operations](docs/build-loop.md)

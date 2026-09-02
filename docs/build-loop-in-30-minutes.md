@@ -507,75 +507,18 @@ and Claude should stay merge-gating, and handles any provider or account UI
 steps that cannot safely run unattended.
 ## 8. Orchestrator Prompt (Copy-Paste)
 
-To bootstrap the reference configuration with an AI orchestrator, paste this
-prompt into a Claude Code session running in the repository you want to pilot,
-with `gh` authenticated as a repository admin:
+Use [Orchestrator Prompt Pack](orchestrator-prompt-pack.md) for copy-pasteable
+prompts for Claude Code as orchestrator, Claude Code/Codex/Cursor or Grok Bot
+as builders, Claude Code/Codex as reviewer lanes, and Gitar, Antigravity, or
+Devin as informational or opt-in signals.
 
-> You are my orchestrator for adopting Code Mower
-> (https://github.com/codemower-ai/code-mower) on this repository, in the
-> reference configuration: you (Claude Code) as orchestrator; Claude Code,
-> Codex, and Cursor as builder lanes; Claude Code and Codex as reviewers
-> (informational during the pilot, promoted to merge-gating only per
-> `docs/lane-promotion-policy.md`); Gitar as an informational reviewer.
->
-> Work on a setup branch and do not push generated workflow changes until you
-> have shown me the plan. Work through it in this order, verifying each step
-> before the next, and stop with a numbered click-list whenever a step needs
-> something only I can do (tokens, GitHub settings, app installs):
->
-> 1. Pick the latest release tag of codemower-ai/code-mower (call it
->    `vX.Y.Z-tag`, package version `X.Y.ZbN`). Read
->    `docs/build-loop-in-30-minutes.md` and `docs/build-loop.md` **from that
->    tag** and follow them rather than improvising.
-> 2. Install the package version derived from that same tag with
->    `pipx install --python python3.12 code-mower==<that version>`. For
->    example, if the tag is `v0.6.0-beta.2`, install
->    `code-mower==0.6.0b2`. Verify `code-mower --version` matches the tag
->    before continuing.
-> 3. Reviewer gate first: `code-mower init --easy` (dry-run), review the plan,
->    then `--apply`; run `code-mower doctor --preflight` and get every check
->    green except the two promotion checks (required `code-mower/gate`
->    branch protection and `allow_auto_merge`), which are expected to report
->    failures during the informational pilot - carry them as the promotion
->    to-do list. Tell me exactly which tokens to create, with scopes, and
->    where each goes. Two settings belong to the promotion step,
->    not the pilot: making `code-mower/gate` a required Any-source
->    branch-protection status, and enabling repository `allow_auto_merge` -
->    turn both on together only when a reviewer lane meets
->    `docs/lane-promotion-policy.md`. During the pilot, leave auto-merge off
->    and merge manually, so a PR can never merge on CI alone while the gate is
->    not yet required.
-> 4. Builders: first ask me whether a Mac is available for the self-hosted
->    lane runner. If yes, walk me through `docs/self-hosted-mac-runner.md`,
->    verify with `code-mower doctor --runner`, then
->    `code-mower init --builders codex,claude,cursor` (dry-run first, then
->    `--apply` from the repository checkout). If no Mac, use
->    `code-mower init --builders cursor` only, and tell me what adding the
->    Mac lanes later would unlock.
-> 5. Gitar: enable the GitHub App if I have it; keep it informational (it is
->    quota-bound and may need a manual "Gitar review" comment) - never
->    required.
-> 6. Calibrate before trusting: run the starter value report, and tell me
->    plainly that reviewer lanes stay informational until repository-specific
->    evidence meets `docs/lane-promotion-policy.md`.
-> 7. Dry-run the loop end to end: file one small real issue, label it
->    `tier:R` plus the builder label `init --builders` created for the lane
->    you enabled (the hosted Cursor lane's generated label is
->    `builder:cursor`; the Mac lanes use `builder:codex` /
->    `builder:claude` - confirm the exact names in the init output), watch it
->    get dispatched, the PR opened, the required audits post verdicts
->    (author lanes never gate their own PR: a hosted Cursor PR gets both
->    Codex and Claude verdicts; a Mac-built Codex or Claude PR gets only its
->    peer's), drive fix rounds by relaying the verdicts, and merge when every
->    required verdict is PASS (during the pilot this is your manual merge
->    criterion; the repo gate enforces it only after lanes are promoted per
->    the policy).
-> 8. Throughout: never argue an audit BLOCKED away - either fix the finding or
->    record a decision with `code-mower decide` (I am the decision authority;
->    configure my GitHub login as `owner_login`). Escalate to me only with
->    owner-escalation asks that include options and a recommendation.
-> 9. This is a beta, bring-your-own-agent-loop tool: expect to supervise the
->    first days. Report progress after each numbered step.
+The short bootstrap prompt is:
 
-The prompt intentionally sends the orchestrator to the released docs first, so
-it stays correct as the guides evolve.
+```text
+You are my orchestrator for adopting Code Mower on this repository. Pick the
+latest Code Mower release tag, read docs/orchestrator-prompt-pack.md plus
+docs/try-in-10-minutes.md from that tag, and follow those docs rather than
+improvising. Start with the reviewer-gate pilot, stop for owner-only token or
+GitHub settings, preserve the metadata-only privacy boundary, and report the
+next action after each step.
+```

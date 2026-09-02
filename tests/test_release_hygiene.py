@@ -7263,6 +7263,7 @@ def main():
         docs_map = readme.split("## Docs Map", 1)[1]
         for link in (
             "docs/build-loop-in-30-minutes.md",
+            "docs/orchestrator-prompt-pack.md",
             "docs/planning-work-orders.md",
             "docs/builders-grok-cursor.md",
             "docs/local-audit-runner.md",
@@ -7294,6 +7295,29 @@ def main():
         )
         self.assertIn(repo_path_truth, " ".join(try_in_10.split()))
         self.assertIn(repo_path_truth, " ".join(quickstart.split()))
+
+    def test_orchestrator_prompt_pack_preserves_adoption_guardrails(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+        build_loop_30 = (ROOT / "docs" / "build-loop-in-30-minutes.md").read_text(
+            encoding="utf-8",
+        )
+        prompt_pack = (ROOT / "docs" / "orchestrator-prompt-pack.md").read_text(
+            encoding="utf-8",
+        )
+
+        for text in (readme, quickstart, build_loop_30):
+            self.assertIn("orchestrator-prompt-pack.md", text)
+        prompt_pack_flat = " ".join(prompt_pack.split())
+        self.assertIn("Claude Code Adoption Orchestrator", prompt_pack)
+        self.assertIn("Claude Code, Codex, and Cursor or Grok Bot", prompt_pack_flat)
+        self.assertIn("Gitar and Antigravity as informational", prompt_pack_flat)
+        self.assertIn("Devin is an explicitly opt-in hosted builder", prompt_pack_flat)
+        self.assertIn("Keep one writer per PR branch", prompt_pack)
+        self.assertIn("Do not argue an audit BLOCKED away", prompt_pack)
+        self.assertIn("docs/lane-promotion-policy.md", prompt_pack)
+        self.assertIn("metadata-only", prompt_pack)
+        self.assertIn("Do not upload source, raw diffs, transcripts", prompt_pack)
 
     def test_v06_adoption_polish_docs_cover_cold_start_surface(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
