@@ -1,17 +1,22 @@
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
+from code_mower import doctor as code_mower_doctor
 from code_mower.doctor_checks import (
     build_doctor_run_plan,
     check_adoption_setup,
+    check_lane_runtime,
     config_with_repository_target,
     detect_repo_slug,
     default_check_group_ids,
     normalize_repo_slug,
     repo_slug_from_remote,
+    DoctorReport,
     run_doctor,
 )
 
@@ -153,6 +158,111 @@ class DoctorRegistryTests(unittest.TestCase):
             tuple(stage["id"] for stage in report.as_dict()["run_plan"]),
             ("load-inputs", "select-profile", "runtime", "providers", "github", "cloud"),
         )
+
+    def test_run_plan_records_adoption_posture(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            report = run_doctor(
+                config_path=root_path / "missing-code-mower.yml",
+                provider_templates_path=root_path / "missing-providers.yml",
+                profile="recommended",
+                adoption=True,
+                adoption_posture="hosted-builders",
+                github=True,
+                cloud=True,
+            )
+
+        plan_check = next(check for check in report.checks if check.name == "doctor.plan")
+        self.assertEqual(plan_check.detail["adoption_posture"], "hosted-builders")
+
+    def test_hosted_builder_posture_skips_local_cli_runtime_checks(self) -> None:
+        checks = check_lane_runtime(
+            "codex",
+            {
+                "driver": "local_cli",
+                "provider": "codex",
+                "provider_config": {"command": "definitely-missing-code-mower"},
+            },
+            probe_runtime=True,
+            http_timeout=1,
+            adoption_posture="hosted-builders",
+        )
+
+        local_checks = {
+            check.name: check
+            for check in checks
+            if check.name in {"runtime.local_audit", "runtime.local_cli", "runtime.local_cli.probe"}
+        }
+        self.assertEqual(
+            {name: check.status for name, check in local_checks.items()},
+            {
+                "runtime.local_audit": "skip",
+                "runtime.local_cli": "skip",
+                "runtime.local_cli.probe": "skip",
+            },
+        )
+        self.assertIn("hosted-builders", local_checks["runtime.local_cli"].message)
+
+    def test_default_adoption_posture_checks_local_cli_runtime(self) -> None:
+        checks = check_lane_runtime(
+            "codex",
+            {
+                "driver": "local_cli",
+                "provider": "codex",
+                "provider_config": {"command": "definitely-missing-code-mower"},
+            },
+            probe_runtime=True,
+            http_timeout=1,
+        )
+
+        local_cli = next(check for check in checks if check.name == "runtime.local_cli")
+        local_probe = next(check for check in checks if check.name == "runtime.local_cli.probe")
+        self.assertEqual(local_cli.status, "warn")
+        self.assertEqual(local_probe.status, "warn")
+
+    def test_doctor_cli_aliases_set_adoption_posture(self) -> None:
+        cases = (
+            (["--adoption", "--repo", "owner/repo"], "reviewer-gate"),
+            (["--adoption", "--hosted-builders", "--repo", "owner/repo"], "hosted-builders"),
+            (
+                ["--adoption", "--orchestrator-only", "--repo", "owner/repo"],
+                "orchestrator-only",
+            ),
+        )
+        for argv, expected in cases:
+            with self.subTest(expected=expected):
+                captured: dict[str, object] = {}
+
+                def fake_run_doctor(
+                    *,
+                    _captured: dict[str, object] = captured,
+                    **kwargs: object,
+                ) -> DoctorReport:
+                    _captured.update(kwargs)
+                    return DoctorReport(
+                        config_path="code-mower.yml",
+                        provider_templates_path="providers.yml",
+                        profile=str(kwargs.get("profile") or ""),
+                        checks=(),
+                    )
+
+                with (
+                    mock.patch.object(
+                        code_mower_doctor,
+                        "resolve_doctor_config_path",
+                        return_value=ROOT / "code-mower.yml",
+                    ),
+                    mock.patch.object(
+                        code_mower_doctor,
+                        "resolve_doctor_provider_templates_path",
+                        return_value=ROOT / "src/code_mower/templates/providers.yml",
+                    ),
+                    mock.patch.object(code_mower_doctor, "run_doctor", fake_run_doctor),
+                ):
+                    with redirect_stdout(StringIO()):
+                        self.assertEqual(code_mower_doctor.main(argv), 0)
+
+                self.assertEqual(captured["adoption_posture"], expected)
 
     def test_adoption_repo_overrides_packaged_example_repository(self) -> None:
         report = run_doctor(

@@ -55,6 +55,7 @@ def _run_plan_check(
     *,
     probe_runtime: bool,
     actions_cost_sample: int,
+    adoption_posture: str,
 ) -> DoctorCheck:
     return DoctorCheck(
         name="doctor.plan",
@@ -71,6 +72,7 @@ def _run_plan_check(
             ],
             "probe_runtime": probe_runtime,
             "actions_cost_sample": actions_cost_sample,
+            "adoption_posture": adoption_posture,
         },
     )
 
@@ -83,6 +85,7 @@ def run_doctor(
     repo_slug: str = "",
     repo_source: str = "",
     adoption: bool = False,
+    adoption_posture: str = "reviewer-gate",
     probe_runtime: bool = False,
     github: bool = False,
     cloud: bool = False,
@@ -121,6 +124,7 @@ def run_doctor(
             plan,
             probe_runtime=probe_runtime,
             actions_cost_sample=actions_cost_sample,
+            adoption_posture=adoption_posture,
         )
     )
     if config is None or templates is None:
@@ -206,6 +210,7 @@ def run_doctor(
                 effective,
                 source_lane=lane,
                 repo_root=repo_root,
+                adoption_posture=adoption_posture,
                 probe_runtime=probe_runtime,
                 http_timeout=http_timeout,
             )
