@@ -41,7 +41,7 @@ class DoctorProviderReviewHygieneTests(unittest.TestCase):
         self.assertEqual(check.detail["missing"], ["workflow", "token_env"])
         self.assertIn("missing stale terminal-label guard config", check.message)
 
-    def test_merge_authority_lane_passes_with_stale_guard(self) -> None:
+    def test_merge_authority_lane_warns_when_stale_guard_presence_unverified(self) -> None:
         check = check_review_hygiene(
             "codex",
             {
@@ -55,15 +55,13 @@ class DoctorProviderReviewHygieneTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(check.status, "pass")
-        self.assertEqual(
-            check.message,
-            "stale terminal-label guard configured via .github/workflows/codex-clear-stale.yml",
-        )
+        self.assertEqual(check.status, "warn")
+        self.assertIn("presence was not verified", check.message)
         self.assertEqual(check.detail["workflow"], ".github/workflows/codex-clear-stale.yml")
         self.assertEqual(check.detail["token_env"], "GITHUB_TOKEN")
         self.assertEqual(check.detail["dispatch_workflow"], "codex-audit-labeler.yml")
         self.assertEqual(check.detail["trusted_authors"], ["codex[bot]"])
+        self.assertIsNone(check.detail["workflow_exists"])
 
     def test_merge_authority_lane_fails_when_configured_workflow_is_missing(self) -> None:
         with TemporaryDirectory() as tmp:

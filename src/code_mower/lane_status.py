@@ -387,8 +387,12 @@ def _redact_local_paths(report: dict[str, Any]) -> None:
 def _global_next(report: Mapping[str, Any]) -> str:
     prs = report["remote"].get("pull_requests", [])
     local_active = bool(report["agenttrail"].get("boards")) or bool(report["local_processes"].get("processes"))
-    if not report["remote"].get("available") and local_active:
-        return "remote unavailable; inspect local lanes"
+    if not report["remote"].get("available"):
+        return (
+            "remote unavailable; inspect local lanes"
+            if local_active
+            else "remote unavailable; fix GitHub access"
+        )
     for action in ("fix BLOCKED audit", "fix failing check", "rebase/behind", "waiting for audits or owner input", "waiting for checks", "ready for merge or auto-merge"):
         if any(pr.get("next_action") == action for pr in prs):
             return action
@@ -447,17 +451,29 @@ def render_text(report: Mapping[str, Any]) -> str:
             lines.append(f"  next: {pr['next_action']}")
             if pr.get("gate_rerun_command") and pr.get("next_action") in GATE_RERUN_ACTIONS:
                 lines.append(f"  rerun gate: {pr['gate_rerun_command']}")
-    else:
+    elif remote.get("available"):
         lines.append("Open PRs: none")
+    else:
+        lines.append("Open PRs: unavailable")
     lines.append("")
     runs = remote.get("workflow_runs") or []
-    lines.append("Recent Code Mower workflows:" if runs else "Recent Code Mower workflows: none")
+    if runs:
+        lines.append("Recent Code Mower workflows:")
+    elif remote.get("available"):
+        lines.append("Recent Code Mower workflows: none")
+    else:
+        lines.append("Recent Code Mower workflows: unavailable")
     for run in runs[:5]:
         state = run.get("conclusion") or run.get("status") or "unknown"
         lines.append(f"- {run.get('workflow') or 'workflow'} [{state}] {run.get('branch') or ''} updated {run.get('updated_at') or ''}".rstrip())
     lines.append("")
     alerts = (remote.get("gate_health") or {}).get("alerts") or []
-    lines.append("Gate alerts:" if alerts else "Gate alerts: none")
+    if alerts:
+        lines.append("Gate alerts:")
+    elif remote.get("available"):
+        lines.append("Gate alerts: none")
+    else:
+        lines.append("Gate alerts: unavailable")
     lines.extend(f"- {alert['message']}" for alert in alerts[:5])
     lines.append("")
     boards = report["agenttrail"].get("boards") or []
