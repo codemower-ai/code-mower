@@ -28,9 +28,10 @@ claude -p "Reply with exactly: ok" --output-format json
 
 Set `DISPATCH_TOKEN` as a human-owned PAT or GitHub App posting-token secret,
 and set `DISPATCH_TOKEN_EXPIRES_AT` as a repository variable with the expiry
-date in `YYYY-MM-DD` format. Runner jobs can post with `GITHUB_TOKEN`, but
-GitHub does not trigger `issue_comment` labeler workflows for comments created
-by the built-in token, so the labels will not flip without that posting token.
+date in `YYYY-MM-DD` format, or `never` when the token has no expiration date.
+Runner jobs can post with `GITHUB_TOKEN`, but GitHub does not trigger
+`issue_comment` labeler workflows for comments created by the built-in token,
+so the labels will not flip without that posting token.
 
 ## Wrapper Contract
 

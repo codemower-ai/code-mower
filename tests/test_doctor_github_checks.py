@@ -161,6 +161,40 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertEqual(check.detail["days_remaining"], 28)
         self.assertEqual(check.detail["secret"], "DISPATCH_TOKEN")
 
+    def test_human_automation_token_check_passes_with_non_expiring_value(self) -> None:
+        check = self._human_token_check(
+            [
+                (
+                    {
+                        "name": "DISPATCH_TOKEN",
+                        "created_at": "2026-08-01T00:00:00Z",
+                        "updated_at": "2026-08-02T00:00:00Z",
+                        "value": "secret-value-that-must-not-print",
+                    },
+                    {},
+                ),
+                ({"name": "DISPATCH_TOKEN_EXPIRES_AT", "value": "never"}, {}),
+            ]
+        )
+
+        self.assertEqual(check.status, "pass")
+        self.assertIn("non-expiring", check.message)
+        self.assertTrue(check.detail["non_expiring"])
+        self.assertEqual(check.detail["expires_at"], "never")
+        self.assertNotIn("secret-value-that-must-not-print", str(check.as_dict()))
+
+    def test_human_automation_token_check_warns_on_placeholder_expiry(self) -> None:
+        check = self._human_token_check(
+            [
+                ({"name": "DISPATCH_TOKEN"}, {}),
+                ({"name": "DISPATCH_TOKEN_EXPIRES_AT", "value": "YYYY-MM-DD"}, {}),
+            ]
+        )
+
+        self.assertEqual(check.status, "warn")
+        self.assertIn("placeholder DISPATCH_TOKEN_EXPIRES_AT", check.message)
+        self.assertIn("`never`", str(check.remediation))
+
     def test_human_automation_token_check_fails_when_secret_missing(self) -> None:
         check = self._human_token_check(
             [(None, {"returncode": 1, "output_summary": "not found"})]
@@ -197,6 +231,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
 
         self.assertEqual(check.status, "fail")
         self.assertIn("invalid DISPATCH_TOKEN_EXPIRES_AT", check.message)
+        self.assertIn("`never`", str(check.remediation))
 
     def test_human_automation_token_check_skips_when_not_required(self) -> None:
         check = check_human_automation_token(

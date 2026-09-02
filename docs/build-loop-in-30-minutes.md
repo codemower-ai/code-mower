@@ -120,6 +120,8 @@ Store the token and its expiry metadata:
 ```bash
 gh secret set DISPATCH_TOKEN --repo "$REPO"
 gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo "$REPO" --body YYYY-MM-DD
+# or, for a non-expiring PAT:
+gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo "$REPO" --body never
 ```
 
 Proof:

@@ -99,7 +99,8 @@ Create these before you run Easy Mode on a real repository:
 - `DISPATCH_TOKEN`: a human-owned fine-grained PAT stored as a repository
   Actions secret.
 - `DISPATCH_TOKEN_EXPIRES_AT`: a repository Actions variable with the PAT
-  expiry date in `YYYY-MM-DD` format.
+  expiry date in `YYYY-MM-DD` format, or `never` when the PAT has no
+  expiration date.
 
 Use a human account or explicitly delegated machine user. The default
 `DISPATCH_TOKEN` needs:
@@ -113,6 +114,8 @@ Set the secret and expiry metadata:
 ```bash
 gh secret set DISPATCH_TOKEN --repo OWNER/REPO
 gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo OWNER/REPO --body YYYY-MM-DD
+# or, for a non-expiring PAT:
+gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo OWNER/REPO --body never
 ```
 
 Why this is required: comments, labels, and mentions posted by the built-in

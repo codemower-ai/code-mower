@@ -11,6 +11,8 @@ from .github_api import _github_api_json
 DEFAULT_HUMAN_TOKEN_SECRET = "DISPATCH_TOKEN"
 DEFAULT_HUMAN_TOKEN_EXPIRES_VAR = "DISPATCH_TOKEN_EXPIRES_AT"
 EXPIRY_WARNING_DAYS = 14
+NON_EXPIRING_TOKEN_VALUE = "never"
+EXPIRY_PLACEHOLDER_VALUES = {"YYYY-MM-DD", "<YYYY-MM-DD>"}
 
 
 def _owner_surface_value(
@@ -83,6 +85,14 @@ def _parse_expiry(value: str) -> date | None:
         return None
 
 
+def _is_non_expiring(value: str) -> bool:
+    return value.strip().casefold() == NON_EXPIRING_TOKEN_VALUE
+
+
+def _is_expiry_placeholder(value: str) -> bool:
+    return value.strip().upper() in EXPIRY_PLACEHOLDER_VALUES
+
+
 def check_human_automation_token(
     *,
     gh_path: str,
@@ -145,12 +155,37 @@ def check_human_automation_token(
             },
             remediation=(
                 f"Record the PAT expiry date with "
-                f"`gh variable set {expires_var} --body YYYY-MM-DD`, then "
-                "rerun `code-mower doctor --github`."
+                f"`gh variable set {expires_var} --body YYYY-MM-DD`, or use "
+                f"`gh variable set {expires_var} --body never` for a "
+                "non-expiring PAT, then rerun `code-mower doctor --github`."
             ),
         )
 
     expiry_text = str(variable_payload.get("value") or "").strip()
+    if _is_non_expiring(expiry_text):
+        return DoctorCheck(
+            name="github.human_automation_token",
+            status=STATUS_PASS,
+            message=f"{slug} {secret_name} is recorded as non-expiring",
+            detail={
+                **detail,
+                "created_at": str(secret_payload.get("created_at") or ""),
+                "updated_at": str(secret_payload.get("updated_at") or ""),
+                "expires_at": NON_EXPIRING_TOKEN_VALUE,
+                "non_expiring": True,
+            },
+        )
+    if _is_expiry_placeholder(expiry_text):
+        return DoctorCheck(
+            name="github.human_automation_token",
+            status=STATUS_WARN,
+            message=f"{slug} still has placeholder {expires_var} value",
+            detail={**detail, "expires_at": expiry_text},
+            remediation=(
+                f"Set {expires_var} to the PAT expiry date in YYYY-MM-DD "
+                "format, or to `never` for a non-expiring PAT."
+            ),
+        )
     expiry = _parse_expiry(expiry_text)
     if expiry is None:
         return DoctorCheck(
@@ -159,7 +194,8 @@ def check_human_automation_token(
             message=f"{slug} has an invalid {expires_var} value",
             detail={**detail, "expires_at": expiry_text},
             remediation=(
-                f"Set {expires_var} to the PAT expiry date in YYYY-MM-DD format."
+                f"Set {expires_var} to the PAT expiry date in YYYY-MM-DD "
+                "format, or to `never` for a non-expiring PAT."
             ),
         )
 
