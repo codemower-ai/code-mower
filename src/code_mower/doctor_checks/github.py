@@ -36,6 +36,7 @@ def check_github_setup(
     lanes: Sequence[tuple[str, Mapping[str, Any]]],
     http_timeout: int,
     actions_cost_sample: int = ACTIONS_COST_SAMPLE_DEFAULT,
+    adoption_posture: str = "reviewer-gate",
 ) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     gh_path = shutil.which("gh")
@@ -142,6 +143,7 @@ def check_github_setup(
                 config=config,
                 lanes=lanes,
                 http_timeout=http_timeout,
+                adoption_posture=adoption_posture,
             )
         )
         if has_merge_authority:

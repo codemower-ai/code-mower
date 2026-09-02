@@ -66,6 +66,7 @@ ACTIONS_METADATA_WORKFLOW_MARKERS = (
     "audit-label-cleanup",
     "devin-audit-bridge",
 )
+OBSERVER_ADOPTION_POSTURES = frozenset({"hosted-builders", "orchestrator-only"})
 
 __all__ = [
     "ACTIONS_BILLING_BLOCK_PATTERNS",
@@ -76,6 +77,7 @@ __all__ = [
     "DoctorCheck",
     "MAX_ACTIONS_FAILED_JOBS_TO_INSPECT",
     "MAX_ACTIONS_FAILED_RUNS_TO_INSPECT",
+    "OBSERVER_ADOPTION_POSTURES",
     "STATUS_FAIL",
     "STATUS_PASS",
     "STATUS_SKIP",

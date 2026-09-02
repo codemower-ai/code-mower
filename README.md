@@ -47,6 +47,8 @@ for a real repository. It checks your runtime, GitHub setup, provider CLIs,
 token posture, optional cloud setup, private-repo Actions cost traps, and
 first-run adoption gaps. `--preflight` remains the compatibility preset for
 older scripts; `--adoption` adds explicit repo targeting and setup guidance.
+Use `--hosted-builders` or `--orchestrator-only` when the current machine is
+observing/coordinating lanes and will not run local Codex or Claude wrappers.
 
 Example, shortened:
 

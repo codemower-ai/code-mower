@@ -111,6 +111,7 @@ def check_adoption_setup(
     repo_slug: str,
     repo_source: str,
     using_packaged_example: bool,
+    config_source: str = "",
 ) -> tuple[DoctorCheck, ...]:
     """Return first-run adoption posture checks."""
 
@@ -144,17 +145,28 @@ def check_adoption_setup(
         )
 
     repositories = _configured_repositories(config)
+    source = config_source or (
+        "packaged_starter" if using_packaged_example else "repository_config"
+    )
+    source_messages = {
+        "explicit_config": "using explicit Code Mower config",
+        "packaged_starter": "using packaged starter config for adoption checks",
+        "repository_config": "using repository Code Mower config",
+        "source_tree_starter": "using source-tree starter config for adoption checks",
+    }
+    detail = {
+        "config_path": str(config_path),
+        "config_source": source,
+        "configured_repositories": repositories,
+        "effective_repository": repo_slug,
+    }
     if using_packaged_example:
         checks.append(
             DoctorCheck(
                 name="doctor.adoption.config_source",
                 status=STATUS_WARN,
-                message="using packaged starter config for adoption checks",
-                detail={
-                    "config_path": str(config_path),
-                    "configured_repositories": repositories,
-                    "effective_repository": repo_slug,
-                },
+                message=source_messages.get(source, source_messages["packaged_starter"]),
+                detail=detail,
                 remediation=(
                     "Run `code-mower init --easy --apply`, review the generated "
                     "setup, and commit an edited code-mower.yml before relying "
@@ -167,12 +179,8 @@ def check_adoption_setup(
             DoctorCheck(
                 name="doctor.adoption.config_source",
                 status=STATUS_PASS,
-                message="using repository Code Mower config",
-                detail={
-                    "config_path": str(config_path),
-                    "configured_repositories": repositories,
-                    "effective_repository": repo_slug,
-                },
+                message=source_messages.get(source, source_messages["repository_config"]),
+                detail=detail,
             )
         )
 

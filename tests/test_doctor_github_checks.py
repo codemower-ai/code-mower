@@ -32,6 +32,8 @@ class GitHubDoctorCheckTests(unittest.TestCase):
     def _human_token_check(
         self,
         api_responses: list[tuple[object, dict[str, object]]],
+        *,
+        adoption_posture: str = "reviewer-gate",
     ):
         with mock.patch(
             "code_mower.doctor_checks.github_human_token._github_api_json",
@@ -43,6 +45,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
                 config={"owner_surface": {"dispatch_token_env": "DISPATCH_TOKEN"}},
                 lanes=[("codex", {"token_env": ["DISPATCH_TOKEN", "GITHUB_TOKEN"]})],
                 http_timeout=1,
+                adoption_posture=adoption_posture,
                 now=datetime(2026, 8, 18, tzinfo=UTC),
             )
 
@@ -203,6 +206,19 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertEqual(check.status, "fail")
         self.assertIn("missing the DISPATCH_TOKEN", check.message)
         self.assertIn("fine-grained PAT", str(check.remediation))
+        self.assertEqual(check.detail["adoption_posture"], "reviewer-gate")
+
+    def test_human_automation_token_check_warns_for_hosted_builder_missing_secret(
+        self,
+    ) -> None:
+        check = self._human_token_check(
+            [(None, {"returncode": 1, "output_summary": "not found"})],
+            adoption_posture="hosted-builders",
+        )
+
+        self.assertEqual(check.status, "warn")
+        self.assertIn("hosted-builder observer posture", check.message)
+        self.assertEqual(check.detail["adoption_posture"], "hosted-builders")
 
     def test_human_automation_token_check_fails_when_expired(self) -> None:
         check = self._human_token_check(
@@ -213,6 +229,20 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         )
 
         self.assertEqual(check.status, "fail")
+        self.assertIn("expired", check.message)
+
+    def test_human_automation_token_check_warns_for_orchestrator_expired_secret(
+        self,
+    ) -> None:
+        check = self._human_token_check(
+            [
+                ({"name": "DISPATCH_TOKEN"}, {}),
+                ({"name": "DISPATCH_TOKEN_EXPIRES_AT", "value": "2026-08-17"}, {}),
+            ],
+            adoption_posture="orchestrator-only",
+        )
+
+        self.assertEqual(check.status, "warn")
         self.assertIn("expired", check.message)
 
     def test_human_automation_token_check_rejects_timestamp_expiry(self) -> None:

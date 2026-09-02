@@ -51,6 +51,39 @@ detect_repo_slug = _doctor_checks.detect_repo_slug
 normalize_repo_slug = _doctor_checks.normalize_repo_slug
 
 
+def _source_repo_uses_starter_config(cwd: Path, config_path: Path) -> bool:
+    """Return true when doctor is running from Code Mower's source tree."""
+
+    try:
+        config_path.resolve().relative_to(cwd.resolve())
+    except ValueError:
+        return False
+    return (
+        config_path.name == "code-mower.example.yml"
+        and (cwd / "pyproject.toml").is_file()
+        and (cwd / "src" / "code_mower" / "templates" / "code-mower.example.yml").is_file()
+    )
+
+
+def _doctor_config_source_label(
+    *,
+    config_arg: str,
+    config_path: Path,
+    easy: bool,
+    cwd: Path | None = None,
+) -> str:
+    """Classify the config source for adoption-facing doctor output."""
+
+    cwd = cwd or Path.cwd()
+    if config_arg != "code-mower.yml":
+        return "explicit_config"
+    if config_path.name == "code-mower.example.yml" and easy:
+        if _source_repo_uses_starter_config(cwd, config_path):
+            return "source_tree_starter"
+        return "packaged_starter"
+    return "repository_config"
+
+
 _DOCTOR_COMPAT_EXPORTS = (
     DEFAULT_CLOUD_TOKEN_DIR,
     DEFAULT_CLOUD_TOKEN_ENV,
@@ -68,6 +101,7 @@ _DOCTOR_COMPAT_EXPORTS = (
     resolve_doctor_config_path_for_script,
     resolve_doctor_provider_templates_path,
     _token_file_mentions_cloud_token,
+    _doctor_config_source_label,
 )
 
 
@@ -202,12 +236,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             repo_slug = detect_repo_slug(Path.cwd())
             repo_source = "git_remote" if repo_slug else ""
         provider_templates_path = resolve_doctor_provider_templates_path(args.provider_templates)
+        config_path = resolve_doctor_config_path(args.config, easy=args.easy)
         report = run_doctor(
-            config_path=resolve_doctor_config_path(args.config, easy=args.easy),
+            config_path=config_path,
             provider_templates_path=provider_templates_path,
             profile=args.profile,
             repo_slug=repo_slug,
             repo_source=repo_source,
+            config_source=_doctor_config_source_label(
+                config_arg=args.config,
+                config_path=config_path,
+                easy=args.easy,
+            ),
             adoption=args.adoption,
             adoption_posture=args.adoption_posture,
             probe_runtime=args.probe_runtime,

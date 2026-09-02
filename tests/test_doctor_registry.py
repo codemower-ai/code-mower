@@ -181,6 +181,7 @@ class DoctorRegistryTests(unittest.TestCase):
             {
                 "driver": "local_cli",
                 "provider": "codex",
+                "token_env": ["MISSING_CODEX_TOKEN"],
                 "provider_config": {"command": "definitely-missing-code-mower"},
             },
             probe_runtime=True,
@@ -188,6 +189,9 @@ class DoctorRegistryTests(unittest.TestCase):
             adoption_posture="hosted-builders",
         )
 
+        self.assertFalse(
+            any(check.name in {"env.tokens", "env.required"} for check in checks)
+        )
         local_checks = {
             check.name: check
             for check in checks
@@ -209,14 +213,17 @@ class DoctorRegistryTests(unittest.TestCase):
             {
                 "driver": "local_cli",
                 "provider": "codex",
+                "token_env": ["MISSING_CODEX_TOKEN"],
                 "provider_config": {"command": "definitely-missing-code-mower"},
             },
             probe_runtime=True,
             http_timeout=1,
         )
 
+        token_check = next(check for check in checks if check.name == "env.tokens")
         local_cli = next(check for check in checks if check.name == "runtime.local_cli")
         local_probe = next(check for check in checks if check.name == "runtime.local_cli.probe")
+        self.assertEqual(token_check.status, "warn")
         self.assertEqual(local_cli.status, "warn")
         self.assertEqual(local_probe.status, "warn")
 
@@ -264,6 +271,42 @@ class DoctorRegistryTests(unittest.TestCase):
 
                 self.assertEqual(captured["adoption_posture"], expected)
 
+    def test_config_source_label_distinguishes_starter_and_explicit_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            starter_path = root_path / "src" / "code_mower" / "templates" / "code-mower.example.yml"
+            starter_path.parent.mkdir(parents=True)
+            starter_path.write_text("version: 1\n", encoding="utf-8")
+            (root_path / "pyproject.toml").write_text("[project]\nname = 'code-mower'\n", encoding="utf-8")
+
+            self.assertEqual(
+                code_mower_doctor._doctor_config_source_label(
+                    config_arg="code-mower.yml",
+                    config_path=starter_path,
+                    easy=True,
+                    cwd=root_path,
+                ),
+                "source_tree_starter",
+            )
+            self.assertEqual(
+                code_mower_doctor._doctor_config_source_label(
+                    config_arg="custom-code-mower.yml",
+                    config_path=root_path / "custom-code-mower.yml",
+                    easy=False,
+                    cwd=root_path,
+                ),
+                "explicit_config",
+            )
+            self.assertEqual(
+                code_mower_doctor._doctor_config_source_label(
+                    config_arg="code-mower.yml",
+                    config_path=root_path / "code-mower.yml",
+                    easy=False,
+                    cwd=root_path,
+                ),
+                "repository_config",
+            )
+
     def test_adoption_repo_overrides_packaged_example_repository(self) -> None:
         report = run_doctor(
             config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
@@ -282,6 +325,7 @@ class DoctorRegistryTests(unittest.TestCase):
             check for check in report.checks if check.name == "doctor.adoption.config_source"
         )
         self.assertEqual(source_check.status, "warn")
+        self.assertEqual(source_check.detail["config_source"], "packaged_starter")
         self.assertEqual(source_check.detail["configured_repositories"], ["owner/example"])
         self.assertEqual(
             source_check.detail["effective_repository"],
@@ -307,6 +351,7 @@ class DoctorRegistryTests(unittest.TestCase):
             check for check in report.checks if check.name == "doctor.adoption.config_source"
         )
         self.assertEqual(source_check.status, "warn")
+        self.assertEqual(source_check.detail["config_source"], "packaged_starter")
         self.assertEqual(source_check.detail["configured_repositories"], ["owner/example"])
 
         self.assertFalse(

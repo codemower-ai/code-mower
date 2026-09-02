@@ -86,7 +86,8 @@ adopters need:
 
 - recommended profile selection;
 - Python/runtime checks;
-- local provider CLI discovery and smoke probes;
+- local provider CLI discovery and smoke probes when this machine will run
+  local lanes;
 - stale terminal-label hygiene for merge-authority reviewer lanes;
 - GitHub repository visibility, permissions, branch protection, and Actions
   cost diagnostics; and
@@ -96,6 +97,10 @@ Warnings are setup guidance. They are only fatal when you pass `--strict`. In
 JSON mode, check the top-level `run_plan` field first. It tells you whether the
 preflight included GitHub and optional cloud checks before you inspect
 individual provider warnings.
+Use `--hosted-builders` or `--orchestrator-only` when this machine observes or
+coordinates lanes without running Codex/Claude local audit wrappers; those
+postures skip local-wrapper probes and keep missing local wrapper env vars out
+of the warning list.
 
 For merge-authority lanes such as Codex or Claude audit, look for
 `provider.review_hygiene`. It should pass for lanes that can satisfy the merge
