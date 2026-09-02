@@ -347,6 +347,56 @@ class BoardTests(TestCase):
         self.assertEqual(code, 2)
         self.assertIn("--retention-days", err.getvalue())
 
+    def test_doctor_payload_reports_local_only_state_without_paths(self) -> None:
+        def unavailable_gh(_args: list[str]) -> object:
+            raise lane_status.LaneStatusUnavailable("offline /tmp/private/repo")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = board.doctor_payload(
+                board.BoardConfig(repo="owner/repo", repo_path=tmp),
+                gh_json_runner=unavailable_gh,
+                command_runner=_command_runner,
+            )
+
+        serialized = json.dumps(payload)
+        self.assertEqual(payload["schema"], board.BOARD_DOCTOR_SCHEMA)
+        self.assertEqual(payload["status"], "warn")
+        self.assertEqual(payload["summary"]["next_action"], "remote unavailable; inspect local lanes")
+        self.assertIn("github.remote", {check["id"] for check in payload["checks"]})
+        self.assertIn(lane_status.LOCAL_PATH_REDACTION, serialized)
+        self.assertNotIn(str(Path(tmp)), serialized)
+        self.assertNotIn("/tmp/private/repo", serialized)
+
+    def test_doctor_payload_detects_malformed_local_board_inputs_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            spend_path = Path(tmp) / "reviewer-spend.json"
+            adapter_dir = Path(tmp) / "agents"
+            store_path.write_text("{bad json\n", encoding="utf-8")
+            spend_path.write_text("{bad json", encoding="utf-8")
+            adapter_dir.mkdir()
+            (adapter_dir / "bad.json").write_text("{bad json", encoding="utf-8")
+
+            payload = board.doctor_payload(
+                board.BoardConfig(
+                    repo="owner/repo",
+                    repo_path=tmp,
+                    store_path=str(store_path),
+                    spend_path=str(spend_path),
+                    agent_adapters_path=str(adapter_dir),
+                ),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+
+        checks = {check["id"]: check for check in payload["checks"]}
+        serialized = json.dumps(payload)
+        self.assertEqual(payload["status"], "warn")
+        self.assertEqual(checks["store.events"]["status"], "warn")
+        self.assertEqual(checks["agent.adapters"]["status"], "warn")
+        self.assertEqual(checks["spend.timeline"]["status"], "warn")
+        self.assertNotIn(str(Path(tmp)), serialized)
+
     def test_status_payload_marks_live_recording_disabled_by_default(self) -> None:
         payload = board.status_payload(
             board.BoardConfig(repo="owner/repo"),

@@ -331,7 +331,10 @@ code-mower board serve --repo OWNER/REPO --record-events
 Live recording writes metadata-only snapshots to `.code-mower/board/events.jsonl`
 at most once every 60 seconds by default. The Board also shows an owner queue,
 and it summarizes reviewer verdict history and spend/latency from local board
-events plus `.code-mower/reviewer-spend.json` when those files exist. Local
+events plus `.code-mower/reviewer-spend.json` when those files exist. Use
+`code-mower board doctor --repo OWNER/REPO` to diagnose Board inputs, local
+history, gate alerts, and optional agent cards without showing local paths by
+default. Local
 agents can publish opt-in status cards by writing metadata-only JSON files to
 `.code-mower/board/agents/*.json`; the Board redacts local paths by default and
 does not upload those cards.
