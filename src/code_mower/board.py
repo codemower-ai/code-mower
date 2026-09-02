@@ -120,8 +120,13 @@ def _candidate_ports(config: BoardConfig) -> list[int]:
     return list(range(config.port, last_port + 1))
 
 
-def _option_present(argv: list[str] | None, option: str) -> bool:
-    return any(arg == option or arg.startswith(f"{option}=") for arg in (argv or []))
+def _explicit_port_conflict_message(host: str, port: int) -> str:
+    suggestions = list(range(port + 1, min(65535, port + 3) + 1))
+    suggestion_text = f" such as {', '.join(str(candidate) for candidate in suggestions)}" if suggestions else ""
+    return (
+        f"error: Code Mower Board port {port} is already in use on {host}. "
+        f"Pass --port with a free loopback port{suggestion_text}."
+    )
 
 
 def _bind_board_server(
@@ -138,12 +143,7 @@ def _bind_board_server(
             if exc.errno != errno.EADDRINUSE:
                 raise
             if not config.port_was_default:
-                suggestions = ", ".join(str(candidate) for candidate in range(port + 1, port + 4))
-                print(
-                    f"error: Code Mower Board port {port} is already in use on {config.host}. "
-                    f"Pass --port with a free loopback port such as {suggestions}.",
-                    file=sys.stderr,
-                )
+                print(_explicit_port_conflict_message(config.host, port), file=sys.stderr)
                 return None
     print(
         "error: Code Mower Board could not find a free loopback port in "
@@ -1110,7 +1110,7 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument(
         "--port",
         type=int,
-        default=DEFAULT_PORT,
+        default=None,
         help="loopback port; the default auto-falls forward when busy",
     )
     serve_parser.add_argument("--pr-limit", type=int, default=50, help="open PRs to show")
@@ -1174,8 +1174,8 @@ def main(argv: list[str] | None = None) -> int:
             BoardConfig(
                 repo=args.repo,
                 host=args.host,
-                port=args.port,
-                port_was_default=not _option_present(argv, "--port"),
+                port=DEFAULT_PORT if args.port is None else args.port,
+                port_was_default=args.port is None,
                 pr_limit=args.pr_limit,
                 workflow_limit=args.workflow_limit,
                 stale_minutes=args.stale_minutes,

@@ -117,10 +117,10 @@ class BoardTests(TestCase):
             [6000],
         )
 
-    def test_option_present_accepts_equals_form(self) -> None:
-        self.assertTrue(board._option_present(["serve", "--port=6000"], "--port"))
-        self.assertTrue(board._option_present(["serve", "--port", "6000"], "--port"))
-        self.assertFalse(board._option_present(["serve", "--pr-limit", "5"], "--port"))
+    def test_explicit_port_conflict_message_clamps_suggestions(self) -> None:
+        self.assertIn("65535", board._explicit_port_conflict_message("127.0.0.1", 65534))
+        self.assertNotIn("65536", board._explicit_port_conflict_message("127.0.0.1", 65534))
+        self.assertNotIn("such as", board._explicit_port_conflict_message("127.0.0.1", 65535))
 
     def test_bind_board_server_falls_forward_when_default_port_is_busy(self) -> None:
         with _occupy_loopback_port() as occupied:
@@ -154,6 +154,17 @@ class BoardTests(TestCase):
         self.assertIsNone(server)
         self.assertIn(f"port {busy_port} is already in use", err.getvalue())
         self.assertIn("Pass --port", err.getvalue())
+
+    def test_serve_treats_abbreviated_port_flag_as_explicit(self) -> None:
+        with _occupy_loopback_port() as occupied:
+            busy_port = int(occupied.getsockname()[1])
+            err = StringIO()
+
+            with redirect_stderr(err):
+                code = board.main(["serve", "--repo", "owner/repo", "--po", str(busy_port)])
+
+        self.assertEqual(code, 2)
+        self.assertIn(f"port {busy_port} is already in use", err.getvalue())
 
     def test_serve_rejects_invalid_port_before_binding(self) -> None:
         err = StringIO()
