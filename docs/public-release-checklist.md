@@ -67,8 +67,9 @@ not know the original reference repos.
   output or token values into shareable JSON.
 - `scripts/smoke_easy_mode.py --json` passes in a fresh virtual environment.
 - `scripts/fresh_clone_rehearsal.py --json` passes against the release commit.
-- `code-mower migration package-install-rehearsal --package-spec ... --json`
-  passes in CI and produces a passing `first_user_readiness` scorecard.
+- `code-mower migration package-install-rehearsal --package-spec . --json`
+  passes in CI and produces a passing `first_user_readiness` scorecard; published
+  package specs add `--allow-package-index`.
 - Secret scans are clean.
 - Privacy scans are clean: no personal paths, private repo slugs, raw auth
   output, or likely secrets.

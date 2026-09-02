@@ -223,6 +223,7 @@ virtual environment, run:
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -235,6 +236,7 @@ repo's native checks.
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
   --repo-path /path/to/repo \
   --python "$(command -v python3.12)" \
   --json

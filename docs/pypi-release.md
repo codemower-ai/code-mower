@@ -182,6 +182,8 @@ Then run the release-gate first-user rehearsal against the same package:
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
+  --upgrade-pip \
   --python "$(command -v python3.12)" \
   --json
 ```

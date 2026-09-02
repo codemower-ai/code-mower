@@ -17,6 +17,7 @@ python3.12 -m venv "$WORK_DIR/venv"
 "$WORK_DIR/venv/bin/python" -m pip install code-mower==0.8.0b1
 "$WORK_DIR/venv/bin/code-mower" migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
   --python "$(command -v python3.12)" \
   --json
 ```

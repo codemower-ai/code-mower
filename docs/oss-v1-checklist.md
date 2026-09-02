@@ -193,6 +193,7 @@ code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
   --repo-path /path/to/repo \
   --json
 code-mower audit pr 123

@@ -208,6 +208,28 @@ def _resolve_install_package_spec(package_spec: str, *, base_dir: Path | None = 
     return str(candidate)
 
 
+def _package_spec_uses_package_index(package_spec: str) -> bool:
+    candidate_text = package_spec.strip()
+    if not candidate_text:
+        return False
+    if candidate_text.startswith(("git+", "http://", "https://", "file://")):
+        return False
+    if "://" in candidate_text:
+        return False
+    looks_path_like = (
+        candidate_text.startswith((".", "/", "~"))
+        or os.sep in candidate_text
+        or "/" in candidate_text
+        or "\\" in candidate_text
+        or (os.altsep is not None and os.altsep in candidate_text)
+    )
+    return not looks_path_like
+
+
+def _pip_upgrade_command(venv_python: Path) -> list[str]:
+    return [str(venv_python), "-m", "pip", "install", "--upgrade", "pip"]
+
+
 def _pip_install_command(
     venv_python: Path,
     package_spec: str,
