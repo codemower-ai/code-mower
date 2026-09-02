@@ -13,11 +13,14 @@ private repository names.
 
 ## 1. Install
 
-Code Mower requires Python 3.12 or newer.
+Code Mower requires Python 3.12 or newer. See
+[Install And Bootstrap](install.md) for pipx, uv, and contributor checkout
+paths. The laptop path is:
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.6.0b3
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
 code-mower --version
 ```
 
@@ -25,7 +28,7 @@ code-mower --version
 pinning this exact build:
 
 ```bash
-pipx install --python python3.12 --pip-args="--pre" code-mower
+pipx install --python "$CODE_MOWER_PYTHON" --pip-args="--pre" code-mower
 ```
 
 ## 2. Authenticate GitHub

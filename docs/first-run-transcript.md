@@ -8,7 +8,8 @@ same provider warnings.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.6.0b3
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
 code-mower --version
 ```
 

@@ -96,6 +96,10 @@ Cold adopters should start with the reviewer gate, then add builders, then
 measure builder experiments; provider experiments come after that base loop is
 observable.
 
+Install first from the [Install And Bootstrap](docs/install.md) matrix: pipx for
+laptops, uv tool installs for hosted agents or CI boxes, and an editable venv
+for Code Mower contributors. All paths require Python 3.12 or newer.
+
 | Path | Use When | Route | Guide |
 | --- | --- | --- | --- |
 | A. Reviewer gate in 10 minutes | You want one audited PR before recurring workflows or builder dispatch. | Install, run `init --easy`, run `doctor --adoption --repo OWNER/REPO`, open a small setup PR, run Codex and Claude audits, then merge manually when the audit evidence is clean. | [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md) |
@@ -355,6 +359,7 @@ first so local work exercises the same package entrypoint users install.
 
 ## Docs Map
 
+- [Install And Bootstrap](docs/install.md)
 - [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
 - [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)
 - [Quickstart Reference](docs/quickstart.md)
