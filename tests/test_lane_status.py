@@ -154,6 +154,44 @@ class LaneStatusTests(TestCase):
         self.assertNotIn("AgentTrail boards:", rendered)
         self.assertNotIn("/tmp/lane-checkout", rendered)
 
+    def test_collect_status_detects_local_board_from_ss_when_lsof_unavailable(
+        self,
+    ) -> None:
+        def gh_json(_args: list[str]) -> object:
+            raise lane_status.LaneStatusUnavailable("gh pr failed")
+
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:4] == ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]:
+                return _completed("", returncode=1)
+            if args == ["ss", "-H", "-ltnp"]:
+                return _completed(
+                    'tcp LISTEN 0 4096 127.0.0.1:5332 0.0.0.0:* users:(("python3",pid=321,fd=3))\n'
+                )
+            if args == ["ps", "-p", "321", "-o", "command="]:
+                return _completed("python3 -m code_mower.cli board serve --repo owner/repo\n")
+            if args == ["lsof", "-a", "-p", "321", "-d", "cwd", "-Fn"]:
+                return _completed("", returncode=1)
+            if args == ["pwdx", "321"]:
+                return _completed("321: /tmp/code-mower-board\n")
+            if args == ["ps", "-axo", "pid=,command="]:
+                return _completed("")
+            return _completed("", returncode=1)
+
+        report = lane_status.collect_status(
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=command_runner,
+            now=NOW,
+        )
+
+        self.assertFalse(report["remote"]["available"])
+        self.assertTrue(report["agenttrail"]["available"])
+        self.assertEqual(report["agenttrail"]["boards"][0]["port"], 5332)
+        self.assertEqual(report["agenttrail"]["boards"][0]["process"], "python3")
+        self.assertEqual(report["agenttrail"]["boards"][0]["confidence"], "high")
+        self.assertEqual(report["agenttrail"]["boards"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertEqual(report["next_action"], "remote unavailable; inspect local lanes")
+
     def test_collect_status_never_reports_no_active_lanes_when_github_unavailable(
         self,
     ) -> None:

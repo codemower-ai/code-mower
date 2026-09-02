@@ -83,7 +83,9 @@ After `init` and `doctor`, use `code-mower lanes status --repo OWNER/REPO` to
 see active builder/reviewer lanes, gate/check state, recent Code Mower
 workflows, local board/process hints when present, and the next operator
 action. Text and JSON output redact local cwd paths by default; use
-`--show-local-paths` only for local debugging.
+`--show-local-paths` only for local debugging. Local Board discovery is
+best-effort across common macOS and Linux listener tools; when a host restricts
+listener inventory, remote PR/check status still reports normally.
 
 For the same redacted metadata in a local browser view, run
 `code-mower board serve --repo OWNER/REPO` and open the printed localhost URL.
