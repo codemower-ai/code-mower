@@ -7138,8 +7138,8 @@ def main():
         self.assertEqual(
             code_mower_versioning.public_baseline_sentence(__version__),
             (
-                "The current public beta baseline is `v0.6.0-beta.3`, with "
-                "pinned package-index install spec `code-mower==0.6.0b3`. "
+                "The current package-index beta baseline is `v0.6.0-beta.3`, "
+                "with pinned package install spec `code-mower==0.6.0b3`. "
                 "Release evidence is recorded on the GitHub release and in the "
                 "first-user install rehearsal."
             ),
@@ -7167,9 +7167,10 @@ def main():
             encoding="utf-8",
         )
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        normalized_baseline = " ".join(baseline_sentence.split())
 
-        self.assertIn(baseline_sentence, current_state)
-        self.assertIn(baseline_sentence, rollout)
+        self.assertIn(normalized_baseline, " ".join(current_state.split()))
+        self.assertIn(normalized_baseline, " ".join(rollout.split()))
         self.assertIn(install_command, rollout)
         self.assertIn(announcement_url, readme)
 
@@ -7201,20 +7202,24 @@ def main():
         )
 
         current_status = (
-            "The current public beta baseline is `v0.6.0-beta.3`, with pinned "
-            "package-index install spec `code-mower==0.6.0b3`. Release "
+            "The current package-index beta baseline is `v0.6.0-beta.3`, with "
+            "pinned package install spec `code-mower==0.6.0b3`. Release "
             "evidence is recorded on the GitHub release and in the first-user "
             "install rehearsal."
         )
         for text in (readme, current_state, rollout):
             self.assertIn(current_status, " ".join(text.split()))
         self.assertIn(
-            "The v0.6 beta entrypoint is `code-mower==0.6.0b3`",
+            "The current package-index beta entrypoint is `code-mower==0.6.0b3`",
+            public_release,
+        )
+        self.assertIn(
+            "The v0.7/v0.8 source line has landed on `main`",
             public_release,
         )
         self.assertIn(
             "`code-mower lanes status --repo OWNER/REPO` as the operator snapshot",
-            public_release,
+            " ".join(public_release.split()),
         )
 
         self.assertIn(

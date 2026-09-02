@@ -1,7 +1,8 @@
 # Code Mower Current State And Roadmap
 
 This is the short source-of-truth snapshot for the public OSS package, the
-hosted CodeMower.com surface, and the near-term path from v0.6 beta to v1.0.
+hosted CodeMower.com surface, and the near-term path from the current beta line
+to v1.0.
 
 ## Positioning
 
@@ -25,10 +26,24 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public beta baseline is `v0.6.0-beta.3`, with pinned package-index install spec `code-mower==0.6.0b3`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
-It is intended to be installed from the package index for friendly-user pilots,
-with GitHub tag/source installs kept as a fallback and development path. This
-baseline keeps the PyPI-first install path, trusted publishing, release
+The current package-index beta baseline is `v0.6.0-beta.3`, with pinned package
+install spec `code-mower==0.6.0b3`. Release evidence is recorded on the GitHub
+release and in the first-user install rehearsal. It is intended to be installed
+from the package index for friendly-user pilots, with GitHub tag/source installs
+kept as a fallback and development path.
+
+The v0.7/v0.8 source line has landed on `main` and is awaiting the next package
+beta before package-only adopters should rely on it. That source line adds the
+Python 3.12+ runtime contract, pipx/uv install matrix, hosted-builder and
+orchestrator-only doctor postures, non-expiring dispatch-token diagnostics,
+native redacted lane status, the local Board, Board history and admin commands,
+spend/verdict timelines, owner queue, optional metadata-only agent cards,
+explicit cloud Board snapshots, the CodeMower.com Board mirror, and a public
+Board demo rehearsal. See
+[Post-v0.8 Effectiveness Assessment](post-v08-effectiveness-assessment.md) for
+the dogfood assessment and lane-readiness interpretation.
+
+This baseline keeps the PyPI-first install path, trusted publishing, release
 rehearsal, production dogfood upload shape, catch-up provenance, stale-audit
 inspection, AI tool/model source diagnostics, CodeMower.com trust guidance,
 generated gate hardening, owner-bound WIP hygiene, lane liveness checks,
@@ -37,8 +52,8 @@ provider sandbox/live guardrails in one coherent beta release line.
 The beta line has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
-- `code-mower init --easy`, `doctor --preflight`, `next-steps`, and starter
-  value-report generation;
+- `code-mower init --easy`, `doctor --adoption --repo OWNER/REPO`,
+  `next-steps`, and starter value-report generation;
 - `code-mower checks detect` and `code-mower checks run` for repository-native
   lint/test/build discovery instead of assuming Ruff, ESLint, or any other
   single check surface applies to every codebase;
@@ -57,9 +72,10 @@ The beta line has proved:
 - optional sanitized cloud export/upload commands with fail-closed structured
   event metadata guards for raw output, auth previews, transcripts, and
   secret-like values;
-- `code-mower doctor --preflight` as the friendly early-adopter preset for easy
-  mode, runtime probes, GitHub/private-repo setup, Actions cost diagnostics,
-  and optional cloud-token setup. `doctor --v05` remains the versioned alias for
+- `code-mower doctor --adoption --repo OWNER/REPO` as the friendly
+  early-adopter preset for easy mode, runtime probes, GitHub/private-repo
+  setup, Actions cost diagnostics, and optional cloud-token setup.
+  `doctor --preflight` and `doctor --v05` remain compatibility presets for
   scripts. Doctor JSON now exposes a top-level `run_plan`, and human output
   prints the same plan near the header so support tooling and first-time users
   can see exactly which optional GitHub/cloud stages ran;
@@ -182,6 +198,10 @@ The beta line has proved:
   `migration.py` remains the backwards-compatible migration command adapter for
   wrapper rehearsal, release-readiness routing, mirror planning, and
   package-install orchestration.
+- native local visibility through `code-mower lanes status` and
+  `code-mower board serve`, with local paths redacted by default, explicit
+  local-history recording, Board doctor/reset commands, and an explicit
+  zero-report `cloud board-snapshot` upload path for CodeMower.com mirrors.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
@@ -237,20 +257,23 @@ OAuth, Supabase, Vercel, DNS, and hosted-secret setup are CodeMower.com
 operator responsibilities. OSS users should only need a dashboard-issued or
 operator-issued developer/team token when they opt into cloud sharing.
 
-## v0.6 Early-Adopter Goal
+## Current Early-Adopter Goal
 
-v0.6 should be shareable with 20-50 early OSS users who can follow a guide
-without knowing the original reference repos.
+The next beta should be shareable with 20-50 early OSS users who can follow a
+guide without knowing the original reference repos.
 
-The v0.6 experience should be:
+The early-adopter experience should be:
 
 1. install Code Mower from PyPI;
 2. run `code-mower init --easy`;
-3. run `code-mower doctor --preflight`;
+3. run `code-mower doctor --adoption --repo OWNER/REPO`;
 4. run a first manual/local audit;
-5. generate a local reviewer value report;
-6. optionally create or receive a CodeMower.com developer/team token; and
-7. optionally upload sanitized benchmark metadata.
+5. run `code-mower lanes status --repo OWNER/REPO` and
+   `code-mower board serve --repo OWNER/REPO`;
+6. generate a local reviewer value report;
+7. optionally create or receive a CodeMower.com developer/team token; and
+8. optionally upload sanitized benchmark metadata and an explicit Board
+   snapshot.
 
 The default lane policy remains conservative: Codex and Claude are the first
 local structured audit lanes; Gitar and other hosted reviewers start
@@ -271,7 +294,7 @@ these questions in the first few minutes:
 - Where is the code intentionally structured, and where is it still being
   refactored from extraction-era shape?
 
-The v0.6-to-v1.0 work should optimize for that trust test. More provider
+The current beta-to-v1.0 work should optimize for that trust test. More provider
 adapters are useful only after install, doctor, first report, privacy, and code
 structure feel boring and credible.
 
@@ -333,9 +356,10 @@ churn:
   beyond syntax/undefined-name once module boundaries stabilize, and a
   narrowly scoped type-checking gate should start with the most stable domain
   modules before becoming a repo-wide v1.0 bar.
-- **Zero-config first value:** `init --easy` and `doctor --preflight` are good,
-  but a future `code-mower try OWNER/REPO` or equivalent should produce a
-  draft corpus/value report from recent PR history with minimal setup.
+- **Zero-config first value:** `init --easy` and
+  `doctor --adoption --repo OWNER/REPO` are good, but a future
+  `code-mower try OWNER/REPO` or equivalent should produce a draft
+  corpus/value report from recent PR history with minimal setup.
 
 ## v1.0 Direction
 
@@ -389,66 +413,72 @@ leaving room for future orchestrator adapters.
 
 ## Near-Term Roadmap
 
-1. Pass the senior-engineer readiness gate: README, quickstart, architecture,
-   privacy, install, and first report should tell one coherent story.
-2. Keep the public/installable v0.6 path boring: docs, package install, doctor,
-   lane status, native checks, first audit, first value report, and optional
-   cloud token setup.
-3. Make the public repository the unambiguous source of truth: keep public docs
+1. Package the completed v0.7/v0.8 source line as the next beta, then verify the
+   exact package install from a clean environment before announcement.
+2. Run one cold-repo adoption rehearsal from the published package: install,
+   `init --easy`, `doctor --adoption`, `lanes status`, `board serve`, one tiny
+   audited PR, and optional metadata-only cloud upload.
+3. Continue dogfooding metadata uploads from Code Mower, CodeMower.com, and
+   product/reference work while keeping operational uploads separate from
+   calibrated reviewer-quality evidence.
+4. Deliberately route some small follow-up issues through Claude Code,
+   Cursor/Grok Bot, Antigravity, Devin, and other available builders/reviewers
+   so promotion decisions can use measured data rather than Codex-only
+   throughput.
+5. Make the public repository the unambiguous source of truth: keep public docs
    and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
    compatibility shims where they confuse contributors, and keep private
    product repos as consumers of pinned releases.
-4. Keep PyPI-first releases boring: every wider-friendly beta should verify
+6. Keep PyPI-first releases boring: every wider-friendly beta should verify
    GitHub release artifacts, PyPI trusted publishing, exact-version install, and
    package-install rehearsal from the published package.
-5. Add a short terminal recording or screenshot showing `doctor --preflight`
-   and the first value-report path. A static transcript now exists in
+7. Add a short terminal recording or screenshot showing `doctor --adoption`,
+   `lanes status`, `board serve`, and the first value-report path. A static
+   transcript now exists in
    `docs/first-run-transcript.md`; replace or augment it with a recording
    before a wider launch.
-6. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
+8. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
    and Apple login end to end.
-7. Turn the current team-controlled deletion/export basics into a published
+9. Turn the current team-controlled deletion/export basics into a published
    retention policy with automated retention jobs before broad cloud-data
    invitations.
-8. Continue dogfooding metadata uploads from Code Mower and private product
-   work.
-9. Expand the calibration corpus with known-clean, known-blocked, and subtle
+10. Expand the calibration corpus with known-clean, known-blocked, and subtle
    architecture-risk PRs.
-10. Run reviewer/lens calibration across Codex, Claude, Antigravity/Gemini,
+11. Run reviewer/lens calibration across Codex, Claude, Antigravity/Gemini,
    Gitar, and available informational lanes.
-11. Produce durable reviewer value reports with useful-rate, false positives,
+12. Produce durable reviewer value reports with useful-rate, false positives,
    latency, and cost.
-12. Promote lanes only after evidence shows they deserve informational,
+13. Promote lanes only after evidence shows they deserve informational,
    selective, or merge-gating status.
-13. Increase tests around verdict parsing, calibration/value-report math,
+14. Increase tests around verdict parsing, calibration/value-report math,
     provider runner stubs, and cloud bundle privacy before presenting Code
     Mower as merge-gate infrastructure.
-14. Extract shared provider-runner primitives so the main provider wrappers are
+15. Extract shared provider-runner primitives so the main provider wrappers are
     thin adapters around a tested PR-audit pipeline.
-15. Remove remaining shipped-package dual-import and `tools` fallback shims once
+16. Remove remaining shipped-package dual-import and `tools` fallback shims once
     release rehearsals prove source-checkout users have a clear supported path.
-16. Add a file-size/module-boundary review gate for the root package. Start by
+17. Add a file-size/module-boundary review gate for the root package. Start by
     splitting `init`, `cloud`, `config`, `cli`, and provider wrappers where it
     improves contributor comprehension.
-17. Introduce static analysis in stages: broaden Ruff on stable packages first,
+18. Introduce static analysis in stages: broaden Ruff on stable packages first,
     then add a scoped type-checking gate before making it a v1.0 release
     requirement.
-18. Triage CLI help into a smaller first-user command set, with advanced
+19. Triage CLI help into a smaller first-user command set, with advanced
     operator/internal commands documented separately.
-19. Harden calibration auto-discovery with more real PR shapes, first-user
+20. Harden calibration auto-discovery with more real PR shapes, first-user
     examples, and package-install rehearsal coverage so first reports can be
     bootstrapped from project history with human review.
-20. Reduce first-read README friction: one-screen pitch, install, doctor sample,
-    demo report, and links to deeper docs.
-21. Keep hardening reusable stale-audit lane handling with real product-repo
+21. Keep first-read README friction low: one-screen pitch, install, doctor
+    sample, demo report, Board demo, and links to deeper docs.
+22. Keep hardening reusable stale-audit lane handling with real product-repo
     feedback now that `clear-stale` and generated stale-clear workflows ship
     in the default merge-authority lane support.
-22. Keep repository-native checks central: detect and run each repo's declared
+23. Keep repository-native checks central: detect and run each repo's declared
     ESLint/Vitest/Ruff/pytest/build surface instead of treating Code Mower's own
     tooling as a universal product-repo lint policy.
-23. Add builder-experiment capture only after the reviewer/value loop is
-    producing durable evidence.
-24. Keep commercial implementation, hosted reporting, telemetry products, and
+24. Expand builder-experiment capture now that the reviewer/value loop and
+    Board visibility path are producing durable evidence.
+25. Keep commercial implementation, hosted reporting, telemetry products, and
     monetization plans in the private CodeMower.com repo.
 
 ## Documentation Ownership

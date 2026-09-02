@@ -57,7 +57,7 @@ pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
 gh auth status
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower doctor --preflight --json
+code-mower doctor --adoption --repo "$REPO" --json
 
 git switch -c chore/code-mower-reviewer-gate
 cp -R .code-mower.generated/. .
@@ -128,7 +128,7 @@ gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo "$REPO" --body never
 Proof:
 
 ```bash
-code-mower doctor --preflight --json
+code-mower doctor --adoption --repo "$REPO" --json
 ```
 
 The GitHub stage should report the human automation token posture instead of a
@@ -215,7 +215,7 @@ Proof:
 ```bash
 gh api "repos/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
   --jq '.checks[]? | select(.context == "code-mower/gate")'
-code-mower doctor --preflight --json
+code-mower doctor --adoption --repo "$REPO" --json
 ```
 
 For `code-mower/gate`, the API response must show `"app_id": null`. If it shows

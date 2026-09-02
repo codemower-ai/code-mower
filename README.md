@@ -110,6 +110,7 @@ the checked-in demo calibration package:
 - [examples/board-demo/README.md](examples/board-demo/README.md)
 - [examples/demo-calibration/reviewer-value-report.md](examples/demo-calibration/reviewer-value-report.md)
 - [docs/first-user-demo-transcript.md](docs/first-user-demo-transcript.md)
+- [docs/post-v08-effectiveness-assessment.md](docs/post-v08-effectiveness-assessment.md)
 
 The example is intentionally tiny and synthetic: one known-clean control, one
 known-blocked control, and three reviewer lanes. It shows the decision Code
@@ -133,9 +134,11 @@ for Code Mower contributors. All paths require Python 3.12 or newer.
 | B. Build loop in 30 minutes | You want builders plus an orchestrator pattern after the reviewer gate works. | Complete path A, then add the automation token, require `code-mower/gate` from Any source, enable repository auto-merge, prove the self-hosted Mac lane runner with `doctor --runner`, run `init --builders`, and dispatch the first issue. | [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md) |
 | C. Builder experiment | You want to compare authoring loops before trusting them broadly. | Use a work order or experiment spec, run `code-mower builder-experiment run` around an explicit command, then review the source-free `authoringRun` artifact and normal audit evidence. | [Builder Experiments](docs/builder-experiments.md) |
 
-The v0.6 beta announcement entry point is the tagged
+The current package-index announcement entry point is the tagged
 [Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.6.0-beta.3/docs/try-in-10-minutes.md)
-guide.
+guide. The completed v0.7/v0.8 Board and adoption-polish source line is on
+`main`; publish a new beta before directing package-only users to those
+commands.
 
 ## What Calibration Does And Does Not Prove
 
@@ -350,7 +353,7 @@ measurement work.
 
 ## Installation Status
 
-The current public beta baseline is `v0.6.0-beta.3`, with pinned package-index
+The current package-index beta baseline is `v0.6.0-beta.3`, with pinned package
 install spec `code-mower==0.6.0b3`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. The public repository is
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), and
@@ -413,7 +416,9 @@ first so local work exercises the same package entrypoint users install.
 - [Launch Command Surface](docs/launch-command-surface.md)
 - [v0.6 Truth Baseline](docs/v06-truth-baseline.md)
 - [v0.6 Release Notes](docs/v06-release-notes.md)
+- [Post-v0.8 Effectiveness Assessment](docs/post-v08-effectiveness-assessment.md)
 - [Demo Calibration Example](examples/demo-calibration/README.md)
+- [Board Demo Rehearsal](examples/board-demo/README.md)
 - [PyPI Release Runbook](docs/pypi-release.md)
 - [Sample Doctor Output](docs/sample-doctor-output.md)
 - [Architecture](docs/architecture.md)
