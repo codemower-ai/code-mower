@@ -26,20 +26,18 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current package-index beta baseline is `v0.6.0-beta.3`, with pinned package
-install spec `code-mower==0.6.0b3`. Release evidence is recorded on the GitHub
+The current package-index beta baseline is `v0.8.0-beta.1`, with pinned package
+install spec `code-mower==0.8.0b1`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. It is intended to be installed
 from the package index for friendly-user pilots, with GitHub tag/source installs
 kept as a fallback and development path.
 
-The v0.7/v0.8 source line has landed on `main` and is awaiting the next package
-beta before package-only adopters should rely on it. That source line adds the
-Python 3.12+ runtime contract, pipx/uv install matrix, hosted-builder and
-orchestrator-only doctor postures, non-expiring dispatch-token diagnostics,
-native redacted lane status, the local Board, Board history and admin commands,
-spend/verdict timelines, owner queue, optional metadata-only agent cards,
-explicit cloud Board snapshots, the CodeMower.com Board mirror, and a public
-Board demo rehearsal. See
+The v0.8 package beta adds the Python 3.12+ runtime contract, pipx/uv install
+matrix, hosted-builder and orchestrator-only doctor postures, non-expiring
+dispatch-token diagnostics, native redacted lane status, the local Board, Board
+history and admin commands, spend/verdict timelines, owner queue, optional
+metadata-only agent cards, explicit cloud Board snapshots, the CodeMower.com
+Board mirror, and a public Board demo rehearsal. See
 [Post-v0.8 Effectiveness Assessment](post-v08-effectiveness-assessment.md) for
 the dogfood assessment and lane-readiness interpretation.
 
@@ -413,8 +411,8 @@ leaving room for future orchestrator adapters.
 
 ## Near-Term Roadmap
 
-1. Package the completed v0.7/v0.8 source line as the next beta, then verify the
-   exact package install from a clean environment before announcement.
+1. Keep the v0.8 package beta install path verified from PyPI, and mark the
+   newest beta GitHub release as Latest until a stable 1.0 line exists.
 2. Run one cold-repo adoption rehearsal from the published package: install,
    `init --easy`, `doctor --adoption`, `lanes status`, `board serve`, one tiny
    audited PR, and optional metadata-only cloud upload.

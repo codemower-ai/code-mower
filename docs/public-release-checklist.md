@@ -11,18 +11,17 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha/beta releases and reports its version with
   `code-mower --version`.
-- The current package-index beta entrypoint is `code-mower==0.6.0b3`, with
+- The current package-index beta entrypoint is `code-mower==0.8.0b1`, with
   `code-mower doctor --adoption --repo OWNER/REPO` as the human-facing
   first-run setup diagnostic and `code-mower lanes status --repo OWNER/REPO`
   as the operator snapshot. The corresponding GitHub tag is
-  `v0.6.0-beta.3`; `doctor --preflight` and `doctor --v05` remain
+  `v0.8.0-beta.1`; `doctor --preflight` and `doctor --v05` remain
   compatibility presets for scripts.
-- The v0.7/v0.8 source line has landed on `main`: Python 3.12+ install
-  hardening, hosted-builder doctor postures, non-expiring token diagnostics,
-  native redacted lane status, local Board, Board history, spend/verdict
-  timelines, owner queue, optional metadata-only agent cards, Board doctor,
-  Board reset, and the public Board demo rehearsal. Cut and rehearse a new beta
-  before asking package-only adopters to rely on that source-line behavior.
+- The v0.8 package beta includes Python 3.12+ install hardening,
+  hosted-builder doctor postures, non-expiring token diagnostics, native
+  redacted lane status, local Board, Board history, spend/verdict timelines,
+  owner queue, optional metadata-only agent cards, Board doctor, Board reset,
+  and the public Board demo rehearsal.
 - The README now shows a shortened `doctor --adoption --repo OWNER/REPO`
   example so fresh users can see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and

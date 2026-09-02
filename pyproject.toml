@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-mower"
-version = "0.6.0b3"
+version = "0.8.0b1"
 description = "Multi-reviewer AI code audit orchestration"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -13,8 +13,10 @@ dependencies = ["PyYAML>=6.0"]
 
 [project.optional-dependencies]
 test = [
+    "build>=1.2",
     "pytest>=8.0",
     "ruff>=0.8",
+    "twine>=5.0",
 ]
 
 [project.scripts]

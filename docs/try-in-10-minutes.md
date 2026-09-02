@@ -20,11 +20,11 @@ paths. The laptop path is:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
 code-mower --version
 ```
 
-`0.6.0b3` is a beta release. To follow the newest beta line instead of
+`0.8.0b1` is a beta release. To follow the newest beta line instead of
 pinning this exact build:
 
 ```bash
@@ -199,7 +199,7 @@ virtual environment, run:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.6.0b3 \
+  --package-spec code-mower==0.8.0b1 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -211,7 +211,7 @@ repo's native checks.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.6.0b3 \
+  --package-spec code-mower==0.8.0b1 \
   --repo-path /path/to/repo \
   --python "$(command -v python3.12)" \
   --json

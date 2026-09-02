@@ -29,10 +29,10 @@ candidates until more repositories and more adjudicated findings are captured.
 
 ## What Should Be Better
 
-- **Cut a release for the completed source line.** The public package baseline
-  is still `v0.6.0-beta.3` / `code-mower==0.6.0b3` until the next beta is
-  tagged and published. The native Board work is merged on `main`, but it is
-  not available to package-only adopters until release.
+- **Keep release verification routine.** The public package baseline is
+  `v0.8.0-beta.1` / `code-mower==0.8.0b1`; each beta should continue to prove
+  the PyPI install path, first-user rehearsal, local Board, and metadata-only
+  cloud checks before it is announced.
 - **Use more builders in live dogfood.** The v0.7/v0.8 implementation PRs were
   overwhelmingly Codex-authored. That was fast, but it does not yet compare
   Claude Code, Cursor/Grok Bot, Devin, or Antigravity as builders on equal
@@ -68,7 +68,7 @@ reviewer-gate pilot, adoption diagnostics, and local visibility before
 promotion. It is not yet ready to be marketed as an unattended autonomous merge
 system for arbitrary teams.
 
-The next release should package the v0.7/v0.8 source line, run one cold-repo
-adoption rehearsal from the published package, and deliberately route a few
-small follow-up issues through non-Codex builders and informational reviewers
-so promotion decisions are based on measured evidence rather than enthusiasm.
+The next release should keep running a cold-repo adoption rehearsal from the
+published package and deliberately route a few small follow-up issues through
+non-Codex builders and informational reviewers so promotion decisions are based
+on measured evidence rather than enthusiasm.
