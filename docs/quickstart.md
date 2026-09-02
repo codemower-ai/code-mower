@@ -352,6 +352,8 @@ an explicit `--port` fails with a friendly conflict instead. The printed URL is
 local to that machine or VM unless you create your own tunnel. `lanes status`
 discovers local Board listeners best-effort across common macOS and Linux tools;
 if listener inventory is restricted, GitHub PR/check status still reports.
+Visible Board timestamps render in the browser's local timezone and keep the
+original UTC value in hover text for precise handoffs.
 When you want the Recent Local History panel to fill while the board is open,
 start it explicitly with:
 

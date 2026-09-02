@@ -99,6 +99,9 @@ class BoardTests(TestCase):
         self.assertIn("Reviewer Verdict Timeline", html)
         self.assertIn("Spend And Latency", html)
         self.assertIn("const href", html)
+        self.assertIn("const localTime", html)
+        self.assertIn("Intl.DateTimeFormat(undefined", html)
+        self.assertIn('title="UTC ', html)
         self.assertNotIn("AgentTrail", html)
 
     def test_render_board_html_escapes_script_terminators(self) -> None:
