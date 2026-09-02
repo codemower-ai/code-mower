@@ -42,15 +42,16 @@ Code Mower should feel like an engineering tool, not a demo harness:
 
 ## What It Looks Like
 
-`code-mower doctor --preflight` is the first useful command. It checks your
-runtime, GitHub setup, provider CLIs, token posture, optional cloud setup, and
-private-repo Actions cost traps. `--preflight` is the friendly first-run preset;
-`doctor --v05` remains an equivalent compatibility alias for older scripts.
+`code-mower doctor --adoption --repo OWNER/REPO` is the first useful command
+for a real repository. It checks your runtime, GitHub setup, provider CLIs,
+token posture, optional cloud setup, private-repo Actions cost traps, and
+first-run adoption gaps. `--preflight` remains the compatibility preset for
+older scripts; `--adoption` adds explicit repo targeting and setup guidance.
 
 Example, shortened:
 
 ```text
-$ code-mower doctor --preflight
+$ code-mower doctor --adoption --repo OWNER/REPO
 PASS  config.validate             config validates
 PASS  profile.select              selected profile: codex, claude_audit, gitar
 PASS  runtime.python              Python 3.12 satisfies Code Mower requirements
@@ -97,7 +98,7 @@ observable.
 
 | Path | Use When | Route | Guide |
 | --- | --- | --- | --- |
-| A. Reviewer gate in 10 minutes | You want one audited PR before recurring workflows or builder dispatch. | Install, run `init --easy`, run `doctor --preflight`, open a small setup PR, run Codex and Claude audits, then merge manually when the audit evidence is clean. | [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md) |
+| A. Reviewer gate in 10 minutes | You want one audited PR before recurring workflows or builder dispatch. | Install, run `init --easy`, run `doctor --adoption --repo OWNER/REPO`, open a small setup PR, run Codex and Claude audits, then merge manually when the audit evidence is clean. | [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md) |
 | B. Build loop in 30 minutes | You want builders plus an orchestrator pattern after the reviewer gate works. | Complete path A, then add the automation token, require `code-mower/gate` from Any source, enable repository auto-merge, prove the self-hosted Mac lane runner with `doctor --runner`, run `init --builders`, and dispatch the first issue. | [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md) |
 | C. Builder experiment | You want to compare authoring loops before trusting them broadly. | Use a work order or experiment spec, run `code-mower builder-experiment run` around an explicit command, then review the source-free `authoringRun` artifact and normal audit evidence. | [Builder Experiments](docs/builder-experiments.md) |
 
@@ -294,7 +295,7 @@ engineer can:
 
 1. install Code Mower in a clean repo;
 2. understand the local/cloud trust boundary;
-3. run `init --easy` and `doctor --preflight`;
+3. run `init --easy` and `doctor --adoption --repo OWNER/REPO`;
 4. run `lanes status --repo OWNER/REPO` to see active lanes and gate state;
 5. detect and run the repo's native lint/test/build surface instead of assuming
    every project uses the same tools;

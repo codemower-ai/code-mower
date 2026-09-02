@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,7 +6,12 @@ from unittest import mock
 
 from code_mower.doctor_checks import (
     build_doctor_run_plan,
+    check_adoption_setup,
+    config_with_repository_target,
+    detect_repo_slug,
     default_check_group_ids,
+    normalize_repo_slug,
+    repo_slug_from_remote,
     run_doctor,
 )
 
@@ -16,7 +22,7 @@ class DoctorRegistryTests(unittest.TestCase):
     def test_default_check_groups_stay_stable(self) -> None:
         self.assertEqual(
             default_check_group_ids(),
-            ("runtime", "github", "providers", "cloud", "output"),
+            ("runtime", "setup", "github", "providers", "cloud", "output"),
         )
 
     def test_run_plan_enables_optional_stages_explicitly(self) -> None:
@@ -47,6 +53,78 @@ class DoctorRegistryTests(unittest.TestCase):
             {"runner"},
         )
 
+        adoption_plan = build_doctor_run_plan(adoption=True)
+        self.assertEqual(
+            tuple(stage.id for stage in adoption_plan),
+            ("load-inputs", "select-profile", "runtime", "providers", "adoption"),
+        )
+        self.assertEqual(
+            {stage.id for stage in adoption_plan if stage.optional},
+            {"adoption"},
+        )
+
+    def test_repo_slug_helpers_support_adoption_targeting(self) -> None:
+        self.assertEqual(
+            repo_slug_from_remote("git@github.com:codemower-ai/code-mower.git"),
+            "codemower-ai/code-mower",
+        )
+        self.assertEqual(
+            repo_slug_from_remote("ssh://git@github.com/codemower-ai/code-mower.git"),
+            "codemower-ai/code-mower",
+        )
+        self.assertEqual(
+            normalize_repo_slug(" codemower-ai/code-mower "),
+            "codemower-ai/code-mower",
+        )
+        with self.assertRaisesRegex(ValueError, "OWNER/REPO"):
+            normalize_repo_slug("codemower-ai")
+
+    def test_repo_override_preserves_matching_repo_metadata(self) -> None:
+        config = {
+            "repositories": [
+                {
+                    "slug": "owner/first",
+                    "default_branch": "main",
+                    "local_path_env": "FIRST_REPO_PATH",
+                },
+                {
+                    "slug": "owner/second",
+                    "default_branch": "develop",
+                    "local_path_env": "SECOND_REPO_PATH",
+                },
+            ],
+        }
+
+        targeted = config_with_repository_target(config, "owner/second")
+
+        self.assertEqual(
+            targeted["repositories"],
+            [
+                {
+                    "slug": "owner/second",
+                    "default_branch": "develop",
+                    "local_path_env": "SECOND_REPO_PATH",
+                }
+            ],
+        )
+
+    def test_adoption_warns_when_inferred_repo_disagrees_with_config(self) -> None:
+        checks = check_adoption_setup(
+            config={"repositories": [{"slug": "owner/configured"}]},
+            config_path=ROOT / "code-mower.yml",
+            adoption=True,
+            repo_slug="owner/from-remote",
+            repo_source="git_remote",
+            using_packaged_example=False,
+        )
+
+        mismatch = next(
+            check for check in checks if check.name == "doctor.adoption.repo_mismatch"
+        )
+        self.assertEqual(mismatch.status, "warn")
+        self.assertEqual(mismatch.detail["inferred_repository"], "owner/from-remote")
+        self.assertEqual(mismatch.detail["configured_repositories"], ["owner/configured"])
+
     def test_runner_emits_sanitized_run_plan_check_even_when_inputs_fail(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
@@ -75,6 +153,76 @@ class DoctorRegistryTests(unittest.TestCase):
             tuple(stage["id"] for stage in report.as_dict()["run_plan"]),
             ("load-inputs", "select-profile", "runtime", "providers", "github", "cloud"),
         )
+
+    def test_adoption_repo_overrides_packaged_example_repository(self) -> None:
+        report = run_doctor(
+            config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
+            provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
+            profile="recommended",
+            repo_slug="codemower-ai/example-adopter",
+            repo_source="explicit",
+            adoption=True,
+        )
+
+        repo_check = next(check for check in report.checks if check.name == "doctor.repo")
+        self.assertEqual(repo_check.status, "pass")
+        self.assertEqual(repo_check.detail["repo"], "codemower-ai/example-adopter")
+
+        source_check = next(
+            check for check in report.checks if check.name == "doctor.adoption.config_source"
+        )
+        self.assertEqual(source_check.status, "warn")
+        self.assertEqual(source_check.detail["configured_repositories"], ["owner/example"])
+        self.assertEqual(
+            source_check.detail["effective_repository"],
+            "codemower-ai/example-adopter",
+        )
+
+        posture_check = next(
+            check for check in report.checks if check.name == "config.repositories"
+        )
+        self.assertEqual(
+            posture_check.detail["repositories"],
+            ["codemower-ai/example-adopter"],
+        )
+
+    def test_packaged_example_config_source_is_explicit_without_adoption_mode(self) -> None:
+        report = run_doctor(
+            config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
+            provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
+            profile="recommended",
+        )
+
+        source_check = next(
+            check for check in report.checks if check.name == "doctor.adoption.config_source"
+        )
+        self.assertEqual(source_check.status, "warn")
+        self.assertEqual(source_check.detail["configured_repositories"], ["owner/example"])
+
+        self.assertFalse(
+            any(check.name == "doctor.adoption.trusted_authors" for check in report.checks)
+        )
+
+    def test_adoption_infers_repo_from_origin_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            subprocess.run(["git", "init", "-q"], cwd=root_path, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.com/codemower-ai/adoption-target.git",
+                ],
+                cwd=root_path,
+                check=True,
+            )
+
+            self.assertEqual(
+                detect_repo_slug(root_path),
+                "codemower-ai/adoption-target",
+            )
 
     def test_packaged_example_config_does_not_require_installed_stale_workflow(self) -> None:
         report = run_doctor(

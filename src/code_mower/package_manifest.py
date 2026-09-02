@@ -74,6 +74,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_context_packs.py", "src/code_mower/code_mower_context_packs.py", "core"),
     ("tools/code_mower_doctor.py", "src/code_mower/doctor.py", "core"),
     ("src/code_mower/doctor_checks/__init__.py", "src/code_mower/doctor_checks/__init__.py", "core"),
+    ("src/code_mower/doctor_checks/adoption.py", "src/code_mower/doctor_checks/adoption.py", "core"),
     ("src/code_mower/doctor_checks/audit_limits.py", "src/code_mower/doctor_checks/audit_limits.py", "core"),
     ("src/code_mower/doctor_checks/cloud.py", "src/code_mower/doctor_checks/cloud.py", "core"),
     ("src/code_mower/doctor_checks/common.py", "src/code_mower/doctor_checks/common.py", "core"),

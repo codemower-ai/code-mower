@@ -75,6 +75,7 @@ class DoctorBoundaryTests(unittest.TestCase):
 
     def test_doctor_check_modules_are_explicit_package_seams(self) -> None:
         expected_modules = (
+            "code_mower.doctor_checks.adoption",
             "code_mower.doctor_checks.cloud",
             "code_mower.doctor_checks.github",
             "code_mower.doctor_checks.github_actions",

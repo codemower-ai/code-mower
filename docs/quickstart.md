@@ -266,15 +266,15 @@ shows `"app_id": 15368`, remove and re-add the required check from Any source.
 Now run the preflight:
 
 ```bash
-code-mower doctor --preflight --json
+code-mower doctor --adoption --repo OWNER/REPO --json
 ```
 
-`doctor --preflight` is the recommended early-adopter preset for GitHub auth,
+`doctor --adoption` is the recommended early-adopter preset for GitHub auth,
 Python/runtime checks, provider CLI probes, private-repo caveats, Actions cost
 diagnostics, branch-protection source, repository auto-merge, human automation
-token metadata, and optional cloud-token setup. It is equivalent to the
-versioned `doctor --v05` preset. Use `--strict` only when warnings should fail
-a bootstrap job. For auth-specific doctor failures, see
+token metadata, optional cloud-token setup, and first-run setup gaps such as
+starter config or missing owner/trusted-author posture. Use `--strict` only
+when warnings should fail a bootstrap job. For auth-specific doctor failures, see
 [Troubleshooting](troubleshooting.md).
 
 When setup is visible enough to start work, use one command to check live lane
@@ -427,7 +427,7 @@ events. It omits branch names and commit SHAs by default; add
 
 One repository is ready for broader Code Mower use when:
 
-- `doctor --preflight` has no unexplained failures.
+- `doctor --adoption --repo OWNER/REPO` has no unexplained failures.
 - Codex and Claude can both run local audits.
 - A small PR can be reviewed manually without recurring workflows.
 - Private-repo GitHub Actions cost is understood.

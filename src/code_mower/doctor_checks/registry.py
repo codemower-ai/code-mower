@@ -27,6 +27,7 @@ class DoctorCheckStage:
 
 DEFAULT_CHECK_GROUPS = (
     DoctorCheckGroup("runtime", "Python, package, and local toolchain checks"),
+    DoctorCheckGroup("setup", "First-run adoption and repository targeting checks"),
     DoctorCheckGroup("github", "GitHub auth, workflow, and private-repo cost checks"),
     DoctorCheckGroup("providers", "Reviewer provider CLI and secret checks"),
     DoctorCheckGroup("cloud", "Optional CodeMower.com token and service checks"),
@@ -59,6 +60,12 @@ OPTIONAL_DOCTOR_STAGES = (
         "Inspect a self-hosted macOS local audit runner",
         optional=True,
     ),
+    DoctorCheckStage(
+        "adoption",
+        "setup",
+        "Inspect first-run adoption posture and selected repository target",
+        optional=True,
+    ),
 )
 
 
@@ -71,10 +78,16 @@ def build_doctor_run_plan(
     github: bool = False,
     cloud: bool = False,
     runner: bool = False,
+    adoption: bool = False,
 ) -> tuple[DoctorCheckStage, ...]:
     """Return the named stages that a doctor run will execute."""
 
     stages = list(BASE_DOCTOR_STAGES)
-    optional_flags = {"github": github, "cloud": cloud, "runner": runner}
+    optional_flags = {
+        "github": github,
+        "cloud": cloud,
+        "runner": runner,
+        "adoption": adoption,
+    }
     stages.extend(stage for stage in OPTIONAL_DOCTOR_STAGES if optional_flags.get(stage.id, False))
     return tuple(stages)

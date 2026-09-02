@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from code_mower import config as code_mower_config
 
+from .adoption import check_adoption_setup, config_with_repository_target
 from .audit_limits import check_effective_audit_limits
 from .cloud import check_cloud_token_surface
 from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
@@ -79,6 +80,9 @@ def run_doctor(
     config_path: Path,
     provider_templates_path: Path,
     profile: str | None,
+    repo_slug: str = "",
+    repo_source: str = "",
+    adoption: bool = False,
     probe_runtime: bool = False,
     github: bool = False,
     cloud: bool = False,
@@ -87,13 +91,31 @@ def run_doctor(
     actions_cost_sample: int = ACTIONS_COST_SAMPLE_DEFAULT,
     actionlint_bin: str = "actionlint",
 ) -> DoctorReport:
-    plan = build_doctor_run_plan(github=github, cloud=cloud, runner=runner)
+    plan = build_doctor_run_plan(
+        github=github,
+        cloud=cloud,
+        runner=runner,
+        adoption=adoption or bool(repo_slug),
+    )
     enabled_stages = {stage.id for stage in plan}
     # `doctor --easy` can inspect the packaged example before a repo has written
     # code-mower.yml. In that mode the example should teach the user about stale
     # guards without failing because product workflow files are not installed yet.
     repo_root = None if config_path.name == "code-mower.example.yml" else config_path.parent
     config, templates, checks = load_inputs(config_path, provider_templates_path)
+    using_packaged_example = config_path.name == "code-mower.example.yml"
+    checks.extend(
+        check_adoption_setup(
+            config=config,
+            config_path=config_path,
+            adoption=adoption,
+            repo_slug=repo_slug,
+            repo_source=repo_source,
+            using_packaged_example=using_packaged_example,
+        )
+    )
+    if config is not None and repo_slug:
+        config = config_with_repository_target(config, repo_slug)
     checks.append(
         _run_plan_check(
             plan,
