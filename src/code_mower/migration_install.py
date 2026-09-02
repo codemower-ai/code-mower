@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from .git_identity import scratch_git_config_commands
+
 MIRRORED_IMPLEMENTATION_PATTERNS = (
     "tools/code_mower_*.py",
     "tools/*_audit_pr.py",
@@ -239,27 +241,8 @@ def _write_public_rehearsal_toy_repo(
         )
         return
     _run_rehearsal_step([git, "init", "-q"], cwd=toy_repo, env=env, steps=steps, timeout=timeout)
-    _run_rehearsal_step(
-        [git, "config", "user.name", "Code Mower Rehearsal"],
-        cwd=toy_repo,
-        env=env,
-        steps=steps,
-        timeout=timeout,
-    )
-    _run_rehearsal_step(
-        [git, "config", "user.email", "rehearsal@example.com"],
-        cwd=toy_repo,
-        env=env,
-        steps=steps,
-        timeout=timeout,
-    )
-    _run_rehearsal_step(
-        [git, "config", "commit.gpgSign", "false"],
-        cwd=toy_repo,
-        env=env,
-        steps=steps,
-        timeout=timeout,
-    )
+    for command in scratch_git_config_commands(git):
+        _run_rehearsal_step(list(command), cwd=toy_repo, env=env, steps=steps, timeout=timeout)
     (toy_repo / "README.md").write_text(
         "# Code Mower package-install rehearsal\n",
         encoding="utf-8",

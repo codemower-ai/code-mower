@@ -149,6 +149,22 @@ from typing import Any
 
 
 DEFAULT_CODE_MOWER_BIN = \"__CODE_MOWER_CONSOLE_SCRIPT__\"
+SCRATCH_GIT_USER_NAME_FALLBACK = \"Code Mower Scratch\"
+SCRATCH_GIT_USER_EMAIL_FALLBACK = \"code-mower-scratch@example.com\"
+
+
+def _scratch_git_identity() -> tuple[str, str]:
+    source_root = Path(__file__).resolve().parents[1] / \"src\"
+    if source_root.is_dir() and str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
+    try:
+        from code_mower.git_identity import (
+            SCRATCH_GIT_USER_EMAIL,
+            SCRATCH_GIT_USER_NAME,
+        )
+    except ModuleNotFoundError:
+        return SCRATCH_GIT_USER_NAME_FALLBACK, SCRATCH_GIT_USER_EMAIL_FALLBACK
+    return SCRATCH_GIT_USER_NAME, SCRATCH_GIT_USER_EMAIL
 
 
 def _run(
@@ -225,9 +241,10 @@ def run_smoke(*, code_mower_bin: Path, work_dir: Path) -> dict[str, Any]:
 
     git = shutil.which(\"git\")
     if git:
+        scratch_name, scratch_email = _scratch_git_identity()
         _run([git, \"init\", \"-q\"], cwd=toy_repo, env=env)
-        _run([git, \"config\", \"user.name\", \"Code Mower Smoke\"], cwd=toy_repo, env=env)
-        _run([git, \"config\", \"user.email\", \"smoke@example.com\"], cwd=toy_repo, env=env)
+        _run([git, \"config\", \"user.name\", scratch_name], cwd=toy_repo, env=env)
+        _run([git, \"config\", \"user.email\", scratch_email], cwd=toy_repo, env=env)
         _run([git, \"config\", \"commit.gpgSign\", \"false\"], cwd=toy_repo, env=env)
     (toy_repo / \"README.md\").write_text(
         \"# Code Mower smoke toy repo\\n\", encoding=\"utf-8\"
