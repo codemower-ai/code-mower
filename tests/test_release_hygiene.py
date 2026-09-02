@@ -7713,6 +7713,42 @@ def main():
         self.assertIn("one writer per PR branch", install_flat)
         self.assertIn("no source, raw diffs, transcripts", install_flat)
 
+    def test_public_setup_docs_use_quiet_auth_probes(self) -> None:
+        docs = [
+            ROOT / "docs" / "build-loop-in-30-minutes.md",
+            ROOT / "docs" / "install.md",
+            ROOT / "docs" / "local-audit-runner.md",
+            ROOT / "docs" / "quickstart.md",
+            ROOT / "docs" / "self-hosted-mac-runner.md",
+            ROOT / "docs" / "troubleshooting.md",
+            ROOT / "docs" / "try-in-10-minutes.md",
+        ]
+        raw_auth_commands = {
+            "codex login status",
+            "gh auth status",
+            "claude auth status",
+        }
+
+        for path in docs:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertFalse(raw_auth_commands & {line.strip() for line in text.splitlines()})
+
+        quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+        build_loop_30 = (ROOT / "docs" / "build-loop-in-30-minutes.md").read_text(
+            encoding="utf-8",
+        )
+        self_hosted = (ROOT / "docs" / "self-hosted-mac-runner.md").read_text(
+            encoding="utf-8",
+        )
+        for text in (quickstart, build_loop_30, self_hosted):
+            self.assertIn("Do not paste raw provider auth/status output", text)
+            self.assertIn(
+                'codex login status >/dev/null 2>&1 && echo "codex auth ok" || '
+                '{ echo "codex auth NOT ready"; false; }',
+                text,
+            )
+
     def test_primary_adoption_docs_do_not_claim_python_311_support(self) -> None:
         docs = [
             ROOT / "README.md",

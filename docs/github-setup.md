@@ -436,8 +436,8 @@ Runner setup recipe:
 5. Ensure `gh`, `git`, `python3`, `codex`, and `claude` are on PATH. If they
    live outside the default Homebrew/system paths, update
    `CODE_MOWER_LOCAL_AUDIT_PATH` in the generated workflow.
-6. Verify local auth from that same account: `gh auth status`,
-   `codex --version`, `claude auth status`, and
+6. Verify local auth from that same account: `gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }`,
+   `codex --version`, `claude auth status >/dev/null 2>&1 && echo "claude auth ok" || { echo "claude auth NOT ready"; false; }`, and
    `claude -p "Reply with exactly: ok" --output-format json`.
 7. Set the repository variable named by
    `owner_surface.local_audit_runner_enabled_var` to `true` only after the

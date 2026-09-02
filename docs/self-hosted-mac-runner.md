@@ -114,10 +114,10 @@ code-mower doctor --runner
 Verify auth from a runner job or from the same service user environment:
 
 ```bash
-gh auth status
-codex login status
+gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
+codex login status >/dev/null 2>&1 && echo "codex auth ok" || { echo "codex auth NOT ready"; false; }
 codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
-claude auth status
+claude auth status >/dev/null 2>&1 && echo "claude auth ok" || { echo "claude auth NOT ready"; false; }
 claude -p "Reply with exactly: ok" --output-format json
 ```
 
@@ -126,9 +126,13 @@ or private `.env`, then load it into the setup shell and run:
 
 ```bash
 printf '%s\n' "$OPENAI_API_KEY" | codex login --with-api-key
-codex login status
+codex login status >/dev/null 2>&1 && echo "codex auth ok" || { echo "codex auth NOT ready"; false; }
 codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
 ```
+
+Do not paste raw provider auth/status output into issues, pull requests, chats,
+or logs. Use quiet probes like these or `code-mower doctor --runner` so account
+and credential-adjacent details stay local.
 
 `claude auth status` is not enough by itself. The prompt smoke is the useful
 signal because login-keychain or inherited-env failures often appear only when

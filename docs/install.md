@@ -206,7 +206,7 @@ Code Mower is GitHub-first. Verify `gh` before running repository diagnostics:
 
 ```bash
 gh auth login -h github.com -s repo,workflow,read:org
-gh auth status
+gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
 gh repo view OWNER/REPO
 ```
 

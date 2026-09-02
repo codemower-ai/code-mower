@@ -11,7 +11,7 @@ requests still fail with `401 Invalid authentication credentials`. Code Mower
 therefore treats the real prompt smoke as the useful signal:
 
 ```bash
-claude auth status
+claude auth status >/dev/null 2>&1 && echo "claude auth ok" || { echo "claude auth NOT ready"; false; }
 claude -p "Reply with exactly: ok" --output-format json
 ```
 
@@ -116,7 +116,7 @@ export PIPX_LOG_DIR="$CODE_MOWER_AGENT_TOOLS/logs"
 Verify the GitHub CLI independently:
 
 ```bash
-gh auth status
+gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
 gh repo view OWNER/REPO --json nameWithOwner,visibility
 ```
 
