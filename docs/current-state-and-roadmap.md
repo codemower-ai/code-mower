@@ -26,18 +26,21 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current package-index beta baseline is `v0.8.0-beta.1`, with pinned package
-install spec `code-mower==0.8.0b1`. Release evidence is recorded on the GitHub
+The current package-index beta baseline is `v0.9.0-beta.1`, with pinned package
+install spec `code-mower==0.9.0b1`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. It is intended to be installed
 from the package index for friendly-user pilots, with GitHub tag/source installs
 kept as a fallback and development path.
 
-The v0.8 package beta adds the Python 3.12+ runtime contract, pipx/uv install
-matrix, hosted-builder and orchestrator-only doctor postures, non-expiring
-dispatch-token diagnostics, native redacted lane status, the local Board, Board
-history and admin commands, spend/verdict timelines, owner queue, optional
-metadata-only agent cards, explicit cloud Board snapshots, the CodeMower.com
-Board mirror, and a public Board demo rehearsal. See
+The v0.9 package beta keeps the Python 3.12+ runtime contract, pipx/uv install
+matrix, non-expiring dispatch-token diagnostics, native redacted lane status,
+the local Board, Board history and admin commands, spend/verdict timelines,
+owner queue, optional metadata-only agent cards, explicit cloud Board snapshots,
+the CodeMower.com Board mirror, and a public Board demo rehearsal. It adds Board
+multi-instance handling, setup drift reporting, quieter hosted-builder and
+orchestrator-only doctor postures, truth-preserving unavailable/warn states,
+current Codex CLI smoke flags, clearer install/upgrade docs, and explicit
+package-index rehearsal opt-ins. See
 [Post-v0.8 Effectiveness Assessment](post-v08-effectiveness-assessment.md) for
 the dogfood assessment and lane-readiness interpretation.
 
@@ -121,8 +124,8 @@ The beta line has proved:
 - a friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- the current public PyPI package-install rehearsal from `v0.8.0-beta.1` /
-  `code-mower==0.8.0b1` with a
+- the current public PyPI package-install rehearsal from `v0.9.0-beta.1` /
+  `code-mower==0.9.0b1` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout. The earlier beta.52 package rehearsal remains
@@ -258,7 +261,7 @@ operator-issued developer/team token when they opt into cloud sharing.
 
 ## Current Early-Adopter Goal
 
-The current v0.8 beta is the shareable package line for 20-50 early OSS users
+The current v0.9 beta is the shareable package line for 20-50 early OSS users
 who can follow a guide without knowing the original reference repos.
 
 The early-adopter experience should be:
@@ -412,7 +415,7 @@ leaving room for future orchestrator adapters.
 
 ## Near-Term Roadmap
 
-1. Keep the v0.8 package beta install path verified from PyPI, and mark the
+1. Keep the v0.9 package beta install path verified from PyPI, and mark the
    newest beta GitHub release as Latest until a stable 1.0 line exists.
 2. Run one cold-repo adoption rehearsal from the published package: install,
    `init --easy`, `doctor --adoption`, `lanes status`, `board serve`, one tiny
