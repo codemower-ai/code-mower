@@ -14,6 +14,7 @@ from code_mower.cloud_client import (
     CloudBundleError,
     DEFAULT_SETUP_INSTALL_ID,
     EVENT_SCHEMA,
+    build_board_snapshot_event,
     build_provenance_summary,
     build_provider_catalog_snapshot_events,
     build_cloud_bundle,
@@ -34,6 +35,99 @@ from code_mower.cloud_client import (
     validate_cloud_event,
 )
 from code_mower import cloud as cloud_cli
+
+
+def _board_snapshot_fixture() -> dict[str, object]:
+    return {
+        "schema": "code_mower.laneStatus.v1",
+        "repo": "owner/repo",
+        "generated_at": "2026-09-02T12:00:00Z",
+        "next_action": "ready for merge or auto-merge",
+        "board": {"schema": "code_mower.board.v1"},
+        "remote": {
+            "available": True,
+            "pull_requests": [
+                {
+                    "number": 7,
+                    "title": "sensitive local PR title",
+                    "url": "https://github.com/owner/repo/pull/7",
+                    "branch": "codex/board",
+                    "author": "codex-bot",
+                    "is_draft": False,
+                    "merge_state": "CLEAN",
+                    "updated_at": "2026-09-02T12:00:00Z",
+                    "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
+                    "labels": {"builder": ["builder:codex"], "done": ["claude-audit-done"]},
+                    "checks": [{"name": "code-mower/gate", "state": "success"}],
+                    "stale": False,
+                    "next_action": "ready for merge or auto-merge",
+                    "gate_rerun_command": "gh workflow run code-mower-gate.yml --repo owner/repo",
+                }
+            ],
+            "workflow_runs": [
+                {
+                    "id": 77,
+                    "workflow": "Code Mower gate",
+                    "title": "internal workflow title",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "event": "pull_request",
+                    "branch": "codex/board",
+                    "updated_at": "2026-09-02T12:00:00Z",
+                    "url": "https://github.com/owner/repo/actions/runs/77",
+                }
+            ],
+            "gate_health": {"status": "pass", "alerts": []},
+        },
+        "owner_queue": {
+            "entries": [
+                {
+                    "kind": "needs-owner",
+                    "title": "private owner note",
+                    "priority": 0,
+                    "pr_number": 7,
+                    "branch": "codex/board",
+                    "author": "codex-bot",
+                    "updated_at": "2026-09-02T12:00:00Z",
+                    "head_sha_prefix": "abcdef012345",
+                    "next_action": "owner decision",
+                    "labels": ["needs-owner"],
+                }
+            ]
+        },
+        "agent_adapters": {
+            "agents": [
+                {
+                    "provider": "codex",
+                    "role": "builder",
+                    "status": "running",
+                    "lane": "builder:codex",
+                    "pr_number": 7,
+                    "pid": 999,
+                    "cwd": "/tmp/private/checkout",
+                    "title": "private prompt fragment",
+                    "next_action": "awaiting peer audit",
+                }
+            ]
+        },
+        "timelines": {
+            "verdicts": {"entries": [{"lane": "claude-audit", "verdict": "PASS"}]},
+            "spend": {
+                "available": True,
+                "groups": [
+                    {
+                        "lane": "claude-audit",
+                        "verdict": "PASS",
+                        "runs": 1,
+                        "wall_seconds_total": 12.5,
+                        "wall_seconds_avg": 12.5,
+                        "cost_usd_total": 0.125,
+                        "total_tokens": 1000,
+                    }
+                ],
+            },
+        },
+    }
 
 
 def test_cloud_catch_up_summary_separates_history_from_calibration() -> None:
@@ -322,6 +416,137 @@ def test_cloud_event_boundary_rejects_secret_like_value() -> None:
         assert "secret-like value" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected secret-like metadata rejection")
+
+
+def test_board_snapshot_event_summarizes_without_local_private_fields() -> None:
+    event = build_board_snapshot_event(
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        source="unit-test",
+        snapshot=_board_snapshot_fixture(),
+    )
+
+    serialized = json.dumps(event)
+    assert event["schema"] == EVENT_SCHEMA
+    assert event["event_type"] == "board_snapshot"
+    assert event["provider"] == "code-mower"
+    assert event["lens"] == "board"
+    assert event["metrics"]["open_pr_count"] == 1
+    assert event["metrics"]["owner_queue_count"] == 1
+    assert event["metrics"]["agent_card_count"] == 1
+    assert event["dimensions"]["snapshot_schema"] == "code_mower.cloudBoardSnapshot.v1"
+    assert event["dimensions"]["pull_requests"][0]["head_sha_prefix"] == "abcdef012345"
+    assert event["dimensions"]["agent_cards"][0]["provider"] == "codex"
+    assert event["dimensions"]["timelines"]["spend_groups"][0]["total_tokens"] == 1000
+    assert "sensitive local PR title" not in serialized
+    assert "private owner note" not in serialized
+    assert "private prompt fragment" not in serialized
+    assert "gate_rerun_command" not in serialized
+    assert "/tmp/private/checkout" not in serialized
+    assert "pid" not in serialized
+    assert "abcdef0123456789abcdef" not in serialized
+
+
+def test_board_snapshot_event_keeps_local_cards_when_github_unavailable() -> None:
+    event = build_board_snapshot_event(
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        source="unit-test",
+        snapshot={
+            "schema": "code_mower.laneStatus.v1",
+            "repo": "owner/repo",
+            "generated_at": "2026-09-02T12:00:00Z",
+            "next_action": "waiting for remote status",
+            "board": {"schema": "code_mower.board.v1"},
+            "remote": {"available": False},
+            "agent_adapters": {
+                "agents": [
+                    {
+                        "provider": "claude",
+                        "role": "reviewer",
+                        "status": "running",
+                        "lane": "claude-audit",
+                        "cwd": "local-private-checkout",
+                        "pid": 12345,
+                    }
+                ]
+            },
+            "timelines": {"spend": {"available": False}},
+        },
+    )
+
+    serialized = json.dumps(event)
+    assert event["dimensions"]["remote_available"] is False
+    assert event["metrics"]["open_pr_count"] == 0
+    assert event["metrics"]["agent_card_count"] == 1
+    assert event["dimensions"]["agent_cards"][0]["provider"] == "claude"
+    assert "local-private-checkout" not in serialized
+    assert '"pid"' not in serialized
+
+
+def test_board_snapshot_upload_dry_run_exports_one_metadata_event(monkeypatch, tmp_path) -> None:
+    fixture = _board_snapshot_fixture()
+    timelines = fixture["timelines"]
+    fixture_without_timelines = dict(fixture)
+    fixture_without_timelines.pop("timelines")
+    monkeypatch.setattr(cloud_operations.board, "status_payload", lambda _config: fixture_without_timelines)
+    monkeypatch.setattr(cloud_operations.board, "timelines_payload", lambda _config: timelines)
+
+    result = cloud_operations.board_snapshot_upload(
+        repo_path=tmp_path,
+        output_dir=tmp_path / "board-snapshot",
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        source="unit-test",
+        endpoint="http://localhost:3000/api/ingest",
+        token_env="CODE_MOWER_TEST_BOARD_TOKEN",
+        yes=False,
+        timeout=0.1,
+    )
+
+    payload = build_upload_payload(bundle_dir=tmp_path / "board-snapshot")
+    assert result["status"] == "dry_run"
+    assert result["event_count"] == 1
+    assert result["export"]["event_types"] == {"board_snapshot": 1}
+    assert result["upload"]["event_types"] == {"board_snapshot": 1}
+    assert result["upload"]["report_count"] == 0
+    assert payload["events"][0]["event_type"] == "board_snapshot"
+
+
+def test_board_snapshot_upload_posts_with_explicit_yes(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cloud_operations.board, "status_payload", lambda _config: _board_snapshot_fixture())
+    monkeypatch.setattr(cloud_operations.board, "timelines_payload", lambda _config: {})
+    monkeypatch.setenv("CODE_MOWER_TEST_BOARD_TOKEN", "cmw_live_board_secret")
+    captured: dict[str, object] = {}
+
+    def fake_post_upload_payload(**kwargs):
+        captured["token"] = kwargs["token"]
+        captured["payload"] = kwargs["payload"]
+        return {"mode": "cloud-upload", "status": 200, "response": {"ok": True}}
+
+    monkeypatch.setattr(cloud_operations, "post_upload_payload", fake_post_upload_payload)
+
+    result = cloud_operations.board_snapshot_upload(
+        repo_path=tmp_path,
+        output_dir=tmp_path / "board-snapshot",
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        source="unit-test",
+        endpoint="https://codemower.com/api/ingest",
+        token_env="CODE_MOWER_TEST_BOARD_TOKEN",
+        yes=True,
+        timeout=0.1,
+    )
+
+    serialized = json.dumps(result)
+    assert result["status"] == "uploaded"
+    assert captured["token"] == "cmw_live_board_secret"
+    assert captured["payload"]["events"][0]["event_type"] == "board_snapshot"
+    assert "cmw_live_board_secret" not in serialized
 
 
 def test_cloud_repo_slug_from_remote_supports_common_github_forms() -> None:
@@ -1225,6 +1450,7 @@ def test_cloud_repo_sync_data_class_summary_separates_sources() -> None:
 
 def test_cloud_py_keeps_legacy_operation_aliases() -> None:
     assert cloud_cli._dogfood_upload is dogfood_upload
+    assert cloud_cli._board_snapshot_upload is cloud_operations.board_snapshot_upload
     assert cloud_cli._repo_sync_output_name("owner/repo", Path("/tmp/repo"), 0) == "owner--repo-1"
 
 

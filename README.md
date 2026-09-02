@@ -94,6 +94,9 @@ publish opt-in status cards by writing metadata-only JSON files to
 does not upload those cards.
 The local JSON contracts are documented in
 [Board Data Contract](docs/board-data-contract.md).
+When a team wants the same operator picture on CodeMower.com, run
+`code-mower cloud board-snapshot --repo-slug OWNER/REPO --json` to inspect a
+zero-report, metadata-only mirror event, then add `--yes` only after review.
 
 ## See The Value Shape First
 
@@ -263,6 +266,9 @@ code-mower cloud dogfood --json
 ```
 
 Nothing uploads unless you pass `--yes`.
+For the hosted Board mirror specifically,
+`code-mower cloud board-snapshot --repo-slug OWNER/REPO --json` exports one
+metadata-only event and zero reports; add `--yes` to upload it after inspection.
 
 Current dogfood uploads, historical catch-up imports, and calibrated
 reviewer/lens evidence are intentionally separate. Imported GitHub Actions

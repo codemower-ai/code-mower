@@ -52,7 +52,7 @@ def _role_for_event_type(event_type: str) -> str:
         return "reviewer"
     if event_type == "workflow_run":
         return "workflow"
-    if event_type == "dogfood_upload":
+    if event_type in {"board_snapshot", "dogfood_upload"}:
         return "reporter"
     if event_type == "lane_policy_snapshot":
         return "policy"

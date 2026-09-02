@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from .. import board
 from .. import code_mower_telemetry
 from .. import reviewer_spend
 from .bundle import MAX_EVENT_COUNT
@@ -13,6 +14,7 @@ from .dogfood import build_dogfood_dry_run_preview, build_dogfood_plan, default_
 from .endpoints import is_local_http_endpoint
 from .errors import CloudBundleError
 from .events import (
+    build_board_snapshot_event,
     build_dogfood_event,
     build_provider_catalog_snapshot_events,
     build_workflow_run_event,
@@ -212,6 +214,128 @@ def _merge_reviewer_spend_events(
         return merged
     remaining = max(0, MAX_EVENT_COUNT - len(merged))
     return [*merged, *unmatched[:remaining]]
+
+
+def board_snapshot_upload(
+    *,
+    repo_path: Path,
+    output_dir: Path,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+    endpoint: str,
+    token_env: str,
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
+    store_path: Path | None = None,
+    spend_path: Path | None = None,
+    agent_adapters_path: Path | None = None,
+    pr_limit: int = 50,
+    workflow_limit: int = 20,
+    stale_minutes: int = 30,
+    event_limit: int = 20,
+    yes: bool,
+    timeout: float,
+) -> dict[str, Any]:
+    repo_path = repo_path.expanduser().resolve()
+    detected_repo_slug = repo_slug or detect_repo_slug(repo_path)
+    if not detected_repo_slug:
+        raise CloudBundleError(
+            "unable to detect repo slug; pass --repo-slug OWNER/REPO"
+        )
+    token_resolution, resolved_endpoint = _resolve_upload_profile(
+        endpoint=endpoint,
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    resolved_team_id, resolved_install_id = resolve_cloud_identity(
+        team_id=team_id,
+        install_id=install_id,
+        resolution=token_resolution,
+    )
+    config = board.BoardConfig(
+        repo=detected_repo_slug,
+        repo_path=str(repo_path),
+        store_path=str(store_path) if store_path else None,
+        spend_path=str(spend_path) if spend_path else None,
+        agent_adapters_path=str(agent_adapters_path) if agent_adapters_path else None,
+        pr_limit=pr_limit,
+        workflow_limit=workflow_limit,
+        stale_minutes=stale_minutes,
+        event_limit=event_limit,
+    )
+    snapshot = board.status_payload(config)
+    snapshot["timelines"] = board.timelines_payload(config)
+    event = build_board_snapshot_event(
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        source=source,
+        snapshot=snapshot,
+    )
+    export_result = build_cloud_bundle(
+        reports=[],
+        events=[event],
+        output_dir=output_dir,
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        anonymous=False,
+    )
+    doctor_result = run_cloud_doctor(
+        bundle_dir=output_dir,
+        endpoint=resolved_endpoint,
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+        require_token=yes,
+    )
+    if doctor_result["failures"]:
+        return {
+            "mode": "cloud-board-snapshot",
+            "status": "doctor_failed",
+            "repo_slug": detected_repo_slug,
+            "event_count": 1,
+            "export": export_result,
+            "doctor": doctor_result,
+        }
+    payload = build_upload_payload(bundle_dir=output_dir, include_reports=False)
+    if not yes:
+        return {
+            "mode": "cloud-board-snapshot",
+            "status": "dry_run",
+            "repo_slug": detected_repo_slug,
+            "event_count": 1,
+            "export": export_result,
+            "doctor": doctor_result,
+            "upload": build_dogfood_dry_run_preview(
+                endpoint=resolved_endpoint,
+                payload=payload,
+            ),
+        }
+    token = require_upload_token(
+        endpoint=resolved_endpoint,
+        resolution=token_resolution,
+        local_endpoint=is_local_http_endpoint(resolved_endpoint),
+    )
+    return {
+        "mode": "cloud-board-snapshot",
+        "status": "uploaded",
+        "repo_slug": detected_repo_slug,
+        "event_count": 1,
+        "export": export_result,
+        "doctor": doctor_result,
+        "upload": post_upload_payload(
+            payload=payload,
+            endpoint=resolved_endpoint,
+            token=token,
+            timeout=timeout,
+        ),
+    }
 
 
 def dogfood_upload(

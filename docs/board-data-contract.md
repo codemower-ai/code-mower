@@ -37,6 +37,10 @@ board's `/api/status` response. It summarizes PRs that need operator attention.
 the board's `/api/status` response. It reads opt-in metadata files from
 `.code-mower/board/agents/*.json` by default.
 
+`code_mower.cloudBoardSnapshot.v1` is the summarized cloud mirror event
+dimension schema emitted only by the explicit
+`code-mower cloud board-snapshot --repo-slug OWNER/REPO` command.
+
 All board schemas are metadata-only. They must not contain source code, raw diffs,
 transcripts, issue body text, raw stdout/stderr, auth output, browser history,
 local secret values, or secrets.
@@ -233,8 +237,18 @@ contracts documented in
 `code_mower.cloudUpload.v1` bundles and `code_mower.benchmarkEvent.v1`
 structured events.
 
-Any future dashboard mirror of board/status data must land as a paired OSS and
-dashboard change: update this document, update
-[Cloud Data Contract](cloud-data-contract.md), keep the hosted service
-backward-compatible with v0.6/v0.7 uploads, and preserve the metadata-only
-privacy boundary.
+The explicit `code-mower cloud board-snapshot --repo-slug OWNER/REPO --json`
+command exports one summarized `board_snapshot` event with zero reports. Adding
+`--yes` uploads the same metadata-only summary for the CodeMower.com Board
+mirror. The cloud snapshot keeps only whitelisted fields such as PR numbers,
+branches, authors, label/check groups, workflow status, owner-queue kinds, agent
+card provider/role/status, verdict counts, and spend group totals. It omits the
+full local Board payload, PR titles, owner note titles, local cwd paths, PIDs,
+full head SHAs, gate rerun commands, source, raw diffs, transcripts, issue body
+text, raw stdout/stderr, auth output, browser history, local secret values, and
+secrets.
+
+Any future dashboard mirror expansion must land as a paired OSS and dashboard
+change: update this document, update [Cloud Data Contract](cloud-data-contract.md),
+keep the hosted service backward-compatible with v0.6/v0.7 uploads, and
+preserve the metadata-only privacy boundary.

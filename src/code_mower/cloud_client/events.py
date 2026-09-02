@@ -17,7 +17,14 @@ from code_mower.providers import (
     normalize_tool_provenance,
 )
 
-from .bundle import MAX_EVENT_COUNT, SAFE_EVENT_TYPES, SAFE_REPORT_KINDS, validate_metadata_payload
+from .bundle import (
+    EXCLUDED_CONTENT,
+    MAX_EVENT_COUNT,
+    SAFE_EVENT_TYPES,
+    SAFE_REPORT_KINDS,
+    UNSAFE_METADATA_VALUE_PATTERNS,
+    validate_metadata_payload,
+)
 from .dogfood import DogfoodPlan
 from .errors import CloudBundleError
 from .git_metadata import run_git
@@ -314,6 +321,231 @@ def _optional_number(value: Any) -> float | int | None:
     if isinstance(value, int | float):
         return value
     return None
+
+
+def _int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return int(value)
+    return None
+
+
+def _safe_dimension_text(value: object, *, max_length: int = 160) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    if any(pattern.search(text) for pattern in UNSAFE_METADATA_VALUE_PATTERNS):
+        return "[redacted]"
+    return text[:max_length]
+
+
+def _safe_url(value: object) -> str:
+    text = _safe_dimension_text(value, max_length=300)
+    return text if text.startswith(("https://", "http://")) else ""
+
+
+def _safe_labels(value: object) -> dict[str, list[str]]:
+    labels = value if isinstance(value, Mapping) else {}
+    safe: dict[str, list[str]] = {}
+    for key in ("builder", "dispatched", "needs", "done", "blocked"):
+        raw_items = labels.get(key)
+        if not isinstance(raw_items, list):
+            continue
+        items = [_safe_dimension_text(item, max_length=80) for item in raw_items]
+        safe[key] = [item for item in items if item]
+    return safe
+
+
+def _safe_checks(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    checks = []
+    for item in value[:8]:
+        check = item if isinstance(item, Mapping) else {}
+        name = _safe_dimension_text(check.get("name"), max_length=120)
+        state = _safe_dimension_text(check.get("state"), max_length=40)
+        if name or state:
+            checks.append({"name": name or "check", "state": state or "unknown"})
+    return checks
+
+
+def _is_present_metadata(value: object) -> bool:
+    return value not in ("", None) and value != [] and value != {}
+
+
+def _safe_pr_summary(value: object) -> dict[str, Any]:
+    pr = value if isinstance(value, Mapping) else {}
+    summary: dict[str, Any] = {
+        "number": _int(pr.get("number")) or 0,
+        "url": _safe_url(pr.get("url")),
+        "branch": _safe_dimension_text(pr.get("branch"), max_length=120),
+        "author": _safe_dimension_text(pr.get("author"), max_length=80),
+        "is_draft": bool(pr.get("is_draft")),
+        "merge_state": _safe_dimension_text(pr.get("merge_state"), max_length=40),
+        "updated_at": _safe_dimension_text(pr.get("updated_at"), max_length=80),
+        "head_sha_prefix": _safe_dimension_text(pr.get("head_sha"), max_length=80)[:12],
+        "labels": _safe_labels(pr.get("labels")),
+        "checks": _safe_checks(pr.get("checks")),
+        "stale": bool(pr.get("stale")),
+        "next_action": _safe_dimension_text(pr.get("next_action"), max_length=120),
+    }
+    return {key: item for key, item in summary.items() if _is_present_metadata(item)}
+
+
+def _safe_owner_item(value: object) -> dict[str, Any]:
+    item = value if isinstance(value, Mapping) else {}
+    summary: dict[str, Any] = {
+        "kind": _safe_dimension_text(item.get("kind"), max_length=60),
+        "priority": _int(item.get("priority")) or 0,
+        "pr_number": _int(item.get("pr_number")) or 0,
+        "url": _safe_url(item.get("url")),
+        "branch": _safe_dimension_text(item.get("branch"), max_length=120),
+        "author": _safe_dimension_text(item.get("author"), max_length=80),
+        "updated_at": _safe_dimension_text(item.get("updated_at"), max_length=80),
+        "head_sha_prefix": _safe_dimension_text(item.get("head_sha_prefix"), max_length=80)[:12],
+        "next_action": _safe_dimension_text(item.get("next_action"), max_length=120),
+    }
+    if labels := item.get("labels"):
+        summary["labels"] = [
+            label
+            for label in (_safe_dimension_text(label, max_length=80) for label in labels if isinstance(label, str))
+            if label
+        ][:8]
+    if checks := item.get("checks"):
+        summary["checks"] = [
+            check
+            for check in (_safe_dimension_text(check, max_length=120) for check in checks if isinstance(check, str))
+            if check
+        ][:8]
+    return {key: data for key, data in summary.items() if _is_present_metadata(data)}
+
+
+def _safe_agent_card(value: object) -> dict[str, Any]:
+    card = value if isinstance(value, Mapping) else {}
+    summary: dict[str, Any] = {
+        "provider": _safe_dimension_text(card.get("provider"), max_length=40),
+        "role": _safe_dimension_text(card.get("role"), max_length=40),
+        "status": _safe_dimension_text(card.get("status"), max_length=40),
+        "lane": _safe_dimension_text(card.get("lane"), max_length=80),
+        "label": _safe_dimension_text(card.get("label"), max_length=80),
+        "repo": _safe_dimension_text(card.get("repo"), max_length=120),
+        "branch": _safe_dimension_text(card.get("branch"), max_length=120),
+        "pr_number": _int(card.get("pr_number")),
+        "issue_number": _int(card.get("issue_number")),
+        "head_sha_prefix": _safe_dimension_text(card.get("head_sha_prefix"), max_length=80)[:12],
+        "url": _safe_url(card.get("url")),
+        "started_at": _safe_dimension_text(card.get("started_at"), max_length=80),
+        "updated_at": _safe_dimension_text(card.get("updated_at"), max_length=80),
+        "next_action": _safe_dimension_text(card.get("next_action"), max_length=120),
+    }
+    return {key: item for key, item in summary.items() if _is_present_metadata(item)}
+
+
+def _safe_workflow_run(value: object) -> dict[str, Any]:
+    run = value if isinstance(value, Mapping) else {}
+    summary: dict[str, Any] = {
+        "id": _int(run.get("id")),
+        "workflow": _safe_dimension_text(run.get("workflow"), max_length=120),
+        "status": _safe_dimension_text(run.get("status"), max_length=40),
+        "conclusion": _safe_dimension_text(run.get("conclusion"), max_length=40),
+        "event": _safe_dimension_text(run.get("event"), max_length=80),
+        "branch": _safe_dimension_text(run.get("branch"), max_length=120),
+        "updated_at": _safe_dimension_text(run.get("updated_at"), max_length=80),
+        "url": _safe_url(run.get("url")),
+    }
+    return {key: item for key, item in summary.items() if _is_present_metadata(item)}
+
+
+def _safe_spend_groups(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    groups = []
+    for item in value[:20]:
+        group = item if isinstance(item, Mapping) else {}
+        groups.append(
+            {
+                "lane": _safe_dimension_text(group.get("lane"), max_length=80),
+                "verdict": _safe_dimension_text(group.get("verdict"), max_length=40),
+                "runs": _int(group.get("runs")) or 0,
+                "wall_seconds_total": _optional_number(group.get("wall_seconds_total")),
+                "wall_seconds_avg": _optional_number(group.get("wall_seconds_avg")),
+                "cost_usd_total": _optional_number(group.get("cost_usd_total")),
+                "total_tokens": _int(group.get("total_tokens")) or 0,
+            }
+        )
+    return groups
+
+
+def build_board_snapshot_event(
+    *,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    remote = _as_mapping(snapshot.get("remote"))
+    board_meta = _as_mapping(snapshot.get("board"))
+    owner_queue = _as_mapping(snapshot.get("owner_queue"))
+    agent_adapters = _as_mapping(snapshot.get("agent_adapters"))
+    timelines = _as_mapping(snapshot.get("timelines"))
+    gate_health = _as_mapping(remote.get("gate_health"))
+    prs = remote.get("pull_requests") if isinstance(remote.get("pull_requests"), list) else []
+    runs = remote.get("workflow_runs") if isinstance(remote.get("workflow_runs"), list) else []
+    owner_entries = owner_queue.get("entries") if isinstance(owner_queue.get("entries"), list) else []
+    agent_cards = agent_adapters.get("agents") if isinstance(agent_adapters.get("agents"), list) else []
+    verdict_entries = _as_mapping(timelines.get("verdicts")).get("entries")
+    spend = _as_mapping(timelines.get("spend"))
+    spend_groups = spend.get("groups") if isinstance(spend.get("groups"), list) else []
+    verdict_count = len(verdict_entries) if isinstance(verdict_entries, list) else 0
+    event = {
+        "schema": EVENT_SCHEMA,
+        "event_id": str(uuid.uuid4()),
+        "event_type": "board_snapshot",
+        "created_at": _safe_dimension_text(snapshot.get("generated_at"), max_length=80) or utc_now(),
+        "repo_slug": repo_slug,
+        "team_id": team_id,
+        "install_id": install_id,
+        "source": source,
+        "provider": "code-mower",
+        "lens": "board",
+        "status": "observed",
+        "tool": build_code_mower_tool_provenance(
+            source=source,
+            version=__version__,
+            role="reporter",
+        ),
+        "metrics": {
+            "open_pr_count": len(prs),
+            "workflow_run_count": len(runs),
+            "gate_alert_count": len(gate_health.get("alerts") or []),
+            "owner_queue_count": len(owner_entries),
+            "agent_card_count": len(agent_cards),
+            "verdict_count": verdict_count,
+            "spend_group_count": len(spend_groups),
+        },
+        "dimensions": {
+            "snapshot_schema": "code_mower.cloudBoardSnapshot.v1",
+            "lane_status_schema": _safe_dimension_text(snapshot.get("schema"), max_length=80),
+            "board_schema": _safe_dimension_text(board_meta.get("schema"), max_length=80),
+            "generated_at": _safe_dimension_text(snapshot.get("generated_at"), max_length=80),
+            "next_action": _safe_dimension_text(snapshot.get("next_action"), max_length=120),
+            "remote_available": bool(remote.get("available")),
+            "gate_status": _safe_dimension_text(gate_health.get("status"), max_length=40),
+            "pull_requests": [_safe_pr_summary(pr) for pr in prs[:50]],
+            "workflow_runs": [_safe_workflow_run(run) for run in runs[:20]],
+            "owner_queue": [_safe_owner_item(item) for item in owner_entries[:50]],
+            "agent_cards": [_safe_agent_card(card) for card in agent_cards[:50]],
+            "timelines": {
+                "verdict_count": verdict_count,
+                "spend_available": bool(spend.get("available")),
+                "spend_groups": _safe_spend_groups(spend_groups),
+            },
+            "privacy_excluded_content": list(EXCLUDED_CONTENT),
+        },
+    }
+    return validate_cloud_event(event)
 
 
 def _authoring_run_event_id(value: Mapping[str, Any]) -> str:

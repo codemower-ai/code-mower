@@ -7437,6 +7437,11 @@ def main():
         self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", board_contract)
         self.assertIn("code-mower board record --repo OWNER/REPO", launch_surface)
         self.assertIn("code-mower board events", launch_surface)
+        self.assertIn("code-mower cloud board-snapshot --repo-slug OWNER/REPO --json", readme)
+        self.assertIn("code-mower cloud board-snapshot --repo-slug OWNER/REPO --json", quickstart)
+        self.assertIn("code-mower cloud board-snapshot --repo-slug OWNER/REPO --json", launch_surface)
+        self.assertIn("code-mower cloud board-snapshot --repo-slug OWNER/REPO --json", board_contract)
+        self.assertIn("code-mower cloud board-snapshot --repo-slug OWNER/REPO --json", cloud_contract)
         self.assertIn("owner queue", readme_flat)
         self.assertIn("owner queue", quickstart_flat)
         self.assertIn("reviewer verdict history and spend/latency", readme_flat)
@@ -7469,6 +7474,11 @@ def main():
 
         board_flat = " ".join(board_contract.split())
         cloud_flat = " ".join(cloud_contract.split())
+        self.assertIn("board_snapshot", cloud_contract)
+        self.assertIn("zero reports", cloud_flat)
+        self.assertIn("zero reports", board_flat)
+        self.assertIn("code_mower.cloudBoardSnapshot.v1", board_contract)
+        self.assertIn("code_mower.cloudBoardSnapshot.v1", cloud_contract)
         for text in (board_flat, cloud_flat):
             self.assertIn("local-only", text)
             self.assertIn("not uploaded by default", text)
