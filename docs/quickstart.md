@@ -37,10 +37,16 @@ For hosted agents or CI boxes without pipx:
 ```bash
 uv python install 3.12
 uv tool install --python 3.12 code-mower==0.8.0b1
+code-mower --version
 ```
 
 For a Code Mower source checkout, use `scripts/dev-python` and the editable
 venv path documented in [Install And Bootstrap](install.md#contributor-checkout).
+
+For upgrades, do not assume the command on `PATH` changed. Run
+`command -v code-mower` and `code-mower --version` before and after reinstall,
+and follow [Cold Install Vs Upgrade](install.md#cold-install-vs-upgrade) when
+moving between pipx and uv.
 
 If `code-mower` is not on your path:
 
@@ -79,7 +85,17 @@ Verify Codex:
 
 ```bash
 codex --version
-codex "Reply with exactly: ok"
+codex login status
+codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
+```
+
+For non-interactive runner or hosted-agent auth, load the API key from a secret
+store and pipe it into Codex without printing it:
+
+```bash
+printf '%s\n' "$OPENAI_API_KEY" | codex login --with-api-key
+codex login status
+codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
 ```
 
 Verify Claude:

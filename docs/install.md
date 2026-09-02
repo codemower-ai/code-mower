@@ -11,6 +11,36 @@ agent, then verify the installed command before touching a repository.
 | Hosted agent, CI box, or minimal Linux VM | `uv tool install` | The machine already uses uv, lacks pipx, or should avoid changing shell startup files. |
 | Code Mower contributor checkout | editable venv | You are changing Code Mower itself and need tests against this checkout. |
 
+## Cold Install Vs Upgrade
+
+A cold install means this machine does not already have the `code-mower`
+command on `PATH`. Pick one install path from the matrix, install the pinned
+package, then verify both the command path and version:
+
+```bash
+command -v code-mower
+code-mower --version
+```
+
+An upgrade means `code-mower` already exists. Before changing it, record the
+current command path and version, then choose whether this machine should keep
+using the same installer or switch installers:
+
+```bash
+command -v code-mower
+code-mower --version
+```
+
+For an existing repository with older generated files, inspect setup drift
+before copying new generated output into the repo:
+
+```bash
+code-mower migration setup-drift --repo-path . --json
+```
+
+The drift report is read-only and metadata-only. It classifies generated setup
+paths without including file contents or diffs.
+
 ## Laptop Or Workstation
 
 Install with pipx and an explicit Python 3.12+ interpreter:
@@ -35,6 +65,27 @@ To follow the newest prerelease instead of the pinned friendly-user beta:
 pipx install --python "$CODE_MOWER_PYTHON" --pip-args="--pre" code-mower
 ```
 
+To replace an existing pipx install with an exact beta, use `--force` so the
+old venv cannot keep serving the previous package:
+
+```bash
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
+code-mower --version
+```
+
+For sandboxed agents that need pipx but should not write to the normal user
+tool directories, set pipx directories explicitly before installing:
+
+```bash
+export CODE_MOWER_AGENT_TOOLS="${RUNNER_TEMP:-$HOME/.cache}/code-mower-tools"
+export PIPX_HOME="$CODE_MOWER_AGENT_TOOLS/pipx"
+export PIPX_BIN_DIR="$CODE_MOWER_AGENT_TOOLS/bin"
+export PIPX_LOG_DIR="$CODE_MOWER_AGENT_TOOLS/logs"
+mkdir -p "$PIPX_HOME" "$PIPX_BIN_DIR" "$PIPX_LOG_DIR"
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
+"$PIPX_BIN_DIR/code-mower" --version
+```
+
 ## Hosted Agent, CI Box, Or Minimal Linux VM
 
 Use uv when the environment does not have pipx or should stay isolated from the
@@ -48,6 +99,34 @@ code-mower --version
 
 If the uv tool directory is not on `PATH`, use uv's printed path hint or run the
 installed command directly from the uv tool bin directory for that session.
+
+To replace an existing uv tool install with an exact beta:
+
+```bash
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.8.0b1
+code-mower --version
+```
+
+## Switching Between pipx And uv
+
+Avoid leaving two different `code-mower` commands competing on `PATH`. If this
+machine should switch from pipx to uv, first record the current path/version,
+then uninstall or stop using the old command:
+
+```bash
+command -v code-mower
+code-mower --version
+pipx uninstall code-mower
+uv python install 3.12
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.8.0b1
+hash -r
+command -v code-mower
+code-mower --version
+```
+
+If the old pipx command must stay for another agent, call the uv-installed
+binary by its absolute path or adjust only that agent's `PATH`. Do not change a
+shared workstation install while another builder owns an active PR branch.
 
 ## Release Rehearsal Installs
 

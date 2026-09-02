@@ -126,6 +126,31 @@ class ReleaseHygieneTests(unittest.TestCase):
             self.assertNotIn("--ask-for-approval", text, msg=str(path))
             self.assertIn("codex login --with-api-key", text, msg=str(path))
 
+    def test_install_and_upgrade_docs_cover_agent_paths(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        install = (ROOT / "docs/install.md").read_text(encoding="utf-8")
+        quickstart = (ROOT / "docs/quickstart.md").read_text(encoding="utf-8")
+        try_in_10 = (ROOT / "docs/try-in-10-minutes.md").read_text(encoding="utf-8")
+        troubleshooting = (ROOT / "docs/troubleshooting.md").read_text(encoding="utf-8")
+
+        self.assertIn("Cold Install Vs Upgrade", install)
+        self.assertIn("Switching Between pipx And uv", install)
+        self.assertIn("uv tool install --python 3.12 --reinstall --refresh-package", install)
+        self.assertIn("pipx uninstall code-mower", install)
+        for env_name in ("PIPX_HOME", "PIPX_BIN_DIR", "PIPX_LOG_DIR"):
+            self.assertIn(env_name, install)
+            self.assertIn(env_name, troubleshooting)
+        self.assertIn("| Hosted agent, CI box, or minimal Linux VM |", try_in_10)
+        self.assertIn("command -v code-mower", readme)
+        self.assertIn("command -v code-mower", quickstart)
+        self.assertIn("codex login --with-api-key", quickstart)
+        self.assertIn("codex exec --skip-git-repo-check --sandbox read-only", quickstart)
+        self.assertIn("Board URL Does Not Open From Another Machine", troubleshooting)
+        self.assertIn(
+            "local to that laptop, runner, VM, or hosted-agent container",
+            " ".join(troubleshooting.split()),
+        )
+
     def test_ruff_static_rule_stage_is_intentional(self) -> None:
         pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
