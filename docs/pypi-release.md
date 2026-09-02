@@ -5,7 +5,7 @@ and wheel distributions, verifies them with `twine check`, and can publish to
 TestPyPI or production PyPI through trusted publishing.
 
 ```bash
-pipx install --python python3.12 code-mower==0.6.0b3
+pipx install --python python3.12 code-mower==0.8.0b1
 ```
 
 ## Current Status
@@ -85,7 +85,7 @@ same artifact download path used by the optional PyPI publish job, then runs
 For beta releases, keep release metadata honest:
 
 ```bash
-gh release view v0.6.0-beta.3 \
+gh release view v0.8.0-beta.1 \
   --repo codemower-ai/code-mower \
   --json tagName,isPrerelease
 gh api repos/codemower-ai/code-mower/releases/latest \
@@ -136,7 +136,7 @@ For pipx:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
 code-mower --version
 ```
 
@@ -144,7 +144,7 @@ For uv:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.6.0b3
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.8.0b1
 code-mower --version
 ```
 
@@ -170,7 +170,7 @@ For production PyPI verification:
 ```bash
 python3.12 -m venv /tmp/code-mower-pypi-smoke
 /tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
-/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==0.6.0b3
+/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==0.8.0b1
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
@@ -178,7 +178,7 @@ Then run the release-gate first-user rehearsal against the same package:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.6.0b3 \
+  --package-spec code-mower==0.8.0b1 \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -226,7 +226,7 @@ The primary README command should stay on an explicit beta version until a
 stable `1.0` line exists:
 
 ```bash
-pipx install --python python3.12 code-mower==0.6.0b3
+pipx install --python python3.12 code-mower==0.8.0b1
 ```
 
 Do not switch to unpinned `pipx install code-mower` until:

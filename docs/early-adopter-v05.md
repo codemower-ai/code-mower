@@ -125,7 +125,8 @@ Cut a v0.5 alpha or beta only after:
 - release workflow builds source/wheel distributions, and PyPI publishing is
   either configured or explicitly called out as the next friction-reduction
   milestone;
-- alpha/beta GitHub releases are marked as prereleases;
+- newest beta GitHub releases are marked as regular releases with beta wording,
+  so GitHub's `/releases/latest` endpoint resolves for early adopters;
 - docs are sufficient for a new user;
 - cloud export and dry-run upload are tested;
 - codemower.com can receive an ingest payload;
@@ -137,7 +138,7 @@ Cut a v0.5 alpha or beta only after:
 
 ## Current Beta
 
-`v0.6.0-beta.3` is the current friendly-user beta. It keeps the
+`v0.8.0-beta.1` is the current friendly-user beta. It keeps the
 local-first package path from alpha.1, the cloud doctor service-readiness check
 from alpha.5, the hardened provider-auth doctor diagnostics needed for
 early-adopter troubleshooting, the dogfood dry-run path that feeds the
@@ -147,7 +148,7 @@ It also adds a first-user readiness scorecard to the package-install rehearsal
 so install, doctor, report, and cloud dry-run privacy gates can be checked at a
 glance, and it carries provider/model/version provenance through cloud bundles
 so CodeMower.com can separate benchmark-grade evidence from operational
-dogfood. The current beta also adds the v0.6 provider-contract hardening queue,
+dogfood. The current beta also carries the provider-contract hardening queue,
 the `code-mower lanes status` operator snapshot, Antigravity/Gemini lane
 separation, builder-experiment metadata capture, and the hosted Cursor lane id
 as `cursor` while accepting legacy `grok-bot` inputs during the migration

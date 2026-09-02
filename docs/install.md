@@ -18,7 +18,7 @@ Install with pipx and an explicit Python 3.12+ interpreter:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
 code-mower --version
 ```
 
@@ -42,7 +42,7 @@ interactive shell profile:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 code-mower==0.6.0b3
+uv tool install --python 3.12 code-mower==0.8.0b1
 code-mower --version
 ```
 
@@ -59,7 +59,7 @@ For pipx:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
 code-mower --version
 ```
 
@@ -67,7 +67,7 @@ For uv:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.6.0b3
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.8.0b1
 code-mower --version
 ```
 
@@ -95,7 +95,7 @@ old system Python shims cannot enter the release path:
 ```bash
 scripts/dev-python --version
 scripts/dev-python -m venv .venv
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install -e ".[test]"
 .venv/bin/code-mower --version
 ```
 

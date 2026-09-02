@@ -1,3 +1,3 @@
 """Code Mower package."""
 
-__version__ = "0.6.0b3"
+__version__ = "0.8.0b1"

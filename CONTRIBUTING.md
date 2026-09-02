@@ -9,7 +9,7 @@ Use Python 3.12 or newer. CI exercises Python 3.12, 3.13, and 3.14.
 ```bash
 python3.12 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e . ruff
+.venv/bin/python -m pip install -e ".[test]"
 ```
 
 ## Local Checks
