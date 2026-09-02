@@ -60,8 +60,11 @@ agent card adapters use `code_mower.boardAgentAdapters.v1` from
 not cloud upload data.
 
 Current board/status JSON and local board event-store data are local-only and
-are not uploaded by default. A future CodeMower.com mirror must land as a paired
-OSS and dashboard change, update both this contract and
+are not uploaded by default. The explicit
+`code-mower cloud board-snapshot --repo-slug OWNER/REPO --json` command exports
+one summarized `board_snapshot` event with zero report text; adding `--yes`
+uploads that metadata-only summary. Any future dashboard mirror expansion must
+land as a paired OSS and dashboard change, update both this contract and
 [Board Data Contract](board-data-contract.md), keep the hosted service
 backward-compatible with v0.6/v0.7 uploads, and preserve the metadata-only
 boundary: no source, raw diffs, transcripts, issue body text, raw stdout/stderr,
@@ -83,6 +86,7 @@ Supported event types include:
 - `provider_catalog_snapshot`
 - `work_order`
 - `workflow_run`
+- `board_snapshot`
 
 Events may include provider/lens names, timing, cost, verdict, useful finding
 counts, false-positive counts, repository slug, install id, and coarse runtime
@@ -118,6 +122,19 @@ intervention count. They exist so CodeMower.com can connect
 `issue -> plan -> work order -> builder run -> PR -> reviewer checks -> merge`
 without receiving source, issue bodies, diffs, prompts, transcripts,
 stdout/stderr, auth output, or secrets.
+
+`board_snapshot` events are explicit CodeMower.com Board mirror metadata. They
+use `dimensions.snapshot_schema=code_mower.cloudBoardSnapshot.v1`, include zero
+reports, and summarize the local Board/status surface into whitelisted
+metadata: repository, generated time, next action, remote availability, gate
+status, PR number/branch/author/draft/merge/check/label summaries, workflow run
+summaries, owner-queue reason summaries, opt-in agent card summaries, and
+verdict/spend group counts. The uploader intentionally does not send the full
+local Board payload, PR titles, owner note titles, local cwd paths, PIDs, full
+head SHAs, gate rerun commands, source, raw diffs, transcripts, issue body
+text, raw stdout/stderr, auth output, browser history, local secret values, or
+secrets. The event type is additive and optional, so CodeMower.com must continue
+accepting v0.6/v0.7 uploads that omit it.
 
 Local `code_mower.authoringRun.v1` artifacts from `builder-experiment run` may
 also be passed as `--event builder_run=PATH`. The OSS uploader converts them to

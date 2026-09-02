@@ -46,6 +46,7 @@ from .doctor import (
 from .events import (
     EVENT_SCHEMA,
     GITHUB_RUN_LIST_FIELDS,
+    build_board_snapshot_event,
     build_dogfood_event,
     build_provider_catalog_snapshot_events,
     build_workflow_run_event,
@@ -70,6 +71,7 @@ from .manifest import (
 )
 from .reports import included_report_payloads
 from .operations import (
+    board_snapshot_upload,
     catch_up_upload,
     dogfood_upload,
     parse_repo_sync_spec,
@@ -144,7 +146,9 @@ __all__ = [
     "build_workflow_run_event",
     "build_cloud_bundle",
     "build_upload_payload",
+    "build_board_snapshot_event",
     "build_provenance_summary",
+    "board_snapshot_upload",
     "catch_up_upload",
     "dashboard_url_for_endpoint",
     "default_setup_path",

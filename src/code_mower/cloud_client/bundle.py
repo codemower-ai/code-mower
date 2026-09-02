@@ -22,6 +22,7 @@ SAFE_REPORT_KINDS = {
     "value-report",
 }
 SAFE_EVENT_TYPES = {
+    "board_snapshot",
     "builder_run",
     "calibration_run",
     "dogfood_upload",

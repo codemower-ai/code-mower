@@ -335,6 +335,9 @@ events plus `.code-mower/reviewer-spend.json` when those files exist. Local
 agents can publish opt-in status cards by writing metadata-only JSON files to
 `.code-mower/board/agents/*.json`; the Board redacts local paths by default and
 does not upload those cards.
+For an explicit CodeMower.com Board mirror, use
+`code-mower cloud board-snapshot --repo-slug OWNER/REPO --json` to inspect one
+zero-report, metadata-only event. Add `--yes` only after reviewing the dry run.
 
 ## 7. Rehearse The Package Install Path
 

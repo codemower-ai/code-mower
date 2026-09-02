@@ -40,6 +40,8 @@ session. Choose the install path first from
 | `code-mower cloud upload ... --dry-run` | Preview upload payload without sending it. | no | no upload |
 | `code-mower cloud dogfood --json` | Preview routine metadata upload. | no | no upload |
 | `code-mower cloud dogfood --yes --json` | Upload sanitized metadata after explicit confirmation. | no | yes |
+| `code-mower cloud board-snapshot --repo-slug OWNER/REPO --json` | Preview a metadata-only Board mirror event with zero reports. | no | no upload |
+| `code-mower cloud board-snapshot --repo-slug OWNER/REPO --yes --json` | Upload the explicit Board mirror event after inspection. | no | yes |
 
 ## Advanced Or Operator Commands
 

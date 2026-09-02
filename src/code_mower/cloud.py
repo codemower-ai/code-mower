@@ -26,6 +26,7 @@ if __package__ in {None, ""}:
         DEFAULT_TEAM_ID_ENV,
         DEFAULT_TOKEN_ENV,
         DEFAULT_UPLOAD_ENDPOINT,
+        board_snapshot_upload as _board_snapshot_upload,
         build_cloud_bundle,
         catch_up_upload as _catch_up_upload,
         default_setup_path as _default_setup_path,
@@ -79,6 +80,7 @@ else:  # pragma: no cover - exercised after package extraction.
         DEFAULT_TEAM_ID_ENV,
         DEFAULT_TOKEN_ENV,
         DEFAULT_UPLOAD_ENDPOINT,
+        board_snapshot_upload as _board_snapshot_upload,
         build_cloud_bundle,
         catch_up_upload as _catch_up_upload,
         default_setup_path as _default_setup_path,
@@ -123,6 +125,7 @@ DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
 DEFAULT_CATCH_UP_OUTPUT_DIR = ".code-mower/cloud-catch-up-bundle"
 DEFAULT_REVIEWER_RUNS_OUTPUT_DIR = ".code-mower/reviewer-run-bundle"
 DEFAULT_REPO_SYNC_OUTPUT_DIR = ".code-mower/cloud-repo-sync"
+DEFAULT_BOARD_SNAPSHOT_OUTPUT_DIR = ".code-mower/cloud-board-snapshot-bundle"
 
 # Keep the legacy cloud.py import surface intentional while implementation
 # moves into code_mower.cloud_client modules.
@@ -140,6 +143,7 @@ __all__ = [
     "DEFAULT_CATCH_UP_OUTPUT_DIR",
     "DEFAULT_REVIEWER_RUNS_OUTPUT_DIR",
     "DEFAULT_REPO_SYNC_OUTPUT_DIR",
+    "DEFAULT_BOARD_SNAPSHOT_OUTPUT_DIR",
     "build_cloud_bundle",
     "build_upload_payload",
     "post_upload_payload",
@@ -153,6 +157,7 @@ __all__ = [
     "validate_metadata_payload",
     "write_setup_env_file",
     "main",
+    "_board_snapshot_upload",
     "_catch_up_upload",
     "_default_dogfood_reports",
     "_default_setup_path",
@@ -463,6 +468,56 @@ def main(argv: list[str] | None = None) -> int:
     )
     catch_up.add_argument("--timeout", type=float, default=20.0)
     catch_up.add_argument("--json", action="store_true")
+    board_snapshot = subparsers.add_parser("board-snapshot")
+    board_snapshot.add_argument("--repo-path", type=Path, default=Path.cwd())
+    board_snapshot.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(DEFAULT_BOARD_SNAPSHOT_OUTPUT_DIR),
+    )
+    board_snapshot.add_argument("--repo-slug", default="")
+    board_snapshot.add_argument("--team-id", default="")
+    board_snapshot.add_argument("--install-id", default="")
+    board_snapshot.add_argument("--source", default="code-mower-board-snapshot")
+    board_snapshot.add_argument("--store-path", type=Path, default=None)
+    board_snapshot.add_argument(
+        "--spend",
+        type=Path,
+        default=None,
+        help=(
+            "reviewer spend ledger to summarize; defaults to "
+            ".code-mower/reviewer-spend.json when present"
+        ),
+    )
+    board_snapshot.add_argument("--agent-adapters-path", type=Path, default=None)
+    board_snapshot.add_argument("--pr-limit", type=int, default=50)
+    board_snapshot.add_argument("--workflow-limit", type=int, default=20)
+    board_snapshot.add_argument("--stale-minutes", type=int, default=30)
+    board_snapshot.add_argument("--event-limit", type=int, default=20)
+    board_snapshot.add_argument(
+        "--endpoint",
+        default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
+    )
+    board_snapshot.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    board_snapshot.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help="token env file or raw token file to use when token env is not set",
+    )
+    board_snapshot.add_argument(
+        "--token-dir",
+        type=Path,
+        default=None,
+        help="directory with Code Mower Cloud token profiles",
+    )
+    board_snapshot.add_argument(
+        "--yes",
+        action="store_true",
+        help="perform the network upload; without this, board-snapshot is a dry run",
+    )
+    board_snapshot.add_argument("--timeout", type=float, default=20.0)
+    board_snapshot.add_argument("--json", action="store_true")
     reviewer_runs = subparsers.add_parser("reviewer-runs")
     reviewer_runs.add_argument("--repo-path", type=Path, default=Path.cwd())
     reviewer_runs.add_argument(
@@ -789,6 +844,41 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Next: {guidance.get('next_step', '')}")
                 print(f"Bundle: {result['export']['output_dir']}")
                 print(f"Events: {result['export']['event_count']}")
+                if result["status"] == "uploaded":
+                    print(f"Upload status: {result['upload']['status']}")
+                elif result["status"] == "dry_run":
+                    print("Network: skipped (pass --yes to upload)")
+            return 1 if result["status"] == "doctor_failed" else 0
+        if args.command == "board-snapshot":
+            result = _board_snapshot_upload(
+                repo_path=args.repo_path,
+                output_dir=args.output_dir,
+                repo_slug=args.repo_slug,
+                team_id=args.team_id,
+                install_id=args.install_id,
+                source=args.source,
+                endpoint=args.endpoint,
+                token_env=args.token_env,
+                token_file=args.token_file,
+                token_dir=args.token_dir,
+                store_path=args.store_path,
+                spend_path=args.spend,
+                agent_adapters_path=args.agent_adapters_path,
+                pr_limit=args.pr_limit,
+                workflow_limit=args.workflow_limit,
+                stale_minutes=args.stale_minutes,
+                event_limit=args.event_limit,
+                yes=args.yes,
+                timeout=args.timeout,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("Code Mower cloud board snapshot")
+                print(f"Status: {result['status']}")
+                print(f"Repository: {result['repo_slug']}")
+                print(f"Events: {result['event_count']}")
+                print(f"Bundle: {result['export']['output_dir']}")
                 if result["status"] == "uploaded":
                     print(f"Upload status: {result['upload']['status']}")
                 elif result["status"] == "dry_run":
