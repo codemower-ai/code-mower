@@ -290,6 +290,10 @@ token metadata, optional cloud-token setup, and first-run setup gaps such as
 starter config or missing owner/trusted-author posture. Use `--strict` only
 when warnings should fail a bootstrap job. For auth-specific doctor failures, see
 [Troubleshooting](troubleshooting.md).
+If this machine observes or dispatches hosted builders but does not run local
+Codex/Claude audits, use `--hosted-builders` or `--orchestrator-only` with
+`doctor --adoption`; those postures keep GitHub, cloud, setup, and privacy
+checks visible while marking local CLI probes skipped.
 
 When setup is visible enough to start work, use one command to check live lane
 state:

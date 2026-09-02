@@ -38,6 +38,8 @@ __all__ = [
     "selected_lanes",
 ]
 
+LOCAL_CLI_SKIP_POSTURES = {"hosted-builders", "orchestrator-only"}
+
 
 def selected_lanes(
     config: Mapping[str, Any],
@@ -109,6 +111,61 @@ def effective_lane(
     return merged
 
 
+def _skip_local_cli_checks(
+    lane_id: str,
+    lane: Mapping[str, Any],
+    *,
+    adoption_posture: str,
+) -> list[DoctorCheck]:
+    provider = str(lane.get("provider") or lane_id)
+    detail = {
+        "adoption_posture": adoption_posture,
+        "driver": "local_cli",
+        "provider": provider,
+    }
+    return [
+        DoctorCheck(
+            name="runtime.local_audit",
+            status=STATUS_SKIP,
+            lane=lane_id,
+            message=(
+                "direct local-audit wrapper checks skipped for "
+                f"{adoption_posture} posture"
+            ),
+            detail=detail,
+            remediation=(
+                "Use the default reviewer-gate posture on machines that will "
+                "run local audit wrappers."
+            ),
+        ),
+        DoctorCheck(
+            name="runtime.local_cli",
+            status=STATUS_SKIP,
+            lane=lane_id,
+            message=(
+                f"{provider} local CLI discovery skipped for "
+                f"{adoption_posture} posture"
+            ),
+            detail=detail,
+            remediation=(
+                f"Install {provider} locally and rerun doctor without "
+                "hosted-builder/orchestrator-only posture if this machine will "
+                "execute the lane."
+            ),
+        ),
+        DoctorCheck(
+            name="runtime.local_cli.probe",
+            status=STATUS_SKIP,
+            lane=lane_id,
+            message=(
+                f"{provider} local CLI probe skipped for "
+                f"{adoption_posture} posture"
+            ),
+            detail=detail,
+        ),
+    ]
+
+
 def check_lane_runtime(
     lane_id: str,
     lane: Mapping[str, Any],
@@ -117,6 +174,7 @@ def check_lane_runtime(
     repo_root: Path | None = None,
     probe_runtime: bool,
     http_timeout: int,
+    adoption_posture: str = "reviewer-gate",
 ) -> list[DoctorCheck]:
     hygiene_source = source_lane if source_lane is not None else lane
     checks = [
@@ -131,6 +189,15 @@ def check_lane_runtime(
     checks.extend(check_required_env(lane_id, lane))
     driver = str(lane.get("driver", ""))
     if driver == "local_cli":
+        if adoption_posture in LOCAL_CLI_SKIP_POSTURES:
+            checks.extend(
+                _skip_local_cli_checks(
+                    lane_id,
+                    lane,
+                    adoption_posture=adoption_posture,
+                )
+            )
+            return checks
         checks.extend(
             check_local_audit_wrapper_setup(
                 lane_id,

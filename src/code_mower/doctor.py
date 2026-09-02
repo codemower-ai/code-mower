@@ -111,6 +111,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             "explicit or inferred GitHub repository and surface setup gaps"
         ),
     )
+    posture_group = parser.add_mutually_exclusive_group()
+    posture_group.add_argument(
+        "--adoption-posture",
+        choices=("reviewer-gate", "hosted-builders", "orchestrator-only"),
+        default="reviewer-gate",
+        help=(
+            "doctor posture for first-run adoption; reviewer-gate checks local "
+            "Codex/Claude CLIs, while hosted-builders and orchestrator-only "
+            "keep GitHub/cloud/setup checks visible but skip local CLI probes"
+        ),
+    )
+    posture_group.add_argument(
+        "--hosted-builders",
+        action="store_const",
+        const="hosted-builders",
+        dest="adoption_posture",
+        help=(
+            "alias for --adoption-posture hosted-builders; use when this "
+            "machine observes or dispatches hosted builder lanes instead of "
+            "running local Codex/Claude CLIs"
+        ),
+    )
+    posture_group.add_argument(
+        "--orchestrator-only",
+        action="store_const",
+        const="orchestrator-only",
+        dest="adoption_posture",
+        help=(
+            "alias for --adoption-posture orchestrator-only; use when this "
+            "machine coordinates lanes but does not execute local reviewer CLIs"
+        ),
+    )
     parser.add_argument(
         "--repo",
         metavar="OWNER/REPO",
@@ -177,6 +209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repo_slug=repo_slug,
             repo_source=repo_source,
             adoption=args.adoption,
+            adoption_posture=args.adoption_posture,
             probe_runtime=args.probe_runtime,
             github=args.github,
             cloud=args.cloud,

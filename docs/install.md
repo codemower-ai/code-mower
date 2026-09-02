@@ -127,6 +127,15 @@ code-mower doctor --adoption --repo OWNER/REPO --json
 code-mower lanes status --repo OWNER/REPO
 ```
 
+If this machine is a hosted-builder observer or orchestrator only, and will not
+run Codex or Claude local CLI audits itself, keep the GitHub/cloud/setup checks
+but skip local CLI probes:
+
+```bash
+code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json
+code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
+```
+
 Then follow [Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the first
 audited PR or [Build Loop In 30 Minutes](build-loop-in-30-minutes.md) after the
 reviewer gate is working.
