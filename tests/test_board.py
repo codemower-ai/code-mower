@@ -81,6 +81,7 @@ class BoardTests(TestCase):
         self.assertIn("/api/status", html)
         self.assertIn("/api/events", html)
         self.assertIn("Owner Queue", html)
+        self.assertIn("Agent Cards", html)
         self.assertIn("Open PRs", html)
         self.assertIn("Recent Local History", html)
         self.assertIn("Reviewer Verdict Timeline", html)
@@ -121,6 +122,113 @@ class BoardTests(TestCase):
         self.assertEqual(payload["board"]["local_paths"], "shown")
         self.assertIn("/tmp/lane-checkout", serialized)
         self.assertIn("/tmp/codex-lane", serialized)
+
+    def test_status_payload_includes_empty_agent_adapters_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = board.status_payload(
+                board.BoardConfig(repo="owner/repo", repo_path=tmp),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+
+        self.assertEqual(payload["agent_adapters"]["schema"], board.BOARD_AGENT_ADAPTERS_SCHEMA)
+        self.assertTrue(payload["agent_adapters"]["available"])
+        self.assertFalse(payload["agent_adapters"]["path_exists"])
+        self.assertEqual(payload["agent_adapters"]["agents"], [])
+        self.assertEqual(payload["agent_adapters"]["message"], "no local agent adapter files found")
+
+    def test_agent_adapters_payload_loads_cards_and_redacts_local_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter_dir = Path(tmp) / ".code-mower" / "board" / "agents"
+            adapter_dir.mkdir(parents=True)
+            (adapter_dir / "codex.json").write_text(
+                json.dumps(
+                    {
+                        "provider": "codex",
+                        "role": "builder",
+                        "status": "running",
+                        "lane": "builder:codex",
+                        "repo": "owner/repo",
+                        "pr_number": 7,
+                        "issue_number": 521,
+                        "pid": 123,
+                        "cwd": "/tmp/private/checkout",
+                        "head_sha": "abcdef0123456789",
+                        "url": "https://github.com/owner/repo/pull/7",
+                        "title": "Implement Board cards",
+                        "next_action": "waiting for peer audit",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = board.agent_adapters_payload(board.BoardConfig(repo="owner/repo", repo_path=tmp))
+
+        serialized = json.dumps(payload)
+        self.assertEqual(payload["schema"], board.BOARD_AGENT_ADAPTERS_SCHEMA)
+        self.assertTrue(payload["path_exists"])
+        self.assertEqual(payload["warnings"], [])
+        self.assertEqual(payload["agents"][0]["source_file"], "codex.json")
+        self.assertEqual(payload["agents"][0]["provider"], "codex")
+        self.assertEqual(payload["agents"][0]["role"], "builder")
+        self.assertEqual(payload["agents"][0]["status"], "running")
+        self.assertEqual(payload["agents"][0]["pr_number"], 7)
+        self.assertEqual(payload["agents"][0]["head_sha_prefix"], "abcdef012345")
+        self.assertEqual(payload["agents"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertNotIn("/tmp/private/checkout", serialized)
+
+    def test_agent_adapters_payload_handles_malformed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter_dir = Path(tmp) / ".code-mower" / "board" / "agents"
+            adapter_dir.mkdir(parents=True)
+            (adapter_dir / "bad.json").write_text("{not json", encoding="utf-8")
+            (adapter_dir / "binary.json").write_bytes(b'{"provider":"codex", "title":"bad \\xff"}')
+            (adapter_dir / "empty.json").write_text("[]", encoding="utf-8")
+
+            payload = board.agent_adapters_payload(board.BoardConfig(repo="owner/repo", repo_path=tmp))
+
+        serialized = json.dumps(payload)
+        self.assertEqual(payload["agents"], [])
+        self.assertEqual(
+            payload["warnings"],
+            [
+                {"file": "bad.json", "message": "could not parse agent adapter file"},
+                {"file": "binary.json", "message": "could not parse agent adapter file"},
+                {"file": "empty.json", "message": "agent adapter file had no cards"},
+            ],
+        )
+        self.assertNotIn(str(Path(tmp)), serialized)
+
+    def test_agent_adapters_payload_omits_secret_like_values(self) -> None:
+        secret = "github_pat_abcdefghijklmnopqrstuvwxyz123456"
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter_dir = Path(tmp) / ".code-mower" / "board" / "agents"
+            adapter_dir.mkdir(parents=True)
+            (adapter_dir / "claude.json").write_text(
+                json.dumps(
+                    {
+                        "provider": "claude",
+                        "role": "reviewer",
+                        "status": "blocked",
+                        "title": f"token {secret}",
+                        "next_action": "fix audit finding",
+                        "url": f"https://example.test/run?token={secret}",
+                        "head_sha": secret,
+                        "stdout": "raw output must not appear",
+                        "token": secret,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = board.agent_adapters_payload(board.BoardConfig(repo="owner/repo", repo_path=tmp))
+
+        serialized = json.dumps(payload)
+        self.assertEqual(payload["agents"][0]["title"], "[redacted]")
+        self.assertNotIn("url", payload["agents"][0])
+        self.assertNotIn("head_sha_prefix", payload["agents"][0])
+        self.assertNotIn(secret, serialized)
+        self.assertNotIn("raw output must not appear", serialized)
 
     def test_record_status_appends_redacted_local_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

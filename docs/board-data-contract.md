@@ -33,6 +33,10 @@ reviewer-spend rows for display only.
 `code_mower.boardOwnerQueue.v1` is the derived local owner queue embedded in the
 board's `/api/status` response. It summarizes PRs that need operator attention.
 
+`code_mower.boardAgentAdapters.v1` is the local adapter-card payload embedded in
+the board's `/api/status` response. It reads opt-in metadata files from
+`.code-mower/board/agents/*.json` by default.
+
 All board schemas are metadata-only. They must not contain source code, raw diffs,
 transcripts, issue body text, raw stdout/stderr, auth output, browser history,
 local secret values, or secrets.
@@ -190,6 +194,35 @@ more than once when it has multiple independent reasons. Each item includes:
 When GitHub is unavailable, the owner queue returns `available: false`, an empty
 entry list, and a generic message. Existing local event and spend timelines can
 still render from local files in the same Board response.
+
+## Agent Adapters
+
+The Board embeds `code_mower.boardAgentAdapters.v1` in `/api/status`. Agent
+adapters are local-only JSON files that let wrappers for Claude, Codex, Cursor
+or Grok Bot, Antigravity, Devin, and reviewers publish safe status cards without
+installing hooks or mutating GitHub.
+
+By default, the Board reads `*.json` files under `.code-mower/board/agents/`.
+Use `--agent-adapters-path PATH` for a custom local directory. Missing adapter
+directories are fine; malformed files produce safe warnings and do not stop the
+Board.
+
+Each JSON file may contain one card object, an array of card objects, or an
+object with an `agents[]` array. Supported card fields are:
+
+- `provider`, `role`, `status`, `lane`, `label`, `repo`, `branch`, `title`, and
+  `next_action`.
+- `pr_number`, `issue_number`, and `pid`.
+- `head_sha`, stored as `head_sha_prefix`.
+- `url`, only when it is HTTP(S).
+- `started_at` and `updated_at`.
+- `cwd`, redacted by default as `[local path hidden]`; `--show-local-paths` may
+  show it for same-machine debugging, while persisted board events still redact
+  it.
+
+Unknown fields are ignored. Secret-like values are redacted, and fields commonly
+used for source, diffs, transcripts, raw command output, auth output, browser
+history, or credentials are not part of the adapter contract.
 
 ## Cloud Boundary
 

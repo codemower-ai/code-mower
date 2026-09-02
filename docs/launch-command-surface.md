@@ -27,6 +27,7 @@ session. Choose the install path first from
 | `code-mower lanes status --repo OWNER/REPO --show-local-paths` | Include local cwd paths in the status snapshot for local debugging. | no | GitHub optional |
 | `code-mower board serve --repo OWNER/REPO` | Serve redacted lane status plus owner queue and local verdict/spend timelines in a local read-only browser board. | no | GitHub optional |
 | `code-mower board serve --repo OWNER/REPO --record-events` | Serve the board and append throttled metadata-only local history snapshots while it is open. | yes, local only | GitHub optional |
+| `code-mower board serve --repo OWNER/REPO --agent-adapters-path PATH` | Read opt-in local agent cards from a custom metadata-only adapter directory. | no | no |
 | `code-mower board record --repo OWNER/REPO` | Append one redacted status snapshot to `.code-mower/board/events.jsonl` for local board history. | yes, local only | GitHub optional |
 | `code-mower board events` | Print recent local board-history events without calling GitHub. | no | no |
 | `code-mower doctor --preflight --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
