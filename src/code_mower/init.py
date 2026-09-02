@@ -132,6 +132,14 @@ APPLY_SUMMARY_FILES = (
     "required-variables.txt",
     "smoke-tests.sh",
 )
+ADOPTION_CONFIG_PATH = "code-mower.yml"
+ADOPTION_CONFIG_FIELDS = (
+    "repositories[0].slug",
+    "repositories[0].default_branch",
+    "owner_surface.owner_login",
+    "owner_surface.status_issue",
+    "decisions.authorities",
+)
 OWNER_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REFERENCE_PYTHON = ".code-mower-venv/bin/python"
 GEMINI_AUTH_FILE_ENV = "GEMINI_API_KEY_FILE"
@@ -577,6 +585,17 @@ def _workflow_entry_for_target(
         "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
         "github_actions_workflows": LOCAL_AUDIT_WORKFLOW_PATH if driver == "local_cli" else "",
     }
+
+
+def _trusted_author_variables_for_generated_files(
+    generated_files: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    variables: list[str] = []
+    for entry in generated_files:
+        variable = str(entry.get("authors_env") or "").strip()
+        if variable:
+            variables.append(variable)
+    return tuple(sorted(dict.fromkeys(variables)))
 
 
 def _csv_value(value: Any, default: str) -> str:
@@ -1967,8 +1986,12 @@ def _copy_source_candidates(source_root: Path, entry: Mapping[str, Any], path: s
     package_copy_from = entry.get("package_copy_from")
     if entry.get("package_copy_first") and package_copy_from:
         candidates.append(Path(__file__).resolve().parent / str(package_copy_from))
-    copy_from = str(entry.get("copy_from", path))
-    candidates.append(source_root / copy_from)
+    copy_from_path = entry.get("copy_from_path")
+    if copy_from_path:
+        candidates.append(Path(str(copy_from_path)).expanduser())
+    if not copy_from_path or "copy_from" in entry:
+        copy_from = str(entry.get("copy_from", path))
+        candidates.append(source_root / copy_from)
     if package_copy_from and not entry.get("package_copy_first"):
         candidates.append(Path(__file__).resolve().parent / str(package_copy_from))
     return tuple(candidates)
@@ -2290,7 +2313,7 @@ def render_init_plan(
 
     labels: list[str] = []
     workflows: list[dict[str, str]] = []
-    generated_files: list[dict[str, str]] = []
+    generated_files: list[dict[str, Any]] = []
     workflow_targets: set[str] = set()
     generated_paths: set[str] = set()
     required_secrets: set[str] = set()
@@ -2347,6 +2370,17 @@ def render_init_plan(
             [*agent_pr_rules, *fix_round_rules],
         )
     )
+
+    if ADOPTION_CONFIG_PATH not in generated_paths:
+        generated_paths.add(ADOPTION_CONFIG_PATH)
+        adoption_config_entry: dict[str, Any] = {
+            "path": ADOPTION_CONFIG_PATH,
+            "source": "editable-adoption-config",
+            "copy_from_path": str(Path(config_path).expanduser().resolve()),
+        }
+        if Path(config_path).name == "code-mower.example.yml":
+            adoption_config_entry["package_copy_from"] = "templates/code-mower.example.yml"
+        generated_files.append(adoption_config_entry)
 
     for lane_id, lane in selected_lanes.items():
         lane_labels = _labels_for(lane)
@@ -2667,6 +2701,9 @@ def render_init_plan(
         "python3 -m py_compile "
         '"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/status_report.py"'
     )
+    trusted_author_variables = _trusted_author_variables_for_generated_files(
+        generated_files
+    )
 
     if not merge_authority_lanes:
         warnings.append(
@@ -2721,6 +2758,12 @@ def render_init_plan(
             ),
             "runner_enabled_var": owner_surface["lane_runner_enabled_var"],
         },
+        "adoption_config": {
+            "path": ADOPTION_CONFIG_PATH,
+            "fields_to_edit": list(ADOPTION_CONFIG_FIELDS),
+            "trusted_author_variables": list(trusted_author_variables),
+            "pilot_doctor_command": "code-mower doctor --adoption --repo OWNER/REPO --json",
+        },
         "repositories": _repository_entries(config),
         "additional_repositories": list(add_repositories),
         "audit": {
@@ -2765,6 +2808,20 @@ def render_init_plan(
     lines.extend(
         f"- {entry['path']} [{entry['source']}]" for entry in data["generated_files"]
     )
+
+    lines.extend(["", "Editable adoption config:"])
+    lines.append(
+        f"- review {ADOPTION_CONFIG_PATH}, edit it for this repository, then commit it at the repo root"
+    )
+    lines.append("- fields to edit: " + ", ".join(ADOPTION_CONFIG_FIELDS))
+    if trusted_author_variables:
+        lines.append(
+            "- trusted audit author variables: "
+            + ", ".join(trusted_author_variables)
+        )
+    else:
+        lines.append("- trusted audit author variables: none")
+    lines.append("- verify: code-mower doctor --adoption --repo OWNER/REPO --json")
 
     lines.extend(["", "Configured repositories:"])
     if data["repositories"]:

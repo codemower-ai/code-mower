@@ -3033,6 +3033,27 @@ jobs:
         self.assertIn("allow_auto_merge=true", plan.text)
         self.assertIn("Audit limits:", plan.text)
         self.assertIn("app_id: 15368", plan.text)
+        self.assertIn("Editable adoption config:", plan.text)
+        self.assertIn("owner_surface.owner_login", plan.text)
+        self.assertEqual(plan.data["adoption_config"]["path"], "code-mower.yml")
+        self.assertIn(
+            "decisions.authorities",
+            plan.data["adoption_config"]["fields_to_edit"],
+        )
+        self.assertIn(
+            "CLAUDE_AUDIT_BOT_AUTHORS",
+            plan.data["adoption_config"]["trusted_author_variables"],
+        )
+        self.assertIn(
+            "CODEX_BOT_AUTHORS",
+            plan.data["adoption_config"]["trusted_author_variables"],
+        )
+        self.assertIn(
+            "GITAR_BOT_AUTHORS",
+            plan.data["adoption_config"]["trusted_author_variables"],
+        )
+        generated_paths = {entry["path"] for entry in plan.data["generated_files"]}
+        self.assertIn("code-mower.yml", generated_paths)
 
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / ".code-mower.generated"
@@ -3061,6 +3082,12 @@ jobs:
             )
             self.assertIn("DISPATCH_TOKEN_EXPIRES_AT", required_variables)
             self.assertIn("CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED", required_variables)
+            adoption_config = output_dir.joinpath("code-mower.yml").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("owner_surface:", adoption_config)
+            self.assertIn("owner_login: TODO_OWNER_LOGIN", adoption_config)
+            self.assertIn("decisions:", adoption_config)
             for rel_path in expected:
                 text = output_dir.joinpath(rel_path).read_text(encoding="utf-8")
                 self.assertNotIn("__WORKFLOW_NAME__", text)
@@ -3394,6 +3421,65 @@ jobs:
                     for warning in plan.data["warnings"]
                 )
             )
+
+    def test_init_apply_copies_relative_external_adoption_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            control_repo = root / "control-repo"
+            target_repo = root / "target-repo"
+            control_repo.mkdir()
+            target_repo.mkdir()
+            config_path = control_repo / "code-mower.yml"
+            config_path.write_text(
+                (ROOT / "src/code_mower/templates/code-mower.example.yml")
+                .read_text(encoding="utf-8")
+                .replace("owner/example", "acme/widget")
+                .replace("TODO_OWNER_LOGIN", "alice"),
+                encoding="utf-8",
+            )
+            config_arg = "../control-repo/code-mower.yml"
+            original_cwd = Path.cwd()
+
+            try:
+                os.chdir(target_repo)
+                config = code_mower_config.load_config(Path(config_arg))
+                for package_mode in (True, False):
+                    with self.subTest(package_mode=package_mode):
+                        output_dir = (
+                            target_repo / f".code-mower.generated-{package_mode}"
+                        )
+                        plan = code_mower_init.render_init_plan(
+                            config,
+                            config_path=config_arg,
+                            package_mode=package_mode,
+                            package_command="code-mower",
+                        )
+                        adoption_entry = next(
+                            entry
+                            for entry in plan.data["generated_files"]
+                            if entry["path"] == "code-mower.yml"
+                        )
+                        self.assertIn("copy_from_path", adoption_entry)
+                        self.assertNotIn("copy_from", adoption_entry)
+
+                        result = code_mower_init.apply_init_plan(
+                            plan,
+                            output_dir,
+                            source_root=target_repo,
+                        )
+
+                        generated_config = output_dir / "code-mower.yml"
+                        self.assertNotIn(
+                            str(generated_config),
+                            result["placeholder_files"],
+                        )
+                        generated_text = generated_config.read_text(
+                            encoding="utf-8"
+                        )
+                        self.assertIn("slug: acme/widget", generated_text)
+                        self.assertIn("owner_login: alice", generated_text)
+            finally:
+                os.chdir(original_cwd)
 
     def test_init_warns_for_agent_pr_builder_identity_mismatches(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"

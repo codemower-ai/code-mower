@@ -63,6 +63,9 @@ The generated tree includes local Codex and Claude audit lanes, the
 `code-mower/gate` workflow, stale-audit cleanup, owner escalation labels, and
 starter calibration files. Keep this generated output reviewable: do not enable
 paid or hosted lanes until your own calibration data supports them.
+It also includes `.code-mower.generated/code-mower.yml`; edit the repository
+slug, owner login, decision authorities, status issue, and trusted audit-comment
+authors before copying it to the repository root.
 
 ## 4. Run The Preflight Doctor
 
@@ -103,7 +106,7 @@ is the first audited PR.
 git switch -c chore/code-mower-reviewer-gate
 cp -R .code-mower.generated/. .
 git status --short
-git add .github tools calibration-corpus.json context-packs.json \
+git add code-mower.yml .github tools calibration-corpus.json context-packs.json \
   reviewer-spend.json reviewer-value-report.example.md
 git commit -m "chore: add code mower reviewer gate"
 git push -u origin HEAD
