@@ -27,6 +27,7 @@ class LaneStatusTests(TestCase):
                         "title": "Fix build loop",
                         "url": "https://github.com/owner/repo/pull/12",
                         "headRefName": "codex/fix-build-loop",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
                         "author": {"login": "codex-bot"},
                         "isDraft": False,
                         "mergeStateStatus": "CLEAN",
@@ -74,6 +75,47 @@ class LaneStatusTests(TestCase):
         self.assertEqual(report["next_action"], "fix BLOCKED audit")
         self.assertEqual(report["remote"]["gate_health"]["status"], "warn")
         self.assertIn("fix BLOCKED audit", lane_status.render_text(report))
+
+    def test_render_text_includes_copy_pasteable_gate_rerun_command(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 34,
+                        "title": "Install Code Mower",
+                        "url": "https://github.com/owner/repo/pull/34",
+                        "headRefName": "chore/code-mower-reviewer-gate",
+                        "headRefOid": "1234567890abcdef1234567890abcdef12345678",
+                        "author": {"login": "alice"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "needs-claude-audit"}],
+                        "statusCheckRollup": [
+                            {"context": "code-mower/gate", "state": "PENDING"},
+                        ],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        report = lane_status.collect_status(
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        expected = (
+            "gh workflow run code-mower-gate.yml --repo owner/repo "
+            "-f pr_number=34 -f head_sha=1234567890abcdef1234567890abcdef12345678"
+        )
+        self.assertEqual(pr["gate_rerun_command"], expected)
+        rendered = lane_status.render_text(report)
+        self.assertIn("next: waiting for audits or owner input", rendered)
+        self.assertIn(f"rerun gate: {expected}", rendered)
 
     def test_collect_status_degrades_when_github_unavailable_and_shows_local_state(self) -> None:
         def gh_json(_args: list[str]) -> object:

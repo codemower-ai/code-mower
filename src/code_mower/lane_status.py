@@ -17,6 +17,12 @@ from typing import Any
 LANE_STATUS_SCHEMA = "code_mower.laneStatus.v1"
 WORKFLOW_TERMS = ("code mower", "code-mower", "gate", "audit", "dispatch", "labeler", "clear-stale")
 CHECK_TERMS = ("code-mower", "gate", "package", "audit", "label", "dispatch", "gitar", "clear-stale")
+GATE_RERUN_ACTIONS = {
+    "fix failing check",
+    "waiting for audits or owner input",
+    "waiting for checks",
+    "ready for merge or auto-merge",
+}
 PROCESS_PROVIDERS = {
     "antigravity": "antigravity",
     "claude": "claude",
@@ -138,6 +144,15 @@ def _next_action(
     return "inspect PR"
 
 
+def _gate_rerun_command(repo: str, number: int, head_sha: str) -> str:
+    if not repo or not number or not head_sha:
+        return ""
+    return (
+        "gh workflow run code-mower-gate.yml "
+        f"--repo {repo} -f pr_number={number} -f head_sha={head_sha}"
+    )
+
+
 def _stale(
     updated_at: str,
     now: datetime,
@@ -159,17 +174,26 @@ def _author(pr: Mapping[str, Any]) -> str:
     return _text(author.get("login")) if isinstance(author, Mapping) else _text(author)
 
 
-def _summarize_pr(pr: Mapping[str, Any], now: datetime, stale_minutes: int) -> dict[str, Any]:
+def _summarize_pr(
+    repo: str,
+    pr: Mapping[str, Any],
+    now: datetime,
+    stale_minutes: int,
+) -> dict[str, Any]:
     labels = _label_groups(pr)
     checks = _checks(pr.get("statusCheckRollup"))
     merge_state = _text(pr.get("mergeStateStatus")) or "UNKNOWN"
     updated_at = _text(pr.get("updatedAt"))
     is_draft = bool(pr.get("isDraft"))
+    number = int(pr.get("number") or 0)
+    head_sha = _text(pr.get("headRefOid"))
+    next_action = _next_action(labels, checks, merge_state, is_draft)
     return {
-        "number": int(pr.get("number") or 0),
+        "number": number,
         "title": _text(pr.get("title")),
         "url": _text(pr.get("url")),
         "branch": _text(pr.get("headRefName")),
+        "head_sha": head_sha,
         "author": _author(pr),
         "is_draft": is_draft,
         "merge_state": merge_state,
@@ -177,7 +201,8 @@ def _summarize_pr(pr: Mapping[str, Any], now: datetime, stale_minutes: int) -> d
         "labels": labels,
         "checks": checks,
         "stale": _stale(updated_at, now, stale_minutes, labels, checks),
-        "next_action": _next_action(labels, checks, merge_state, is_draft),
+        "next_action": next_action,
+        "gate_rerun_command": _gate_rerun_command(repo, number, head_sha),
     }
 
 
@@ -226,13 +251,17 @@ def _remote(
     try:
         raw_prs = gh_json_runner([
             "pr", "list", "--repo", repo, "--state", "open", "--limit", str(pr_limit),
-            "--json", "number,title,url,headRefName,author,isDraft,mergeStateStatus,updatedAt,labels,statusCheckRollup",
+            "--json", "number,title,url,headRefName,headRefOid,author,isDraft,mergeStateStatus,updatedAt,labels,statusCheckRollup",
         ])
     except LaneStatusUnavailable as exc:
         raw_prs = []
         errors.append(f"pull_requests: {exc}")
     raw_prs = raw_prs if isinstance(raw_prs, list) else []
-    prs = [_summarize_pr(pr, now, stale_minutes) for pr in raw_prs if isinstance(pr, Mapping)]
+    prs = [
+        _summarize_pr(repo, pr, now, stale_minutes)
+        for pr in raw_prs
+        if isinstance(pr, Mapping)
+    ]
 
     try:
         raw_runs = gh_json_runner([
@@ -393,6 +422,8 @@ def render_text(report: Mapping[str, Any]) -> str:
             lines.append(f"  labels: {_label_text(pr['labels'])}")
             lines.append(f"  checks: {_check_text(pr['checks'])}")
             lines.append(f"  next: {pr['next_action']}")
+            if pr.get("gate_rerun_command") and pr.get("next_action") in GATE_RERUN_ACTIONS:
+                lines.append(f"  rerun gate: {pr['gate_rerun_command']}")
     else:
         lines.append("Open PRs: none")
     lines.append("")

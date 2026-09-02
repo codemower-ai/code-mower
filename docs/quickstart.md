@@ -231,6 +231,13 @@ If the selected profile has merge-authority lanes, Code Mower publishes the
 `code-mower/gate` commit status and asks GitHub to enable auto-merge only after
 that status is green. Two GitHub settings must match that behavior.
 
+During the initial informational pilot, leave this section as a promotion todo:
+do not require `code-mower/gate`, do not enable repository auto-merge, and merge
+manually only after clean audit evidence for the current PR head. A
+`doctor --adoption` failure for `allow_auto_merge` is expected in that posture;
+promote the setting only after the reviewer lane meets
+[Lane Promotion Policy](lane-promotion-policy.md).
+
 For unattended merges, add a merge-capable machine-user or GitHub App token as
 `CODE_MOWER_GATE_AUTOMERGE_TOKEN`. If this secret is absent, the generated gate
 falls back to `DISPATCH_TOKEN` and then to the default Actions token, which may
@@ -292,6 +299,8 @@ code-mower lanes status --repo OWNER/REPO
 It reports open Code Mower PR lanes, audit/gate labels, major checks, recent
 Code Mower workflows, local AgentTrail boards when present, and the next
 operator action. It does not upload data or require AgentTrail to be running.
+When a PR needs the gate recomputed manually, the text and JSON output include a
+copy-pasteable dispatch command with `pr_number` and the current `head_sha`.
 
 ## 7. Rehearse The Package Install Path
 
