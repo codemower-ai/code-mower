@@ -71,6 +71,14 @@ def _run_command(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(list(args), check=False, text=True, capture_output=True, timeout=3)
 
 
+def run_gh_json(args: Sequence[str]) -> Any:
+    return _run_gh_json(args)
+
+
+def run_command(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    return _run_command(args)
+
+
 def _stdout(command_runner: CommandRunner, args: Sequence[str]) -> str:
     try:
         completed = command_runner(args)

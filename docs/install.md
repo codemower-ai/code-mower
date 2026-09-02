@@ -125,6 +125,7 @@ After install, start with the manual reviewer-gate path:
 code-mower init --easy
 code-mower doctor --adoption --repo OWNER/REPO --json
 code-mower lanes status --repo OWNER/REPO
+code-mower board serve --repo OWNER/REPO
 ```
 
 If this machine is a hosted-builder observer or orchestrator only, and will not

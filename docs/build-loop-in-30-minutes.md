@@ -26,14 +26,15 @@ Mower's native status snapshot:
 ```bash
 code-mower lanes status --repo OWNER/REPO
 code-mower lanes status --repo OWNER/REPO --json
+code-mower board serve --repo OWNER/REPO
 ```
 
 The snapshot is read-only, metadata-only, and pasteable into an epic status
 comment. It shows open Code Mower PR lanes, audit/gate labels, major checks,
 recent Code Mower workflows, local board/process hints when present, and the
 next operator action. Local cwd paths are redacted by default; use
-`--show-local-paths` only for local debugging. The v0.7 native board MVP will
-build on this same status surface.
+`--show-local-paths` only for local debugging. `board serve` opens the same
+state as a local read-only browser view.
 
 ## 1. Set Repository Variables
 

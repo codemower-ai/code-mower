@@ -85,15 +85,17 @@ team dashboards and eventually aggregate benchmarks.
 flowchart TD
   A["Install Code Mower"] --> B["code-mower init --easy"]
   B --> C["Generate .code-mower.generated"]
-  C --> D["code-mower doctor --preflight"]
-  D --> E["Run local/manual audits"]
-  E --> F["Build calibration corpus"]
-  F --> G["Generate reviewer value report"]
-  G --> H{"Opt into cloud?"}
-  H -->|No| I["Use local reports"]
-  H -->|Yes| J["Export metadata-only bundle"]
-  J --> K["Dry-run upload"]
-  K --> L["Upload with team token"]
+  C --> D["code-mower doctor --adoption --repo OWNER/REPO"]
+  D --> E["code-mower lanes status --repo OWNER/REPO"]
+  E --> F["code-mower board serve --repo OWNER/REPO"]
+  F --> G["Run local/manual audits"]
+  G --> H["Build calibration corpus"]
+  H --> I["Generate reviewer value report"]
+  I --> J{"Opt into cloud?"}
+  J -->|No| K["Use local reports"]
+  J -->|Yes| L["Export metadata-only bundle"]
+  L --> M["Dry-run upload"]
+  M --> N["Upload with team token"]
 ```
 
 ## Provider And Lane Posture

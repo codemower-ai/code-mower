@@ -13,6 +13,7 @@ PACKAGE_FILES = (
     ("tools/CODE_MOWER_NOTICE.txt", "NOTICE", "package"),
     ("tools/code_mower_cli.py", "src/code_mower/cli.py", "core"),
     ("tools/code_mower_bootstrap.py", "src/code_mower/bootstrap.py", "core"),
+    ("src/code_mower/board.py", "src/code_mower/board.py", "core"),
     ("src/code_mower/builder_runs.py", "src/code_mower/builder_runs.py", "core"),
     ("tools/code_mower_builder_experiment.py", "src/code_mower/builder_experiment.py", "core"),
     ("src/code_mower/work_orders.py", "src/code_mower/work_orders.py", "core"),
