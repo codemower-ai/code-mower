@@ -32,6 +32,9 @@ PROCESS_PROVIDERS = {
     "gitar": "gitar",
 }
 AGENTTRAIL_DEFAULT_PORTS = {5330, 5331}
+BOARD_DEFAULT_PORTS = set(range(5332, 5342))
+LOCAL_BOARD_DEFAULT_PORTS = AGENTTRAIL_DEFAULT_PORTS | BOARD_DEFAULT_PORTS
+LOCAL_BOARD_PROCESS_NAMES = {"code-mower", "node", "npx", "python", "python3"}
 LOCAL_PATH_REDACTION = "[local path hidden]"
 
 
@@ -291,6 +294,11 @@ def _port(name: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _endpoint_port(value: str) -> int | None:
+    match = re.search(r":(\d+)$", value.strip())
+    return int(match.group(1)) if match else None
+
+
 def _listeners(text: str) -> list[dict[str, Any]]:
     current: dict[str, Any] = {}
     found = []
@@ -307,10 +315,49 @@ def _listeners(text: str) -> list[dict[str, Any]]:
     return found
 
 
+def _ss_listeners(text: str) -> list[dict[str, Any]]:
+    found = []
+    for line in text.splitlines():
+        parts = line.split(None, 6)
+        if not parts:
+            continue
+        listen_index = 0 if parts[0] == "LISTEN" else 1 if len(parts) > 1 and parts[1] == "LISTEN" else -1
+        if listen_index < 0:
+            continue
+        local_index = listen_index + 3
+        process_index = listen_index + 5
+        if len(parts) <= process_index:
+            continue
+        port = _endpoint_port(parts[local_index])
+        process_match = re.search(r'"([^"]+)",pid=(\d+)', parts[process_index])
+        if port is None or not process_match:
+            continue
+        found.append(
+            {
+                "pid": int(process_match.group(2)),
+                "process": _text(process_match.group(1)),
+                "port": port,
+            }
+        )
+    return found
+
+
+def _listener_inventory(command_runner: CommandRunner) -> list[dict[str, Any]]:
+    text = _stdout(command_runner, ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-FnPcn"])
+    if text:
+        return _listeners(text)
+    text = _stdout(command_runner, ["ss", "-H", "-ltnp"])
+    return _ss_listeners(text) if text else []
+
+
 def _process_cwd(pid: int, command_runner: CommandRunner) -> str:
     for line in _stdout(command_runner, ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"]).splitlines():
         if line.startswith("n"):
             return line[1:].strip()
+    pwdx = _stdout(command_runner, ["pwdx", str(pid)])
+    match = re.match(rf"{pid}:\s*(.+)", pwdx.strip())
+    if match:
+        return match.group(1).strip()
     return ""
 
 
@@ -319,19 +366,24 @@ def _process_command(pid: int, command_runner: CommandRunner) -> str:
 
 
 def collect_agenttrail_boards(command_runner: CommandRunner = _run_command) -> dict[str, Any]:
-    text = _stdout(command_runner, ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-FnPcn"])
-    if not text:
+    listeners = _listener_inventory(command_runner)
+    if not listeners:
         return {"available": False, "boards": [], "message": "local listener inventory unavailable"}
     boards = []
-    for listener in _listeners(text):
+    for listener in listeners:
         pid = int(listener["pid"])
         command = _process_command(pid, command_runner)
         cwd = _process_cwd(pid, command_runner)
         haystack = f"{listener['process']} {command} {cwd}".lower()
-        default_port = listener["port"] in AGENTTRAIL_DEFAULT_PORTS
-        node_like = str(listener["process"]).lower() in {"node", "npx"}
-        if "agenttrail" in haystack or (default_port and node_like):
-            confidence = "high" if "agenttrail" in haystack else "medium"
+        default_port = listener["port"] in LOCAL_BOARD_DEFAULT_PORTS
+        process_name = str(listener["process"]).lower()
+        board_like = any(
+            term in haystack
+            for term in ("agenttrail", "code-mower board", "code_mower.board", "code_mower.cli board", "board serve")
+        )
+        runtime_like = process_name in LOCAL_BOARD_PROCESS_NAMES or process_name.startswith("python")
+        if board_like or (default_port and runtime_like):
+            confidence = "high" if board_like else "medium"
             boards.append({**listener, "cwd": cwd, "confidence": confidence})
     return {"available": True, "boards": boards, "message": ""}
 
