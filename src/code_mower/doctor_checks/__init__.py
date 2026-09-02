@@ -32,6 +32,7 @@ from .github_human_token import (
     human_automation_token_config,
     human_automation_token_required,
 )
+from .github_trusted_authors import trusted_author_variable_statuses
 from .groups import GROUP_LABELS, doctor_check_group_id
 from .models import (
     STATUS_FAIL,
@@ -112,6 +113,7 @@ __all__ = [
     "check_macos_runner_launchagent",
     "check_github_setup",
     "check_human_automation_token",
+    "trusted_author_variable_statuses",
     "check_repository_posture",
     "check_lane_runtime",
     "check_review_hygiene",

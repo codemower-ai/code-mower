@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 from typing import Any, Mapping
 
 from code_mower import config as code_mower_config
 
 from .adoption import (
+    TRUSTED_AUDIT_AUTHOR_VARIABLES,
     check_adoption_posture_guidance,
     check_adoption_setup,
     config_with_repository_target,
@@ -17,6 +19,7 @@ from .cloud import check_cloud_token_surface
 from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
 from .github import check_github_setup
 from .github_config import check_repository_posture
+from .github_trusted_authors import trusted_author_variable_statuses
 from .models import STATUS_FAIL, STATUS_PASS, DoctorCheck, DoctorReport
 from .providers import check_lane_runtime, effective_lane, provider_template_coverage, selected_lanes
 from .registry import DoctorCheckStage, build_doctor_run_plan
@@ -112,6 +115,22 @@ def run_doctor(
     repo_root = None if config_path.name == "code-mower.example.yml" else config_path.parent
     config, templates, checks = load_inputs(config_path, provider_templates_path)
     using_packaged_example = config_path.name == "code-mower.example.yml"
+    trusted_author_variables = None
+    trusted_author_repo_slug = repo_slug
+    if not trusted_author_repo_slug and isinstance(config, Mapping):
+        for repository in config.get("repositories") or []:
+            if isinstance(repository, Mapping) and repository.get("slug"):
+                trusted_author_repo_slug = str(repository.get("slug") or "")
+                break
+    if github and trusted_author_repo_slug:
+        gh_path = shutil.which("gh")
+        if gh_path:
+            trusted_author_variables = trusted_author_variable_statuses(
+                gh_path=gh_path,
+                slug=trusted_author_repo_slug,
+                variables=TRUSTED_AUDIT_AUTHOR_VARIABLES,
+                http_timeout=http_timeout,
+            )
     checks.extend(
         check_adoption_setup(
             config=config,
@@ -122,6 +141,7 @@ def run_doctor(
             config_source=config_source,
             using_packaged_example=using_packaged_example,
             repo_root=Path.cwd() if using_packaged_example else config_path.parent,
+            trusted_author_variables=trusted_author_variables,
         )
     )
     if config is not None and repo_slug:

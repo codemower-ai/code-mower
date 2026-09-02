@@ -26,6 +26,9 @@ from code_mower.doctor_checks.github_repo import (
     check_repo_auto_merge,
     check_repo_permissions,
 )
+from code_mower.doctor_checks.github_trusted_authors import (
+    trusted_author_variable_statuses,
+)
 
 
 class GitHubDoctorCheckTests(unittest.TestCase):
@@ -137,6 +140,58 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         )
 
         self.assertTrue(required)
+
+    def test_trusted_author_variable_statuses_do_not_expose_values(self) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.github_trusted_authors._github_api_json",
+            side_effect=[
+                (
+                    {
+                        "name": "CLAUDE_AUDIT_BOT_AUTHORS",
+                        "value": "owner-login-that-must-not-print",
+                    },
+                    {},
+                ),
+                (
+                    {
+                        "name": "CODEX_BOT_AUTHORS",
+                        "value": "codex-login-that-must-not-print",
+                    },
+                    {},
+                ),
+                (
+                    {"name": "EMPTY_BOT_AUTHORS", "value": ""},
+                    {},
+                ),
+                (
+                    None,
+                    {"returncode": 1, "output_summary": "not found"},
+                ),
+            ],
+        ):
+            statuses = trusted_author_variable_statuses(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                variables=[
+                    "CLAUDE_AUDIT_BOT_AUTHORS",
+                    "CODEX_BOT_AUTHORS",
+                    "EMPTY_BOT_AUTHORS",
+                    "MISSING_BOT_AUTHORS",
+                ],
+                http_timeout=1,
+            )
+
+        self.assertEqual(
+            statuses,
+            {
+                "CLAUDE_AUDIT_BOT_AUTHORS": "present",
+                "CODEX_BOT_AUTHORS": "present",
+                "EMPTY_BOT_AUTHORS": "empty",
+                "MISSING_BOT_AUTHORS": "missing",
+            },
+        )
+        self.assertNotIn("owner-login-that-must-not-print", str(statuses))
+        self.assertNotIn("codex-login-that-must-not-print", str(statuses))
 
     def test_human_automation_token_check_passes_with_future_expiry(self) -> None:
         check = self._human_token_check(
