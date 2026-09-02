@@ -92,6 +92,40 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
+## Cache-Bypass And Local Wheel Checks
+
+When a release has just been published, use a cache-bypassing install before
+deciding the package index or the release is broken. For pipx:
+
+```bash
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
+code-mower --version
+```
+
+For uv:
+
+```bash
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.6.0b3
+code-mower --version
+```
+
+Before PyPI or TestPyPI has the candidate, validate the local wheel from the
+release checkout:
+
+```bash
+scripts/dev-python -m build
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" dist/code_mower-*.whl
+uv tool install --python 3.12 --reinstall dist/code_mower-*.whl
+```
+
+If exact-version installs repeatedly report "no matching distribution" or index
+timeouts right after publication, record that as PyPI/TestPyPI propagation and
+retry before changing source. If the install succeeds but `code-mower --version`
+is wrong, the CLI fails to start, or this rehearsal fails, treat that as a
+release blocker.
+
 ## External Repo Rehearsal
 
 Use `--repo-path` to prove the installed Code Mower CLI can inspect a real

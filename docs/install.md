@@ -49,6 +49,44 @@ code-mower --version
 If the uv tool directory is not on `PATH`, use uv's printed path hint or run the
 installed command directly from the uv tool bin directory for that session.
 
+## Release Rehearsal Installs
+
+When validating a newly published beta, bypass installer caches before deciding
+that PyPI or the package is broken.
+
+For pipx:
+
+```bash
+python3.12 --version
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
+code-mower --version
+```
+
+For uv:
+
+```bash
+uv python install 3.12
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.6.0b3
+code-mower --version
+```
+
+Before PyPI has the candidate, rehearse the local wheel from a source checkout:
+
+```bash
+scripts/dev-python -m build
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" dist/code_mower-*.whl
+uv tool install --python 3.12 --reinstall dist/code_mower-*.whl
+```
+
+If an exact-version install fails right after publication, wait a few minutes
+and retry with the cache-bypass command for your installer. Treat repeated
+"no matching distribution" or index timeouts as package-index/network
+propagation until the same command succeeds or the version is visible on PyPI.
+Treat a successful install with the wrong `code-mower --version`, failed CLI
+startup, or failed first-user rehearsal as a Code Mower release issue.
+
 ## Contributor Checkout
 
 From the Code Mower source checkout, use the checked-in development wrapper so

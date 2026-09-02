@@ -7148,6 +7148,7 @@ def main():
         first_user = (ROOT / "docs" / "first-user-install-rehearsal.md").read_text(
             encoding="utf-8",
         )
+        pypi_release = (ROOT / "docs" / "pypi-release.md").read_text(encoding="utf-8")
         current_state = (
             ROOT / "docs" / "current-state-and-roadmap.md"
         ).read_text(encoding="utf-8")
@@ -7195,6 +7196,13 @@ def main():
         )
 
         self.assertIn("## v0.6 Beta Package-Index Release Procedure", first_user)
+        self.assertIn("## Cache-Bypass And Local Wheel Checks", first_user)
+        self.assertIn("## Cache Bypass And Propagation Triage", pypi_release)
+        for text in (first_user, pypi_release):
+            self.assertIn("PIP_NO_CACHE_DIR=1 pipx install --force", text)
+            self.assertIn("--reinstall --refresh-package code-mower", text)
+            self.assertIn("dist/code_mower-*.whl", text)
+            self.assertIn("no matching distribution", text)
         self.assertIn(
             "dispatch both package-index publication runs",
             " ".join(first_user.split()),
@@ -7364,11 +7372,21 @@ def main():
         self.assertIn("Python 3.12 or newer", install)
         self.assertIn('pipx install --python "$CODE_MOWER_PYTHON"', install)
         self.assertIn("uv tool install --python 3.12 code-mower==0.6.0b3", install)
+        self.assertIn(
+            'PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON"',
+            install,
+        )
+        self.assertIn(
+            "uv tool install --python 3.12 --reinstall --refresh-package code-mower",
+            install,
+        )
+        self.assertIn("dist/code_mower-*.whl", install)
         self.assertIn(".venv/bin/python -m pip install -e .", install)
         self.assertIn("## Multi-Agent Coexistence", install)
         self.assertIn("code-mower board serve --repo OWNER/REPO", install)
         self.assertIn("~/.config/code-mower/tokens/", install)
         install_flat = " ".join(install.split())
+        self.assertIn("package-index/network propagation", install_flat)
         self.assertIn("one writer per PR branch", install_flat)
         self.assertIn("no source, raw diffs, transcripts", install_flat)
 
