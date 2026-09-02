@@ -321,7 +321,10 @@ code-mower board serve --repo OWNER/REPO
 ```
 
 The board serves only on loopback by default. It is read-only, does not upload
-data, and uses the same local-path redaction as `lanes status`.
+data, and uses the same local-path redaction as `lanes status`. If the default
+port is busy, it picks a nearby free loopback port and prints the URL to open;
+an explicit `--port` fails with a friendly conflict instead. The printed URL is
+local to that machine or VM unless you create your own tunnel.
 When you want the Recent Local History panel to fill while the board is open,
 start it explicitly with:
 

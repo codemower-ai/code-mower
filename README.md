@@ -79,8 +79,10 @@ action. Text and JSON output redact local cwd paths by default; use
 
 For the same redacted metadata in a local browser view, run
 `code-mower board serve --repo OWNER/REPO` and open the printed localhost URL.
-Plain `board serve` is read-only. To build local history while the browser view
-is open, run `code-mower board serve --repo OWNER/REPO --record-events`; it
+Plain `board serve` is read-only. If the default Board port is busy, the CLI
+uses a nearby free loopback port and prints the URL; an explicit `--port` stays
+strict and reports a friendly conflict. To build local history while the browser
+view is open, run `code-mower board serve --repo OWNER/REPO --record-events`; it
 records at most one snapshot every 60 seconds by default. To append one snapshot
 without serving the browser view, run
 `code-mower board record --repo OWNER/REPO` from the repository checkout; it

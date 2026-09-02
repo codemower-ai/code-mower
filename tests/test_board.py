@@ -73,6 +73,18 @@ def _command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
     return _completed("", returncode=1)
 
 
+def _occupy_loopback_port(start: int = 5332, stop: int = 5400) -> socket.socket:
+    for port in range(start, stop):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", port))
+            sock.listen()
+            return sock
+        except OSError:
+            sock.close()
+    raise RuntimeError("could not reserve a loopback port for Board test")
+
+
 class BoardTests(TestCase):
     def test_render_board_html_contains_local_app_shell(self) -> None:
         html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
@@ -94,6 +106,63 @@ class BoardTests(TestCase):
 
         self.assertIn("owner/repo<\\/script><b>bad<\\/b>", html)
         self.assertNotIn("owner/repo</script><b>bad</b>", html)
+
+    def test_candidate_ports_only_auto_fall_forward_for_default_port(self) -> None:
+        self.assertEqual(
+            board._candidate_ports(board.BoardConfig(repo="owner/repo", port=5332, port_was_default=True)),
+            list(range(5332, 5342)),
+        )
+        self.assertEqual(
+            board._candidate_ports(board.BoardConfig(repo="owner/repo", port=6000, port_was_default=False)),
+            [6000],
+        )
+
+    def test_option_present_accepts_equals_form(self) -> None:
+        self.assertTrue(board._option_present(["serve", "--port=6000"], "--port"))
+        self.assertTrue(board._option_present(["serve", "--port", "6000"], "--port"))
+        self.assertFalse(board._option_present(["serve", "--pr-limit", "5"], "--port"))
+
+    def test_bind_board_server_falls_forward_when_default_port_is_busy(self) -> None:
+        with _occupy_loopback_port() as occupied:
+            busy_port = int(occupied.getsockname()[1])
+            handler = board.make_handler(board.BoardConfig(repo="owner/repo", port=busy_port))
+
+            server = board._bind_board_server(
+                board.BoardConfig(repo="owner/repo", port=busy_port, port_was_default=True),
+                handler,
+            )
+
+        self.assertIsNotNone(server)
+        assert server is not None
+        try:
+            self.assertGreaterEqual(int(server.server_address[1]), busy_port + 1)
+        finally:
+            server.server_close()
+
+    def test_bind_board_server_reports_explicit_port_conflict(self) -> None:
+        with _occupy_loopback_port() as occupied:
+            busy_port = int(occupied.getsockname()[1])
+            handler = board.make_handler(board.BoardConfig(repo="owner/repo", port=busy_port))
+            err = StringIO()
+
+            with redirect_stderr(err):
+                server = board._bind_board_server(
+                    board.BoardConfig(repo="owner/repo", port=busy_port, port_was_default=False),
+                    handler,
+                )
+
+        self.assertIsNone(server)
+        self.assertIn(f"port {busy_port} is already in use", err.getvalue())
+        self.assertIn("Pass --port", err.getvalue())
+
+    def test_serve_rejects_invalid_port_before_binding(self) -> None:
+        err = StringIO()
+
+        with redirect_stderr(err):
+            code = board.serve(board.BoardConfig(repo="owner/repo", port=70000))
+
+        self.assertEqual(code, 2)
+        self.assertIn("--port", err.getvalue())
 
     def test_status_payload_redacts_local_paths_by_default(self) -> None:
         payload = board.status_payload(

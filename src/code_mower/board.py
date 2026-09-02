@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import re
 import socket
@@ -41,6 +42,7 @@ class BoardConfig:
     repo: str
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    port_was_default: bool = True
     pr_limit: int = 50
     workflow_limit: int = 20
     stale_minutes: int = 30
@@ -109,6 +111,46 @@ def _server_class(host: str) -> type[ThreadingHTTPServer]:
 def _server_url(host: str, port: int) -> str:
     display_host = f"[{host}]" if ":" in host else host
     return f"http://{display_host}:{port}/"
+
+
+def _candidate_ports(config: BoardConfig) -> list[int]:
+    if not config.port_was_default:
+        return [config.port]
+    last_port = min(65535, config.port + 9)
+    return list(range(config.port, last_port + 1))
+
+
+def _option_present(argv: list[str] | None, option: str) -> bool:
+    return any(arg == option or arg.startswith(f"{option}=") for arg in (argv or []))
+
+
+def _bind_board_server(
+    config: BoardConfig,
+    handler: type[BaseHTTPRequestHandler],
+) -> ThreadingHTTPServer | None:
+    server_type = _server_class(config.host)
+    tried: list[int] = []
+    for port in _candidate_ports(config):
+        tried.append(port)
+        try:
+            return server_type((config.host, port), handler)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            if not config.port_was_default:
+                suggestions = ", ".join(str(candidate) for candidate in range(port + 1, port + 4))
+                print(
+                    f"error: Code Mower Board port {port} is already in use on {config.host}. "
+                    f"Pass --port with a free loopback port such as {suggestions}.",
+                    file=sys.stderr,
+                )
+                return None
+    print(
+        "error: Code Mower Board could not find a free loopback port in "
+        f"{tried[0]}-{tried[-1]}; pass --port with a free port.",
+        file=sys.stderr,
+    )
+    return None
 
 
 def status_payload(
@@ -781,6 +823,9 @@ def serve(config: BoardConfig, *, open_browser: bool = False) -> int:
     if not _is_loopback(config.host):
         print("error: board host must be loopback; use 127.0.0.1 or localhost", file=sys.stderr)
         return 2
+    if not 0 <= config.port <= 65535:
+        print("error: --port must be between 0 and 65535", file=sys.stderr)
+        return 2
     if config.record_interval_seconds < 0:
         print("error: --record-interval-seconds must be non-negative", file=sys.stderr)
         return 2
@@ -791,10 +836,14 @@ def serve(config: BoardConfig, *, open_browser: bool = False) -> int:
         print("error: --max-events must be at least 1", file=sys.stderr)
         return 2
     handler = make_handler(config)
-    server_type = _server_class(config.host)
-    with server_type((config.host, config.port), handler) as server:
+    server = _bind_board_server(config, handler)
+    if server is None:
+        return 2
+    with server:
         port = int(server.server_address[1])
         url = _server_url(config.host, port)
+        if config.port_was_default and port != config.port:
+            print(f"Code Mower Board: default port {config.port} was busy; using {port}", file=sys.stderr)
         print(f"Code Mower Board: {url}", flush=True)
         if open_browser:
             webbrowser.open(url)
@@ -1057,22 +1106,32 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--repo", required=True)
-    serve_parser.add_argument("--host", default=DEFAULT_HOST)
-    serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    serve_parser.add_argument("--pr-limit", type=int, default=50)
-    serve_parser.add_argument("--workflow-limit", type=int, default=20)
-    serve_parser.add_argument("--stale-minutes", type=int, default=30)
-    serve_parser.add_argument("--refresh-seconds", type=int, default=15)
-    serve_parser.add_argument("--show-local-paths", action="store_true")
-    serve_parser.add_argument("--repo-path", default=".")
-    serve_parser.add_argument("--store-path")
-    serve_parser.add_argument("--spend-path")
-    serve_parser.add_argument("--agent-adapters-path")
-    serve_parser.add_argument("--event-limit", type=int, default=20)
-    serve_parser.add_argument("--record-events", action="store_true")
-    serve_parser.add_argument("--record-interval-seconds", type=int, default=60)
-    serve_parser.add_argument("--retention-days", type=int, default=board_store.DEFAULT_RETENTION_DAYS)
-    serve_parser.add_argument("--max-events", type=int, default=board_store.DEFAULT_MAX_EVENTS)
+    serve_parser.add_argument("--host", default=DEFAULT_HOST, help="loopback host to bind; default: 127.0.0.1")
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help="loopback port; the default auto-falls forward when busy",
+    )
+    serve_parser.add_argument("--pr-limit", type=int, default=50, help="open PRs to show")
+    serve_parser.add_argument("--workflow-limit", type=int, default=20, help="recent Code Mower workflow runs to show")
+    serve_parser.add_argument("--stale-minutes", type=int, default=30, help="minutes before gate evidence is stale")
+    serve_parser.add_argument("--refresh-seconds", type=int, default=15, help="browser refresh interval")
+    serve_parser.add_argument("--show-local-paths", action="store_true", help="show local cwd paths for debugging")
+    serve_parser.add_argument("--repo-path", default=".", help="repository checkout used for local Board files")
+    serve_parser.add_argument("--store-path", help="custom local Board event store path")
+    serve_parser.add_argument("--spend-path", help="custom reviewer spend ledger path")
+    serve_parser.add_argument("--agent-adapters-path", help="custom local agent card directory")
+    serve_parser.add_argument("--event-limit", type=int, default=20, help="local history events to show")
+    serve_parser.add_argument("--record-events", action="store_true", help="append local history while the Board is open")
+    serve_parser.add_argument("--record-interval-seconds", type=int, default=60, help="minimum seconds between records")
+    serve_parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=board_store.DEFAULT_RETENTION_DAYS,
+        help="local history retention window",
+    )
+    serve_parser.add_argument("--max-events", type=int, default=board_store.DEFAULT_MAX_EVENTS, help="maximum local events")
     serve_parser.add_argument("--open", action="store_true", help="open the local board in a browser")
     record_parser = subparsers.add_parser("record")
     record_parser.add_argument("--repo", required=True)
@@ -1116,6 +1175,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo=args.repo,
                 host=args.host,
                 port=args.port,
+                port_was_default=not _option_present(argv, "--port"),
                 pr_limit=args.pr_limit,
                 workflow_limit=args.workflow_limit,
                 stale_minutes=args.stale_minutes,
