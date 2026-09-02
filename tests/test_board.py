@@ -14,7 +14,7 @@ from unittest import TestCase
 from unittest.mock import patch
 from io import StringIO
 
-from code_mower import board, board_store, lane_status
+from code_mower import board, board_store, lane_status, reviewer_spend
 
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
@@ -82,6 +82,8 @@ class BoardTests(TestCase):
         self.assertIn("/api/events", html)
         self.assertIn("Open PRs", html)
         self.assertIn("Recent Local History", html)
+        self.assertIn("Reviewer Verdict Timeline", html)
+        self.assertIn("Spend And Latency", html)
         self.assertIn("const href", html)
         self.assertNotIn("AgentTrail", html)
 
@@ -371,6 +373,165 @@ class BoardTests(TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn("--max-events", err.getvalue())
+
+    def test_timelines_payload_summarizes_verdicts_and_spend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            spend_path = Path(tmp) / "reviewer-spend.json"
+            board_store.append_snapshot(
+                {
+                    "schema": lane_status.LANE_STATUS_SCHEMA,
+                    "repo": "owner/repo",
+                    "remote": {
+                        "available": True,
+                        "pull_requests": [
+                            {
+                                "number": 7,
+                                "url": "https://github.com/owner/repo/pull/7",
+                                "head_sha": "abcdef0123456789",
+                                "labels": {
+                                    "done": ["claude-audit-done"],
+                                    "blocked": ["codex-audit-blocked"],
+                                },
+                            }
+                        ],
+                    },
+                    "board": {"schema": "code_mower.board.v1"},
+                },
+                path=store_path,
+                now=NOW,
+            )
+            spend_path.write_text(
+                json.dumps(
+                    {
+                        "schema": reviewer_spend.SPEND_SCHEMA,
+                        "runs": [
+                            {
+                                "created_at": "2026-09-01T12:01:00+00:00",
+                                "lane": "claude-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 7,
+                                "head_sha": "abcdef0123456789",
+                                "model": "sonnet",
+                                "wall_seconds": 12.5,
+                                "cost_usd": 0.125,
+                                "total_tokens": 1000,
+                                "verdict": "PASS",
+                            },
+                            {"repo": "owner/repo"},
+                            "not a row",
+                            {"lane": "claude-audit", "repo": "other/repo", "pr_number": 1, "verdict": "PASS"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = board.timelines_payload(
+                board.BoardConfig(repo="owner/repo", store_path=str(store_path), spend_path=str(spend_path)),
+                limit=10,
+            )
+
+        self.assertEqual(payload["schema"], board.BOARD_TIMELINES_SCHEMA)
+        self.assertEqual(
+            [(entry["lane"], entry["verdict"], entry["head_sha_prefix"]) for entry in payload["verdicts"]["entries"]],
+            [("claude-audit", "PASS", "abcdef012345"), ("codex-audit", "BLOCKED", "abcdef012345")],
+        )
+        self.assertEqual(payload["spend"]["skipped_rows"], 2)
+        self.assertEqual(payload["spend"]["filtered_rows"], 1)
+        self.assertEqual(payload["spend"]["groups"][0]["lane"], "claude-audit")
+        self.assertEqual(payload["spend"]["groups"][0]["runs"], 1)
+        self.assertEqual(payload["spend"]["groups"][0]["wall_seconds_total"], 12.5)
+        self.assertEqual(payload["spend"]["groups"][0]["cost_usd_total"], 0.125)
+        self.assertEqual(payload["spend"]["groups"][0]["total_tokens"], 1000)
+        self.assertEqual(payload["spend"]["recent_runs"][0]["head_sha_prefix"], "abcdef012345")
+        self.assertNotIn(str(Path(tmp)), json.dumps(payload))
+
+    def test_timelines_payload_handles_missing_and_malformed_spend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = board.timelines_payload(
+                board.BoardConfig(repo="owner/repo", repo_path=tmp, store_path=str(Path(tmp) / "events.jsonl")),
+                limit=10,
+            )
+            spend_path = Path(tmp) / "reviewer-spend.json"
+            spend_path.write_text("{not json", encoding="utf-8")
+            malformed = board.timelines_payload(
+                board.BoardConfig(repo="owner/repo", store_path=str(Path(tmp) / "events.jsonl"), spend_path=str(spend_path)),
+                limit=10,
+            )
+
+        self.assertFalse(missing["spend"]["available"])
+        self.assertIn("no reviewer spend file yet", missing["spend"]["message"])
+        self.assertFalse(malformed["spend"]["available"])
+        self.assertEqual(malformed["spend"]["message"], "could not read reviewer spend file")
+        self.assertNotIn(str(Path(tmp)), json.dumps(malformed))
+
+    def test_http_status_includes_local_timelines_when_github_is_unavailable(self) -> None:
+        def unavailable_gh(_args: list[str]) -> object:
+            raise lane_status.LaneStatusUnavailable("offline")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            spend_path = Path(tmp) / "reviewer-spend.json"
+            board_store.append_snapshot(
+                {
+                    "schema": lane_status.LANE_STATUS_SCHEMA,
+                    "repo": "owner/repo",
+                    "remote": {
+                        "available": True,
+                        "pull_requests": [
+                            {
+                                "number": 9,
+                                "url": "https://github.com/owner/repo/pull/9",
+                                "head_sha": "9999999999999999",
+                                "labels": {"done": ["gitar-audit-done"]},
+                            }
+                        ],
+                    },
+                    "board": {"schema": "code_mower.board.v1"},
+                },
+                path=store_path,
+                now=NOW,
+            )
+            spend_path.write_text(
+                json.dumps(
+                    {
+                        "schema": reviewer_spend.SPEND_SCHEMA,
+                        "runs": [
+                            {
+                                "created_at": "2026-09-01T12:02:00+00:00",
+                                "lane": "gitar-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 9,
+                                "head_sha": "9999999999999999",
+                                "wall_seconds": 1.0,
+                                "verdict": "PASS",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            handler = board.make_handler(
+                board.BoardConfig(repo="owner/repo", store_path=str(store_path), spend_path=str(spend_path)),
+                gh_json_runner=unavailable_gh,
+                command_runner=_command_runner,
+            )
+            server = board.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+                with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        self.assertFalse(payload["remote"]["available"])
+        self.assertEqual(payload["timelines"]["verdicts"]["entries"][0]["lane"], "gitar-audit")
+        self.assertEqual(payload["timelines"]["spend"]["groups"][0]["lane"], "gitar-audit")
 
     def test_http_handler_serves_page_status_and_health(self) -> None:
         handler = board.make_handler(

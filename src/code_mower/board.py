@@ -19,10 +19,12 @@ from urllib.parse import urlparse
 
 from . import board_store
 from . import lane_status
+from . import reviewer_spend
 
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5332
+BOARD_TIMELINES_SCHEMA = "code_mower.boardTimelines.v1"
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class BoardConfig:
     show_local_paths: bool = False
     repo_path: str = "."
     store_path: str | None = None
+    spend_path: str | None = None
     event_limit: int = 20
     record_events: bool = False
     record_interval_seconds: int = 60
@@ -48,6 +51,12 @@ def _store_path(config: BoardConfig) -> Path:
     if config.store_path:
         return Path(config.store_path)
     return board_store.default_store_path(config.repo_path)
+
+
+def _spend_path(config: BoardConfig) -> Path:
+    if config.spend_path:
+        return Path(config.spend_path)
+    return Path(config.repo_path) / reviewer_spend.DEFAULT_SPEND_PATH
 
 
 def _is_loopback(host: str) -> bool:
@@ -143,6 +152,206 @@ def _record_live_snapshot(
     )
 
 
+def _http_url(value: object) -> str:
+    text = str(value or "").strip()
+    return text if text.startswith(("https://", "http://")) else ""
+
+
+def _head_prefix(value: object) -> str:
+    return str(value or "").strip()[:12]
+
+
+def _verdict_from_done_label(label: str) -> tuple[str, str] | None:
+    if label.endswith("-done"):
+        return label[: -len("-done")], "PASS"
+    return None
+
+
+def _verdict_from_blocked_label(label: str) -> tuple[str, str] | None:
+    if label.endswith("-blocked"):
+        return label[: -len("-blocked")], "BLOCKED"
+    return None
+
+
+def _verdict_timeline(events: list[dict[str, Any]], *, limit: int) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, str, str]] = set()
+    for event in reversed(events):
+        snapshot = event.get("snapshot") if isinstance(event.get("snapshot"), dict) else {}
+        remote = snapshot.get("remote") if isinstance(snapshot.get("remote"), dict) else {}
+        prs = remote.get("pull_requests") if isinstance(remote.get("pull_requests"), list) else []
+        for pr in prs:
+            if not isinstance(pr, dict):
+                continue
+            labels = pr.get("labels") if isinstance(pr.get("labels"), dict) else {}
+            label_verdicts: list[tuple[str, str]] = []
+            for label in labels.get("done") or []:
+                if isinstance(label, str) and (verdict := _verdict_from_done_label(label)):
+                    label_verdicts.append(verdict)
+            for label in labels.get("blocked") or []:
+                if isinstance(label, str) and (verdict := _verdict_from_blocked_label(label)):
+                    label_verdicts.append(verdict)
+            for lane, verdict in label_verdicts:
+                pr_number = _int(pr.get("number")) or 0
+                head_sha_prefix = _head_prefix(pr.get("head_sha"))
+                key = (lane, pr_number, head_sha_prefix, verdict)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append(
+                    {
+                        "created_at": str(event.get("created_at") or ""),
+                        "lane": lane,
+                        "pr_number": pr_number,
+                        "head_sha_prefix": head_sha_prefix,
+                        "verdict": verdict,
+                        "url": _http_url(pr.get("url")),
+                    }
+                )
+                if len(entries) >= limit:
+                    return {"available": bool(entries), "entries": entries, "message": ""}
+    return {
+        "available": bool(entries),
+        "entries": entries,
+        "message": "" if entries else "no local reviewer verdict history yet",
+    }
+
+
+def _float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip().replace("$", ""))
+        except ValueError:
+            return None
+    return None
+
+
+def _int(value: object) -> int | None:
+    number = _float(value)
+    return int(number) if number is not None else None
+
+
+def _spend_timeline(config: BoardConfig, *, limit: int) -> dict[str, Any]:
+    path = _spend_path(config)
+    try:
+        payload = reviewer_spend.load_spend_file(path)
+        raw_runs = payload.get("runs", [])
+        if raw_runs is None:
+            raw_runs = []
+        if not isinstance(raw_runs, list):
+            raise ValueError("reviewer spend runs must be a list")
+    except ValueError:
+        return {
+            "available": False,
+            "path": lane_status.LOCAL_PATH_REDACTION,
+            "path_redacted": True,
+            "message": "could not read reviewer spend file",
+            "groups": [],
+            "recent_runs": [],
+            "skipped_rows": 0,
+            "filtered_rows": 0,
+        }
+
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    recent: list[dict[str, Any]] = []
+    skipped = 0
+    filtered = 0
+    for raw_run in raw_runs:
+        if not isinstance(raw_run, dict):
+            skipped += 1
+            continue
+        lane = str(raw_run.get("lane") or "").strip()
+        verdict = str(raw_run.get("verdict") or "").strip().upper()
+        repo = str(raw_run.get("repo") or "").strip()
+        pr_number = _int(raw_run.get("pr_number"))
+        if repo and repo != config.repo:
+            filtered += 1
+            continue
+        if not lane or not verdict or pr_number is None:
+            skipped += 1
+            continue
+        wall_seconds = _float(raw_run.get("wall_seconds"))
+        cost_usd = _float(raw_run.get("cost_usd"))
+        total_tokens = _int(raw_run.get("total_tokens"))
+        group = groups.setdefault(
+            (lane, verdict),
+            {
+                "lane": lane,
+                "verdict": verdict,
+                "runs": 0,
+                "wall_seconds_total": 0.0,
+                "wall_seconds_avg": None,
+                "cost_usd_total": 0.0,
+                "total_tokens": 0,
+            },
+        )
+        group["runs"] += 1
+        if wall_seconds is not None:
+            group["wall_seconds_total"] += wall_seconds
+            group["wall_seconds_avg"] = group["wall_seconds_total"] / group["runs"]
+        if cost_usd is not None:
+            group["cost_usd_total"] += cost_usd
+        if total_tokens is not None:
+            group["total_tokens"] += total_tokens
+        recent.append(
+            {
+                "created_at": str(raw_run.get("created_at") or ""),
+                "lane": lane,
+                "pr_number": pr_number,
+                "head_sha_prefix": _head_prefix(raw_run.get("head_sha")),
+                "verdict": verdict,
+                "model": str(raw_run.get("model") or ""),
+                "wall_seconds": wall_seconds,
+                "cost_usd": cost_usd,
+                "total_tokens": total_tokens,
+            }
+        )
+
+    normalized_groups = []
+    for group in groups.values():
+        if group["wall_seconds_avg"] is not None:
+            group["wall_seconds_avg"] = round(group["wall_seconds_avg"], 3)
+        group["wall_seconds_total"] = round(group["wall_seconds_total"], 3)
+        group["cost_usd_total"] = round(group["cost_usd_total"], 6)
+        normalized_groups.append(group)
+    recent.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    available = path.is_file()
+    message = ""
+    if not available:
+        message = "no reviewer spend file yet"
+    elif not normalized_groups and not skipped and not filtered:
+        message = "no reviewer spend rows for this repo yet"
+    return {
+        "available": available,
+        "path": lane_status.LOCAL_PATH_REDACTION,
+        "path_redacted": True,
+        "message": message,
+        "groups": sorted(normalized_groups, key=lambda item: (item["lane"], item["verdict"])),
+        "recent_runs": recent[:limit],
+        "skipped_rows": skipped,
+        "filtered_rows": filtered,
+    }
+
+
+def timelines_payload(config: BoardConfig, *, limit: int | None = None) -> dict[str, Any]:
+    event_limit = limit if limit is not None else config.event_limit
+    report = board_store.event_report(path=_store_path(config), limit=event_limit)
+    events = report.get("events") if isinstance(report.get("events"), list) else []
+    return {
+        "schema": BOARD_TIMELINES_SCHEMA,
+        "verdicts": _verdict_timeline([event for event in events if isinstance(event, dict)], limit=event_limit),
+        "spend": _spend_timeline(config, limit=event_limit),
+        "source": {
+            "events_available": bool(report.get("available")),
+            "events_message": str(report.get("message") or ""),
+        },
+    }
+
+
 def render_board_html(config: BoardConfig) -> str:
     repo_json = json.dumps(config.repo).replace("</", "<\\/")
     refresh_json = json.dumps(config.refresh_seconds * 1000)
@@ -185,6 +394,8 @@ def render_board_html(config: BoardConfig) -> str:
     <section><h2>Gate Alerts</h2><div class="rows" id="alerts"></div></section>
     <section><h2>Recent Code Mower Workflows</h2><div class="rows" id="runs"></div></section>
     <section><h2>Recent Local History</h2><div class="rows" id="history"></div></section>
+    <section><h2>Reviewer Verdict Timeline</h2><div class="rows" id="verdicts"></div></section>
+    <section><h2>Spend And Latency</h2><div class="rows" id="spend"></div></section>
     <section><h2>Local Activity</h2><div class="rows" id="local"></div></section>
   </main>
   <script>
@@ -197,6 +408,8 @@ def render_board_html(config: BoardConfig) -> str:
     const empty = (message) => `<div class="muted">${{esc(message)}}</div>`;
     const href = (value) => /^https?:\\/\\//i.test(text(value)) ? text(value) : "#";
     const stateClass = (value) => /fail|error|blocked/i.test(text(value)) ? "bad" : /warn|pending|waiting|queued|progress/i.test(text(value)) ? "warn" : "ok";
+    const seconds = (value) => Number.isFinite(Number(value)) ? `${{Number(value).toFixed(1)}}s` : "n/a";
+    const money = (value) => Number.isFinite(Number(value)) ? `$${{Number(value).toFixed(3)}}` : "n/a";
     function labels(groups) {{
       return Object.values(groups || {{}}).flat().map(pill).join(" ") || '<span class="muted">none</span>';
     }}
@@ -209,6 +422,10 @@ def render_board_html(config: BoardConfig) -> str:
       const prs = data.remote?.pull_requests || [];
       const runs = data.remote?.workflow_runs || [];
       const alerts = data.remote?.gate_health?.alerts || [];
+      const timelines = data.timelines || {{}};
+      const verdicts = timelines.verdicts?.entries || [];
+      const spend = timelines.spend || {{}};
+      const spendGroups = spend.groups || [];
       put("summary", [
         `<div class="metric"><span class="muted">Next action</span><b>${{esc(data.next_action || "inspect")}}</b></div>`,
         `<div class="metric"><span class="muted">GitHub</span><b class="${{data.remote?.available ? "ok" : "warn"}}">${{data.remote?.available ? "available" : "unavailable"}}</b></div>`,
@@ -224,6 +441,13 @@ def render_board_html(config: BoardConfig) -> str:
       </div>`).join("") : empty("No open pull requests."));
       put("alerts", alerts.length ? alerts.map(a => `<div class="row"><b class="warn">${{esc(a.kind)}}</b> ${{esc(a.message)}}</div>`).join("") : empty("No gate alerts."));
       put("runs", runs.length ? runs.slice(0, 8).map(run => `<div class="row"><div class="line"><a href="${{esc(href(run.url))}}">${{esc(run.workflow || "workflow")}}</a>${{pill(run.conclusion || run.status || "unknown")}}</div><div class="muted">${{esc(run.branch)}} updated ${{esc(run.updated_at)}}</div></div>`).join("") : empty("No recent Code Mower workflow runs."));
+      put("verdicts", verdicts.length ? verdicts.map(v => `<div class="row"><div class="line"><a href="${{esc(href(v.url))}}">#${{esc(v.pr_number)}} ${{esc(v.lane)}}</a>${{pill(v.verdict)}}${{pill(v.head_sha_prefix)}}</div><div class="muted">${{esc(v.created_at)}}</div></div>`).join("") : empty(timelines.verdicts?.message || "No local reviewer verdict history yet."));
+      const spendRows = [
+        ...spendGroups.map(g => `<div class="row"><div class="line"><b>${{esc(g.lane)}}</b>${{pill(g.verdict)}}${{pill(`${{g.runs}} runs`)}}</div><div class="muted">${{seconds(g.wall_seconds_total)}} total / ${{seconds(g.wall_seconds_avg)}} avg / ${{money(g.cost_usd_total)}} / ${{esc(g.total_tokens || 0)}} tokens</div></div>`),
+        spend.skipped_rows ? `<div class="row muted">Skipped ${{esc(spend.skipped_rows)}} malformed spend row(s).</div>` : "",
+        spend.filtered_rows ? `<div class="row muted">Filtered ${{esc(spend.filtered_rows)}} spend row(s) from other repos.</div>` : ""
+      ].filter(Boolean);
+      put("spend", spendRows.length ? spendRows.join("") : empty(spend.message || "No reviewer spend rows for this repo yet."));
       const boards = data.agenttrail?.boards || [];
       const procs = data.local_processes?.processes || [];
       put("local", [...boards.map(b => `<div class="row">board localhost:${{esc(b.port)}} pid=${{esc(b.pid)}} cwd=<code>${{esc(b.cwd || "")}}</code></div>`), ...procs.slice(0, 8).map(p => `<div class="row">${{esc(p.provider)}} pid=${{esc(p.pid)}} cwd=<code>${{esc(p.cwd || "")}}</code></div>`)].join("") || empty("No local boards or lane processes visible."));
@@ -327,6 +551,7 @@ def make_handler(
                                 "skipped",
                                 message="record interval not reached",
                             )
+                payload["timelines"] = timelines_payload(config)
                 body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
                 self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
                 return
@@ -445,6 +670,7 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--show-local-paths", action="store_true")
     serve_parser.add_argument("--repo-path", default=".")
     serve_parser.add_argument("--store-path")
+    serve_parser.add_argument("--spend-path")
     serve_parser.add_argument("--event-limit", type=int, default=20)
     serve_parser.add_argument("--record-events", action="store_true")
     serve_parser.add_argument("--record-interval-seconds", type=int, default=60)
@@ -481,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
                 show_local_paths=args.show_local_paths,
                 repo_path=args.repo_path,
                 store_path=args.store_path,
+                spend_path=args.spend_path,
                 event_limit=args.event_limit,
                 record_events=args.record_events,
                 record_interval_seconds=args.record_interval_seconds,

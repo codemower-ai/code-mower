@@ -7417,6 +7417,7 @@ def main():
 
     def test_board_data_contract_preserves_local_only_cloud_boundary(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
         launch_surface = (ROOT / "docs" / "launch-command-surface.md").read_text(
             encoding="utf-8",
         )
@@ -7426,6 +7427,8 @@ def main():
         cloud_contract = (ROOT / "docs" / "cloud-data-contract.md").read_text(
             encoding="utf-8",
         )
+        readme_flat = " ".join(readme.split())
+        quickstart_flat = " ".join(quickstart.split())
 
         self.assertIn("[Board Data Contract](docs/board-data-contract.md)", readme)
         self.assertIn("code-mower board record --repo OWNER/REPO", readme)
@@ -7434,6 +7437,12 @@ def main():
         self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", board_contract)
         self.assertIn("code-mower board record --repo OWNER/REPO", launch_surface)
         self.assertIn("code-mower board events", launch_surface)
+        self.assertIn("reviewer verdict history and spend/latency", readme_flat)
+        self.assertIn("reviewer verdict history and spend/latency", quickstart_flat)
+        self.assertIn("code_mower.boardTimelines.v1", board_contract)
+        self.assertIn("timelines.verdicts.entries[]", board_contract)
+        self.assertIn("timelines.spend", board_contract)
+        self.assertIn("filtered_rows", board_contract)
         for schema_name in (
             "code_mower.laneStatus.v1",
             "code_mower.board.v1",
