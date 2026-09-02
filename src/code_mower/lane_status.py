@@ -32,6 +32,7 @@ PROCESS_PROVIDERS = {
     "gitar": "gitar",
 }
 AGENTTRAIL_DEFAULT_PORTS = {5330, 5331}
+LOCAL_PATH_REDACTION = "[local path hidden]"
 
 
 class LaneStatusUnavailable(RuntimeError):
@@ -364,6 +365,17 @@ def collect_lane_processes(command_runner: CommandRunner = _run_command) -> dict
     return {"available": True, "processes": processes, "message": ""}
 
 
+def _redact_local_paths(report: dict[str, Any]) -> None:
+    for board in report["agenttrail"].get("boards") or []:
+        if board.get("cwd"):
+            board["cwd"] = LOCAL_PATH_REDACTION
+            board["cwd_redacted"] = True
+    for process in report["local_processes"].get("processes") or []:
+        if process.get("cwd"):
+            process["cwd"] = LOCAL_PATH_REDACTION
+            process["cwd_redacted"] = True
+
+
 def _global_next(report: Mapping[str, Any]) -> str:
     prs = report["remote"].get("pull_requests", [])
     local_active = bool(report["agenttrail"].get("boards")) or bool(report["local_processes"].get("processes"))
@@ -384,6 +396,7 @@ def collect_status(
     pr_limit: int = 50,
     workflow_limit: int = 20,
     stale_minutes: int = 30,
+    show_local_paths: bool = False,
 ) -> dict[str, Any]:
     observed_at = now or _now()
     report = {
@@ -394,6 +407,8 @@ def collect_status(
         "agenttrail": collect_agenttrail_boards(command_runner),
         "local_processes": collect_lane_processes(command_runner),
     }
+    if not show_local_paths:
+        _redact_local_paths(report)
     report["next_action"] = _global_next(report)
     return report
 
@@ -439,7 +454,7 @@ def render_text(report: Mapping[str, Any]) -> str:
     lines.append("")
     boards = report["agenttrail"].get("boards") or []
     message = report["agenttrail"].get("message") or "none visible"
-    lines.append("AgentTrail boards:" if boards else f"AgentTrail boards: none ({message})")
+    lines.append("Local boards:" if boards else f"Local boards: none ({message})")
     for board in boards:
         cwd = f" cwd={board['cwd']}" if board.get("cwd") else ""
         lines.append(f"- localhost:{board['port']} pid={board['pid']} process={board['process']} confidence={board['confidence']}{cwd}")
@@ -468,6 +483,11 @@ def main(
     status.add_argument("--pr-limit", type=int, default=50)
     status.add_argument("--workflow-limit", type=int, default=20)
     status.add_argument("--stale-minutes", type=int, default=30)
+    status.add_argument(
+        "--show-local-paths",
+        action="store_true",
+        help="include local cwd paths for debugging; default output redacts them",
+    )
     args = parser.parse_args(list(argv or ()))
     if args.command != "status":  # pragma: no cover - argparse validates choices.
         raise AssertionError(f"unhandled lanes command: {args.command}")
@@ -478,6 +498,7 @@ def main(
         pr_limit=args.pr_limit,
         workflow_limit=args.workflow_limit,
         stale_minutes=args.stale_minutes,
+        show_local_paths=args.show_local_paths,
     )
     output = json.dumps(report, indent=2, sort_keys=True) + "\n" if args.json else render_text(report)
     print(output, end="")

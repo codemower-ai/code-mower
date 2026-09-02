@@ -306,8 +306,10 @@ code-mower lanes status --repo OWNER/REPO
 ```
 
 It reports open Code Mower PR lanes, audit/gate labels, major checks, recent
-Code Mower workflows, local AgentTrail boards when present, and the next
-operator action. It does not upload data or require AgentTrail to be running.
+Code Mower workflows, local board/process hints when present, and the next
+operator action. It does not upload data or require any external viewer.
+Local cwd paths are redacted by default; pass `--show-local-paths` only when you
+are debugging on your own machine.
 When a PR needs the gate recomputed manually, the text and JSON output include a
 copy-pasteable dispatch command with `pr_number` and the current `head_sha`.
 

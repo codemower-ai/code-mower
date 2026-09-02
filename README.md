@@ -73,7 +73,10 @@ See a fuller static transcript: [docs/first-run-transcript.md](docs/first-run-tr
 
 After `init` and `doctor`, use `code-mower lanes status --repo OWNER/REPO` to
 see active builder/reviewer lanes, gate/check state, recent Code Mower
-workflows, local AgentTrail boards when present, and the next operator action.
+workflows, local board/process hints when present, and the next operator
+action. It is the recommended visibility surface until the native Code Mower
+Board lands in v0.7. Text and JSON output redact local cwd paths by default;
+use `--show-local-paths` only for local debugging.
 
 ## See The Value Shape First
 

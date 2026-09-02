@@ -20,20 +20,20 @@ operating model behind the labels and WIP cap, use
 [Self-Hosted Mac Runner](self-hosted-mac-runner.md). For pipx, uv, and
 contributor install choices, use [Install And Bootstrap](install.md).
 
-Optional live observability: if you want a local board showing which files each
-lane checkout is touching while Code Mower waits for PR and audit evidence, use
-the safe AgentTrail wrapper:
+Visibility checkpoint: after setup and after each dispatched issue, use Code
+Mower's native status snapshot:
 
 ```bash
-code-mower observe agenttrail --repo /path/to/lane-checkout --dry-run
-code-mower observe agenttrail --repo /path/to/lane-checkout
+code-mower lanes status --repo OWNER/REPO
+code-mower lanes status --repo OWNER/REPO --json
 ```
 
-The wrapper is observe-only by default. It does not call `agenttrail init`, does
-not edit `PLAN.md`, `AGENTS.md`, or `CLAUDE.md`, launches with `--no-open`, and
-fails if repository status changes during the startup guard window. Component-map
-mode waits for upstream alternate plan-file support; see
-[Build Loop Operations](build-loop.md#optional-live-lane-view).
+The snapshot is read-only, metadata-only, and pasteable into an epic status
+comment. It shows open Code Mower PR lanes, audit/gate labels, major checks,
+recent Code Mower workflows, local board/process hints when present, and the
+next operator action. Local cwd paths are redacted by default; use
+`--show-local-paths` only for local debugging. The v0.7 native board MVP will
+build on this same status surface.
 
 ## 1. Set Repository Variables
 
