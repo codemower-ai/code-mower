@@ -143,9 +143,45 @@ class LaneStatusTests(TestCase):
 
         self.assertFalse(report["remote"]["available"])
         self.assertEqual(report["agenttrail"]["boards"][0]["port"], 5330)
-        self.assertEqual(report["agenttrail"]["boards"][0]["cwd"], "/tmp/lane-checkout")
+        self.assertEqual(report["agenttrail"]["boards"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertTrue(report["agenttrail"]["boards"][0]["cwd_redacted"])
         self.assertEqual(report["local_processes"]["processes"][0]["provider"], "codex")
+        self.assertEqual(report["local_processes"]["processes"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertTrue(report["local_processes"]["processes"][0]["cwd_redacted"])
         self.assertEqual(report["next_action"], "remote unavailable; inspect local lanes")
+        rendered = lane_status.render_text(report)
+        self.assertIn("Local boards:", rendered)
+        self.assertNotIn("AgentTrail boards:", rendered)
+        self.assertNotIn("/tmp/lane-checkout", rendered)
+
+    def test_collect_status_can_include_local_paths_for_debugging(self) -> None:
+        def gh_json(_args: list[str]) -> object:
+            raise lane_status.LaneStatusUnavailable("gh pr failed")
+
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:4] == ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]:
+                return _completed("p123\ncnode\nn127.0.0.1:5330\n")
+            if args == ["ps", "-p", "123", "-o", "command="]:
+                return _completed("node /tmp/bin/agenttrail /repo --no-open\n")
+            if args == ["lsof", "-a", "-p", "123", "-d", "cwd", "-Fn"]:
+                return _completed("p123\nn/tmp/lane-checkout\n")
+            if args == ["ps", "-axo", "pid=,command="]:
+                return _completed(" 456 codex exec review\n")
+            if args == ["lsof", "-a", "-p", "456", "-d", "cwd", "-Fn"]:
+                return _completed("p456\nn/tmp/codex-lane\n")
+            return _completed("", returncode=1)
+
+        report = lane_status.collect_status(
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=command_runner,
+            now=NOW,
+            show_local_paths=True,
+        )
+
+        self.assertEqual(report["agenttrail"]["boards"][0]["cwd"], "/tmp/lane-checkout")
+        self.assertNotIn("cwd_redacted", report["agenttrail"]["boards"][0])
+        self.assertEqual(report["local_processes"]["processes"][0]["cwd"], "/tmp/codex-lane")
 
     def test_main_json_outputs_stable_shape(self) -> None:
         def gh_json(args: list[str]) -> object:

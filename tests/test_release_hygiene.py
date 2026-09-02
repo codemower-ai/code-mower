@@ -7271,6 +7271,10 @@ def main():
             encoding="utf-8",
         )
         quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+        build_loop = (ROOT / "docs" / "build-loop.md").read_text(encoding="utf-8")
+        launch_surface = (ROOT / "docs" / "launch-command-surface.md").read_text(
+            encoding="utf-8",
+        )
 
         self.assertIn("[Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)", readme)
         self.assertIn("[Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)", readme)
@@ -7321,6 +7325,16 @@ def main():
         )
         self.assertIn(repo_path_truth, " ".join(try_in_10.split()))
         self.assertIn(repo_path_truth, " ".join(quickstart.split()))
+
+        for path, text in (
+            ("README.md", readme),
+            ("docs/quickstart.md", quickstart),
+            ("docs/build-loop.md", build_loop),
+            ("docs/build-loop-in-30-minutes.md", build_loop_30),
+            ("docs/launch-command-surface.md", launch_surface),
+        ):
+            with self.subTest(path=path):
+                self.assertNotIn("AgentTrail", text)
 
     def test_install_docs_cover_supported_adoption_paths(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
