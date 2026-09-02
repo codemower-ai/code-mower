@@ -92,6 +92,9 @@ class BoardTests(TestCase):
         )
 
         serialized = json.dumps(payload)
+        self.assertEqual(payload["schema"], lane_status.LANE_STATUS_SCHEMA)
+        self.assertEqual(payload["board"]["schema"], "code_mower.board.v1")
+        self.assertEqual(payload["board"]["mode"], "local_read_only")
         self.assertEqual(payload["board"]["local_paths"], "redacted")
         self.assertIn(lane_status.LOCAL_PATH_REDACTION, serialized)
         self.assertNotIn("/tmp/lane-checkout", serialized)

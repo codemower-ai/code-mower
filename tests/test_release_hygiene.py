@@ -7413,6 +7413,43 @@ def main():
             with self.subTest(path=path):
                 self.assertNotIn("AgentTrail", text)
 
+    def test_board_data_contract_preserves_local_only_cloud_boundary(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        board_contract = (ROOT / "docs" / "board-data-contract.md").read_text(
+            encoding="utf-8",
+        )
+        cloud_contract = (ROOT / "docs" / "cloud-data-contract.md").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertIn("[Board Data Contract](docs/board-data-contract.md)", readme)
+        for schema_name in ("code_mower.laneStatus.v1", "code_mower.board.v1"):
+            with self.subTest(schema=schema_name):
+                self.assertIn(schema_name, board_contract)
+                self.assertIn(schema_name, cloud_contract)
+
+        board_flat = " ".join(board_contract.split())
+        cloud_flat = " ".join(cloud_contract.split())
+        for text in (board_flat, cloud_flat):
+            self.assertIn("local-only", text)
+            self.assertIn("not uploaded by default", text)
+            self.assertIn("paired OSS and dashboard change", text)
+            self.assertIn("backward-compatible with v0.6/v0.7 uploads", text)
+            self.assertIn("metadata-only", text)
+            for excluded in (
+                "source",
+                "raw diffs",
+                "transcripts",
+                "issue body text",
+                "raw stdout/stderr",
+                "auth output",
+                "browser history",
+                "local secret values",
+                "secrets",
+            ):
+                with self.subTest(excluded=excluded):
+                    self.assertIn(excluded, text)
+
     def test_install_docs_cover_supported_adoption_paths(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
