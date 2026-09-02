@@ -7536,6 +7536,7 @@ def main():
         docs_map = readme.split("## Docs Map", 1)[1]
         for link in (
             "docs/build-loop-in-30-minutes.md",
+            "docs/upgrade-existing-repo.md",
             "docs/orchestrator-prompt-pack.md",
             "docs/planning-work-orders.md",
             "docs/builders-grok-cursor.md",
@@ -7572,6 +7573,7 @@ def main():
         self.assertIn("code-mower board serve --repo OWNER/REPO", quickstart)
         self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", readme)
         self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", quickstart)
+        self.assertIn("code-mower migration setup-drift --repo-path .", launch_surface)
 
         for path, text in (
             ("README.md", readme),

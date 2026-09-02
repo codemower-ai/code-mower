@@ -40,6 +40,9 @@ code-mower migration setup-drift --repo-path . --json
 
 The drift report is read-only and metadata-only. It classifies generated setup
 paths without including file contents or diffs.
+For the full reviewed upgrade PR sequence, including `repo-only` handling and
+wrapper/pin drift checks, see
+[Upgrade An Existing Repository](upgrade-existing-repo.md).
 
 ## Laptop Or Workstation
 
@@ -260,6 +263,8 @@ The drift report is read-only. It compares the current generated setup output
 against tracked Code Mower files and classifies paths as `same`, `differs`,
 `new`, `repo-only`, or `missing-from-output`. Use it before an upgrade PR so
 you can review workflow/wrapper changes without source diffs in the report.
+Follow [Upgrade An Existing Repository](upgrade-existing-repo.md) when applying
+those changes to a repo that already has generated support files.
 
 If this machine is a hosted-builder observer or orchestrator only, and will not
 run Codex or Claude local CLI audits itself, keep the GitHub/cloud/setup checks

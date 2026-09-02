@@ -40,6 +40,9 @@ For an existing install, first run `command -v code-mower` and
 [Cold Install Vs Upgrade](install.md#cold-install-vs-upgrade). If you switch
 from pipx to uv, make sure the command on `PATH` is the one you meant to use
 before running `init`.
+For a repository that already has generated Code Mower support, follow
+[Upgrade An Existing Repository](upgrade-existing-repo.md) before copying a new
+`.code-mower.generated` tree.
 
 `0.9.0b1` is a beta release. To follow the newest beta line instead of
 pinning this exact build:
@@ -154,7 +157,9 @@ gh pr edit "$PR_NUMBER" --repo "$REPO" \
 
 If your repository already has files with the same names, review `git diff`
 before committing and keep only the generated support files you actually intend
-to enable.
+to enable. Existing Code Mower repositories should use
+[Upgrade An Existing Repository](upgrade-existing-repo.md) so `repo-only`
+wrappers, pins, and local shims are explicit review decisions.
 
 The first setup PR is special: the generated workflows are not on the default
 branch yet, so it cannot fully self-gate. Treat it as a manual pilot PR. Merge

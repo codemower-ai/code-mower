@@ -78,6 +78,9 @@ wrappers, run `code-mower migration setup-drift --repo-path .` before copying a
 fresh `.code-mower.generated` tree. It is read-only and reports path-level
 classifications (`same`, `differs`, `new`, `repo-only`,
 `missing-from-output`) without file contents or diffs.
+Use [Upgrade An Existing Repository](docs/upgrade-existing-repo.md) for the
+reviewed PR flow, repo-only file handling, builder identity checks, and
+wrapper/pin drift checks.
 
 After `init` and `doctor`, use `code-mower lanes status --repo OWNER/REPO` to
 see active builder/reviewer lanes, gate/check state, recent Code Mower
@@ -175,6 +178,8 @@ review-request signals to propose known-clean and known-blocked cases. Review
 every disposition before using it for lane promotion or merge policy.
 
 Full walkthrough: [docs/try-in-10-minutes.md](docs/try-in-10-minutes.md).
+Existing-repo upgrade flow:
+[docs/upgrade-existing-repo.md](docs/upgrade-existing-repo.md).
 First-time command map: [docs/launch-command-surface.md](docs/launch-command-surface.md).
 Provider-contract baseline for the next release train:
 [docs/v06-truth-baseline.md](docs/v06-truth-baseline.md).
@@ -409,6 +414,7 @@ first so local work exercises the same package entrypoint users install.
 ## Docs Map
 
 - [Install And Bootstrap](docs/install.md)
+- [Upgrade An Existing Repository](docs/upgrade-existing-repo.md)
 - [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
 - [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)
 - [Quickstart Reference](docs/quickstart.md)
