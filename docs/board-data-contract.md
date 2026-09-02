@@ -22,6 +22,9 @@ embeds the lane-status snapshot unchanged.
 `code_mower.boardEventStore.v1` is the read response emitted by
 `code-mower board events` and the board's `/api/events` endpoint.
 
+`code_mower.boardRecord.v1` is the write acknowledgement emitted by
+`code-mower board record --json`.
+
 All board schemas are metadata-only. They must not contain source code, raw diffs,
 transcripts, issue body text, raw stdout/stderr, auth output, browser history,
 local secret values, or secrets.
@@ -106,6 +109,9 @@ Each stored `code_mower.boardEvent.v1` event includes:
 recent events, total valid event count, malformed-line count, and a message when
 no store exists yet. Malformed JSONL lines are skipped instead of failing the
 board.
+
+`code_mower.boardRecord.v1` write acknowledgements include `status`, the redacted
+store path, the stored event, retained/pruned counts, and malformed-line count.
 
 Persisted snapshots redact local cwd paths by default even if a debug view chose
 to show them. Store paths are redacted in JSON output unless an operator

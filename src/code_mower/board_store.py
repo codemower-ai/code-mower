@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import json
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import IO
 from typing import Any, Mapping
 
 from . import lane_status
@@ -16,9 +19,14 @@ from . import lane_status
 
 BOARD_EVENT_SCHEMA = "code_mower.boardEvent.v1"
 BOARD_EVENT_STORE_SCHEMA = "code_mower.boardEventStore.v1"
+BOARD_RECORD_SCHEMA = "code_mower.boardRecord.v1"
 DEFAULT_RETENTION_DAYS = 14
 DEFAULT_MAX_EVENTS = 500
 DEFAULT_STORE_RELATIVE_PATH = Path(".code-mower") / "board" / "events.jsonl"
+
+
+class BoardStoreError(RuntimeError):
+    """Raised when a board-store write cannot safely preserve existing data."""
 
 
 @dataclass(frozen=True)
@@ -112,10 +120,7 @@ def _read_valid_events(path: Path) -> tuple[list[dict[str, Any]], int]:
         return [], 0
     events: list[dict[str, Any]] = []
     malformed = 0
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return [], 1
+    lines = path.read_text(encoding="utf-8").splitlines()
     for line in lines:
         if not line.strip():
             continue
@@ -142,9 +147,21 @@ def _retained_events(
     retained = [
         event
         for event in events
-        if (created := _parse_timestamp(event.get("created_at"))) is None or created >= cutoff
+        if (created := _parse_timestamp(event.get("created_at"))) is not None and created >= cutoff
     ]
     return retained[-max_events:]
+
+
+@contextmanager
+def _locked_store(path: Path) -> IO[str]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f"{path.name}.lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield lock_file
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def append_snapshot(
@@ -162,21 +179,24 @@ def append_snapshot(
     observed_at = now or _now()
     store_path = Path(path)
     event = snapshot_event(snapshot, now=observed_at)
-    existing, malformed = _read_valid_events(store_path)
-    before = len(existing)
-    retained = _retained_events(
-        [*existing, event],
-        now=observed_at,
-        retention_days=retention_days,
-        max_events=max_events,
-    )
-    store_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = store_path.with_name(f"{store_path.name}.tmp")
-    tmp_path.write_text(
-        "".join(json.dumps(item, sort_keys=True) + "\n" for item in retained),
-        encoding="utf-8",
-    )
-    os.replace(tmp_path, store_path)
+    try:
+        with _locked_store(store_path):
+            existing, malformed = _read_valid_events(store_path)
+            before = len(existing)
+            retained = _retained_events(
+                [*existing, event],
+                now=observed_at,
+                retention_days=retention_days,
+                max_events=max_events,
+            )
+            tmp_path = store_path.with_name(f"{store_path.name}.tmp")
+            tmp_path.write_text(
+                "".join(json.dumps(item, sort_keys=True) + "\n" for item in retained),
+                encoding="utf-8",
+            )
+            os.replace(tmp_path, store_path)
+    except OSError as exc:
+        raise BoardStoreError(f"could not update local board event store: {exc}") from exc
     pruned = before + 1 - len(retained)
     return StoreWriteResult(
         path=store_path,
@@ -194,7 +214,21 @@ def event_report(
     show_store_path: bool = False,
 ) -> dict[str, Any]:
     store_path = Path(path)
-    events, malformed = _read_valid_events(store_path)
+    try:
+        events, malformed = _read_valid_events(store_path)
+    except OSError as exc:
+        return {
+            "schema": BOARD_EVENT_STORE_SCHEMA,
+            "available": False,
+            "store": {
+                "path": str(store_path) if show_store_path else lane_status.LOCAL_PATH_REDACTION,
+                "path_redacted": not show_store_path,
+            },
+            "events": [],
+            "event_count": 0,
+            "malformed": 0,
+            "message": f"could not read local board event store: {exc.strerror or exc}",
+        }
     available = store_path.exists()
     selected = events[-limit:] if limit > 0 else []
     store: dict[str, Any] = {

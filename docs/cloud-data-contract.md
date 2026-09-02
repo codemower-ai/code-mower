@@ -53,8 +53,9 @@ excluded-content declaration, and copied report file metadata.
 `code-mower board serve --repo OWNER/REPO` use local schemas
 `code_mower.laneStatus.v1` and `code_mower.board.v1`. The explicit local
 history commands use `code_mower.boardEvent.v1` and
-`code_mower.boardEventStore.v1` under `.code-mower/board/events.jsonl`. Those
-payloads are operator visibility data, not cloud upload data.
+`code_mower.boardEventStore.v1` under `.code-mower/board/events.jsonl`, and
+`code_mower.boardRecord.v1` for explicit write acknowledgements. Those payloads
+are operator visibility data, not cloud upload data.
 
 Current board/status JSON and local board event-store data are local-only and
 are not uploaded by default. A future CodeMower.com mirror must land as a paired

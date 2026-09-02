@@ -330,6 +330,25 @@ def render_events_text(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def record_result_payload(result: board_store.StoreWriteResult) -> dict[str, Any]:
+    return {
+        "schema": board_store.BOARD_RECORD_SCHEMA,
+        "status": "recorded",
+        "store_path": lane_status.LOCAL_PATH_REDACTION,
+        "store_path_redacted": True,
+        "event": result.event,
+        "kept": result.kept,
+        "pruned": result.pruned,
+        "malformed": result.malformed,
+    }
+
+
+def _record_store_display(args: argparse.Namespace) -> str:
+    if args.store_path:
+        return "custom store path"
+    return board_store.DEFAULT_STORE_RELATIVE_PATH.as_posix()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower board")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -381,38 +400,33 @@ def main(argv: list[str] | None = None) -> int:
             open_browser=args.open,
         )
     if args.command == "record":
-        result = record_status(
-            BoardConfig(
-                repo=args.repo,
-                pr_limit=args.pr_limit,
-                workflow_limit=args.workflow_limit,
-                stale_minutes=args.stale_minutes,
-                repo_path=args.repo_path,
-                store_path=args.store_path,
-            ),
-            retention_days=args.retention_days,
-            max_events=args.max_events,
-        )
-        if args.json:
-            print(
-                json.dumps(
-                    {
-                        "schema": board_store.BOARD_EVENT_STORE_SCHEMA,
-                        "status": "recorded",
-                        "store_path": lane_status.LOCAL_PATH_REDACTION,
-                        "store_path_redacted": True,
-                        "event": result.event,
-                        "kept": result.kept,
-                        "pruned": result.pruned,
-                        "malformed": result.malformed,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
+        if args.retention_days < 0:
+            print("error: --retention-days must be non-negative", file=sys.stderr)
+            return 2
+        if args.max_events < 1:
+            print("error: --max-events must be at least 1", file=sys.stderr)
+            return 2
+        try:
+            result = record_status(
+                BoardConfig(
+                    repo=args.repo,
+                    pr_limit=args.pr_limit,
+                    workflow_limit=args.workflow_limit,
+                    stale_minutes=args.stale_minutes,
+                    repo_path=args.repo_path,
+                    store_path=args.store_path,
+                ),
+                retention_days=args.retention_days,
+                max_events=args.max_events,
             )
+        except board_store.BoardStoreError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(record_result_payload(result), indent=2, sort_keys=True))
         else:
             print(
-                "Recorded board status to .code-mower/board/events.jsonl "
+                f"Recorded board status to {_record_store_display(args)} "
                 f"(kept {result.kept}, pruned {result.pruned})."
             )
         return 0

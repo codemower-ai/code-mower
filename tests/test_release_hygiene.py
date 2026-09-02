@@ -7434,6 +7434,7 @@ def main():
             "code_mower.board.v1",
             "code_mower.boardEvent.v1",
             "code_mower.boardEventStore.v1",
+            "code_mower.boardRecord.v1",
         ):
             with self.subTest(schema=schema_name):
                 self.assertIn(schema_name, board_contract)
