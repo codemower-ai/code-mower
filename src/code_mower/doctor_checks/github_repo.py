@@ -146,6 +146,11 @@ def check_repo_auto_merge(*, slug: str, repo_payload: Mapping[str, Any]) -> Doct
         remediation=(
             None
             if allow_auto_merge
-            else f"Enable repository auto-merge with `gh api -X PATCH repos/{slug} -f allow_auto_merge=true`."
+            else (
+                "During an informational pilot this is expected; enable "
+                "repository auto-merge only when a reviewer lane meets "
+                "docs/lane-promotion-policy.md and code-mower/gate is required. "
+                f"Promotion command: `gh api -X PATCH repos/{slug} -f allow_auto_merge=true`."
+            )
         ),
     )

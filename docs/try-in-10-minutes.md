@@ -130,6 +130,11 @@ If your repository already has files with the same names, review `git diff`
 before committing and keep only the generated support files you actually intend
 to enable.
 
+The first setup PR is special: the generated workflows are not on the default
+branch yet, so it cannot fully self-gate. Treat it as a manual pilot PR. Merge
+only after the local audit comments are clean for the current head SHA and your
+normal CI is green.
+
 ## 6. Run The Audits
 
 The direct wrappers need a GitHub posting token and a separate checkout of the
@@ -160,6 +165,17 @@ Each wrapper posts a structured audit comment tied to the current head SHA. A
 clean audit adds `codex-audit-done` or `claude-audit-done`; a blocking audit
 adds the matching `*-audit-blocked` label and explains the finding. Fix any
 P0, P1, or P2 findings on the same branch, push, and rerun the blocked lane.
+
+If you need to recompute the Code Mower gate after posting manual audit
+comments, dispatch it with the PR number and the exact current head SHA:
+
+```bash
+export PR_HEAD_SHA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+gh workflow run code-mower-gate.yml --repo "$REPO" \
+  -f pr_number="$PR_NUMBER" \
+  -f head_sha="$PR_HEAD_SHA"
+code-mower lanes status --repo "$REPO"
+```
 
 When both audits are clean and your normal CI is green, merge the setup PR:
 

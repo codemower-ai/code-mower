@@ -524,6 +524,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
 
         self.assertEqual(check.status, "fail")
         self.assertIn("allow_auto_merge=true", check.remediation)
+        self.assertIn("docs/lane-promotion-policy.md", check.remediation)
 
 
 if __name__ == "__main__":
