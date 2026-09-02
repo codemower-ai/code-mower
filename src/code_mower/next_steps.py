@@ -198,7 +198,7 @@ def build_next_steps(
             "title": "Prove the package-installed path in a fresh toy repo",
             "command": (
                 "code-mower migration package-install-rehearsal "
-                f"--package-spec {alpha_package_spec} --json"
+                f"--package-spec {alpha_package_spec} --allow-package-index --json"
             ),
             "why": (
                 "Installs Code Mower into a clean venv, verifies the easy-mode "
@@ -206,9 +206,9 @@ def build_next_steps(
                 "and cloud dry-run artifacts, emits `first_user_readiness`, and "
                 "optionally checks a real repo when --repo-path is provided. "
                 "Wrapper-bearing repos get parity checks; fresh external repos "
-                "get installed-CLI readiness checks. The default beta path uses "
-                "the current published PyPI prerelease; GitHub tags remain a "
-                "release-debug fallback."
+                "get installed-CLI readiness checks. The default beta path is "
+                "an explicit package-index rehearsal of the current published "
+                "PyPI prerelease; GitHub tags remain a release-debug fallback."
             ),
             "artifacts": [
                 "outputs/package-install-rehearsal.json",

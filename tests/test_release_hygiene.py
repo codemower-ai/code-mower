@@ -232,6 +232,8 @@ class ReleaseHygieneTests(unittest.TestCase):
             workflow,
         )
         self.assertIn('          --python "$(command -v python)"\n', workflow)
+        self.assertNotIn("--allow-package-index", workflow)
+        self.assertNotIn("--upgrade-pip", workflow)
         self.assertIn("          --json\n", workflow)
 
     def test_pypi_runbook_publishes_newest_beta_as_regular_release(self) -> None:
@@ -340,7 +342,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn(
             (
                 "code-mower migration package-install-rehearsal --package-spec "
-                "code-mower==0.8.0b1 --json"
+                "code-mower==0.8.0b1 --allow-package-index --json"
             ),
             help_text,
         )
@@ -6989,6 +6991,89 @@ def main():
             ],
         )
 
+    def test_package_install_rehearsal_classifies_package_index_specs(self) -> None:
+        self.assertTrue(code_mower_migration._package_spec_uses_package_index("code-mower"))
+        self.assertTrue(
+            code_mower_migration._package_spec_uses_package_index(
+                "code-mower==0.8.0b1"
+            )
+        )
+        self.assertFalse(code_mower_migration._package_spec_uses_package_index("."))
+        self.assertFalse(
+            code_mower_migration._package_spec_uses_package_index("/tmp/code-mower")
+        )
+        self.assertFalse(
+            code_mower_migration._package_spec_uses_package_index(
+                "git+https://github.com/codemower-ai/code-mower.git@v0.8.0-beta.1"
+            )
+        )
+
+    def test_package_install_rehearsal_requires_package_index_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work_dir = Path(tmp) / "rehearsal"
+
+            with self.assertRaisesRegex(ValueError, "--allow-package-index"):
+                code_mower_migration.run_package_install_rehearsal(
+                    package_spec="code-mower==0.8.0b1",
+                    work_dir=work_dir,
+                )
+
+            self.assertFalse(work_dir.exists())
+
+    def test_package_install_rehearsal_cli_default_is_non_network_fail_fast(self) -> None:
+        out = StringIO()
+
+        with redirect_stdout(out):
+            status = code_mower_migration.main(["package-install-rehearsal", "--json"])
+
+        payload = json.loads(out.getvalue())
+        self.assertEqual(status, 1)
+        self.assertEqual(payload["status"], "fail")
+        self.assertIn("--allow-package-index", payload["error"])
+        self.assertEqual(payload["steps"], [])
+
+    def test_package_install_rehearsal_cli_passes_network_opt_ins(self) -> None:
+        with mock.patch.object(
+            code_mower_migration,
+            "run_package_install_rehearsal",
+            return_value={"status": "pass"},
+        ) as rehearsal:
+            status = code_mower_migration.main(
+                [
+                    "package-install-rehearsal",
+                    "--package-spec",
+                    "code-mower==0.8.0b1",
+                    "--allow-package-index",
+                    "--upgrade-pip",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertTrue(rehearsal.call_args.kwargs["allow_package_index"])
+        self.assertTrue(rehearsal.call_args.kwargs["upgrade_pip"])
+
+    def test_package_install_rehearsal_cli_keeps_local_path_offline_by_default(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            code_mower_migration,
+            "run_package_install_rehearsal",
+            return_value={"status": "pass"},
+        ) as rehearsal:
+            status = code_mower_migration.main(
+                [
+                    "package-install-rehearsal",
+                    "--package-spec",
+                    ".",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertFalse(rehearsal.call_args.kwargs["allow_package_index"])
+        self.assertFalse(rehearsal.call_args.kwargs["upgrade_pip"])
+
     def test_package_install_rehearsal_resolves_python_command_from_path(self) -> None:
         with mock.patch("shutil.which", return_value="/opt/example/bin/python3.12"):
             self.assertEqual(
@@ -7030,6 +7115,8 @@ def main():
         self.assertNotIn("--ref main", commands["publish-testpypi-candidate"])
         self.assertIn("publish_testpypi=true", commands["publish-testpypi-candidate"])
         self.assertIn("publish_pypi=false", commands["publish-testpypi-candidate"])
+        self.assertIn("--allow-package-index", commands["testpypi-install-rehearsal"])
+        self.assertIn("--upgrade-pip", commands["testpypi-install-rehearsal"])
         self.assertIn("--pip-index-url https://test.pypi.org/simple/", commands["testpypi-install-rehearsal"])
         self.assertEqual(
             payload["setup_urls"]["github_environments"],
@@ -7742,7 +7829,7 @@ def main():
             (
                 "code-mower migration package-install-rehearsal "
                 f"--package-spec {next_steps.current_alpha_package_spec()} "
-                "--repo-path /path/to/product-repo --json"
+                "--allow-package-index --repo-path /path/to/product-repo --json"
             ),
             code_mower_package_content.cli_commands(__version__),
         )
@@ -7919,6 +8006,7 @@ def main():
             doctor_step["command"],
         )
         self.assertIn("code-mower==0.8.0b1", package_step["command"])
+        self.assertIn("--allow-package-index", package_step["command"])
         self.assertIn("current published PyPI prerelease", package_step["why"])
         self.assertIn("first_user_readiness", package_step["why"])
         self.assertEqual(

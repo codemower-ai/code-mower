@@ -556,7 +556,8 @@ def _top_level_help(show_all: bool) -> str:
             "  code-mower board serve --repo OWNER/REPO",
             (
                 "  code-mower migration package-install-rehearsal "
-                f"--package-spec {code_mower_next_steps.current_alpha_package_spec()} --json"
+                f"--package-spec {code_mower_next_steps.current_alpha_package_spec()} "
+                "--allow-package-index --json"
             ),
         ]
     )

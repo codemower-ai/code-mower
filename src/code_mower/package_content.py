@@ -449,7 +449,7 @@ def cli_commands(version: str) -> tuple[str, ...]:
         (
             "code-mower migration package-install-rehearsal "
             f"--package-spec {current_alpha_package_spec(version)} "
-            "--repo-path /path/to/product-repo --json"
+            "--allow-package-index --repo-path /path/to/product-repo --json"
         ),
         "code-mower local-llm profiles --json",
         "code-mower local-llm probe --profile qwen3-coder-next-lmstudio --json",

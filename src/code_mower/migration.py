@@ -41,7 +41,9 @@ if __package__ in {None, ""}:
         _glob_relative_files,
         _json_payload,
         _load_release_readiness,
+        _package_spec_uses_package_index,
         _pip_install_command,
+        _pip_upgrade_command,
         _resolve_python_executable,
         _resolve_install_package_spec,
         _run,
@@ -78,7 +80,9 @@ else:
             _glob_relative_files,
             _json_payload,
             _load_release_readiness,
+            _package_spec_uses_package_index,
             _pip_install_command,
+            _pip_upgrade_command,
             _resolve_python_executable,
             _resolve_install_package_spec,
             _run,
@@ -115,7 +119,9 @@ else:
             _glob_relative_files,
             _json_payload,
             _load_release_readiness,
+            _package_spec_uses_package_index,
             _pip_install_command,
+            _pip_upgrade_command,
             _resolve_python_executable,
             _resolve_install_package_spec,
             _run,
@@ -142,7 +148,9 @@ __all__ = [
     "_json_payload",
     "_line_requires_workflow_file",
     "_load_release_readiness",
+    "_package_spec_uses_package_index",
     "_pip_install_command",
+    "_pip_upgrade_command",
     "_relative_existing_files",
     "_resolve_python_executable",
     "_resolve_install_package_spec",
@@ -703,6 +711,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
         help="optional pip --extra-index-url; may be provided multiple times",
     )
+    package_install.add_argument(
+        "--allow-package-index",
+        action="store_true",
+        help=(
+            "allow bare package-index specs such as code-mower==0.8.0b1; "
+            "normal unit/CI rehearsals should use a local path instead"
+        ),
+    )
+    package_install.add_argument(
+        "--upgrade-pip",
+        action="store_true",
+        help="upgrade pip inside the rehearsal venv before installing the package",
+    )
     package_install.add_argument("--timeout", type=int, default=180)
     package_install.add_argument("--shadow-cycles", type=int, default=1)
     package_install.add_argument("--standalone-default-cycles", type=int, default=1)
@@ -819,6 +840,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 standalone_default_cycles=args.standalone_default_cycles,
                 pip_index_url=args.pip_index_url,
                 pip_extra_index_urls=args.pip_extra_index_url,
+                allow_package_index=args.allow_package_index,
+                upgrade_pip=args.upgrade_pip,
             )
         except (OSError, subprocess.TimeoutExpired, ValueError, RehearsalError) as exc:
             payload = {

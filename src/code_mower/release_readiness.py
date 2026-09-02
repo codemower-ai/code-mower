@@ -412,6 +412,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 if (
                     package_index_spec
                     and package_index_spec in doc_blob
+                    and "--allow-package-index" in doc_blob
                     and "--pip-index-url https://test.pypi.org/simple/" in doc_blob
                     and "--pip-extra-index-url https://pypi.org/simple/" in doc_blob
                     and "package-install-rehearsal" in doc_blob
@@ -513,6 +514,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "command": (
                 "code-mower migration package-install-rehearsal "
                 f"--package-spec {package_index_spec} "
+                "--allow-package-index "
+                "--upgrade-pip "
                 "--pip-index-url https://test.pypi.org/simple/ "
                 "--pip-extra-index-url https://pypi.org/simple/ "
                 "--json"

@@ -35,7 +35,9 @@ No source code, raw diffs, model transcripts, auth output, or secrets are
 uploaded. The cloud upload and dogfood checks are dry-run-only in this rehearsal.
 Public CI runs this rehearsal from the current checkout, and release candidates
 should also run it against the exact public tag or package-index candidate before
-being widened.
+being widened. Package-index rehearsals require `--allow-package-index`; add
+`--upgrade-pip` only for deliberate release/integration checks that should also
+touch the package index for pip itself.
 
 ## Canonical Command
 
@@ -44,6 +46,7 @@ Use the current public tag or release candidate:
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -67,6 +70,7 @@ For a fixed output directory:
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-first-user-rehearsal \
   --json
@@ -77,6 +81,8 @@ For a TestPyPI candidate, use the exact version published to TestPyPI:
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==<candidate-version> \
+  --allow-package-index \
+  --upgrade-pip \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \
@@ -134,6 +140,7 @@ repository after the package install succeeds:
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
   --repo-path /path/to/external-repo \
   --python "$(command -v python3.12)" \
   --json
@@ -215,6 +222,7 @@ When a product repository already has Code Mower wrapper files, the same
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
   --repo-path /path/to/product-repo \
   --python "$(command -v python3.12)" \
   --json
@@ -295,6 +303,8 @@ candidate from TestPyPI:
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
+  --upgrade-pip \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \
@@ -318,6 +328,8 @@ production package from PyPI:
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
+  --upgrade-pip \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-v08-beta1-pypi-rehearsal \
   --json
@@ -336,6 +348,7 @@ repository:
 ```bash
 code-mower migration package-install-rehearsal \
   --package-spec code-mower==0.8.0b1 \
+  --allow-package-index \
   --repo-path "$REPO_PATH" \
   --work-dir "$WORK_DIR" \
   --json

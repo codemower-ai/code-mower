@@ -21,7 +21,9 @@ if __package__ in {None, ""}:
         _glob_relative_files,
         _json_payload,
         _load_release_readiness,
+        _package_spec_uses_package_index,
         _pip_install_command,
+        _pip_upgrade_command,
         _resolve_install_package_spec,
         _run,
         _run_rehearsal_step,
@@ -47,7 +49,9 @@ else:
         _glob_relative_files,
         _json_payload,
         _load_release_readiness,
+        _package_spec_uses_package_index,
         _pip_install_command,
+        _pip_upgrade_command,
         _resolve_install_package_spec,
         _run,
         _run_rehearsal_step,
@@ -77,7 +81,9 @@ __all__ = [
     "_glob_relative_files",
     "_json_payload",
     "_load_release_readiness",
+    "_package_spec_uses_package_index",
     "_pip_install_command",
+    "_pip_upgrade_command",
     "_resolve_python_executable",
     "_resolve_install_package_spec",
     "_run",
@@ -251,8 +257,18 @@ def run_package_install_rehearsal(
     standalone_default_cycles: int = 1,
     pip_index_url: str = "",
     pip_extra_index_urls: Sequence[str] | None = None,
+    allow_package_index: bool = False,
+    upgrade_pip: bool = False,
 ) -> dict[str, Any]:
     requested_package_spec = package_spec
+    uses_package_index = _package_spec_uses_package_index(requested_package_spec)
+    if uses_package_index and not allow_package_index:
+        raise ValueError(
+            "package-index package specs require --allow-package-index. "
+            "Use --package-spec . for a local source rehearsal, or pass "
+            "--allow-package-index for release/integration rehearsals against "
+            "PyPI or TestPyPI."
+        )
     package_spec = _resolve_install_package_spec(package_spec)
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="code-mower-package-install-"))
@@ -278,13 +294,14 @@ def run_package_install_rehearsal(
     )
     venv_python = _venv_python(venv_dir)
     code_mower_bin = _venv_code_mower(venv_dir)
-    _run_rehearsal_step(
-        [str(venv_python), "-m", "pip", "install", "--upgrade", "pip"],
-        cwd=work_dir,
-        env=None,
-        steps=steps,
-        timeout=timeout,
-    )
+    if upgrade_pip:
+        _run_rehearsal_step(
+            _pip_upgrade_command(venv_python),
+            cwd=work_dir,
+            env=None,
+            steps=steps,
+            timeout=timeout,
+        )
     _run_rehearsal_step(
         _pip_install_command(
             venv_python,
@@ -637,6 +654,9 @@ def run_package_install_rehearsal(
         "status": "pass",
         "package_spec": package_spec,
         "requested_package_spec": requested_package_spec,
+        "uses_package_index": uses_package_index,
+        "package_index_allowed": allow_package_index,
+        "pip_upgraded": upgrade_pip,
         "pip_index_url": pip_index_url,
         "pip_extra_index_urls": list(pip_extra_index_urls or ()),
         "python": str(python_bin),
@@ -664,6 +684,9 @@ def render_package_install_rehearsal_text(payload: dict[str, Any]) -> str:
         "Code Mower package-install rehearsal",
         f"Status: {payload['status']}",
         f"Package: {payload['package_spec']}",
+        "Package index: "
+        f"{'allowed' if payload.get('package_index_allowed') else 'disabled'}",
+        f"Pip upgrade: {'run' if payload.get('pip_upgraded') else 'skipped'}",
         f"Version: {payload.get('version', '')}",
         f"Work dir: {payload['work_dir']}",
         f"Toy repo: {payload['toy_repo']}",
