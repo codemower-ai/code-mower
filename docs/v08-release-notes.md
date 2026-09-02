@@ -2,7 +2,8 @@
 
 This beta packages the v0.7 adoption hardening and v0.8 native Board work.
 Install the pinned beta with
-`pipx install --python python3.12 code-mower==0.8.0b1`.
+`CODE_MOWER_PYTHON="$(command -v python3.12)"` followed by
+`pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1`.
 
 ## Headline
 

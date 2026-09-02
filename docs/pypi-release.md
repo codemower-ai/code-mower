@@ -5,7 +5,8 @@ and wheel distributions, verifies them with `twine check`, and can publish to
 TestPyPI or production PyPI through trusted publishing.
 
 ```bash
-pipx install --python python3.12 code-mower==0.8.0b1
+CODE_MOWER_PYTHON="$(command -v python3.12)"
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
 ```
 
 ## Current Status
@@ -228,7 +229,8 @@ The primary README command should stay on an explicit beta version until a
 stable `1.0` line exists:
 
 ```bash
-pipx install --python python3.12 code-mower==0.8.0b1
+CODE_MOWER_PYTHON="$(command -v python3.12)"
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
 ```
 
 Do not switch to unpinned `pipx install code-mower` until:

@@ -7613,10 +7613,12 @@ def main():
             / "docs"
             / "early-adopter-invite-runbook.md",
             "docs/friendly-user-rollout-v05.md": ROOT / "docs" / "friendly-user-rollout-v05.md",
+            "docs/oss-v1-checklist.md": ROOT / "docs" / "oss-v1-checklist.md",
             "docs/pypi-release.md": ROOT / "docs" / "pypi-release.md",
             "docs/v08-release-notes.md": ROOT / "docs" / "v08-release-notes.md",
         }
         stale_phrases = (
+            "pipx install --python python3.12 code-mower==0.8.0b1",
             "Use only after TestPyPI passes.",
             "beta.52 (and future newest betas until 1.0)",
             "during v0.7 adoption",
