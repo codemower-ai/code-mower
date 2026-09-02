@@ -53,7 +53,7 @@ audit evidence, skip to section 2.
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.0b1
 gh auth status
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
