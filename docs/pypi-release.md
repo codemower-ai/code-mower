@@ -67,7 +67,7 @@ for manual release rehearsals:
 | --- | --- | --- |
 | `false` | `false` | Build, upload, download, and verify distributions only. |
 | `true` | `false` | Build, verify, then publish to TestPyPI using the `testpypi` environment. |
-| `false` | `true` | Build, verify, then publish to production PyPI using the `pypi` environment. Use only after TestPyPI passes. |
+| `false` | `true` | Build, verify, then publish to production PyPI using the `pypi` environment. Use only after the no-publish verification run is green; run TestPyPI first for trusted-publishing setup changes or risky packaging changes. |
 | `true` | `true` | Avoid this for normal releases; publish to TestPyPI and PyPI as separate, auditable runs. |
 
 Manual dispatch inputs are the only publish controls for manual runs. Repository
@@ -94,7 +94,7 @@ gh api repos/codemower-ai/code-mower/releases/latest \
 
 `DEC-427-LATEST` records the 2026-08-23 owner decision in
 [PR #427](https://github.com/codemower-ai/code-mower/pull/427#issuecomment-5388373205):
-beta.52 (and future newest betas until 1.0) are published as **regular
+beta.52 established that future newest betas until 1.0 are published as **regular
 releases** (prerelease flag off), not prerelease-flagged releases, so GitHub's
 `/releases/latest` endpoint resolves for early adopters, automation, and
 package-index release checks. A prerelease-flagged release cannot be returned by
@@ -121,9 +121,11 @@ project pages, and trusted-publishing setup pages:
 - [TestPyPI trusted publishers](https://test.pypi.org/manage/project/code-mower/settings/publishing/)
 - [PyPI trusted publishers](https://pypi.org/manage/project/code-mower/settings/publishing/)
 
-Before publishing to TestPyPI, run the release workflow once with both publish
-inputs set to `false` and confirm `build-distributions` and
-`verify-distributions` are green.
+Before publishing to TestPyPI or PyPI, run the release workflow once with both
+publish inputs set to `false` and confirm `build-distributions` and
+`verify-distributions` are green. TestPyPI remains useful for first-time
+trusted-publishing setup or risky packaging changes; routine beta publishing
+can go from the green no-publish verification run to production PyPI.
 
 ## Cache Bypass And Propagation Triage
 

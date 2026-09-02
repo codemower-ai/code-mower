@@ -3,6 +3,9 @@
 This is the operating plan for the first 5-10 friendly users before Code Mower
 widens to 20-50 early adopters.
 
+The filename is historical from the v0.5 planning pass. The live baseline in
+this document is the current v0.8 package beta.
+
 Code Mower is beta, bring-your-own-agent-loop software for teams willing to
 calibrate reviewers. It is not a drop-in autonomous merge gate.
 
@@ -23,7 +26,9 @@ Use the current beta install pin unless a newer release is explicitly called out
 in the invite:
 
 ```bash
-pipx install --python python3.12 code-mower==0.8.0b1
+python3.12 --version
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.8.0b1
 ```
 
 The current package-index beta baseline is `v0.8.0-beta.1`, with pinned package install spec `code-mower==0.8.0b1`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
@@ -33,7 +38,8 @@ The current package-index beta baseline is `v0.8.0-beta.1`, with pinned package 
 Start with users who have:
 
 - a GitHub repository they can safely run diagnostics against;
-- Python 3.12 available through Homebrew, pyenv, or system package manager;
+- Python 3.12 available through Homebrew, pyenv, uv, or a system package
+  manager;
 - willingness to run a local-first tool before enabling any cloud upload; and
 - patience to report rough edges in install, doctor, or first report output.
 
@@ -46,8 +52,9 @@ Ask each user to run:
 
 ```bash
 code-mower init --easy
-code-mower doctor --preflight --json
+code-mower doctor --adoption --repo OWNER/REPO --json
 code-mower lanes status --repo OWNER/REPO
+code-mower board serve --repo OWNER/REPO
 code-mower next-steps --profile recommended
 ```
 
@@ -99,9 +106,9 @@ For each friendly user, capture:
 Do not collect source code, raw diffs, raw model transcripts, auth output, or
 secrets.
 
-## Exit Criteria For v0.6
+## Exit Criteria For Wider Beta
 
-The friendly-user loop is good enough for a wider v0.6 push when:
+The friendly-user loop is good enough for a wider v0.8/v1.0 push when:
 
 - at least 5 fresh users complete install, doctor, and first report;
 - at least 3 private repositories complete package-install rehearsal or
