@@ -7443,9 +7443,11 @@ def main():
         self.assertIn("reviewer verdict history and spend/latency", quickstart_flat)
         self.assertIn("code_mower.boardTimelines.v1", board_contract)
         self.assertIn("code_mower.boardOwnerQueue.v1", board_contract)
+        self.assertIn("code_mower.boardAgentAdapters.v1", board_contract)
         self.assertIn("timelines.verdicts.entries[]", board_contract)
         self.assertIn("timelines.spend", board_contract)
         self.assertIn("owner_queue.entries[]", board_contract)
+        self.assertIn(".code-mower/board/agents/*.json", board_contract)
         self.assertIn("filtered_rows", board_contract)
         for schema_name in (
             "code_mower.laneStatus.v1",
@@ -7453,6 +7455,7 @@ def main():
             "code_mower.boardEvent.v1",
             "code_mower.boardEventStore.v1",
             "code_mower.boardRecord.v1",
+            "code_mower.boardAgentAdapters.v1",
         ):
             with self.subTest(schema=schema_name):
                 self.assertIn(schema_name, board_contract)

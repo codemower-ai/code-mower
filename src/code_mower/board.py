@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import socket
 import sys
 import webbrowser
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -26,6 +28,11 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5332
 BOARD_TIMELINES_SCHEMA = "code_mower.boardTimelines.v1"
 BOARD_OWNER_QUEUE_SCHEMA = "code_mower.boardOwnerQueue.v1"
+BOARD_AGENT_ADAPTERS_SCHEMA = "code_mower.boardAgentAdapters.v1"
+DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH = Path(".code-mower") / "board" / "agents"
+SECRET_VALUE_RE = re.compile(
+    r"(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})"
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,7 @@ class BoardConfig:
     repo_path: str = "."
     store_path: str | None = None
     spend_path: str | None = None
+    agent_adapters_path: str | None = None
     event_limit: int = 20
     record_events: bool = False
     record_interval_seconds: int = 60
@@ -58,6 +66,12 @@ def _spend_path(config: BoardConfig) -> Path:
     if config.spend_path:
         return Path(config.spend_path)
     return Path(config.repo_path) / reviewer_spend.DEFAULT_SPEND_PATH
+
+
+def _agent_adapters_path(config: BoardConfig) -> Path:
+    if config.agent_adapters_path:
+        return Path(config.agent_adapters_path)
+    return Path(config.repo_path) / DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH
 
 
 def _is_loopback(host: str) -> bool:
@@ -121,6 +135,7 @@ def status_payload(
             "interval_seconds": config.record_interval_seconds,
         },
     }
+    payload["agent_adapters"] = agent_adapters_payload(config)
     payload["owner_queue"] = owner_queue_payload(payload)
     return payload
 
@@ -156,11 +171,23 @@ def _record_live_snapshot(
 
 def _http_url(value: object) -> str:
     text = str(value or "").strip()
+    if SECRET_VALUE_RE.search(text):
+        return ""
     return text if text.startswith(("https://", "http://")) else ""
 
 
+def _safe_text(value: object, *, limit: int = 160) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    if SECRET_VALUE_RE.search(text):
+        return "[redacted]"
+    return text[:limit]
+
+
 def _head_prefix(value: object) -> str:
-    return str(value or "").strip()[:12]
+    text = str(value or "").strip()
+    return "" if SECRET_VALUE_RE.search(text) else text[:12]
 
 
 def _queue_base(pr: dict[str, Any], kind: str, priority: int, next_action: str) -> dict[str, Any]:
@@ -311,6 +338,96 @@ def _float(value: object) -> float | None:
 def _int(value: object) -> int | None:
     number = _float(value)
     return int(number) if number is not None else None
+
+
+def _adapter_items(raw: object) -> list[Mapping[str, Any]]:
+    if isinstance(raw, Mapping):
+        agents = raw.get("agents")
+        if isinstance(agents, list):
+            return [item for item in agents if isinstance(item, Mapping)]
+        return [raw]
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, Mapping)]
+    return []
+
+
+def _adapter_card(
+    raw: Mapping[str, Any],
+    *,
+    source_file: str,
+    show_local_paths: bool,
+) -> dict[str, Any]:
+    card: dict[str, Any] = {
+        "source_file": source_file,
+        "provider": _safe_text(raw.get("provider") or raw.get("agent") or raw.get("name"), limit=40) or "unknown",
+        "role": _safe_text(raw.get("role"), limit=40) or "agent",
+        "status": _safe_text(raw.get("status"), limit=40) or "unknown",
+    }
+    optional_text_fields = {
+        "lane": 60,
+        "label": 80,
+        "repo": 120,
+        "branch": 120,
+        "title": 160,
+        "next_action": 160,
+        "started_at": 80,
+        "updated_at": 80,
+    }
+    for field, limit in optional_text_fields.items():
+        value = _safe_text(raw.get(field), limit=limit)
+        if value:
+            card[field] = value
+    for field in ("pr_number", "issue_number", "pid"):
+        value = _int(raw.get(field))
+        if value is not None:
+            card[field] = value
+    if url := _http_url(raw.get("url")):
+        card["url"] = url
+    if head_sha := _head_prefix(raw.get("head_sha")):
+        card["head_sha_prefix"] = head_sha
+    if cwd := _safe_text(raw.get("cwd"), limit=240):
+        if show_local_paths:
+            card["cwd"] = cwd
+        else:
+            card["cwd"] = lane_status.LOCAL_PATH_REDACTION
+            card["cwd_redacted"] = True
+    return card
+
+
+def agent_adapters_payload(config: BoardConfig) -> dict[str, Any]:
+    path = _agent_adapters_path(config)
+    payload: dict[str, Any] = {
+        "schema": BOARD_AGENT_ADAPTERS_SCHEMA,
+        "available": True,
+        "path": lane_status.LOCAL_PATH_REDACTION,
+        "path_redacted": True,
+        "path_exists": path.exists(),
+        "agents": [],
+        "warnings": [],
+        "message": "no local agent adapter files found",
+    }
+    if not path.exists():
+        return payload
+    if not path.is_dir():
+        payload["warnings"].append({"file": "", "message": "agent adapter path is not a directory"})
+        payload["message"] = "could not read local agent adapter files"
+        return payload
+    for adapter_file in sorted(path.glob("*.json"))[:50]:
+        try:
+            raw = json.loads(adapter_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload["warnings"].append({"file": adapter_file.name, "message": "could not parse agent adapter file"})
+            continue
+        cards = [
+            _adapter_card(item, source_file=adapter_file.name, show_local_paths=config.show_local_paths)
+            for item in _adapter_items(raw)
+        ]
+        if not cards:
+            payload["warnings"].append({"file": adapter_file.name, "message": "agent adapter file had no cards"})
+            continue
+        payload["agents"].extend(cards)
+    payload["message"] = "" if payload["agents"] else "no local agent adapter cards found"
+    return payload
 
 
 def _spend_timeline(config: BoardConfig, *, limit: int) -> dict[str, Any]:
@@ -469,6 +586,7 @@ def render_board_html(config: BoardConfig) -> str:
   <main>
     <div class="summary" id="summary"></div>
     <section><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
+    <section><h2>Agent Cards</h2><div class="rows" id="agents"></div></section>
     <section><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
     <section><h2>Gate Alerts</h2><div class="rows" id="alerts"></div></section>
     <section><h2>Recent Code Mower Workflows</h2><div class="rows" id="runs"></div></section>
@@ -502,6 +620,7 @@ def render_board_html(config: BoardConfig) -> str:
       const runs = data.remote?.workflow_runs || [];
       const alerts = data.remote?.gate_health?.alerts || [];
       const ownerQueue = data.owner_queue?.entries || [];
+      const agentCards = data.agent_adapters?.agents || [];
       const timelines = data.timelines || {{}};
       const verdicts = timelines.verdicts?.entries || [];
       const spend = timelines.spend || {{}};
@@ -511,9 +630,11 @@ def render_board_html(config: BoardConfig) -> str:
         `<div class="metric"><span class="muted">GitHub</span><b class="${{data.remote?.available ? "ok" : "warn"}}">${{data.remote?.available ? "available" : "unavailable"}}</b></div>`,
         `<div class="metric"><span class="muted">Open PRs</span><b>${{prs.length}}</b></div>`,
         `<div class="metric"><span class="muted">Owner queue</span><b class="${{ownerQueue.length ? "warn" : "ok"}}">${{ownerQueue.length}}</b></div>`,
+        `<div class="metric"><span class="muted">Agent cards</span><b>${{agentCards.length}}</b></div>`,
         `<div class="metric"><span class="muted">Gate alerts</span><b class="${{alerts.length ? "warn" : "ok"}}">${{alerts.length}}</b></div>`
       ].join(""));
       put("owner", ownerQueue.length ? ownerQueue.map(item => `<div class="row"><div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.kind)}}</a>${{pill(item.next_action)}}${{pill(item.head_sha_prefix)}}</div><div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}} updated ${{esc(item.updated_at)}}</div></div>`).join("") : empty(data.owner_queue?.message || "No owner queue items."));
+      put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{esc(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
       put("prs", prs.length ? prs.map(pr => `<div class="row">
         <div class="line"><a href="${{esc(href(pr.url))}}">#${{esc(pr.number)}} ${{esc(pr.title)}}</a>${{pill(pr.merge_state)}}${{pr.is_draft ? pill("draft") : ""}}${{pr.stale ? pill("stale") : ""}}</div>
         <div class="muted">${{esc(pr.branch)}} by ${{esc(pr.author)}} updated ${{esc(pr.updated_at)}}</div>
@@ -753,6 +874,7 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--repo-path", default=".")
     serve_parser.add_argument("--store-path")
     serve_parser.add_argument("--spend-path")
+    serve_parser.add_argument("--agent-adapters-path")
     serve_parser.add_argument("--event-limit", type=int, default=20)
     serve_parser.add_argument("--record-events", action="store_true")
     serve_parser.add_argument("--record-interval-seconds", type=int, default=60)
@@ -763,6 +885,7 @@ def main(argv: list[str] | None = None) -> int:
     record_parser.add_argument("--repo", required=True)
     record_parser.add_argument("--repo-path", default=".")
     record_parser.add_argument("--store-path")
+    record_parser.add_argument("--agent-adapters-path")
     record_parser.add_argument("--pr-limit", type=int, default=50)
     record_parser.add_argument("--workflow-limit", type=int, default=20)
     record_parser.add_argument("--stale-minutes", type=int, default=30)
@@ -790,6 +913,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_path=args.repo_path,
                 store_path=args.store_path,
                 spend_path=args.spend_path,
+                agent_adapters_path=args.agent_adapters_path,
                 event_limit=args.event_limit,
                 record_events=args.record_events,
                 record_interval_seconds=args.record_interval_seconds,
@@ -814,6 +938,7 @@ def main(argv: list[str] | None = None) -> int:
                     stale_minutes=args.stale_minutes,
                     repo_path=args.repo_path,
                     store_path=args.store_path,
+                    agent_adapters_path=args.agent_adapters_path,
                 ),
                 retention_days=args.retention_days,
                 max_events=args.max_events,

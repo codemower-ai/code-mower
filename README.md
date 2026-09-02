@@ -88,7 +88,10 @@ writes metadata-only snapshots to `.code-mower/board/events.jsonl` with default
 14-day and 500-event retention. `code-mower board events` prints recent stored
 events without calling GitHub. The Board also shows an owner queue, and it
 summarizes reviewer verdict history and spend/latency from local board events
-plus `.code-mower/reviewer-spend.json` when those files exist.
+plus `.code-mower/reviewer-spend.json` when those files exist. Local agents can
+publish opt-in status cards by writing metadata-only JSON files to
+`.code-mower/board/agents/*.json`; the Board redacts local paths by default and
+does not upload those cards.
 The local JSON contracts are documented in
 [Board Data Contract](docs/board-data-contract.md).
 
