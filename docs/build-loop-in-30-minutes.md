@@ -392,9 +392,18 @@ Run these smoke checks as the macOS user that owns the runner process:
 ```bash
 gh auth status
 codex --version
-codex exec --skip-git-repo-check --sandbox read-only --ask-for-approval never --ephemeral "Reply with exactly: ok"
+codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
 claude auth status
 claude -p "Reply with exactly: ok" --output-format json
+```
+
+For non-interactive runner or hosted-agent setup, load the Codex API key from a
+secret store and pipe it into the CLI without printing it:
+
+```bash
+printf '%s\n' "$OPENAI_API_KEY" | codex login --with-api-key
+codex login status
+codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
 ```
 
 In service mode, set `USER`, `LOGNAME`, `SHELL`, `LANG`, and a PATH that can

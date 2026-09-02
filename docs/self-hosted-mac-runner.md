@@ -116,9 +116,18 @@ Verify auth from a runner job or from the same service user environment:
 ```bash
 gh auth status
 codex login status
-codex exec --skip-git-repo-check --sandbox read-only --ask-for-approval never --ephemeral "Reply with exactly: ok"
+codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
 claude auth status
 claude -p "Reply with exactly: ok" --output-format json
+```
+
+For API-key runner auth, store `OPENAI_API_KEY` in the runner's secret manager
+or private `.env`, then load it into the setup shell and run:
+
+```bash
+printf '%s\n' "$OPENAI_API_KEY" | codex login --with-api-key
+codex login status
+codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
 ```
 
 `claude auth status` is not enough by itself. The prompt smoke is the useful
