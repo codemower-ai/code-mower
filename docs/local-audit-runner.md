@@ -47,6 +47,12 @@ does not appear in the Python process's initial environment. Direct local runs
 may use `GITHUB_TOKEN` when that exposure is acceptable for the operator's
 machine.
 
+During package-install adoption, `tools/run_codex_audit_pr.sh` and
+`tools/run_claude_audit_pr.sh` use the installed `code-mower` on `PATH` while
+`tools/code_mower_standalone_pin.env` still has placeholder values. Configure
+the standalone pin file, or set `CODE_MOWER_USE_STANDALONE=1`, when you are
+ready to shadow a reviewed Code Mower source ref through `tools/code_mower`.
+
 Repository paths must use this format:
 
 ```text

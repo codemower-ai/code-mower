@@ -302,6 +302,10 @@ standalone access.
 `tools/code_mower_standalone_pin.env` are migration support files. They should
 remain in product repos until the package is installed through a normal public
 dependency path.
+For package-installed adoption, generated Codex and Claude audit wrappers use
+the installed `code-mower` on `PATH` while the standalone pin file still has
+placeholder values. Once you intentionally shadow a reviewed source ref, replace
+the pin placeholders or set `CODE_MOWER_USE_STANDALONE=1`.
 
 The Antigravity CLI lane uses the local `agy` authentication state created by
 `agy install`/login. Because that OAuth state currently lives in the operator's

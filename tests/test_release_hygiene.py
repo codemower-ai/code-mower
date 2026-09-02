@@ -4417,6 +4417,98 @@ printf '%s\\n' "${lane}"
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 self.assertEqual(completed.stdout.strip(), lane)
 
+    def test_audit_wrappers_fall_back_to_installed_cli_before_standalone_pin(
+        self,
+    ) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / ".code-mower.generated"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            installed_code_mower = bin_dir / "code-mower"
+            installed_code_mower.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+lane="$1"
+stdin_flag="$2"
+if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ]; then
+  echo "token leaked through environment" >&2
+  exit 42
+fi
+read -r token
+if [ "${stdin_flag}" != "--read-token-from-stdin" ]; then
+  echo "missing stdin flag: ${stdin_flag}" >&2
+  exit 43
+fi
+if [ "${token}" != "secret-token" ]; then
+  echo "wrong token: ${token}" >&2
+  exit 44
+fi
+printf 'installed:%s\\n' "${lane}"
+""",
+                encoding="utf-8",
+            )
+            installed_code_mower.chmod(0o755)
+            plan = code_mower_init.render_init_plan(
+                code_mower_config.load_config(config_path),
+                package_mode=True,
+                package_command="code-mower",
+            )
+            code_mower_init.apply_init_plan(plan, output_dir)
+
+            for wrapper, lane in (
+                ("tools/run_codex_audit_pr.sh", "codex-audit"),
+                ("tools/run_claude_audit_pr.sh", "claude-audit"),
+            ):
+                with self.subTest(wrapper=wrapper):
+                    completed = subprocess.run(
+                        [str(output_dir / wrapper), "--repo", "owner/repo"],
+                        cwd=output_dir,
+                        env={
+                            "PATH": f"{bin_dir}{os.pathsep}{os.defpath}",
+                            "HOME": os.environ.get("HOME", ""),
+                            "GITHUB_TOKEN": "secret-token",
+                        },
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    self.assertEqual(completed.stdout.strip(), f"installed:{lane}")
+                    self.assertIn("using installed code-mower", completed.stderr)
+
+            repo_code_mower = output_dir / "tools/code_mower"
+            repo_code_mower.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+lane="$1"
+stdin_flag="$2"
+read -r token
+printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
+""",
+                encoding="utf-8",
+            )
+            repo_code_mower.chmod(0o755)
+            completed = subprocess.run(
+                [str(output_dir / "tools/run_codex_audit_pr.sh"), "--repo", "owner/repo"],
+                cwd=output_dir,
+                env={
+                    "PATH": f"{bin_dir}{os.pathsep}{os.defpath}",
+                    "HOME": os.environ.get("HOME", ""),
+                    "GITHUB_TOKEN": "secret-token",
+                    "CODE_MOWER_USE_STANDALONE": "1",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                completed.stdout.strip(),
+                "repo:codex-audit:--read-token-from-stdin:secret-token",
+            )
+
     def test_privacy_scan_is_clean(self) -> None:
         self.assertEqual(privacy_scan.scan(ROOT), [])
 
