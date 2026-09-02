@@ -26,6 +26,10 @@ embeds the lane-status snapshot unchanged.
 `code_mower.boardRecord.v1` is the write acknowledgement emitted by
 `code-mower board record --json`.
 
+`code_mower.boardTimelines.v1` is the derived local timeline payload embedded in
+the board's `/api/status` response. It summarizes local board events and
+reviewer-spend rows for display only.
+
 All board schemas are metadata-only. They must not contain source code, raw diffs,
 transcripts, issue body text, raw stdout/stderr, auth output, browser history,
 local secret values, or secrets.
@@ -129,6 +133,38 @@ store path, the stored event, retained/pruned counts, and malformed-line count.
 Persisted snapshots redact local cwd paths by default even if a debug view chose
 to show them. Store paths are redacted in JSON output unless an operator
 explicitly requests `--show-store-path`.
+
+## Timelines
+
+The Board embeds `code_mower.boardTimelines.v1` in `/api/status`. The timeline
+payload is derived locally and is not written back into board event snapshots, so
+history files do not recursively grow as the browser refreshes.
+
+`timelines.verdicts.entries[]` is derived from local board event snapshots. Each
+entry includes:
+
+- `created_at`: event snapshot timestamp.
+- `lane`: reviewer lane inferred from done or blocked audit labels.
+- `pr_number`: pull request number.
+- `head_sha_prefix`: first 12 characters of the PR head SHA.
+- `verdict`: `PASS` for done labels or `BLOCKED` for blocked labels.
+- `url`: HTTP(S) PR URL when present.
+
+`timelines.spend` is derived from `.code-mower/reviewer-spend.json` unless
+`--spend-path` points somewhere else. It includes:
+
+- `available`: whether the spend file exists and was readable.
+- `groups[]`: run counts, total and average wall seconds, total cost, and total
+  tokens grouped by lane and verdict.
+- `recent_runs[]`: recent metadata rows with lane, PR number, SHA prefix, model,
+  wall seconds, cost, token count, and verdict.
+- `skipped_rows`: malformed spend rows skipped while rendering.
+- `filtered_rows`: spend rows for other repositories skipped while rendering.
+- `message`: safe status text when no spend file exists or the file cannot be
+  read.
+
+Spend paths are redacted in JSON output. Malformed spend files and local read
+errors use generic safe messages without embedding local paths.
 
 ## Cloud Boundary
 

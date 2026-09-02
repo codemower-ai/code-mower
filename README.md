@@ -86,7 +86,9 @@ without serving the browser view, run
 `code-mower board record --repo OWNER/REPO` from the repository checkout; it
 writes metadata-only snapshots to `.code-mower/board/events.jsonl` with default
 14-day and 500-event retention. `code-mower board events` prints recent stored
-events without calling GitHub.
+events without calling GitHub. The Board also summarizes reviewer verdict
+history and spend/latency from local board events plus
+`.code-mower/reviewer-spend.json` when those files exist.
 The local JSON contracts are documented in
 [Board Data Contract](docs/board-data-contract.md).
 
