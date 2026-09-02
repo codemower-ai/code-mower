@@ -114,6 +114,18 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("      - name: Unit tests\n", workflow)
         self.assertIn("      - name: Compile sources\n", workflow)
 
+    def test_codex_smoke_docs_use_supported_flags(self) -> None:
+        doc_paths = (
+            ROOT / "docs/build-loop-in-30-minutes.md",
+            ROOT / "docs/self-hosted-mac-runner.md",
+        )
+
+        for path in doc_paths:
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("--ephemeral", text, msg=str(path))
+            self.assertNotIn("--ask-for-approval", text, msg=str(path))
+            self.assertIn("codex login --with-api-key", text, msg=str(path))
+
     def test_ruff_static_rule_stage_is_intentional(self) -> None:
         pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 

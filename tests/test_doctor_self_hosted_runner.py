@@ -145,6 +145,37 @@ class SelfHostedRunnerDoctorTests(unittest.TestCase):
         self.assertEqual(codex_check.status, "fail")
         self.assertIn("codex auth prompt probe", codex_check.message)
 
+    def test_runner_cli_auth_codex_probe_omits_stale_smoke_flags(self) -> None:
+        config = _runner_config()
+        codex_lane = config["lanes"]["codex"]
+        calls: list[list[str]] = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            codex = bin_dir / "codex"
+            codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            codex.chmod(0o755)
+
+            def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+
+            with mock.patch.dict(os.environ, {"PATH": str(bin_dir)}, clear=False):
+                checks = check_runner_cli_auth(
+                    [("codex", codex_lane)],
+                    run=fake_run,
+                    http_timeout=5,
+                )
+
+        codex_check = next(check for check in checks if check.lane == "codex")
+        self.assertEqual(codex_check.status, "pass")
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("--ephemeral", calls[0])
+        self.assertNotIn("--ask-for-approval", calls[0])
+        self.assertNotIn("--ephemeral", codex_check.detail["args"])
+        self.assertNotIn("--ask-for-approval", codex_check.detail["args"])
+
     def test_runner_workflow_labels_fail_when_custom_label_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
