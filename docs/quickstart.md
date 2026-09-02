@@ -329,9 +329,9 @@ code-mower board serve --repo OWNER/REPO --record-events
 ```
 
 Live recording writes metadata-only snapshots to `.code-mower/board/events.jsonl`
-at most once every 60 seconds by default. The Board also summarizes reviewer
-verdict history and spend/latency from local board events plus
-`.code-mower/reviewer-spend.json` when those files exist.
+at most once every 60 seconds by default. The Board also shows an owner queue,
+and it summarizes reviewer verdict history and spend/latency from local board
+events plus `.code-mower/reviewer-spend.json` when those files exist.
 
 ## 7. Rehearse The Package Install Path
 

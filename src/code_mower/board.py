@@ -25,6 +25,7 @@ from . import reviewer_spend
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5332
 BOARD_TIMELINES_SCHEMA = "code_mower.boardTimelines.v1"
+BOARD_OWNER_QUEUE_SCHEMA = "code_mower.boardOwnerQueue.v1"
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,7 @@ def status_payload(
             "interval_seconds": config.record_interval_seconds,
         },
     }
+    payload["owner_queue"] = owner_queue_payload(payload)
     return payload
 
 
@@ -159,6 +161,82 @@ def _http_url(value: object) -> str:
 
 def _head_prefix(value: object) -> str:
     return str(value or "").strip()[:12]
+
+
+def _queue_base(pr: dict[str, Any], kind: str, priority: int, next_action: str) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "priority": priority,
+        "pr_number": _int(pr.get("number")) or 0,
+        "title": str(pr.get("title") or ""),
+        "url": _http_url(pr.get("url")),
+        "branch": str(pr.get("branch") or ""),
+        "author": str(pr.get("author") or ""),
+        "updated_at": str(pr.get("updated_at") or ""),
+        "head_sha_prefix": _head_prefix(pr.get("head_sha")),
+        "next_action": next_action,
+    }
+
+
+def _failing_checks(checks: object) -> list[str]:
+    if not isinstance(checks, list):
+        return []
+    failing = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        state = str(check.get("state") or "").lower()
+        if state in {"failure", "failed", "error", "timed_out", "cancelled"}:
+            failing.append(str(check.get("name") or "check"))
+    return failing[:4]
+
+
+def owner_queue_payload(status: dict[str, Any]) -> dict[str, Any]:
+    remote = status.get("remote") if isinstance(status.get("remote"), dict) else {}
+    if not remote.get("available"):
+        return {
+            "schema": BOARD_OWNER_QUEUE_SCHEMA,
+            "available": False,
+            "count": 0,
+            "entries": [],
+            "message": "GitHub unavailable; owner queue cannot inspect PR labels",
+        }
+    entries: list[dict[str, Any]] = []
+    prs = remote.get("pull_requests") if isinstance(remote.get("pull_requests"), list) else []
+    for pr in prs:
+        if not isinstance(pr, dict):
+            continue
+        labels = pr.get("labels") if isinstance(pr.get("labels"), dict) else {}
+        needs = [label for label in labels.get("needs") or [] if isinstance(label, str)]
+        blocked = [label for label in labels.get("blocked") or [] if isinstance(label, str)]
+        if any(label == "needs-owner" for label in needs):
+            item = _queue_base(pr, "needs-owner", 0, str(pr.get("next_action") or "owner decision"))
+            item["labels"] = [label for label in needs if label == "needs-owner"]
+            entries.append(item)
+        if blocked:
+            item = _queue_base(pr, "blocked-audit", 0, "fix BLOCKED audit")
+            item["labels"] = blocked
+            entries.append(item)
+        failing = _failing_checks(pr.get("checks"))
+        if failing:
+            item = _queue_base(pr, "failing-check", 1, "fix failing check")
+            item["checks"] = failing
+            entries.append(item)
+        if pr.get("stale"):
+            entries.append(_queue_base(pr, "stale-gate", 1, "rerun gate or inspect stuck audit"))
+        merge_state = str(pr.get("merge_state") or "")
+        if merge_state in {"BEHIND", "DIRTY"}:
+            entries.append(_queue_base(pr, "rebase-needed", 1, "rebase/behind"))
+        if pr.get("is_draft"):
+            entries.append(_queue_base(pr, "draft", 2, "finish draft PR"))
+    entries.sort(key=lambda item: (item["priority"], item["pr_number"], item["kind"]))
+    return {
+        "schema": BOARD_OWNER_QUEUE_SCHEMA,
+        "available": True,
+        "count": len(entries),
+        "entries": entries,
+        "message": "" if entries else "no owner queue items",
+    }
 
 
 def _verdict_from_done_label(label: str) -> tuple[str, str] | None:
@@ -390,6 +468,7 @@ def render_board_html(config: BoardConfig) -> str:
   </header>
   <main>
     <div class="summary" id="summary"></div>
+    <section><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
     <section><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
     <section><h2>Gate Alerts</h2><div class="rows" id="alerts"></div></section>
     <section><h2>Recent Code Mower Workflows</h2><div class="rows" id="runs"></div></section>
@@ -422,6 +501,7 @@ def render_board_html(config: BoardConfig) -> str:
       const prs = data.remote?.pull_requests || [];
       const runs = data.remote?.workflow_runs || [];
       const alerts = data.remote?.gate_health?.alerts || [];
+      const ownerQueue = data.owner_queue?.entries || [];
       const timelines = data.timelines || {{}};
       const verdicts = timelines.verdicts?.entries || [];
       const spend = timelines.spend || {{}};
@@ -430,8 +510,10 @@ def render_board_html(config: BoardConfig) -> str:
         `<div class="metric"><span class="muted">Next action</span><b>${{esc(data.next_action || "inspect")}}</b></div>`,
         `<div class="metric"><span class="muted">GitHub</span><b class="${{data.remote?.available ? "ok" : "warn"}}">${{data.remote?.available ? "available" : "unavailable"}}</b></div>`,
         `<div class="metric"><span class="muted">Open PRs</span><b>${{prs.length}}</b></div>`,
+        `<div class="metric"><span class="muted">Owner queue</span><b class="${{ownerQueue.length ? "warn" : "ok"}}">${{ownerQueue.length}}</b></div>`,
         `<div class="metric"><span class="muted">Gate alerts</span><b class="${{alerts.length ? "warn" : "ok"}}">${{alerts.length}}</b></div>`
       ].join(""));
+      put("owner", ownerQueue.length ? ownerQueue.map(item => `<div class="row"><div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.kind)}}</a>${{pill(item.next_action)}}${{pill(item.head_sha_prefix)}}</div><div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}} updated ${{esc(item.updated_at)}}</div></div>`).join("") : empty(data.owner_queue?.message || "No owner queue items."));
       put("prs", prs.length ? prs.map(pr => `<div class="row">
         <div class="line"><a href="${{esc(href(pr.url))}}">#${{esc(pr.number)}} ${{esc(pr.title)}}</a>${{pill(pr.merge_state)}}${{pr.is_draft ? pill("draft") : ""}}${{pr.stale ? pill("stale") : ""}}</div>
         <div class="muted">${{esc(pr.branch)}} by ${{esc(pr.author)}} updated ${{esc(pr.updated_at)}}</div>

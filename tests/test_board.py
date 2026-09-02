@@ -80,6 +80,7 @@ class BoardTests(TestCase):
         self.assertIn("Code Mower Board", html)
         self.assertIn("/api/status", html)
         self.assertIn("/api/events", html)
+        self.assertIn("Owner Queue", html)
         self.assertIn("Open PRs", html)
         self.assertIn("Recent Local History", html)
         self.assertIn("Reviewer Verdict Timeline", html)
@@ -249,6 +250,121 @@ class BoardTests(TestCase):
             payload["board"]["recording"],
             {"enabled": False, "interval_seconds": 60},
         )
+
+    def test_status_payload_includes_empty_owner_queue_for_clean_pr(self) -> None:
+        payload = board.status_payload(
+            board.BoardConfig(repo="owner/repo"),
+            gh_json_runner=_gh_json,
+            command_runner=_command_runner,
+        )
+
+        self.assertEqual(payload["owner_queue"]["schema"], board.BOARD_OWNER_QUEUE_SCHEMA)
+        self.assertTrue(payload["owner_queue"]["available"])
+        self.assertEqual(payload["owner_queue"]["entries"], [])
+        self.assertEqual(payload["owner_queue"]["message"], "no owner queue items")
+
+    def test_owner_queue_payload_detects_attention_states(self) -> None:
+        payload = board.owner_queue_payload(
+            {
+                "remote": {
+                    "available": True,
+                    "pull_requests": [
+                        {
+                            "number": 1,
+                            "title": "Owner decision",
+                            "url": "https://github.com/owner/repo/pull/1",
+                            "branch": "codex/one",
+                            "author": "codex",
+                            "updated_at": "2026-09-01T12:00:00Z",
+                            "head_sha": "1111111111111111",
+                            "labels": {"needs": ["needs-owner"], "blocked": []},
+                            "checks": [],
+                            "next_action": "waiting for audits or owner input",
+                        },
+                        {
+                            "number": 2,
+                            "title": "Blocked",
+                            "url": "https://github.com/owner/repo/pull/2",
+                            "branch": "codex/two",
+                            "author": "codex",
+                            "updated_at": "2026-09-01T12:00:00Z",
+                            "head_sha": "2222222222222222",
+                            "labels": {"needs": [], "blocked": ["claude-audit-blocked"]},
+                            "checks": [],
+                            "next_action": "fix BLOCKED audit",
+                        },
+                        {
+                            "number": 3,
+                            "title": "Stale",
+                            "url": "https://github.com/owner/repo/pull/3",
+                            "branch": "codex/three",
+                            "author": "codex",
+                            "updated_at": "2026-09-01T12:00:00Z",
+                            "head_sha": "3333333333333333",
+                            "labels": {"needs": [], "blocked": []},
+                            "checks": [{"name": "code-mower/gate", "state": "success"}],
+                            "stale": True,
+                            "next_action": "waiting for checks",
+                        },
+                        {
+                            "number": 4,
+                            "title": "Failing",
+                            "url": "https://github.com/owner/repo/pull/4",
+                            "branch": "codex/four",
+                            "author": "codex",
+                            "updated_at": "2026-09-01T12:00:00Z",
+                            "head_sha": "4444444444444444",
+                            "labels": {"needs": [], "blocked": []},
+                            "checks": [{"name": "package", "state": "failure"}],
+                            "next_action": "fix failing check",
+                        },
+                        {
+                            "number": 5,
+                            "title": "Behind",
+                            "url": "https://github.com/owner/repo/pull/5",
+                            "branch": "codex/five",
+                            "author": "codex",
+                            "updated_at": "2026-09-01T12:00:00Z",
+                            "head_sha": "5555555555555555",
+                            "labels": {"needs": [], "blocked": []},
+                            "checks": [],
+                            "merge_state": "BEHIND",
+                            "next_action": "rebase/behind",
+                        },
+                        {
+                            "number": 6,
+                            "title": "Draft",
+                            "url": "file:///tmp/secret",
+                            "branch": "codex/six",
+                            "author": "codex",
+                            "updated_at": "2026-09-01T12:00:00Z",
+                            "head_sha": "6666666666666666",
+                            "labels": {"needs": [], "blocked": []},
+                            "checks": [],
+                            "is_draft": True,
+                            "next_action": "finish draft PR",
+                        },
+                    ],
+                }
+            }
+        )
+
+        kinds = {entry["kind"] for entry in payload["entries"]}
+        self.assertEqual(
+            kinds,
+            {"needs-owner", "blocked-audit", "stale-gate", "failing-check", "rebase-needed", "draft"},
+        )
+        self.assertEqual(payload["count"], 6)
+        self.assertEqual(payload["entries"][0]["priority"], 0)
+        self.assertEqual(payload["entries"][-1]["kind"], "draft")
+        self.assertNotIn("/tmp/secret", json.dumps(payload))
+
+    def test_owner_queue_payload_reports_github_unavailable(self) -> None:
+        payload = board.owner_queue_payload({"remote": {"available": False}})
+
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["entries"], [])
+        self.assertIn("GitHub unavailable", payload["message"])
 
     def test_http_status_does_not_write_events_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -530,6 +646,7 @@ class BoardTests(TestCase):
                 thread.join(timeout=5)
 
         self.assertFalse(payload["remote"]["available"])
+        self.assertFalse(payload["owner_queue"]["available"])
         self.assertEqual(payload["timelines"]["verdicts"]["entries"][0]["lane"], "gitar-audit")
         self.assertEqual(payload["timelines"]["spend"]["groups"][0]["lane"], "gitar-audit")
 

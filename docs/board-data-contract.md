@@ -30,6 +30,9 @@ embeds the lane-status snapshot unchanged.
 the board's `/api/status` response. It summarizes local board events and
 reviewer-spend rows for display only.
 
+`code_mower.boardOwnerQueue.v1` is the derived local owner queue embedded in the
+board's `/api/status` response. It summarizes PRs that need operator attention.
+
 All board schemas are metadata-only. They must not contain source code, raw diffs,
 transcripts, issue body text, raw stdout/stderr, auth output, browser history,
 local secret values, or secrets.
@@ -165,6 +168,28 @@ entry includes:
 
 Spend paths are redacted in JSON output. Malformed spend files and local read
 errors use generic safe messages without embedding local paths.
+
+## Owner Queue
+
+The Board embeds `code_mower.boardOwnerQueue.v1` in `/api/status`. The owner
+queue is derived from the current lane-status PR metadata and is not uploaded or
+written to GitHub.
+
+`owner_queue.entries[]` includes one item per attention reason. A PR may appear
+more than once when it has multiple independent reasons. Each item includes:
+
+- `kind`: `needs-owner`, `blocked-audit`, `stale-gate`, `failing-check`,
+  `rebase-needed`, or `draft`.
+- `priority`: lower numbers sort first.
+- `pr_number`, `title`, `branch`, `author`, and `updated_at`.
+- `head_sha_prefix`: first 12 characters of the PR head SHA.
+- `url`: HTTP(S) PR URL when present.
+- `next_action`: concise operator action.
+- `labels` or `checks` only for the relevant reason, without raw logs.
+
+When GitHub is unavailable, the owner queue returns `available: false`, an empty
+entry list, and a generic message. Existing local event and spend timelines can
+still render from local files in the same Board response.
 
 ## Cloud Boundary
 

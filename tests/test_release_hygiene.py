@@ -7437,11 +7437,15 @@ def main():
         self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", board_contract)
         self.assertIn("code-mower board record --repo OWNER/REPO", launch_surface)
         self.assertIn("code-mower board events", launch_surface)
+        self.assertIn("owner queue", readme_flat)
+        self.assertIn("owner queue", quickstart_flat)
         self.assertIn("reviewer verdict history and spend/latency", readme_flat)
         self.assertIn("reviewer verdict history and spend/latency", quickstart_flat)
         self.assertIn("code_mower.boardTimelines.v1", board_contract)
+        self.assertIn("code_mower.boardOwnerQueue.v1", board_contract)
         self.assertIn("timelines.verdicts.entries[]", board_contract)
         self.assertIn("timelines.spend", board_contract)
+        self.assertIn("owner_queue.entries[]", board_contract)
         self.assertIn("filtered_rows", board_contract)
         for schema_name in (
             "code_mower.laneStatus.v1",
