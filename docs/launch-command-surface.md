@@ -31,6 +31,7 @@ session. Choose the install path first from
 | `code-mower board record --repo OWNER/REPO` | Append one redacted status snapshot to `.code-mower/board/events.jsonl` for local board history. | yes, local only | GitHub optional |
 | `code-mower board events` | Print recent local board-history events without calling GitHub. | no | no |
 | `code-mower board doctor --repo OWNER/REPO` | Diagnose Board inputs, local history, gate alerts, owner queue, and optional agent cards with redacted local paths by default. | no | GitHub optional |
+| `code-mower board reset --repo OWNER/REPO --yes` | Delete only the local Board history file after explicit confirmation. | yes, local only | no |
 | `code-mower doctor --preflight --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
 | `code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json` | Check hosted-builder or orchestrator setup without requiring local Codex/Claude CLIs on this machine. | no | optional GitHub/provider probes |
 | `code-mower next-steps --profile recommended --repo OWNER/REPO` | Print the next recommended setup actions. | no | no |

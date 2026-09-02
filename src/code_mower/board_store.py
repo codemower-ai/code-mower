@@ -20,6 +20,7 @@ from . import lane_status
 BOARD_EVENT_SCHEMA = "code_mower.boardEvent.v1"
 BOARD_EVENT_STORE_SCHEMA = "code_mower.boardEventStore.v1"
 BOARD_RECORD_SCHEMA = "code_mower.boardRecord.v1"
+BOARD_RESET_SCHEMA = "code_mower.boardReset.v1"
 DEFAULT_RETENTION_DAYS = 14
 DEFAULT_MAX_EVENTS = 500
 DEFAULT_STORE_RELATIVE_PATH = Path(".code-mower") / "board" / "events.jsonl"
@@ -36,6 +37,12 @@ class StoreWriteResult:
     kept: int
     pruned: int
     malformed: int
+
+
+@dataclass(frozen=True)
+class StoreResetResult:
+    path: Path
+    deleted: bool
 
 
 def _now() -> datetime:
@@ -205,6 +212,22 @@ def append_snapshot(
         pruned=max(pruned, 0),
         malformed=malformed,
     )
+
+
+def reset_store(*, path: str | Path) -> StoreResetResult:
+    store_path = Path(path)
+    try:
+        if not store_path.exists():
+            return StoreResetResult(path=store_path, deleted=False)
+        with _locked_store(store_path):
+            if not store_path.exists():
+                return StoreResetResult(path=store_path, deleted=False)
+            if not store_path.is_file():
+                raise BoardStoreError("local board event store is not a file")
+            store_path.unlink()
+    except OSError as exc:
+        raise BoardStoreError("could not reset local board event store") from exc
+    return StoreResetResult(path=store_path, deleted=True)
 
 
 def event_report(

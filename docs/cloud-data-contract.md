@@ -57,8 +57,9 @@ history commands use `code_mower.boardEvent.v1` and
 `code_mower.boardRecord.v1` for explicit write acknowledgements. Optional local
 agent card adapters use `code_mower.boardAgentAdapters.v1` from
 `.code-mower/board/agents/*.json`. Board admin commands use
-`code_mower.boardDoctor.v1` for local diagnostics. Those payloads are operator
-visibility data, not cloud upload data.
+`code_mower.boardDoctor.v1` for local diagnostics and
+`code_mower.boardReset.v1` for explicit local-history reset acknowledgements.
+Those payloads are operator visibility data, not cloud upload data.
 
 Current board/status JSON and local board event-store data are local-only and
 are not uploaded by default. The explicit

@@ -237,6 +237,12 @@ cards, and spend parsing. Text and JSON output redact local paths by default and
 use safe counts/messages instead of raw command output or raw GitHub auth
 errors.
 
+`code-mower board reset --repo OWNER/REPO --yes` emits
+`code_mower.boardReset.v1` and deletes only the local Board event-store file.
+Without `--yes`, the command exits before touching local files. Reset does not
+delete agent adapter cards, spend files, workflow outputs, repository files, or
+GitHub state.
+
 ## Cloud Boundary
 
 Current board/status JSON and local board event-store data are local-only and
