@@ -11,10 +11,10 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha/beta releases and reports its version with
   `code-mower --version`.
-- The v0.6 beta entrypoint is `code-mower==0.6.0b2`, with
+- The v0.6 beta entrypoint is `code-mower==0.6.0b3`, with
   `code-mower doctor --preflight` as the first-run setup diagnostic and
   `code-mower lanes status --repo OWNER/REPO` as the operator snapshot. The
-  corresponding GitHub tag is `v0.6.0-beta.2`; `doctor --v05` remains a
+  corresponding GitHub tag is `v0.6.0-beta.3`; `doctor --v05` remains a
   compatibility alias for scripts.
 - The README now shows a shortened `doctor --preflight` example so fresh users can
   see the payoff before installing.

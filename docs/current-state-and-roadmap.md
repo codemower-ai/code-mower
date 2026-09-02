@@ -25,7 +25,7 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current public beta baseline is `v0.6.0-beta.2`, with pinned package-index install spec `code-mower==0.6.0b2`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
+The current public beta baseline is `v0.6.0-beta.3`, with pinned package-index install spec `code-mower==0.6.0b3`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
 It is intended to be installed from the package index for friendly-user pilots,
 with GitHub tag/source installs kept as a fallback and development path. This
 baseline keeps the PyPI-first install path, trusted publishing, release

@@ -14,7 +14,7 @@ environment before they are treated as shareable.
 schema-structuring phase inherited a repository check that only made sense from
 an editable source checkout. `v0.5.0-beta.8` fixed that by making the
 installed-package transport path explicit and then validating it from the public
-tag. `v0.6.0-beta.2` keeps that installed-package gate and carries the same
+tag. `v0.6.0-beta.3` keeps that installed-package gate and carries the same
 provenance discipline into provider-contract, stale-audit, catch-up, and
 dashboard trust work.
 
@@ -33,7 +33,7 @@ workflow history as reviewer-value evidence.
 
 `v0.5.0-beta.49` added a dedicated authenticated lineage drilldown for the
 planning and execution chain: issue -> posted plan -> work order -> pull
-request -> reviewer checks -> merge -> upload. `v0.6.0-beta.2` carries that
+request -> reviewer checks -> merge -> upload. `v0.6.0-beta.3` carries that
 trust surface forward while adding the owner-bound WIP, lane-liveness,
 fix-round, human-token, owner-decision, provider-namespace, builder-experiment,
 and lane-status hardening from the later dogfood follow-ups. The lineage page

@@ -1,7 +1,8 @@
-# Code Mower v0.6.0-beta.2 Release Notes
+# Code Mower v0.6.0-beta.3 Release Notes
 
-This release finishes the v0.6 provider-contract hardening workstream. Install
-the pinned beta with `pipx install --python python3.12 code-mower==0.6.0b2`.
+This release adds cold-adoption hardening on top of the v0.6 provider-contract
+workstream. Install the pinned beta with
+`pipx install --python python3.12 code-mower==0.6.0b3`.
 
 ## Headline
 
@@ -43,6 +44,18 @@ runtimes, and capture builder/reviewer metadata without uploading source.
 - `code-mower cloud setup` now records the current local cloud token profile,
   and upload-style cloud commands can resolve it after shell or app restarts
   while still refusing ambiguous profiles and requiring explicit `--yes`.
+- `doctor --adoption --repo OWNER/REPO` targets the real repository, and
+  `init --easy --apply` emits an editable `code-mower.yml` so owner/trusted
+  author setup is visible before the first setup PR.
+- Generated smoke tests avoid bytecode cache churn, and generated audit
+  wrappers use the installed `code-mower` CLI until standalone pins are
+  configured intentionally.
+- `code-mower lanes status --repo OWNER/REPO` includes a safe manual gate
+  rerun command with `pr_number` and the current `head_sha` when a PR needs
+  gate recomputation.
+- [Orchestrator Prompt Pack](orchestrator-prompt-pack.md) gives copy-pasteable
+  prompts for Claude Code orchestration, builder handoffs, reviewer handoffs,
+  and owner status snapshots.
 - Public docs now steer cold adopters through the reviewer gate first, then the
   build loop, then builder experiments and optional provider research.
 
