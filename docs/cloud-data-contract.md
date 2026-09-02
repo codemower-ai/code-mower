@@ -47,6 +47,20 @@ as privacy mode, upload mode, install id, optional team id, optional repository
 slug, report count and report kinds, structured event count and event types,
 excluded-content declaration, and copied report file metadata.
 
+## Local Board Status
+
+`code-mower lanes status --repo OWNER/REPO` and
+`code-mower board serve --repo OWNER/REPO` use local schemas
+`code_mower.laneStatus.v1` and `code_mower.board.v1`. Those payloads are
+operator visibility data, not cloud upload data.
+
+Current board/status JSON is local-only and is not uploaded by default. A future
+CodeMower.com mirror must land as a paired OSS and dashboard change, update
+both this contract and [Board Data Contract](board-data-contract.md), keep the
+hosted service backward-compatible with v0.6/v0.7 uploads, and preserve the
+metadata-only boundary: no source, raw diffs, transcripts, issue body text, raw
+stdout/stderr, auth output, browser history, local secret values, or secrets.
+
 ## Structured Events
 
 Metadata events use schema `code_mower.benchmarkEvent.v1`. They are intended to

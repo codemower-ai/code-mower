@@ -80,6 +80,8 @@ use `--show-local-paths` only for local debugging.
 
 For the same redacted metadata in a local browser view, run
 `code-mower board serve --repo OWNER/REPO` and open the printed localhost URL.
+The local JSON contracts are documented in
+[Board Data Contract](docs/board-data-contract.md).
 
 ## See The Value Shape First
 
@@ -396,6 +398,7 @@ first so local work exercises the same package entrypoint users install.
 - [Lane Promotion Policy](docs/lane-promotion-policy.md)
 - [Cloud Sharing](docs/cloud-sharing.md)
 - [Cloud Data Contract](docs/cloud-data-contract.md)
+- [Board Data Contract](docs/board-data-contract.md)
 - [Privacy And Threat Model](docs/privacy-threat-model.md)
 - [Current State And Roadmap](docs/current-state-and-roadmap.md)
 - [Public Release Checklist](docs/public-release-checklist.md)
