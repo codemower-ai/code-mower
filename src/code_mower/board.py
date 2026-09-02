@@ -655,6 +655,14 @@ def render_board_html(config: BoardConfig) -> str:
     const stateClass = (value) => /fail|error|blocked/i.test(text(value)) ? "bad" : /warn|pending|waiting|queued|progress/i.test(text(value)) ? "warn" : "ok";
     const seconds = (value) => Number.isFinite(Number(value)) ? `${{Number(value).toFixed(1)}}s` : "n/a";
     const money = (value) => Number.isFinite(Number(value)) ? `$${{Number(value).toFixed(3)}}` : "n/a";
+    const localTime = (value) => {{
+      const raw = text(value);
+      if (!raw) return "";
+      const date = new Date(raw);
+      if (Number.isNaN(date.getTime())) return esc(raw);
+      const local = new Intl.DateTimeFormat(undefined, {{year:"numeric", month:"short", day:"numeric", hour:"numeric", minute:"2-digit", second:"2-digit", timeZoneName:"short"}}).format(date);
+      return `<time datetime="${{esc(raw)}}" title="UTC ${{esc(raw)}}">${{esc(local)}}</time>`;
+    }};
     function labels(groups) {{
       return Object.values(groups || {{}}).flat().map(pill).join(" ") || '<span class="muted">none</span>';
     }}
@@ -663,7 +671,7 @@ def render_board_html(config: BoardConfig) -> str:
     }}
     function render(data) {{
       document.getElementById("repo").textContent = REPO;
-      document.getElementById("generated").textContent = `Generated ${{data.generated_at || ""}}`;
+      document.getElementById("generated").innerHTML = data.generated_at ? `Generated ${{localTime(data.generated_at)}}` : "Loading...";
       const prs = data.remote?.pull_requests || [];
       const runs = data.remote?.workflow_runs || [];
       const alerts = data.remote?.gate_health?.alerts || [];
@@ -681,18 +689,18 @@ def render_board_html(config: BoardConfig) -> str:
         `<div class="metric"><span class="muted">Agent cards</span><b>${{agentCards.length}}</b></div>`,
         `<div class="metric"><span class="muted">Gate alerts</span><b class="${{alerts.length ? "warn" : "ok"}}">${{alerts.length}}</b></div>`
       ].join(""));
-      put("owner", ownerQueue.length ? ownerQueue.map(item => `<div class="row"><div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.kind)}}</a>${{pill(item.next_action)}}${{pill(item.head_sha_prefix)}}</div><div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}} updated ${{esc(item.updated_at)}}</div></div>`).join("") : empty(data.owner_queue?.message || "No owner queue items."));
-      put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{esc(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
+      put("owner", ownerQueue.length ? ownerQueue.map(item => `<div class="row"><div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.kind)}}</a>${{pill(item.next_action)}}${{pill(item.head_sha_prefix)}}</div><div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}}${{item.updated_at ? ` updated ${{localTime(item.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.owner_queue?.message || "No owner queue items."));
+      put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{localTime(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
       put("prs", prs.length ? prs.map(pr => `<div class="row">
         <div class="line"><a href="${{esc(href(pr.url))}}">#${{esc(pr.number)}} ${{esc(pr.title)}}</a>${{pill(pr.merge_state)}}${{pr.is_draft ? pill("draft") : ""}}${{pr.stale ? pill("stale") : ""}}</div>
-        <div class="muted">${{esc(pr.branch)}} by ${{esc(pr.author)}} updated ${{esc(pr.updated_at)}}</div>
+        <div class="muted">${{esc(pr.branch)}} by ${{esc(pr.author)}}${{pr.updated_at ? ` updated ${{localTime(pr.updated_at)}}` : ""}}</div>
         <div>labels: ${{labels(pr.labels)}}</div>
         <div>checks: ${{checks(pr.checks)}}</div>
         <div>next: <b>${{esc(pr.next_action)}}</b></div>
       </div>`).join("") : empty("No open pull requests."));
       put("alerts", alerts.length ? alerts.map(a => `<div class="row"><b class="warn">${{esc(a.kind)}}</b> ${{esc(a.message)}}</div>`).join("") : empty("No gate alerts."));
-      put("runs", runs.length ? runs.slice(0, 8).map(run => `<div class="row"><div class="line"><a href="${{esc(href(run.url))}}">${{esc(run.workflow || "workflow")}}</a>${{pill(run.conclusion || run.status || "unknown")}}</div><div class="muted">${{esc(run.branch)}} updated ${{esc(run.updated_at)}}</div></div>`).join("") : empty("No recent Code Mower workflow runs."));
-      put("verdicts", verdicts.length ? verdicts.map(v => `<div class="row"><div class="line"><a href="${{esc(href(v.url))}}">#${{esc(v.pr_number)}} ${{esc(v.lane)}}</a>${{pill(v.verdict)}}${{pill(v.head_sha_prefix)}}</div><div class="muted">${{esc(v.created_at)}}</div></div>`).join("") : empty(timelines.verdicts?.message || "No local reviewer verdict history yet."));
+      put("runs", runs.length ? runs.slice(0, 8).map(run => `<div class="row"><div class="line"><a href="${{esc(href(run.url))}}">${{esc(run.workflow || "workflow")}}</a>${{pill(run.conclusion || run.status || "unknown")}}</div><div class="muted">${{esc(run.branch)}}${{run.updated_at ? ` updated ${{localTime(run.updated_at)}}` : ""}}</div></div>`).join("") : empty("No recent Code Mower workflow runs."));
+      put("verdicts", verdicts.length ? verdicts.map(v => `<div class="row"><div class="line"><a href="${{esc(href(v.url))}}">#${{esc(v.pr_number)}} ${{esc(v.lane)}}</a>${{pill(v.verdict)}}${{pill(v.head_sha_prefix)}}</div><div class="muted">${{localTime(v.created_at)}}</div></div>`).join("") : empty(timelines.verdicts?.message || "No local reviewer verdict history yet."));
       const spendRows = [
         ...spendGroups.map(g => `<div class="row"><div class="line"><b>${{esc(g.lane)}}</b>${{pill(g.verdict)}}${{pill(`${{g.runs}} runs`)}}</div><div class="muted">${{seconds(g.wall_seconds_total)}} total / ${{seconds(g.wall_seconds_avg)}} avg / ${{money(g.cost_usd_total)}} / ${{esc(g.total_tokens || 0)}} tokens</div></div>`),
         spend.skipped_rows ? `<div class="row muted">Skipped ${{esc(spend.skipped_rows)}} malformed spend row(s).</div>` : "",
@@ -708,7 +716,7 @@ def render_board_html(config: BoardConfig) -> str:
       put("history", events.length ? events.slice().reverse().map(event => {{
         const s = event.summary || {{}};
         const remote = s.remote_available ? "remote available" : "remote unavailable";
-        return `<div class="row"><div class="line"><b>${{esc(event.created_at)}}</b>${{pill(remote)}}</div><div>next: <b>${{esc(s.next_action || "inspect")}}</b></div><div class="muted">PRs ${{esc(s.open_prs ?? 0)}} / alerts ${{esc(s.gate_alerts ?? 0)}} / local ${{esc((s.local_boards ?? 0) + (s.local_processes ?? 0))}}</div></div>`;
+        return `<div class="row"><div class="line"><b>${{localTime(event.created_at)}}</b>${{pill(remote)}}</div><div>next: <b>${{esc(s.next_action || "inspect")}}</b></div><div class="muted">PRs ${{esc(s.open_prs ?? 0)}} / alerts ${{esc(s.gate_alerts ?? 0)}} / local ${{esc((s.local_boards ?? 0) + (s.local_processes ?? 0))}}</div></div>`;
       }}).join("") : empty(history.message || "No local board events recorded yet."));
     }}
     async function load() {{
