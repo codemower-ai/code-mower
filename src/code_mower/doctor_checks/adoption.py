@@ -12,6 +12,10 @@ from .models import STATUS_PASS, STATUS_WARN, DoctorCheck
 
 OWNER_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 OWNER_LOGIN_PLACEHOLDER = "TODO_OWNER_LOGIN"
+TRUSTED_AUDIT_AUTHOR_VARIABLES = (
+    "CLAUDE_AUDIT_BOT_AUTHORS",
+    "CODEX_BOT_AUTHORS",
+)
 GENERATED_SETUP_MARKERS = {
     "generated_config": (".code-mower.generated/code-mower.yml",),
     "installed_gate_workflow": (".github/workflows/code-mower-gate.yml",),
@@ -200,6 +204,7 @@ def check_adoption_setup(
     using_packaged_example: bool,
     config_source: str = "",
     repo_root: Path | None = None,
+    trusted_author_variables: Mapping[str, str] | None = None,
 ) -> tuple[DoctorCheck, ...]:
     """Return first-run adoption posture checks."""
 
@@ -361,17 +366,35 @@ def check_adoption_setup(
             )
         )
 
+    trusted_detail: dict[str, Any] = {
+        "variables": list(TRUSTED_AUDIT_AUTHOR_VARIABLES)
+    }
+    if trusted_author_variables is not None:
+        variable_status = {
+            name: str(trusted_author_variables.get(name) or "missing")
+            for name in TRUSTED_AUDIT_AUTHOR_VARIABLES
+        }
+        trusted_detail["variable_status"] = variable_status
+        all_present = all(
+            variable_status[name] == "present" for name in TRUSTED_AUDIT_AUTHOR_VARIABLES
+        )
+        if all_present:
+            checks.append(
+                DoctorCheck(
+                    name="doctor.adoption.trusted_authors",
+                    status=STATUS_PASS,
+                    message="trusted audit-comment author variables are configured",
+                    detail=trusted_detail,
+                )
+            )
+            return tuple(checks)
+
     checks.append(
         DoctorCheck(
             name="doctor.adoption.trusted_authors",
             status=STATUS_WARN,
             message="human-run audit comments must be listed as trusted lane authors",
-            detail={
-                "variables": [
-                    "CLAUDE_AUDIT_BOT_AUTHORS",
-                    "CODEX_BOT_AUTHORS",
-                ]
-            },
+            detail=trusted_detail,
             remediation=(
                 "For manual pilot audits, set repository variables such as "
                 "CLAUDE_AUDIT_BOT_AUTHORS and CODEX_BOT_AUTHORS to the "

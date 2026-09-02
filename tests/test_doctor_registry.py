@@ -132,6 +132,92 @@ class DoctorRegistryTests(unittest.TestCase):
         self.assertEqual(mismatch.detail["inferred_repository"], "owner/from-remote")
         self.assertEqual(mismatch.detail["configured_repositories"], ["owner/configured"])
 
+    def test_adoption_trusted_authors_pass_when_github_variables_are_present(
+        self,
+    ) -> None:
+        checks = check_adoption_setup(
+            config={"repositories": [{"slug": "owner/repo"}]},
+            config_path=ROOT / "code-mower.yml",
+            adoption=True,
+            repo_slug="owner/repo",
+            repo_source="explicit",
+            using_packaged_example=False,
+            trusted_author_variables={
+                "CLAUDE_AUDIT_BOT_AUTHORS": "present",
+                "CODEX_BOT_AUTHORS": "present",
+            },
+        )
+
+        trusted_authors = next(
+            check for check in checks if check.name == "doctor.adoption.trusted_authors"
+        )
+        self.assertEqual(trusted_authors.status, "pass")
+        self.assertEqual(
+            trusted_authors.detail["variable_status"],
+            {
+                "CLAUDE_AUDIT_BOT_AUTHORS": "present",
+                "CODEX_BOT_AUTHORS": "present",
+            },
+        )
+
+    def test_adoption_trusted_authors_warn_when_github_variables_are_missing(
+        self,
+    ) -> None:
+        checks = check_adoption_setup(
+            config={"repositories": [{"slug": "owner/repo"}]},
+            config_path=ROOT / "code-mower.yml",
+            adoption=True,
+            repo_slug="owner/repo",
+            repo_source="explicit",
+            using_packaged_example=False,
+            trusted_author_variables={
+                "CLAUDE_AUDIT_BOT_AUTHORS": "present",
+                "CODEX_BOT_AUTHORS": "missing",
+            },
+        )
+
+        trusted_authors = next(
+            check for check in checks if check.name == "doctor.adoption.trusted_authors"
+        )
+        self.assertEqual(trusted_authors.status, "warn")
+        self.assertEqual(
+            trusted_authors.detail["variable_status"]["CODEX_BOT_AUTHORS"],
+            "missing",
+        )
+
+    def test_run_doctor_uses_github_trusted_author_variable_probe(self) -> None:
+        with (
+            mock.patch(
+                "code_mower.doctor_checks.runner.shutil.which",
+                return_value="/usr/bin/gh",
+            ),
+            mock.patch(
+                "code_mower.doctor_checks.runner.trusted_author_variable_statuses",
+                return_value={
+                    "CLAUDE_AUDIT_BOT_AUTHORS": "present",
+                    "CODEX_BOT_AUTHORS": "present",
+                },
+            ) as variable_probe,
+            mock.patch(
+                "code_mower.doctor_checks.runner.check_github_setup",
+                return_value=[],
+            ),
+        ):
+            report = run_doctor(
+                config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
+                provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
+                profile="recommended",
+                adoption=True,
+                github=True,
+                repo_slug="owner/repo",
+            )
+
+        variable_probe.assert_called_once()
+        trusted_authors = next(
+            check for check in report.checks if check.name == "doctor.adoption.trusted_authors"
+        )
+        self.assertEqual(trusted_authors.status, "pass")
+
     def test_runner_emits_sanitized_run_plan_check_even_when_inputs_fail(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)

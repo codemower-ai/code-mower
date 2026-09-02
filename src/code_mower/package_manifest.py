@@ -130,6 +130,11 @@ PACKAGE_FILES = (
         "src/code_mower/doctor_checks/github_human_token.py",
         "core",
     ),
+    (
+        "src/code_mower/doctor_checks/github_trusted_authors.py",
+        "src/code_mower/doctor_checks/github_trusted_authors.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/github.py", "src/code_mower/doctor_checks/github.py", "core"),
     (
         "src/code_mower/doctor_checks/github_provider.py",
