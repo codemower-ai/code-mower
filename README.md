@@ -86,7 +86,9 @@ without serving the browser view, run
 `code-mower board record --repo OWNER/REPO` from the repository checkout; it
 writes metadata-only snapshots to `.code-mower/board/events.jsonl` with default
 14-day and 500-event retention. `code-mower board events` prints recent stored
-events without calling GitHub. The Board also shows an owner queue, and it
+events without calling GitHub. `code-mower board doctor --repo OWNER/REPO`
+checks Board inputs and local history without exposing local paths by default.
+The Board also shows an owner queue, and it
 summarizes reviewer verdict history and spend/latency from local board events
 plus `.code-mower/reviewer-spend.json` when those files exist. Local agents can
 publish opt-in status cards by writing metadata-only JSON files to

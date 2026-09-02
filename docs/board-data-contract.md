@@ -228,6 +228,15 @@ Unknown fields are ignored. Secret-like values are redacted, and fields commonly
 used for source, diffs, transcripts, raw command output, auth output, browser
 history, or credentials are not part of the adapter contract.
 
+## Board Admin Commands
+
+`code-mower board doctor --repo OWNER/REPO` emits
+`code_mower.boardDoctor.v1`, a local diagnostic summary for Board inputs,
+GitHub availability, gate alerts, local history, owner queue, optional agent
+cards, and spend parsing. Text and JSON output redact local paths by default and
+use safe counts/messages instead of raw command output or raw GitHub auth
+errors.
+
 ## Cloud Boundary
 
 Current board/status JSON and local board event-store data are local-only and

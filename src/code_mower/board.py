@@ -29,6 +29,7 @@ DEFAULT_PORT = 5332
 BOARD_TIMELINES_SCHEMA = "code_mower.boardTimelines.v1"
 BOARD_OWNER_QUEUE_SCHEMA = "code_mower.boardOwnerQueue.v1"
 BOARD_AGENT_ADAPTERS_SCHEMA = "code_mower.boardAgentAdapters.v1"
+BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"
 DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH = Path(".code-mower") / "board" / "agents"
 SECRET_VALUE_RE = re.compile(
     r"(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})"
@@ -532,9 +533,14 @@ def _spend_timeline(config: BoardConfig, *, limit: int) -> dict[str, Any]:
     }
 
 
-def timelines_payload(config: BoardConfig, *, limit: int | None = None) -> dict[str, Any]:
+def timelines_payload(
+    config: BoardConfig,
+    *,
+    limit: int | None = None,
+    event_report_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     event_limit = limit if limit is not None else config.event_limit
-    report = board_store.event_report(path=_store_path(config), limit=event_limit)
+    report = event_report_payload or board_store.event_report(path=_store_path(config), limit=event_limit)
     events = report.get("events") if isinstance(report.get("events"), list) else []
     return {
         "schema": BOARD_TIMELINES_SCHEMA,
@@ -853,6 +859,183 @@ def record_result_payload(result: board_store.StoreWriteResult) -> dict[str, Any
     }
 
 
+def _doctor_check(check_id: str, status: str, message: str, **extra: Any) -> dict[str, Any]:
+    check = {"id": check_id, "status": status, "message": message}
+    check.update({key: value for key, value in extra.items() if value not in (None, "", [])})
+    return check
+
+
+def _doctor_overall(checks: list[dict[str, Any]]) -> str:
+    statuses = {str(check.get("status") or "") for check in checks}
+    if "fail" in statuses:
+        return "fail"
+    if "warn" in statuses:
+        return "warn"
+    return "pass"
+
+
+def doctor_payload(
+    config: BoardConfig,
+    *,
+    gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
+    command_runner: lane_status.CommandRunner = lane_status.run_command,
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    repo_path = Path(config.repo_path)
+    checks.append(
+        _doctor_check(
+            "repo.path",
+            "pass" if repo_path.is_dir() else "fail",
+            "repository path is readable" if repo_path.is_dir() else "repository path is not readable",
+            path=str(repo_path) if config.show_local_paths else lane_status.LOCAL_PATH_REDACTION,
+            path_redacted=not config.show_local_paths,
+        )
+    )
+
+    status = status_payload(
+        config,
+        gh_json_runner=gh_json_runner,
+        command_runner=command_runner,
+    )
+    remote = status.get("remote") if isinstance(status.get("remote"), dict) else {}
+    checks.append(
+        _doctor_check(
+            "github.remote",
+            "pass" if remote.get("available") else "warn",
+            "GitHub metadata is available"
+            if remote.get("available")
+            else "GitHub unavailable; Board will render local-only state",
+            errors=len(remote.get("errors") or []),
+        )
+    )
+
+    gate_health = remote.get("gate_health") if isinstance(remote.get("gate_health"), dict) else {}
+    gate_alerts = gate_health.get("alerts") if isinstance(gate_health.get("alerts"), list) else []
+    checks.append(
+        _doctor_check(
+            "gate.health",
+            "warn" if gate_alerts else "pass",
+            f"{len(gate_alerts)} gate alert(s) need attention" if gate_alerts else "no gate alerts",
+            alerts=len(gate_alerts),
+        )
+    )
+
+    store_report = board_store.event_report(path=_store_path(config), limit=config.event_limit)
+    store_malformed = int(store_report.get("malformed") or 0)
+    store_available = bool(store_report.get("available"))
+    store_message = str(store_report.get("message") or "")
+    if store_malformed:
+        store_status = "warn"
+        store_text = f"local board event store has {store_malformed} malformed line(s)"
+    elif store_message == "could not read local board event store":
+        store_status = "warn"
+        store_text = store_message
+    elif store_available:
+        store_status = "pass"
+        store_text = f"local board event store has {store_report.get('event_count', 0)} event(s)"
+    else:
+        store_status = "pass"
+        store_text = "no local board event store yet; run board record or board serve --record-events"
+    checks.append(
+        _doctor_check(
+            "store.events",
+            store_status,
+            store_text,
+            events=int(store_report.get("event_count") or 0),
+            malformed=store_malformed,
+        )
+    )
+
+    owner_queue = status.get("owner_queue") if isinstance(status.get("owner_queue"), dict) else {}
+    owner_count = int(owner_queue.get("count") or 0)
+    checks.append(
+        _doctor_check(
+            "owner.queue",
+            "warn" if owner_count else "pass",
+            f"owner queue has {owner_count} item(s)" if owner_count else "owner queue is empty",
+            entries=owner_count,
+        )
+    )
+
+    adapters = status.get("agent_adapters") if isinstance(status.get("agent_adapters"), dict) else {}
+    adapter_warnings = adapters.get("warnings") if isinstance(adapters.get("warnings"), list) else []
+    adapter_agents = adapters.get("agents") if isinstance(adapters.get("agents"), list) else []
+    checks.append(
+        _doctor_check(
+            "agent.adapters",
+            "warn" if adapter_warnings else "pass",
+            f"{len(adapter_warnings)} local agent adapter warning(s)"
+            if adapter_warnings
+            else (
+                f"{len(adapter_agents)} local agent adapter card(s)"
+                if adapter_agents
+                else "optional local agent adapters are not configured"
+            ),
+            agents=len(adapter_agents),
+            warnings=len(adapter_warnings),
+        )
+    )
+
+    timelines = timelines_payload(config, event_report_payload=store_report)
+    spend = timelines.get("spend") if isinstance(timelines.get("spend"), dict) else {}
+    spend_message = str(spend.get("message") or "")
+    spend_status = "warn" if spend_message == "could not read reviewer spend file" else "pass"
+    checks.append(
+        _doctor_check(
+            "spend.timeline",
+            spend_status,
+            spend_message or f"{len(spend.get('groups') or [])} spend group(s) available",
+            groups=len(spend.get("groups") or []),
+            skipped_rows=int(spend.get("skipped_rows") or 0),
+        )
+    )
+
+    return {
+        "schema": BOARD_DOCTOR_SCHEMA,
+        "repo": config.repo,
+        "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "status": _doctor_overall(checks),
+        "checks": checks,
+        "summary": {
+            "open_prs": len(remote.get("pull_requests") or []),
+            "workflow_runs": len(remote.get("workflow_runs") or []),
+            "gate_alerts": len(gate_alerts),
+            "owner_queue": owner_count,
+            "agent_cards": len(adapter_agents),
+            "local_events": int(store_report.get("event_count") or 0),
+            "next_action": str(status.get("next_action") or "inspect"),
+        },
+        "next_action": _board_doctor_next_action(config.repo, status, checks),
+    }
+
+
+def _board_doctor_next_action(repo: str, status: dict[str, Any], checks: list[dict[str, Any]]) -> str:
+    if any(check.get("status") == "fail" for check in checks):
+        return "fix failed Board diagnostic"
+    action = str(status.get("next_action") or "")
+    if action and action != "no active lanes":
+        return action
+    if any(check.get("id") == "store.events" and "no local board event store" in str(check.get("message")) for check in checks):
+        return f"run code-mower board serve --repo {repo} --record-events to build local history"
+    return action or "no active lanes"
+
+
+def render_doctor_text(payload: dict[str, Any]) -> str:
+    lines = [
+        f"Code Mower board doctor for {payload['repo']}",
+        f"Status: {payload['status']}",
+        "",
+    ]
+    for check in payload.get("checks") or []:
+        lines.append(
+            f"{str(check.get('status') or '').upper():5} "
+            f"{str(check.get('id') or ''):16} "
+            f"{check.get('message') or ''}"
+        )
+    lines.extend(["", f"Next: {payload.get('next_action') or 'inspect'}"])
+    return "\n".join(lines) + "\n"
+
+
 def _record_store_display(args: argparse.Namespace) -> str:
     if args.store_path:
         return "custom store path"
@@ -898,6 +1081,18 @@ def main(argv: list[str] | None = None) -> int:
     events_parser.add_argument("--limit", type=int, default=20)
     events_parser.add_argument("--show-store-path", action="store_true")
     events_parser.add_argument("--json", action="store_true")
+    doctor_parser = subparsers.add_parser("doctor")
+    doctor_parser.add_argument("--repo", required=True)
+    doctor_parser.add_argument("--repo-path", default=".")
+    doctor_parser.add_argument("--store-path")
+    doctor_parser.add_argument("--spend-path")
+    doctor_parser.add_argument("--agent-adapters-path")
+    doctor_parser.add_argument("--pr-limit", type=int, default=50)
+    doctor_parser.add_argument("--workflow-limit", type=int, default=20)
+    doctor_parser.add_argument("--stale-minutes", type=int, default=30)
+    doctor_parser.add_argument("--event-limit", type=int, default=20)
+    doctor_parser.add_argument("--show-local-paths", action="store_true")
+    doctor_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(list(argv or ()))
     if args.command == "serve":
         return serve(
@@ -963,6 +1158,24 @@ def main(argv: list[str] | None = None) -> int:
         output = json.dumps(report, indent=2, sort_keys=True) + "\n" if args.json else render_events_text(report)
         print(output, end="")
         return 0
+    if args.command == "doctor":
+        payload = doctor_payload(
+            BoardConfig(
+                repo=args.repo,
+                pr_limit=args.pr_limit,
+                workflow_limit=args.workflow_limit,
+                stale_minutes=args.stale_minutes,
+                show_local_paths=args.show_local_paths,
+                repo_path=args.repo_path,
+                store_path=args.store_path,
+                spend_path=args.spend_path,
+                agent_adapters_path=args.agent_adapters_path,
+                event_limit=args.event_limit,
+            )
+        )
+        output = json.dumps(payload, indent=2, sort_keys=True) + "\n" if args.json else render_doctor_text(payload)
+        print(output, end="")
+        return 1 if payload["status"] == "fail" else 0
     raise AssertionError(f"unhandled board command: {args.command}")
 
 
