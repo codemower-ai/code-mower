@@ -11,7 +11,7 @@ import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -156,6 +156,8 @@ __all__ = [
     "render_package_install_rehearsal_text",
     "render_runner_aliases",
     "render_runner_aliases_text",
+    "render_setup_drift_report",
+    "render_setup_drift_text",
     "run_package_install_rehearsal",
 ]
 
@@ -183,6 +185,39 @@ CALIBRATION_EVIDENCE_ADDITIVE_KEYS = frozenset(
         "result_category",
     }
 )
+SETUP_DRIFT_SCHEMA = "code_mower.setupDrift.v1"
+SETUP_DRIFT_CLASSIFICATIONS = ("same", "differs", "new", "repo-only", "missing-from-output")
+SETUP_DRIFT_SETUP_FILENAMES = {
+    "calibration-corpus.json",
+    "code-mower.yml",
+    "context-packs.json",
+    "reviewer-spend.json",
+    "reviewer-value-report.example.md",
+}
+SETUP_DRIFT_WORKFLOW_KEYWORDS = (
+    "antigravity",
+    "claude",
+    "code-mower",
+    "codex",
+    "cursor",
+    "devin",
+    "dispatch-lanes",
+    "gemini",
+    "gitar",
+    "grok",
+    "local-cli-audit",
+    "needs-owner",
+    "weekly-status",
+)
+SETUP_DRIFT_TOOL_FILENAMES = {
+    "audit_labeler_lib.py",
+    "code_mower",
+    "code_mower_standalone_pin.env",
+    "code_mower_standalone_shadow.sh",
+    "decisions.py",
+    "safe_gh_comment.py",
+    "status_report.py",
+}
 
 
 def _resolve_command(command_text: str) -> tuple[str, ...]:
@@ -260,6 +295,247 @@ def _safe_commands(repo_path: Path) -> list[tuple[str, ...]]:
             commands.append(("calibration", "evidence", candidate, "--json"))
             break
     return commands
+
+
+def _load_init_module() -> Any:
+    if __package__ in {None, ""}:  # pragma: no cover - script entrypoint fallback.
+        import code_mower.init as code_mower_init
+    else:
+        from . import init as code_mower_init
+
+    return code_mower_init
+
+
+def _setup_drift_config_path(repo_path: Path, config_arg: str | None, code_mower_init: Any) -> Path:
+    raw = config_arg or ("code-mower.yml" if (repo_path / "code-mower.yml").is_file() else "code-mower.example.yml")
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute() and (repo_path / candidate).is_file():
+        return (repo_path / candidate).resolve()
+    return code_mower_init._resolve_config_path(raw)
+
+
+def _git_tracked_files(repo_path: Path) -> tuple[set[str], bool]:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_path), "ls-files", "-z"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return set(), False
+    return {Path(item).as_posix() for item in completed.stdout.split("\0") if item}, True
+
+
+def _is_setup_candidate_path(path: str) -> bool:
+    normalized = Path(path).as_posix()
+    name = Path(normalized).name.lower()
+    if normalized in SETUP_DRIFT_SETUP_FILENAMES:
+        return True
+    if normalized.startswith("docs/lanes/"):
+        return True
+    if normalized.startswith("tools/lane_configs/"):
+        return True
+    if normalized.startswith(".github/workflows/"):
+        return any(keyword in name for keyword in SETUP_DRIFT_WORKFLOW_KEYWORDS)
+    if normalized.startswith("tools/"):
+        return (
+            name in SETUP_DRIFT_TOOL_FILENAMES
+            or name.startswith("code_mower")
+            or (name.startswith("run_") and name.endswith("_audit_pr.sh"))
+        )
+    return False
+
+
+def _setup_drift_file(
+    path: str,
+    classification: str,
+    *,
+    generated_bytes: int | None = None,
+    repo_bytes: int | None = None,
+    tracked: bool = False,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "path": path,
+        "classification": classification,
+        "tracked": tracked,
+    }
+    if generated_bytes is not None:
+        item["generated_bytes"] = generated_bytes
+    if repo_bytes is not None:
+        item["repo_bytes"] = repo_bytes
+    return item
+
+
+def _classify_setup_drift(
+    *,
+    repo_path: Path,
+    generated_files: Mapping[str, str | None],
+    tracked_files: set[str],
+) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    generated_paths = set(generated_files)
+    for path in sorted(generated_paths):
+        generated = generated_files[path]
+        repo_file = repo_path / path
+        repo_is_tracked = path in tracked_files
+        repo_exists = repo_file.is_file()
+        if generated is None:
+            files.append(
+                _setup_drift_file(
+                    path,
+                    "missing-from-output",
+                    tracked=repo_is_tracked,
+                )
+            )
+            continue
+        generated_bytes = generated.encode("utf-8")
+        if repo_is_tracked and repo_exists:
+            repo_bytes = repo_file.read_bytes()
+            classification = "same" if repo_bytes == generated_bytes else "differs"
+            files.append(
+                _setup_drift_file(
+                    path,
+                    classification,
+                    generated_bytes=len(generated_bytes),
+                    repo_bytes=len(repo_bytes),
+                    tracked=True,
+                )
+            )
+        else:
+            files.append(
+                _setup_drift_file(
+                    path,
+                    "new",
+                    generated_bytes=len(generated_bytes),
+                    tracked=repo_is_tracked,
+                )
+            )
+
+    for path in sorted(tracked_files - generated_paths):
+        if _is_setup_candidate_path(path):
+            repo_file = repo_path / path
+            files.append(
+                _setup_drift_file(
+                    path,
+                    "repo-only",
+                    repo_bytes=repo_file.stat().st_size if repo_file.is_file() else None,
+                    tracked=True,
+                )
+            )
+    order = {name: index for index, name in enumerate(SETUP_DRIFT_CLASSIFICATIONS)}
+    return sorted(files, key=lambda item: (order.get(str(item["classification"]), 99), str(item["path"])))
+
+
+def _generated_setup_files_from_plan(plan: Any, *, source_root: Path, code_mower_init: Any) -> dict[str, str | None]:
+    generated: dict[str, str | None] = {}
+    for entry in plan.data["generated_files"]:
+        path = str(entry["path"])
+        try:
+            materialized = code_mower_init._materialize_generated_file(
+                entry,
+                path,
+                Path(path),
+                source_root=source_root,
+            )
+        except (OSError, KeyError, ValueError):
+            generated[path] = None
+            continue
+        generated[path] = materialized.text
+    return generated
+
+
+def render_setup_drift_report(
+    *,
+    repo_path: Path,
+    config: str | None = None,
+    profile: str = "recommended",
+    builders: str = "",
+    add_repositories: Sequence[str] = (),
+) -> dict[str, Any]:
+    repo_path = repo_path.expanduser().resolve()
+    if not repo_path.is_dir():
+        raise ValueError(f"repo path is not a directory: {repo_path}")
+    code_mower_init = _load_init_module()
+    config_path = _setup_drift_config_path(repo_path, config, code_mower_init)
+    builder_lanes = code_mower_init._parse_builder_lanes(builders) if builders else ()
+    loaded_config, added_repos = code_mower_init.config_with_added_repositories(
+        code_mower_init.load_config(config_path),
+        tuple(add_repositories),
+    )
+    plan = code_mower_init.render_init_plan(
+        loaded_config,
+        profile_id=profile,
+        config_path=str(config_path),
+        add_repositories=added_repos,
+        builders=builder_lanes,
+    )
+    generated = _generated_setup_files_from_plan(
+        plan,
+        source_root=code_mower_init._repo_root().resolve(),
+        code_mower_init=code_mower_init,
+    )
+    tracked, tracked_available = _git_tracked_files(repo_path)
+    files = _classify_setup_drift(
+        repo_path=repo_path,
+        generated_files=generated,
+        tracked_files=tracked,
+    )
+    counts = {name: 0 for name in SETUP_DRIFT_CLASSIFICATIONS}
+    for item in files:
+        counts[str(item["classification"])] = counts.get(str(item["classification"]), 0) + 1
+    changed_count = sum(counts[name] for name in SETUP_DRIFT_CLASSIFICATIONS if name != "same")
+    return {
+        "schema": SETUP_DRIFT_SCHEMA,
+        "mode": "setup-drift",
+        "status": "pass" if changed_count == 0 else "warn",
+        "repo_path": str(repo_path),
+        "config": str(config_path),
+        "profile": profile,
+        "builders": list(builder_lanes),
+        "additional_repositories": list(added_repos),
+        "tracked_source": "git" if tracked_available else "unavailable",
+        "counts": counts,
+        "file_count": len(files),
+        "changed_count": changed_count,
+        "files": files,
+        "next_action": (
+            "review differs, new, repo-only, and missing-from-output entries before copying generated setup"
+            if changed_count
+            else "generated setup matches tracked Code Mower files"
+        ),
+    }
+
+
+def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
+    counts = payload.get("counts") or {}
+    lines = [
+        "Code Mower setup drift",
+        f"Status: {payload['status']}",
+        f"Repo: {payload['repo_path']}",
+        f"Profile: {payload['profile']}",
+        "Counts: "
+        + ", ".join(f"{name}={counts.get(name, 0)}" for name in SETUP_DRIFT_CLASSIFICATIONS),
+        f"Next: {payload['next_action']}",
+        "",
+    ]
+    changed = [item for item in payload.get("files") or [] if item.get("classification") != "same"]
+    if not changed:
+        lines.append("- PASS generated setup matches tracked Code Mower files")
+    else:
+        for item in changed[:limit]:
+            details = []
+            if "repo_bytes" in item:
+                details.append(f"repo={item['repo_bytes']}b")
+            if "generated_bytes" in item:
+                details.append(f"generated={item['generated_bytes']}b")
+            suffix = f" ({', '.join(details)})" if details else ""
+            lines.append(f"- {str(item['classification']).upper()} {item['path']}{suffix}")
+        remaining = len(changed) - limit
+        if remaining > 0:
+            lines.append(f"- ... {remaining} more changed path(s); rerun with --json for the full list")
+    return "\n".join(lines) + "\n"
 
 
 def run_wrapper_rehearsal(
@@ -347,6 +623,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     mirror.add_argument("--standalone-default-cycles", type=int, default=0)
     mirror.add_argument("--required-standalone-default-cycles", type=int, default=1)
     mirror.add_argument("--json", action="store_true")
+    setup_drift = subparsers.add_parser("setup-drift")
+    setup_drift.add_argument(
+        "config",
+        nargs="?",
+        default=None,
+        help="Code Mower config to render; defaults to repo code-mower.yml or packaged starter config",
+    )
+    setup_drift.add_argument("--repo-path", type=Path, default=Path.cwd())
+    setup_drift.add_argument("--profile", default="recommended")
+    setup_drift.add_argument(
+        "--builders",
+        metavar="LANES",
+        default="",
+        help="comma-separated builder lanes to include, e.g. codex,claude,cursor",
+    )
+    setup_drift.add_argument(
+        "--add-repo",
+        action="append",
+        default=[],
+        metavar="OWNER/REPO",
+        help="append a sibling repository target while rendering the setup plan",
+    )
+    setup_drift.add_argument("--limit", type=int, default=50, help="changed paths to show in text output")
+    setup_drift.add_argument("--json", action="store_true")
     aliases = subparsers.add_parser("runner-aliases")
     aliases.add_argument(
         "--legacy",
@@ -460,6 +760,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             print(render_mirror_removal_text(payload), end="")
+        return 0
+
+    if args.command == "setup-drift":
+        try:
+            payload = render_setup_drift_report(
+                repo_path=args.repo_path,
+                config=args.config,
+                profile=args.profile,
+                builders=args.builders,
+                add_repositories=tuple(args.add_repo),
+            )
+        except (OSError, ValueError) as exc:
+            payload = {
+                "schema": SETUP_DRIFT_SCHEMA,
+                "mode": "setup-drift",
+                "status": "fail",
+                "error": str(exc),
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(f"setup drift failed: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(render_setup_drift_text(payload, limit=args.limit), end="")
         return 0
 
     if args.command == "runner-aliases":

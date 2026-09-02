@@ -157,7 +157,10 @@ secret values, or secrets.
 
 ## First Repository Commands
 
-After install, start with the manual reviewer-gate path:
+After install, choose the path that matches the repository.
+
+For a cold repository that has not adopted Code Mower, start with the manual
+reviewer-gate path:
 
 ```bash
 code-mower init --easy
@@ -165,6 +168,19 @@ code-mower doctor --adoption --repo OWNER/REPO --json
 code-mower lanes status --repo OWNER/REPO
 code-mower board serve --repo OWNER/REPO
 ```
+
+For an existing repository with older Code Mower generated files, inspect drift
+before copying a newly generated tree into the repo:
+
+```bash
+code-mower migration setup-drift --repo-path . --json
+code-mower migration setup-drift --repo-path .
+```
+
+The drift report is read-only. It compares the current generated setup output
+against tracked Code Mower files and classifies paths as `same`, `differs`,
+`new`, `repo-only`, or `missing-from-output`. Use it before an upgrade PR so
+you can review workflow/wrapper changes without source diffs in the report.
 
 If this machine is a hosted-builder observer or orchestrator only, and will not
 run Codex or Claude local CLI audits itself, keep the GitHub/cloud/setup checks
