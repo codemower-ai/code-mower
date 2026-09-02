@@ -13,6 +13,7 @@ from .cloud import (
     token_file_mentions_cloud_token,
 )
 from .adoption import (
+    check_adoption_posture_guidance,
     check_adoption_setup,
     config_with_repository_target,
     detect_repo_slug,
@@ -105,6 +106,7 @@ __all__ = [
     "auth_probe_output_detail",
     "build_doctor_run_plan",
     "check_cloud_token_surface",
+    "check_adoption_posture_guidance",
     "check_adoption_setup",
     "check_github_auth_surface",
     "check_macos_runner_launchagent",

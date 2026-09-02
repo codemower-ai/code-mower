@@ -9,6 +9,7 @@ from unittest import mock
 from code_mower import doctor as code_mower_doctor
 from code_mower.doctor_checks import (
     build_doctor_run_plan,
+    check_adoption_posture_guidance,
     check_adoption_setup,
     check_lane_runtime,
     config_with_repository_target,
@@ -16,6 +17,7 @@ from code_mower.doctor_checks import (
     default_check_group_ids,
     normalize_repo_slug,
     repo_slug_from_remote,
+    DoctorCheck,
     DoctorReport,
     run_doctor,
 )
@@ -227,6 +229,66 @@ class DoctorRegistryTests(unittest.TestCase):
         self.assertEqual(local_cli.status, "warn")
         self.assertEqual(local_probe.status, "warn")
 
+    def test_default_adoption_posture_guides_observer_hosts_on_provider_gaps(self) -> None:
+        checks = check_adoption_posture_guidance(
+            (
+                DoctorCheck(
+                    name="runtime.local_cli",
+                    status="warn",
+                    lane="codex",
+                    message="codex missing",
+                ),
+                DoctorCheck(
+                    name="runtime.local_cli.probe",
+                    status="skip",
+                    lane="claude_audit",
+                    message="probe skipped",
+                ),
+            ),
+            adoption=True,
+            adoption_posture="reviewer-gate",
+        )
+
+        self.assertEqual(len(checks), 1)
+        hint = checks[0]
+        self.assertEqual(hint.name, "doctor.adoption.posture_hint")
+        self.assertEqual(hint.status, "warn")
+        self.assertEqual(hint.detail["adoption_posture"], "reviewer-gate")
+        self.assertEqual(hint.detail["local_provider_gap_lanes"], ["codex"])
+        self.assertIn("rerun_orchestrator_only_if_this_host_only_coordinates", hint.detail["next_steps"])
+        self.assertIn(
+            "code-mower doctor --adoption --hosted-builders --repo OWNER/REPO",
+            hint.detail["commands"],
+        )
+        self.assertIn("--orchestrator-only", hint.remediation)
+
+    def test_adoption_posture_guidance_skips_observer_postures_and_probe_skips(self) -> None:
+        checks = (
+            DoctorCheck(
+                name="runtime.local_cli.probe",
+                status="skip",
+                lane="codex",
+                message="probe skipped",
+            ),
+        )
+
+        self.assertEqual(
+            check_adoption_posture_guidance(
+                checks,
+                adoption=True,
+                adoption_posture="reviewer-gate",
+            ),
+            (),
+        )
+        self.assertEqual(
+            check_adoption_posture_guidance(
+                checks,
+                adoption=True,
+                adoption_posture="hosted-builders",
+            ),
+            (),
+        )
+
     def test_doctor_cli_aliases_set_adoption_posture(self) -> None:
         cases = (
             (["--adoption", "--repo", "owner/repo"], "reviewer-gate"),
@@ -338,6 +400,66 @@ class DoctorRegistryTests(unittest.TestCase):
         self.assertEqual(
             posture_check.detail["repositories"],
             ["codemower-ai/example-adopter"],
+        )
+
+    def test_adoption_config_source_distinguishes_cold_configless_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            checks = check_adoption_setup(
+                config={"repositories": [{"slug": "owner/example"}]},
+                config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
+                adoption=True,
+                repo_slug="owner/example",
+                repo_source="explicit",
+                using_packaged_example=True,
+                config_source="packaged_starter",
+                repo_root=Path(root),
+            )
+
+        source_check = next(
+            check for check in checks if check.name == "doctor.adoption.config_source"
+        )
+        self.assertEqual(source_check.detail["config_source_state"], "cold_configless")
+        self.assertFalse(source_check.detail["generated_setup_detected"])
+        self.assertEqual(source_check.detail["generated_setup_marker_types"], [])
+        self.assertIn("no repository code-mower.yml was found", source_check.message)
+        self.assertIn("run_init_easy_apply", source_check.detail["next_steps"])
+
+    def test_adoption_config_source_detects_generated_setup_without_root_config(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            workflow_dir = root_path / ".github" / "workflows"
+            workflow_dir.mkdir(parents=True)
+            (workflow_dir / "code-mower-gate.yml").write_text(
+                "name: Code Mower gate\n",
+                encoding="utf-8",
+            )
+            checks = check_adoption_setup(
+                config={"repositories": [{"slug": "owner/example"}]},
+                config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
+                adoption=True,
+                repo_slug="owner/example",
+                repo_source="explicit",
+                using_packaged_example=True,
+                config_source="packaged_starter",
+                repo_root=root_path,
+            )
+
+        source_check = next(
+            check for check in checks if check.name == "doctor.adoption.config_source"
+        )
+        self.assertEqual(
+            source_check.detail["config_source_state"],
+            "generated_without_root_config",
+        )
+        self.assertTrue(source_check.detail["generated_setup_detected"])
+        self.assertEqual(
+            source_check.detail["generated_setup_marker_types"],
+            ["installed_gate_workflow"],
+        )
+        self.assertIn("generated Code Mower setup exists", source_check.message)
+        self.assertEqual(
+            source_check.detail["next_steps"],
+            ["review_generated_setup", "install_root_config", "rerun_adoption_doctor"],
         )
 
     def test_packaged_example_config_source_is_explicit_without_adoption_mode(self) -> None:
