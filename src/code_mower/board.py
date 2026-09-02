@@ -9,9 +9,11 @@ import socket
 import sys
 import webbrowser
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from urllib.parse import urlparse
 
@@ -36,6 +38,10 @@ class BoardConfig:
     repo_path: str = "."
     store_path: str | None = None
     event_limit: int = 20
+    record_events: bool = False
+    record_interval_seconds: int = 60
+    retention_days: int = board_store.DEFAULT_RETENTION_DAYS
+    max_events: int = board_store.DEFAULT_MAX_EVENTS
 
 
 def _store_path(config: BoardConfig) -> Path:
@@ -97,11 +103,44 @@ def status_payload(
     )
     payload["board"] = {
         "schema": "code_mower.board.v1",
-        "mode": "local_read_only",
+        "mode": "local_recording" if config.record_events else "local_read_only",
         "refresh_seconds": config.refresh_seconds,
         "local_paths": "shown" if config.show_local_paths else "redacted",
+        "recording": {
+            "enabled": config.record_events,
+            "interval_seconds": config.record_interval_seconds,
+        },
     }
     return payload
+
+
+def _recording_due(last_recorded_at: datetime | None, now: datetime, interval_seconds: int) -> bool:
+    return last_recorded_at is None or interval_seconds <= 0 or (now - last_recorded_at).total_seconds() >= interval_seconds
+
+
+def _recording_metadata(config: BoardConfig, status: str, **extra: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "enabled": config.record_events,
+        "interval_seconds": config.record_interval_seconds,
+        "status": status,
+    }
+    metadata.update(extra)
+    return metadata
+
+
+def _record_live_snapshot(
+    payload: dict[str, Any],
+    config: BoardConfig,
+    *,
+    now: datetime,
+) -> board_store.StoreWriteResult:
+    return board_store.append_snapshot(
+        payload,
+        path=_store_path(config),
+        now=now,
+        retention_days=config.retention_days,
+        max_events=config.max_events,
+    )
 
 
 def render_board_html(config: BoardConfig) -> str:
@@ -223,6 +262,9 @@ def make_handler(
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
 ) -> type[BaseHTTPRequestHandler]:
+    last_recorded_at: datetime | None = None
+    recording_lock = Lock()
+
     class BoardHandler(BaseHTTPRequestHandler):
         server_version = "CodeMowerBoard/0.1"
 
@@ -238,6 +280,8 @@ def make_handler(
             self.wfile.write(body)
 
         def do_GET(self) -> None:
+            nonlocal last_recorded_at
+
             if not _host_header_allowed(self.headers.get("Host")):
                 self._send(HTTPStatus.FORBIDDEN, b"forbidden\n", "text/plain; charset=utf-8")
                 return
@@ -254,6 +298,35 @@ def make_handler(
                     gh_json_runner=gh_json_runner,
                     command_runner=command_runner,
                 )
+                if config.record_events:
+                    with recording_lock:
+                        now = datetime.now(UTC).replace(microsecond=0)
+                        if _recording_due(last_recorded_at, now, config.record_interval_seconds):
+                            payload["board"]["recording"] = _recording_metadata(config, "recording")
+                            try:
+                                result = _record_live_snapshot(payload, config, now=now)
+                            except (ValueError, board_store.BoardStoreError):
+                                last_recorded_at = now
+                                payload["board"]["recording"] = _recording_metadata(
+                                    config,
+                                    "error",
+                                    message="could not update local board event store",
+                                )
+                            else:
+                                last_recorded_at = now
+                                payload["board"]["recording"] = _recording_metadata(
+                                    config,
+                                    "recorded",
+                                    kept=result.kept,
+                                    pruned=result.pruned,
+                                    malformed=result.malformed,
+                                )
+                        else:
+                            payload["board"]["recording"] = _recording_metadata(
+                                config,
+                                "skipped",
+                                message="record interval not reached",
+                            )
                 body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
                 self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
                 return
@@ -273,6 +346,15 @@ def make_handler(
 def serve(config: BoardConfig, *, open_browser: bool = False) -> int:
     if not _is_loopback(config.host):
         print("error: board host must be loopback; use 127.0.0.1 or localhost", file=sys.stderr)
+        return 2
+    if config.record_interval_seconds < 0:
+        print("error: --record-interval-seconds must be non-negative", file=sys.stderr)
+        return 2
+    if config.retention_days < 0:
+        print("error: --retention-days must be non-negative", file=sys.stderr)
+        return 2
+    if config.max_events < 1:
+        print("error: --max-events must be at least 1", file=sys.stderr)
         return 2
     handler = make_handler(config)
     server_type = _server_class(config.host)
@@ -364,6 +446,10 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--repo-path", default=".")
     serve_parser.add_argument("--store-path")
     serve_parser.add_argument("--event-limit", type=int, default=20)
+    serve_parser.add_argument("--record-events", action="store_true")
+    serve_parser.add_argument("--record-interval-seconds", type=int, default=60)
+    serve_parser.add_argument("--retention-days", type=int, default=board_store.DEFAULT_RETENTION_DAYS)
+    serve_parser.add_argument("--max-events", type=int, default=board_store.DEFAULT_MAX_EVENTS)
     serve_parser.add_argument("--open", action="store_true", help="open the local board in a browser")
     record_parser = subparsers.add_parser("record")
     record_parser.add_argument("--repo", required=True)
@@ -396,6 +482,10 @@ def main(argv: list[str] | None = None) -> int:
                 repo_path=args.repo_path,
                 store_path=args.store_path,
                 event_limit=args.event_limit,
+                record_events=args.record_events,
+                record_interval_seconds=args.record_interval_seconds,
+                retention_days=args.retention_days,
+                max_events=args.max_events,
             ),
             open_browser=args.open,
         )

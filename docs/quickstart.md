@@ -321,6 +321,15 @@ code-mower board serve --repo OWNER/REPO
 
 The board serves only on loopback by default. It is read-only, does not upload
 data, and uses the same local-path redaction as `lanes status`.
+When you want the Recent Local History panel to fill while the board is open,
+start it explicitly with:
+
+```bash
+code-mower board serve --repo OWNER/REPO --record-events
+```
+
+Live recording writes metadata-only snapshots to `.code-mower/board/events.jsonl`
+at most once every 60 seconds by default.
 
 ## 7. Rehearse The Package Install Path
 
