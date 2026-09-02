@@ -17,7 +17,8 @@ runner setup, decide owner escalations, and calibrate reviewers.
 Use [Quickstart](quickstart.md) as the reference after this guided path. For the
 operating model behind the labels and WIP cap, use
 [Build Loop Operations](build-loop.md). For the macOS service details, use
-[Self-Hosted Mac Runner](self-hosted-mac-runner.md).
+[Self-Hosted Mac Runner](self-hosted-mac-runner.md). For pipx, uv, and
+contributor install choices, use [Install And Bootstrap](install.md).
 
 Optional live observability: if you want a local board showing which files each
 lane checkout is touching while Code Mower waits for PR and audit evidence, use
@@ -50,7 +51,8 @@ audit evidence, skip to section 2.
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.6.0b3
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
 gh auth status
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated

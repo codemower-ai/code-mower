@@ -7,7 +7,8 @@ commands.
 ## Launch-Safe Commands
 
 These are the commands early adopters should be able to run in the first
-session.
+session. Choose the install path first from
+[Install And Bootstrap](install.md).
 
 | Command | Purpose | Writes? | Network? |
 | --- | --- | --- | --- |

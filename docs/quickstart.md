@@ -13,11 +13,14 @@ To see the value loop before you touch a product repository, open the
 
 ## 1. Install
 
-Code Mower requires Python 3.12 or newer.
+Code Mower requires Python 3.12 or newer. For hosted agents, minimal Linux
+boxes, and contributor checkouts, use the full
+[Install And Bootstrap](install.md) matrix. The laptop path is:
 
 ```bash
 python3.12 --version
-pipx install --python python3.12 code-mower==0.6.0b3
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
 code-mower --version
 ```
 
@@ -25,21 +28,18 @@ code-mower --version
 exact verified beta, use:
 
 ```bash
-pipx install --python python3.12 --pip-args="--pre" code-mower
+pipx install --python "$CODE_MOWER_PYTHON" --pip-args="--pre" code-mower
 ```
 
-If you are working from a source checkout instead of an installed package, use
-the checked-in development wrapper so old system Python shims cannot enter the
-release path:
+For hosted agents or CI boxes without pipx:
 
 ```bash
-scripts/dev-python
-scripts/dev-python -m venv .venv
-.venv/bin/python -m pip install -e .
+uv python install 3.12
+uv tool install --python 3.12 code-mower==0.6.0b3
 ```
 
-Avoid hand-wiring source import paths to run the CLI; use the editable venv so
-your checkout follows the same package-first path as the public install.
+For a Code Mower source checkout, use `scripts/dev-python` and the editable
+venv path documented in [Install And Bootstrap](install.md#contributor-checkout).
 
 If `code-mower` is not on your path:
 
@@ -51,7 +51,9 @@ exec "$SHELL" -l
 For the reference multi-agent adoption loop, use Claude Code as the
 orchestrator convention, Claude Code/Codex/Cursor as builders, Claude
 Code/Codex as reviewer lanes, and Gitar plus Antigravity as informational
-reviewer signal until local calibration supports promotion.
+reviewer signal until local calibration supports promotion. On shared machines,
+read [Multi-Agent Coexistence](install.md#multi-agent-coexistence) before
+running multiple builders against the same repository.
 
 ## 2. Authenticate GitHub
 

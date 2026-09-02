@@ -7322,6 +7322,50 @@ def main():
         self.assertIn(repo_path_truth, " ".join(try_in_10.split()))
         self.assertIn(repo_path_truth, " ".join(quickstart.split()))
 
+    def test_install_docs_cover_supported_adoption_paths(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+        try_in_10 = (ROOT / "docs" / "try-in-10-minutes.md").read_text(
+            encoding="utf-8",
+        )
+        build_loop_30 = (ROOT / "docs" / "build-loop-in-30-minutes.md").read_text(
+            encoding="utf-8",
+        )
+        launch_surface = (ROOT / "docs" / "launch-command-surface.md").read_text(
+            encoding="utf-8",
+        )
+        install = (ROOT / "docs" / "install.md").read_text(encoding="utf-8")
+
+        for text in (readme, quickstart, try_in_10, build_loop_30, launch_surface):
+            self.assertIn("Install And Bootstrap", text)
+
+        self.assertIn("Python 3.12 or newer", install)
+        self.assertIn('pipx install --python "$CODE_MOWER_PYTHON"', install)
+        self.assertIn("uv tool install --python 3.12 code-mower==0.6.0b3", install)
+        self.assertIn(".venv/bin/python -m pip install -e .", install)
+        self.assertIn("## Multi-Agent Coexistence", install)
+        self.assertIn("~/.config/code-mower/tokens/", install)
+        install_flat = " ".join(install.split())
+        self.assertIn("one writer per PR branch", install_flat)
+        self.assertIn("no source, raw diffs, transcripts", install_flat)
+
+    def test_primary_adoption_docs_do_not_claim_python_311_support(self) -> None:
+        docs = [
+            ROOT / "README.md",
+            ROOT / "docs" / "install.md",
+            ROOT / "docs" / "quickstart.md",
+            ROOT / "docs" / "try-in-10-minutes.md",
+            ROOT / "docs" / "build-loop-in-30-minutes.md",
+            ROOT / "docs" / "first-run-transcript.md",
+        ]
+        stale_patterns = ("Python 3.11", "python3.11", ">=3.11")
+
+        for path in docs:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                for pattern in stale_patterns:
+                    self.assertNotIn(pattern, text)
+
     def test_orchestrator_prompt_pack_preserves_adoption_guardrails(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
