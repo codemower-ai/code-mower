@@ -46,8 +46,8 @@ def public_baseline_sentence(version: str) -> str:
 
     release_tag = release_tag_for_version(version)
     return (
-        f"The current public beta baseline is `{release_tag}`, with pinned "
-        f"package-index install spec `{public_package_spec(version)}`. "
+        f"The current package-index beta baseline is `{release_tag}`, with "
+        f"pinned package install spec `{public_package_spec(version)}`. "
         "Release evidence is recorded on the GitHub release and in the "
         "first-user install rehearsal."
     )

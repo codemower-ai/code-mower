@@ -26,7 +26,7 @@ in the invite:
 pipx install --python python3.12 code-mower==0.6.0b3
 ```
 
-The current public beta baseline is `v0.6.0-beta.3`, with pinned package-index install spec `code-mower==0.6.0b3`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
+The current package-index beta baseline is `v0.6.0-beta.3`, with pinned package install spec `code-mower==0.6.0b3`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
 
 ## Invite Criteria
 

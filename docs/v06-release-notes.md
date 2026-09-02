@@ -39,7 +39,7 @@ runtimes, and capture builder/reviewer metadata without uploading source.
   builder, branch/PR, and command-hash metadata.
 - `code-mower lanes status --repo OWNER/REPO` gives operators one read-only
   snapshot of active PR lanes, audit/gate labels, major checks, recent Code
-  Mower workflows, local AgentTrail boards, likely local lane processes, and
+  Mower workflows, local board/process hints, likely local lane processes, and
   the next action. `--json` emits a stable metadata-only shape.
 - `code-mower cloud setup` now records the current local cloud token profile,
   and upload-style cloud commands can resolve it after shell or app restarts

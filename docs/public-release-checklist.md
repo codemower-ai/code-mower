@@ -11,13 +11,20 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha/beta releases and reports its version with
   `code-mower --version`.
-- The v0.6 beta entrypoint is `code-mower==0.6.0b3`, with
-  `code-mower doctor --preflight` as the first-run setup diagnostic and
-  `code-mower lanes status --repo OWNER/REPO` as the operator snapshot. The
-  corresponding GitHub tag is `v0.6.0-beta.3`; `doctor --v05` remains a
-  compatibility alias for scripts.
-- The README now shows a shortened `doctor --preflight` example so fresh users can
-  see the payoff before installing.
+- The current package-index beta entrypoint is `code-mower==0.6.0b3`, with
+  `code-mower doctor --adoption --repo OWNER/REPO` as the human-facing
+  first-run setup diagnostic and `code-mower lanes status --repo OWNER/REPO`
+  as the operator snapshot. The corresponding GitHub tag is
+  `v0.6.0-beta.3`; `doctor --preflight` and `doctor --v05` remain
+  compatibility presets for scripts.
+- The v0.7/v0.8 source line has landed on `main`: Python 3.12+ install
+  hardening, hosted-builder doctor postures, non-expiring token diagnostics,
+  native redacted lane status, local Board, Board history, spend/verdict
+  timelines, owner queue, optional metadata-only agent cards, Board doctor,
+  Board reset, and the public Board demo rehearsal. Cut and rehearse a new beta
+  before asking package-only adopters to rely on that source-line behavior.
+- The README now shows a shortened `doctor --adoption --repo OWNER/REPO`
+  example so fresh users can see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and
   changelog exist as public trust/readiness artifacts.
 - Top-level CLI help is first-user focused: `code-mower --help` shows the
@@ -52,13 +59,13 @@ not know the original reference repos.
   reviewer: lane consistency, setup diagnostics, calibration, spend/latency, and
   evidence-gated promotion.
 - Standalone CI passes from a clean clone.
-- `code-mower init --easy` and `code-mower doctor --preflight` work in a fresh toy
-  repo.
+- `code-mower init --easy` and
+  `code-mower doctor --adoption --repo OWNER/REPO` work in a fresh toy repo.
 - `code-mower --help` makes the first-user path obvious without exposing all
   advanced/operator commands by default.
-- `code-mower doctor --preflight` runs provider-declared smoke probes and optional
-  cloud-token diagnostics without leaking raw auth/provider output or token
-  values into shareable JSON.
+- `code-mower doctor --adoption --repo OWNER/REPO` runs provider-declared smoke
+  probes and optional cloud-token diagnostics without leaking raw auth/provider
+  output or token values into shareable JSON.
 - `scripts/smoke_easy_mode.py --json` passes in a fresh virtual environment.
 - `scripts/fresh_clone_rehearsal.py --json` passes against the release commit.
 - `code-mower migration package-install-rehearsal --package-spec ... --json`
@@ -94,6 +101,8 @@ not know the original reference repos.
   math, cloud bundle privacy, and at least one provider-runner stub path.
 - CodeMower.com has a published retention policy and user-visible deletion or
   export path before broad cloud-data invitations.
+- A current post-release effectiveness assessment exists and distinguishes
+  operational dogfood evidence from calibrated lane-promotion evidence.
 
 ## Alpha Release Gate
 
@@ -143,7 +152,7 @@ interpreter.
   `code-mower calibration auto-discover --repo OWNER/REPO --last-n 20` in at
   least one public toy/real repository.
 - Add a short terminal recording, screenshot, or transcript of the first
-  `doctor --preflight` run to the README/website.
+  `doctor --adoption --repo OWNER/REPO` run to the README/website.
 - Expand [docs/troubleshooting.md](troubleshooting.md) as new setup traps are
   found in early-adopter installs.
 - Add a migration note for teams that want to start with informational-only
