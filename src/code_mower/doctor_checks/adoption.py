@@ -5,13 +5,21 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .models import STATUS_PASS, STATUS_WARN, DoctorCheck
 
 
 OWNER_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 OWNER_LOGIN_PLACEHOLDER = "TODO_OWNER_LOGIN"
+GENERATED_SETUP_MARKERS = {
+    "generated_config": (".code-mower.generated/code-mower.yml",),
+    "installed_gate_workflow": (".github/workflows/code-mower-gate.yml",),
+    "installed_dispatch_workflow": (".github/workflows/dispatch-lanes.yml",),
+    "installed_agent_pr_labeler": (
+        ".github/workflows/code-mower-agent-pr-labeler.yml",
+    ),
+}
 
 
 def normalize_repo_slug(value: str, *, option: str = "--repo") -> str:
@@ -103,6 +111,85 @@ def _configured_repositories(config: Mapping[str, Any] | None) -> list[str]:
     return slugs
 
 
+def _generated_setup_marker_types(repo_root: Path | None) -> list[str]:
+    if repo_root is None:
+        return []
+    marker_types: list[str] = []
+    for marker_type, relative_paths in GENERATED_SETUP_MARKERS.items():
+        if any((repo_root / relative_path).exists() for relative_path in relative_paths):
+            marker_types.append(marker_type)
+    return marker_types
+
+
+def _config_source_state(
+    *,
+    source: str,
+    using_packaged_example: bool,
+    generated_marker_types: Sequence[str],
+) -> str:
+    if not using_packaged_example:
+        return source or "repository_config"
+    if source == "source_tree_starter":
+        return "source_tree_starter"
+    if generated_marker_types:
+        return "generated_without_root_config"
+    return "cold_configless"
+
+
+def check_adoption_posture_guidance(
+    checks: Sequence[DoctorCheck],
+    *,
+    adoption: bool,
+    adoption_posture: str,
+) -> tuple[DoctorCheck, ...]:
+    """Return first-run guidance when default posture may not match this host."""
+
+    if not adoption or adoption_posture != "reviewer-gate":
+        return ()
+    local_provider_gap_names = {"runtime.local_cli", "runtime.local_cli.probe"}
+    gap_lanes = sorted(
+        {
+            str(check.lane)
+            for check in checks
+            if check.lane
+            and (
+                check.name in local_provider_gap_names
+                or check.name.startswith("runtime.local_audit")
+            )
+            and check.status == STATUS_WARN
+        }
+    )
+    if not gap_lanes:
+        return ()
+    return (
+        DoctorCheck(
+            name="doctor.adoption.posture_hint",
+            status=STATUS_WARN,
+            message=(
+                "default reviewer-gate posture found local provider setup gaps"
+            ),
+            detail={
+                "adoption_posture": adoption_posture,
+                "local_provider_gap_lanes": gap_lanes,
+                "next_steps": [
+                    "rerun_orchestrator_only_if_this_host_only_coordinates",
+                    "rerun_hosted_builders_if_this_host_observes_hosted_lanes",
+                    "finish_local_cli_setup_if_this_host_runs_reviewers",
+                ],
+                "commands": [
+                    "code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO",
+                    "code-mower doctor --adoption --hosted-builders --repo OWNER/REPO",
+                ],
+            },
+            remediation=(
+                "If this host only coordinates or observes hosted builders, "
+                "rerun with `--orchestrator-only` or `--hosted-builders`; "
+                "otherwise finish the local CLI/token setup for the listed lanes."
+            ),
+        ),
+    )
+
+
 def check_adoption_setup(
     *,
     config: Mapping[str, Any] | None,
@@ -112,6 +199,7 @@ def check_adoption_setup(
     repo_source: str,
     using_packaged_example: bool,
     config_source: str = "",
+    repo_root: Path | None = None,
 ) -> tuple[DoctorCheck, ...]:
     """Return first-run adoption posture checks."""
 
@@ -148,27 +236,64 @@ def check_adoption_setup(
     source = config_source or (
         "packaged_starter" if using_packaged_example else "repository_config"
     )
+    generated_marker_types = _generated_setup_marker_types(repo_root)
+    source_state = _config_source_state(
+        source=source,
+        using_packaged_example=using_packaged_example,
+        generated_marker_types=generated_marker_types,
+    )
     source_messages = {
         "explicit_config": "using explicit Code Mower config",
+        "cold_configless": (
+            "using packaged starter config because no repository code-mower.yml was found"
+        ),
+        "generated_without_root_config": (
+            "using packaged starter config because generated Code Mower setup exists "
+            "but repository code-mower.yml is not installed"
+        ),
         "packaged_starter": "using packaged starter config for adoption checks",
         "repository_config": "using repository Code Mower config",
         "source_tree_starter": "using source-tree starter config for adoption checks",
     }
+    next_steps = (
+        [
+            "review_generated_setup",
+            "install_root_config",
+            "rerun_adoption_doctor",
+        ]
+        if source_state == "generated_without_root_config"
+        else [
+            "run_init_easy_apply",
+            "edit_generated_config",
+            "rerun_adoption_doctor",
+        ]
+        if source_state == "cold_configless"
+        else []
+    )
     detail = {
         "config_path": str(config_path),
         "config_source": source,
+        "config_source_state": source_state,
         "configured_repositories": repositories,
         "effective_repository": repo_slug,
+        "repository_config_present": not using_packaged_example,
+        "generated_setup_detected": bool(generated_marker_types),
+        "generated_setup_marker_types": generated_marker_types,
     }
+    if next_steps:
+        detail["next_steps"] = next_steps
     if using_packaged_example:
         checks.append(
             DoctorCheck(
                 name="doctor.adoption.config_source",
                 status=STATUS_WARN,
-                message=source_messages.get(source, source_messages["packaged_starter"]),
+                message=source_messages.get(source_state, source_messages["packaged_starter"]),
                 detail=detail,
                 remediation=(
-                    "Run `code-mower init --easy --apply`, review the generated "
+                    "Review the generated setup, commit an edited code-mower.yml "
+                    "at the repository root, then rerun doctor."
+                    if source_state == "generated_without_root_config"
+                    else "Run `code-mower init --easy --apply`, review the generated "
                     "setup, and commit an edited code-mower.yml before relying "
                     "on recurring workflows."
                 ),

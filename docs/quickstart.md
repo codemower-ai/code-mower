@@ -320,6 +320,9 @@ Codex/Claude audits, use `--hosted-builders` or `--orchestrator-only` with
 `doctor --adoption`; those postures keep GitHub, cloud, setup, and privacy
 checks visible while marking local CLI probes skipped and treating local wrapper
 env gaps as setup tasks for the machine that will execute those lanes.
+When default adoption output shows local provider setup gaps on an observer
+host, doctor includes the same posture commands as next-step hints in text and
+JSON.
 
 When setup is visible enough to start work, use one command to check live lane
 state:

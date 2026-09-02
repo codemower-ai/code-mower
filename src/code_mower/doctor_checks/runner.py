@@ -7,7 +7,11 @@ from typing import Any, Mapping
 
 from code_mower import config as code_mower_config
 
-from .adoption import check_adoption_setup, config_with_repository_target
+from .adoption import (
+    check_adoption_posture_guidance,
+    check_adoption_setup,
+    config_with_repository_target,
+)
 from .audit_limits import check_effective_audit_limits
 from .cloud import check_cloud_token_surface
 from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
@@ -117,6 +121,7 @@ def run_doctor(
             repo_source=repo_source,
             config_source=config_source,
             using_packaged_example=using_packaged_example,
+            repo_root=Path.cwd() if using_packaged_example else config_path.parent,
         )
     )
     if config is not None and repo_slug:
@@ -217,6 +222,13 @@ def run_doctor(
                 http_timeout=http_timeout,
             )
         )
+    checks.extend(
+        check_adoption_posture_guidance(
+            checks,
+            adoption=adoption,
+            adoption_posture=adoption_posture,
+        )
+    )
 
     if "github" in enabled_stages:
         checks.extend(
