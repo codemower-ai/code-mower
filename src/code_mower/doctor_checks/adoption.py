@@ -72,11 +72,12 @@ def config_with_repository_target(
     repositories = [
         repo for repo in config.get("repositories") or [] if isinstance(repo, Mapping)
     ]
-    default_branch = "main"
-    local_path_env = ""
-    if repositories:
-        default_branch = str(repositories[0].get("default_branch") or default_branch)
-        local_path_env = str(repositories[0].get("local_path_env") or "")
+    source_repo = next(
+        (repo for repo in repositories if str(repo.get("slug") or "") == repo_slug),
+        repositories[0] if repositories else {},
+    )
+    default_branch = str(source_repo.get("default_branch") or "main")
+    local_path_env = str(source_repo.get("local_path_env") or "")
     target: dict[str, str] = {"slug": repo_slug, "default_branch": default_branch}
     if local_path_env:
         target["local_path_env"] = local_path_env
@@ -172,6 +173,30 @@ def check_adoption_setup(
                     "configured_repositories": repositories,
                     "effective_repository": repo_slug,
                 },
+            )
+        )
+
+    if (
+        repo_slug
+        and repo_source == "git_remote"
+        and repositories
+        and repo_slug not in repositories
+        and not using_packaged_example
+    ):
+        checks.append(
+            DoctorCheck(
+                name="doctor.adoption.repo_mismatch",
+                status=STATUS_WARN,
+                message="remote origin does not match code-mower.yml repositories",
+                detail={
+                    "inferred_repository": repo_slug,
+                    "configured_repositories": repositories,
+                },
+                remediation=(
+                    "Pass `--repo OWNER/REPO` to choose an explicit target, or "
+                    "update code-mower.yml or remote.origin.url so doctor and "
+                    "the committed config agree."
+                ),
             )
         )
 

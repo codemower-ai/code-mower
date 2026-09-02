@@ -6,6 +6,8 @@ from unittest import mock
 
 from code_mower.doctor_checks import (
     build_doctor_run_plan,
+    check_adoption_setup,
+    config_with_repository_target,
     detect_repo_slug,
     default_check_group_ids,
     normalize_repo_slug,
@@ -76,6 +78,52 @@ class DoctorRegistryTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "OWNER/REPO"):
             normalize_repo_slug("codemower-ai")
+
+    def test_repo_override_preserves_matching_repo_metadata(self) -> None:
+        config = {
+            "repositories": [
+                {
+                    "slug": "owner/first",
+                    "default_branch": "main",
+                    "local_path_env": "FIRST_REPO_PATH",
+                },
+                {
+                    "slug": "owner/second",
+                    "default_branch": "develop",
+                    "local_path_env": "SECOND_REPO_PATH",
+                },
+            ],
+        }
+
+        targeted = config_with_repository_target(config, "owner/second")
+
+        self.assertEqual(
+            targeted["repositories"],
+            [
+                {
+                    "slug": "owner/second",
+                    "default_branch": "develop",
+                    "local_path_env": "SECOND_REPO_PATH",
+                }
+            ],
+        )
+
+    def test_adoption_warns_when_inferred_repo_disagrees_with_config(self) -> None:
+        checks = check_adoption_setup(
+            config={"repositories": [{"slug": "owner/configured"}]},
+            config_path=ROOT / "code-mower.yml",
+            adoption=True,
+            repo_slug="owner/from-remote",
+            repo_source="git_remote",
+            using_packaged_example=False,
+        )
+
+        mismatch = next(
+            check for check in checks if check.name == "doctor.adoption.repo_mismatch"
+        )
+        self.assertEqual(mismatch.status, "warn")
+        self.assertEqual(mismatch.detail["inferred_repository"], "owner/from-remote")
+        self.assertEqual(mismatch.detail["configured_repositories"], ["owner/configured"])
 
     def test_runner_emits_sanitized_run_plan_check_even_when_inputs_fail(self) -> None:
         with tempfile.TemporaryDirectory() as root:
