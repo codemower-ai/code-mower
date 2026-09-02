@@ -123,6 +123,7 @@ snapshot:
 ```bash
 code-mower lanes status --repo OWNER/REPO
 code-mower lanes status --repo OWNER/REPO --json
+code-mower board serve --repo OWNER/REPO
 ```
 
 It summarizes open PR lanes, audit/gate labels, major checks, recent Code Mower
@@ -131,9 +132,10 @@ and the next action. It is read-only and metadata-only.
 Local cwd paths are redacted by default; pass `--show-local-paths` only when you
 are debugging locally.
 
-Use this command as the recommended visibility surface during v0.7 adoption.
-The native Code Mower Board MVP will build on the same metadata instead of
-requiring a separate observer setup.
+Use `lanes status` as the pasteable visibility surface during v0.7 adoption.
+Use `board serve` when you want the same state in a local browser. The board is
+read-only, serves on loopback by default, and does not require a separate
+observer setup.
 
 ## Required Tokens
 

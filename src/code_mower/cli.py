@@ -39,6 +39,7 @@ from . import __version__
 from . import antigravity_cli_audit_pr
 from . import antigravity_sdk_probe
 from . import blind_review_coordinator
+from . import board as code_mower_board
 from . import bootstrap as code_mower_bootstrap
 from . import builder_experiment as code_mower_builder_experiment
 from . import builder_runs as code_mower_builder_runs
@@ -426,6 +427,7 @@ CommandHandler = Callable[[list[str]], int]
 COMMAND_DESCRIPTIONS: dict[str, str] = {
     "antigravity-cli": "Run an Antigravity/Gemini CLI structured audit lane.",
     "blind-review": "Coordinate hidden/blind review artifacts.",
+    "board": "Serve a local read-only lane visibility board.",
     "bootstrap": "Bootstrap generated support files and workflow fixtures.",
     "builder": "Record source-free builder run provenance.",
     "builder-experiment": "Capture builder-side experiment metadata.",
@@ -454,7 +456,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "migration": "Rehearse standalone package and wrapper migration paths.",
     "merge-plan": "Inspect merge-readiness signals and lane labels.",
     "next-steps": "Print the recommended next actions after setup.",
-    "observe": "Launch optional local observability companions.",
+    "observe": "Run legacy optional local observability companions.",
     "package": "Build or inspect package extraction artifacts.",
     "plan": "Create local issue-derived planning artifacts.",
     "project-context": "Create editable local project-context doctrine docs.",
@@ -472,6 +474,7 @@ FIRST_USER_COMMANDS = (
     "init",
     "doctor",
     "checks",
+    "board",
     "next-steps",
     "calibration",
     "reviewer-metrics",
@@ -548,8 +551,9 @@ def _top_level_help(show_all: bool) -> str:
             "",
             "Common first run:",
             "  code-mower init --easy",
-            "  code-mower doctor --preflight",
-            "  code-mower next-steps --profile recommended",
+            "  code-mower doctor --adoption --repo OWNER/REPO",
+            "  code-mower lanes status --repo OWNER/REPO",
+            "  code-mower board serve --repo OWNER/REPO",
             (
                 "  code-mower migration package-install-rehearsal "
                 f"--package-spec {code_mower_next_steps.current_alpha_package_spec()} --json"
@@ -562,6 +566,7 @@ def _top_level_help(show_all: bool) -> str:
 COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "antigravity-cli": antigravity_cli_audit_pr.main,
     "blind-review": blind_review_coordinator.main,
+    "board": code_mower_board.main,
     "bootstrap": code_mower_bootstrap.main,
     "builder": code_mower_builder_runs.main,
     "builder-experiment": code_mower_builder_experiment.main,

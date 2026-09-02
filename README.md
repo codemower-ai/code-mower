@@ -78,6 +78,9 @@ action. It is the recommended visibility surface until the native Code Mower
 Board lands in v0.7. Text and JSON output redact local cwd paths by default;
 use `--show-local-paths` only for local debugging.
 
+For the same redacted metadata in a local browser view, run
+`code-mower board serve --repo OWNER/REPO` and open the printed localhost URL.
+
 ## See The Value Shape First
 
 If you want to understand the product before installing anything, start with
@@ -304,12 +307,14 @@ engineer can:
 2. understand the local/cloud trust boundary;
 3. run `init --easy` and `doctor --adoption --repo OWNER/REPO`;
 4. run `lanes status --repo OWNER/REPO` to see active lanes and gate state;
-5. detect and run the repo's native lint/test/build surface instead of assuming
+5. run `board serve --repo OWNER/REPO` when you want the same state in a local
+   browser view;
+6. detect and run the repo's native lint/test/build surface instead of assuming
    every project uses the same tools;
-6. produce a local value report from known PR outcomes;
-7. decide which lanes should stay informational, selective, or merge-gating;
+7. produce a local value report from known PR outcomes;
+8. decide which lanes should stay informational, selective, or merge-gating;
    and
-8. optionally upload sanitized metadata to CodeMower.com and see useful team
+9. optionally upload sanitized metadata to CodeMower.com and see useful team
    dashboard signal.
 
 Build-loop templates extend the same loop from "who reviews best?" to "which AI

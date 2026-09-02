@@ -25,6 +25,7 @@ session. Choose the install path first from
 | `code-mower builder record --provider grok_bot --executor cursor_cloud_agent ...` | Record source-free builder provenance after an agent opens a branch or PR. | yes, local only | no |
 | `code-mower lanes status --repo OWNER/REPO` | Show active PR lanes, gate/check state, local board/process hints, and the next action. | no | GitHub optional |
 | `code-mower lanes status --repo OWNER/REPO --show-local-paths` | Include local cwd paths in the status snapshot for local debugging. | no | GitHub optional |
+| `code-mower board serve --repo OWNER/REPO` | Serve the same redacted lane status in a local read-only browser board. | no | GitHub optional |
 | `code-mower doctor --preflight --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
 | `code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json` | Check hosted-builder or orchestrator setup without requiring local Codex/Claude CLIs on this machine. | no | optional GitHub/provider probes |
 | `code-mower next-steps --profile recommended --repo OWNER/REPO` | Print the next recommended setup actions. | no | no |
@@ -62,7 +63,7 @@ repository.
 Manual and informational lanes can be tried early. Merge-gating lanes should
 wait until:
 
-1. `doctor --preflight` has no unexplained failures;
+1. `doctor --adoption --repo OWNER/REPO` has no unexplained failures;
 2. the provider can run a real prompt or audit smoke;
 3. known-clean controls stay quiet;
 4. known-blocked controls are caught; and

@@ -313,6 +313,15 @@ are debugging on your own machine.
 When a PR needs the gate recomputed manually, the text and JSON output include a
 copy-pasteable dispatch command with `pr_number` and the current `head_sha`.
 
+For a browser view of the same local-first metadata, run:
+
+```bash
+code-mower board serve --repo OWNER/REPO
+```
+
+The board serves only on loopback by default. It is read-only, does not upload
+data, and uses the same local-path redaction as `lanes status`.
+
 ## 7. Rehearse The Package Install Path
 
 This proves Code Mower can be installed fresh and run the starter workflow in a

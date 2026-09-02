@@ -239,6 +239,7 @@ class ReleaseHygieneTests(unittest.TestCase):
             (
                 "antigravity-cli",
                 "blind-review",
+                "board",
                 "bootstrap",
                 "builder",
                 "builder-experiment",
@@ -303,10 +304,14 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("  init", help_text)
         self.assertIn("  doctor", help_text)
         self.assertIn("  checks", help_text)
+        self.assertIn("  board", help_text)
         self.assertIn("  calibration", help_text)
         self.assertIn("  cloud", help_text)
         self.assertIn("  lanes", help_text)
         self.assertIn("  project-context", help_text)
+        self.assertIn("code-mower doctor --adoption --repo OWNER/REPO", help_text)
+        self.assertIn("code-mower lanes status --repo OWNER/REPO", help_text)
+        self.assertIn("code-mower board serve --repo OWNER/REPO", help_text)
         self.assertNotIn("trailer-comment-labeler", help_text)
         self.assertNotIn("codex-audit-env-preflight", help_text)
         self.assertNotIn("claude-bounce", help_text)
@@ -7284,6 +7289,7 @@ def main():
         self.assertIn("[Quickstart](quickstart.md)", build_loop_30)
         self.assertIn("write a PATCH payload from", build_loop_30)
         self.assertIn("existing source-app bindings", build_loop_30)
+        self.assertIn("code-mower board serve --repo OWNER/REPO", build_loop_30)
         self.assertIn("python3.12 - <<'PY'", build_loop_30)
         self.assertIn('preserved_checks.append({"context": check["context"], "app_id": app_id})', build_loop_30)
         self.assertIn('"checks": preserved_checks + [{"context": "code-mower/gate", "app_id": -1}]', build_loop_30)
@@ -7325,6 +7331,8 @@ def main():
         )
         self.assertIn(repo_path_truth, " ".join(try_in_10.split()))
         self.assertIn(repo_path_truth, " ".join(quickstart.split()))
+        self.assertIn("code-mower board serve --repo OWNER/REPO", readme)
+        self.assertIn("code-mower board serve --repo OWNER/REPO", quickstart)
 
         for path, text in (
             ("README.md", readme),
@@ -7358,6 +7366,7 @@ def main():
         self.assertIn("uv tool install --python 3.12 code-mower==0.6.0b3", install)
         self.assertIn(".venv/bin/python -m pip install -e .", install)
         self.assertIn("## Multi-Agent Coexistence", install)
+        self.assertIn("code-mower board serve --repo OWNER/REPO", install)
         self.assertIn("~/.config/code-mower/tokens/", install)
         install_flat = " ".join(install.split())
         self.assertIn("one writer per PR branch", install_flat)
