@@ -3481,6 +3481,41 @@ jobs:
             finally:
                 os.chdir(original_cwd)
 
+    def test_generated_smoke_tests_do_not_write_python_bytecode(self) -> None:
+        config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_bin = root / "code-mower"
+            fake_bin.write_text(
+                "#!/usr/bin/env bash\nexit 0\n",
+                encoding="utf-8",
+            )
+            fake_bin.chmod(0o755)
+            output_dir = root / ".code-mower.generated"
+            plan = code_mower_init.render_init_plan(
+                code_mower_config.load_config(config_path),
+                package_mode=True,
+                package_command=str(fake_bin),
+            )
+            smoke_text = "\n".join(plan.data["smoke_tests"])
+            self.assertIn("compile(path.read_text", smoke_text)
+            self.assertNotIn("python3 -m py_compile", smoke_text)
+
+            code_mower_init.apply_init_plan(plan, output_dir)
+            subprocess.run(
+                ["bash", str(output_dir / "smoke-tests.sh")],
+                check=True,
+                cwd=output_dir,
+                text=True,
+            )
+
+            bytecode_dirs = [
+                path
+                for path in output_dir.rglob("__pycache__")
+                if path.is_dir()
+            ]
+            self.assertEqual(bytecode_dirs, [])
+
     def test_init_warns_for_agent_pr_builder_identity_mismatches(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
         config = copy.deepcopy(code_mower_config.load_config(config_path))
