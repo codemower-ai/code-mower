@@ -107,6 +107,10 @@ The browser UI fetches `/api/status` from a loopback-only HTTP server. It does
 not mutate GitHub and does not upload payloads. Plain `board serve` does not
 mutate local repository state. `board serve --record-events` is the explicit
 local-only write mode for filling board history while the browser view is open.
+When the default port is already in use, `board serve` falls forward to a nearby
+free loopback port and prints the selected URL. An explicit `--port` stays
+strict so scripts and bookmarks fail clearly instead of silently moving. The
+printed URL is local to that machine or VM unless the operator creates a tunnel.
 
 ## Local Event Store
 
