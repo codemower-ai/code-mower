@@ -23,6 +23,7 @@ PACKAGE_FILES = (
     ("src/code_mower/checks.py", "src/code_mower/checks.py", "core"),
     ("src/code_mower/decisions.py", "src/code_mower/decisions.py", "core"),
     ("src/code_mower/gate_health.py", "src/code_mower/gate_health.py", "core"),
+    ("src/code_mower/git_identity.py", "src/code_mower/git_identity.py", "core"),
     ("src/code_mower/calibration/__init__.py", "src/code_mower/calibration/__init__.py", "core"),
     ("src/code_mower/calibration/auto_discovery.py", "src/code_mower/calibration/auto_discovery.py", "core"),
     ("src/code_mower/calibration/arms.py", "src/code_mower/calibration/arms.py", "core"),

@@ -19,6 +19,22 @@ self-hosted-runner:
     - code-mower-audit
 """
 IGNORES = ("SC2016", "SC2034")
+SCRATCH_GIT_USER_NAME_FALLBACK = "Code Mower Scratch"
+SCRATCH_GIT_USER_EMAIL_FALLBACK = "code-mower-scratch@example.com"
+
+
+def _scratch_git_identity() -> tuple[str, str]:
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    if source_root.is_dir() and str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
+    try:
+        from code_mower.git_identity import (
+            SCRATCH_GIT_USER_EMAIL,
+            SCRATCH_GIT_USER_NAME,
+        )
+    except ModuleNotFoundError:
+        return SCRATCH_GIT_USER_NAME_FALLBACK, SCRATCH_GIT_USER_EMAIL_FALLBACK
+    return SCRATCH_GIT_USER_NAME, SCRATCH_GIT_USER_EMAIL
 
 
 def _resolve_executable(value: str) -> Path:
@@ -66,9 +82,10 @@ def _prepare_repo(repo: Path, env: dict[str, str]) -> None:
     git = shutil.which("git")
     if not git:
         return
+    scratch_name, scratch_email = _scratch_git_identity()
     _run([git, "init", "-q"], cwd=repo, env=env)
-    _run([git, "config", "user.name", "Code Mower Actionlint"], cwd=repo, env=env)
-    _run([git, "config", "user.email", "actionlint@example.com"], cwd=repo, env=env)
+    _run([git, "config", "user.name", scratch_name], cwd=repo, env=env)
+    _run([git, "config", "user.email", scratch_email], cwd=repo, env=env)
     _run([git, "config", "commit.gpgSign", "false"], cwd=repo, env=env)
     _run([git, "add", "README.md"], cwd=repo, env=env)
     _run(

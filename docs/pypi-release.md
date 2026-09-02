@@ -194,11 +194,14 @@ See [First-User Install Rehearsal](first-user-install-rehearsal.md) for the full
 artifact contract. If you need to debug a step manually, the equivalent toy-repo
 flow is:
 
+Code Mower-created scratch repositories use the non-personal Git identity
+`Code Mower Scratch <code-mower-scratch@example.com>`.
+
 ```bash
 mkdir /tmp/code-mower-toy && cd /tmp/code-mower-toy
 git init
-git config user.email code-mower-smoke@example.com
-git config user.name "Code Mower Smoke"
+git config user.email code-mower-scratch@example.com
+git config user.name "Code Mower Scratch"
 printf '# Toy Repo\n' > README.md
 git add README.md && git commit -m 'Initial commit'
 /tmp/code-mower-pypi-smoke/bin/code-mower init --easy --apply --output-dir .code-mower.generated

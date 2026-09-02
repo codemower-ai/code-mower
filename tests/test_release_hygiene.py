@@ -6,6 +6,7 @@ import importlib.util
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,7 @@ from code_mower import cloud_client
 from code_mower import decisions as code_mower_decisions
 from code_mower import doctor
 from code_mower import doctor_checks
+from code_mower import git_identity as code_mower_git_identity
 from code_mower import init as code_mower_init
 from code_mower import migration as code_mower_migration
 from code_mower import migration_install as code_mower_migration_install
@@ -7240,6 +7242,65 @@ def main():
                 text,
             )
             self.assertNotIn("beta.52: 10/10 first-user readiness", text)
+
+    def test_scratch_git_identity_is_shared_by_rehearsal_docs_and_static_scripts(
+        self,
+    ) -> None:
+        expected_name = code_mower_git_identity.SCRATCH_GIT_USER_NAME
+        expected_email = code_mower_git_identity.SCRATCH_GIT_USER_EMAIL
+        docs_and_scripts = [
+            ROOT / "docs" / "pypi-release.md",
+            ROOT / "scripts" / "actionlint_generated_workflows.py",
+            ROOT / "scripts" / "smoke_easy_mode.py",
+            ROOT / "src" / "code_mower" / "package_static.py",
+        ]
+
+        for path in docs_and_scripts:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertIn(expected_name, text)
+                self.assertIn(expected_email, text)
+        self.assertIn("non-personal Git identity", docs_and_scripts[0].read_text(encoding="utf-8"))
+
+        current_text = "\n".join(
+            path.read_text(encoding="utf-8") for path in docs_and_scripts
+        )
+        self.assertNotIn("Code Mower Smoke", current_text)
+        self.assertNotIn("smoke@example.com", current_text)
+        self.assertNotIn("Code Mower Rehearsal", current_text)
+        self.assertNotIn("rehearsal@example.com", current_text)
+        self.assertNotIn("Code Mower Actionlint", current_text)
+        self.assertNotIn("actionlint@example.com", current_text)
+
+    def test_package_install_rehearsal_toy_repo_uses_shared_scratch_identity(
+        self,
+    ) -> None:
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("git is required for the scratch identity check")
+        with tempfile.TemporaryDirectory() as tmp:
+            toy_repo = Path(tmp) / "toy-repo"
+            steps: list[dict[str, object]] = []
+            code_mower_migration_install._write_public_rehearsal_toy_repo(
+                toy_repo,
+                steps=steps,
+                env=os.environ.copy(),
+                timeout=10,
+            )
+
+            name = subprocess.check_output(
+                [git, "config", "user.name"],
+                cwd=toy_repo,
+                text=True,
+            ).strip()
+            email = subprocess.check_output(
+                [git, "config", "user.email"],
+                cwd=toy_repo,
+                text=True,
+            ).strip()
+
+        self.assertEqual(name, code_mower_git_identity.SCRATCH_GIT_USER_NAME)
+        self.assertEqual(email, code_mower_git_identity.SCRATCH_GIT_USER_EMAIL)
 
     def test_readme_describes_calibration_limits_and_roles(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
