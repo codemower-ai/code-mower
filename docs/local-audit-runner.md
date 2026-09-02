@@ -20,9 +20,9 @@ interactively while runner jobs return `Not logged in`.
 Verify from a runner job, not only from an interactive terminal:
 
 ```bash
-gh auth status
+gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
 codex --version
-claude auth status
+claude auth status >/dev/null 2>&1 && echo "claude auth ok" || { echo "claude auth NOT ready"; false; }
 claude -p "Reply with exactly: ok" --output-format json
 ```
 

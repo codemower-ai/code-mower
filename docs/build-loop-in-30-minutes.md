@@ -54,7 +54,7 @@ audit evidence, skip to section 2.
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
 pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.0b1
-gh auth status
+gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --adoption --repo "$REPO" --json
@@ -390,19 +390,23 @@ code-mower-lane
 Run these smoke checks as the macOS user that owns the runner process:
 
 ```bash
-gh auth status
+gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
 codex --version
 codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
-claude auth status
+claude auth status >/dev/null 2>&1 && echo "claude auth ok" || { echo "claude auth NOT ready"; false; }
 claude -p "Reply with exactly: ok" --output-format json
 ```
+
+Do not paste raw provider auth/status output into issues, pull requests, chats,
+or logs. Use quiet probes like the commands above, or let `code-mower doctor`
+summarize auth readiness, so account and credential-adjacent output stays local.
 
 For non-interactive runner or hosted-agent setup, load the Codex API key from a
 secret store and pipe it into the CLI without printing it:
 
 ```bash
 printf '%s\n' "$OPENAI_API_KEY" | codex login --with-api-key
-codex login status
+codex login status >/dev/null 2>&1 && echo "codex auth ok" || { echo "codex auth NOT ready"; false; }
 codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
 ```
 

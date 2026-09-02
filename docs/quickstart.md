@@ -68,7 +68,7 @@ Code Mower v0.9 is GitHub-first.
 
 ```bash
 gh auth login -h github.com -s repo,workflow,read:org
-gh auth status
+gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
 ```
 
 For a private repository, verify access before continuing:
@@ -85,7 +85,7 @@ Verify Codex:
 
 ```bash
 codex --version
-codex login status
+codex login status >/dev/null 2>&1 && echo "codex auth ok" || { echo "codex auth NOT ready"; false; }
 codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
 ```
 
@@ -94,14 +94,18 @@ store and pipe it into Codex without printing it:
 
 ```bash
 printf '%s\n' "$OPENAI_API_KEY" | codex login --with-api-key
-codex login status
+codex login status >/dev/null 2>&1 && echo "codex auth ok" || { echo "codex auth NOT ready"; false; }
 codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly: ok"
 ```
+
+Do not paste raw provider auth/status output into issues, pull requests, chats,
+or logs. Use quiet probes like these or `code-mower doctor` so account and
+credential-adjacent details stay local.
 
 Verify Claude:
 
 ```bash
-claude auth status
+claude auth status >/dev/null 2>&1 && echo "claude auth ok" || { echo "claude auth NOT ready"; false; }
 claude -p "Reply with exactly: ok" --output-format json
 ```
 
