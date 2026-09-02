@@ -125,6 +125,46 @@ Before publishing to TestPyPI, run the release workflow once with both publish
 inputs set to `false` and confirm `build-distributions` and
 `verify-distributions` are green.
 
+## Cache Bypass And Propagation Triage
+
+Use cache-bypassing exact-version installs when validating a just-published
+beta. That keeps stale local wheels from looking like a successful release and
+keeps PyPI propagation delays from looking like source regressions.
+
+For pipx:
+
+```bash
+python3.12 --version
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.6.0b3
+code-mower --version
+```
+
+For uv:
+
+```bash
+uv python install 3.12
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.6.0b3
+code-mower --version
+```
+
+Before the candidate is available on TestPyPI or PyPI, validate the local wheel
+from the release checkout:
+
+```bash
+scripts/dev-python -m build
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" dist/code_mower-*.whl
+uv tool install --python 3.12 --reinstall dist/code_mower-*.whl
+```
+
+If an exact-version install fails within a few minutes of publication, retry
+with the cache-bypass command. Repeated "no matching distribution" errors,
+HTTP/index errors, or TestPyPI/PyPI timeouts are package-index or network
+propagation until the uploaded artifact is visible and installable. A command
+that installs successfully but reports the wrong `code-mower --version`, fails
+to start, or fails the first-user rehearsal is a release blocker.
+
 For production PyPI verification:
 
 ```bash
