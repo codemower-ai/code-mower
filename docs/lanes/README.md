@@ -35,7 +35,8 @@ Dispatcher rules:
 Operational checks:
 - `DISPATCH_TOKEN` should be a human-owned fine-grained PAT or delegated machine
   user token with Issues read/write and Pull requests read/write.
-- `DISPATCH_TOKEN_EXPIRES_AT` should hold the token expiry date as `YYYY-MM-DD`.
+- `DISPATCH_TOKEN_EXPIRES_AT` should hold the token expiry date as `YYYY-MM-DD`,
+  or `never` for a non-expiring token.
 - Set `CODE_MOWER_MAX_WIP` to override the default WIP cap.
 - Set `LANE_MAC_RUNNER_ENABLED=true` only after the self-hosted Mac runner has
   the configured labels and the lane CLIs are authenticated for the runner user.

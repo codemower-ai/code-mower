@@ -2858,7 +2858,7 @@ def render_init_plan(
     if token["required"]:
         required_setup.append(
             f"create human automation token secret {token['secret']} and "
-            f"expiry variable {token['expires_var']}"
+            f"expiry variable {token['expires_var']} (YYYY-MM-DD or never)"
         )
     if merge_authority_lanes:
         required_setup.extend(
@@ -2927,7 +2927,7 @@ def render_init_plan(
     lines.extend(["", "Human automation token:"])
     if token["required"]:
         lines.append(f"- secret: {token['secret']}")
-        lines.append(f"- expiry variable: {token['expires_var']} (YYYY-MM-DD)")
+        lines.append(f"- expiry variable: {token['expires_var']} (YYYY-MM-DD or never)")
         lines.append("- scopes: " + "; ".join(token["scopes"]))
         lines.append(
             f"- setup: gh secret set {token['secret']} && "
@@ -3104,7 +3104,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Builder loop next steps:")
             token = plan.data["human_automation_token"]
             print(f"- set secret {token['secret']}")
-            print(f"- set variable {token['expires_var']} (YYYY-MM-DD)")
+            print(f"- set variable {token['expires_var']} (YYYY-MM-DD or never)")
             builder_loop = plan.data["builder_loop"]
             print(f"- set variable CODE_MOWER_MAX_WIP or use default {builder_loop['wip_cap']}")
             if builder_loop["runner_enabled_var"] in plan.data["required_variables"]:

@@ -266,7 +266,7 @@ Code Mower lanes therefore support one human-owned automation token by default:
 
 - `DISPATCH_TOKEN`
 - `DISPATCH_TOKEN_EXPIRES_AT` as a repository variable containing the PAT expiry
-  date in `YYYY-MM-DD` format
+  date in `YYYY-MM-DD` format, or `never` when the PAT has no expiration date
 
 Keep older per-lane token names only as beta compatibility fallbacks:
 
@@ -291,13 +291,16 @@ Set the token and expiry metadata with:
 ```bash
 gh secret set DISPATCH_TOKEN
 gh variable set DISPATCH_TOKEN_EXPIRES_AT --body YYYY-MM-DD
+# or, for a non-expiring PAT:
+gh variable set DISPATCH_TOKEN_EXPIRES_AT --body never
 ```
 
 `code-mower doctor --github` fails when the generated human-token workflows are
 enabled but the secret is missing, the expiry variable is missing, or the
-recorded expiry date is in the past. It warns when rotation is due within 14
-days. The check reads only GitHub secret/variable metadata; it cannot read the
-PAT value.
+recorded expiry date is malformed or in the past. It warns when rotation is due
+within 14 days or when the value is still the `YYYY-MM-DD` setup placeholder.
+It passes `never` as an explicit non-expiring posture. The check reads only
+GitHub secret/variable metadata; it cannot read the PAT value.
 
 Generated workflows still grant `GITHUB_TOKEN` write permissions where GitHub
 allows them, but human-token templates prefer `DISPATCH_TOKEN` so label events
