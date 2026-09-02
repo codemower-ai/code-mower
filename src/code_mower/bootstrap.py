@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 
-MIN_PYTHON = (3, 11)
+MIN_PYTHON = (3, 12)
 DEFAULT_VENV = ".code-mower-venv"
 DEFAULT_REQUIREMENTS = "requirements/requirements.txt"
 PYTHON_ENV = "CODE_MOWER_PYTHON"
@@ -157,9 +157,9 @@ def candidate_commands(environ: Mapping[str, str] | None = None) -> tuple[str, .
         _dedupe(
             (
                 sys.executable,
+                "python3.14",
                 "python3.13",
                 "python3.12",
-                "python3.11",
                 "python3",
                 "/opt/homebrew/bin/python3",
                 "/usr/local/bin/python3",
@@ -191,12 +191,12 @@ def find_supported_python(
             continue
         if info.supported:
             return info
-        errors.append(f"{resolved}: Python {info.version_text} is below 3.11")
+        errors.append(f"{resolved}: Python {info.version_text} is below 3.12")
         if explicit:
             break
 
     hint = (
-        f"Set {PYTHON_ENV}=/path/to/python3.11+ or install Python 3.11+."
+        f"Set {PYTHON_ENV}=/path/to/python3.12+ or install Python 3.12+."
     )
     detail = "; ".join(errors[-6:]) if errors else "no candidates tried"
     raise RuntimeError(f"no supported Python found ({detail}). {hint}")
@@ -415,7 +415,7 @@ def _ensure_venv(
     venv_info = probe_python(str(venv_python), runner=runner)
     if not venv_info.supported:
         raise RuntimeError(
-            f"{venv_python} is Python {venv_info.version_text}; expected 3.11+"
+            f"{venv_python} is Python {venv_info.version_text}; expected 3.12+"
         )
     return venv_python, base_python, True
 

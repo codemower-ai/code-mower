@@ -13,7 +13,7 @@ To see the value loop before you touch a product repository, open the
 
 ## 1. Install
 
-Code Mower requires Python 3.11 or newer. Python 3.12 is recommended.
+Code Mower requires Python 3.12 or newer.
 
 ```bash
 python3.12 --version

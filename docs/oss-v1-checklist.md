@@ -267,7 +267,7 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 - Publish a normal Python package with `pyproject.toml`.
 - Support `pipx install code-mower` and `uv tool install code-mower`.
 - Expose the `code-mower` console script.
-- Keep Python >=3.11 explicit.
+- Keep Python >=3.12 explicit.
 - Create, repair, and report one blessed Code Mower virtualenv or packaged
   runtime path.
 - Prove commands do not accidentally inherit unsupported ambient Python after
@@ -430,7 +430,7 @@ do not spend v1.0 work on non-GitHub workflow rendering.
 ## Release Gate
 
 v1.0 is ready when the generated standalone package passes the easy-mode smoke
-script from a clean Python >=3.11 environment, and a new public repo plus a new
+script from a clean Python >=3.12 environment, and a new public repo plus a new
 private repo can complete this sequence from a clean machine:
 
 1. install package

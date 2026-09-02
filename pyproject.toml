@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "code-mower"
 version = "0.6.0b3"
 description = "Multi-reviewer AI code audit orchestration"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 readme = "README.md"
 license = "Apache-2.0"
 dependencies = ["PyYAML>=6.0"]
@@ -43,7 +43,7 @@ code_mower = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]

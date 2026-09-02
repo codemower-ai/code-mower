@@ -35,7 +35,7 @@ def _pyproject_text(package_name: str, *, version: str) -> str:
             f'name = "{package_name}"',
             f'version = "{version}"',
             'description = "Multi-reviewer AI code audit orchestration"',
-            'requires-python = ">=3.11"',
+            'requires-python = ">=3.12"',
             'readme = "README.md"',
             'license = {text = "Apache-2.0"}',
             'dependencies = ["PyYAML>=6.0"]',
