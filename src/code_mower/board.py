@@ -11,9 +11,11 @@ import webbrowser
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from . import board_store
 from . import lane_status
 
 
@@ -31,6 +33,15 @@ class BoardConfig:
     stale_minutes: int = 30
     refresh_seconds: int = 15
     show_local_paths: bool = False
+    repo_path: str = "."
+    store_path: str | None = None
+    event_limit: int = 20
+
+
+def _store_path(config: BoardConfig) -> Path:
+    if config.store_path:
+        return Path(config.store_path)
+    return board_store.default_store_path(config.repo_path)
 
 
 def _is_loopback(host: str) -> bool:
@@ -134,6 +145,7 @@ def render_board_html(config: BoardConfig) -> str:
     <section><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
     <section><h2>Gate Alerts</h2><div class="rows" id="alerts"></div></section>
     <section><h2>Recent Code Mower Workflows</h2><div class="rows" id="runs"></div></section>
+    <section><h2>Recent Local History</h2><div class="rows" id="history"></div></section>
     <section><h2>Local Activity</h2><div class="rows" id="local"></div></section>
   </main>
   <script>
@@ -177,10 +189,22 @@ def render_board_html(config: BoardConfig) -> str:
       const procs = data.local_processes?.processes || [];
       put("local", [...boards.map(b => `<div class="row">board localhost:${{esc(b.port)}} pid=${{esc(b.pid)}} cwd=<code>${{esc(b.cwd || "")}}</code></div>`), ...procs.slice(0, 8).map(p => `<div class="row">${{esc(p.provider)}} pid=${{esc(p.pid)}} cwd=<code>${{esc(p.cwd || "")}}</code></div>`)].join("") || empty("No local boards or lane processes visible."));
     }}
+    function renderEvents(history) {{
+      const events = history.events || [];
+      put("history", events.length ? events.slice().reverse().map(event => {{
+        const s = event.summary || {{}};
+        const remote = s.remote_available ? "remote available" : "remote unavailable";
+        return `<div class="row"><div class="line"><b>${{esc(event.created_at)}}</b>${{pill(remote)}}</div><div>next: <b>${{esc(s.next_action || "inspect")}}</b></div><div class="muted">PRs ${{esc(s.open_prs ?? 0)}} / alerts ${{esc(s.gate_alerts ?? 0)}} / local ${{esc((s.local_boards ?? 0) + (s.local_processes ?? 0))}}</div></div>`;
+      }}).join("") : empty(history.message || "No local board events recorded yet."));
+    }}
     async function load() {{
       try {{
-        const response = await fetch("/api/status", {{cache:"no-store"}});
-        render(await response.json());
+        const [statusResponse, eventsResponse] = await Promise.all([
+          fetch("/api/status", {{cache:"no-store"}}),
+          fetch("/api/events", {{cache:"no-store"}})
+        ]);
+        render(await statusResponse.json());
+        renderEvents(await eventsResponse.json());
       }} catch (error) {{
         put("summary", `<div class="metric"><span class="muted">Next action</span><b class="warn">reload board</b></div>`);
       }}
@@ -233,6 +257,11 @@ def make_handler(
                 body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
                 self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
                 return
+            if path == "/api/events":
+                payload = board_store.event_report(path=_store_path(config), limit=config.event_limit)
+                body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+                self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
+                return
             if path == "/healthz":
                 self._send(HTTPStatus.OK, b'{"ok":true}\n', "application/json; charset=utf-8")
                 return
@@ -260,6 +289,47 @@ def serve(config: BoardConfig, *, open_browser: bool = False) -> int:
     return 0
 
 
+def record_status(
+    config: BoardConfig,
+    *,
+    retention_days: int = board_store.DEFAULT_RETENTION_DAYS,
+    max_events: int = board_store.DEFAULT_MAX_EVENTS,
+    gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
+    command_runner: lane_status.CommandRunner = lane_status.run_command,
+) -> board_store.StoreWriteResult:
+    snapshot = status_payload(
+        config,
+        gh_json_runner=gh_json_runner,
+        command_runner=command_runner,
+    )
+    return board_store.append_snapshot(
+        snapshot,
+        path=_store_path(config),
+        retention_days=retention_days,
+        max_events=max_events,
+    )
+
+
+def render_events_text(report: dict[str, Any]) -> str:
+    lines = ["Code Mower board events"]
+    if not report.get("available"):
+        lines.append(report.get("message") or "no local board event store yet")
+        return "\n".join(lines) + "\n"
+    lines.append(f"Events: {report.get('event_count', 0)}")
+    if report.get("malformed"):
+        lines.append(f"Malformed lines skipped: {report['malformed']}")
+    for event in report.get("events") or []:
+        summary = event.get("summary") or {}
+        lines.append(
+            "- "
+            f"{event.get('created_at')} "
+            f"{summary.get('next_action', 'inspect')} "
+            f"prs={summary.get('open_prs', 0)} "
+            f"alerts={summary.get('gate_alerts', 0)}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower board")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -272,23 +342,90 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--stale-minutes", type=int, default=30)
     serve_parser.add_argument("--refresh-seconds", type=int, default=15)
     serve_parser.add_argument("--show-local-paths", action="store_true")
+    serve_parser.add_argument("--repo-path", default=".")
+    serve_parser.add_argument("--store-path")
+    serve_parser.add_argument("--event-limit", type=int, default=20)
     serve_parser.add_argument("--open", action="store_true", help="open the local board in a browser")
+    record_parser = subparsers.add_parser("record")
+    record_parser.add_argument("--repo", required=True)
+    record_parser.add_argument("--repo-path", default=".")
+    record_parser.add_argument("--store-path")
+    record_parser.add_argument("--pr-limit", type=int, default=50)
+    record_parser.add_argument("--workflow-limit", type=int, default=20)
+    record_parser.add_argument("--stale-minutes", type=int, default=30)
+    record_parser.add_argument("--retention-days", type=int, default=board_store.DEFAULT_RETENTION_DAYS)
+    record_parser.add_argument("--max-events", type=int, default=board_store.DEFAULT_MAX_EVENTS)
+    record_parser.add_argument("--json", action="store_true")
+    events_parser = subparsers.add_parser("events")
+    events_parser.add_argument("--repo-path", default=".")
+    events_parser.add_argument("--store-path")
+    events_parser.add_argument("--limit", type=int, default=20)
+    events_parser.add_argument("--show-store-path", action="store_true")
+    events_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(list(argv or ()))
-    if args.command != "serve":  # pragma: no cover - argparse validates choices.
-        raise AssertionError(f"unhandled board command: {args.command}")
-    return serve(
-        BoardConfig(
-            repo=args.repo,
-            host=args.host,
-            port=args.port,
-            pr_limit=args.pr_limit,
-            workflow_limit=args.workflow_limit,
-            stale_minutes=args.stale_minutes,
-            refresh_seconds=args.refresh_seconds,
-            show_local_paths=args.show_local_paths,
-        ),
-        open_browser=args.open,
-    )
+    if args.command == "serve":
+        return serve(
+            BoardConfig(
+                repo=args.repo,
+                host=args.host,
+                port=args.port,
+                pr_limit=args.pr_limit,
+                workflow_limit=args.workflow_limit,
+                stale_minutes=args.stale_minutes,
+                refresh_seconds=args.refresh_seconds,
+                show_local_paths=args.show_local_paths,
+                repo_path=args.repo_path,
+                store_path=args.store_path,
+                event_limit=args.event_limit,
+            ),
+            open_browser=args.open,
+        )
+    if args.command == "record":
+        result = record_status(
+            BoardConfig(
+                repo=args.repo,
+                pr_limit=args.pr_limit,
+                workflow_limit=args.workflow_limit,
+                stale_minutes=args.stale_minutes,
+                repo_path=args.repo_path,
+                store_path=args.store_path,
+            ),
+            retention_days=args.retention_days,
+            max_events=args.max_events,
+        )
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "schema": board_store.BOARD_EVENT_STORE_SCHEMA,
+                        "status": "recorded",
+                        "store_path": lane_status.LOCAL_PATH_REDACTION,
+                        "store_path_redacted": True,
+                        "event": result.event,
+                        "kept": result.kept,
+                        "pruned": result.pruned,
+                        "malformed": result.malformed,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(
+                "Recorded board status to .code-mower/board/events.jsonl "
+                f"(kept {result.kept}, pruned {result.pruned})."
+            )
+        return 0
+    if args.command == "events":
+        report = board_store.event_report(
+            path=Path(args.store_path) if args.store_path else board_store.default_store_path(args.repo_path),
+            limit=args.limit,
+            show_store_path=args.show_store_path,
+        )
+        output = json.dumps(report, indent=2, sort_keys=True) + "\n" if args.json else render_events_text(report)
+        print(output, end="")
+        return 0
+    raise AssertionError(f"unhandled board command: {args.command}")
 
 
 if __name__ == "__main__":

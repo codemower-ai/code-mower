@@ -427,7 +427,7 @@ CommandHandler = Callable[[list[str]], int]
 COMMAND_DESCRIPTIONS: dict[str, str] = {
     "antigravity-cli": "Run an Antigravity/Gemini CLI structured audit lane.",
     "blind-review": "Coordinate hidden/blind review artifacts.",
-    "board": "Serve a local read-only lane visibility board.",
+    "board": "Serve or record local lane visibility board data.",
     "bootstrap": "Bootstrap generated support files and workflow fixtures.",
     "builder": "Record source-free builder run provenance.",
     "builder-experiment": "Capture builder-side experiment metadata.",

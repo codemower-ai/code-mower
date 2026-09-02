@@ -80,6 +80,11 @@ use `--show-local-paths` only for local debugging.
 
 For the same redacted metadata in a local browser view, run
 `code-mower board serve --repo OWNER/REPO` and open the printed localhost URL.
+To build local history for board timelines, run
+`code-mower board record --repo OWNER/REPO` from the repository checkout; it
+writes metadata-only snapshots to `.code-mower/board/events.jsonl` with default
+14-day and 500-event retention. `code-mower board events` prints recent stored
+events without calling GitHub.
 The local JSON contracts are documented in
 [Board Data Contract](docs/board-data-contract.md).
 

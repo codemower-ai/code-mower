@@ -7415,6 +7415,9 @@ def main():
 
     def test_board_data_contract_preserves_local_only_cloud_boundary(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        launch_surface = (ROOT / "docs" / "launch-command-surface.md").read_text(
+            encoding="utf-8",
+        )
         board_contract = (ROOT / "docs" / "board-data-contract.md").read_text(
             encoding="utf-8",
         )
@@ -7423,10 +7426,23 @@ def main():
         )
 
         self.assertIn("[Board Data Contract](docs/board-data-contract.md)", readme)
-        for schema_name in ("code_mower.laneStatus.v1", "code_mower.board.v1"):
+        self.assertIn("code-mower board record --repo OWNER/REPO", readme)
+        self.assertIn("code-mower board record --repo OWNER/REPO", launch_surface)
+        self.assertIn("code-mower board events", launch_surface)
+        for schema_name in (
+            "code_mower.laneStatus.v1",
+            "code_mower.board.v1",
+            "code_mower.boardEvent.v1",
+            "code_mower.boardEventStore.v1",
+        ):
             with self.subTest(schema=schema_name):
                 self.assertIn(schema_name, board_contract)
                 self.assertIn(schema_name, cloud_contract)
+        for text in (readme, board_contract, cloud_contract):
+            with self.subTest(retention_doc=text[:20]):
+                self.assertIn(".code-mower/board/events.jsonl", text)
+        self.assertIn("14 days", board_contract)
+        self.assertIn("500 events", board_contract)
 
         board_flat = " ".join(board_contract.split())
         cloud_flat = " ".join(cloud_contract.split())
