@@ -384,7 +384,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--python",
         type=Path,
         default=None,
-        help="Python 3.11+ executable used to create the clean rehearsal venv",
+        help="Python 3.12+ executable used to create the clean rehearsal venv",
     )
     package_install.add_argument(
         "--work-dir",

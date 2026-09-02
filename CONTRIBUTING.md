@@ -4,7 +4,7 @@ Thanks for helping make Code Mower boringly reliable.
 
 ## Development Setup
 
-Use Python 3.11 or newer. Python 3.12 is the preferred local and CI runtime.
+Use Python 3.12 or newer. CI exercises Python 3.12, 3.13, and 3.14.
 
 ```bash
 python3.12 -m venv .venv

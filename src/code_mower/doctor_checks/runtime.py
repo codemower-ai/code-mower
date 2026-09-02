@@ -24,24 +24,24 @@ __all__ = (
 
 def check_python_runtime() -> DoctorCheck:
     version = ".".join(str(part) for part in sys.version_info[:3])
-    status = STATUS_PASS if sys.version_info >= (3, 11) else STATUS_FAIL
+    status = STATUS_PASS if sys.version_info >= (3, 12) else STATUS_FAIL
     return DoctorCheck(
         name="runtime.python",
         status=status,
         message=(
-            f"Python {version} satisfies Code Mower's >=3.11 requirement"
+            f"Python {version} satisfies Code Mower's >=3.12 requirement"
             if status == STATUS_PASS
-            else f"Python {version} is too old; Code Mower requires >=3.11"
+            else f"Python {version} is too old; Code Mower requires >=3.12"
         ),
         detail={
             "executable": sys.executable,
             "version": version,
-            "required": ">=3.11",
+            "required": ">=3.12",
         },
         remediation=(
             None
             if status == STATUS_PASS
-            else "Run Code Mower with Python >=3.11, then rerun doctor."
+            else "Run Code Mower with Python >=3.12, then rerun doctor."
         ),
     )
 

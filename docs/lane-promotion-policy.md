@@ -173,7 +173,7 @@ operational debt to repair before the next unattended merge cycle.
    `--probe-runtime` for local CLI lanes so missing auth, stale installs, or
    broken commands fail before the corpus starts.
    Run the CLI through the Code Mower bootstrap interpreter or another explicit
-   Python 3.11+ runtime; a bare `python3` can resolve to an older local Python
+   Python 3.12+ runtime; a bare `python3` can resolve to an older local Python
    with a broken certificate store and turn a reviewer batch into an
    infrastructure failure.
 2. Run `code-mower calibration run` with a narrow `--lanes` list. Start with one

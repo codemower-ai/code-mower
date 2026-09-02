@@ -29,7 +29,7 @@ Setup
 - PASS provider_templates.coverage: provider templates cover selected lanes
 
 Runtime
-- PASS runtime.python: Python 3.12 satisfies Code Mower's >=3.11 requirement
+- PASS runtime.python: Python 3.12 satisfies Code Mower's >=3.12 requirement
 - PASS runtime.pytest: pytest import is available for product-side test wrappers
 - PASS runtime.github_auth: GitHub CLI auth probe succeeded
 - PASS runtime.ripgrep: rg found

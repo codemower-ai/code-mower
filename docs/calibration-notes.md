@@ -264,7 +264,7 @@ selective trigger, not a universal merge gate.
 - The 2026-06-08 Gemini refresh proved why that Python guard matters: a bare
   `python3` on the Mac resolved to old Framework Python 3.8 with a broken TLS
   certificate store, causing GitHub API fetches to fail before Gemini ran. Use
-  the repo bootstrap interpreter or an explicit Python 3.11+ runtime for
+  the repo bootstrap interpreter or an explicit Python 3.12+ runtime for
   calibration batches.
 - `--repo-path-map` is a repeatable flag. Pass it once per repo or per
   repo/PR/head selector; do not comma-separate multiple mappings in one value.

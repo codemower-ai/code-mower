@@ -31,6 +31,7 @@ CHECKOUT_V7_0_1_PIN = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 from code_mower import __version__
 from code_mower import audit_labeler_lib
 from code_mower import audit_progress
+from code_mower import bootstrap as code_mower_bootstrap
 from code_mower import calibration as calibration_pkg
 from code_mower import cloud as code_mower_cloud
 from code_mower import code_mower_calibration
@@ -81,6 +82,31 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("test", extras)
         self.assertIn("pytest>=8.0", extras["test"])
         self.assertIn("ruff>=0.8", extras["test"])
+
+    def test_python_support_contract_is_312_plus(self) -> None:
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+        self.assertEqual(pyproject["project"]["requires-python"], ">=3.12")
+        self.assertEqual(pyproject["tool"]["ruff"]["target-version"], "py312")
+        self.assertEqual(code_mower_bootstrap.MIN_PYTHON, (3, 12))
+        product_wrapper = (
+            ROOT / "src/code_mower/templates/product-support/code_mower"
+        ).read_text(encoding="utf-8")
+        self.assertIn("sys.version_info >= (3, 12)", product_wrapper)
+        stale_gate = "sys.version_info >= " + "(3, 11)"
+        self.assertNotIn(stale_gate, product_wrapper)
+
+    def test_ci_workflow_tests_supported_python_minors(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn('python-version: ["3.12", "3.13", "3.14"]', workflow)
+        self.assertIn("python-version: ${{ matrix.python-version }}", workflow)
+        self.assertIn("if: matrix.python-version == '3.12'", workflow)
+        self.assertIn("  package:\n    name: package\n", workflow)
+        self.assertIn("    needs: package_matrix\n", workflow)
+        self.assertIn('test "${{ needs.package_matrix.result }}" = "success"', workflow)
+        self.assertIn("      - name: Unit tests\n", workflow)
+        self.assertIn("      - name: Compile sources\n", workflow)
 
     def test_ruff_static_rule_stage_is_intentional(self) -> None:
         pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
