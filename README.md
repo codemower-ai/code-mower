@@ -71,6 +71,12 @@ boundaries visible before you promote any reviewer lane.
 
 See a fuller static transcript: [docs/first-run-transcript.md](docs/first-run-transcript.md).
 
+For an existing repository that already has Code Mower generated workflows or
+wrappers, run `code-mower migration setup-drift --repo-path .` before copying a
+fresh `.code-mower.generated` tree. It is read-only and reports path-level
+classifications (`same`, `differs`, `new`, `repo-only`,
+`missing-from-output`) without file contents or diffs.
+
 After `init` and `doctor`, use `code-mower lanes status --repo OWNER/REPO` to
 see active builder/reviewer lanes, gate/check state, recent Code Mower
 workflows, local board/process hints when present, and the next operator
