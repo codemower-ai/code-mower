@@ -1,0 +1,29 @@
+{
+  "schema": "code_mower.reviewerSpend.v1",
+  "runs": [
+    {
+      "created_at": "2026-09-01T12:04:10Z",
+      "lane": "claude-audit",
+      "repo": "example/widget-service",
+      "pr_number": 12,
+      "head_sha": "1111111111111111111111111111111111111111",
+      "model": "sonnet",
+      "wall_seconds": 31.2,
+      "cost_usd": 0.18,
+      "total_tokens": 4200,
+      "verdict": "PASS"
+    },
+    {
+      "created_at": "2026-09-01T12:04:50Z",
+      "lane": "codex-audit",
+      "repo": "example/widget-service",
+      "pr_number": 13,
+      "head_sha": "2222222222222222222222222222222222222222",
+      "model": "gpt-5",
+      "wall_seconds": 44.8,
+      "cost_usd": 0.24,
+      "total_tokens": 5100,
+      "verdict": "BLOCKED"
+    }
+  ]
+}

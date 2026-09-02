@@ -107,6 +107,7 @@ If you want to understand the product before installing anything, start with
 the checked-in demo calibration package:
 
 - [examples/demo-calibration/README.md](examples/demo-calibration/README.md)
+- [examples/board-demo/README.md](examples/board-demo/README.md)
 - [examples/demo-calibration/reviewer-value-report.md](examples/demo-calibration/reviewer-value-report.md)
 - [docs/first-user-demo-transcript.md](docs/first-user-demo-transcript.md)
 
