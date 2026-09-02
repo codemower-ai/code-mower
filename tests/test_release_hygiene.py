@@ -32,6 +32,8 @@ CHECKOUT_V7_0_1_PIN = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 from code_mower import __version__
 from code_mower import audit_labeler_lib
 from code_mower import audit_progress
+from code_mower import board as code_mower_board
+from code_mower import board_store as code_mower_board_store
 from code_mower import bootstrap as code_mower_bootstrap
 from code_mower import calibration as calibration_pkg
 from code_mower import cloud as code_mower_cloud
@@ -4590,6 +4592,43 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
         for fragment in forbidden_fragments:
             with self.subTest(fragment=fragment):
                 self.assertNotIn(fragment, public_text)
+
+    def test_public_board_demo_artifacts_are_parseable_and_sanitized(self) -> None:
+        demo_dir = ROOT / "examples/board-demo"
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        quickstart = (ROOT / "docs/quickstart.md").read_text(encoding="utf-8")
+        required = {"README.md", "board-events.jsonl", "reviewer-spend.json"}
+        self.assertTrue(demo_dir.is_dir())
+        self.assertTrue(required.issubset({path.name for path in demo_dir.iterdir()}))
+        self.assertIn("examples/board-demo/README.md", readme)
+        self.assertIn("../examples/board-demo/README.md", quickstart)
+
+        report = code_mower_board_store.event_report(
+            path=demo_dir / "board-events.jsonl",
+            limit=10,
+        )
+        timelines = code_mower_board.timelines_payload(
+            code_mower_board.BoardConfig(
+                repo="example/widget-service",
+                store_path=str(demo_dir / "board-events.jsonl"),
+                spend_path=str(demo_dir / "reviewer-spend.json"),
+            )
+        )
+        spend = json.loads((demo_dir / "reviewer-spend.json").read_text(encoding="utf-8"))
+        public_text = "\n".join(path.read_text(encoding="utf-8") for path in sorted(demo_dir.iterdir()))
+
+        self.assertEqual(report["schema"], code_mower_board_store.BOARD_EVENT_STORE_SCHEMA)
+        self.assertEqual(report["event_count"], 2)
+        self.assertEqual(report["malformed"], 0)
+        self.assertEqual(spend["schema"], "code_mower.reviewerSpend.v1")
+        self.assertIn(
+            ("codex-audit", "BLOCKED"),
+            {(entry["lane"], entry["verdict"]) for entry in timelines["verdicts"]["entries"]},
+        )
+        self.assertEqual(timelines["spend"]["groups"][0]["lane"], "claude-audit")
+        self.assertIn("metadata-only", public_text)
+        self.assertNotIn("/" + "Users/", public_text)
+        self.assertNotIn("/private" + "/tmp", public_text)
 
     def test_public_demo_calibration_generates_expected_value_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -8,7 +8,8 @@ on one repository and keep all reviewer lanes manual until the output is useful
 on your codebase.
 
 To see the value loop before you touch a product repository, open the
-[Demo Calibration Example](../examples/demo-calibration/README.md) and the
+[Demo Calibration Example](../examples/demo-calibration/README.md), the
+[Board Demo Rehearsal](../examples/board-demo/README.md), and the
 [First-User Demo Transcript](first-user-demo-transcript.md).
 
 ## 1. Install
