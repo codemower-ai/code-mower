@@ -859,6 +859,16 @@ def record_result_payload(result: board_store.StoreWriteResult) -> dict[str, Any
     }
 
 
+def reset_result_payload(result: board_store.StoreResetResult) -> dict[str, Any]:
+    return {
+        "schema": board_store.BOARD_RESET_SCHEMA,
+        "status": "reset" if result.deleted else "noop",
+        "store_path": lane_status.LOCAL_PATH_REDACTION,
+        "store_path_redacted": True,
+        "deleted": result.deleted,
+    }
+
+
 def _doctor_check(check_id: str, status: str, message: str, **extra: Any) -> dict[str, Any]:
     check = {"id": check_id, "status": status, "message": message}
     check.update({key: value for key, value in extra.items() if value not in (None, "", [])})
@@ -1093,6 +1103,12 @@ def main(argv: list[str] | None = None) -> int:
     doctor_parser.add_argument("--event-limit", type=int, default=20)
     doctor_parser.add_argument("--show-local-paths", action="store_true")
     doctor_parser.add_argument("--json", action="store_true")
+    reset_parser = subparsers.add_parser("reset")
+    reset_parser.add_argument("--repo", required=True)
+    reset_parser.add_argument("--repo-path", default=".")
+    reset_parser.add_argument("--store-path")
+    reset_parser.add_argument("--yes", action="store_true", help="delete the local board event store")
+    reset_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(list(argv or ()))
     if args.command == "serve":
         return serve(
@@ -1176,6 +1192,24 @@ def main(argv: list[str] | None = None) -> int:
         output = json.dumps(payload, indent=2, sort_keys=True) + "\n" if args.json else render_doctor_text(payload)
         print(output, end="")
         return 1 if payload["status"] == "fail" else 0
+    if args.command == "reset":
+        if not args.yes:
+            print("error: board reset only deletes local board history when --yes is passed", file=sys.stderr)
+            return 2
+        try:
+            result = board_store.reset_store(
+                path=Path(args.store_path) if args.store_path else board_store.default_store_path(args.repo_path)
+            )
+        except board_store.BoardStoreError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        payload = reset_result_payload(result)
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            action = "deleted" if result.deleted else "nothing to delete"
+            print(f"Board local history reset: {action}.")
+        return 0
     raise AssertionError(f"unhandled board command: {args.command}")
 
 

@@ -7440,6 +7440,9 @@ def main():
         self.assertIn("code-mower board doctor --repo OWNER/REPO", readme)
         self.assertIn("code-mower board doctor --repo OWNER/REPO", quickstart)
         self.assertIn("code-mower board doctor --repo OWNER/REPO", launch_surface)
+        self.assertIn("code-mower board reset --repo OWNER/REPO --yes", readme)
+        self.assertIn("code-mower board reset --repo OWNER/REPO --yes", quickstart)
+        self.assertIn("code-mower board reset --repo OWNER/REPO --yes", launch_surface)
         self.assertIn("code-mower cloud board-snapshot --repo-slug OWNER/REPO --json", readme)
         self.assertIn("code-mower cloud board-snapshot --repo-slug OWNER/REPO --json", quickstart)
         self.assertIn("code-mower cloud board-snapshot --repo-slug OWNER/REPO --json", launch_surface)
@@ -7465,6 +7468,7 @@ def main():
             "code_mower.boardRecord.v1",
             "code_mower.boardAgentAdapters.v1",
             "code_mower.boardDoctor.v1",
+            "code_mower.boardReset.v1",
         ):
             with self.subTest(schema=schema_name):
                 self.assertIn(schema_name, board_contract)

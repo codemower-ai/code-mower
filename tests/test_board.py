@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import http.client
 import json
 import socket
@@ -395,6 +395,54 @@ class BoardTests(TestCase):
         self.assertEqual(checks["store.events"]["status"], "warn")
         self.assertEqual(checks["agent.adapters"]["status"], "warn")
         self.assertEqual(checks["spend.timeline"]["status"], "warn")
+        self.assertNotIn(str(Path(tmp)), serialized)
+
+    def test_reset_command_requires_explicit_yes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            store_path.write_text("keep me\n", encoding="utf-8")
+            err = StringIO()
+
+            with redirect_stderr(err):
+                code = board.main(["reset", "--repo", "owner/repo", "--store-path", str(store_path)])
+
+            self.assertEqual(code, 2)
+            self.assertTrue(store_path.exists())
+            self.assertIn("--yes", err.getvalue())
+
+    def test_reset_command_deletes_only_local_history_and_redacts_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            adapter_path = Path(tmp) / "agents" / "codex.json"
+            adapter_path.parent.mkdir()
+            store_path.write_text("delete me\n", encoding="utf-8")
+            adapter_path.write_text("keep me\n", encoding="utf-8")
+            out = StringIO()
+
+            with redirect_stdout(out):
+                code = board.main(
+                    [
+                        "reset",
+                        "--repo",
+                        "owner/repo",
+                        "--store-path",
+                        str(store_path),
+                        "--yes",
+                        "--json",
+                    ]
+                )
+
+            payload = json.loads(out.getvalue())
+            store_exists = store_path.exists()
+            adapter_exists = adapter_path.exists()
+            serialized = json.dumps(payload)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["schema"], board_store.BOARD_RESET_SCHEMA)
+        self.assertTrue(payload["deleted"])
+        self.assertEqual(payload["store_path"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertFalse(store_exists)
+        self.assertTrue(adapter_exists)
         self.assertNotIn(str(Path(tmp)), serialized)
 
     def test_status_payload_marks_live_recording_disabled_by_default(self) -> None:

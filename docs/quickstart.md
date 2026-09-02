@@ -334,7 +334,8 @@ and it summarizes reviewer verdict history and spend/latency from local board
 events plus `.code-mower/reviewer-spend.json` when those files exist. Use
 `code-mower board doctor --repo OWNER/REPO` to diagnose Board inputs, local
 history, gate alerts, and optional agent cards without showing local paths by
-default. Local
+default. Use `code-mower board reset --repo OWNER/REPO --yes` only when you want
+to clear the local Board history file. Local
 agents can publish opt-in status cards by writing metadata-only JSON files to
 `.code-mower/board/agents/*.json`; the Board redacts local paths by default and
 does not upload those cards.
