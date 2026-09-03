@@ -44,10 +44,12 @@ if __package__ in {None, ""}:
         _load_release_readiness,
         _package_spec_uses_package_index,
         _pip_install_command,
+        _pip_install_policy,
         _pip_upgrade_command,
         _resolve_python_executable,
         _resolve_install_package_spec,
         _run,
+        _run_pip_install_with_retries,
         _run_rehearsal_step,
         _run_rehearsal_step_to_file,
         render_package_install_rehearsal_text,
@@ -85,10 +87,12 @@ else:
             _load_release_readiness,
             _package_spec_uses_package_index,
             _pip_install_command,
+            _pip_install_policy,
             _pip_upgrade_command,
             _resolve_python_executable,
             _resolve_install_package_spec,
             _run,
+            _run_pip_install_with_retries,
             _run_rehearsal_step,
             _run_rehearsal_step_to_file,
             render_package_install_rehearsal_text,
@@ -126,10 +130,12 @@ else:
             _load_release_readiness,
             _package_spec_uses_package_index,
             _pip_install_command,
+            _pip_install_policy,
             _pip_upgrade_command,
             _resolve_python_executable,
             _resolve_install_package_spec,
             _run,
+            _run_pip_install_with_retries,
             _run_rehearsal_step,
             _run_rehearsal_step_to_file,
             render_package_install_rehearsal_text,
@@ -156,11 +162,13 @@ __all__ = [
     "_load_release_readiness",
     "_package_spec_uses_package_index",
     "_pip_install_command",
+    "_pip_install_policy",
     "_pip_upgrade_command",
     "_relative_existing_files",
     "_resolve_python_executable",
     "_resolve_install_package_spec",
     "_run",
+    "_run_pip_install_with_retries",
     "_run_rehearsal_step",
     "_run_rehearsal_step_to_file",
     "_workflow_file_references",
@@ -1056,6 +1064,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="upgrade pip inside the rehearsal venv before installing the package",
     )
+    package_install.add_argument(
+        "--pip-no-cache",
+        action="store_true",
+        help=(
+            "pass pip --no-cache-dir; package-index rehearsals enable this "
+            "automatically after --allow-package-index"
+        ),
+    )
+    package_install.add_argument(
+        "--pip-install-attempts",
+        type=int,
+        default=None,
+        help=(
+            "number of pip install attempts; package-index rehearsals default "
+            "to 3, local/source rehearsals default to 1"
+        ),
+    )
+    package_install.add_argument(
+        "--pip-retry-delay",
+        type=float,
+        default=15.0,
+        help="seconds to wait between pip install attempts",
+    )
     package_install.add_argument("--timeout", type=int, default=180)
     package_install.add_argument("--shadow-cycles", type=int, default=1)
     package_install.add_argument("--standalone-default-cycles", type=int, default=1)
@@ -1174,6 +1205,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pip_extra_index_urls=args.pip_extra_index_url,
                 allow_package_index=args.allow_package_index,
                 upgrade_pip=args.upgrade_pip,
+                pip_no_cache=args.pip_no_cache,
+                pip_install_attempts=args.pip_install_attempts,
+                pip_retry_delay_seconds=args.pip_retry_delay,
             )
         except (OSError, subprocess.TimeoutExpired, ValueError, RehearsalError) as exc:
             payload = {

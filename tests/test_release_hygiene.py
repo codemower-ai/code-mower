@@ -7296,12 +7296,14 @@ def main():
                 "code-mower==0.6.0b3",
                 pip_index_url="https://test.pypi.org/simple/",
                 pip_extra_index_urls=["https://pypi.org/simple/"],
+                pip_no_cache=True,
             ),
             [
                 "/tmp/venv/bin/python",
                 "-m",
                 "pip",
                 "install",
+                "--no-cache-dir",
                 "--index-url",
                 "https://test.pypi.org/simple/",
                 "--extra-index-url",
@@ -7309,6 +7311,102 @@ def main():
                 "code-mower==0.6.0b3",
             ],
         )
+
+    def test_package_install_rehearsal_uses_robust_package_index_policy(self) -> None:
+        self.assertEqual(
+            code_mower_migration._pip_install_policy(
+                uses_package_index=True,
+                allow_package_index=True,
+                pip_no_cache=False,
+                pip_install_attempts=None,
+            ),
+            (True, 3),
+        )
+        self.assertEqual(
+            code_mower_migration._pip_install_policy(
+                uses_package_index=False,
+                allow_package_index=False,
+                pip_no_cache=False,
+                pip_install_attempts=None,
+            ),
+            (False, 1),
+        )
+
+    def _run_mocked_pip_install(
+        self,
+        returncodes: list[int | str],
+        *,
+        steps: list[dict[str, object]],
+        retry_delay_seconds: float = 0,
+    ) -> mock.Mock:
+        command = [
+            "/tmp/venv/bin/python",
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "code-mower==1.0.1",
+        ]
+
+        def fake_run_step(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            result = returncodes.pop(0)
+            if result == "timeout":
+                raise subprocess.TimeoutExpired(
+                    command,
+                    180,
+                    output="waiting for index",
+                    stderr="index timeout",
+                )
+            returncode = int(result)
+            step = {
+                "command": list(command),
+                "cwd": "/tmp",
+                "returncode": returncode,
+                "stdout_preview": "",
+                "stderr_preview": "No matching distribution found",
+            }
+            steps.append(step)
+            if returncode:
+                raise code_mower_migration.RehearsalError("pip lag", steps)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with (
+            mock.patch.object(
+                code_mower_migration_install,
+                "_run_rehearsal_step",
+                side_effect=fake_run_step,
+            ),
+            mock.patch("code_mower.migration_install.time.sleep") as sleep,
+        ):
+            code_mower_migration_install._run_pip_install_with_retries(
+                command,
+                cwd=Path("/tmp"),
+                env=None,
+                steps=steps,
+                timeout=180,
+                attempts=2,
+                retry_delay_seconds=retry_delay_seconds,
+                package_index=True,
+            )
+        return sleep
+
+    def test_package_install_rehearsal_retries_package_index_installs(self) -> None:
+        steps: list[dict[str, object]] = []
+
+        sleep = self._run_mocked_pip_install(
+            ["timeout", 0],
+            steps=steps,
+            retry_delay_seconds=0.25,
+        )
+
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0]["returncode"], -1)
+        self.assertEqual(steps[0]["timeout_seconds"], 180)
+        self.assertEqual(steps[0]["pip_install_attempt"], 1)
+        self.assertEqual(steps[0]["retry_scheduled_seconds"], 0.25)
+        self.assertEqual(steps[1]["pip_install_attempt"], 2)
+        self.assertTrue(steps[1]["pip_cache_disabled"])
+        sleep.assert_called_once_with(0.25)
 
     def test_package_install_rehearsal_classifies_package_index_specs(self) -> None:
         self.assertTrue(code_mower_migration._package_spec_uses_package_index("code-mower"))
@@ -7364,6 +7462,11 @@ def main():
                     "code-mower==1.0.1",
                     "--allow-package-index",
                     "--upgrade-pip",
+                    "--pip-no-cache",
+                    "--pip-install-attempts",
+                    "5",
+                    "--pip-retry-delay",
+                    "0.5",
                     "--json",
                 ]
             )
@@ -7371,6 +7474,9 @@ def main():
         self.assertEqual(status, 0)
         self.assertTrue(rehearsal.call_args.kwargs["allow_package_index"])
         self.assertTrue(rehearsal.call_args.kwargs["upgrade_pip"])
+        self.assertTrue(rehearsal.call_args.kwargs["pip_no_cache"])
+        self.assertEqual(rehearsal.call_args.kwargs["pip_install_attempts"], 5)
+        self.assertEqual(rehearsal.call_args.kwargs["pip_retry_delay_seconds"], 0.5)
 
     def test_package_install_rehearsal_cli_keeps_local_path_offline_by_default(
         self,

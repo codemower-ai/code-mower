@@ -6,7 +6,9 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
-No changes yet.
+- `migration package-install-rehearsal` now disables pip cache and retries
+  package-index installs after `--allow-package-index`, reducing false release
+  blockers while PyPI/TestPyPI finishes fresh-package propagation (#635).
 
 ## v1.0.1
 

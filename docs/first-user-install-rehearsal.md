@@ -37,7 +37,10 @@ Public CI runs this rehearsal from the current checkout, and release candidates
 should also run it against the exact public tag or package-index candidate before
 being widened. Package-index rehearsals require `--allow-package-index`; add
 `--upgrade-pip` only for deliberate release/integration checks that should also
-touch the package index for pip itself.
+touch the package index for pip itself. Once package-index access is explicitly
+allowed, the rehearsal passes `pip --no-cache-dir` and retries the install three
+times by default so fresh PyPI/TestPyPI propagation lag is recorded before it is
+treated as a release blocker.
 
 ## Canonical Command
 
@@ -89,6 +92,11 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
+Use `--pip-install-attempts` and `--pip-retry-delay` only when you need to tune
+the package-index propagation window for a particular release. Local source,
+wheel, Git URL, and path rehearsals still install once unless you opt into
+additional attempts.
+
 For a GitHub tag fallback, pass the tag URL explicitly:
 
 ```bash
@@ -127,10 +135,11 @@ uv tool install --python 3.12 --reinstall dist/code_mower-*.whl
 ```
 
 If exact-version installs repeatedly report "no matching distribution" or index
-timeouts right after publication, record that as PyPI/TestPyPI propagation and
-retry before changing source. If the install succeeds but `code-mower --version`
-is wrong, the CLI fails to start, or this rehearsal fails, treat that as a
-release blocker.
+timeouts right after publication even after the built-in package-install
+attempts are exhausted, record that as PyPI/TestPyPI propagation and retry
+before changing source. If the install succeeds but `code-mower --version` is
+wrong, the CLI fails to start, or this rehearsal fails after installation, treat
+that as a release blocker.
 
 ## External Repo Rehearsal
 
