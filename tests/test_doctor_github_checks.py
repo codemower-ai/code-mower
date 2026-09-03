@@ -275,7 +275,19 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertIn("hosted-builder observer posture", check.message)
         self.assertEqual(check.detail["adoption_posture"], "hosted-builders")
 
-    def test_human_automation_token_check_fails_when_expired(self) -> None:
+    def test_human_automation_token_check_warns_when_expiry_metadata_missing(self) -> None:
+        check = self._human_token_check(
+            [
+                ({"name": "DISPATCH_TOKEN"}, {}),
+                (None, {"returncode": 1, "output_summary": "not found"}),
+            ]
+        )
+
+        self.assertEqual(check.status, "warn")
+        self.assertIn("missing the DISPATCH_TOKEN_EXPIRES_AT", check.message)
+        self.assertIn("--body never", str(check.remediation))
+
+    def test_human_automation_token_check_warns_when_expired(self) -> None:
         check = self._human_token_check(
             [
                 ({"name": "DISPATCH_TOKEN"}, {}),
@@ -283,7 +295,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(check.status, "fail")
+        self.assertEqual(check.status, "warn")
         self.assertIn("expired", check.message)
 
     def test_human_automation_token_check_warns_for_orchestrator_expired_secret(
@@ -300,7 +312,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertEqual(check.status, "warn")
         self.assertIn("expired", check.message)
 
-    def test_human_automation_token_check_rejects_timestamp_expiry(self) -> None:
+    def test_human_automation_token_check_warns_on_timestamp_expiry(self) -> None:
         check = self._human_token_check(
             [
                 ({"name": "DISPATCH_TOKEN"}, {}),
@@ -314,7 +326,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(check.status, "fail")
+        self.assertEqual(check.status, "warn")
         self.assertIn("invalid DISPATCH_TOKEN_EXPIRES_AT", check.message)
         self.assertIn("`never`", str(check.remediation))
 

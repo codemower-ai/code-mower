@@ -296,11 +296,12 @@ gh variable set DISPATCH_TOKEN_EXPIRES_AT --body never
 ```
 
 `code-mower doctor --github` fails when the generated human-token workflows are
-enabled but the secret is missing, the expiry variable is missing, or the
-recorded expiry date is malformed or in the past. It warns when rotation is due
-within 14 days or when the value is still the `YYYY-MM-DD` setup placeholder.
-It passes `never` as an explicit non-expiring posture. The check reads only
-GitHub secret/variable metadata; it cannot read the PAT value.
+enabled but the secret is missing. When the secret exists, expiry metadata is a
+rotation posture: missing, placeholder, malformed, expired, or near-expiry
+`DISPATCH_TOKEN_EXPIRES_AT` values warn instead of blocking normal adoption
+checks. Use `--strict` when warnings should fail the command. It passes `never`
+as an explicit non-expiring posture. The check reads only GitHub secret/variable
+metadata; it cannot read the PAT value.
 
 Generated workflows still grant `GITHUB_TOKEN` write permissions where GitHub
 allows them, but human-token templates prefer `DISPATCH_TOKEN` so label events
