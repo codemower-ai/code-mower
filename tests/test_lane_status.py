@@ -152,9 +152,11 @@ class LaneStatusTests(TestCase):
         self.assertEqual(report["next_action"], "requeue stale audit")
         self.assertIn("codex", pr["next_detail"])
         self.assertIn("runner/dispatcher", pr["next_detail"])
+        self.assertEqual(report["next_detail"], pr["next_detail"])
         rendered = lane_status.render_text(report)
         self.assertIn("next: requeue stale audit", rendered)
         self.assertIn("detail: stale audit request for codex", rendered)
+        self.assertIn("Detail: stale audit request for codex", rendered)
 
     def test_stale_gate_only_wait_keeps_gate_rerun_command(self) -> None:
         def gh_json(args: list[str]) -> object:
@@ -189,6 +191,7 @@ class LaneStatusTests(TestCase):
         self.assertEqual(pr["next_action"], "rerun stale gate")
         self.assertEqual(report["next_action"], "rerun stale gate")
         self.assertIn("current head", pr["next_detail"])
+        self.assertEqual(report["next_detail"], pr["next_detail"])
         rendered = lane_status.render_text(report)
         self.assertIn("next: rerun stale gate", rendered)
         self.assertIn("rerun gate: gh workflow run code-mower-gate.yml", rendered)
@@ -348,6 +351,8 @@ class LaneStatusTests(TestCase):
                 "local_boards",
                 "local_processes",
                 "next_action",
+                "next_detail",
             },
         )
         self.assertEqual(payload["next_action"], "no active lanes")
+        self.assertEqual(payload["next_detail"], "")

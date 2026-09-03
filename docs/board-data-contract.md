@@ -15,6 +15,9 @@ different contract from CodeMower.com cloud uploads.
 `code_mower.board.v1` is the local board wrapper added by
 `code-mower board serve --repo OWNER/REPO`. It adds board display metadata and
 embeds the lane-status snapshot unchanged.
+The `board.version` block includes `serving_version`, `installed_version`, and
+`restart_recommended` so operators can tell when a long-running Board server
+should be restarted after a package upgrade.
 
 `code_mower.boardEvent.v1` is the local history event emitted by
 `code-mower board record --repo OWNER/REPO` and by

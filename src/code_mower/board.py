@@ -15,11 +15,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import metadata
 from pathlib import Path
 from threading import Lock
 from typing import Any
 from urllib.parse import urlparse
 
+from . import __version__ as CODE_MOWER_VERSION
 from . import board_store
 from . import lane_status
 from . import reviewer_spend
@@ -120,6 +122,22 @@ def _candidate_ports(config: BoardConfig) -> list[int]:
     return list(range(config.port, last_port + 1))
 
 
+def _installed_package_version() -> str:
+    try:
+        return metadata.version("code-mower")
+    except metadata.PackageNotFoundError:
+        return ""
+
+
+def board_version_payload() -> dict[str, Any]:
+    installed_version = _installed_package_version()
+    return {
+        "serving_version": CODE_MOWER_VERSION,
+        "installed_version": installed_version,
+        "restart_recommended": bool(installed_version and installed_version != CODE_MOWER_VERSION),
+    }
+
+
 def _explicit_port_conflict_message(host: str, port: int) -> str:
     suggestions = list(range(port + 1, min(65535, port + 3) + 1))
     suggestion_text = f" such as {', '.join(str(candidate) for candidate in suggestions)}" if suggestions else ""
@@ -171,6 +189,7 @@ def status_payload(
     payload["board"] = {
         "schema": "code_mower.board.v1",
         "mode": "local_recording" if config.record_events else "local_read_only",
+        "version": board_version_payload(),
         "refresh_seconds": config.refresh_seconds,
         "local_paths": "shown" if config.show_local_paths else "redacted",
         "recording": {
@@ -628,7 +647,7 @@ def render_board_html(config: BoardConfig) -> str:
 </head>
 <body>
   <header>
-    <div><h1>Code Mower Board</h1><div class="muted" id="repo"></div></div>
+    <div><h1>Code Mower Board</h1><div class="muted" id="repo"></div><div class="muted" id="version"></div></div>
     <div class="muted" id="generated">Loading...</div>
   </header>
   <main>
@@ -671,6 +690,12 @@ def render_board_html(config: BoardConfig) -> str:
     }}
     function render(data) {{
       document.getElementById("repo").textContent = REPO;
+      const version = data.board?.version || {{}};
+      const servingVersion = version.serving_version || "unknown";
+      const installedVersion = version.installed_version || servingVersion;
+      document.getElementById("version").textContent = version.restart_recommended
+        ? `serving ${{servingVersion}}; installed ${{installedVersion}} available after restart`
+        : `serving ${{servingVersion}}`;
       document.getElementById("generated").innerHTML = data.generated_at ? `Generated ${{localTime(data.generated_at)}}` : "Loading...";
       const prs = data.remote?.pull_requests || [];
       const runs = data.remote?.workflow_runs || [];
@@ -683,6 +708,7 @@ def render_board_html(config: BoardConfig) -> str:
       const spendGroups = spend.groups || [];
       put("summary", [
         `<div class="metric"><span class="muted">Next action</span><b>${{esc(data.next_action || "inspect")}}</b></div>`,
+        data.next_detail ? `<div class="metric"><span class="muted">Detail</span><b>${{esc(data.next_detail)}}</b></div>` : "",
         `<div class="metric"><span class="muted">GitHub</span><b class="${{data.remote?.available ? "ok" : "warn"}}">${{data.remote?.available ? "available" : "unavailable"}}</b></div>`,
         `<div class="metric"><span class="muted">Open PRs</span><b>${{prs.length}}</b></div>`,
         `<div class="metric"><span class="muted">Owner queue</span><b class="${{ownerQueue.length ? "warn" : "ok"}}">${{ownerQueue.length}}</b></div>`,

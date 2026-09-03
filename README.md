@@ -96,8 +96,9 @@ Plain `board serve` is read-only. If the default Board port is busy, the CLI
 uses a nearby free loopback port and prints the URL; an explicit `--port` stays
 strict and reports a friendly conflict. To build local history while the browser
 view is open, run `code-mower board serve --repo OWNER/REPO --record-events`; it
-records at most one snapshot every 60 seconds by default. To append one snapshot
-without serving the browser view, run
+records at most one snapshot every 60 seconds by default. The Board header shows
+the Code Mower version serving the page and flags when a restart is needed after
+an upgrade. To append one snapshot without serving the browser view, run
 `code-mower board record --repo OWNER/REPO` from the repository checkout; it
 writes metadata-only snapshots to `.code-mower/board/events.jsonl` with default
 14-day and 500-event retention. `code-mower board events` prints recent stored
