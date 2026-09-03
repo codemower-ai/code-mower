@@ -114,7 +114,10 @@ class DoctorOutputTests(unittest.TestCase):
                     name="github.human_automation_token",
                     status=STATUS_WARN,
                     message="owner/repo is missing DISPATCH_TOKEN",
-                    detail={"owner_action": True},
+                    detail={
+                        "owner_action": True,
+                        "owner_action_kind": "human_automation_token",
+                    },
                 ),
                 DoctorCheck(
                     name="runtime.pytest",
@@ -138,6 +141,10 @@ class DoctorOutputTests(unittest.TestCase):
         self.assertEqual(report.as_dict()["groups"]["github"]["owner_actions"], 1)
         self.assertEqual(report.as_dict()["groups"]["github"]["warnings"], 0)
         self.assertEqual(report.as_dict()["groups"]["runtime"]["warnings"], 1)
+        owner_check = report.as_dict()["checks"][0]
+        self.assertEqual(owner_check["id"], "github.human_automation_token")
+        self.assertTrue(owner_check["owner_action"])
+        self.assertEqual(owner_check["owner_action_kind"], "human_automation_token")
 
     def test_doctor_output_group_keeps_lane_checks_with_providers(self) -> None:
         check = DoctorCheck(

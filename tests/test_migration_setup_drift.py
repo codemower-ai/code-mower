@@ -80,3 +80,83 @@ class SetupDriftTests(TestCase):
 
         self.assertTrue(available)
         self.assertEqual(tracked, set())
+
+    def test_repo_path_hint_warns_when_everything_looks_new(self) -> None:
+        hint = migration._setup_drift_repo_path_hint(
+            tracked_available=True,
+            counts={
+                "same": 0,
+                "differs": 0,
+                "new": 7,
+                "repo-only": 0,
+                "missing-from-output": 0,
+            },
+        )
+
+        self.assertEqual(hint["status"], "warn")
+        self.assertEqual(hint["reason"], "repo_path_may_be_incomplete")
+        self.assertIn("full repository checkout", hint["next_action"])
+
+    def test_repo_path_hint_warns_when_git_tracking_is_unavailable(self) -> None:
+        hint = migration._setup_drift_repo_path_hint(
+            tracked_available=False,
+            counts={
+                "same": 0,
+                "differs": 0,
+                "new": 0,
+                "repo-only": 0,
+                "missing-from-output": 0,
+            },
+        )
+
+        self.assertEqual(hint["status"], "warn")
+        self.assertEqual(hint["reason"], "tracked_source_unavailable")
+        self.assertIn("real git checkout", hint["next_action"])
+
+    def test_builder_hint_distinguishes_reviewer_only_repos(self) -> None:
+        hint = migration._setup_drift_builder_hint(
+            files=[
+                {
+                    "path": ".github/workflows/codex-audit-labeler.yml",
+                    "classification": "same",
+                }
+            ],
+            builders_supplied=False,
+        )
+
+        self.assertEqual(hint["status"], "skip")
+        self.assertEqual(hint["reason"], "reviewer_lanes_without_builder_dispatch")
+        self.assertIn("no builder-dispatch files", hint["next_action"])
+
+    def test_setup_drift_text_prints_repo_path_and_reviewer_hints(self) -> None:
+        payload = {
+            "status": "warn",
+            "repo_path": "/tmp/repo",
+            "profile": "recommended",
+            "counts": {
+                "same": 0,
+                "differs": 0,
+                "new": 7,
+                "repo-only": 0,
+                "missing-from-output": 0,
+            },
+            "next_action": "rerun against the full repository checkout",
+            "repo_path_hint": {
+                "status": "warn",
+                "reason": "repo_path_may_be_incomplete",
+                "next_action": "rerun against the full repository checkout",
+            },
+            "builder_hint": {
+                "status": "skip",
+                "reason": "reviewer_lanes_without_builder_dispatch",
+                "paths": [".github/workflows/codex-audit-labeler.yml"],
+                "next_action": "pass --builders only if this repo uses builder lanes",
+            },
+            "files": [],
+        }
+
+        text = migration.render_setup_drift_text(payload)
+
+        self.assertIn("Repo path hint: WARN repo_path_may_be_incomplete", text)
+        self.assertIn("Builder hint: SKIP reviewer_lanes_without_builder_dispatch", text)
+        self.assertIn(".github/workflows/codex-audit-labeler.yml", text)

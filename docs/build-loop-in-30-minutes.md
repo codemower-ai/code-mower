@@ -125,6 +125,11 @@ gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo "$REPO" --body YYYY-MM-DD
 gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo "$REPO" --body never
 ```
 
+During adoption, Code Mower reports missing or placeholder expiry metadata as
+an owner action warning so you can keep rehearsing. The `DISPATCH_TOKEN` secret
+itself is not optional once dispatch workflows are enabled: without it, the
+workflow cannot post human-authored labels, comments, or builder mentions.
+
 Proof:
 
 ```bash

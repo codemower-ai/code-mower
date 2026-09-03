@@ -81,6 +81,10 @@ classifications (`same`, `differs`, `new`, `repo-only`,
 If the repository already has builder or dispatch lanes, rerun setup drift with
 the current builder set, for example `--builders codex,claude,cursor`, before
 opening the reviewed upgrade PR.
+If the report warns that the repo path may be incomplete, rerun it from the
+full repository checkout before treating every generated file as new. If it
+detects reviewer-lane files but no builder-dispatch files, pass `--builders`
+only for repos that actually use builder lanes.
 Use [Upgrade An Existing Repository](docs/upgrade-existing-repo.md) for the
 reviewed PR flow, repo-only file handling, builder identity checks, and
 wrapper/pin drift checks.

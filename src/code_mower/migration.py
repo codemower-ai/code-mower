@@ -248,6 +248,17 @@ SETUP_DRIFT_BUILDER_LANES_BY_PATH = {
     "docs/lanes/claude.md": "claude",
     "docs/lanes/cursor.md": "cursor",
 }
+SETUP_DRIFT_REVIEWER_PATHS = frozenset(
+    {
+        ".github/workflows/claude-audit-labeler.yml",
+        ".github/workflows/code-mower-agent-pr-labeler.yml",
+        ".github/workflows/codex-audit-labeler.yml",
+        ".github/workflows/gitar-audit-labeler.yml",
+        ".github/workflows/local-cli-audit.yml",
+        "tools/run_claude_audit_pr.sh",
+        "tools/run_codex_audit_pr.sh",
+    }
+)
 STANDALONE_PIN_RELATIVE_PATH = "tools/code_mower_standalone_pin.env"
 STANDALONE_PIN_REF_KEY = "CODE_MOWER_STANDALONE_REF"
 STANDALONE_PIN_PLACEHOLDER_FRAGMENT = "pin-a-reviewed-code-mower"
@@ -350,11 +361,15 @@ def _setup_drift_next_action(
     changed_count: int,
     standalone_pin: Mapping[str, Any],
     builder_hint: Mapping[str, Any],
+    repo_path_hint: Mapping[str, Any] | None = None,
 ) -> str:
     file_action = "review differs, new, repo-only, and missing-from-output entries before copying generated setup"
     pin_warn = standalone_pin.get("status") == "warn"
     builder_warn = builder_hint.get("status") == "warn"
+    repo_path_warn = bool(repo_path_hint and repo_path_hint.get("status") == "warn")
     extras: list[str] = []
+    if repo_path_warn:
+        extras.append(str(repo_path_hint["next_action"]))
     if pin_warn:
         extras.append(str(standalone_pin["next_action"]))
     if builder_warn:
@@ -364,6 +379,60 @@ def _setup_drift_next_action(
     if extras:
         return "; ".join(extras)
     return "generated setup matches tracked Code Mower files"
+
+
+def _setup_drift_repo_path_hint(
+    *,
+    tracked_available: bool,
+    counts: Mapping[str, int],
+) -> dict[str, Any]:
+    if not tracked_available:
+        return {
+            "status": "warn",
+            "reason": "tracked_source_unavailable",
+            "next_action": (
+                "rerun setup-drift with --repo-path pointing at a real git checkout "
+                "before copying generated setup"
+            ),
+        }
+    if (
+        counts.get("new", 0) >= 5
+        and counts.get("same", 0) == 0
+        and counts.get("differs", 0) == 0
+        and counts.get("repo-only", 0) == 0
+        and counts.get("missing-from-output", 0) == 0
+    ):
+        return {
+            "status": "warn",
+            "reason": "repo_path_may_be_incomplete",
+            "next_action": (
+                "if this repo was already configured, rerun setup-drift against the "
+                "full repository checkout; thin or empty checkouts can make all "
+                "generated setup look new"
+            ),
+        }
+    return {
+        "status": "pass",
+        "reason": "tracked_source_available",
+        "next_action": "setup-drift can compare generated output with tracked files",
+    }
+
+
+def _is_reviewer_lane_path(path: str) -> bool:
+    normalized = Path(path).as_posix()
+    name = Path(normalized).name.lower()
+    return (
+        normalized in SETUP_DRIFT_REVIEWER_PATHS
+        or (
+            normalized.startswith(".github/workflows/")
+            and ("audit-labeler" in name or name in {"local-cli-audit.yml"})
+        )
+        or (
+            normalized.startswith("tools/")
+            and name.startswith("run_")
+            and name.endswith("_audit_pr.sh")
+        )
+    )
 
 
 def _setup_drift_builder_hint(
@@ -384,6 +453,22 @@ def _setup_drift_builder_hint(
         and str(item.get("path")) in SETUP_DRIFT_BUILDER_PATHS
     )
     if not existing_paths:
+        reviewer_paths = sorted(
+            str(item["path"])
+            for item in files
+            if str(item.get("classification")) != "new"
+            and _is_reviewer_lane_path(str(item.get("path")))
+        )
+        if reviewer_paths:
+            return {
+                "status": "skip",
+                "reason": "reviewer_lanes_without_builder_dispatch",
+                "paths": reviewer_paths,
+                "next_action": (
+                    "reviewer-lane files were detected, but no builder-dispatch "
+                    "files; pass --builders only if this repo uses builder lanes"
+                ),
+            }
         return {
             "status": "skip",
             "reason": "no_existing_builder_files",
@@ -682,12 +767,22 @@ def render_setup_drift_report(
         builders_supplied=bool(builders),
     )
     builder_hint_warn = builder_hint["status"] == "warn"
+    repo_path_hint = _setup_drift_repo_path_hint(
+        tracked_available=tracked_available,
+        counts=counts,
+    )
+    repo_path_warn = repo_path_hint["status"] == "warn"
     return {
         "schema": SETUP_DRIFT_SCHEMA,
         "mode": "setup-drift",
         "status": (
             "pass"
-            if changed_count == 0 and not standalone_pin_warn and not builder_hint_warn
+            if (
+                changed_count == 0
+                and not standalone_pin_warn
+                and not builder_hint_warn
+                and not repo_path_warn
+            )
             else "warn"
         ),
         "repo_path": str(repo_path),
@@ -699,6 +794,7 @@ def render_setup_drift_report(
         "counts": counts,
         "file_count": len(files),
         "changed_count": changed_count,
+        "repo_path_hint": repo_path_hint,
         "standalone_pin": standalone_pin,
         "builder_hint": builder_hint,
         "files": files,
@@ -706,6 +802,7 @@ def render_setup_drift_report(
             changed_count=changed_count,
             standalone_pin=standalone_pin,
             builder_hint=builder_hint,
+            repo_path_hint=repo_path_hint,
         ),
     }
 
@@ -736,11 +833,24 @@ def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
                 "",
             ]
         )
-    builder_hint = payload.get("builder_hint") or {}
-    if builder_hint and builder_hint.get("status") == "warn":
+    repo_path_hint = payload.get("repo_path_hint") or {}
+    if repo_path_hint and repo_path_hint.get("status") == "warn":
         lines.extend(
             [
-                f"Builder hint: WARN {builder_hint['reason']}",
+                f"Repo path hint: WARN {repo_path_hint['reason']}",
+                f"Repo path hint next: {repo_path_hint['next_action']}",
+                "",
+            ]
+        )
+    builder_hint = payload.get("builder_hint") or {}
+    if builder_hint and (
+        builder_hint.get("status") == "warn"
+        or builder_hint.get("reason") == "reviewer_lanes_without_builder_dispatch"
+    ):
+        label = str(builder_hint["status"]).upper()
+        lines.extend(
+            [
+                f"Builder hint: {label} {builder_hint['reason']}",
                 f"Builder hint next: {builder_hint['next_action']}",
             ]
         )

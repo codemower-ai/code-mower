@@ -88,6 +88,29 @@ class InitBuildLoopTests(unittest.TestCase):
         self.assertEqual(lanes["cursor"]["doc_target"], "docs/lanes/cursor.md")
         self.assertIn("Builder loop:", plan.text)
 
+    def test_builders_trust_decision_authorities_for_dispatch_work_orders(self) -> None:
+        cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
+        cfg["owner_surface"]["owner_login"] = "owner"
+        cfg["owner_surface"]["lane_runner_trusted_authors"] = []
+        cfg["decisions"] = {"authorities": ["maintainer"]}
+        plan = _builders_plan(cfg)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+            dispatch = yaml.safe_load(
+                output_dir.joinpath(".github/workflows/dispatch-lanes.yml").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(
+            json.loads(
+                dispatch["jobs"]["dispatch"]["env"]["CODE_MOWER_TRUSTED_AUTHORS_JSON"]
+            ),
+            ["owner", "maintainer"],
+        )
+
     def test_builders_accept_legacy_grok_bot_aliases_for_cursor(self) -> None:
         lanes = code_mower_init._parse_builder_lanes("cursor,grok,grok-bot")
 

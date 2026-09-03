@@ -36,6 +36,13 @@ class DoctorCheck:
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        data["id"] = self.name
+        if is_owner_action_check(self):
+            data["owner_action"] = True
+            if isinstance(self.detail, Mapping):
+                owner_action_kind = self.detail.get("owner_action_kind")
+                if owner_action_kind:
+                    data["owner_action_kind"] = str(owner_action_kind)
         if self.detail is None:
             data.pop("detail")
         if self.lane is None:
