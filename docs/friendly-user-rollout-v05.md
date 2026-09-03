@@ -28,10 +28,10 @@ in the invite:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.0b1
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.1b1
 ```
 
-The current package-index beta baseline is `v0.9.0-beta.1`, with pinned package install spec `code-mower==0.9.0b1`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
+The current package-index beta baseline is `v0.9.1-beta.1`, with pinned package install spec `code-mower==0.9.1b1`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
 
 ## Invite Criteria
 

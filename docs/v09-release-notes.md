@@ -1,37 +1,41 @@
-# Code Mower v0.9.0-beta.1 Release Notes
+# Code Mower v0.9.1-beta.1 Release Notes
 
-This beta packages the v0.9 adoption and upgrade hardening work after the v0.8
-native Board release. Install the pinned beta with
+This beta packages the v0.9.1 announcement-hardening pass after the v0.9
+adoption and upgrade release. Install the pinned beta with
 `CODE_MOWER_PYTHON="$(command -v python3.12)"` followed by
-`pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.0b1`.
+`pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.1b1`.
 
 ## Headline
 
-Code Mower v0.9 smooths the cold-install and upgrade path: multiple local Board
-instances can coexist, upgrade drift is visible before generated setup files are
-applied, hosted-builder and orchestrator-only doctors are quieter, and live
-package-index rehearsals are explicit release gates instead of accidental unit
-test/network work.
+Code Mower v0.9.1 makes the friendly-adopter loop less surprising: local Board
+state is easier to detect, Board timestamps render in the operator's local time
+with UTC on hover, setup docs avoid raw auth/status output, doctor output is
+clearer for hosted-builder and orchestrator-only machines, trusted author
+repository variables are recognized before warning, and upgrade operators get a
+reviewed-PR path for generated setup drift.
 
 ## What's New
 
-- `code-mower board serve --repo OWNER/REPO` now falls forward to nearby
-  available loopback ports unless an operator requests an exact port.
-- `code-mower migration setup-drift` reports read-only generated setup drift
-  before upgrade PRs touch labels, workflows, or local setup files.
-- `doctor --adoption --profile hosted-builders` and
-  `doctor --adoption --profile orchestrator-only` avoid local CLI/token noise
-  that does not apply to hosted-agent-only machines.
-- Doctor and lane status output now preserve uncertainty: missing workflow file
-  evidence and unavailable GitHub state are warnings/unavailable states, not
-  quiet PASS results.
-- The Codex runner smoke probe uses current noninteractive Codex CLI flags.
-- Install and upgrade docs distinguish cold installs, version upgrades,
-  pipx-to-uv migration, sandboxed pipx paths, and hosted-agent installs.
-- `migration package-install-rehearsal` keeps package-index specs behind
-  `--allow-package-index` and pip upgrades behind `--upgrade-pip`; local source
-  and normal test paths fail fast instead of invoking live package-index work by
-  accident.
+- `code-mower lanes status --repo OWNER/REPO` now detects local Board/listener
+  state on macOS and Linux, including Linux hosts where `lsof` is unavailable.
+- `code-mower board serve --repo OWNER/REPO` scans the standard local port band
+  by default, keeps local paths out of API output, and degrades gracefully when
+  GitHub is temporarily unavailable.
+- Board-visible timestamps now render with the browser's local timezone; the
+  original UTC timestamp remains available as a hover tooltip.
+- Public setup docs now use quiet auth/status probes and warn operators not to
+  paste raw credential or auth output into issues, chats, or reports.
+- `doctor --adoption` gives clearer guidance for configless repositories and
+  points hosted-builder or orchestrator-only users at the matching profiles
+  instead of making missing local CLIs look like broken setup.
+- `doctor --adoption --github --repo OWNER/REPO` recognizes the trusted-author
+  repository variables used by Claude and Codex audit lanes without printing
+  their values.
+- The new existing-repo upgrade guide explains the `setup-drift` to reviewed PR
+  flow, including how to handle repo-only files, generated-file drift, wrapper
+  pins, and builder/reviewer identity hints.
+- Contributor docs now say default checks should stay offline-friendly; live
+  package-index rehearsals remain explicit release/integration checks.
 
 ## Privacy
 
