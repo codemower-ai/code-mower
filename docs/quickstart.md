@@ -139,6 +139,11 @@ gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo OWNER/REPO --body YYYY-MM-DD
 gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo OWNER/REPO --body never
 ```
 
+If `doctor --adoption` reports trusted-author variables as `not_confirmed`, it
+could not read the repository Actions variable through GitHub. Confirm `gh auth`
+has access to the target repo, then set `CLAUDE_AUDIT_BOT_AUTHORS` and
+`CODEX_BOT_AUTHORS` to the GitHub logins that may post trusted audit verdicts.
+
 Why this is required: comments, labels, and mentions posted by the built-in
 `GITHUB_TOKEN` are bot-authored. GitHub does not trigger downstream workflows
 from those events, and tools such as Cursor ignore bot-authored `@cursor`
@@ -321,11 +326,12 @@ token metadata, optional cloud-token setup, and first-run setup gaps such as
 starter config or missing owner/trusted-author posture. Use `--strict` only
 when warnings should fail a bootstrap job. For auth-specific doctor failures, see
 [Troubleshooting](troubleshooting.md).
-If this machine observes or dispatches hosted builders but does not run local
-Codex/Claude audits, use `--hosted-builders` or `--orchestrator-only` with
-`doctor --adoption`; those postures keep GitHub, cloud, setup, and privacy
-checks visible while marking local CLI probes skipped and treating local wrapper
-env gaps as setup tasks for the machine that will execute those lanes.
+The default reviewer-gate posture assumes this machine runs the local reviewer
+CLIs. If this machine only coordinates work, use `--orchestrator-only`; if it
+observes or dispatches hosted builders but does not run local Codex/Claude
+audits, use `--hosted-builders`. Those postures keep GitHub, cloud, setup, and
+privacy checks visible while marking local CLI probes skipped and treating local
+wrapper env gaps as setup tasks for the machine that will execute those lanes.
 When default adoption output shows local provider setup gaps on an observer
 host, doctor includes the same posture commands as next-step hints in text and
 JSON.

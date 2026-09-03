@@ -27,6 +27,7 @@ from code_mower.doctor_checks.github_repo import (
     check_repo_permissions,
 )
 from code_mower.doctor_checks.github_trusted_authors import (
+    trusted_author_variable_probe,
     trusted_author_variable_statuses,
 )
 
@@ -187,11 +188,35 @@ class GitHubDoctorCheckTests(unittest.TestCase):
                 "CLAUDE_AUDIT_BOT_AUTHORS": "present",
                 "CODEX_BOT_AUTHORS": "present",
                 "EMPTY_BOT_AUTHORS": "empty",
-                "MISSING_BOT_AUTHORS": "missing",
+                "MISSING_BOT_AUTHORS": "not_confirmed",
             },
         )
         self.assertNotIn("owner-login-that-must-not-print", str(statuses))
         self.assertNotIn("codex-login-that-must-not-print", str(statuses))
+
+    def test_trusted_author_variable_probe_reports_redacted_read_errors(self) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.github_trusted_authors._github_api_json",
+            return_value=(
+                None,
+                {
+                    "endpoint": "repos/owner/repo/actions/variables/CODEX_BOT_AUTHORS",
+                    "returncode": 1,
+                    "output_redacted": True,
+                    "output_line_count": 2,
+                },
+            ),
+        ):
+            probe = trusted_author_variable_probe(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                variables=["CODEX_BOT_AUTHORS"],
+                http_timeout=1,
+            )
+
+        self.assertEqual(probe["statuses"], {"CODEX_BOT_AUTHORS": "not_confirmed"})
+        self.assertEqual(probe["read_errors"]["CODEX_BOT_AUTHORS"]["returncode"], 1)
+        self.assertNotIn("secret-value", str(probe))
 
     def test_human_automation_token_check_passes_with_future_expiry(self) -> None:
         check = self._human_token_check(

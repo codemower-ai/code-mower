@@ -170,7 +170,7 @@ def check_adoption_posture_guidance(
             name="doctor.adoption.posture_hint",
             status=STATUS_WARN,
             message=(
-                "default reviewer-gate posture found local provider setup gaps"
+                "default reviewer-gate posture checks local reviewer CLIs on this host"
             ),
             detail={
                 "adoption_posture": adoption_posture,
@@ -186,9 +186,12 @@ def check_adoption_posture_guidance(
                 ],
             },
             remediation=(
-                "If this host only coordinates or observes hosted builders, "
-                "rerun with `--orchestrator-only` or `--hosted-builders`; "
-                "otherwise finish the local CLI/token setup for the listed lanes."
+                "If this host only coordinates work, rerun "
+                "`code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO`. "
+                "If it observes hosted builder lanes, rerun "
+                "`code-mower doctor --adoption --hosted-builders --repo OWNER/REPO`. "
+                "Only keep the default reviewer-gate posture on machines that "
+                "run local reviewer CLIs."
             ),
         ),
     )
@@ -205,6 +208,7 @@ def check_adoption_setup(
     config_source: str = "",
     repo_root: Path | None = None,
     trusted_author_variables: Mapping[str, str] | None = None,
+    trusted_author_variable_errors: Mapping[str, Any] | None = None,
 ) -> tuple[DoctorCheck, ...]:
     """Return first-run adoption posture checks."""
 
@@ -371,10 +375,16 @@ def check_adoption_setup(
     }
     if trusted_author_variables is not None:
         variable_status = {
-            name: str(trusted_author_variables.get(name) or "missing")
+            name: str(trusted_author_variables.get(name) or "not_confirmed")
             for name in TRUSTED_AUDIT_AUTHOR_VARIABLES
         }
         trusted_detail["variable_status"] = variable_status
+        if trusted_author_variable_errors:
+            trusted_detail["variable_read_errors"] = {
+                name: trusted_author_variable_errors[name]
+                for name in sorted(trusted_author_variable_errors)
+                if name in TRUSTED_AUDIT_AUTHOR_VARIABLES
+            }
         all_present = all(
             variable_status[name] == "present" for name in TRUSTED_AUDIT_AUTHOR_VARIABLES
         )
@@ -385,6 +395,27 @@ def check_adoption_setup(
                     status=STATUS_PASS,
                     message="trusted audit-comment author variables are configured",
                     detail=trusted_detail,
+                )
+            )
+            return tuple(checks)
+        if any(
+            variable_status[name] == "not_confirmed"
+            for name in TRUSTED_AUDIT_AUTHOR_VARIABLES
+        ):
+            checks.append(
+                DoctorCheck(
+                    name="doctor.adoption.trusted_authors",
+                    status=STATUS_WARN,
+                    message=(
+                        "trusted audit-comment author variables were not fully confirmed"
+                    ),
+                    detail=trusted_detail,
+                    remediation=(
+                        "Ensure `gh auth status` can read repository Actions "
+                        "variables for this repo, then set CLAUDE_AUDIT_BOT_AUTHORS "
+                        "and CODEX_BOT_AUTHORS to the GitHub logins that may post "
+                        "trusted audit verdicts."
+                    ),
                 )
             )
             return tuple(checks)

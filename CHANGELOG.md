@@ -17,6 +17,9 @@ provider posture, and optional cloud sharing loop are still hardening.
 - The local Board now reports the Code Mower version currently serving the
   browser page and shows a restart hint when a newer installed package version
   is available (#591).
+- `doctor --adoption` now gives a plainer posture hint for hosted/orchestrator
+  machines, and trusted audit-author variable probes report failed GitHub reads
+  as `not_confirmed` instead of implying confirmed missing configuration (#593).
 
 ## v0.9.2-beta.1
 

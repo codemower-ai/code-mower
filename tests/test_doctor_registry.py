@@ -185,6 +185,45 @@ class DoctorRegistryTests(unittest.TestCase):
             "missing",
         )
 
+    def test_adoption_trusted_authors_warn_when_github_variables_not_confirmed(
+        self,
+    ) -> None:
+        checks = check_adoption_setup(
+            config={"repositories": [{"slug": "owner/repo"}]},
+            config_path=ROOT / "code-mower.yml",
+            adoption=True,
+            repo_slug="owner/repo",
+            repo_source="explicit",
+            using_packaged_example=False,
+            trusted_author_variables={
+                "CLAUDE_AUDIT_BOT_AUTHORS": "present",
+                "CODEX_BOT_AUTHORS": "not_confirmed",
+            },
+            trusted_author_variable_errors={
+                "CODEX_BOT_AUTHORS": {
+                    "returncode": 1,
+                    "output_redacted": True,
+                    "output_line_count": 1,
+                }
+            },
+        )
+
+        trusted_authors = next(
+            check for check in checks if check.name == "doctor.adoption.trusted_authors"
+        )
+        self.assertEqual(trusted_authors.status, "warn")
+        self.assertIn("not fully confirmed", trusted_authors.message)
+        self.assertEqual(
+            trusted_authors.detail["variable_status"]["CODEX_BOT_AUTHORS"],
+            "not_confirmed",
+        )
+        self.assertEqual(
+            trusted_authors.detail["variable_read_errors"]["CODEX_BOT_AUTHORS"][
+                "returncode"
+            ],
+            1,
+        )
+
     def test_run_doctor_uses_github_trusted_author_variable_probe(self) -> None:
         with (
             mock.patch(
@@ -192,10 +231,13 @@ class DoctorRegistryTests(unittest.TestCase):
                 return_value="/usr/bin/gh",
             ),
             mock.patch(
-                "code_mower.doctor_checks.runner.trusted_author_variable_statuses",
+                "code_mower.doctor_checks.runner.trusted_author_variable_probe",
                 return_value={
-                    "CLAUDE_AUDIT_BOT_AUTHORS": "present",
-                    "CODEX_BOT_AUTHORS": "present",
+                    "statuses": {
+                        "CLAUDE_AUDIT_BOT_AUTHORS": "present",
+                        "CODEX_BOT_AUTHORS": "present",
+                    },
+                    "read_errors": {},
                 },
             ) as variable_probe,
             mock.patch(
@@ -346,7 +388,8 @@ class DoctorRegistryTests(unittest.TestCase):
             "code-mower doctor --adoption --hosted-builders --repo OWNER/REPO",
             hint.detail["commands"],
         )
-        self.assertIn("--orchestrator-only", hint.remediation)
+        self.assertIn("reviewer-gate posture", hint.message)
+        self.assertIn("code-mower doctor --adoption --orchestrator-only", hint.remediation)
 
     def test_adoption_posture_guidance_skips_observer_postures_and_probe_skips(self) -> None:
         checks = (
