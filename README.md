@@ -119,6 +119,8 @@ The local JSON contracts are documented in
 When a team wants the same operator picture on CodeMower.com, run
 `code-mower cloud board-snapshot --repo-slug OWNER/REPO --json` to inspect a
 zero-report, metadata-only mirror event, then add `--yes` only after review.
+The v1.0 supervised-pilot automation and event boundary is defined in
+[Supervised Pilot Contract](docs/supervised-pilot-contract.md).
 
 ## See The Value Shape First
 

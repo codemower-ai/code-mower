@@ -89,6 +89,10 @@ Supported event types include:
 - `work_order`
 - `workflow_run`
 - `board_snapshot`
+- `controller_decision`
+- `merge_decision`
+- `queue_state_snapshot`
+- `owner_intervention`
 
 Events may include provider/lens names, timing, cost, verdict, useful finding
 counts, false-positive counts, repository slug, install id, and coarse runtime
@@ -137,6 +141,17 @@ head SHAs, gate rerun commands, source, raw diffs, transcripts, issue body
 text, raw stdout/stderr, auth output, browser history, local secret values, or
 secrets. The event type is additive and optional, so CodeMower.com must continue
 accepting v0.6/v0.7 uploads that omit it.
+
+Supervised-pilot events are additive v1.0 metadata for controller and merge
+visibility. `controller_decision`, `merge_decision`, `queue_state_snapshot`,
+and `owner_intervention` events use
+`dimensions.supervised_pilot_schema=code_mower.supervisedPilot.v1` and record
+state, next action, lane/check references, owner-action reasons, and coarse
+counts without raw work content. See
+[Supervised Pilot Contract](supervised-pilot-contract.md) for the product
+boundary, stop conditions, reviewer outcome references, example fixtures, and
+privacy rules. CodeMower.com must keep accepting v0.9.x uploads that omit these
+event types.
 
 Local `code_mower.authoringRun.v1` artifacts from `builder-experiment run` may
 also be passed as `--event builder_run=PATH`. The OSS uploader converts them to

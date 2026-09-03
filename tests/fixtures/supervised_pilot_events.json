@@ -1,0 +1,43 @@
+{
+  "schema": "code_mower.supervisedPilotFixture.v1",
+  "legacy_v09_events": [
+    {
+      "schema": "code_mower.benchmarkEvent.v1", "event_id": "legacy-reviewer-run-1", "event_type": "reviewer_run", "created_at": "2026-09-03T12:00:00Z", "repo_slug": "owner/repo", "team_id": "team", "install_id": "install", "source": "fixture", "provider": "codex", "lens": "review", "status": "pass",
+      "tool": {"role": "reviewer", "tool_name": "codex", "tool_version": "0.147.0", "provider": "openai", "model": "gpt-5", "model_source": "profile:codex", "version_source": "cli_version_probe", "integration": "cli", "runtime_environment": "local"},
+      "metrics": {"wall_seconds": 42.0, "total_tokens": 1800},
+      "dimensions": {"lane_id": "codex", "pr_number": "42", "head_sha_prefix": "abcdef012345", "verdict": "PASS"}
+    }
+  ],
+  "supervised_pilot_events": [
+    {
+      "schema": "code_mower.benchmarkEvent.v1", "event_id": "controller-dispatch-1", "event_type": "controller_decision", "created_at": "2026-09-03T12:01:00Z", "repo_slug": "owner/repo", "team_id": "team", "install_id": "install", "source": "fixture", "provider": "code-mower", "lens": "supervised-pilot", "status": "observed",
+      "tool": {"role": "controller", "tool_name": "code-mower", "tool_version": "1.0.0b1", "provider": "code-mower", "model": "", "model_source": "not_applicable", "version_source": "package_version", "integration": "cli", "runtime_environment": "local"},
+      "metrics": {"active_lane_count": 1, "ready_pr_count": 0, "blocked_pr_count": 0, "owner_action_count": 0},
+      "dimensions": {"supervised_pilot_schema": "code_mower.supervisedPilot.v1", "controller_mode": "dry_run", "decision_state": "dispatch_builder", "next_action": "dispatch builder lane", "repo_slug": "owner/repo", "issue_number": "571", "lane_id": "builder:codex"}
+    },
+    {
+      "schema": "code_mower.benchmarkEvent.v1", "event_id": "controller-blocked-audit-1", "event_type": "controller_decision", "created_at": "2026-09-03T12:02:00Z", "repo_slug": "owner/repo", "team_id": "team", "install_id": "install", "source": "fixture", "provider": "code-mower", "lens": "supervised-pilot", "status": "blocked",
+      "tool": {"role": "controller", "tool_name": "code-mower", "tool_version": "1.0.0b1", "provider": "code-mower", "model": "", "model_source": "not_applicable", "version_source": "package_version", "integration": "cli", "runtime_environment": "local"},
+      "metrics": {"reviewer_pass_count": 1, "reviewer_blocked_count": 1, "stale_evidence_count": 0},
+      "dimensions": {"supervised_pilot_schema": "code_mower.supervisedPilot.v1", "controller_mode": "manual", "decision_state": "blocked_audit", "next_action": "fix blocked audit", "repo_slug": "owner/repo", "pr_number": "42", "branch": "codex/v1-contract-571", "lane_id": "codex", "reviewer_outcomes": [{"lane_id": "codex", "verdict": "BLOCKED", "check_name": "codex-audit", "promoted": true}]}
+    },
+    {
+      "schema": "code_mower.benchmarkEvent.v1", "event_id": "merge-ready-1", "event_type": "merge_decision", "created_at": "2026-09-03T12:03:00Z", "repo_slug": "owner/repo", "team_id": "team", "install_id": "install", "source": "fixture", "provider": "code-mower", "lens": "merge-policy", "status": "ready",
+      "tool": {"role": "controller", "tool_name": "code-mower", "tool_version": "1.0.0b1", "provider": "code-mower", "model": "", "model_source": "not_applicable", "version_source": "package_version", "integration": "cli", "runtime_environment": "local"},
+      "metrics": {"reviewer_pass_count": 2, "reviewer_blocked_count": 0, "owner_action_count": 0},
+      "dimensions": {"supervised_pilot_schema": "code_mower.supervisedPilot.v1", "controller_mode": "promoted", "decision_state": "ready_to_merge", "next_action": "enable pull request auto merge", "repo_slug": "owner/repo", "pr_number": "42", "branch": "codex/v1-contract-571", "head_sha_prefix": "abcdef012345", "gate_status": "success", "author_lane_excluded": true, "promoted_reviewers_passed": true}
+    },
+    {
+      "schema": "code_mower.benchmarkEvent.v1", "event_id": "owner-intervention-1", "event_type": "owner_intervention", "created_at": "2026-09-03T12:04:00Z", "repo_slug": "owner/repo", "team_id": "team", "install_id": "install", "source": "fixture", "provider": "code-mower", "lens": "owner-surface", "status": "owner_action",
+      "tool": {"role": "controller", "tool_name": "code-mower", "tool_version": "1.0.0b1", "provider": "code-mower", "model": "", "model_source": "not_applicable", "version_source": "package_version", "integration": "cli", "runtime_environment": "local"},
+      "metrics": {"owner_action_count": 1},
+      "dimensions": {"supervised_pilot_schema": "code_mower.supervisedPilot.v1", "controller_mode": "manual", "decision_state": "owner_action", "next_action": "configure merge-capable credential", "repo_slug": "owner/repo", "owner_action_kind": "merge_credential_missing", "setup_url": "https://github.com/owner/repo/settings/actions"}
+    },
+    {
+      "schema": "code_mower.benchmarkEvent.v1", "event_id": "queue-release-stop-1", "event_type": "queue_state_snapshot", "created_at": "2026-09-03T12:05:00Z", "repo_slug": "owner/repo", "team_id": "team", "install_id": "install", "source": "fixture", "provider": "code-mower", "lens": "queue", "status": "stopped",
+      "tool": {"role": "controller", "tool_name": "code-mower", "tool_version": "1.0.0b1", "provider": "code-mower", "model": "", "model_source": "not_applicable", "version_source": "package_version", "integration": "cli", "runtime_environment": "local"},
+      "metrics": {"active_lane_count": 3, "ready_pr_count": 2, "blocked_pr_count": 0, "owner_action_count": 1},
+      "dimensions": {"supervised_pilot_schema": "code_mower.supervisedPilot.v1", "controller_mode": "promoted", "decision_state": "release_stop", "next_action": "finish serialized release checklist", "repo_slug": "owner/repo", "stop_condition": "serial_release_in_progress", "parallelism_limit": "4"}
+    }
+  ]
+}
