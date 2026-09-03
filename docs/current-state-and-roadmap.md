@@ -26,8 +26,8 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current package-index beta baseline is `v0.9.0-beta.1`, with pinned package
-install spec `code-mower==0.9.0b1`. Release evidence is recorded on the GitHub
+The current package-index beta baseline is `v0.9.1-beta.1`, with pinned package
+install spec `code-mower==0.9.1b1`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. It is intended to be installed
 from the package index for friendly-user pilots, with GitHub tag/source installs
 kept as a fallback and development path.
@@ -124,8 +124,8 @@ The beta line has proved:
 - a friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- the current public PyPI package-install rehearsal from `v0.9.0-beta.1` /
-  `code-mower==0.9.0b1` with a
+- the current public PyPI package-install rehearsal from `v0.9.1-beta.1` /
+  `code-mower==0.9.1b1` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout. The earlier beta.52 package rehearsal remains
