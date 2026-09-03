@@ -373,8 +373,10 @@ The report reads metadata-only local Board history and
 `.code-mower/reviewer-spend.json`, and can also include aggregate
 `productivity_summary` event files with `--cloud-event PATH`. It reports recent
 PR/lane counts, observed reviewer PASS/BLOCKED signals, fix rounds, owner
-actions, cost/tokens, and cloud-provided merge/cycle metrics where known.
-Missing metrics mean unknown, not zero.
+actions, provider scorecards, promotion caveats, cost/tokens, and
+cloud-provided merge/cycle metrics where known. Missing metrics mean unknown,
+not zero, and scorecard recommendations stay advisory until reviewed against
+[Lane Promotion Policy](lane-promotion-policy.md).
 
 For a browser view of the same local-first metadata, run:
 
