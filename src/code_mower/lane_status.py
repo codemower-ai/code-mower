@@ -31,10 +31,9 @@ PROCESS_PROVIDERS = {
     "gemini": "gemini",
     "gitar": "gitar",
 }
-AGENTTRAIL_DEFAULT_PORTS = {5330, 5331}
 BOARD_DEFAULT_PORTS = set(range(5332, 5342))
-LOCAL_BOARD_DEFAULT_PORTS = AGENTTRAIL_DEFAULT_PORTS | BOARD_DEFAULT_PORTS
-LOCAL_BOARD_PROCESS_NAMES = {"code-mower", "node", "npx", "python", "python3"}
+LOCAL_BOARD_DEFAULT_PORTS = BOARD_DEFAULT_PORTS
+LOCAL_BOARD_PROCESS_NAMES = {"code-mower", "python", "python3"}
 LOCAL_PATH_REDACTION = "[local path hidden]"
 
 
@@ -365,7 +364,7 @@ def _process_command(pid: int, command_runner: CommandRunner) -> str:
     return _stdout(command_runner, ["ps", "-p", str(pid), "-o", "command="]).strip()
 
 
-def collect_agenttrail_boards(command_runner: CommandRunner = _run_command) -> dict[str, Any]:
+def collect_local_boards(command_runner: CommandRunner = _run_command) -> dict[str, Any]:
     listeners = _listener_inventory(command_runner)
     if not listeners:
         return {"available": False, "boards": [], "message": "local listener inventory unavailable"}
@@ -379,7 +378,7 @@ def collect_agenttrail_boards(command_runner: CommandRunner = _run_command) -> d
         process_name = str(listener["process"]).lower()
         board_like = any(
             term in haystack
-            for term in ("agenttrail", "code-mower board", "code_mower.board", "code_mower.cli board", "board serve")
+            for term in ("code-mower board", "code_mower.board", "code_mower.cli board", "board serve")
         )
         runtime_like = process_name in LOCAL_BOARD_PROCESS_NAMES or process_name.startswith("python")
         if board_like or (default_port and runtime_like):
@@ -426,7 +425,7 @@ def collect_lane_processes(command_runner: CommandRunner = _run_command) -> dict
 
 
 def _redact_local_paths(report: dict[str, Any]) -> None:
-    for board in report["agenttrail"].get("boards") or []:
+    for board in report["local_boards"].get("boards") or []:
         if board.get("cwd"):
             board["cwd"] = LOCAL_PATH_REDACTION
             board["cwd_redacted"] = True
@@ -438,7 +437,7 @@ def _redact_local_paths(report: dict[str, Any]) -> None:
 
 def _global_next(report: Mapping[str, Any]) -> str:
     prs = report["remote"].get("pull_requests", [])
-    local_active = bool(report["agenttrail"].get("boards")) or bool(report["local_processes"].get("processes"))
+    local_active = bool(report["local_boards"].get("boards")) or bool(report["local_processes"].get("processes"))
     if not report["remote"].get("available"):
         return (
             "remote unavailable; inspect local lanes"
@@ -468,7 +467,7 @@ def collect_status(
         "repo": repo,
         "generated_at": observed_at.isoformat().replace("+00:00", "Z"),
         "remote": _remote(repo, gh_json_runner, observed_at, pr_limit, workflow_limit, stale_minutes),
-        "agenttrail": collect_agenttrail_boards(command_runner),
+        "local_boards": collect_local_boards(command_runner),
         "local_processes": collect_lane_processes(command_runner),
     }
     if not show_local_paths:
@@ -528,8 +527,8 @@ def render_text(report: Mapping[str, Any]) -> str:
         lines.append("Gate alerts: unavailable")
     lines.extend(f"- {alert['message']}" for alert in alerts[:5])
     lines.append("")
-    boards = report["agenttrail"].get("boards") or []
-    message = report["agenttrail"].get("message") or "none visible"
+    boards = report["local_boards"].get("boards") or []
+    message = report["local_boards"].get("message") or "none visible"
     lines.append("Local boards:" if boards else f"Local boards: none ({message})")
     for board in boards:
         cwd = f" cwd={board['cwd']}" if board.get("cwd") else ""

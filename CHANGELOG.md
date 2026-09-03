@@ -68,7 +68,7 @@ metadata-only evidence to CodeMower.com.
 
 - `code-mower lanes status --repo OWNER/REPO` gives operators one concise,
   read-only snapshot of active PR lanes, labels/checks, recent Code Mower
-  workflows, gate alerts, local AgentTrail boards, likely local lane processes,
+  workflows, gate alerts, local Board listeners, likely local lane processes,
   and the next action (#470, #471).
 - `code-mower builder-experiment run` records source-free authoring-run
   metadata around an explicit local command, including timing, status,

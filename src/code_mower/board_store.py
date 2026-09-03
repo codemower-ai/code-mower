@@ -83,14 +83,16 @@ def _redact_local_paths(value: Any) -> Any:
 
 def _snapshot_summary(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     remote = snapshot.get("remote") if isinstance(snapshot.get("remote"), dict) else {}
-    agenttrail = snapshot.get("agenttrail") if isinstance(snapshot.get("agenttrail"), dict) else {}
+    local_boards = (
+        snapshot.get("local_boards") if isinstance(snapshot.get("local_boards"), dict) else {}
+    )
     local_processes = (
         snapshot.get("local_processes") if isinstance(snapshot.get("local_processes"), dict) else {}
     )
     pull_requests = remote.get("pull_requests") if isinstance(remote.get("pull_requests"), list) else []
     gate_health = remote.get("gate_health") if isinstance(remote.get("gate_health"), dict) else {}
     gate_alerts = gate_health.get("alerts") if isinstance(gate_health.get("alerts"), list) else []
-    boards = agenttrail.get("boards") if isinstance(agenttrail.get("boards"), list) else []
+    boards = local_boards.get("boards") if isinstance(local_boards.get("boards"), list) else []
     processes = (
         local_processes.get("processes")
         if isinstance(local_processes.get("processes"), list)

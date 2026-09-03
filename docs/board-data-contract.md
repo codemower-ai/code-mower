@@ -53,9 +53,7 @@ Top-level fields:
 - `repo`: the requested `OWNER/REPO` slug.
 - `generated_at`: UTC timestamp for the snapshot.
 - `remote`: best-effort GitHub state.
-- `agenttrail`: legacy local-board detector state. This is not a recommendation
-  to run AgentTrail; it remains for compatibility with existing local board
-  detection code.
+- `local_boards`: best-effort local Code Mower Board listener hints.
 - `local_processes`: best-effort local lane process hints.
 - `next_action`: concise operator action such as `fix BLOCKED audit`,
   `waiting for checks`, `ready for merge or auto-merge`,
