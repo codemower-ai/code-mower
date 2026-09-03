@@ -19,7 +19,7 @@ from .cloud import check_cloud_token_surface
 from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
 from .github import check_github_setup
 from .github_config import check_repository_posture
-from .github_trusted_authors import trusted_author_variable_statuses
+from .github_trusted_authors import trusted_author_variable_probe
 from .models import STATUS_FAIL, STATUS_PASS, DoctorCheck, DoctorReport
 from .providers import check_lane_runtime, effective_lane, provider_template_coverage, selected_lanes
 from .registry import DoctorCheckStage, build_doctor_run_plan
@@ -117,6 +117,7 @@ def run_doctor(
     # yet, but it may still verify workflows already present in the checkout.
     repo_root = Path.cwd() if using_packaged_example else config_path.parent
     trusted_author_variables = None
+    trusted_author_variable_errors = None
     trusted_author_repo_slug = repo_slug
     if not trusted_author_repo_slug and isinstance(config, Mapping):
         for repository in config.get("repositories") or []:
@@ -126,12 +127,21 @@ def run_doctor(
     if github and trusted_author_repo_slug:
         gh_path = shutil.which("gh")
         if gh_path:
-            trusted_author_variables = trusted_author_variable_statuses(
+            trusted_author_probe = trusted_author_variable_probe(
                 gh_path=gh_path,
                 slug=trusted_author_repo_slug,
                 variables=TRUSTED_AUDIT_AUTHOR_VARIABLES,
                 http_timeout=http_timeout,
             )
+            statuses = trusted_author_probe.get("statuses")
+            if isinstance(statuses, Mapping):
+                trusted_author_variables = {
+                    str(name): str(status)
+                    for name, status in statuses.items()
+                }
+            errors = trusted_author_probe.get("read_errors")
+            if isinstance(errors, Mapping):
+                trusted_author_variable_errors = dict(errors)
     checks.extend(
         check_adoption_setup(
             config=config,
@@ -143,6 +153,7 @@ def run_doctor(
             using_packaged_example=using_packaged_example,
             repo_root=Path.cwd() if using_packaged_example else config_path.parent,
             trusted_author_variables=trusted_author_variables,
+            trusted_author_variable_errors=trusted_author_variable_errors,
         )
     )
     if config is not None and repo_slug:
