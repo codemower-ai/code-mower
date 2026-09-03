@@ -19,6 +19,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_builder_experiment.py", "src/code_mower/builder_experiment.py", "core"),
     ("src/code_mower/work_orders.py", "src/code_mower/work_orders.py", "core"),
     ("src/code_mower/plan_context.py", "src/code_mower/plan_context.py", "core"),
+    ("src/code_mower/productivity_report.py", "src/code_mower/productivity_report.py", "core"),
     ("tools/code_mower_requirements.txt", "requirements/requirements.txt", "tooling"),
     ("tools/code_mower_calibration.py", "src/code_mower/code_mower_calibration.py", "core"),
     ("src/code_mower/checks.py", "src/code_mower/checks.py", "core"),

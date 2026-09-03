@@ -33,6 +33,14 @@ should be restarted after a package upgrade.
 the board's `/api/status` response. It summarizes local board events and
 reviewer-spend rows for display only.
 
+`code_mower.productivityReport.v1` is emitted by
+`code-mower productivity report --repo OWNER/REPO`. It derives a local
+effectiveness snapshot from Board history, reviewer-spend rows, and optional
+metadata-only aggregate `productivity_summary` event files.
+
+`code_mower.boardProductivity.v1` is the compact Board form embedded in the
+board's `/api/status` response as `productivity`.
+
 `code_mower.boardOwnerQueue.v1` is the derived local owner queue embedded in the
 board's `/api/status` response. It summarizes PRs that need operator attention.
 
@@ -62,7 +70,8 @@ and local diagnostics:
   includes `serving_version`, `installed_version`, and `restart_recommended`.
   When `restart_recommended` is true, stop and restart
   `code-mower board serve --repo OWNER/REPO` so the browser uses the newly
-  installed package.
+  installed package. The response also embeds `productivity` as
+  `code_mower.boardProductivity.v1`.
 - GET `/api/events` returns `code_mower.boardEventStore.v1` from local
   `.code-mower/board/events.jsonl` history.
 
@@ -230,6 +239,48 @@ entry includes:
 
 Spend paths are redacted in JSON output. Malformed spend files and local read
 errors use generic safe messages without embedding local paths.
+
+## Productivity
+
+`code-mower productivity report --repo OWNER/REPO` emits
+`code_mower.productivityReport.v1`. The Board embeds the display subset as
+`code_mower.boardProductivity.v1` in `/api/status`.
+
+The report uses only metadata already visible to Code Mower:
+
+- local Board history from `.code-mower/board/events.jsonl`;
+- reviewer spend rows from `.code-mower/reviewer-spend.json`; and
+- optional aggregate `productivity_summary` cloud-event files passed with
+  `--cloud-event PATH`.
+
+Top-level report fields include:
+
+- `schema`, `repo`, `generated_at`, and `status`;
+- `source`: redacted availability/counts for Board events, reviewer spend,
+  optional cloud productivity events, and current remote availability;
+- `window.local_history`: start, end, and duration for the local Board history
+  used in the report;
+- `current`: current open PR, active lane, blocked PR, stale PR, owner-action,
+  and gate-alert counts when current GitHub metadata is available;
+- `metrics`: contract-aligned productivity names such as
+  `cycle_time_seconds`, `active_time_seconds`, `wait_time_seconds`,
+  `reviewer_run_count`, `audit_pass_count`, `audit_blocked_count`,
+  `reviewer_catch_count`, `blocking_bug_count`, `blocked_finding_count`,
+  `fix_round_count`, `owner_intervention_count`, `merged_pr_count`,
+  `cost_usd`, and `total_tokens`;
+- `quality`: reviewer PASS/BLOCKED, catch, blocker, and fix-round counts;
+- `spend`: reviewer run count, total reviewer wall seconds, cost, token totals,
+  and per-lane groups; and
+- `next_action`: a concise operator action suitable for an epic status comment.
+
+Missing metrics are encoded as JSON `null` and mean unknown, not zero. A missing
+Board history or reviewer spend file is not a failure; the report stays local
+and gives the next setup action. The report and Board subset redact store paths
+and do not include source code, raw diffs, transcripts, issue body text, raw
+stdout/stderr, auth output, browser history, local secret values, or secrets.
+When multiple `productivity_summary` event files are supplied, the local report
+uses latest-window time metrics only; only additive count, token, and cost
+metrics are eligible for cross-event totals.
 
 ## Owner Queue
 
