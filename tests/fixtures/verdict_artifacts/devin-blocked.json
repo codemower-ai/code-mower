@@ -1,0 +1,14 @@
+{
+  "comment_body": "## Devin audit (paid-optional lane)\n\nHead SHA: `6666666666666666666666666666666666666666`\nFindings: P0=0, P1=1, P2=0, P3=0\n\nDevin Audit: BLOCKED\n\nSummary:\n\nSecurity vulnerability in authentication flow.\n\nFindings:\n\n- [P1] JWT token validation bypass -- `src/auth/middleware.py:56`\n\n<!-- DEVIN_AUDIT_STATE: devin-audit-blocked -->",
+  "created_at": "2026-09-01T13:00:00Z",
+  "duration_seconds": 92.8,
+  "head_sha_end": "6666666666666666666666666666666666666666",
+  "head_sha_start": "6666666666666666666666666666666666666666",
+  "lane_id": "devin-audit",
+  "posted_comment_url": "https://github.com/codemower-ai/code-mower/pull/13#issuecomment-13",
+  "pr_number": 13,
+  "repo": "codemower-ai/code-mower",
+  "schema": "code_mower.auditVerdictArtifact.v1",
+  "trailer": "<!-- DEVIN_AUDIT_STATE: devin-audit-blocked -->",
+  "verdict": "BLOCKED"
+}

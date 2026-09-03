@@ -91,7 +91,7 @@ def test_verdict_artifact_fixtures_export_metadata_only_events(tmp_path: Path) -
         include_git_ref=True,
     )
 
-    assert len(events) == 3
+    assert len(events) == 9
     for event in events:
         validate_metadata_payload(event)
         rendered = json.dumps(event, sort_keys=True)
@@ -120,6 +120,34 @@ def test_verdict_artifact_fixtures_export_metadata_only_events(tmp_path: Path) -
     assert codex_unknown["status"] == "unknown"
     assert codex_unknown["dimensions"]["audit_comment_lane_id"] == "codex-audit"
 
+    gitar_pass = by_case[("gitar-audit", 10)]
+    assert gitar_pass["provider"] == "gitar"
+    assert gitar_pass["status"] == "pass"
+    assert gitar_pass["metrics"]["duration_seconds"] == 12.3
+
+    cursor_bugbot_blocked = by_case[("cursor-bugbot-audit", 11)]
+    assert cursor_bugbot_blocked["provider"] == "cursor_bugbot"
+    assert cursor_bugbot_blocked["status"] == "blocked"
+    assert cursor_bugbot_blocked["metrics"]["p1_count"] == 1
+
+    antigravity_pass = by_case[("antigravity-cli-audit", 12)]
+    assert antigravity_pass["provider"] == "antigravity"
+    assert antigravity_pass["status"] == "pass"
+    assert antigravity_pass["metrics"]["duration_seconds"] == 45.2
+
+    devin_blocked = by_case[("devin-audit", 13)]
+    assert devin_blocked["provider"] == "devin"
+    assert devin_blocked["status"] == "blocked"
+    assert devin_blocked["metrics"]["p1_count"] == 1
+
+    muse_pass = by_case[("muse-audit", 14)]
+    assert muse_pass["provider"] == "muse"
+    assert muse_pass["status"] == "pass"
+
+    grok_build_pass = by_case[("grok-audit", 15)]
+    assert grok_build_pass["provider"] == "grok_build"
+    assert grok_build_pass["status"] == "pass"
+
     build_cloud_bundle(
         reports=[],
         events=events,
@@ -128,7 +156,7 @@ def test_verdict_artifact_fixtures_export_metadata_only_events(tmp_path: Path) -
     )
     upload = build_upload_payload(bundle_dir=tmp_path / "bundle")
     assert upload["upload_mode"] == "metadata_only"
-    assert len(upload["events"]) == 3
+    assert len(upload["events"]) == 9
     assert len(upload["reports"]) == 0
     for event in upload["events"]:
         validate_metadata_payload(event)
