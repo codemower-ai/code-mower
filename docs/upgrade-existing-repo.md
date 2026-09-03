@@ -16,6 +16,10 @@ code-mower --version
 If multiple agents share the machine, decide which installer owns this command
 before upgrading it. Use the install matrix in [Install And Bootstrap](install.md)
 for pipx, uv, and contributor-checkout paths.
+When a hosted or peer agent performs the upgrade rehearsal, give it the
+universal prompt in [Orchestrator Prompt Pack](orchestrator-prompt-pack.md) so
+it reports the same active command, exact version, posture-specific doctor,
+lanes status, and owner click-list as the primary orchestrator.
 
 ## 2. Generate Fresh Setup Output
 

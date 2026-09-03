@@ -93,6 +93,12 @@ not know the original reference repos.
   private-fork/deploy-key install paths.
 - At least one fresh public toy repo and one private GitHub repo complete the
   easy-mode flow without reference-repo assumptions.
+- At least one cold install rehearsal and one existing-repo upgrade rehearsal
+  are recorded on the release PR or epic, including the installed version,
+  first-user readiness, setup-drift posture, and any filed follow-up issues.
+- The orchestrator prompt pack has one common install/upgrade prompt that
+  works across Claude Code, Codex, Cursor/Grok Bot, Antigravity, Devin, Muse,
+  and future providers without requiring repo-specific private context.
 - Source-checkout and release-rehearsal commands use `scripts/dev-python` or
   `.venv/bin/python`; docs and gates do not rely on ambient `python`/`python3`
   resolving to a safe interpreter or on raw source-path environment imports.

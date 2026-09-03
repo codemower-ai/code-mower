@@ -144,6 +144,13 @@ export PIPX_BIN_DIR="$CODE_MOWER_AGENT_TOOLS/bin"
 export PIPX_LOG_DIR="$CODE_MOWER_AGENT_TOOLS/logs"
 ```
 
+For a machine to count as active on a Code Mower pilot, it should be able to
+report the install method, `command -v code-mower`, `code-mower --version`, the
+posture-specific doctor command it ran, and `code-mower lanes status --repo
+OWNER/REPO`. If different agents on the same workstation see different
+versions, pin each agent to an isolated pipx or uv tool directory instead of
+changing the shared command mid-PR.
+
 ## GitHub Auth Or Private Repo Checks Fail
 
 Verify the GitHub CLI independently:
