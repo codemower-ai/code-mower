@@ -94,6 +94,53 @@ class SetupDriftTests(TestCase):
         self.assertEqual(states[".github/workflows/old-code-mower.yml"], "repo-only")
         self.assertEqual(states["missing.yml"], "missing-from-output")
 
+    def test_setup_drift_report_records_explicit_config_source(self) -> None:
+        source_config = (
+            Path(__file__).parents[1] / "src" / "code_mower" / "templates" / "code-mower.example.yml"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp) / "target"
+            repo_path.mkdir()
+            (repo_path / "code-mower.yml").write_text(
+                source_config.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
+            payload = migration.render_setup_drift_report(repo_path=repo_path)
+
+        self.assertEqual(payload["config_source"], "explicit_repository_config")
+        text = migration.render_setup_drift_text(payload)
+        self.assertIn("Config source: explicit repository config (", text)
+        self.assertIn("code-mower.yml", text)
+
+    def test_setup_drift_report_records_packaged_starter_config_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp) / "target"
+            repo_path.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
+            payload = migration.render_setup_drift_report(repo_path=repo_path)
+
+        self.assertEqual(payload["config_source"], "packaged_starter")
+        text = migration.render_setup_drift_text(payload)
+        self.assertIn("Config source: packaged starter (code-mower.example.yml)", text)
+
+    def test_setup_drift_text_omits_config_source_when_unclassified(self) -> None:
+        payload = {
+            "status": "pass",
+            "repo_path": "/tmp/repo",
+            "profile": "recommended",
+            "counts": {
+                "same": 0,
+                "differs": 0,
+                "new": 0,
+                "repo-only": 0,
+                "missing-from-output": 0,
+            },
+            "next_action": "generated setup matches tracked Code Mower files",
+            "files": [],
+        }
+
+        self.assertNotIn("Config source:", migration.render_setup_drift_text(payload))
+
     def test_render_setup_drift_text_omits_file_contents(self) -> None:
         payload = {
             "status": "warn",

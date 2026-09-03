@@ -272,7 +272,10 @@ code-mower migration setup-drift --repo-path .
 
 The drift report is read-only. It compares the current generated setup output
 against tracked Code Mower files and classifies paths as `same`, `differs`,
-`new`, `repo-only`, or `missing-from-output`. Use it before an upgrade PR so
+`new`, `repo-only`, or `missing-from-output`. The text report also names the
+configuration source (`Config source: packaged starter ...` or
+`Config source: explicit repository config ...`), using the same terms as
+`code-mower init`. Use it before an upgrade PR so
 you can review workflow/wrapper changes without source diffs in the report.
 Follow [Upgrade An Existing Repository](upgrade-existing-repo.md) when applying
 those changes to a repo that already has generated support files.
@@ -288,7 +291,10 @@ code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
 
 In those observer/coordinator postures, missing local wrapper environment
 variables and missing `DISPATCH_TOKEN` setup are surfaced as owner setup or
-promotion tasks, not as proof the install is broken. Use the default
+promotion tasks, not as proof the install is broken. Adoption text output
+prints the posture hint before provider-lane detail, so a default
+reviewer-gate warning on an observer host reads as a posture mismatch, not a
+broken install. Use the default
 reviewer-gate posture on the machine that will actually run local audit
 wrappers or unattended dispatch.
 

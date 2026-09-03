@@ -207,6 +207,44 @@ class DoctorOutputTests(unittest.TestCase):
         self.assertTrue(promotion_check["promotion_todo"])
         self.assertEqual(promotion_check["promotion_todo_kind"], "repo_auto_merge")
 
+    def test_adoption_posture_hint_renders_before_provider_warnings(self) -> None:
+        report = DoctorReport(
+            config_path="code-mower.yml",
+            provider_templates_path="providers.yml",
+            profile="recommended",
+            checks=(
+                DoctorCheck(
+                    name="runtime.local_cli",
+                    status=STATUS_WARN,
+                    lane="codex",
+                    message="codex CLI missing",
+                ),
+                DoctorCheck(
+                    name="doctor.adoption.posture_hint",
+                    status=STATUS_WARN,
+                    message="default reviewer-gate posture checks local reviewer CLIs on this host",
+                    remediation="rerun with --orchestrator-only when this host only coordinates",
+                ),
+            ),
+        )
+
+        rendered = output.render_doctor_text(report)
+
+        self.assertNotIn("Setup", rendered)
+        self.assertLess(rendered.index("Adoption posture:"), rendered.index("Provider lanes"))
+        self.assertLess(
+            rendered.index("Adoption posture:"),
+            rendered.index("- WARN runtime.local_cli [codex]"),
+        )
+        self.assertIn("doctor.adoption.posture_hint", rendered)
+        self.assertEqual(rendered.count("doctor.adoption.posture_hint"), 1)
+        self.assertEqual(rendered.count("Adoption posture:"), 1)
+        # JSON IDs and ordering stay stable; only text gains the early hint.
+        self.assertEqual(
+            [check["id"] for check in report.as_dict()["checks"]],
+            ["runtime.local_cli", "doctor.adoption.posture_hint"],
+        )
+
     def test_doctor_output_group_keeps_lane_checks_with_providers(self) -> None:
         check = DoctorCheck(
             name="runtime.local_cli.probe",

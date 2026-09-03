@@ -802,6 +802,7 @@ def render_setup_drift_report(
         ),
         "repo_path": str(repo_path),
         "config": str(config_path),
+        "config_source": source_kind,
         "profile": profile,
         "builders": list(builder_lanes),
         "additional_repositories": list(added_repos),
@@ -822,6 +823,20 @@ def render_setup_drift_report(
     }
 
 
+def _setup_drift_config_source_line(payload: dict[str, Any]) -> str | None:
+    """Render the init-matching config-source line, or None when unclassified."""
+
+    source_kind = payload.get("config_source")
+    if source_kind == "packaged_starter":
+        # Mirror init: a packaged fallback prints the stable starter name,
+        # not the absolute install path.
+        display = Path(str(payload.get("config") or "")).name or "code-mower.example.yml"
+        return f"Config source: packaged starter ({display})"
+    if source_kind == "explicit_repository_config":
+        return f"Config source: explicit repository config ({payload.get('config', 'code-mower.yml')})"
+    return None
+
+
 def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
     counts = payload.get("counts") or {}
     lines = [
@@ -829,11 +844,18 @@ def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
         f"Status: {payload['status']}",
         f"Repo: {payload['repo_path']}",
         f"Profile: {payload['profile']}",
-        "Counts: "
-        + ", ".join(f"{name}={counts.get(name, 0)}" for name in SETUP_DRIFT_CLASSIFICATIONS),
-        f"Next: {payload['next_action']}",
-        "",
     ]
+    config_source_line = _setup_drift_config_source_line(payload)
+    if config_source_line is not None:
+        lines.append(config_source_line)
+    lines.extend(
+        [
+            "Counts: "
+            + ", ".join(f"{name}={counts.get(name, 0)}" for name in SETUP_DRIFT_CLASSIFICATIONS),
+            f"Next: {payload['next_action']}",
+            "",
+        ]
+    )
     standalone_pin = payload.get("standalone_pin") or {}
     if standalone_pin:
         current = (

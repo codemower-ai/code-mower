@@ -5619,10 +5619,14 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
 
             fake_package = root / "fake-code-mower"
             fake_package.mkdir()
+            # Offline-friendly fixture: the in-tree backend below needs no
+            # build requirements, so pip installs without package-index
+            # access (PIP_NO_INDEX below proves it).
             fake_package.joinpath("pyproject.toml").write_text(
                 """[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = []
+build-backend = "fake_backend"
+backend-path = ["."]
 
 [project]
 name = "fake-code-mower-wrapper-test"
@@ -5630,10 +5634,68 @@ version = "0.0.0"
 
 [project.scripts]
 code-mower = "fake_code_mower:main"
-
-[tool.setuptools]
-py-modules = ["fake_code_mower"]
 """,
+                encoding="utf-8",
+            )
+            fake_package.joinpath("fake_backend.py").write_text(
+                '''"""Minimal stdlib-only PEP 517/660 backend for the offline fixture."""
+
+import base64
+import csv
+import hashlib
+import io
+import zipfile
+from pathlib import Path
+
+NAME = "fake-code-mower-wrapper-test"
+VERSION = "0.0.0"
+SOURCE_DIR = Path(__file__).resolve().parent
+
+
+def _dist_info_name() -> str:
+    # PEP 427: dashes become underscores in wheel filenames and dist-info dirs.
+    return f"{NAME.replace('-', '_')}-{VERSION}.dist-info"
+
+
+def _wheel_name() -> str:
+    return f"{NAME.replace('-', '_')}-{VERSION}-py3-none-any.whl"
+
+
+def get_requires_for_build_wheel(config_settings=None):  # noqa: ANN001, ANN202
+    return []
+
+
+def get_requires_for_build_editable(config_settings=None):  # noqa: ANN001, ANN202
+    return []
+
+
+def build_editable(wheel_directory, config_settings=None, metadata_directory=None):  # noqa: ANN001, ANN202
+    dist_info = _dist_info_name()
+    wheel_name = _wheel_name()
+    pth_name = f"__editable__.{NAME.replace('-', '_')}-{VERSION}.pth"
+    files = {
+        f"{dist_info}/METADATA": f"Metadata-Version: 2.1\\nName: {NAME}\\nVersion: {VERSION}\\n",
+        f"{dist_info}/WHEEL": (
+            "Wheel-Version: 1.0\\nGenerator: fake-backend (offline fixture)\\n"
+            "Root-Is-Purelib: true\\nTag: py3-none-any\\n"
+        ),
+        f"{dist_info}/entry_points.txt": "[console_scripts]\\ncode-mower = fake_code_mower:main\\n",
+        pth_name: str(SOURCE_DIR) + "\\n",
+    }
+    wheel_path = Path(wheel_directory) / wheel_name
+    with zipfile.ZipFile(wheel_path, "w", zipfile.ZIP_DEFLATED) as handle:
+        rows: list[tuple[str, str, str]] = []
+        for arcname, text in files.items():
+            data = text.encode("utf-8")
+            handle.writestr(arcname, data)
+            digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode("ascii")
+            rows.append((arcname, f"sha256={digest}", str(len(data))))
+        rows.append((f"{dist_info}/RECORD", "", ""))
+        buffer = io.StringIO()
+        csv.writer(buffer, lineterminator="\\n").writerows(rows)
+        handle.writestr(f"{dist_info}/RECORD", buffer.getvalue().encode("utf-8"))
+    return wheel_name
+''',
                 encoding="utf-8",
             )
             fake_package.joinpath("fake_code_mower.py").write_text(
@@ -5650,6 +5712,10 @@ def main():
             env = {
                 "PATH": os.environ.get("PATH", os.defpath),
                 "HOME": os.environ.get("HOME", ""),
+                # Keep the default contributor path offline-friendly: the
+                # reinstall must not touch a package index or the network.
+                "PIP_NO_INDEX": "1",
+                "PIP_DISABLE_PIP_VERSION_CHECK": "1",
                 "CODE_MOWER_BOOTSTRAP_PYTHON": sys.executable,
                 "CODE_MOWER_STANDALONE_PATH": str(fake_package),
                 "CODE_MOWER_STANDALONE_VENV": str(custom_venv),
