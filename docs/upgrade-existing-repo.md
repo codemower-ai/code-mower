@@ -51,6 +51,13 @@ Do not delete `repo-only` or `missing-from-output` files automatically. They may
 be product-specific shims, pinned wrappers, hand-written docs, or rollback
 support. Keep, edit, or remove them only as an explicit review decision.
 
+If `tools/code_mower_standalone_pin.env` exists, the JSON report includes a
+`standalone_pin` block and the text report prints a concise standalone pin line.
+A warning there means the checked-in standalone ref is missing, placeholder,
+unreadable, or different from the currently running Code Mower package. Treat it
+as an upgrade review item: decide whether the repo should keep its current
+reviewed pin or move the pin in the same upgrade PR.
+
 ## 4. Copy Only Intended Files
 
 Open a branch for the upgrade PR, then copy the generated files you intend to

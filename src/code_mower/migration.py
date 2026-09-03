@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from code_mower import __version__ as CODE_MOWER_VERSION
     from code_mower.migration_mirror import (
         PRODUCT_SUPPORT_PATTERNS,
         RUNNER_ALIASES,
@@ -52,8 +53,10 @@ if __package__ in {None, ""}:
         render_package_install_rehearsal_text,
         run_package_install_rehearsal,
     )
+    from code_mower.versioning import release_tag_for_version
 else:
     try:
+        from . import __version__ as CODE_MOWER_VERSION
         from .migration_mirror import (
             PRODUCT_SUPPORT_PATTERNS,
             RUNNER_ALIASES,
@@ -91,8 +94,10 @@ else:
             render_package_install_rehearsal_text,
             run_package_install_rehearsal,
         )
+        from .versioning import release_tag_for_version
     except ImportError:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from code_mower import __version__ as CODE_MOWER_VERSION
         from code_mower.migration_mirror import (
             PRODUCT_SUPPORT_PATTERNS,
             RUNNER_ALIASES,
@@ -130,6 +135,7 @@ else:
             render_package_install_rehearsal_text,
             run_package_install_rehearsal,
         )
+        from code_mower.versioning import release_tag_for_version
 
 __all__ = [
     "FIRST_USER_ARTIFACTS",
@@ -226,6 +232,117 @@ SETUP_DRIFT_TOOL_FILENAMES = {
     "safe_gh_comment.py",
     "status_report.py",
 }
+STANDALONE_PIN_RELATIVE_PATH = "tools/code_mower_standalone_pin.env"
+STANDALONE_PIN_REF_KEY = "CODE_MOWER_STANDALONE_REF"
+STANDALONE_PIN_PLACEHOLDER_FRAGMENT = "pin-a-reviewed-code-mower"
+STANDALONE_PIN_SAFE_REF_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    "._/@+-"
+)
+
+
+def _parse_standalone_pin_ref(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, value = stripped.partition("=")
+        if separator and key.strip() == STANDALONE_PIN_REF_KEY:
+            try:
+                parts = shlex.split(value, comments=True, posix=True)
+            except ValueError:
+                return ""
+            return parts[0] if parts else ""
+    return ""
+
+
+def _is_standalone_pin_placeholder(ref: str) -> bool:
+    normalized = ref.strip()
+    return (
+        not normalized
+        or normalized in {"TODO", "TBD"}
+        or normalized.startswith("<")
+        or STANDALONE_PIN_PLACEHOLDER_FRAGMENT in normalized
+    )
+
+
+def _safe_standalone_pin_ref(ref: str) -> str:
+    value = ref.strip()
+    if 0 < len(value) <= 160 and all(char in STANDALONE_PIN_SAFE_REF_CHARS for char in value):
+        return value
+    return "<redacted-ref>"
+
+
+def _standalone_pin_drift_summary(
+    repo_path: Path,
+    *,
+    package_version: str = CODE_MOWER_VERSION,
+) -> dict[str, Any]:
+    expected_ref = release_tag_for_version(package_version)
+    summary: dict[str, Any] = {
+        "path": STANDALONE_PIN_RELATIVE_PATH,
+        "package_version": package_version,
+        "expected_ref": expected_ref,
+    }
+    pin_path = repo_path / STANDALONE_PIN_RELATIVE_PATH
+    if not pin_path.is_file():
+        return {
+            **summary,
+            "status": "skip",
+            "reason": "pin_file_absent",
+            "current_ref_status": "absent",
+            "next_action": "no standalone pin file found",
+        }
+    try:
+        current_ref = _parse_standalone_pin_ref(pin_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
+        return {
+            **summary,
+            "status": "warn",
+            "reason": "pin_file_unreadable",
+            "current_ref_status": "unreadable",
+            "read_error": exc.__class__.__name__,
+            "next_action": "fix or regenerate the standalone pin file",
+        }
+    if _is_standalone_pin_placeholder(current_ref):
+        return {
+            **summary,
+            "status": "warn",
+            "reason": "pin_ref_placeholder",
+            "current_ref_status": "placeholder",
+            "next_action": "set CODE_MOWER_STANDALONE_REF to a reviewed release tag or commit in a PR",
+        }
+    status = "pass" if current_ref == expected_ref else "warn"
+    return {
+        **summary,
+        "status": status,
+        "reason": "matches_running_package" if status == "pass" else "pin_ref_differs",
+        "current_ref_status": "present",
+        "current_ref": _safe_standalone_pin_ref(current_ref),
+        "next_action": (
+            "standalone pin matches the running Code Mower package"
+            if status == "pass"
+            else "review whether tools/code_mower_standalone_pin.env should move to the current release tag"
+        ),
+    }
+
+
+def _setup_drift_next_action(
+    *,
+    changed_count: int,
+    standalone_pin: Mapping[str, Any],
+) -> str:
+    file_action = "review differs, new, repo-only, and missing-from-output entries before copying generated setup"
+    pin_warn = standalone_pin.get("status") == "warn"
+    if changed_count and pin_warn:
+        return f"{file_action}; also {standalone_pin['next_action']}"
+    if changed_count:
+        return file_action
+    if pin_warn:
+        return str(standalone_pin["next_action"])
+    return "generated setup matches tracked Code Mower files"
 
 
 def _resolve_command(command_text: str) -> tuple[str, ...]:
@@ -494,10 +611,12 @@ def render_setup_drift_report(
     for item in files:
         counts[str(item["classification"])] = counts.get(str(item["classification"]), 0) + 1
     changed_count = sum(counts[name] for name in SETUP_DRIFT_CLASSIFICATIONS if name != "same")
+    standalone_pin = _standalone_pin_drift_summary(repo_path)
+    standalone_pin_warn = standalone_pin["status"] == "warn"
     return {
         "schema": SETUP_DRIFT_SCHEMA,
         "mode": "setup-drift",
-        "status": "pass" if changed_count == 0 else "warn",
+        "status": "pass" if changed_count == 0 and not standalone_pin_warn else "warn",
         "repo_path": str(repo_path),
         "config": str(config_path),
         "profile": profile,
@@ -507,11 +626,11 @@ def render_setup_drift_report(
         "counts": counts,
         "file_count": len(files),
         "changed_count": changed_count,
+        "standalone_pin": standalone_pin,
         "files": files,
-        "next_action": (
-            "review differs, new, repo-only, and missing-from-output entries before copying generated setup"
-            if changed_count
-            else "generated setup matches tracked Code Mower files"
+        "next_action": _setup_drift_next_action(
+            changed_count=changed_count,
+            standalone_pin=standalone_pin,
         ),
     }
 
@@ -528,6 +647,20 @@ def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
         f"Next: {payload['next_action']}",
         "",
     ]
+    standalone_pin = payload.get("standalone_pin") or {}
+    if standalone_pin and standalone_pin.get("status") != "skip":
+        current = (
+            f" current={standalone_pin['current_ref']}"
+            if standalone_pin.get("current_ref")
+            else ""
+        )
+        lines.extend(
+            [
+                f"Standalone pin: {str(standalone_pin['status']).upper()} "
+                f"{standalone_pin['reason']} expected={standalone_pin['expected_ref']}{current}",
+                "",
+            ]
+        )
     changed = [item for item in payload.get("files") or [] if item.get("classification") != "same"]
     if not changed:
         lines.append("- PASS generated setup matches tracked Code Mower files")
