@@ -103,6 +103,8 @@ def validate_pr_outcome_payload(event: Mapping[str, Any]) -> None:
         raise CloudBundleError("pr_outcome outcome 'closed_unmerged' requires closed_at")
     if outcome == "reverted" and "reverted_at" not in timestamps:
         raise CloudBundleError("pr_outcome outcome 'reverted' requires reverted_at")
+    if outcome == "reverted" and timestamps["reverted_at"] < timestamps["merged_at"]:
+        raise CloudBundleError("pr_outcome dimension 'reverted_at' cannot precede merged_at")
 
     allowed_metrics = set(PR_OUTCOME_COUNT_METRICS + PR_OUTCOME_COST_METRICS)
     unknown_metrics = [str(key) for key in metrics if key not in allowed_metrics]

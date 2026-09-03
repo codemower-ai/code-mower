@@ -181,7 +181,8 @@ Required dimensions are `pr_outcome_schema`, positive integer-string
 `closed_unmerged`, or `reverted`), and `cost_coverage` (`complete`, `partial`,
 or `unknown`). Merged and reverted outcomes require `merged_at`, closed-unmerged
 requires `closed_at`, and reverted requires `reverted_at`. Timestamps include a
-UTC offset and cannot precede `opened_at`.
+UTC offset and cannot precede `opened_at`; `reverted_at` cannot precede
+`merged_at`.
 
 Metrics are atomic values, never precomputed dashboard rates:
 

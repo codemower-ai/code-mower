@@ -116,3 +116,16 @@ class PrOutcomeContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(CloudBundleError, "unsupported pr_outcome dimension"):
             validate_cloud_event(event)
+
+    def test_rejects_revert_before_merge(self) -> None:
+        event = copy.deepcopy(_fixture()["pr_outcome_events"][0])
+        event["dimensions"].update(
+            {
+                "outcome": "reverted",
+                "merged_at": "2026-09-03T12:55:00Z",
+                "reverted_at": "2026-09-03T12:54:00Z",
+            }
+        )
+
+        with self.assertRaisesRegex(CloudBundleError, "cannot precede merged_at"):
+            validate_cloud_event(event)
