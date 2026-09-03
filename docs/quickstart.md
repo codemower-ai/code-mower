@@ -14,9 +14,20 @@ To see the value loop before you touch a product repository, open the
 
 ## 1. Install
 
-Code Mower requires Python 3.12 or newer. For hosted agents, minimal Linux
-boxes, and contributor checkouts, use the full
-[Install And Bootstrap](install.md) matrix. The laptop path is:
+Code Mower requires Python 3.12 or newer. Use the full
+[Install And Bootstrap](install.md) matrix when you are choosing between
+laptop, hosted-agent, CI, and contributor installs.
+
+For hosted agents, minimal Linux boxes, and CI-style runners, `uv tool install`
+is the first-class isolated path:
+
+```bash
+uv python install 3.12
+uv tool install --python 3.12 code-mower==1.0.1
+code-mower --version
+```
+
+For a laptop or workstation that already uses pipx:
 
 ```bash
 python3.12 --version
@@ -30,14 +41,6 @@ of this exact verified release, use:
 
 ```bash
 pipx install --python "$CODE_MOWER_PYTHON" --pip-args="--pre" code-mower
-```
-
-For hosted agents or CI boxes without pipx:
-
-```bash
-uv python install 3.12
-uv tool install --python 3.12 code-mower==1.0.1
-code-mower --version
 ```
 
 For a Code Mower source checkout, use `scripts/dev-python` and the editable

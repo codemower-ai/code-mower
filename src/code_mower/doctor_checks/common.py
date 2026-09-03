@@ -178,8 +178,11 @@ def load_inputs(
                 status=STATUS_FAIL,
                 message=f"cannot load config: {exc}",
                 remediation=(
-                    "Run `code-mower init --easy` to render a starter config, "
-                    "or pass an existing config path to doctor."
+                    f"Doctor looked for {config_path} from cwd {Path.cwd()}. "
+                    "Run `code-mower doctor --easy` for packaged starter "
+                    "checks, run `code-mower init --easy` to render a starter "
+                    "config, rerun from the repository checkout that contains "
+                    "code-mower.yml, or pass an existing config path to doctor."
                 ),
             )
         )

@@ -84,6 +84,27 @@ def _doctor_config_source_label(
     return "repository_config"
 
 
+def _doctor_config_error_message(exc: Exception, *, config_arg: str) -> str:
+    requested = str(config_arg)
+    lines = [
+        f"error: {exc}",
+        f"Doctor looked for config {requested!r} from cwd {Path.cwd()}.",
+    ]
+    if requested == "code-mower.yml":
+        lines.append(
+            "Run from a repository that already has code-mower.yml, pass the "
+            "config path explicitly, or use `code-mower doctor --easy` for the "
+            "packaged starter checks."
+        )
+    else:
+        lines.append(
+            "Pass the path to the repository's code-mower.yml, or rerun from "
+            "the repository checkout with `code-mower doctor --adoption "
+            "--repo OWNER/REPO`."
+        )
+    return "\n".join(lines)
+
+
 _DOCTOR_COMPAT_EXPORTS = (
     DEFAULT_CLOUD_TOKEN_DIR,
     DEFAULT_CLOUD_TOKEN_ENV,
@@ -289,7 +310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             actionlint_bin=args.actionlint_bin,
         )
     except (code_mower_config.ConfigError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(_doctor_config_error_message(exc, config_arg=args.config), file=sys.stderr)
         return 1
 
     if args.json:

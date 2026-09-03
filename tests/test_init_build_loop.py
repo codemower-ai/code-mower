@@ -51,6 +51,23 @@ def _mac_runner_selection_script(workflow_text: str) -> str:
 
 
 class InitBuildLoopTests(unittest.TestCase):
+    def test_init_missing_config_error_explains_cwd_and_config_path(self) -> None:
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                stderr = io.StringIO()
+                with mock.patch("sys.stderr", stderr):
+                    code = code_mower_init.main(["code-mower.yml", "--dry-run"])
+            finally:
+                os.chdir(original_cwd)
+
+        self.assertEqual(code, 1)
+        message = stderr.getvalue()
+        self.assertIn("Init loaded config 'code-mower.yml' from cwd", message)
+        self.assertIn("run from the checkout that contains code-mower.yml", message)
+        self.assertIn("pass its path explicitly", message)
+
     def test_builders_use_cursor_as_hosted_builder_identity(self) -> None:
         plan = _builders_plan()
 

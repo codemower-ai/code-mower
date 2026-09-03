@@ -269,15 +269,33 @@ class BoardTests(TestCase):
         self.assertEqual(payload["boards"], [])
         self.assertEqual(payload["next_action"], "fix local process inspection")
 
-    def test_board_inventory_payload_marks_unresponsive_listener(self) -> None:
+    def test_board_inventory_payload_marks_unresponsive_listener_without_restart(self) -> None:
         payload = board.board_inventory_payload(
             command_runner=_command_runner,
             status_probe=lambda _board_item: {"available": False, "message": "connection refused"},
         )
 
         self.assertEqual(payload["boards"][0]["health"], "unresponsive")
+        self.assertFalse(payload["boards"][0]["restart_recommended"])
         self.assertEqual(payload["next_action"], "inspect unresponsive Board")
         self.assertIn("did not answer", payload["next_detail"])
+
+    def test_board_inventory_payload_marks_legacy_listener_restart_recommended(self) -> None:
+        payload = board.board_inventory_payload(
+            command_runner=_command_runner,
+            status_probe=lambda _board_item: {
+                "available": False,
+                "reason": "legacy_identity_endpoint_missing",
+                "message": "endpoint missing",
+            },
+        )
+
+        self.assertEqual(payload["boards"][0]["health"], "legacy")
+        self.assertTrue(payload["boards"][0]["restart_recommended"])
+        self.assertIn("legacy / restart recommended", payload["boards"][0]["status_message"])
+        self.assertEqual(payload["next_action"], "restart stale Board")
+        rendered = board.render_inventory_text(payload)
+        self.assertIn("health=legacy / restart recommended", rendered)
 
     def test_stop_board_requires_confirmation_and_stops_matching_board(self) -> None:
         stopped: list[tuple[int, int]] = []

@@ -760,6 +760,13 @@ def main(
     run.add_argument("--repo", required=True)
     run.add_argument("--config", type=Path, default=Path("code-mower.yml"))
     run.add_argument("--mode", choices=CONTROL_MODES, default="dry_run")
+    run.add_argument(
+        "--dry-run",
+        action="store_const",
+        const="dry_run",
+        dest="mode",
+        help="explicit alias for --mode dry_run; this is also the default",
+    )
     run.add_argument("--gate-required", action="store_true")
     run.add_argument("--auto-merge-enabled", action="store_true")
     run.add_argument("--merge-token-ready", action="store_true")

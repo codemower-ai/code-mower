@@ -408,6 +408,70 @@ lanes:
         assert forbidden not in serialized
 
 
+def test_cli_accepts_explicit_dry_run_alias(tmp_path: Path) -> None:
+    config_path = tmp_path / "code-mower.yml"
+    config_path.write_text(
+        """
+version: 1
+project:
+  name: demo
+  state_dir: .code-mower
+repositories:
+  - slug: owner/repo
+    default_branch: main
+owner_surface:
+  ready_label: tier:R
+builder_identity:
+  labels:
+    builder:codex: codex
+lanes:
+  codex:
+    type: audit
+    driver: local_cli
+    provider: codex
+    merge_authority: true
+    labels:
+      needs: needs-codex-audit
+      done: codex-audit-done
+      blocked: codex-audit-blocked
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    def gh_json(args: list[str]) -> object:
+        if args[:2] == ["pr", "list"]:
+            return []
+        if args[:2] == ["run", "list"]:
+            return []
+        if args[:2] == ["issue", "list"]:
+            return []
+        raise AssertionError(args)
+
+    def command_runner(_args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], 1, "", "")
+
+    out = StringIO()
+    with redirect_stdout(out):
+        code = controller.main(
+            [
+                "run",
+                "--repo",
+                "owner/repo",
+                "--config",
+                str(config_path),
+                "--dry-run",
+                "--json",
+            ],
+            gh_json_runner=gh_json,
+            command_runner=command_runner,
+        )
+
+    assert code == 0
+    payload = json.loads(out.getvalue())
+    assert payload["mode"] == "dry_run"
+    assert payload["decision"]["would_mutate"] is False
+
+
 def test_cli_reports_cloud_event_validation_errors_without_traceback(tmp_path: Path) -> None:
     config_path = tmp_path / "code-mower.yml"
     config_path.write_text(

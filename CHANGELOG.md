@@ -9,6 +9,11 @@ provider posture, and optional cloud sharing loop are still hardening.
 - `migration package-install-rehearsal` now disables pip cache and retries
   package-index installs after `--allow-package-index`, reducing false release
   blockers while PyPI/TestPyPI finishes fresh-package propagation (#635).
+- Adoption-polish diagnostics now give clearer cwd/config guidance for
+  `doctor` and `init`, label legacy Board listeners as restart recommended,
+  include both Board history capture paths in empty productivity reports, make
+  hosted-agent `uv tool install` first-class in quickstart, and accept
+  `controller run --dry-run` as an explicit dry-run alias (#637).
 
 ## v1.0.1
 

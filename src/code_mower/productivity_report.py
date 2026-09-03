@@ -1075,7 +1075,10 @@ def _next_action(
     ):
         return status_action
     if not board_metrics.get("snapshot_count"):
-        return f"run code-mower board serve --repo {repo} --record-events to build local history"
+        return (
+            f"run code-mower board serve --repo {repo} --record-events to build "
+            f"local history, or code-mower board record --repo {repo} for one snapshot"
+        )
     if not spend.get("run_count"):
         return "capture reviewer spend rows from audit wrappers for cost/latency"
     if not cloud.get("event_count"):
