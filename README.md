@@ -78,6 +78,9 @@ wrappers, run `code-mower migration setup-drift --repo-path .` before copying a
 fresh `.code-mower.generated` tree. It is read-only and reports path-level
 classifications (`same`, `differs`, `new`, `repo-only`,
 `missing-from-output`) without file contents or diffs.
+If the repository already has builder or dispatch lanes, rerun setup drift with
+the current builder set, for example `--builders codex,claude,cursor`, before
+opening the reviewed upgrade PR.
 Use [Upgrade An Existing Repository](docs/upgrade-existing-repo.md) for the
 reviewed PR flow, repo-only file handling, builder identity checks, and
 wrapper/pin drift checks.

@@ -37,6 +37,14 @@ code-mower migration setup-drift --repo-path . --json
 code-mower migration setup-drift --repo-path .
 ```
 
+If the repository already has generated builder or dispatch files, pass the
+current builder set so the comparison includes those files instead of reporting
+them as repo-only upgrade noise:
+
+```bash
+code-mower migration setup-drift --repo-path . --builders codex,claude,cursor
+```
+
 The report classifies paths only; it does not include source, diffs,
 transcripts, issue body text, auth output, local secret values, or secrets.
 
@@ -51,12 +59,16 @@ Do not delete `repo-only` or `missing-from-output` files automatically. They may
 be product-specific shims, pinned wrappers, hand-written docs, or rollback
 support. Keep, edit, or remove them only as an explicit review decision.
 
-If `tools/code_mower_standalone_pin.env` exists, the JSON report includes a
-`standalone_pin` block and the text report prints a concise standalone pin line.
-A warning there means the checked-in standalone ref is missing, placeholder,
-unreadable, or different from the currently running Code Mower package. Treat it
-as an upgrade review item: decide whether the repo should keep its current
-reviewed pin or move the pin in the same upgrade PR.
+The JSON report includes a `standalone_pin` block and the text report prints a
+concise standalone pin line even when the pin file is absent. A warning there
+means the checked-in standalone ref is missing, placeholder, unreadable, or
+different from the currently running Code Mower package. Treat it as an upgrade
+review item: decide whether the repo should keep its current reviewed pin or
+move the pin in the same upgrade PR.
+
+When builder files are tracked but `--builders` was omitted, the report prints a
+builder hint with the safest inferred `--builders` option. Rerun with that option
+before copying generated setup if those builder lanes are still enabled.
 
 ## 4. Copy Only Intended Files
 

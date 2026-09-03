@@ -232,6 +232,22 @@ SETUP_DRIFT_TOOL_FILENAMES = {
     "safe_gh_comment.py",
     "status_report.py",
 }
+SETUP_DRIFT_BUILDER_PATHS = frozenset(
+    {
+        ".github/workflows/dispatch-lanes.yml",
+        ".github/workflows/lane-mac-runner.yml",
+        "tools/lanes/run_mac_lane.sh",
+        "docs/lanes/README.md",
+        "docs/lanes/codex.md",
+        "docs/lanes/claude.md",
+        "docs/lanes/cursor.md",
+    }
+)
+SETUP_DRIFT_BUILDER_LANES_BY_PATH = {
+    "docs/lanes/codex.md": "codex",
+    "docs/lanes/claude.md": "claude",
+    "docs/lanes/cursor.md": "cursor",
+}
 STANDALONE_PIN_RELATIVE_PATH = "tools/code_mower_standalone_pin.env"
 STANDALONE_PIN_REF_KEY = "CODE_MOWER_STANDALONE_REF"
 STANDALONE_PIN_PLACEHOLDER_FRAGMENT = "pin-a-reviewed-code-mower"
@@ -333,16 +349,62 @@ def _setup_drift_next_action(
     *,
     changed_count: int,
     standalone_pin: Mapping[str, Any],
+    builder_hint: Mapping[str, Any],
 ) -> str:
     file_action = "review differs, new, repo-only, and missing-from-output entries before copying generated setup"
     pin_warn = standalone_pin.get("status") == "warn"
-    if changed_count and pin_warn:
-        return f"{file_action}; also {standalone_pin['next_action']}"
-    if changed_count:
-        return file_action
+    builder_warn = builder_hint.get("status") == "warn"
+    extras: list[str] = []
     if pin_warn:
-        return str(standalone_pin["next_action"])
+        extras.append(str(standalone_pin["next_action"]))
+    if builder_warn:
+        extras.append(str(builder_hint["next_action"]))
+    if changed_count:
+        return f"{file_action}; also {'; '.join(extras)}" if extras else file_action
+    if extras:
+        return "; ".join(extras)
     return "generated setup matches tracked Code Mower files"
+
+
+def _setup_drift_builder_hint(
+    *,
+    files: Sequence[Mapping[str, Any]],
+    builders_supplied: bool,
+) -> dict[str, Any]:
+    if builders_supplied:
+        return {
+            "status": "pass",
+            "reason": "builders_supplied",
+            "next_action": "builder-aware setup drift was requested",
+        }
+    existing_paths = sorted(
+        str(item["path"])
+        for item in files
+        if str(item.get("classification")) == "repo-only"
+        and str(item.get("path")) in SETUP_DRIFT_BUILDER_PATHS
+    )
+    if not existing_paths:
+        return {
+            "status": "skip",
+            "reason": "no_existing_builder_files",
+            "next_action": "no builder-specific setup files detected",
+        }
+    inferred_builders = sorted(
+        {
+            lane
+            for path in existing_paths
+            if (lane := SETUP_DRIFT_BUILDER_LANES_BY_PATH.get(path))
+        }
+    )
+    option = f"--builders {','.join(inferred_builders)}" if inferred_builders else "--builders LANES"
+    return {
+        "status": "warn",
+        "reason": "builders_omitted_with_existing_builder_files",
+        "paths": existing_paths,
+        "suggested_builders": inferred_builders,
+        "suggested_option": option,
+        "next_action": f"rerun setup-drift with {option} if these builder lanes are still enabled",
+    }
 
 
 def _resolve_command(command_text: str) -> tuple[str, ...]:
@@ -457,6 +519,8 @@ def _is_setup_candidate_path(path: str) -> bool:
     normalized = Path(path).as_posix()
     name = Path(normalized).name.lower()
     if normalized in SETUP_DRIFT_SETUP_FILENAMES:
+        return True
+    if normalized in SETUP_DRIFT_BUILDER_PATHS:
         return True
     if normalized.startswith("docs/lanes/"):
         return True
@@ -613,10 +677,19 @@ def render_setup_drift_report(
     changed_count = sum(counts[name] for name in SETUP_DRIFT_CLASSIFICATIONS if name != "same")
     standalone_pin = _standalone_pin_drift_summary(repo_path)
     standalone_pin_warn = standalone_pin["status"] == "warn"
+    builder_hint = _setup_drift_builder_hint(
+        files=files,
+        builders_supplied=bool(builders),
+    )
+    builder_hint_warn = builder_hint["status"] == "warn"
     return {
         "schema": SETUP_DRIFT_SCHEMA,
         "mode": "setup-drift",
-        "status": "pass" if changed_count == 0 and not standalone_pin_warn else "warn",
+        "status": (
+            "pass"
+            if changed_count == 0 and not standalone_pin_warn and not builder_hint_warn
+            else "warn"
+        ),
         "repo_path": str(repo_path),
         "config": str(config_path),
         "profile": profile,
@@ -627,10 +700,12 @@ def render_setup_drift_report(
         "file_count": len(files),
         "changed_count": changed_count,
         "standalone_pin": standalone_pin,
+        "builder_hint": builder_hint,
         "files": files,
         "next_action": _setup_drift_next_action(
             changed_count=changed_count,
             standalone_pin=standalone_pin,
+            builder_hint=builder_hint,
         ),
     }
 
@@ -648,7 +723,7 @@ def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
         "",
     ]
     standalone_pin = payload.get("standalone_pin") or {}
-    if standalone_pin and standalone_pin.get("status") != "skip":
+    if standalone_pin:
         current = (
             f" current={standalone_pin['current_ref']}"
             if standalone_pin.get("current_ref")
@@ -661,6 +736,20 @@ def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
                 "",
             ]
         )
+    builder_hint = payload.get("builder_hint") or {}
+    if builder_hint and builder_hint.get("status") == "warn":
+        lines.extend(
+            [
+                f"Builder hint: WARN {builder_hint['reason']}",
+                f"Builder hint next: {builder_hint['next_action']}",
+            ]
+        )
+        paths = list(builder_hint.get("paths") or [])
+        if paths:
+            preview = ", ".join(str(path) for path in paths[:5])
+            suffix = "" if len(paths) <= 5 else f", +{len(paths) - 5} more"
+            lines.append(f"Builder hint paths: {preview}{suffix}")
+        lines.append("")
     changed = [item for item in payload.get("files") or [] if item.get("classification") != "same"]
     if not changed:
         lines.append("- PASS generated setup matches tracked Code Mower files")
