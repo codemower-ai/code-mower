@@ -71,7 +71,6 @@ from . import local_llm_calibration
 from . import local_llm_profiles
 from . import migration as code_mower_migration
 from . import next_steps as code_mower_next_steps
-from . import observe as code_mower_observe
 from . import package as code_mower_package
 from . import prompts as code_mower_prompts
 from . import reviewer_metrics
@@ -456,7 +455,6 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "migration": "Rehearse standalone package and wrapper migration paths.",
     "merge-plan": "Inspect merge-readiness signals and lane labels.",
     "next-steps": "Print the recommended next actions after setup.",
-    "observe": "Run legacy optional local observability companions.",
     "package": "Build or inspect package extraction artifacts.",
     "plan": "Create local issue-derived planning artifacts.",
     "project-context": "Create editable local project-context doctrine docs.",
@@ -596,7 +594,6 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "migration": code_mower_migration.main,
     "merge-plan": code_mower_merge.main,
     "next-steps": code_mower_next_steps.main,
-    "observe": code_mower_observe.main,
     "package": _package_main,
     "plan": code_mower_work_orders.plan_main,
     "project-context": code_mower_work_orders.project_context_main,

@@ -707,7 +707,7 @@ def render_board_html(config: BoardConfig) -> str:
         spend.filtered_rows ? `<div class="row muted">Filtered ${{esc(spend.filtered_rows)}} spend row(s) from other repos.</div>` : ""
       ].filter(Boolean);
       put("spend", spendRows.length ? spendRows.join("") : empty(spend.message || "No reviewer spend rows for this repo yet."));
-      const boards = data.agenttrail?.boards || [];
+      const boards = data.local_boards?.boards || [];
       const procs = data.local_processes?.processes || [];
       put("local", [...boards.map(b => `<div class="row">board localhost:${{esc(b.port)}} pid=${{esc(b.pid)}} cwd=<code>${{esc(b.cwd || "")}}</code></div>`), ...procs.slice(0, 8).map(p => `<div class="row">${{esc(p.provider)}} pid=${{esc(p.pid)}} cwd=<code>${{esc(p.cwd || "")}}</code></div>`)].join("") || empty("No local boards or lane processes visible."));
     }}

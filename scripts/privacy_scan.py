@@ -101,6 +101,8 @@ def scan(root: Path = ROOT, *, excludes: set[str] | None = None) -> list[Finding
             continue
         try:
             text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
         except UnicodeDecodeError:
             continue
         findings.extend(_scan_text(path, rel_path, text))

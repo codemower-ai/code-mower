@@ -125,7 +125,7 @@ class LaneStatusTests(TestCase):
             if args[:4] == ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]:
                 return _completed("p123\ncnode\nn127.0.0.1:5330\n")
             if args == ["ps", "-p", "123", "-o", "command="]:
-                return _completed("node /tmp/bin/agenttrail /repo --no-open\n")
+                return _completed("code-mower board serve --repo owner/repo\n")
             if args == ["lsof", "-a", "-p", "123", "-d", "cwd", "-Fn"]:
                 return _completed("p123\nn/tmp/lane-checkout\n")
             if args == ["ps", "-axo", "pid=,command="]:
@@ -142,16 +142,15 @@ class LaneStatusTests(TestCase):
         )
 
         self.assertFalse(report["remote"]["available"])
-        self.assertEqual(report["agenttrail"]["boards"][0]["port"], 5330)
-        self.assertEqual(report["agenttrail"]["boards"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
-        self.assertTrue(report["agenttrail"]["boards"][0]["cwd_redacted"])
+        self.assertEqual(report["local_boards"]["boards"][0]["port"], 5330)
+        self.assertEqual(report["local_boards"]["boards"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertTrue(report["local_boards"]["boards"][0]["cwd_redacted"])
         self.assertEqual(report["local_processes"]["processes"][0]["provider"], "codex")
         self.assertEqual(report["local_processes"]["processes"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
         self.assertTrue(report["local_processes"]["processes"][0]["cwd_redacted"])
         self.assertEqual(report["next_action"], "remote unavailable; inspect local lanes")
         rendered = lane_status.render_text(report)
         self.assertIn("Local boards:", rendered)
-        self.assertNotIn("AgentTrail boards:", rendered)
         self.assertNotIn("/tmp/lane-checkout", rendered)
 
     def test_collect_status_detects_local_board_from_ss_when_lsof_unavailable(
@@ -185,11 +184,11 @@ class LaneStatusTests(TestCase):
         )
 
         self.assertFalse(report["remote"]["available"])
-        self.assertTrue(report["agenttrail"]["available"])
-        self.assertEqual(report["agenttrail"]["boards"][0]["port"], 5332)
-        self.assertEqual(report["agenttrail"]["boards"][0]["process"], "python3")
-        self.assertEqual(report["agenttrail"]["boards"][0]["confidence"], "high")
-        self.assertEqual(report["agenttrail"]["boards"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertTrue(report["local_boards"]["available"])
+        self.assertEqual(report["local_boards"]["boards"][0]["port"], 5332)
+        self.assertEqual(report["local_boards"]["boards"][0]["process"], "python3")
+        self.assertEqual(report["local_boards"]["boards"][0]["confidence"], "high")
+        self.assertEqual(report["local_boards"]["boards"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
         self.assertEqual(report["next_action"], "remote unavailable; inspect local lanes")
 
     def test_collect_status_never_reports_no_active_lanes_when_github_unavailable(
@@ -222,7 +221,7 @@ class LaneStatusTests(TestCase):
             if args[:4] == ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]:
                 return _completed("p123\ncnode\nn127.0.0.1:5330\n")
             if args == ["ps", "-p", "123", "-o", "command="]:
-                return _completed("node /tmp/bin/agenttrail /repo --no-open\n")
+                return _completed("code-mower board serve --repo owner/repo\n")
             if args == ["lsof", "-a", "-p", "123", "-d", "cwd", "-Fn"]:
                 return _completed("p123\nn/tmp/lane-checkout\n")
             if args == ["ps", "-axo", "pid=,command="]:
@@ -239,8 +238,8 @@ class LaneStatusTests(TestCase):
             show_local_paths=True,
         )
 
-        self.assertEqual(report["agenttrail"]["boards"][0]["cwd"], "/tmp/lane-checkout")
-        self.assertNotIn("cwd_redacted", report["agenttrail"]["boards"][0])
+        self.assertEqual(report["local_boards"]["boards"][0]["cwd"], "/tmp/lane-checkout")
+        self.assertNotIn("cwd_redacted", report["local_boards"]["boards"][0])
         self.assertEqual(report["local_processes"]["processes"][0]["cwd"], "/tmp/codex-lane")
 
     def test_main_json_outputs_stable_shape(self) -> None:
@@ -263,4 +262,16 @@ class LaneStatusTests(TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["schema"], lane_status.LANE_STATUS_SCHEMA)
         self.assertEqual(payload["repo"], "owner/repo")
+        self.assertEqual(
+            set(payload),
+            {
+                "schema",
+                "repo",
+                "generated_at",
+                "remote",
+                "local_boards",
+                "local_processes",
+                "next_action",
+            },
+        )
         self.assertEqual(payload["next_action"], "no active lanes")

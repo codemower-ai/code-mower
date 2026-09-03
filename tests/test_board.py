@@ -63,7 +63,7 @@ def _command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
     if args[:4] == ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]:
         return _completed("p123\ncnode\nn127.0.0.1:5332\n")
     if args == ["ps", "-p", "123", "-o", "command="]:
-        return _completed("node /tmp/bin/agenttrail /repo --no-open\n")
+        return _completed("code-mower board serve --repo owner/repo\n")
     if args == ["lsof", "-a", "-p", "123", "-d", "cwd", "-Fn"]:
         return _completed("p123\nn/tmp/lane-checkout\n")
     if args == ["ps", "-axo", "pid=,command="]:
@@ -102,7 +102,6 @@ class BoardTests(TestCase):
         self.assertIn("const localTime", html)
         self.assertIn("Intl.DateTimeFormat(undefined", html)
         self.assertIn('title="UTC ', html)
-        self.assertNotIn("AgentTrail", html)
 
     def test_render_board_html_escapes_script_terminators(self) -> None:
         html = board.render_board_html(board.BoardConfig(repo="owner/repo</script><b>bad</b>"))

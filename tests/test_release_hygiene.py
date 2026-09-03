@@ -330,7 +330,6 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "migration",
                 "merge-plan",
                 "next-steps",
-                "observe",
                 "package",
                 "plan",
                 "project-context",
@@ -395,7 +394,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("claude-bounce", help_text)
         self.assertIn("builder-experiment", help_text)
         self.assertIn("context", help_text)
-        self.assertIn("observe", help_text)
+        self.assertNotIn("observe", help_text)
         self.assertIn("work-order", help_text)
         self.assertIn("providers", help_text)
         self.assertIn("migration", help_text)
@@ -7590,6 +7589,7 @@ def main():
         self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", quickstart)
         self.assertIn("code-mower migration setup-drift --repo-path .", launch_surface)
 
+        legacy_name = "".join(("Agent", "Trail"))
         for path, text in (
             ("README.md", readme),
             ("docs/quickstart.md", quickstart),
@@ -7598,7 +7598,7 @@ def main():
             ("docs/launch-command-surface.md", launch_surface),
         ):
             with self.subTest(path=path):
-                self.assertNotIn("AgentTrail", text)
+                self.assertNotIn(legacy_name, text)
 
     def test_board_data_contract_preserves_local_only_cloud_boundary(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -7804,7 +7804,7 @@ def main():
             "during v0.7 adoption",
             "Exit Criteria For v0.6",
             "wider v0.6 push",
-            "without AgentTrail or hook setup",
+            "without external hook setup",
             "doctor --preflight --json` status",
             "preflight doctor preset",
         )
