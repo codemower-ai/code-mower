@@ -69,6 +69,8 @@ Top-level fields:
 - `checks`: check names and states, without raw logs.
 - `stale`: whether gate/check evidence is older than the requested threshold.
 - `next_action`: the PR-specific next action.
+- `next_detail`: optional short operator guidance for stale audit/gate waits,
+  such as checking the audit runner/dispatcher and requeueing a lane.
 - `gate_rerun_command`: a paste-safe command only when rerunning the gate is the
   useful next step.
 

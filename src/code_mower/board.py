@@ -697,6 +697,7 @@ def render_board_html(config: BoardConfig) -> str:
         <div>labels: ${{labels(pr.labels)}}</div>
         <div>checks: ${{checks(pr.checks)}}</div>
         <div>next: <b>${{esc(pr.next_action)}}</b></div>
+        ${{pr.next_detail ? `<div class="muted">${{esc(pr.next_detail)}}</div>` : ""}}
       </div>`).join("") : empty("No open pull requests."));
       put("alerts", alerts.length ? alerts.map(a => `<div class="row"><b class="warn">${{esc(a.kind)}}</b> ${{esc(a.message)}}</div>`).join("") : empty("No gate alerts."));
       put("runs", runs.length ? runs.slice(0, 8).map(run => `<div class="row"><div class="line"><a href="${{esc(href(run.url))}}">${{esc(run.workflow || "workflow")}}</a>${{pill(run.conclusion || run.status || "unknown")}}</div><div class="muted">${{esc(run.branch)}}${{run.updated_at ? ` updated ${{localTime(run.updated_at)}}` : ""}}</div></div>`).join("") : empty("No recent Code Mower workflow runs."));

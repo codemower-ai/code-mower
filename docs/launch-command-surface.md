@@ -23,7 +23,7 @@ session. Choose the install path first from
 | `code-mower work-order draft ...` | Create an implementation contract from a plan or prompt, plus a metadata-only `*.cloud-event.json` sidecar. | yes, local only | no |
 | `code-mower work-order attach-delivery ...` | Attach PR, reviewer-check, and merge identifiers to a work-order sidecar without source, diffs, transcripts, or issue bodies. | yes, local only | no |
 | `code-mower builder record --provider grok_bot --executor cursor_cloud_agent ...` | Record source-free builder provenance after an agent opens a branch or PR. | yes, local only | no |
-| `code-mower lanes status --repo OWNER/REPO` | Show active PR lanes, gate/check state, local board/process hints, and the next action. | no | GitHub optional |
+| `code-mower lanes status --repo OWNER/REPO` | Show active PR lanes, gate/check state, local board/process hints, stale audit requeue guidance, and the next action. | no | GitHub optional |
 | `code-mower lanes status --repo OWNER/REPO --show-local-paths` | Include local cwd paths in the status snapshot for local debugging. | no | GitHub optional |
 | `code-mower board serve --repo OWNER/REPO` | Serve redacted lane status plus owner queue and local verdict/spend timelines in a local read-only browser board. | no | GitHub optional |
 | `code-mower board serve --repo OWNER/REPO --record-events` | Serve the board and append throttled metadata-only local history snapshots while it is open. | yes, local only | GitHub optional |

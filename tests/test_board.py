@@ -102,6 +102,7 @@ class BoardTests(TestCase):
         self.assertIn("const localTime", html)
         self.assertIn("Intl.DateTimeFormat(undefined", html)
         self.assertIn('title="UTC ', html)
+        self.assertIn("next_detail", html)
 
     def test_render_board_html_escapes_script_terminators(self) -> None:
         html = board.render_board_html(board.BoardConfig(repo="owner/repo</script><b>bad</b>"))
