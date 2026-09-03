@@ -321,6 +321,7 @@ Now run the preflight:
 
 ```bash
 code-mower doctor --adoption --repo OWNER/REPO --json
+code-mower doctor --supervised-pilot --repo OWNER/REPO --json
 ```
 
 `doctor --adoption` is the recommended early-adopter preset for GitHub auth,
@@ -340,6 +341,13 @@ wrapper env gaps as setup tasks for the machine that will execute those lanes.
 When default adoption output shows local provider setup gaps on an observer
 host, doctor includes the same posture commands as next-step hints in text and
 JSON.
+`doctor --supervised-pilot` adds a compact v1.0 readiness rollup. Manual pilot
+mode separates blockers from warnings and promotion to-dos, while
+`--promoted-pilot` treats a missing required `code-mower/gate`, repository
+auto-merge, or merge-capable gate credential as a blocker before green audits
+may drive merge.
+On a self-hosted Mac audit host, add `--runner` to include runner launch and
+wrapper checks in the same proof.
 
 When setup is visible enough to start work, use one command to check live lane
 state:

@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from .groups import GROUP_LABELS, doctor_check_group_id
 from .models import STATUS_FAIL, STATUS_SKIP, STATUS_WARN, DoctorCheck
 from .models import DoctorReport
-from .models import is_owner_action_check
+from .models import is_owner_action_check, is_promotion_todo_check
 
 
 def doctor_output_group(check: DoctorCheck) -> str:
@@ -33,6 +33,9 @@ def _format_status_summary(report: DoctorReport) -> str:
     owner_actions = report.owner_actions
     if owner_actions:
         parts.append(f"{owner_actions} owner actions")
+    promotion_todos = report.promotion_todos
+    if promotion_todos:
+        parts.append(f"{promotion_todos} promotion todos")
     if report.warnings:
         parts.append(f"{report.warnings} warnings")
     skipped = sum(1 for check in report.checks if check.status == STATUS_SKIP)
@@ -55,7 +58,12 @@ def _format_run_plan(report: DoctorReport) -> str | None:
 
 def _format_check(check: DoctorCheck) -> list[str]:
     lane = f" [{check.lane}]" if check.lane else ""
-    status = "OWNER-ACTION" if is_owner_action_check(check) else check.status.upper()
+    if is_owner_action_check(check):
+        status = "OWNER-ACTION"
+    elif is_promotion_todo_check(check):
+        status = "PROMOTION-TODO"
+    else:
+        status = check.status.upper()
     lines = [f"- {status} {check.name}{lane}: {check.message}"]
     if check.remediation:
         lines.append(f"  remediation: {check.remediation}")
@@ -87,15 +95,19 @@ def render_doctor_text(report: DoctorReport) -> str:
             continue
         failed = sum(1 for check in checks if check.status == STATUS_FAIL)
         owner_actions = sum(1 for check in checks if is_owner_action_check(check))
+        promotion_todos = sum(1 for check in checks if is_promotion_todo_check(check))
         warnings = (
             sum(1 for check in checks if check.status == STATUS_WARN)
             - owner_actions
+            - promotion_todos
         )
         summary = []
         if failed:
             summary.append(f"{failed} failed")
         if owner_actions:
             summary.append(f"{owner_actions} owner actions")
+        if promotion_todos:
+            summary.append(f"{promotion_todos} promotion todos")
         if warnings:
             summary.append(f"{warnings} warnings")
         heading = GROUP_LABELS.get(group_id, group_id.title())

@@ -17,6 +17,7 @@ from .github_api import _github_api_json
 
 DEFAULT_HUMAN_TOKEN_SECRET = "DISPATCH_TOKEN"
 DEFAULT_HUMAN_TOKEN_EXPIRES_VAR = "DISPATCH_TOKEN_EXPIRES_AT"
+DEFAULT_GATE_AUTOMERGE_TOKEN_SECRET = "CODE_MOWER_GATE_" + "AUTOMERGE_TOKEN"
 EXPIRY_WARNING_DAYS = 14
 NON_EXPIRING_TOKEN_VALUE = "never"
 EXPIRY_PLACEHOLDER_VALUES = {"YYYY-MM-DD", "<YYYY-MM-DD>"}
@@ -47,6 +48,17 @@ def human_automation_token_config(config: Mapping[str, Any]) -> dict[str, str]:
             "dispatch_token_expires_var",
             DEFAULT_HUMAN_TOKEN_EXPIRES_VAR,
         ),
+    }
+
+
+def gate_automerge_token_config(config: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "secret": _owner_surface_value(
+            config,
+            "gate_automerge_token_env",
+            DEFAULT_GATE_AUTOMERGE_TOKEN_SECRET,
+        ),
+        "fallback_secret": human_automation_token_config(config)["secret"],
     }
 
 
@@ -282,8 +294,94 @@ def check_human_automation_token(
     )
 
 
+def check_gate_automerge_token(
+    *,
+    gh_path: str,
+    slug: str,
+    config: Mapping[str, Any],
+    http_timeout: int,
+    promoted: bool = False,
+) -> DoctorCheck:
+    token = gate_automerge_token_config(config)
+    secret_name = token["secret"]
+    fallback_secret = token["fallback_secret"]
+    detail = {
+        "repo": slug,
+        "secret": secret_name,
+        "fallback_secret": fallback_secret,
+        "setup_url": f"https://github.com/{slug}/settings/secrets/actions",
+    }
+
+    secret_payload, secret_detail = _github_api_json(
+        gh_path,
+        f"repos/{slug}/actions/secrets/{secret_name}",
+        http_timeout=http_timeout,
+    )
+    if secret_payload is not None:
+        return DoctorCheck(
+            name="github.gate_automerge_token",
+            status=STATUS_PASS,
+            message=f"{slug} has a dedicated {secret_name} secret",
+            detail={
+                **detail,
+                "credential_source": "dedicated_secret",
+                "created_at": str(secret_payload.get("created_at") or ""),
+                "updated_at": str(secret_payload.get("updated_at") or ""),
+                "capability_verified": False,
+                "verification_note": (
+                    "GitHub verifies merge capability when the green gate calls "
+                    "enablePullRequestAutoMerge."
+                ),
+            },
+        )
+
+    fallback_payload, fallback_detail = _github_api_json(
+        gh_path,
+        f"repos/{slug}/actions/secrets/{fallback_secret}",
+        http_timeout=http_timeout,
+    )
+    if fallback_payload is not None:
+        return DoctorCheck(
+            name="github.gate_automerge_token",
+            status=STATUS_PASS,
+            message=f"{slug} can use {fallback_secret} as the auto-merge fallback",
+            detail={
+                **detail,
+                "credential_source": "dispatch_token_fallback",
+                "dedicated_secret_check": secret_detail,
+                "fallback_created_at": str(fallback_payload.get("created_at") or ""),
+                "fallback_updated_at": str(fallback_payload.get("updated_at") or ""),
+                "capability_verified": False,
+                "recommendation": f"Prefer a dedicated {secret_name} secret for promoted pilots.",
+            },
+        )
+
+    status = STATUS_FAIL if promoted else STATUS_WARN
+    return DoctorCheck(
+        name="github.gate_automerge_token",
+        status=status,
+        message=f"{slug} has no merge-capable gate credential configured",
+        detail={
+            **detail,
+            "owner_action": promoted,
+            "owner_action_kind": "merge_credential_missing",
+            "promotion_todo": not promoted,
+            "promotion_todo_kind": "merge_credential_missing",
+            "dedicated_secret_check": secret_detail,
+            "fallback_secret_check": fallback_detail,
+        },
+        remediation=(
+            f"Before promoted supervised pilot mode, add a merge-capable "
+            f"machine-user or GitHub App token as {secret_name}, or confirm "
+            f"{fallback_secret} belongs to that trusted automation identity."
+        ),
+    )
+
+
 __all__ = (
+    "check_gate_automerge_token",
     "check_human_automation_token",
+    "gate_automerge_token_config",
     "human_automation_token_config",
     "human_automation_token_required",
 )

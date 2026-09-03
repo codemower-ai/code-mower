@@ -13,6 +13,7 @@ STATUS_WARN = "warn"
 STATUS_FAIL = "fail"
 STATUS_SKIP = "skip"
 OWNER_ACTION_DETAIL_KEY = "owner_action"
+PROMOTION_TODO_DETAIL_KEY = "promotion_todo"
 
 
 def is_owner_action_check(check: "DoctorCheck") -> bool:
@@ -22,6 +23,17 @@ def is_owner_action_check(check: "DoctorCheck") -> bool:
         check.status == STATUS_WARN
         and isinstance(check.detail, Mapping)
         and bool(check.detail.get(OWNER_ACTION_DETAIL_KEY))
+        and not bool(check.detail.get(PROMOTION_TODO_DETAIL_KEY))
+    )
+
+
+def is_promotion_todo_check(check: "DoctorCheck") -> bool:
+    """Return true when a warning is expected until merge gates are promoted."""
+
+    return (
+        check.status == STATUS_WARN
+        and isinstance(check.detail, Mapping)
+        and bool(check.detail.get(PROMOTION_TODO_DETAIL_KEY))
     )
 
 
@@ -43,6 +55,12 @@ class DoctorCheck:
                 owner_action_kind = self.detail.get("owner_action_kind")
                 if owner_action_kind:
                     data["owner_action_kind"] = str(owner_action_kind)
+        if is_promotion_todo_check(self):
+            data["promotion_todo"] = True
+            if isinstance(self.detail, Mapping):
+                promotion_kind = self.detail.get("promotion_todo_kind")
+                if promotion_kind:
+                    data["promotion_todo_kind"] = str(promotion_kind)
         if self.detail is None:
             data.pop("detail")
         if self.lane is None:
@@ -68,7 +86,9 @@ class DoctorReport:
         return sum(
             1
             for check in self.checks
-            if check.status == STATUS_WARN and not is_owner_action_check(check)
+            if check.status == STATUS_WARN
+            and not is_owner_action_check(check)
+            and not is_promotion_todo_check(check)
         )
 
     @property
@@ -76,10 +96,14 @@ class DoctorReport:
         return sum(1 for check in self.checks if is_owner_action_check(check))
 
     @property
+    def promotion_todos(self) -> int:
+        return sum(1 for check in self.checks if is_promotion_todo_check(check))
+
+    @property
     def status(self) -> str:
         if self.failures:
             return STATUS_FAIL
-        if self.warnings or self.owner_actions:
+        if self.warnings or self.owner_actions or self.promotion_todos:
             return STATUS_WARN
         return STATUS_PASS
 
@@ -119,10 +143,15 @@ class DoctorReport:
                 continue
             failures = sum(1 for check in group_checks if check.status == STATUS_FAIL)
             owner_actions = sum(1 for check in group_checks if is_owner_action_check(check))
+            promotion_todos = sum(
+                1 for check in group_checks if is_promotion_todo_check(check)
+            )
             warnings = sum(
                 1
                 for check in group_checks
-                if check.status == STATUS_WARN and not is_owner_action_check(check)
+                if check.status == STATUS_WARN
+                and not is_owner_action_check(check)
+                and not is_promotion_todo_check(check)
             )
             skipped = sum(1 for check in group_checks if check.status == STATUS_SKIP)
             summary[group_id] = {
@@ -131,6 +160,7 @@ class DoctorReport:
                 "failures": failures,
                 "warnings": warnings,
                 "owner_actions": owner_actions,
+                "promotion_todos": promotion_todos,
                 "skipped": skipped,
             }
         return summary
@@ -147,6 +177,7 @@ class DoctorReport:
                 "failures": self.failures,
                 "warnings": self.warnings,
                 "owner_actions": self.owner_actions,
+                "promotion_todos": self.promotion_todos,
             },
             "run_plan": list(self.run_plan),
             "groups": self.group_summary(),

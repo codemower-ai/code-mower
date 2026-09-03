@@ -134,10 +134,13 @@ Proof:
 
 ```bash
 code-mower doctor --adoption --repo "$REPO" --json
+code-mower doctor --supervised-pilot --repo "$REPO" --json
 ```
 
 The GitHub stage should report the human automation token posture instead of a
 missing `DISPATCH_TOKEN` or invalid `DISPATCH_TOKEN_EXPIRES_AT` warning.
+On a self-hosted Mac audit host, add `--runner` when you want the same proof to
+include runner launch and wrapper checks.
 
 ## 3. Enable The Gate And Auto-Merge (Promotion Step)
 
@@ -221,13 +224,15 @@ Proof:
 gh api "repos/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
   --jq '.checks[]? | select(.context == "code-mower/gate")'
 code-mower doctor --adoption --repo "$REPO" --json
+code-mower doctor --promoted-pilot --repo "$REPO" --json
 ```
 
 For `code-mower/gate`, the API response must show `"app_id": null`. If it shows
 `"app_id": 15368`, the required check is bound to the GitHub Actions check-run
 instead of the Code Mower commit status. The doctor should pass
-`github.branch_protection` for the gate status and `github.repo.auto_merge` for
-repository auto-merge.
+`github.branch_protection` for the gate status, `github.repo.auto_merge` for
+repository auto-merge, and `supervised_pilot.readiness` for promoted-pilot
+readiness.
 
 ## 4. Configure The Reference Build Loop
 

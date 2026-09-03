@@ -580,7 +580,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertIn("code-mower/gate", check.message)
         self.assertEqual(check.detail["required_status_context"], "code-mower/gate")
 
-    def test_branch_protection_marks_missing_gate_as_owner_action_during_adoption(
+    def test_branch_protection_marks_missing_gate_as_promotion_todo_during_adoption(
         self,
     ) -> None:
         with mock.patch(
@@ -600,9 +600,9 @@ class GitHubDoctorCheckTests(unittest.TestCase):
             )
 
         self.assertEqual(check.status, "warn")
-        self.assertTrue(check.detail["owner_action"])
+        self.assertTrue(check.detail["promotion_todo"])
         self.assertEqual(
-            check.detail["owner_action_kind"],
+            check.detail["promotion_todo_kind"],
             "branch_protection_gate_requirement",
         )
 
@@ -692,7 +692,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
             [{"context": "code-mower/gate", "app_id": 15368}],
         )
 
-    def test_branch_protection_wrong_gate_binding_is_owner_action_during_adoption(
+    def test_branch_protection_wrong_gate_binding_is_promotion_todo_during_adoption(
         self,
     ) -> None:
         with mock.patch(
@@ -717,9 +717,9 @@ class GitHubDoctorCheckTests(unittest.TestCase):
             )
 
         self.assertEqual(check.status, "warn")
-        self.assertTrue(check.detail["owner_action"])
+        self.assertTrue(check.detail["promotion_todo"])
         self.assertEqual(
-            check.detail["owner_action_kind"],
+            check.detail["promotion_todo_kind"],
             "branch_protection_gate_binding",
         )
 
@@ -757,7 +757,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertIn("allow_auto_merge=true", check.remediation)
         self.assertIn("docs/lane-promotion-policy.md", check.remediation)
 
-    def test_repo_auto_merge_is_owner_action_during_adoption(self) -> None:
+    def test_repo_auto_merge_is_promotion_todo_during_adoption(self) -> None:
         check = check_repo_auto_merge(
             slug="owner/repo",
             repo_payload={"allow_auto_merge": False},
@@ -765,8 +765,31 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         )
 
         self.assertEqual(check.status, "warn")
+        self.assertTrue(check.detail["promotion_todo"])
+        self.assertEqual(check.detail["promotion_todo_kind"], "repo_auto_merge")
+        self.assertFalse(check.detail["owner_action"])
+
+    def test_repo_auto_merge_is_owner_action_for_observer_without_adoption(self) -> None:
+        check = check_repo_auto_merge(
+            slug="owner/repo",
+            repo_payload={"allow_auto_merge": False},
+            adoption_posture="hosted-builders",
+        )
+
+        self.assertEqual(check.status, "warn")
         self.assertTrue(check.detail["owner_action"])
-        self.assertEqual(check.detail["owner_action_kind"], "repo_auto_merge")
+        self.assertFalse(check.detail["promotion_todo"])
+
+    def test_repo_auto_merge_visibility_is_owner_action_without_adoption(self) -> None:
+        check = check_repo_auto_merge(
+            slug="owner/repo",
+            repo_payload={},
+            adoption_posture="orchestrator-only",
+        )
+
+        self.assertEqual(check.status, "warn")
+        self.assertTrue(check.detail["owner_action"])
+        self.assertFalse(check.detail["promotion_todo"])
 
 
 if __name__ == "__main__":

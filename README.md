@@ -49,6 +49,12 @@ first-run adoption gaps. `--preflight` remains the compatibility preset for
 older scripts; `--adoption` adds explicit repo targeting and setup guidance.
 Use `--hosted-builders` or `--orchestrator-only` when the current machine is
 observing/coordinating lanes and will not run local Codex or Claude wrappers.
+For the v1.0 supervised pilot posture, run
+`code-mower doctor --supervised-pilot --repo OWNER/REPO`; use
+`--promoted-pilot` only when `code-mower/gate`, repository auto-merge, and a
+merge-capable gate credential are ready to let green audits drive merge.
+On a self-hosted Mac audit host, add `--runner` to include runner launch and
+wrapper checks in the same proof.
 
 Example, shortened:
 

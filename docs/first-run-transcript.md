@@ -46,7 +46,7 @@ Default posture:
 ## Run Doctor
 
 ```bash
-code-mower doctor --preflight
+code-mower doctor --supervised-pilot --repo OWNER/REPO
 ```
 
 Shortened example:
@@ -58,18 +58,18 @@ PASS  runtime.python              Python 3.12 satisfies Code Mower requirements
 PASS  runtime.github_auth         GitHub CLI auth probe succeeded
 PASS  runtime.local_cli codex     codex found
 PASS  runtime.local_cli claude    claude auth smoke probe succeeded
-FAIL  github.human_automation_token owner/repo is missing the DISPATCH_TOKEN human automation token secret
-FAIL  github.branch_protection    owner/repo@main requires code-mower/gate from GitHub Actions instead of Any source
-FAIL  github.repo.auto_merge      owner/repo does not allow auto-merge
+OWNER-ACTION github.human_automation_token OWNER/REPO is missing the DISPATCH_TOKEN human automation token secret
+PROMOTION-TODO github.branch_protection owner/repo@main requires code-mower/gate from GitHub Actions instead of Any source
+PROMOTION-TODO github.repo.auto_merge owner/repo does not allow auto-merge
 WARN  github.actions_cost         private repo has high-frequency metadata workflows
 PASS  cloud.token                 optional Code Mower Cloud token file is configured
 
-Summary: fail, 24 checks, 3 failures, 4 warnings
-Next: create DISPATCH_TOKEN, rebind code-mower/gate to Any source, enable repository auto-merge, then rerun doctor.
+Summary: warn, 24 checks, 1 owner action, 2 promotion todos, 4 warnings
+Next: create DISPATCH_TOKEN, keep manual merges during pilot, then finish the promotion todos before enabling unattended merge.
 ```
 
-The failures are useful. They show whether the repo is safe to pilot before
-you add labels, GitHub workflows, provider CLIs, or cloud upload.
+The warnings are useful. They show what is safe for a manual pilot and what
+must be fixed before promoted mode can let green audit evidence drive merge.
 
 ## Generate The Starter Value Report
 

@@ -21,7 +21,7 @@ from .github_actions import (
 from .github_actions_permissions import check_actions_permissions
 from .github_branch import check_branch_protection
 from .github_config import configured_repositories, selected_saas_or_hosted_lanes
-from .github_human_token import check_human_automation_token
+from .github_human_token import check_gate_automerge_token, check_human_automation_token
 from .github_provider import check_private_repo_provider_surface
 from .github_repo import (
     check_repo_auto_merge,
@@ -38,6 +38,7 @@ def check_github_setup(
     actions_cost_sample: int = ACTIONS_COST_SAMPLE_DEFAULT,
     adoption: bool = False,
     adoption_posture: str = "reviewer-gate",
+    pilot_mode: str = "manual",
 ) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     gh_path = shutil.which("gh")
@@ -156,6 +157,15 @@ def check_github_setup(
                     repo_payload=metadata.payload,
                     adoption=adoption,
                     adoption_posture=adoption_posture,
+                )
+            )
+            checks.append(
+                check_gate_automerge_token(
+                    gh_path=gh_path,
+                    slug=slug,
+                    config=config,
+                    http_timeout=http_timeout,
+                    promoted=pilot_mode == "promoted",
                 )
             )
 
