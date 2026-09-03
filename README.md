@@ -114,7 +114,11 @@ checks Board inputs and local history without exposing local paths by default.
 `code-mower board reset --repo OWNER/REPO --yes` clears only the local Board
 history file. The Board also shows an owner queue, and it
 summarizes reviewer verdict history and spend/latency from local board events
-plus `.code-mower/reviewer-spend.json` when those files exist. Local agents can
+plus `.code-mower/reviewer-spend.json` when those files exist. When
+`code-mower.yml` is present, the Board also embeds a supervised-pilot controller
+summary so the browser view shows the current decision, queue counts, reviewer
+evidence, selected PR or issue, and next action from the same metadata-only
+policy engine as `code-mower controller run`. Local agents can
 publish opt-in status cards by writing metadata-only JSON files to
 `.code-mower/board/agents/*.json`; the Board redacts local paths by default and
 does not upload those cards.

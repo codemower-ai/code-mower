@@ -23,6 +23,8 @@ from urllib.parse import urlparse
 
 from . import __version__ as CODE_MOWER_VERSION
 from . import board_store
+from . import config as code_mower_config
+from . import controller
 from . import lane_status
 from . import reviewer_spend
 
@@ -199,6 +201,11 @@ def status_payload(
     }
     payload["agent_adapters"] = agent_adapters_payload(config)
     payload["owner_queue"] = owner_queue_payload(payload)
+    payload["supervised_pilot"] = supervised_pilot_payload(
+        config,
+        payload,
+        gh_json_runner=gh_json_runner,
+    )
     return payload
 
 
@@ -325,6 +332,183 @@ def owner_queue_payload(status: dict[str, Any]) -> dict[str, Any]:
         "count": len(entries),
         "entries": entries,
         "message": "" if entries else "no owner queue items",
+    }
+
+
+def _supervised_disabled(message: str, *, cycle_state: str = "unavailable") -> dict[str, Any]:
+    return {
+        "schema": controller.SUPERVISED_PILOT_SCHEMA,
+        "enabled": False,
+        "cycle_state": cycle_state,
+        "controller_mode": "dry_run",
+        "decision": {},
+        "queue": {"active_lanes": {}, "metrics": {}, "ready_issue_errors": []},
+        "active_issues": [],
+        "active_prs": [],
+        "message": message,
+    }
+
+
+def _supervised_cycle_state(decision_state: object) -> str:
+    state = str(decision_state or "")
+    if state == "no_work":
+        return "idle"
+    if state == "dispatch_builder":
+        return "dispatch"
+    if state == "ready_to_merge":
+        return "ready"
+    if state == "owner_action":
+        return "owner_action"
+    if state in {"blocked_audit", "failing_check", "not_mergeable"}:
+        return "blocked"
+    if state in {"stale_evidence", "draft_pr", "waiting_for_evidence"}:
+        return "waiting"
+    return "unknown"
+
+
+def _safe_bool(value: object) -> bool:
+    return bool(value)
+
+
+def _safe_reviewer_outcomes(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    outcomes = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        outcomes.append(
+            {
+                "lane_id": _safe_text(item.get("lane_id"), limit=60),
+                "config_lane_id": _safe_text(item.get("config_lane_id"), limit=80),
+                "verdict": _safe_text(item.get("verdict"), limit=20),
+                "promoted": _safe_bool(item.get("promoted")),
+            }
+        )
+    return outcomes
+
+
+def _supervised_decision_payload(decision: Mapping[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "decision_state": _safe_text(decision.get("decision_state"), limit=80),
+        "next_action": _safe_text(decision.get("next_action"), limit=160),
+        "next_detail": _safe_text(decision.get("next_detail"), limit=220),
+        "stop_condition": _safe_text(decision.get("stop_condition"), limit=80),
+        "owner_action_kind": _safe_text(decision.get("owner_action_kind"), limit=80),
+        "lane_id": _safe_text(decision.get("lane_id"), limit=60),
+        "gate_status": _safe_text(decision.get("gate_status"), limit=40),
+        "branch": _safe_text(decision.get("branch"), limit=160),
+        "author": _safe_text(decision.get("author"), limit=80),
+        "head_sha_prefix": _head_prefix(decision.get("head_sha_prefix")),
+        "merge_method": _safe_text(decision.get("merge_method"), limit=40),
+        "author_lane_excluded": _safe_bool(decision.get("author_lane_excluded")),
+        "promoted_reviewers_passed": _safe_bool(decision.get("promoted_reviewers_passed")),
+        "would_mutate": _safe_bool(decision.get("would_mutate")),
+        "reviewer_outcomes": _safe_reviewer_outcomes(decision.get("reviewer_outcomes")),
+    }
+    if pr_number := _int(decision.get("pr_number")):
+        payload["pr_number"] = pr_number
+    if issue_number := _int(decision.get("issue_number")):
+        payload["issue_number"] = issue_number
+    if pr_url := _http_url(decision.get("pr_url")):
+        payload["pr_url"] = pr_url
+    if issue_url := _http_url(decision.get("issue_url")):
+        payload["issue_url"] = issue_url
+    return {key: value for key, value in payload.items() if value not in (None, "", [])}
+
+
+def _supervised_pr_payload(pr: Mapping[str, Any]) -> dict[str, Any]:
+    labels = pr.get("labels") if isinstance(pr.get("labels"), Mapping) else {}
+    payload: dict[str, Any] = {
+        "number": _int(pr.get("number")) or 0,
+        "title": _safe_text(pr.get("title"), limit=180),
+        "url": _http_url(pr.get("url")),
+        "branch": _safe_text(pr.get("branch"), limit=160),
+        "author": _safe_text(pr.get("author"), limit=80),
+        "updated_at": _safe_text(pr.get("updated_at"), limit=80),
+        "head_sha_prefix": _head_prefix(pr.get("head_sha")),
+        "merge_state": _safe_text(pr.get("merge_state"), limit=40),
+        "is_draft": _safe_bool(pr.get("is_draft")),
+        "stale": _safe_bool(pr.get("stale")),
+        "next_action": _safe_text(pr.get("next_action"), limit=160),
+        "next_detail": _safe_text(pr.get("next_detail"), limit=220),
+        "labels": labels,
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "", [])}
+
+
+def _supervised_issue_payload(issue: Mapping[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "number": _int(issue.get("number")) or 0,
+        "url": _http_url(issue.get("url")),
+        "author": _safe_text(issue.get("author"), limit=80),
+        "updated_at": _safe_text(issue.get("updated_at"), limit=80),
+        "builder_lane": _safe_text(issue.get("builder_lane"), limit=60),
+        "assigned": _safe_bool(issue.get("assigned")),
+        "dispatched": _safe_bool(issue.get("dispatched")),
+        "owner_action": _safe_bool(issue.get("owner_action")),
+        "labels": [label for label in issue.get("labels") or [] if isinstance(label, str)][:20],
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "", [])}
+
+
+def supervised_pilot_payload(
+    config: BoardConfig,
+    status: dict[str, Any],
+    *,
+    gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
+) -> dict[str, Any]:
+    config_path = Path(config.repo_path) / "code-mower.yml"
+    if not config_path.is_file():
+        return _supervised_disabled("code-mower.yml not found; supervised pilot state is unavailable")
+    try:
+        raw_config = code_mower_config.load_config(config_path)
+        issues = code_mower_config.validate_config(raw_config)
+    except (OSError, code_mower_config.ConfigError, ValueError):
+        return _supervised_disabled("could not read Code Mower config; run code-mower config validate")
+    if issues:
+        return _supervised_disabled("Code Mower config is invalid; run code-mower config validate")
+
+    remote = status.get("remote") if isinstance(status.get("remote"), Mapping) else {}
+    if remote.get("available"):
+        ready_issues = controller._collect_ready_issues(  # noqa: SLF001 - shared package policy surface for Board.
+            repo=config.repo,
+            config=raw_config,
+            gh_json_runner=gh_json_runner,
+            issue_limit=min(config.pr_limit, 50),
+        )
+    else:
+        ready_issues = {"available": False, "errors": ["remote unavailable"], "issues": []}
+
+    report = controller.evaluate_controller_report(
+        status_report=status,
+        ready_issues=ready_issues,
+        config=raw_config,
+        options=controller.ControllerOptions(repo=config.repo, mode="dry_run", issue_limit=min(config.pr_limit, 50)),
+    )
+    decision = report.get("decision") if isinstance(report.get("decision"), Mapping) else {}
+    queue = report.get("queue") if isinstance(report.get("queue"), Mapping) else {}
+    raw_prs = remote.get("pull_requests") if isinstance(remote.get("pull_requests"), list) else []
+    issue_payload = ready_issues.get("issues") if isinstance(ready_issues.get("issues"), list) else []
+    return {
+        "schema": controller.SUPERVISED_PILOT_SCHEMA,
+        "enabled": True,
+        "cycle_state": _supervised_cycle_state(decision.get("decision_state")),
+        "controller_mode": report.get("mode") or "dry_run",
+        "generated_at": report.get("generated_at") or "",
+        "decision": _supervised_decision_payload(decision),
+        "queue": queue,
+        "active_issues": [
+            _supervised_issue_payload(issue)
+            for issue in issue_payload
+            if isinstance(issue, Mapping)
+        ],
+        "active_prs": [
+            _supervised_pr_payload(pr)
+            for pr in raw_prs
+            if isinstance(pr, Mapping)
+        ],
+        "message": "",
     }
 
 
@@ -652,6 +836,7 @@ def render_board_html(config: BoardConfig) -> str:
   </header>
   <main>
     <div class="summary" id="summary"></div>
+    <section><h2>Supervised Pilot</h2><div class="rows" id="supervised"></div></section>
     <section><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
     <section><h2>Agent Cards</h2><div class="rows" id="agents"></div></section>
     <section><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
@@ -702,6 +887,12 @@ def render_board_html(config: BoardConfig) -> str:
       const alerts = data.remote?.gate_health?.alerts || [];
       const ownerQueue = data.owner_queue?.entries || [];
       const agentCards = data.agent_adapters?.agents || [];
+      const supervised = data.supervised_pilot || {{}};
+      const supervisedDecision = supervised.decision || {{}};
+      const supervisedQueue = supervised.queue || {{}};
+      const supervisedMetrics = supervisedQueue.metrics || {{}};
+      const supervisedPRs = supervised.active_prs || [];
+      const supervisedIssues = supervised.active_issues || [];
       const timelines = data.timelines || {{}};
       const verdicts = timelines.verdicts?.entries || [];
       const spend = timelines.spend || {{}};
@@ -711,10 +902,22 @@ def render_board_html(config: BoardConfig) -> str:
         data.next_detail ? `<div class="metric"><span class="muted">Detail</span><b>${{esc(data.next_detail)}}</b></div>` : "",
         `<div class="metric"><span class="muted">GitHub</span><b class="${{data.remote?.available ? "ok" : "warn"}}">${{data.remote?.available ? "available" : "unavailable"}}</b></div>`,
         `<div class="metric"><span class="muted">Open PRs</span><b>${{prs.length}}</b></div>`,
+        `<div class="metric"><span class="muted">Pilot</span><b class="${{stateClass(supervised.cycle_state || "")}}">${{esc(supervised.cycle_state || "off")}}</b></div>`,
         `<div class="metric"><span class="muted">Owner queue</span><b class="${{ownerQueue.length ? "warn" : "ok"}}">${{ownerQueue.length}}</b></div>`,
         `<div class="metric"><span class="muted">Agent cards</span><b>${{agentCards.length}}</b></div>`,
         `<div class="metric"><span class="muted">Gate alerts</span><b class="${{alerts.length ? "warn" : "ok"}}">${{alerts.length}}</b></div>`
       ].join(""));
+      const reviewerOutcomes = supervisedDecision.reviewer_outcomes || [];
+      const supervisedRows = supervised.enabled ? [
+        `<div class="row"><div class="line"><b class="${{stateClass(supervised.cycle_state)}}">${{esc(supervised.cycle_state || "unknown")}}</b>${{pill(supervised.controller_mode || "dry_run")}}${{supervisedDecision.decision_state ? pill(supervisedDecision.decision_state) : ""}}</div><div>next: <b>${{esc(supervisedDecision.next_action || "inspect")}}</b></div>${{supervisedDecision.next_detail ? `<div class="muted">${{esc(supervisedDecision.next_detail)}}</div>` : ""}}</div>`,
+        `<div class="row"><div class="line">${{pill(`open PRs ${{supervisedMetrics.open_pr_count ?? supervisedPRs.length}}`)}}${{pill(`ready issues ${{supervisedMetrics.ready_issue_count ?? supervisedIssues.length}}`)}}${{pill(`active lanes ${{supervisedMetrics.active_lane_count ?? 0}}`)}}${{pill(`stale ${{supervisedMetrics.stale_evidence_count ?? 0}}`)}}</div></div>`,
+        supervisedDecision.pr_number ? `<div class="row"><div class="line"><a href="${{esc(href(supervisedDecision.pr_url))}}">Selected PR #${{esc(supervisedDecision.pr_number)}}</a>${{supervisedDecision.lane_id ? pill(supervisedDecision.lane_id) : ""}}${{supervisedDecision.gate_status ? pill(`gate ${{supervisedDecision.gate_status}}`) : ""}}${{supervisedDecision.author_lane_excluded ? pill("author excluded") : ""}}</div><div class="muted">${{esc(supervisedDecision.branch || "")}}${{supervisedDecision.head_sha_prefix ? ` @ ${{esc(supervisedDecision.head_sha_prefix)}}` : ""}}</div></div>` : "",
+        supervisedDecision.issue_number ? `<div class="row"><div class="line"><a href="${{esc(href(supervisedDecision.issue_url))}}">Selected issue #${{esc(supervisedDecision.issue_number)}}</a>${{supervisedDecision.lane_id ? pill(supervisedDecision.lane_id) : ""}}</div></div>` : "",
+        reviewerOutcomes.length ? `<div class="row"><b>Reviewer Evidence</b><div class="muted">${{reviewerOutcomes.map(outcome => `${{esc(outcome.lane_id || outcome.config_lane_id)}}=${{esc(outcome.verdict)}}`).join(", ")}}</div></div>` : "",
+        supervisedIssues.length ? `<div class="row"><b>Ready Issues</b><div class="muted">${{supervisedIssues.slice(0, 5).map(issue => `#${{esc(issue.number)}} ${{esc(issue.builder_lane || "")}}`).join(", ")}}</div></div>` : "",
+        supervisedPRs.length ? `<div class="row"><b>Active PRs</b><div class="muted">${{supervisedPRs.slice(0, 5).map(pr => `#${{esc(pr.number)}} ${{esc(pr.merge_state || "")}}${{pr.stale ? " stale" : ""}}${{pr.is_draft ? " draft" : ""}}`).join(", ")}}</div></div>` : ""
+      ].filter(Boolean).join("") : empty(supervised.message || "Supervised pilot state unavailable.");
+      put("supervised", supervisedRows || empty(supervised.message || "No supervised pilot activity."));
       put("owner", ownerQueue.length ? ownerQueue.map(item => `<div class="row"><div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.kind)}}</a>${{pill(item.next_action)}}${{pill(item.head_sha_prefix)}}</div><div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}}${{item.updated_at ? ` updated ${{localTime(item.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.owner_queue?.message || "No owner queue items."));
       put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{localTime(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
       put("prs", prs.length ? prs.map(pr => `<div class="row">
