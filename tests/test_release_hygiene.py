@@ -329,6 +329,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "local-llm",
                 "migration",
                 "merge-plan",
+                "muse-cli",
                 "next-steps",
                 "package",
                 "plan",
@@ -743,6 +744,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "hermes_cli",
                 "coderabbit_cli",
                 "grok_build",
+                "muse_cli",
             ),
         )
         package_targets = {target for _, target, _ in code_mower_package.PACKAGE_FILES}

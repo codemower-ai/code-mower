@@ -362,6 +362,7 @@ PACKAGE_FILES = (
     ("tools/hermes_cli_audit_pr.py", "src/code_mower/hermes_cli_audit_pr.py", "reviewer"),
     ("tools/coderabbit_cli_audit_pr.py", "src/code_mower/coderabbit_cli_audit_pr.py", "reviewer"),
     ("src/code_mower/grok_build_audit_pr.py", "src/code_mower/grok_build_audit_pr.py", "reviewer"),
+    ("src/code_mower/muse_cli_audit_pr.py", "src/code_mower/muse_cli_audit_pr.py", "reviewer"),
     ("tools/lane_configs/__init__.py", "src/code_mower/lane_configs/__init__.py", "lane-config"),
     ("tools/lane_configs/claude.py", "src/code_mower/lane_configs/claude.py", "lane-config"),
     ("tools/lane_configs/codex.py", "src/code_mower/lane_configs/codex.py", "lane-config"),
@@ -372,6 +373,7 @@ PACKAGE_FILES = (
     ("tools/lane_configs/antigravity_cli.py", "src/code_mower/lane_configs/antigravity_cli.py", "lane-config"),
     ("tools/lane_configs/hermes_cli.py", "src/code_mower/lane_configs/hermes_cli.py", "lane-config"),
     ("src/code_mower/lane_configs/grok_build.py", "src/code_mower/lane_configs/grok_build.py", "lane-config"),
+    ("src/code_mower/lane_configs/muse_cli.py", "src/code_mower/lane_configs/muse_cli.py", "lane-config"),
     ("tools/lane_prompts/base-audit.md", "src/code_mower/templates/lane_prompts/base-audit.md", "prompt"),
     ("tools/lane_prompts/calibration-policy.md", "src/code_mower/templates/lane_prompts/calibration-policy.md", "prompt"),
     (

@@ -418,6 +418,45 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             ),
         },
     ),
+    "muse_cli": ProviderLane(
+        lane_id="muse_cli",
+        lane_type="audit",
+        driver="local_cli",
+        provider="muse",
+        labels=LaneLabels(
+            needs="needs-muse-audit",
+            done="muse-audit-done",
+            blocked="muse-audit-blocked",
+        ),
+        token_env=("GITHUB_TOKEN",),
+        result_sources=("trailer_comment",),
+        informational=True,
+        enabled_by_default=False,
+        trigger_policy="manual",
+        spend_policy="included",
+        provider_config={
+            "command": "muse",
+            "command_env": "MUSE_CLI_COMMAND",
+            "model_env": "CODE_MOWER_MUSE_MODEL",
+            "model_env_any": ("MUSE_MODEL", "META_MUSE_MODEL"),
+            "prompt_transport": "jsonl_prompt_file",
+            "prompt_lenses": ("base-audit",),
+            "required_env_any": ("META_API_KEY", "META_API_KEY_FILE"),
+            "required_env_truthy_any": ("MUSE_CLI_USE_AMBIENT_HOME",),
+            "doctor_probe_args": ("--version",),
+            "auth": (
+                "run `muse login`, set META_API_KEY, or point "
+                "META_API_KEY_FILE at a local key file. Real audit runs that "
+                "inherit local login state require MUSE_CLI_USE_AMBIENT_HOME=1 "
+                "in trusted environments"
+            ),
+            "status": (
+                "experimental Muse Code lane; not merge authority until "
+                "calibrated for blocker catch rate, false positives, cost, "
+                "and latency"
+            ),
+        },
+    ),
     "coderabbit_cli": ProviderLane(
         lane_id="coderabbit_cli",
         lane_type="audit",

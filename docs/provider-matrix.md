@@ -18,7 +18,7 @@ Everything else is opt-in until calibrated on the user's codebase.
 
 | Class | Examples | Private repo support | Source exposure | v1.0 posture |
 |---|---|---|---|---|
-| Local CLI | Codex, Claude Code, Antigravity CLI, Grok Build, Hermes CLI, Aider, CodeRabbit CLI | Yes, if local auth can read the repo | Usually sent to the provider behind the CLI unless provider is local-only | Codex/Claude default; others informational |
+| Local CLI | Codex, Claude Code, Antigravity CLI, Muse Code, Grok Build, Hermes CLI, Aider, CodeRabbit CLI | Yes, if local auth can read the repo | Usually sent to the provider behind the CLI unless provider is local-only | Codex/Claude default; others informational |
 | API/local model | Qwen, Gemma, DeepSeek, Grok-compatible endpoints | Yes | Sent to configured endpoint; local endpoints can keep code local | Informational calibration |
 | SaaS reviewer | Gitar, CodeRabbit hosted, Cursor BugBot, Greptile, Qodo | Yes, if GitHub App and plan allow | Provider sees PR diff/source context | Manual or informational until calibrated |
 | Hosted async builder | Devin, Jules, Cursor Cloud Agents, Grok Bot-orchestrated runs | Yes, if app/API is authorized | Provider may clone or modify repo | Opt-in, paid, explicit trust boundary; record as `builder_run` metadata first |
@@ -51,6 +51,7 @@ the live catalog is untouched.
 | `aider` | Aider CLI | local runner | local/provider account | local checkout plus model auth | informational |
 | `gemini_cli` | Gemini CLI compatibility | local runner | provider account | local checkout plus API/auth | legacy informational |
 | `antigravity_cli` | Antigravity CLI | local runner | provider account | local checkout plus local auth | informational |
+| `muse_cli` | Muse Code | local runner | provider account | local checkout plus local auth or Meta API key | informational |
 | `grok_build` | Grok Build | local runner | provider account | local checkout plus local auth or xAI API key | informational |
 | `hermes_cli` | Hermes Agent | local runner | provider account | local checkout plus local auth | informational |
 | `coderabbit_cli` | CodeRabbit CLI | local runner | provider account | local checkout plus CLI auth | informational |
@@ -111,6 +112,7 @@ one lane from accidentally inheriting another lane's model label.
 | Claude audit | `CLAUDE_AUDIT_MODEL` | none | Mirrors the structured audit wrapper model. |
 | Gemini CLI | `CODE_MOWER_GEMINI_MODEL` | `GEMINI_MODEL`, `GOOGLE_GENAI_MODEL` | Legacy compatibility lane; prefer Antigravity for new Google CLI work. |
 | Antigravity CLI | `CODE_MOWER_ANTIGRAVITY_MODEL` | `ANTIGRAVITY_MODEL` | Deliberately does not inherit Gemini model env vars. |
+| Muse CLI | `CODE_MOWER_MUSE_MODEL` | `MUSE_MODEL`, `META_MUSE_MODEL` | Use the Muse model id you want benchmarked. |
 | Grok Build | `CODE_MOWER_GROK_MODEL` | `GROK_MODEL`, `XAI_MODEL` | Use the Grok Build or xAI model id you want benchmarked, for example `grok-4.6-build`. |
 | Hermes CLI | `CODE_MOWER_HERMES_MODEL` | `HERMES_INFERENCE_MODEL`, `HERMES_MODEL` | Use the deployed inference model id. |
 | Aider | `CODE_MOWER_AIDER_MODEL` | `AIDER_MODEL`, `AIDER_CHAT_MODEL` | Informational until calibrated. |
@@ -128,6 +130,37 @@ You can generate the same setup plan from the installed package:
 code-mower providers provenance-env
 code-mower providers provenance-env --provider antigravity_cli --shell
 ```
+
+## Muse CLI Policy
+
+Muse Code is an experimental Meta local CLI lane. It is useful for early
+calibration as a builder/reviewer candidate, but it is not merge-gating in
+v1.0.
+
+Recommended setup:
+
+- Install the CLI with Meta's installer and authenticate with `muse login`, or
+  set `META_API_KEY`.
+- If you prefer a local key file, set `META_API_KEY_FILE` to a file containing
+  either a raw key or a shell-style `META_API_KEY=...` assignment.
+- Set `CODE_MOWER_MUSE_MODEL` to the Muse model label you want benchmarked.
+- For real audit runs that use local login state, set
+  `MUSE_CLI_USE_AMBIENT_HOME=1` only in trusted local environments. Without an
+  API key, Code Mower intentionally requires this opt-in before inheriting
+  local Muse session state.
+- Code Mower labels: `needs-muse-audit`, `muse-audit-done`,
+  `muse-audit-blocked`.
+- Code Mower command: `code-mower muse-cli --repo OWNER/REPO --pr NUMBER`.
+- Real audits use Muse's `exec --json --prompt-file` transport with write,
+  shell, and web tools disabled. Code Mower extracts the final response text
+  and safe JSONL event metadata, but does not retain raw JSONL events because
+  they can contain prompts and local paths.
+- Muse audits default to `--max-model-steps 12`; lower values can fail before
+  a final verdict on medium-sized PRs.
+
+Keep Muse informational/manual until calibration shows it catches known
+blockers, stays quiet on known-clean controls, and reports acceptable latency
+and cost.
 
 ## Grok Build Policy
 

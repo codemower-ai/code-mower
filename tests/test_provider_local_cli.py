@@ -10,6 +10,7 @@ from code_mower.provider_registry import REFERENCE_PROVIDERS
 from code_mower import cli as code_mower_cli
 from code_mower import gemini_cli_audit_pr
 from code_mower import grok_build_audit_pr
+from code_mower import muse_cli_audit_pr
 from code_mower.providers import build_provider_lane_tool_provenance
 from code_mower.providers.provenance import (
     build_code_mower_tool_provenance,
@@ -413,7 +414,7 @@ def test_antigravity_head_changed_error_names_lane(monkeypatch, tmp_path: Path) 
                     "findings": [],
                 }
             ),
-            stderr="",
+            stderr="muse: workspace root: /workspace/private-repo\n",
         )
 
     monkeypatch.setattr(gemini_cli_audit_pr.subprocess, "run", fake_run)
@@ -507,6 +508,218 @@ def test_grok_build_runner_prefers_code_mower_model_env(monkeypatch) -> None:
     monkeypatch.setenv("CODE_MOWER_GROK_MODEL", "grok-4.6-build")
 
     assert grok_build_audit_pr.resolve_grok_model() == "grok-4.6-build"
+
+
+def test_muse_cli_provenance_prefers_code_mower_model_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    executable = _write_executable(
+        tmp_path / "muse",
+        "#!/bin/sh\nprintf 'Muse Code 1.0.2 (1.0.2-R2040.1)\\n'\n",
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setenv("MUSE_MODEL", "generic-muse")
+    monkeypatch.setenv("META_MUSE_MODEL", "meta-muse")
+    monkeypatch.setenv("CODE_MOWER_MUSE_MODEL", "muse-spark-1.3")
+
+    tool, detail = build_provider_lane_tool_provenance(
+        "muse_cli",
+        REFERENCE_PROVIDERS["muse_cli"],
+        source="unit-test",
+    )
+
+    assert tool["tool_name"] == "muse"
+    assert tool["tool_version"] == "Muse Code 1.0.2 (1.0.2-R2040.1)"
+    assert tool["provider"] == "muse"
+    assert tool["model"] == "muse-spark-1.3"
+    assert tool["model_source"] == "env"
+    assert detail["command_found"] is True
+    assert detail["version_known"] is True
+
+
+def test_muse_jsonl_response_keeps_only_output_and_safe_metadata() -> None:
+    verdict_text = json.dumps(
+        {
+            "verdict": "pass",
+            "summary": "No findings.",
+            "findings": [],
+        }
+    )
+    response_text, metadata = muse_cli_audit_pr.muse_jsonl_response(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "payload_type": "turn.input.user",
+                        "payload": {"text": "secret prompt body"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "payload_type": "session.workspace_branch.observed",
+                        "payload": {"text": "/workspace/private-repo"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "payload_type": "run.terminal.completed",
+                        "payload": {"text": "terminal copy with secret prompt body"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "payload_type": "run.output.delta",
+                        "payload": {"text": verdict_text},
+                    }
+                ),
+            ]
+        )
+    )
+
+    assert response_text == verdict_text
+    assert metadata == {
+        "muse_jsonl_event_count": 4,
+        "muse_jsonl_payload_types": [
+            "run.output.delta",
+            "run.terminal.completed",
+            "session.workspace_branch.observed",
+            "turn.input.user",
+        ],
+    }
+    assert "secret prompt body" not in response_text
+    assert "/workspace/private-repo" not in str(metadata)
+    parsed = gemini_cli_audit_pr.parse_response_json(response_text)
+    assert parsed is not None
+    assert parsed["verdict"] == "pass"
+
+
+def test_muse_jsonl_response_accepts_strict_terminal_verdict_fallback() -> None:
+    verdict_text = json.dumps(
+        {
+            "verdict": "pass",
+            "summary": "Terminal fallback.",
+            "findings": [],
+        }
+    )
+    response_text, metadata = muse_cli_audit_pr.muse_jsonl_response(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "payload_type": "turn.input.user",
+                        "payload": {"text": "secret prompt body"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "payload_type": "run.terminal.completed",
+                        "payload": {"text": "secret prompt body then no strict verdict"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "payload_type": "run.terminal.completed",
+                        "payload": {"text": verdict_text},
+                    }
+                ),
+            ]
+        )
+    )
+
+    assert response_text == json.dumps(json.loads(verdict_text), sort_keys=True)
+    assert metadata["muse_jsonl_payload_types"] == [
+        "run.terminal.completed",
+        "turn.input.user",
+    ]
+    assert "secret prompt body" not in response_text
+
+
+def test_muse_cli_runner_uses_jsonl_prompt_file_and_disabled_tools(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    monkeypatch.setattr(
+        muse_cli_audit_pr.gemini_cli_audit_pr,
+        "fetch_pull_request",
+        lambda repo, pr_number, *, token: {"head": {"sha": "abc123"}},
+    )
+    monkeypatch.setattr(
+        muse_cli_audit_pr.gemini_cli_audit_pr,
+        "fetch_local_checkout_diff",
+        lambda repo_path, *, base_ref: ("abc123", "diff --git a/a b/a\n"),
+    )
+    monkeypatch.setattr(
+        muse_cli_audit_pr.gemini_cli_audit_pr,
+        "_local_head_sha",
+        lambda repo_path: "abc123",
+    )
+    monkeypatch.setattr(
+        muse_cli_audit_pr.gemini_cli_audit_pr,
+        "build_prompt",
+        lambda **kwargs: ("review prompt", {"prompt_bytes": 13}),
+    )
+
+    def fake_run(args, **kwargs):
+        prompt_path = Path(args[args.index("--prompt-file") + 1])
+        assert prompt_path.is_file()
+        assert prompt_path.read_text(encoding="utf-8") == "review prompt"
+        calls.append((list(args), dict(kwargs)))
+        verdict_text = json.dumps(
+            {
+                "verdict": "pass",
+                "summary": "No findings.",
+                "findings": [],
+            }
+        )
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps(
+                {
+                    "payload_type": "run.output.delta",
+                    "payload": {"text": verdict_text},
+                }
+            ),
+            stderr="muse: workspace root: /workspace/private-repo\n",
+        )
+
+    monkeypatch.setattr(muse_cli_audit_pr.subprocess, "run", fake_run)
+
+    payload = muse_cli_audit_pr.run_muse_cli_audit(
+        repo="owner/repo",
+        pr_number=7,
+        github_token="token",
+        command="muse",
+        repo_path=tmp_path,
+        muse_api_key="meta-key",
+        model="muse-spark-1.3",
+        reasoning_effort="low",
+        max_model_steps=2,
+    )
+
+    args, kwargs = calls[0]
+    assert args[:4] == ["muse", "exec", "--json", "--prompt-file"]
+    assert "--api-key-stdin" in args
+    assert "--disable-shell" in args
+    assert "--disable-write" in args
+    assert "--disable-web-tools" in args
+    assert "--no-session-log" in args
+    assert args[args.index("--max-model-steps") + 1] == "2"
+    assert args[args.index("--model") + 1] == "muse-spark-1.3"
+    assert args[args.index("--reasoning-effort") + 1] == "low"
+    assert kwargs["input"] == "meta-key"
+    assert kwargs["check"] is False
+    assert payload["verdict"]["verdict"] == "pass"
+    assert payload["diagnostics"]["cli_transport"] == "jsonl_prompt_file"
+    assert payload["diagnostics"]["raw_jsonl_retained"] is False
+    assert payload["diagnostics"]["raw_stdout_retained"] is False
+    assert payload["diagnostics"]["raw_stderr_retained"] is False
+    assert payload["diagnostics"]["stderr_line_count"] == 1
+    assert "stderr" not in payload
+    assert "/workspace/private-repo" not in str(payload)
 
 
 def test_grok_build_runner_uses_configurable_audit_turn_budget(
