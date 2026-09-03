@@ -222,6 +222,8 @@ class LaneStatusTests(TestCase):
 
         self.assertFalse(report["remote"]["available"])
         self.assertEqual(report["local_boards"]["boards"][0]["port"], 5330)
+        self.assertEqual(report["local_boards"]["boards"][0]["repo"], "owner/repo")
+        self.assertEqual(report["local_boards"]["boards"][0]["url"], "http://127.0.0.1:5330/")
         self.assertEqual(report["local_boards"]["boards"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
         self.assertTrue(report["local_boards"]["boards"][0]["cwd_redacted"])
         self.assertEqual(report["local_processes"]["processes"][0]["provider"], "codex")
@@ -267,8 +269,41 @@ class LaneStatusTests(TestCase):
         self.assertEqual(report["local_boards"]["boards"][0]["port"], 5332)
         self.assertEqual(report["local_boards"]["boards"][0]["process"], "python3")
         self.assertEqual(report["local_boards"]["boards"][0]["confidence"], "high")
+        self.assertEqual(report["local_boards"]["boards"][0]["repo"], "owner/repo")
+        self.assertEqual(report["local_boards"]["boards"][0]["url"], "http://127.0.0.1:5332/")
         self.assertEqual(report["local_boards"]["boards"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
         self.assertEqual(report["next_action"], "remote unavailable; inspect local lanes")
+
+    def test_collect_status_detects_multiple_local_boards_with_repo_hints(self) -> None:
+        def gh_json(_args: list[str]) -> object:
+            raise lane_status.LaneStatusUnavailable("gh pr failed")
+
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:4] == ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]:
+                return _completed("p123\ncPython\nn127.0.0.1:5332\np124\ncPython\nn127.0.0.1:5333\n")
+            if args == ["ps", "-p", "123", "-o", "command="]:
+                return _completed("python -m code_mower.cli board serve --repo owner/one\n")
+            if args == ["ps", "-p", "124", "-o", "command="]:
+                return _completed("code-mower board serve --repo=owner/two\n")
+            if args == ["lsof", "-a", "-p", "123", "-d", "cwd", "-Fn"]:
+                return _completed("p123\nn/tmp/one\n")
+            if args == ["lsof", "-a", "-p", "124", "-d", "cwd", "-Fn"]:
+                return _completed("p124\nn/tmp/two\n")
+            if args == ["ps", "-axo", "pid=,command="]:
+                return _completed("")
+            return _completed("", returncode=1)
+
+        report = lane_status.collect_status(
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=command_runner,
+            now=NOW,
+        )
+
+        boards = report["local_boards"]["boards"]
+        self.assertEqual([board["repo"] for board in boards], ["owner/one", "owner/two"])
+        self.assertEqual([board["url"] for board in boards], ["http://127.0.0.1:5332/", "http://127.0.0.1:5333/"])
+        self.assertNotIn("/tmp/one", json.dumps(report))
 
     def test_collect_status_never_reports_no_active_lanes_when_github_unavailable(
         self,

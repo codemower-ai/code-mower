@@ -72,6 +72,8 @@ and local diagnostics:
   `code-mower board serve --repo OWNER/REPO` so the browser uses the newly
   installed package. The response also embeds `productivity` as
   `code_mower.boardProductivity.v1`.
+- GET `/api/identity` returns `code_mower.boardIdentity.v1`, a lightweight
+  repo/version/restart payload used by `code-mower board list`.
 - GET `/api/events` returns `code_mower.boardEventStore.v1` from local
   `.code-mower/board/events.jsonl` history.
 
@@ -142,6 +144,8 @@ local-only write mode for filling board history while the browser view is open.
 When the default port is already in use, `board serve` falls forward to a nearby
 free loopback port and prints the selected URL. An explicit `--port` stays
 strict so scripts and bookmarks fail clearly instead of silently moving. The
+conflict message points operators at `code-mower board list` and
+`code-mower board stop --port PORT --yes` before choosing another port. The
 printed URL is local to that machine or VM unless the operator creates a tunnel.
 
 ## `code_mower.supervisedPilot.v1`
@@ -341,6 +345,21 @@ used for source, diffs, transcripts, raw command output, auth output, browser
 history, or credentials are not part of the adapter contract.
 
 ## Board Admin Commands
+
+`code-mower board list` emits `code_mower.boardInventory.v1`, a local inventory
+of visible Code Mower Board listeners. It reports loopback URL, PID, process
+name, parsed repo hint, serving version, installed package version,
+`restart_recommended`, health, and next action. Local cwd paths are redacted by
+default; `--show-local-paths` is for local debugging only. If the host blocks
+listener inspection, the command reports an unavailable inventory instead of
+calling GitHub or reading repository content.
+
+`code-mower board stop --port PORT --yes` and `code-mower board stop --pid PID
+--yes` emit `code_mower.boardStop.v1`. Stop only sends a local termination
+signal after the inventory identifies the target as a high-confidence Code
+Mower Board listener. Medium-confidence default-port listener hints are never
+stopped automatically. Without `--yes`, the command exits with
+`confirmation_required` and does not signal any process.
 
 `code-mower board doctor --repo OWNER/REPO` emits
 `code_mower.boardDoctor.v1`, a local diagnostic summary for Board inputs,

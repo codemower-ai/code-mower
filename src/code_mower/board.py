@@ -6,9 +6,13 @@ from __future__ import annotations
 import argparse
 import errno
 import json
+import os
 import re
+import signal
 import socket
 import sys
+import urllib.error
+import urllib.request
 import webbrowser
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -36,6 +40,9 @@ BOARD_TIMELINES_SCHEMA = "code_mower.boardTimelines.v1"
 BOARD_OWNER_QUEUE_SCHEMA = "code_mower.boardOwnerQueue.v1"
 BOARD_AGENT_ADAPTERS_SCHEMA = "code_mower.boardAgentAdapters.v1"
 BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"
+BOARD_IDENTITY_SCHEMA = "code_mower.boardIdentity.v1"
+BOARD_INVENTORY_SCHEMA = "code_mower.boardInventory.v1"
+BOARD_STOP_SCHEMA = "code_mower.boardStop.v1"
 DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH = Path(".code-mower") / "board" / "agents"
 SECRET_VALUE_RE = re.compile(
     r"(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})"
@@ -141,12 +148,27 @@ def board_version_payload() -> dict[str, Any]:
     }
 
 
+def board_identity_payload(config: BoardConfig) -> dict[str, Any]:
+    return {
+        "schema": BOARD_IDENTITY_SCHEMA,
+        "repo": config.repo,
+        "board": {
+            "schema": "code_mower.board.v1",
+            "version": board_version_payload(),
+            "local_paths": "shown" if config.show_local_paths else "redacted",
+            "recording": {"enabled": config.record_events},
+        },
+    }
+
+
 def _explicit_port_conflict_message(host: str, port: int) -> str:
     suggestions = list(range(port + 1, min(65535, port + 3) + 1))
     suggestion_text = f" such as {', '.join(str(candidate) for candidate in suggestions)}" if suggestions else ""
     return (
         f"error: Code Mower Board port {port} is already in use on {host}. "
-        f"Pass --port with a free loopback port{suggestion_text}."
+        f"Run code-mower board list to inspect local Boards, stop a stale one with "
+        f"code-mower board stop --port {port} --yes, or pass --port with a free "
+        f"loopback port{suggestion_text}."
     )
 
 
@@ -1002,6 +1024,194 @@ def render_board_html(config: BoardConfig) -> str:
 """
 
 
+def _probe_board_status(board: Mapping[str, Any], *, timeout: float = 0.75) -> dict[str, Any]:
+    url = str(board.get("url") or "")
+    if not url:
+        return {"available": False, "message": "Board URL unavailable"}
+    try:
+        with urllib.request.urlopen(f"{url.rstrip('/')}/api/identity", timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
+        return {"available": False, "message": "Board identity probe failed"}
+    return payload if isinstance(payload, dict) else {"available": False, "message": "Board status was not an object"}
+
+
+def _inventory_next_action(boards: list[dict[str, Any]], available: bool) -> tuple[str, str]:
+    if not available:
+        return "fix local process inspection", "install lsof or ss, or grant this shell permission to inspect local listeners"
+    if not boards:
+        return "start Board", "run code-mower board serve --repo OWNER/REPO"
+    stale = [board for board in boards if board.get("restart_recommended")]
+    if stale:
+        ports = ", ".join(str(board.get("port")) for board in stale)
+        return "restart stale Board", f"stop stale Board port(s) {ports}, then restart with code-mower board serve --repo OWNER/REPO"
+    unresponsive = [board for board in boards if board.get("health") == "unresponsive"]
+    if unresponsive:
+        ports = ", ".join(str(board.get("port")) for board in unresponsive)
+        return "inspect unresponsive Board", f"Board listener port(s) {ports} did not answer /api/identity"
+    return "use listed localhost URL", "open the Board URL for the repo you want"
+
+
+def _redact_inventory_paths(payload: dict[str, Any]) -> None:
+    for key in ("boards", "matches", "stopped"):
+        for board in payload.get(key) or []:
+            if board.get("cwd"):
+                board["cwd"] = lane_status.LOCAL_PATH_REDACTION
+                board["cwd_redacted"] = True
+
+
+def board_inventory_payload(
+    *,
+    show_local_paths: bool = False,
+    command_runner: lane_status.CommandRunner = lane_status.run_command,
+    status_probe: Any = _probe_board_status,
+) -> dict[str, Any]:
+    local = lane_status.collect_local_boards(command_runner)
+    boards: list[dict[str, Any]] = []
+    for discovered in local.get("boards") or []:
+        if not isinstance(discovered, Mapping):
+            continue
+        item = dict(discovered)
+        probed = status_probe(item) if status_probe else {}
+        if isinstance(probed, Mapping) and probed.get("schema") in {BOARD_IDENTITY_SCHEMA, lane_status.LANE_STATUS_SCHEMA}:
+            board_meta = probed.get("board") if isinstance(probed.get("board"), Mapping) else {}
+            version = board_meta.get("version") if isinstance(board_meta.get("version"), Mapping) else {}
+            item["health"] = "ok"
+            item["repo"] = str(probed.get("repo") or item.get("repo") or "")
+            item["serving_version"] = str(version.get("serving_version") or "")
+            item["installed_version"] = str(version.get("installed_version") or "")
+            item["restart_recommended"] = bool(version.get("restart_recommended"))
+        elif isinstance(probed, Mapping) and not probed.get("available", True):
+            item["health"] = "unresponsive"
+            item["status_message"] = str(probed.get("message") or "Board status unavailable")
+            item.setdefault("restart_recommended", False)
+        else:
+            item["health"] = "unknown"
+            item.setdefault("restart_recommended", False)
+        boards.append(item)
+    next_action, next_detail = _inventory_next_action(boards, bool(local.get("available")))
+    payload = {
+        "schema": BOARD_INVENTORY_SCHEMA,
+        "available": bool(local.get("available")),
+        "message": str(local.get("message") or ""),
+        "boards": boards,
+        "next_action": next_action,
+        "next_detail": next_detail,
+    }
+    if not show_local_paths:
+        _redact_inventory_paths(payload)
+    return payload
+
+
+def render_inventory_text(payload: Mapping[str, Any]) -> str:
+    lines = ["Code Mower local Boards"]
+    if not payload.get("available"):
+        lines.append(f"Inventory: unavailable ({payload.get('message') or 'local process inspection failed'})")
+    boards = payload.get("boards") if isinstance(payload.get("boards"), list) else []
+    if not boards and payload.get("available"):
+        lines.append("Boards: none visible")
+    for board_item in boards:
+        repo = board_item.get("repo") or "unknown repo"
+        version = board_item.get("serving_version") or "unknown version"
+        health = board_item.get("health") or "unknown"
+        restart = " restart recommended" if board_item.get("restart_recommended") else ""
+        cwd = f" cwd={board_item.get('cwd')}" if board_item.get("cwd") else ""
+        lines.append(
+            f"- {board_item.get('url') or 'localhost'} pid={board_item.get('pid')} "
+            f"repo={repo} version={version} health={health}{restart}{cwd}"
+        )
+    lines.extend(["", f"Next: {payload.get('next_action') or 'inspect'}"])
+    if payload.get("next_detail"):
+        lines.append(f"Detail: {payload['next_detail']}")
+    return "\n".join(lines) + "\n"
+
+
+def stop_board(
+    *,
+    port: int | None = None,
+    pid: int | None = None,
+    yes: bool = False,
+    show_local_paths: bool = False,
+    command_runner: lane_status.CommandRunner = lane_status.run_command,
+    killer: Any = os.kill,
+) -> dict[str, Any]:
+    if (port is None) == (pid is None):
+        return {
+            "schema": BOARD_STOP_SCHEMA,
+            "status": "invalid_selector",
+            "message": "pass exactly one of --port or --pid",
+            "stopped": [],
+            "errors": [],
+        }
+    inventory = board_inventory_payload(
+        show_local_paths=True,
+        command_runner=command_runner,
+        status_probe=None,
+    )
+    boards = inventory.get("boards") if isinstance(inventory.get("boards"), list) else []
+    matches = [
+        board_item
+        for board_item in boards
+        if board_item.get("confidence") == "high"
+        and (
+            (port is not None and int(board_item.get("port") or -1) == port)
+            or (pid is not None and int(board_item.get("pid") or -1) == pid)
+        )
+    ]
+    payload: dict[str, Any] = {
+        "schema": BOARD_STOP_SCHEMA,
+        "selector": {"port": port, "pid": pid},
+        "matches": matches,
+        "stopped": [],
+        "errors": [],
+    }
+    if not matches:
+        payload["status"] = "not_found"
+        payload["message"] = "no matching high-confidence Code Mower Board listener found"
+    elif not yes:
+        payload["status"] = "confirmation_required"
+        payload["message"] = "pass --yes to stop matching Code Mower Board listener(s)"
+    else:
+        seen: set[int] = set()
+        for board_item in matches:
+            target_pid = int(board_item.get("pid") or 0)
+            if not target_pid or target_pid in seen:
+                continue
+            seen.add(target_pid)
+            try:
+                killer(target_pid, signal.SIGTERM)
+                payload["stopped"].append(
+                    {
+                        "pid": target_pid,
+                        "port": board_item.get("port"),
+                        "repo": board_item.get("repo", ""),
+                        "cwd": board_item.get("cwd", ""),
+                    }
+                )
+            except ProcessLookupError:
+                payload["errors"].append({"pid": target_pid, "message": "process no longer exists"})
+            except PermissionError:
+                payload["errors"].append({"pid": target_pid, "message": "permission denied"})
+            except OSError as exc:
+                payload["errors"].append({"pid": target_pid, "message": str(exc)})
+        payload["status"] = "stopped" if payload["stopped"] and not payload["errors"] else "partial" if payload["stopped"] else "failed"
+        payload["message"] = "stopped matching Code Mower Board listener(s)" if payload["stopped"] else "could not stop matching Code Mower Board listener(s)"
+    if not show_local_paths:
+        _redact_inventory_paths(payload)
+    return payload
+
+
+def render_stop_text(payload: Mapping[str, Any]) -> str:
+    lines = [f"Code Mower Board stop: {payload.get('status') or 'unknown'}", str(payload.get("message") or "")]
+    stopped = payload.get("stopped") if isinstance(payload.get("stopped"), list) else []
+    for item in stopped:
+        lines.append(f"- stopped pid={item.get('pid')} port={item.get('port')} repo={item.get('repo') or 'unknown repo'}")
+    errors = payload.get("errors") if isinstance(payload.get("errors"), list) else []
+    for item in errors:
+        lines.append(f"- error pid={item.get('pid')}: {item.get('message')}")
+    return "\n".join(line for line in lines if line) + "\n"
+
+
 def make_handler(
     config: BoardConfig,
     *,
@@ -1037,6 +1247,10 @@ def make_handler(
             path = urlparse(self.path).path
             if path in {"", "/", "/index.html"}:
                 self._send(HTTPStatus.OK, render_board_html(config).encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if path == "/api/identity":
+                body = json.dumps(board_identity_payload(config), indent=2, sort_keys=True).encode("utf-8")
+                self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
                 return
             if path == "/api/status":
                 payload = status_payload(
@@ -1375,6 +1589,16 @@ def _record_store_display(args: argparse.Namespace) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower board")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    list_parser = subparsers.add_parser("list")
+    list_parser.add_argument("--show-local-paths", action="store_true", help="show local cwd paths for debugging")
+    list_parser.add_argument("--json", action="store_true")
+    stop_parser = subparsers.add_parser("stop")
+    stop_selector = stop_parser.add_mutually_exclusive_group(required=True)
+    stop_selector.add_argument("--port", type=int, help="loopback port serving the Board")
+    stop_selector.add_argument("--pid", type=int, help="process id serving the Board")
+    stop_parser.add_argument("--yes", action="store_true", help="stop the matching Board listener")
+    stop_parser.add_argument("--show-local-paths", action="store_true", help="show local cwd paths for debugging")
+    stop_parser.add_argument("--json", action="store_true")
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--repo", required=True)
     serve_parser.add_argument("--host", default=DEFAULT_HOST, help="loopback host to bind; default: 127.0.0.1")
@@ -1440,6 +1664,21 @@ def main(argv: list[str] | None = None) -> int:
     reset_parser.add_argument("--yes", action="store_true", help="delete the local board event store")
     reset_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(list(argv or ()))
+    if args.command == "list":
+        payload = board_inventory_payload(show_local_paths=args.show_local_paths)
+        output = json.dumps(payload, indent=2, sort_keys=True) + "\n" if args.json else render_inventory_text(payload)
+        print(output, end="")
+        return 0 if payload.get("available") else 1
+    if args.command == "stop":
+        payload = stop_board(
+            port=args.port,
+            pid=args.pid,
+            yes=args.yes,
+            show_local_paths=args.show_local_paths,
+        )
+        output = json.dumps(payload, indent=2, sort_keys=True) + "\n" if args.json else render_stop_text(payload)
+        print(output, end="")
+        return 0 if payload.get("status") == "stopped" else 2 if payload.get("status") in {"invalid_selector", "confirmation_required"} else 1
     if args.command == "serve":
         return serve(
             BoardConfig(

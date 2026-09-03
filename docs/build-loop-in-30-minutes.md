@@ -35,7 +35,9 @@ comment. It shows open Code Mower PR lanes, audit/gate labels, major checks,
 recent Code Mower workflows, local board/process hints when present, and the
 next operator action. Local cwd paths are redacted by default; use
 `--show-local-paths` only for local debugging. `board serve` opens the same
-state as a local read-only browser view. `productivity report` reads local
+state as a local read-only browser view. If several local Boards are running,
+use `code-mower board list` to pick the repo/version you want or
+`code-mower board stop --port PORT --yes` to stop a stale listener. `productivity report` reads local
 Board history, reviewer-spend rows, and optional aggregate
 `productivity_summary` event files so the same loop can summarize throughput,
 reviewer catches, fix rounds, owner actions, cost/tokens, and merge/cycle

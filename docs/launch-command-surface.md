@@ -30,6 +30,8 @@ session. Choose the install path first from
 | `code-mower board serve --repo OWNER/REPO` | Serve redacted lane status plus owner queue and local verdict/spend timelines in a local read-only browser board. | no | GitHub optional |
 | `code-mower board serve --repo OWNER/REPO --record-events` | Serve the board and append throttled metadata-only local history snapshots while it is open. | yes, local only | GitHub optional |
 | `code-mower board serve --repo OWNER/REPO --agent-adapters-path PATH` | Read opt-in local agent cards from a custom metadata-only adapter directory. | no | no |
+| `code-mower board list` | List local Board listeners with repo/version, restart hints, ports, and redacted cwd paths by default. | no | no |
+| `code-mower board stop --port PORT --yes` | Stop a local Board listener that the inventory identified as Code Mower. | local process signal | no |
 | `code-mower board record --repo OWNER/REPO` | Append one redacted status snapshot to `.code-mower/board/events.jsonl` for local board history. | yes, local only | GitHub optional |
 | `code-mower board events` | Print recent local board-history events without calling GitHub. | no | no |
 | `code-mower board doctor --repo OWNER/REPO` | Diagnose Board inputs, local history, gate alerts, owner queue, and optional agent cards with redacted local paths by default. | no | GitHub optional |

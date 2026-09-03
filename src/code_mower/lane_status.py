@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -335,6 +336,41 @@ def _endpoint_port(value: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _endpoint_host(value: str) -> str:
+    value = value.strip()
+    if value.startswith("["):
+        match = re.match(r"\[([^\]]+)\]:\d+$", value)
+        return _text(match.group(1)) if match else ""
+    if ":" not in value:
+        return ""
+    return _text(value.rsplit(":", 1)[0])
+
+
+def _url_host(host: str) -> str:
+    if host in {"", "*", "0.0.0.0", "::"}:
+        return "127.0.0.1"
+    return host
+
+
+def _local_board_url(host: str, port: int) -> str:
+    host = _url_host(host)
+    display_host = f"[{host}]" if ":" in host else host
+    return f"http://{display_host}:{port}/"
+
+
+def _board_repo_from_command(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+    for index, part in enumerate(parts):
+        if part == "--repo" and index + 1 < len(parts):
+            return _text(parts[index + 1])
+        if part.startswith("--repo="):
+            return _text(part.partition("=")[2])
+    return ""
+
+
 def _listeners(text: str) -> list[dict[str, Any]]:
     current: dict[str, Any] = {}
     found = []
@@ -347,7 +383,16 @@ def _listeners(text: str) -> list[dict[str, Any]]:
         elif key == "c":
             current["process"] = value
         elif key == "n" and current.get("pid") and _port(value) is not None:
-            found.append({"pid": int(current["pid"]), "process": _text(current.get("process")), "port": _port(value)})
+            port = _port(value)
+            assert port is not None
+            found.append(
+                {
+                    "pid": int(current["pid"]),
+                    "process": _text(current.get("process")),
+                    "host": _endpoint_host(value),
+                    "port": port,
+                }
+            )
     return found
 
 
@@ -372,6 +417,7 @@ def _ss_listeners(text: str) -> list[dict[str, Any]]:
             {
                 "pid": int(process_match.group(2)),
                 "process": _text(process_match.group(1)),
+                "host": _endpoint_host(parts[local_index]),
                 "port": port,
             }
         )
@@ -420,7 +466,17 @@ def collect_local_boards(command_runner: CommandRunner = _run_command) -> dict[s
         runtime_like = process_name in LOCAL_BOARD_PROCESS_NAMES or process_name.startswith("python")
         if board_like or (default_port and runtime_like):
             confidence = "high" if board_like else "medium"
-            boards.append({**listener, "cwd": cwd, "confidence": confidence})
+            host = _text(listener.get("host"))
+            port = int(listener["port"])
+            boards.append(
+                {
+                    **listener,
+                    "cwd": cwd,
+                    "confidence": confidence,
+                    "repo": _board_repo_from_command(command),
+                    "url": _local_board_url(host, port),
+                }
+            )
     return {"available": True, "boards": boards, "message": ""}
 
 
