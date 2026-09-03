@@ -6,7 +6,10 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
-No unreleased changes yet.
+- `doctor --adoption` can now verify packaged-starter review-hygiene workflow
+  paths against the current repository checkout. Missing workflows remain a
+  warning in starter mode, while real repository configs still fail when a
+  required clear-stale workflow is absent (#588).
 
 ## v0.9.2-beta.1
 

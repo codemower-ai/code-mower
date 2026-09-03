@@ -60,6 +60,17 @@ status-code fields such as `api_error_status`, `status_code`, or `http_status`.
 Doctor only reports sanitized auth status codes (`401` or `403`), never raw
 provider-supplied status text.
 
+## `provider.review_hygiene` Mentions Clear-Stale Workflows
+
+Merge-authority reviewer lanes should have clear-stale workflows so old PASS or
+BLOCKED labels are removed after a PR head changes. During first setup,
+`doctor --adoption` may use the packaged starter config before a repository has
+a committed `code-mower.yml`; in that starter mode missing clear-stale
+workflows are warnings. If the workflows already exist in `.github/workflows/`,
+doctor verifies them from the current checkout. With a real repository
+`code-mower.yml`, missing configured clear-stale workflows are failures because
+the gate would otherwise be able to trust stale review evidence.
+
 ## Python Is Too Old
 
 Use the checked-in developer wrapper instead of bare `python3`:
