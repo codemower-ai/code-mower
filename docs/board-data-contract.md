@@ -48,6 +48,19 @@ All board schemas are metadata-only. They must not contain source code, raw diff
 transcripts, issue body text, raw stdout/stderr, auth output, browser history,
 local secret values, or secrets.
 
+## Local HTTP Endpoints
+
+The loopback Board server exposes read-only JSON endpoints for the browser UI
+and local diagnostics:
+
+- GET `/api/status` returns `code_mower.board.v1`. Its `board.version` block
+  includes `serving_version`, `installed_version`, and `restart_recommended`.
+  When `restart_recommended` is true, stop and restart
+  `code-mower board serve --repo OWNER/REPO` so the browser uses the newly
+  installed package.
+- GET `/api/events` returns `code_mower.boardEventStore.v1` from local
+  `.code-mower/board/events.jsonl` history.
+
 ## `code_mower.laneStatus.v1`
 
 Top-level fields:

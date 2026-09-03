@@ -535,7 +535,8 @@ The short bootstrap prompt is:
 ```text
 You are my orchestrator for adopting Code Mower on this repository. Pick the
 latest Code Mower release tag, read docs/orchestrator-prompt-pack.md plus
-docs/try-in-10-minutes.md from that tag, and follow those docs rather than
+docs/install.md, docs/try-in-10-minutes.md, and
+docs/upgrade-existing-repo.md from that tag, and follow those docs rather than
 improvising. Start with the reviewer-gate pilot, stop for owner-only token or
 GitHub settings, preserve the metadata-only privacy boundary, and report the
 next action after each step.

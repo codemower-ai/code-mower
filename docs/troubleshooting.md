@@ -60,6 +60,28 @@ status-code fields such as `api_error_status`, `status_code`, or `http_status`.
 Doctor only reports sanitized auth status codes (`401` or `403`), never raw
 provider-supplied status text.
 
+## Board Shows An Older Version After Upgrade
+
+`code-mower board serve --repo OWNER/REPO` is a long-running local process. If
+you upgrade Code Mower while the Board is open, the browser can keep talking to
+the older process until you restart it. The Board header shows the serving
+version, the installed version, and whether a restart is recommended.
+
+For a scriptable check, query the local status endpoint on the printed Board
+port:
+
+```bash
+curl -fsS http://127.0.0.1:PORT/api/status | python3 -m json.tool
+```
+
+In the JSON output, inspect `board.version.serving_version`,
+`board.version.installed_version`, and `board.version.restart_recommended`.
+When restart is recommended, stop the old Board process and start it again:
+
+```bash
+code-mower board serve --repo OWNER/REPO
+```
+
 ## `provider.review_hygiene` Mentions Clear-Stale Workflows
 
 Merge-authority reviewer lanes should have clear-stale workflows so old PASS or

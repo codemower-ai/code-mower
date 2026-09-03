@@ -34,16 +34,21 @@ supports promotion. Devin is an explicitly opt-in hosted builder or reviewer
 signal, never merge authority by default.
 
 First pick the latest Code Mower release tag and read these docs from that tag:
-docs/try-in-10-minutes.md, docs/build-loop-in-30-minutes.md,
-docs/build-loop.md, docs/quickstart.md, docs/provider-matrix.md, and
+docs/install.md, docs/try-in-10-minutes.md,
+docs/build-loop-in-30-minutes.md, docs/build-loop.md, docs/quickstart.md,
+docs/provider-matrix.md, docs/upgrade-existing-repo.md, and
 docs/lane-promotion-policy.md. Follow those docs rather than improvising.
 
 Work on a setup branch. Start with the reviewer-gate pilot: install the package
 for the chosen tag, verify code-mower --version, run init --easy as a dry run,
-then apply generated output only after showing me the plan. Run
-doctor --adoption --repo OWNER/REPO and treat missing code-mower/gate branch
-protection plus allow_auto_merge as promotion todos during the pilot, not pilot
-failures.
+then apply generated output only after showing me the plan. If this is a
+hosted-agent or orchestration-only machine, run
+doctor --adoption --orchestrator-only --repo OWNER/REPO first; if this machine
+coordinates hosted builders but does not run local Codex/Claude wrappers, run
+doctor --adoption --hosted-builders --repo OWNER/REPO. Use the unqualified
+doctor --adoption --repo OWNER/REPO only on a machine expected to run local
+reviewer wrappers. Treat missing code-mower/gate branch protection plus
+allow_auto_merge as promotion todos during the pilot, not pilot failures.
 
 Stop with a numbered owner click-list for GitHub settings, app installs,
 runner setup, or tokens. Name each token, required scope, destination, and
