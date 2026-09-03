@@ -241,6 +241,52 @@ class InitBuildLoopTests(unittest.TestCase):
                 runner_text,
             )
 
+    def test_build_loop_pr_dispatch_token_workflows_use_pull_request_target_without_checkout(
+        self,
+    ) -> None:
+        plan = _builders_plan()
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "generated"
+            code_mower_init.apply_init_plan(plan, output_dir)
+
+            for rel_path, expected_types, expected_job in (
+                (
+                    ".github/workflows/code-mower-agent-pr-labeler.yml",
+                    ["opened", "reopened", "synchronize"],
+                    "label",
+                ),
+                (
+                    ".github/workflows/code-mower-fix-round-dispatch.yml",
+                    ["labeled"],
+                    "dispatch",
+                ),
+            ):
+                workflow_path = output_dir / rel_path
+                self.assertTrue(workflow_path.is_file(), rel_path)
+                workflow_text = workflow_path.read_text(encoding="utf-8")
+                workflow = yaml.safe_load(workflow_text)
+
+                on_config = _workflow_on(workflow)
+                self.assertIn("pull_request_target", on_config)
+                self.assertNotIn("pull_request", on_config)
+                self.assertEqual(
+                    on_config["pull_request_target"]["types"],
+                    expected_types,
+                )
+                self.assertEqual(
+                    workflow["permissions"],
+                    {"pull-requests": "write", "issues": "write"},
+                )
+                job = workflow["jobs"][expected_job]
+                self.assertEqual(
+                    job["if"],
+                    "github.event.pull_request.head.repo.full_name == github.repository",
+                )
+                self.assertIn("secrets.DISPATCH_TOKEN", workflow_text)
+                self.assertNotIn("actions/checkout", workflow_text)
+                for step in job["steps"]:
+                    self.assertNotIn("checkout", step.get("uses", ""))
+
     def test_mac_lane_runner_rejects_forced_targets_without_single_lane(self) -> None:
         plan = _builders_plan()
         with tempfile.TemporaryDirectory() as tmp:

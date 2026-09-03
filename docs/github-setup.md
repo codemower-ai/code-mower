@@ -653,7 +653,9 @@ synchronize. When `builder_identity.fix_round_mentions` is configured,
 generated fix-round dispatch comments once per blocked head and audit lane.
 Both generated workflows use `owner_surface.dispatch_token_env`, which must name
 a human-owned secret so label events and agent mentions are not authored by the
-built-in workflow token. Record the same token's expiry date in
+built-in workflow token. Both workflows trigger on `pull_request_target`
+without checking out PR code, so privileged runs execute only trusted
+default-branch definitions. Record the same token's expiry date in
 `owner_surface.dispatch_token_expires_var` so `doctor --github` can report the
 rotation countdown.
 
