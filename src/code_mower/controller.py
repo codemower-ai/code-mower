@@ -703,6 +703,36 @@ def collect_controller_report(
     )
 
 
+CONTROLLER_CONFIG_DOC = "docs/upgrade-existing-repo.md"
+
+
+def controller_config_error_message(exc: Exception, *, config_arg: Path | str) -> str:
+    """Explain a missing/invalid controller config for local output only.
+
+    The returned text names the requested config and working directory for a
+    local operator. It must never be embedded in uploadable cloud events,
+    which stay metadata-only.
+    """
+
+    requested = str(config_arg)
+    try:
+        working_dir = str(Path.cwd())
+    except OSError:
+        working_dir = "."
+    if not Path(requested).is_file():
+        reason = f"controller config {requested!r} was not found"
+    else:
+        reason = f"controller config {requested!r} is invalid: {exc}"
+    return "\n".join(
+        [
+            f"error: {reason} (working directory: {working_dir}).",
+            "For a fresh checkout, run `code-mower init --easy --dry-run` to render a starter plan.",
+            "For an existing repo, pass its config path explicitly or see "
+            f"{CONTROLLER_CONFIG_DOC}.",
+        ]
+    )
+
+
 def render_text(report: Mapping[str, Any]) -> str:
     decision = report.get("decision") if isinstance(report.get("decision"), Mapping) else {}
     queue = report.get("queue") if isinstance(report.get("queue"), Mapping) else {}
@@ -815,7 +845,15 @@ def main(
         lane_status.LaneStatusUnavailable,
         OSError,
     ) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        if isinstance(exc, code_mower_config.ConfigError):
+            # Local-operator guidance only; config failures return before any
+            # uploadable event is built so local paths never leave the machine.
+            print(
+                controller_config_error_message(exc, config_arg=args.config),
+                file=sys.stderr,
+            )
+        else:
+            print(f"error: {exc}", file=sys.stderr)
         return 1
 
 

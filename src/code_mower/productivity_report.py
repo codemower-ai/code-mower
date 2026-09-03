@@ -913,6 +913,13 @@ def build_report(
     warnings = [*spend_warnings, *cloud_warnings]
     if int(store_report.get("event_count") or 0) > len(board_events):
         warnings.append("local board history truncated by event limit")
+    evidence = _evidence_block(
+        repo=repo,
+        board_metrics=board_metrics,
+        store_available=bool(store_report.get("available")),
+        spend=spend,
+        cloud=cloud,
+    )
 
     metrics = {
         "cycle_time_seconds": _prefer(
@@ -1049,6 +1056,7 @@ def build_report(
         "providers": providers,
         "cloud_aggregate": cloud,
         "warnings": warnings,
+        "evidence": evidence,
         "next_action": next_action,
     }
 
@@ -1080,10 +1088,75 @@ def _next_action(
             f"local history, or code-mower board record --repo {repo} for one snapshot"
         )
     if not spend.get("run_count"):
-        return "capture reviewer spend rows from audit wrappers for cost/latency"
+        return "optionally capture reviewer spend rows from audit wrappers for cost/latency completeness"
     if not cloud.get("event_count"):
-        return "add or upload productivity_summary events to compare release windows"
+        return "optionally add productivity_summary event files with --cloud-event PATH to compare release windows"
     return "continue supervised loop and compare the next report window"
+
+
+def _evidence_block(
+    *,
+    repo: str,
+    board_metrics: Mapping[str, Any],
+    store_available: bool,
+    spend: Mapping[str, Any],
+    cloud: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Separate command success from evidence readiness.
+
+    Code Mower is local-first and cloud is optional: useful local Board
+    history alone makes a report ready. Reviewer spend and cloud events are
+    optional completeness enhancements that improve coverage but never block
+    readiness.
+    Empty or partial evidence stays a successful command; this additive block
+    explicitly reports the coverage level, the per-source flags, and the
+    Board recording and event-store next steps needed to fill the gaps.
+    """
+
+    board_history = bool(store_available) and int(board_metrics.get("snapshot_count") or 0) > 0
+    reviewer_spend_ready = int(spend.get("run_count") or 0) > 0
+    cloud_events_ready = int(cloud.get("event_count") or 0) > 0
+    missing: list[str] = []
+    steps: list[str] = []
+    if not board_history:
+        missing.append("board history")
+        steps.append(
+            f"run code-mower board serve --repo {repo} --record-events to build "
+            f"local history, or code-mower board record --repo {repo} for one snapshot"
+        )
+    if not reviewer_spend_ready:
+        missing.append("reviewer spend")
+        steps.append(
+            "optionally capture reviewer spend rows from audit wrappers for cost/latency completeness"
+        )
+    if not cloud_events_ready:
+        missing.append("cloud events")
+        steps.append(
+            "optionally add productivity_summary event files with --cloud-event PATH to compare release windows"
+        )
+    present_count = sum((board_history, reviewer_spend_ready, cloud_events_ready))
+    if present_count == 3:
+        coverage = "complete"
+    elif present_count == 0:
+        coverage = "empty"
+    else:
+        coverage = "partial"
+    ready = board_history
+    if coverage == "complete":
+        detail = "board history, reviewer spend, and cloud events are all present"
+    elif ready:
+        detail = "local board history is present; optional enhancements (" + ", ".join(missing) + " missing): " + "; ".join(steps)
+    else:
+        detail = "insufficient evidence (" + ", ".join(missing) + " missing): " + "; ".join(steps)
+    return {
+        "ready": ready,
+        "coverage": coverage,
+        "board_history": board_history,
+        "reviewer_spend": reviewer_spend_ready,
+        "cloud_events": cloud_events_ready,
+        "missing": missing,
+        "detail": detail,
+    }
 
 
 def board_payload(
@@ -1115,6 +1188,7 @@ def board_payload(
         "providers": report["providers"],
         "source": report["source"],
         "warnings": report["warnings"],
+        "evidence": report["evidence"],
         "next_action": report["next_action"],
     }
 
@@ -1131,6 +1205,7 @@ def render_text(report: Mapping[str, Any]) -> str:
     providers = report.get("providers") if isinstance(report.get("providers"), Mapping) else {}
     scorecards = providers.get("scorecards") if isinstance(providers.get("scorecards"), list) else []
     warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), Mapping) else {}
     lines = [
         f"Code Mower productivity report for {report.get('repo') or ''}",
         f"Status: {report.get('status') or 'warn'}",
@@ -1192,6 +1267,8 @@ def render_text(report: Mapping[str, Any]) -> str:
             )
     if warnings:
         lines.append("Warnings: " + "; ".join(str(warning) for warning in warnings[:5]))
+    if evidence:
+        lines.append(f"Evidence: {evidence.get('detail') or 'unknown'}")
     lines.extend(["", f"Next: {report.get('next_action') or 'inspect'}"])
     return "\n".join(lines) + "\n"
 

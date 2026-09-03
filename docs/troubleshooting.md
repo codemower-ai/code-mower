@@ -244,3 +244,21 @@ comment newer than the queued run, the gate treats the lane as complete on the
 next evaluation. If the gate still waits, rerun `code-mower-gate.yml` with the
 same PR number and head SHA, then check whether the named job is still queued or
 whether GitHub returned stale Actions metadata.
+
+## Init Used The Starter While The Repo Has Its Own Config
+
+Successful `code-mower init` output names its config source: `packaged starter`
+or `explicit repository config`. When a root `code-mower.yml` exists but the
+packaged starter was selected, the plan also prints a `Setup drift` next step:
+rerun with `code-mower init code-mower.yml --profile <profile> --dry-run`, or
+compare with `code-mower migration setup-drift --repo-path .` following
+[Upgrade An Existing Repository](upgrade-existing-repo.md). The default
+config-selection behavior is unchanged; only the diagnosis is new.
+
+## Controller Reports A Missing Or Invalid Config
+
+`code-mower controller run` names the requested config and working directory on
+local output only, then points at `code-mower init --easy --dry-run` for fresh
+checkouts or [Upgrade An Existing Repository](upgrade-existing-repo.md) for
+existing repos. Config failures return before any uploadable event is built, so
+local paths never leave the machine.
