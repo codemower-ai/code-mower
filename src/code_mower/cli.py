@@ -70,6 +70,7 @@ from . import local_llm_bakeoff
 from . import local_llm_calibration
 from . import local_llm_profiles
 from . import migration as code_mower_migration
+from . import muse_cli_audit_pr
 from . import next_steps as code_mower_next_steps
 from . import package as code_mower_package
 from . import prompts as code_mower_prompts
@@ -454,6 +455,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "local-llm": "Probe and run local OpenAI-compatible model lanes.",
     "migration": "Rehearse standalone package and wrapper migration paths.",
     "merge-plan": "Inspect merge-readiness signals and lane labels.",
+    "muse-cli": "Run a Muse CLI structured audit lane.",
     "next-steps": "Print the recommended next actions after setup.",
     "package": "Build or inspect package extraction artifacts.",
     "plan": "Create local issue-derived planning artifacts.",
@@ -593,6 +595,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "local-llm": _local_llm_main,
     "migration": code_mower_migration.main,
     "merge-plan": code_mower_merge.main,
+    "muse-cli": muse_cli_audit_pr.main,
     "next-steps": code_mower_next_steps.main,
     "package": _package_main,
     "plan": code_mower_work_orders.plan_main,

@@ -15,6 +15,7 @@ DEFAULT_CLI_LANES = (
     "hermes_cli",
     "coderabbit_cli",
     "grok_build",
+    "muse_cli",
 )
 
 

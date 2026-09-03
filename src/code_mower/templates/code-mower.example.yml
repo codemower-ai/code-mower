@@ -422,6 +422,41 @@ lanes:
       auth: run `hermes setup` or provider login locally; set HERMES_CLI_USE_AMBIENT_HOME=1 to opt into local Hermes auth/session state in trusted environments
       status: informational Hermes Agent one-shot lane; not merge authority until calibrated
 
+  muse_cli:
+    type: audit
+    driver: local_cli
+    provider: muse
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: included
+    labels:
+      needs: needs-muse-audit
+      done: muse-audit-done
+      blocked: muse-audit-blocked
+    token_env:
+      - GITHUB_TOKEN
+    token_env_any: []
+    provider_config:
+      command: muse
+      command_env: MUSE_CLI_COMMAND
+      model_env: CODE_MOWER_MUSE_MODEL
+      model_env_any:
+        - MUSE_MODEL
+        - META_MUSE_MODEL
+      prompt_transport: jsonl_prompt_file
+      prompt_lenses:
+        - base-audit
+      required_env_any:
+        - META_API_KEY
+        - META_API_KEY_FILE
+      required_env_truthy_any:
+        - MUSE_CLI_USE_AMBIENT_HOME
+      doctor_probe_args:
+        - --version
+      auth: run `muse login`, set META_API_KEY, or point META_API_KEY_FILE at a local key file. Real audit runs that inherit local login state require MUSE_CLI_USE_AMBIENT_HOME=1 in trusted environments
+      status: experimental Muse Code lane; informational until calibrated for blocker catch rate, false positives, cost, and latency
+
   coderabbit_cli:
     type: audit
     driver: local_cli
@@ -548,12 +583,13 @@ profiles:
       - aider
 
   third_peer:
-    description: Optional third local CLI reviewer calibration profile; Google, Grok, and Hermes CLI lanes stay informational until catch rate and false positives are measured.
+    description: Optional third local CLI reviewer calibration profile; Google, Grok, Hermes, and Muse CLI lanes stay informational until catch rate and false positives are measured.
     lanes:
       - antigravity_cli
       - gemini_cli
       - grok_build
       - hermes_cli
+      - muse_cli
 
   cli_research:
     description: Optional local CLI and protocol research profile; use for on-demand review capture, not routine merge gates.
@@ -562,6 +598,7 @@ profiles:
       - gemini_cli
       - grok_build
       - hermes_cli
+      - muse_cli
       - coderabbit_cli
       - acp_bridge
 

@@ -192,6 +192,15 @@ code-mower hermes-cli --repo owner/repo --pr 123 \
   --context-pack-file .code-mower/context-packs/pr-123/context-pack.txt \
   --output-dir .code-mower/calibration/pr-123/hermes-cli \
   --json
+code-mower muse-cli --repo owner/repo --pr 123 \
+  --repo-path /tmp/pr-123-blocked \
+  --base-ref BASE_SHA \
+  --expected-head-sha HEAD_SHA \
+  --allow-historical-head \
+  --historical-calibration \
+  --context-pack-file .code-mower/context-packs/pr-123/context-pack.txt \
+  --output-dir .code-mower/calibration/pr-123/muse-cli \
+  --json
 code-mower local-llm bakeoff --repo owner/repo --pr 123 \
   --profiles qwen3-coder-next-lmstudio,gemma4-ollama \
   --repo-path /tmp/pr-123-blocked \
@@ -242,6 +251,12 @@ informational until Antigravity exposes a stronger noninteractive auth/sandbox
 contract or calibration data justifies promotion.
 After installation, confirm `agy --version` and the smoke prompt both work, then
 run `code-mower doctor --profile cli_research --probe-runtime`.
+
+Muse Code can be calibrated as a manual local CLI lane after `muse login`, or by
+setting `META_API_KEY`/`META_API_KEY_FILE`. Real local-login audits require
+`MUSE_CLI_USE_AMBIENT_HOME=1` in trusted environments. The wrapper uses
+`muse exec --json --prompt-file`, disables shell/write/web tools, and records
+only verdict text plus safe event metadata.
 
 Hermes Agent can be calibrated as a manual local CLI lane after local setup:
 

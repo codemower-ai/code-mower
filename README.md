@@ -338,8 +338,8 @@ The first recommended lanes are local/manual:
 | Gitar | advisory third signal | informational until calibrated |
 
 Everything else starts manual or informational until your own calibration data
-proves it is useful: Antigravity/Gemini, Hermes, CodeRabbit CLI, Cursor BugBot,
-Qodo, Greptile, Devin, local LLMs, and future ACP bridges.
+proves it is useful: Antigravity/Gemini, Muse, Hermes, CodeRabbit CLI, Cursor
+BugBot, Qodo, Greptile, Devin, local LLMs, and future ACP bridges.
 
 Gemini CLI and Antigravity are distinct lane ids even though both are Google
 surfaces and may use Gemini model infrastructure. Keep their auth, model

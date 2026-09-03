@@ -232,6 +232,7 @@ def build_pilot_plan(
                             "gemini_cli",
                             "grok_build",
                             "hermes_cli",
+                            "muse_cli",
                         }:
                             output_leaf = _local_cli_output_leaf(
                                 lane_slug=lane_slug,
