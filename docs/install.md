@@ -31,6 +31,12 @@ command -v code-mower
 code-mower --version
 ```
 
+An install or upgrade is not complete until the active command on `PATH` is the
+intended one, `code-mower --version` matches the chosen release, the
+posture-appropriate doctor command has no unexplained failures, and
+`code-mower lanes status --repo OWNER/REPO` can summarize the repo or clearly
+explain why GitHub/local visibility is unavailable.
+
 For an existing repository with older generated files, inspect setup drift
 before copying new generated output into the repo:
 
@@ -236,6 +242,11 @@ clear:
 Code Mower's default cloud and shareable outputs stay metadata-only: no source,
 raw diffs, transcripts, issue body text, raw stdout/stderr, auth output, local
 secret values, or secrets.
+
+When onboarding another agent, use
+[Orchestrator Prompt Pack](orchestrator-prompt-pack.md) so every participant
+reports cold-install versus upgrade status, installer choice, exact version,
+doctor posture, Board URL, and owner-only setup needs in the same shape.
 
 ## First Repository Commands
 

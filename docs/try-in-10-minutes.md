@@ -40,6 +40,10 @@ For an existing install, first run `command -v code-mower` and
 [Cold Install Vs Upgrade](install.md#cold-install-vs-upgrade). If you switch
 from pipx to uv, make sure the command on `PATH` is the one you meant to use
 before running `init`.
+When asking Claude Code, Codex, Cursor/Grok Bot, Antigravity, Devin, Muse, or
+another agent to install or upgrade, use the common prompt in
+[Orchestrator Prompt Pack](orchestrator-prompt-pack.md) so every host reports
+the same version, posture, doctor, lanes, and Board evidence.
 For a repository that already has generated Code Mower support, follow
 [Upgrade An Existing Repository](upgrade-existing-repo.md) before copying a new
 `.code-mower.generated` tree.

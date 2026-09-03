@@ -175,6 +175,12 @@ after reinstalling, especially when switching between pipx and uv.
 | B. Build loop in 30 minutes | You want builders plus an orchestrator pattern after the reviewer gate works. | Complete path A, then add the automation token, require `code-mower/gate` from Any source, enable repository auto-merge, prove the self-hosted Mac lane runner with `doctor --runner`, run `init --builders`, and dispatch the first issue. | [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md) |
 | C. Builder experiment | You want to compare authoring loops before trusting them broadly. | Use a work order or experiment spec, run `code-mower builder-experiment run` around an explicit command, then review the source-free `authoringRun` artifact and normal audit evidence. | [Builder Experiments](docs/builder-experiments.md) |
 
+When you ask another agent to install, upgrade, orchestrate, build, or review,
+start from the universal prompt in
+[Orchestrator Prompt Pack](docs/orchestrator-prompt-pack.md). It makes the
+agent report its actual host posture, exact installed version, doctor result,
+Board URL, and any owner-only click-list before it mutates the repo.
+
 The current package-index announcement entry point is the tagged
 [Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.9.4-beta.1/docs/try-in-10-minutes.md)
 guide. The v0.9 beta includes the completed native Board work plus the adoption

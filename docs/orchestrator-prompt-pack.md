@@ -20,6 +20,66 @@ and makes the prompt pack safe to copy across repositories.
 - Do not upload source, raw diffs, transcripts, issue body text, raw
   stdout/stderr, auth output, or secrets to CodeMower.com.
 
+## Universal Install Or Upgrade Prompt
+
+Use this when asking any capable agent to become an active Code Mower
+participant. It works for Claude Code, Codex, Cursor or Grok Bot,
+Antigravity, Devin, Muse, or a future provider. The agent should report which
+role it can actually fill on its host instead of pretending every local CLI is
+available.
+
+```text
+Adopt Code Mower on OWNER/REPO using the current release tag I provide, or the
+latest GitHub release if I do not provide one.
+
+First identify your role on this host:
+- orchestrator: you can monitor issues/PRs, run code-mower lanes status, and
+  drive fix rounds;
+- builder: you can take one assigned issue and open one PR branch;
+- reviewer: you can review a PR through a Code Mower lane or as informational
+  evidence; or
+- observer: you can install Code Mower and report status but cannot mutate the
+  repo.
+
+Read docs/install.md, docs/try-in-10-minutes.md, docs/quickstart.md,
+docs/orchestrator-prompt-pack.md, docs/lane-promotion-policy.md, and
+docs/provider-matrix.md from the same release tag you install. For an existing
+repo with Code Mower files, also read docs/upgrade-existing-repo.md. Follow
+those docs instead of improvising.
+
+Install or upgrade to the exact package version for that tag. Before and after
+the install, report command -v code-mower and code-mower --version. Use pipx on
+a laptop/workstation, uv tool install on hosted agents or minimal Linux boxes,
+and an editable venv only if you are changing Code Mower itself.
+
+Run the posture-appropriate doctor:
+- local reviewer/builder machine: code-mower doctor --adoption --repo OWNER/REPO --json
+- hosted builder or observer: code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json
+- orchestrator-only host: code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
+- supervised pilot readiness: code-mower doctor --supervised-pilot --repo OWNER/REPO --json
+
+Then run code-mower lanes status --repo OWNER/REPO and, when useful, start or
+check the local Board with code-mower board serve --repo OWNER/REPO.
+
+If any step needs the owner, stop with a numbered click-list. Include exact
+GitHub URLs, token names, scopes, secret/variable destinations, and a
+recommendation. Never print token values.
+
+If you can act as a builder, take only one assigned issue, keep one writer on
+one PR branch, label the PR with your builder lane, run tests, and do not merge.
+If you can act as a reviewer, review only the current PR head and post PASS,
+BLOCKED, or UNKNOWN using the Code Mower lane instructions. Keep unpromoted
+reviewers informational.
+
+If CodeMower.com is configured, upload only metadata allowed by the Code Mower
+cloud data contract. Never upload source, raw diffs, transcripts, issue body
+text, raw stdout/stderr, auth output, local paths, token values, or secrets.
+
+Finish with a concise report: install method, version, role, doctor status,
+lanes status next action, Board URL if local to you, tests or checks run,
+anything blocked, and recommended next step.
+```
+
 ## Claude Code Adoption Orchestrator
 
 Paste this into Claude Code from the repository checkout you want to adopt.
