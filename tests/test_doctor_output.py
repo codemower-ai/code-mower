@@ -104,6 +104,41 @@ class DoctorOutputTests(unittest.TestCase):
         self.assertIn("Checks: 0 total, all passing", rendered)
         self.assertIn("No checks ran.", rendered)
 
+    def test_owner_actions_are_rendered_separately_from_warnings(self) -> None:
+        report = DoctorReport(
+            config_path="code-mower.yml",
+            provider_templates_path="providers.yml",
+            profile="recommended",
+            checks=(
+                DoctorCheck(
+                    name="github.human_automation_token",
+                    status=STATUS_WARN,
+                    message="owner/repo is missing DISPATCH_TOKEN",
+                    detail={"owner_action": True},
+                ),
+                DoctorCheck(
+                    name="runtime.pytest",
+                    status=STATUS_WARN,
+                    message="pytest is not installed",
+                ),
+            ),
+        )
+
+        rendered = output.render_doctor_text(report)
+
+        self.assertIn("Checks: 2 total, 1 owner actions, 1 warnings", rendered)
+        self.assertIn("GitHub (1 owner actions)", rendered)
+        self.assertIn(
+            "- OWNER-ACTION github.human_automation_token: owner/repo is missing DISPATCH_TOKEN",
+            rendered,
+        )
+        self.assertIn("Runtime (1 warnings)", rendered)
+        self.assertEqual(report.as_dict()["summary"]["owner_actions"], 1)
+        self.assertEqual(report.as_dict()["summary"]["warnings"], 1)
+        self.assertEqual(report.as_dict()["groups"]["github"]["owner_actions"], 1)
+        self.assertEqual(report.as_dict()["groups"]["github"]["warnings"], 0)
+        self.assertEqual(report.as_dict()["groups"]["runtime"]["warnings"], 1)
+
     def test_doctor_output_group_keeps_lane_checks_with_providers(self) -> None:
         check = DoctorCheck(
             name="runtime.local_cli.probe",

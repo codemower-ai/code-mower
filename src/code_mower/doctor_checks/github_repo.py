@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .common import DoctorCheck, STATUS_FAIL, STATUS_PASS, STATUS_WARN
+from .common import DoctorCheck, OBSERVER_ADOPTION_POSTURES, STATUS_FAIL, STATUS_PASS, STATUS_WARN
 from .github_api import _github_api_json
 
 
@@ -120,13 +120,23 @@ def check_repo_permissions(*, slug: str, repo_payload: Mapping[str, Any]) -> Doc
     )
 
 
-def check_repo_auto_merge(*, slug: str, repo_payload: Mapping[str, Any]) -> DoctorCheck:
+def check_repo_auto_merge(
+    *,
+    slug: str,
+    repo_payload: Mapping[str, Any],
+    adoption: bool = False,
+    adoption_posture: str = "reviewer-gate",
+) -> DoctorCheck:
     if "allow_auto_merge" not in repo_payload:
         return DoctorCheck(
             name="github.repo.auto_merge",
             status=STATUS_WARN,
             message=f"{slug} metadata did not include auto-merge posture",
-            detail={"repo": slug},
+            detail={
+                "repo": slug,
+                "owner_action": adoption,
+                "owner_action_kind": "repo_auto_merge_visibility",
+            },
             remediation=(
                 "Verify repository auto-merge manually before relying on the "
                 "generated Code Mower gate to call enablePullRequestAutoMerge."
@@ -134,15 +144,26 @@ def check_repo_auto_merge(*, slug: str, repo_payload: Mapping[str, Any]) -> Doct
         )
 
     allow_auto_merge = bool(repo_payload.get("allow_auto_merge"))
+    blocked = (
+        not allow_auto_merge
+        and not adoption
+        and adoption_posture not in OBSERVER_ADOPTION_POSTURES
+    )
     return DoctorCheck(
         name="github.repo.auto_merge",
-        status=STATUS_PASS if allow_auto_merge else STATUS_FAIL,
+        status=STATUS_PASS if allow_auto_merge else (STATUS_FAIL if blocked else STATUS_WARN),
         message=(
             f"{slug} has auto-merge enabled"
             if allow_auto_merge
             else f"{slug} does not allow auto-merge"
         ),
-        detail={"repo": slug, "allow_auto_merge": allow_auto_merge},
+        detail={
+            "repo": slug,
+            "allow_auto_merge": allow_auto_merge,
+            "owner_action": not allow_auto_merge,
+            "owner_action_kind": "repo_auto_merge",
+            "adoption_posture": adoption_posture,
+        },
         remediation=(
             None
             if allow_auto_merge

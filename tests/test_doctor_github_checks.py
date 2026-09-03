@@ -37,6 +37,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self,
         api_responses: list[tuple[object, dict[str, object]]],
         *,
+        adoption: bool = False,
         adoption_posture: str = "reviewer-gate",
     ):
         with mock.patch(
@@ -49,6 +50,7 @@ class GitHubDoctorCheckTests(unittest.TestCase):
                 config={"owner_surface": {"dispatch_token_env": "DISPATCH_TOKEN"}},
                 lanes=[("codex", {"token_env": ["DISPATCH_TOKEN", "GITHUB_TOKEN"]})],
                 http_timeout=1,
+                adoption=adoption,
                 adoption_posture=adoption_posture,
                 now=datetime(2026, 8, 18, tzinfo=UTC),
             )
@@ -287,6 +289,21 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertIn("missing the DISPATCH_TOKEN", check.message)
         self.assertIn("fine-grained PAT", str(check.remediation))
         self.assertEqual(check.detail["adoption_posture"], "reviewer-gate")
+
+    def test_human_automation_token_check_is_owner_action_during_adoption(
+        self,
+    ) -> None:
+        check = self._human_token_check(
+            [(None, {"returncode": 1, "output_summary": "not found"})],
+            adoption=True,
+        )
+
+        self.assertEqual(check.status, "warn")
+        self.assertTrue(check.detail["owner_action"])
+        self.assertEqual(
+            check.detail["owner_action_kind"],
+            "human_automation_token",
+        )
 
     def test_human_automation_token_check_warns_for_hosted_builder_missing_secret(
         self,
@@ -563,6 +580,32 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertIn("code-mower/gate", check.message)
         self.assertEqual(check.detail["required_status_context"], "code-mower/gate")
 
+    def test_branch_protection_marks_missing_gate_as_owner_action_during_adoption(
+        self,
+    ) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.github_branch._github_api_json",
+            return_value=(
+                {"required_status_checks": {"contexts": ["ci", "package"]}},
+                {},
+            ),
+        ):
+            check = check_branch_protection(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                default_branch="main",
+                http_timeout=1,
+                required_status_context="code-mower/gate",
+                adoption=True,
+            )
+
+        self.assertEqual(check.status, "warn")
+        self.assertTrue(check.detail["owner_action"])
+        self.assertEqual(
+            check.detail["owner_action_kind"],
+            "branch_protection_gate_requirement",
+        )
+
     def test_branch_protection_accepts_any_source_gate_status_binding(self) -> None:
         with mock.patch(
             "code_mower.doctor_checks.github_branch._github_api_json",
@@ -649,6 +692,37 @@ class GitHubDoctorCheckTests(unittest.TestCase):
             [{"context": "code-mower/gate", "app_id": 15368}],
         )
 
+    def test_branch_protection_wrong_gate_binding_is_owner_action_during_adoption(
+        self,
+    ) -> None:
+        with mock.patch(
+            "code_mower.doctor_checks.github_branch._github_api_json",
+            return_value=(
+                {
+                    "required_status_checks": {
+                        "contexts": ["code-mower/gate"],
+                        "checks": [{"context": "code-mower/gate", "app_id": 15368}],
+                    }
+                },
+                {},
+            ),
+        ):
+            check = check_branch_protection(
+                gh_path="/usr/bin/gh",
+                slug="owner/repo",
+                default_branch="main",
+                http_timeout=1,
+                required_status_context="code-mower/gate",
+                adoption=True,
+            )
+
+        self.assertEqual(check.status, "warn")
+        self.assertTrue(check.detail["owner_action"])
+        self.assertEqual(
+            check.detail["owner_action_kind"],
+            "branch_protection_gate_binding",
+        )
+
     def test_branch_protection_fails_when_gate_status_bound_to_any_app(self) -> None:
         with mock.patch(
             "code_mower.doctor_checks.github_branch._github_api_json",
@@ -682,6 +756,17 @@ class GitHubDoctorCheckTests(unittest.TestCase):
         self.assertEqual(check.status, "fail")
         self.assertIn("allow_auto_merge=true", check.remediation)
         self.assertIn("docs/lane-promotion-policy.md", check.remediation)
+
+    def test_repo_auto_merge_is_owner_action_during_adoption(self) -> None:
+        check = check_repo_auto_merge(
+            slug="owner/repo",
+            repo_payload={"allow_auto_merge": False},
+            adoption=True,
+        )
+
+        self.assertEqual(check.status, "warn")
+        self.assertTrue(check.detail["owner_action"])
+        self.assertEqual(check.detail["owner_action_kind"], "repo_auto_merge")
 
 
 if __name__ == "__main__":

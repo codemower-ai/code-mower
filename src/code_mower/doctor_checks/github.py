@@ -36,6 +36,7 @@ def check_github_setup(
     lanes: Sequence[tuple[str, Mapping[str, Any]]],
     http_timeout: int,
     actions_cost_sample: int = ACTIONS_COST_SAMPLE_DEFAULT,
+    adoption: bool = False,
     adoption_posture: str = "reviewer-gate",
 ) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
@@ -127,6 +128,7 @@ def check_github_setup(
                     required_status_context=(
                         "code-mower/gate" if has_merge_authority else None
                     ),
+                    adoption=adoption,
                 ),
                 check_recent_pr_diff_median(
                     gh_path=gh_path,
@@ -143,12 +145,18 @@ def check_github_setup(
                 config=config,
                 lanes=lanes,
                 http_timeout=http_timeout,
+                adoption=adoption,
                 adoption_posture=adoption_posture,
             )
         )
         if has_merge_authority:
             checks.append(
-                check_repo_auto_merge(slug=slug, repo_payload=metadata.payload)
+                check_repo_auto_merge(
+                    slug=slug,
+                    repo_payload=metadata.payload,
+                    adoption=adoption,
+                    adoption_posture=adoption_posture,
+                )
             )
 
     provider_check = check_private_repo_provider_surface(

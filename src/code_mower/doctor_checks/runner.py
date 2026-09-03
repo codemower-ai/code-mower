@@ -270,6 +270,7 @@ def run_doctor(
                 lanes=effective_lanes,
                 http_timeout=http_timeout,
                 actions_cost_sample=actions_cost_sample,
+                adoption=adoption,
                 adoption_posture=adoption_posture,
             )
         )
