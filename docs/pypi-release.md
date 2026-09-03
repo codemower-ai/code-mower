@@ -1,12 +1,12 @@
 # PyPI Release Runbook
 
-Code Mower beta users install from PyPI. The release workflow builds source
-and wheel distributions, verifies them with `twine check`, and can publish to
+Code Mower users install from PyPI. The release workflow builds source and
+wheel distributions, verifies them with `twine check`, and can publish to
 TestPyPI or production PyPI through trusted publishing.
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.4b1
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.0
 ```
 
 ## Current Status
@@ -83,26 +83,26 @@ Every GitHub release run should leave `build-distributions` and
 same artifact download path used by the optional PyPI publish job, then runs
 `twine check dist/*` without publishing anything.
 
-For beta releases, keep release metadata honest:
+For stable releases, keep release metadata simple: the newest GitHub release
+should be the `/releases/latest` result, and exact-version installs should
+resolve from PyPI.
 
 ```bash
-gh release view v0.9.4-beta.1 \
+gh release view v1.0.0 \
   --repo codemower-ai/code-mower \
   --json tagName,isPrerelease
 gh api repos/codemower-ai/code-mower/releases/latest \
   --jq '{tag_name,prerelease}'
 ```
 
-`DEC-427-LATEST` records the 2026-08-23 owner decision in
+Historical note: `DEC-427-LATEST` records the 2026-08-23 owner decision in
 [PR #427](https://github.com/codemower-ai/code-mower/pull/427#issuecomment-5388373205):
-beta.52 established that future newest betas until 1.0 are published as **regular
-releases** (prerelease flag off), not prerelease-flagged releases, so GitHub's
-`/releases/latest` endpoint resolves for early adopters, automation, and
-package-index release checks. A prerelease-flagged release cannot be returned by
-that endpoint. The tradeoff is that publishing beta tags as regular GitHub
-releases makes the release line look more mature than it is; install docs still
-pin explicit versions, and the release title, notes, and README must keep saying
-beta.
+beta.52 through v0.9.4 were published as **regular releases** (prerelease flag
+off), not prerelease-flagged releases, so GitHub's `/releases/latest` endpoint
+resolved for early adopters, automation, and package-index release checks. A
+prerelease-flagged release cannot be returned by that endpoint. For v1.0.0 and
+newer stable releases, the title, notes, README, and PyPI version should all
+say release while preserving the supervised-pilot caveat.
 
 Before any package-index promotion, run the static release-readiness check from
 the repository root:
@@ -124,22 +124,22 @@ project pages, and trusted-publishing setup pages:
 
 Before publishing to TestPyPI or PyPI, run the release workflow once with both
 publish inputs set to `false` and confirm `build-distributions` and
-`verify-distributions` are green. TestPyPI remains useful for first-time
-trusted-publishing setup or risky packaging changes; routine beta publishing
-can go from the green no-publish verification run to production PyPI.
+  `verify-distributions` are green. TestPyPI remains useful for first-time
+  trusted-publishing setup or risky packaging changes; routine publishing
+  can go from the green no-publish verification run to production PyPI.
 
 ## Cache Bypass And Propagation Triage
 
 Use cache-bypassing exact-version installs when validating a just-published
-beta. That keeps stale local wheels from looking like a successful release and
-keeps PyPI propagation delays from looking like source regressions.
+release. That keeps stale local wheels from looking like a successful release
+and keeps PyPI propagation delays from looking like source regressions.
 
 For pipx:
 
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==0.9.4b1
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.0.0
 code-mower --version
 ```
 
@@ -147,7 +147,7 @@ For uv:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==0.9.4b1
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.0.0
 code-mower --version
 ```
 
@@ -173,7 +173,7 @@ For production PyPI verification:
 ```bash
 python3.12 -m venv /tmp/code-mower-pypi-smoke
 /tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
-/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==0.9.4b1
+/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==1.0.0
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
@@ -181,7 +181,7 @@ Then run the release-gate first-user rehearsal against the same package:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.9.4b1 \
+  --package-spec code-mower==1.0.0 \
   --allow-package-index \
   --upgrade-pip \
   --python "$(command -v python3.12)" \
@@ -232,7 +232,7 @@ stable `1.0` line exists:
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.4b1
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.0
 ```
 
 Do not switch to unpinned `pipx install code-mower` until:

@@ -9,19 +9,21 @@ not know the original reference repos.
 
 - Public repository exists.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
-- The package has alpha/beta releases and reports its version with
+- The package has public releases and reports its version with
   `code-mower --version`.
-- The current package-index beta entrypoint is `code-mower==0.9.4b1`, with
+- The current package-index release entrypoint is `code-mower==1.0.0`, with
   `code-mower doctor --adoption --repo OWNER/REPO` as the human-facing
   first-run setup diagnostic and `code-mower lanes status --repo OWNER/REPO`
   as the operator snapshot. The corresponding GitHub tag is
-  `v0.9.4-beta.1`; `doctor --preflight` and `doctor --v05` remain
+  `v1.0.0`; `doctor --preflight` and `doctor --v05` remain
   compatibility presets for scripts.
-- The v0.9 package beta includes Python 3.12+ install hardening,
+- The v1.0 supervised-pilot release includes Python 3.12+ install hardening,
   hosted-builder doctor postures, non-expiring token diagnostics, native
   redacted lane status, local Board, Board history, spend/verdict timelines,
   owner queue, optional metadata-only agent cards, Board doctor, Board reset,
-  Board multi-instance handling, setup drift reporting, explicit package-index
+  supervised controller dry-run policy, promoted/manual pilot readiness,
+  provider-diversity fixtures, the universal orchestrator prompt pack, Board
+  multi-instance handling, setup drift reporting, explicit package-index
   rehearsal opt-ins, and the public Board demo rehearsal.
 - The README now shows a shortened `doctor --adoption --repo OWNER/REPO`
   example so fresh users can see the payoff before installing.
@@ -33,10 +35,10 @@ not know the original reference repos.
 - `docs/first-user-install-rehearsal.md` records the executable release-gate
   path: package install, easy-mode smoke, first value report, cloud upload dry
   run, and dogfood dry run. Re-run it against the public tag before widening
-  beyond friendly beta users. Alpha-specific rehearsal notes live under
+  beyond supervised pilots. Alpha-specific rehearsal notes live under
   `docs/archive/` as historical transcripts.
 - Public CI now runs the package-install first-user rehearsal from the current
-  checkout, and release-gate rehearsals run against the published PyPI beta
+  checkout, and release-gate rehearsals run against the published PyPI release
   before widening.
 - CodeMower.com rows now need stable evidence/detail URLs and JSON exports
   before dashboard changes are treated as release-ready. A chart that cannot be
@@ -135,13 +137,11 @@ refuses Python older than 3.12, including stale virtualenvs and old system
 `python3` shims, so release work cannot accidentally use a broken local
 interpreter.
 
-## Recommended Before v1.0
+## Post-v1.0 Hardening Candidates
 
 - Publish a short "easy mode" walkthrough using a toy repo.
-- Publish a GitHub Release for the current public release tag, keep the title
-  and notes explicit that it is beta software, and leave the prerelease flag off
-  for the newest beta until v1.0 so GitHub's latest-release endpoint resolves
-  for early adopters.
+- Keep the newest GitHub release marked Latest so GitHub's latest-release
+  endpoint resolves for early adopters.
 - Confirm the release workflow builds source/wheel distributions for every
   public alpha.
 - Configure PyPI trusted publishing before widening beyond friendly alpha users,

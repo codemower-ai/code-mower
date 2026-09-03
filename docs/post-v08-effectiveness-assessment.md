@@ -30,7 +30,7 @@ candidates until more repositories and more adjudicated findings are captured.
 ## What Should Be Better
 
 - **Keep release verification routine.** The public package baseline is
-  `v0.9.4-beta.1` / `code-mower==0.9.4b1`; each beta should continue to prove
+  `v1.0.0` / `code-mower==1.0.0`; each beta should continue to prove
   the PyPI install path, first-user rehearsal, local Board, and metadata-only
   cloud checks before it is announced.
 - **Use more builders in live dogfood.** The v0.7/v0.8 implementation PRs were

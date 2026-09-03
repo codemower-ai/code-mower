@@ -45,8 +45,14 @@ def public_baseline_sentence(version: str) -> str:
     """Return the shared current-baseline sentence for public docs."""
 
     release_tag = release_tag_for_version(version)
+    if re.fullmatch(r"\d+\.\d+\.\d+", version):
+        baseline_label = "package-index release baseline"
+    elif re.fullmatch(r"\d+\.\d+\.\d+rc\d+", version):
+        baseline_label = "package-index release-candidate baseline"
+    else:
+        baseline_label = "package-index beta baseline"
     return (
-        f"The current package-index beta baseline is `{release_tag}`, with "
+        f"The current {baseline_label} is `{release_tag}`, with "
         f"pinned package install spec `{public_package_spec(version)}`. "
         "Release evidence is recorded on the GitHub release and in the "
         "first-user install rehearsal."

@@ -22,16 +22,16 @@ the private history behind Code Mower:
 
 ## Current Baseline
 
-Use the current beta install pin unless a newer release is explicitly called out
-in the invite:
+Use the current release install pin unless a newer release is explicitly called
+out in the invite:
 
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.4b1
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.0
 ```
 
-The current package-index beta baseline is `v0.9.4-beta.1`, with pinned package install spec `code-mower==0.9.4b1`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
+The current package-index release baseline is `v1.0.0`, with pinned package install spec `code-mower==1.0.0`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
 
 ## Invite Criteria
 
