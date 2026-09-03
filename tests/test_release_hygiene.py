@@ -78,6 +78,14 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertEqual(config["decisions"]["authorities"], ["jeffhuber"])
         self.assertEqual(config["profiles"]["recommended"]["lanes"], ["codex", "claude_audit"])
 
+        dispatch_workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/dispatch-lanes.yml").read_text(encoding="utf-8")
+        )
+        trusted_authors = json.loads(
+            dispatch_workflow["jobs"]["dispatch"]["env"]["CODE_MOWER_TRUSTED_AUTHORS_JSON"]
+        )
+        self.assertIn("jeffhuber", trusted_authors)
+
         report = doctor_checks.run_doctor(
             config_path=config_path,
             provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
