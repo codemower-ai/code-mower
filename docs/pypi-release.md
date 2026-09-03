@@ -162,11 +162,14 @@ uv tool install --python 3.12 --reinstall dist/code_mower-*.whl
 ```
 
 If an exact-version install fails within a few minutes of publication, retry
-with the cache-bypass command. Repeated "no matching distribution" errors,
-HTTP/index errors, or TestPyPI/PyPI timeouts are package-index or network
-propagation until the uploaded artifact is visible and installable. A command
-that installs successfully but reports the wrong `code-mower --version`, fails
-to start, or fails the first-user rehearsal is a release blocker.
+with the cache-bypass command. The package-install rehearsal does this for
+package-index specs after `--allow-package-index`: it passes
+`pip --no-cache-dir` and retries the install three times by default. Repeated
+"no matching distribution" errors, HTTP/index errors, or TestPyPI/PyPI timeouts
+after those attempts are package-index or network propagation until the
+uploaded artifact is visible and installable. A command that installs
+successfully but reports the wrong `code-mower --version`, fails to start, or
+fails the first-user rehearsal is a release blocker.
 
 For production PyPI verification:
 

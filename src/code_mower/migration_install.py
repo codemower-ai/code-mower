@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -236,8 +237,11 @@ def _pip_install_command(
     *,
     pip_index_url: str = "",
     pip_extra_index_urls: Sequence[str] | None = None,
+    pip_no_cache: bool = False,
 ) -> list[str]:
     command = [str(venv_python), "-m", "pip", "install"]
+    if pip_no_cache:
+        command.append("--no-cache-dir")
     if pip_index_url:
         command.extend(["--index-url", pip_index_url])
     for extra_index_url in pip_extra_index_urls or ():
@@ -245,6 +249,104 @@ def _pip_install_command(
             command.extend(["--extra-index-url", extra_index_url])
     command.append(package_spec)
     return command
+
+
+def _preview_timeout_output(output: bytes | str | None) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")[-4000:]
+    return output[-4000:]
+
+
+def _annotate_pip_install_attempt(
+    steps: list[dict[str, Any]],
+    *,
+    command: Sequence[str],
+    cwd: Path,
+    attempt: int,
+    attempts: int,
+    timeout: int,
+    timeout_error: subprocess.TimeoutExpired | None = None,
+) -> None:
+    if timeout_error is not None:
+        steps.append(
+            {
+                "command": list(command),
+                "cwd": str(cwd),
+                "returncode": -1,
+                "stdout_preview": _preview_timeout_output(timeout_error.stdout),
+                "stderr_preview": _preview_timeout_output(timeout_error.stderr),
+                "timeout_seconds": timeout,
+                "error": "timeout expired",
+            }
+        )
+    steps[-1]["pip_install_attempt"] = attempt
+    steps[-1]["pip_install_max_attempts"] = attempts
+    steps[-1]["pip_cache_disabled"] = "--no-cache-dir" in command
+
+
+def _run_pip_install_with_retries(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None,
+    steps: list[dict[str, Any]],
+    timeout: int,
+    attempts: int,
+    retry_delay_seconds: float,
+    package_index: bool,
+) -> subprocess.CompletedProcess[str]:
+    if attempts < 1:
+        raise ValueError("--pip-install-attempts must be at least 1")
+    if retry_delay_seconds < 0:
+        raise ValueError("--pip-retry-delay must be zero or greater")
+
+    for attempt in range(1, attempts + 1):
+        try:
+            completed = _run_rehearsal_step(
+                command,
+                cwd=cwd,
+                env=env,
+                steps=steps,
+                timeout=timeout,
+            )
+            _annotate_pip_install_attempt(
+                steps,
+                command=command,
+                cwd=cwd,
+                attempt=attempt,
+                attempts=attempts,
+                timeout=timeout,
+            )
+            return completed
+        except (RehearsalError, subprocess.TimeoutExpired) as exc:
+            _annotate_pip_install_attempt(
+                steps,
+                command=command,
+                cwd=cwd,
+                attempt=attempt,
+                attempts=attempts,
+                timeout=timeout,
+                timeout_error=exc if isinstance(exc, subprocess.TimeoutExpired) else None,
+            )
+            if attempt >= attempts:
+                if package_index:
+                    raise RehearsalError(
+                        (
+                            f"pip install failed after {attempts} attempts. "
+                            "If this followed a fresh package publish, retry after "
+                            "PyPI/TestPyPI propagation or install the local wheel to "
+                            "separate source failures from package-index lag."
+                        ),
+                        steps,
+                    ) from exc
+                raise
+            steps[-1]["retry_scheduled_seconds"] = retry_delay_seconds
+            if retry_delay_seconds > 0:
+                time.sleep(retry_delay_seconds)
+
+    raise AssertionError("pip install retry loop exited unexpectedly")
 
 
 def _write_public_rehearsal_toy_repo(

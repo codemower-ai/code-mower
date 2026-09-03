@@ -26,6 +26,7 @@ if __package__ in {None, ""}:
         _pip_upgrade_command,
         _resolve_install_package_spec,
         _run,
+        _run_pip_install_with_retries,
         _run_rehearsal_step,
         _run_rehearsal_step_to_file,
         _venv_code_mower,
@@ -54,6 +55,7 @@ else:
         _pip_upgrade_command,
         _resolve_install_package_spec,
         _run,
+        _run_pip_install_with_retries,
         _run_rehearsal_step,
         _run_rehearsal_step_to_file,
         _venv_code_mower,
@@ -84,9 +86,11 @@ __all__ = [
     "_package_spec_uses_package_index",
     "_pip_install_command",
     "_pip_upgrade_command",
+    "_pip_install_policy",
     "_resolve_python_executable",
     "_resolve_install_package_spec",
     "_run",
+    "_run_pip_install_with_retries",
     "_run_rehearsal_step",
     "_run_rehearsal_step_to_file",
     "_write_json",
@@ -245,6 +249,25 @@ def _resolve_python_executable(python: Path | None) -> Path:
     return resolved
 
 
+def _pip_install_policy(
+    *,
+    uses_package_index: bool,
+    allow_package_index: bool,
+    pip_no_cache: bool,
+    pip_install_attempts: int | None,
+) -> tuple[bool, int]:
+    package_index_enabled = uses_package_index and allow_package_index
+    cache_disabled = bool(pip_no_cache or package_index_enabled)
+    attempts = (
+        pip_install_attempts
+        if pip_install_attempts is not None
+        else (3 if package_index_enabled else 1)
+    )
+    if attempts < 1:
+        raise ValueError("--pip-install-attempts must be at least 1")
+    return cache_disabled, attempts
+
+
 def run_package_install_rehearsal(
     *,
     package_spec: str,
@@ -259,6 +282,9 @@ def run_package_install_rehearsal(
     pip_extra_index_urls: Sequence[str] | None = None,
     allow_package_index: bool = False,
     upgrade_pip: bool = False,
+    pip_no_cache: bool = False,
+    pip_install_attempts: int | None = None,
+    pip_retry_delay_seconds: float = 15.0,
 ) -> dict[str, Any]:
     requested_package_spec = package_spec
     uses_package_index = _package_spec_uses_package_index(requested_package_spec)
@@ -269,6 +295,14 @@ def run_package_install_rehearsal(
             "--allow-package-index for release/integration rehearsals against "
             "PyPI or TestPyPI."
         )
+    pip_cache_disabled, pip_install_max_attempts = _pip_install_policy(
+        uses_package_index=uses_package_index,
+        allow_package_index=allow_package_index,
+        pip_no_cache=pip_no_cache,
+        pip_install_attempts=pip_install_attempts,
+    )
+    if pip_retry_delay_seconds < 0:
+        raise ValueError("--pip-retry-delay must be zero or greater")
     package_spec = _resolve_install_package_spec(package_spec)
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="code-mower-package-install-"))
@@ -302,18 +336,24 @@ def run_package_install_rehearsal(
             steps=steps,
             timeout=timeout,
         )
-    _run_rehearsal_step(
+    pip_install_start = len(steps)
+    _run_pip_install_with_retries(
         _pip_install_command(
             venv_python,
             package_spec,
             pip_index_url=pip_index_url,
             pip_extra_index_urls=pip_extra_index_urls,
+            pip_no_cache=pip_cache_disabled,
         ),
         cwd=work_dir,
         env=None,
         steps=steps,
         timeout=timeout,
+        attempts=pip_install_max_attempts,
+        retry_delay_seconds=pip_retry_delay_seconds,
+        package_index=uses_package_index and allow_package_index,
     )
+    pip_install_attempt_count = len(steps) - pip_install_start
     _run_rehearsal_step(
         [str(venv_python), "-m", "pip", "check"],
         cwd=work_dir,
@@ -657,6 +697,10 @@ def run_package_install_rehearsal(
         "uses_package_index": uses_package_index,
         "package_index_allowed": allow_package_index,
         "pip_upgraded": upgrade_pip,
+        "pip_cache_disabled": pip_cache_disabled,
+        "pip_install_attempts": pip_install_attempt_count,
+        "pip_install_max_attempts": pip_install_max_attempts,
+        "pip_retry_delay_seconds": pip_retry_delay_seconds,
         "pip_index_url": pip_index_url,
         "pip_extra_index_urls": list(pip_extra_index_urls or ()),
         "python": str(python_bin),
@@ -687,6 +731,12 @@ def render_package_install_rehearsal_text(payload: dict[str, Any]) -> str:
         "Package index: "
         f"{'allowed' if payload.get('package_index_allowed') else 'disabled'}",
         f"Pip upgrade: {'run' if payload.get('pip_upgraded') else 'skipped'}",
+        f"Pip cache: {'disabled' if payload.get('pip_cache_disabled') else 'default'}",
+        (
+            "Pip install attempts: "
+            f"{payload.get('pip_install_attempts', 1)}/"
+            f"{payload.get('pip_install_max_attempts', 1)}"
+        ),
         f"Version: {payload.get('version', '')}",
         f"Work dir: {payload['work_dir']}",
         f"Toy repo: {payload['toy_repo']}",
