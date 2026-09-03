@@ -6,6 +6,28 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
+## v1.0.3
+
+This patch is the confidence-polish release for experienced senior engineers
+adopting the v1 supervised pilot. It preserves gate semantics and the
+metadata-only privacy boundary while making Board operation and first-use
+diagnostics faster, safer, and clearer.
+
+### Changed
+
+- Board `/api/status` now uses a stale-while-refresh cache, returning a safe
+  warming payload on cold start and millisecond-fast cached responses while a
+  single background refresh updates GitHub and local state (#643).
+- Adoption diagnostics now identify packaged versus explicit configuration,
+  productivity evidence reports local coverage honestly, and stale local agent
+  cards can be pruned through an explicit confirmed command (#644).
+- Board stop and stale-card pruning now defend against PID reuse, symlinked
+  adapter directories, malformed PID values, partial cleanup failures, and
+  exception-content leakage (#644).
+- Public configuration, security posture, contributor-facing docs, and the
+  metadata-only privacy contract were reviewed and normalized for an OSS
+  checkout without embedding maintainer-specific identity (#645).
+
 ## v1.0.2
 
 This patch hardens first-user and release-smoke ergonomics after the v1.0.1
