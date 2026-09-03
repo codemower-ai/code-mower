@@ -93,6 +93,7 @@ Supported event types include:
 - `merge_decision`
 - `queue_state_snapshot`
 - `owner_intervention`
+- `productivity_summary`
 
 Events may include provider/lens names, timing, cost, verdict, useful finding
 counts, false-positive counts, repository slug, install id, and coarse runtime
@@ -160,6 +161,59 @@ counts without raw work content. See
 boundary, stop conditions, reviewer outcome references, example fixtures, and
 privacy rules. CodeMower.com must keep accepting v0.9.x uploads that omit these
 event types.
+
+## Productivity Metrics
+
+`productivity_summary` is the v1.0.1 aggregate metric event for local reports
+and CodeMower.com dashboards. It uses the normal
+`code_mower.benchmarkEvent.v1` envelope with
+`dimensions.productivity_schema=code_mower.productivityMetrics.v1`. It is an
+aggregate snapshot, not a raw trace: dashboards may group it by repository,
+lane, provider, builder, reviewer, issue, PR, or release without receiving
+source, diffs, prompts, transcripts, issue body text, raw stdout/stderr, auth
+output, local paths, or secrets.
+
+Required dimensions:
+
+- `productivity_schema`: `code_mower.productivityMetrics.v1`;
+- `repo_slug`: `OWNER/REPO`;
+- `window_start` and `window_end`: UTC timestamps for the measured window;
+- `window_granularity`: `cycle`, `day`, `week`, `release`, or `custom`; and
+- `aggregation_subject`: `repo`, `lane`, `provider`, `builder`, `reviewer`,
+  `issue`, `pr`, or `release`.
+
+Optional dimensions are intentionally small and metadata-only:
+`aggregation_key`, `lane_id`, `provider`, `builder_provider`,
+`reviewer_provider`, `role`, `issue_number`, `pr_number`, `branch`, `release`,
+`pilot_posture`, `policy_state`, `merge_state`, `verdict`, `manual_outcome`,
+`automated_vs_manual`, `owner_action_reason`, and `event_source`.
+
+Metric names and units are stable:
+
+- Time metrics use seconds: `cycle_time_seconds`, `active_time_seconds`,
+  `wait_time_seconds`, `queue_wait_seconds`,
+  `time_to_first_review_seconds`, `time_to_green_seconds`,
+  `time_to_merge_seconds`, and `owner_wait_seconds`.
+- Count metrics use integer counts: `builder_run_count`,
+  `reviewer_run_count`, `audit_pass_count`, `audit_blocked_count`,
+  `reviewer_catch_count`, `blocking_bug_count`, `blocked_finding_count`,
+  `false_blocker_count`, `missed_blocker_count`, `fix_round_count`,
+  `owner_intervention_count`, `manual_override_count`,
+  `automerge_eligible_count`, `automerge_requested_count`,
+  `automerge_completed_count`, `merged_pr_count`, `abandoned_pr_count`,
+  `reverted_pr_count`, `checks_failed_count`, `checks_passed_count`, and
+  `post_merge_defect_count`.
+- Cost metrics use US dollars: `cost_usd`.
+- Token metrics use integer token counts: `input_tokens`, `output_tokens`,
+  `total_tokens`, `cached_input_tokens`, and `reasoning_tokens`.
+
+Missing metrics mean unknown, not zero. Derived percentiles, rates, and
+rankings are report/dashboard calculations and should reference the source
+metric names used to compute them. The OSS validator rejects unknown
+`productivity_summary` metric names, negative or non-finite values, and
+fractional count/token values so future producers do not drift from the
+contract accidentally. CodeMower.com must continue accepting v0.9.x and v1.0
+uploads that omit `productivity_summary`.
 
 Local `code_mower.authoringRun.v1` artifacts from `builder-experiment run` may
 also be passed as `--event builder_run=PATH`. The OSS uploader converts them to

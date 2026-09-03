@@ -28,6 +28,10 @@ from .bundle import (
 from .dogfood import DogfoodPlan
 from .errors import CloudBundleError
 from .git_metadata import run_git
+from .productivity import (
+    PRODUCTIVITY_EVENT_TYPE,
+    validate_productivity_summary_payload,
+)
 
 
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
@@ -304,6 +308,8 @@ def validate_cloud_event(value: Any) -> dict[str, Any]:
     for key in ("metrics", "dimensions", "tool"):
         if not isinstance(value.get(key), dict):
             raise CloudBundleError(f"structured event field {key} must be an object")
+    if value["event_type"] == PRODUCTIVITY_EVENT_TYPE:
+        validate_productivity_summary_payload(value)
     return value
 
 
@@ -781,6 +787,7 @@ def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
         raise CloudBundleError("structured event dimensions must be an object")
     if normalized.get("tool") is None and normalized["event_type"] in {
         "lane_policy_snapshot",
+        PRODUCTIVITY_EVENT_TYPE,
         "value_report_snapshot",
     }:
         normalized["tool"] = build_code_mower_tool_provenance(
