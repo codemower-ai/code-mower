@@ -113,6 +113,21 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn('test "${{ needs.package_matrix.result }}" = "success"', workflow)
         self.assertIn("      - name: Unit tests\n", workflow)
         self.assertIn("      - name: Compile sources\n", workflow)
+        self.assertIn('          --package-spec "$GITHUB_WORKSPACE"\n', workflow)
+        self.assertNotIn("--allow-package-index", workflow)
+        self.assertNotIn("--upgrade-pip", workflow)
+
+    def test_contributing_default_checks_are_offline_friendly(self) -> None:
+        contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        contributing_flat = " ".join(contributing.split())
+
+        self.assertIn("offline-friendly by default", contributing)
+        self.assertIn("must not depend on PyPI", contributing)
+        self.assertIn("live package-index propagation", contributing)
+        self.assertIn("external provider network calls", contributing)
+        self.assertIn("--package-spec .", contributing)
+        self.assertIn("Add `--allow-package-index` only when deliberately", contributing_flat)
+        self.assertIn("release/integration checks, not default unit tests", contributing_flat)
 
     def test_codex_smoke_docs_use_supported_flags(self) -> None:
         doc_paths = (
