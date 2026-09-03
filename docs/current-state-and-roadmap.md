@@ -1,8 +1,8 @@
 # Code Mower Current State And Roadmap
 
 This is the short source-of-truth snapshot for the public OSS package, the
-hosted CodeMower.com surface, and the near-term path from the current beta line
-to v1.0.
+hosted CodeMower.com surface, and the near-term path from the current v1.0 line
+to v1.0.1.
 
 ## Positioning
 
@@ -11,8 +11,9 @@ around the top AI coding agents and reviewers. The OSS core helps teams move
 from plan to merge at maximum safe velocity while preserving code quality,
 architecture, and deployment confidence.
 
-Code Mower is beta, bring-your-own-agent-loop software for teams willing to
-calibrate reviewers. It is not a drop-in autonomous merge gate.
+Code Mower v1.0 is supervised-pilot software for teams willing to calibrate
+reviewers and keep a human or trusted orchestrator responsible for the loop. It
+is not a drop-in unattended merge gate for arbitrary repositories.
 
 It also creates a quality, speed, and cost benchmark loop on a team's actual
 product: which AI builders and reviewers produce useful results on this
@@ -26,17 +27,19 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current package-index beta baseline is `v0.9.4-beta.1`, with pinned package
-install spec `code-mower==0.9.4b1`. Release evidence is recorded on the GitHub
+The current package-index release baseline is `v1.0.0`, with pinned package
+install spec `code-mower==1.0.0`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. It is intended to be installed
-from the package index for friendly-user pilots, with GitHub tag/source installs
+from the package index for supervised pilots, with GitHub tag/source installs
 kept as a fallback and development path.
 
-The v0.9 package beta keeps the Python 3.12+ runtime contract, pipx/uv install
-matrix, non-expiring dispatch-token diagnostics, native redacted lane status,
-the local Board, Board history and admin commands, spend/verdict timelines,
-owner queue, optional metadata-only agent cards, explicit cloud Board snapshots,
-the CodeMower.com Board mirror, and a public Board demo rehearsal. It adds Board
+The v1.0 supervised-pilot release keeps the Python 3.12+ runtime contract,
+pipx/uv install matrix, non-expiring dispatch-token diagnostics, native redacted
+lane status, the local Board, Board history and admin commands, spend/verdict
+timelines, owner queue, optional metadata-only agent cards, explicit cloud Board
+snapshots, the CodeMower.com Board mirror, and a public Board demo rehearsal. It
+adds controller dry-run policy, supervised-pilot doctor readiness,
+provider-diversity fixtures, the common install/upgrade prompt pack, Board
 multi-instance handling, setup drift reporting, quieter hosted-builder and
 orchestrator-only doctor postures, truth-preserving unavailable/warn states,
 current Codex CLI smoke flags, clearer install/upgrade docs, and explicit
@@ -49,8 +52,8 @@ rehearsal, production dogfood upload shape, catch-up provenance, stale-audit
 inspection, AI tool/model source diagnostics, CodeMower.com trust guidance,
 generated gate hardening, owner-bound WIP hygiene, lane liveness checks,
 fix-round templates, human-token diagnostics, owner-decision escalation, and
-provider sandbox/live guardrails in one coherent beta release line.
-The beta line has proved:
+provider sandbox/live guardrails in one coherent supervised-pilot release line.
+The beta-to-v1.0 line has proved:
 
 - source checkout and package-install rehearsals from a clean Python 3.12 path;
 - `code-mower init --easy`, `doctor --adoption --repo OWNER/REPO`,
@@ -81,7 +84,7 @@ The beta line has proved:
   prints the same plan near the header so support tooling and first-time users
   can see exactly which optional GitHub/cloud stages ran;
 - Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
-  private reference/product repos, with the current beta preserving that client
+  private reference/product repos, with the current release preserving that client
   path for the next rollout; and
 - metadata-only AI tool/model provenance in cloud bundles and structured
   events, so dashboards can distinguish known provider/model/version signal
@@ -124,8 +127,8 @@ The beta line has proved:
 - a friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- the current public PyPI package-install rehearsal from `v0.9.4-beta.1` /
-  `code-mower==0.9.4b1` with a
+- the current public PyPI package-install rehearsal from `v1.0.0` /
+  `code-mower==1.0.0` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout. The earlier beta.52 package rehearsal remains
@@ -259,10 +262,11 @@ OAuth, Supabase, Vercel, DNS, and hosted-secret setup are CodeMower.com
 operator responsibilities. OSS users should only need a dashboard-issued or
 operator-issued developer/team token when they opt into cloud sharing.
 
-## Current Early-Adopter Goal
+## Current Supervised-Pilot Goal
 
-The current v0.9 beta is the shareable package line for 20-50 early OSS users
-who can follow a guide without knowing the original reference repos.
+The current v1.0 release is the shareable supervised-pilot package line for
+20-50 early OSS users who can follow a guide without knowing the original
+reference repos.
 
 The early-adopter experience should be:
 
@@ -296,9 +300,9 @@ these questions in the first few minutes:
 - Where is the code intentionally structured, and where is it still being
   refactored from extraction-era shape?
 
-The current beta-to-v1.0 work should optimize for that trust test. More provider
-adapters are useful only after install, doctor, first report, privacy, and code
-structure feel boring and credible.
+The v1.0-to-v1.0.1 work should optimize for that trust test. More provider
+adapters are useful only when install, doctor, first report, privacy, and code
+structure remain boring and credible.
 
 ## v0.5 Beta Learning Addendum
 
@@ -415,8 +419,8 @@ leaving room for future orchestrator adapters.
 
 ## Near-Term Roadmap
 
-1. Keep the v0.9 package beta install path verified from PyPI, and mark the
-   newest beta GitHub release as Latest until a stable 1.0 line exists.
+1. Keep the v1.0 package install path verified from PyPI, and mark the newest
+   GitHub release as Latest.
 2. Run one cold-repo adoption rehearsal from the published package: install,
    `init --easy`, `doctor --adoption`, `lanes status`, `board serve`, one tiny
    audited PR, and optional metadata-only cloud upload.
@@ -431,9 +435,9 @@ leaving room for future orchestrator adapters.
    and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
    compatibility shims where they confuse contributors, and keep private
    product repos as consumers of pinned releases.
-6. Keep PyPI-first releases boring: every wider-friendly beta should verify
-   GitHub release artifacts, PyPI trusted publishing, exact-version install, and
-   package-install rehearsal from the published package.
+6. Keep PyPI-first releases boring: every wider supervised-pilot release should
+   verify GitHub release artifacts, PyPI trusted publishing, exact-version
+   install, and package-install rehearsal from the published package.
 7. Add a short terminal recording or screenshot showing `doctor --adoption`,
    `lanes status`, `board serve`, and the first value-report path. A static
    transcript now exists in

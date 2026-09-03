@@ -82,7 +82,7 @@ as part of the manifest until the exporter emits it and tests cover it.
 
 ### v1.1: Broader Opt-In Upload
 
-Promote upload beyond friendly-user beta only after the bundle schema, Board
+Promote upload beyond supervised pilots only after the bundle schema, Board
 snapshot event, and hosted ingestion path have real early-adopter mileage:
 
 ```bash

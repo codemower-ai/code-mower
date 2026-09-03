@@ -32,15 +32,15 @@ Run:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.9.4b1 \
+  --package-spec code-mower==1.0.0 \
   --allow-package-index \
   --repo-path /path/to/product-repo \
   --json
 ```
 
-During beta testing, use the published PyPI beta by default. Use a local path
-or git URL for `--package-spec` only when rehearsing a release candidate before
-publication.
+During supervised pilots, use the published PyPI release by default. Use a local
+path or git URL for `--package-spec` only when rehearsing a release candidate
+before publication.
 
 ### Mirrors Removed
 

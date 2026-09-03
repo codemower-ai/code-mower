@@ -3,9 +3,9 @@
 This is the reference for Code Mower's first-user command surface. For the two
 guided starts, use [Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the
 reviewer gate or [Build Loop In 30 Minutes](build-loop-in-30-minutes.md) for
-builders plus orchestrator convention. Code Mower v0.9 is beta software; start
-on one repository and keep all reviewer lanes manual until the output is useful
-on your codebase.
+builders plus orchestrator convention. Code Mower v1.0 is supervised-pilot
+software; start on one repository and keep reviewer lanes manual until the
+output is useful on your codebase.
 
 To see the value loop before you touch a product repository, open the
 [Demo Calibration Example](../examples/demo-calibration/README.md), the
@@ -21,12 +21,12 @@ boxes, and contributor checkouts, use the full
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.4b1
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.0
 code-mower --version
 ```
 
-`0.9.4b1` is a beta release. If you want the newest prerelease instead of this
-exact verified beta, use:
+`1.0.0` is the supervised-pilot release. If you want a future prerelease instead
+of this exact verified release, use:
 
 ```bash
 pipx install --python "$CODE_MOWER_PYTHON" --pip-args="--pre" code-mower
@@ -36,7 +36,7 @@ For hosted agents or CI boxes without pipx:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 code-mower==0.9.4b1
+uv tool install --python 3.12 code-mower==1.0.0
 code-mower --version
 ```
 
@@ -64,7 +64,7 @@ running multiple builders against the same repository.
 
 ## 2. Authenticate GitHub
 
-Code Mower v0.9 is GitHub-first.
+Code Mower v1.0 is GitHub-first.
 
 ```bash
 gh auth login -h github.com -s repo,workflow,read:org
@@ -412,7 +412,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.9.4b1 \
+  --package-spec code-mower==1.0.0 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --json
