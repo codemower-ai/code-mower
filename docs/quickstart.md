@@ -360,6 +360,8 @@ discovers local Board listeners best-effort across common macOS and Linux tools;
 if listener inventory is restricted, GitHub PR/check status still reports.
 Visible Board timestamps render in the browser's local timezone and keep the
 original UTC value in hover text for precise handoffs.
+The Board header shows the Code Mower version currently serving the page and
+flags when a restart would pick up a newer installed package.
 When you want the Recent Local History panel to fill while the board is open,
 start it explicitly with:
 

@@ -99,6 +99,8 @@ class BoardTests(TestCase):
         self.assertIn("Reviewer Verdict Timeline", html)
         self.assertIn("Spend And Latency", html)
         self.assertIn("const href", html)
+        self.assertIn('id="version"', html)
+        self.assertIn("servingVersion", html)
         self.assertIn("const localTime", html)
         self.assertIn("Intl.DateTimeFormat(undefined", html)
         self.assertIn('title="UTC ', html)
@@ -190,9 +192,20 @@ class BoardTests(TestCase):
         self.assertEqual(payload["board"]["schema"], "code_mower.board.v1")
         self.assertEqual(payload["board"]["mode"], "local_read_only")
         self.assertEqual(payload["board"]["local_paths"], "redacted")
+        self.assertEqual(payload["board"]["version"]["serving_version"], board.CODE_MOWER_VERSION)
+        self.assertIn("restart_recommended", payload["board"]["version"])
         self.assertIn(lane_status.LOCAL_PATH_REDACTION, serialized)
         self.assertNotIn("/tmp/lane-checkout", serialized)
         self.assertNotIn("/tmp/codex-lane", serialized)
+
+    def test_board_version_payload_detects_upgrade_restart_hint(self) -> None:
+        with patch("code_mower.board.CODE_MOWER_VERSION", "0.9.1b1"):
+            with patch("code_mower.board._installed_package_version", return_value="0.9.2b1"):
+                payload = board.board_version_payload()
+
+        self.assertEqual(payload["serving_version"], "0.9.1b1")
+        self.assertEqual(payload["installed_version"], "0.9.2b1")
+        self.assertTrue(payload["restart_recommended"])
 
     def test_status_payload_can_show_local_paths_for_debugging(self) -> None:
         payload = board.status_payload(

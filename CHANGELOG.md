@@ -10,6 +10,13 @@ provider posture, and optional cloud sharing loop are still hardening.
   paths against the current repository checkout. Missing workflows remain a
   warning in starter mode, while real repository configs still fail when a
   required clear-stale workflow is absent (#588).
+- `code-mower lanes status --repo OWNER/REPO` now promotes the selected
+  PR-specific `next_detail` into the top-level text and JSON summary so pasted
+  operator updates include the stale audit/gate requeue detail without expanding
+  each PR (#591).
+- The local Board now reports the Code Mower version currently serving the
+  browser page and shows a restart hint when a newer installed package version
+  is available (#591).
 
 ## v0.9.2-beta.1
 

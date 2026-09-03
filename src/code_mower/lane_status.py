@@ -472,7 +472,7 @@ def _redact_local_paths(report: dict[str, Any]) -> None:
             process["cwd_redacted"] = True
 
 
-def _global_next(report: Mapping[str, Any]) -> str:
+def _global_next(report: Mapping[str, Any]) -> tuple[str, str]:
     prs = report["remote"].get("pull_requests", [])
     local_active = bool(report["local_boards"].get("boards")) or bool(report["local_processes"].get("processes"))
     if not report["remote"].get("available"):
@@ -480,7 +480,7 @@ def _global_next(report: Mapping[str, Any]) -> str:
             "remote unavailable; inspect local lanes"
             if local_active
             else "remote unavailable; fix GitHub access"
-        )
+        ), ""
     for action in (
         "fix BLOCKED audit",
         "fix failing check",
@@ -491,9 +491,12 @@ def _global_next(report: Mapping[str, Any]) -> str:
         "waiting for checks",
         "ready for merge or auto-merge",
     ):
-        if any(pr.get("next_action") == action for pr in prs):
-            return action
-    return "inspect PRs" if prs else ("local lanes visible; connect them to PR evidence" if local_active else "no active lanes")
+        for pr in prs:
+            if pr.get("next_action") == action:
+                return action, str(pr.get("next_detail") or "")
+    return (
+        "inspect PRs" if prs else ("local lanes visible; connect them to PR evidence" if local_active else "no active lanes")
+    ), ""
 
 
 def collect_status(
@@ -518,7 +521,7 @@ def collect_status(
     }
     if not show_local_paths:
         _redact_local_paths(report)
-    report["next_action"] = _global_next(report)
+    report["next_action"], report["next_detail"] = _global_next(report)
     return report
 
 
@@ -589,6 +592,8 @@ def render_text(report: Mapping[str, Any]) -> str:
         cwd = f" cwd={process['cwd']}" if process.get("cwd") else ""
         lines.append(f"- {process['provider']} pid={process['pid']} process={process['process']}{cwd}")
     lines.extend(["", f"Next: {report['next_action']}"])
+    if report.get("next_detail"):
+        lines.append(f"Detail: {report['next_detail']}")
     return "\n".join(lines) + "\n"
 
 
