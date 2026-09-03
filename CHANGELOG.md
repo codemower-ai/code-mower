@@ -6,6 +6,16 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
+No changes yet.
+
+## v0.9.3-beta.1
+
+This beta is a small confidence-polish release after the v0.9.2 adoption pass.
+It tightens first-run and upgrade diagnostics without changing the privacy
+boundary, gate semantics, or generated workflow names.
+
+### Changed
+
 - `doctor --adoption` can now verify packaged-starter review-hygiene workflow
   paths against the current repository checkout. Missing workflows remain a
   warning in starter mode, while real repository configs still fail when a

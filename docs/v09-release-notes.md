@@ -1,40 +1,39 @@
-# Code Mower v0.9.2-beta.1 Release Notes
+# Code Mower v0.9.3-beta.1 Release Notes
 
-This beta packages a small v0.9.2 cleanup pass after the v0.9.1
+This beta packages a small v0.9.3 confidence-polish pass after the v0.9.2
 announcement-hardening release. Install the pinned beta with
 `CODE_MOWER_PYTHON="$(command -v python3.12)"` followed by
-`pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.2b1`.
+`pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.3b1`.
 
 ## Headline
 
-Code Mower v0.9.2 makes the friendly-adopter loop less surprising by removing
-the retired third-party observe bridge, treating dispatch-token expiry metadata
-as advisory once the dispatch secret exists, and making stale audit waits point
-operators at the audit runner/dispatcher requeue path.
+Code Mower v0.9.3 makes the friendly-adopter loop more confidence-inspiring by
+separating starter-package warnings from real repo failures, improving
+operator-facing status detail, clarifying hosted/orchestrator doctor posture,
+and reporting standalone pin drift during existing-repo upgrades.
 
 ## What's New
 
-- The retired third-party observe bridge and its legacy status JSON alias have
-  been removed. The native read-only Board is the supported local visibility
-  surface.
-- `code-mower lanes status --repo OWNER/REPO --json` now reports local Board
-  listeners under `local_boards` only, with paths redacted by default.
-- `doctor --adoption --repo OWNER/REPO` keeps a missing or placeholder
-  `DISPATCH_TOKEN_EXPIRES_AT` repository variable at warning level once the
-  `DISPATCH_TOKEN` secret exists. Missing dispatch secrets still fail in
-  reviewer-gate posture.
-- Repositories that intentionally use a non-expiring dispatch token can set
-  `DISPATCH_TOKEN_EXPIRES_AT=never`; doctor reports that as a passing,
-  non-expiring token posture.
-- `code-mower lanes status --repo OWNER/REPO` now distinguishes stale
-  `needs-*-audit` waits from generic stuck checks and tells operators to check
-  the audit runner/dispatcher and requeue the named lane.
-- Stale pending gate waits now surface `rerun stale gate` at the PR and report
-  headline level, while preserving the paste-safe gate rerun command.
-- Board shows the same `next_detail` guidance that appears in the CLI text and
-  JSON output.
+- `doctor --adoption` verifies packaged-starter review-hygiene workflow paths
+  against the current repo checkout. Missing generated review-hygiene workflows
+  remain a starter warning, while missing workflows in a real repo config still
+  fail.
+- `code-mower lanes status --repo OWNER/REPO` promotes the selected PR's
+  `next_detail` into the top-level text and JSON summary so pasted status
+  updates include the exact stale audit or gate requeue detail.
+- Board now reports the Code Mower version currently serving the browser page
+  and shows a restart hint when a newer installed package version is available.
 - `code-mower board serve --repo OWNER/REPO` remains the recommended local
   read-only dashboard after install, init, and doctor.
+- `doctor --adoption` uses plainer hosted/orchestrator posture guidance, and
+  trusted audit-author GitHub variable read failures report `not_confirmed`
+  instead of implying confirmed missing configuration.
+- `code-mower migration setup-drift --repo-path .` reports the current
+  `tools/code_mower_standalone_pin.env` posture without sourcing it, including
+  placeholder, unreadable, missing, matching, and drifted states.
+- Longer term, #590 tracks cleaning up Code Mower's own dogfood
+  `code-mower.yml` root posture so product checks do the unsurprising thing by
+  default without starter-specific explanation.
 
 ## Privacy
 
