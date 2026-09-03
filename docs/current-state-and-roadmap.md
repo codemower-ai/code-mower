@@ -2,7 +2,7 @@
 
 This is the short source-of-truth snapshot for the public OSS package, the
 hosted CodeMower.com surface, and the near-term path from the current v1.0.2
-line toward broader supervised pilots.
+line toward broader supervised adoption.
 
 ## Positioning
 
@@ -45,8 +45,8 @@ summaries, provider scorecards, CodeMower.com productivity views, setup drift
 reporting, quieter hosted-builder and orchestrator-only doctor postures,
 truth-preserving unavailable/warn states, current Codex CLI smoke flags, clearer
 install/upgrade docs, and explicit package-index rehearsal opt-ins. See the
-[v1.0.2 Effectiveness Assessment](v101-effectiveness-assessment.md) for the
-current dogfood assessment and lane-readiness interpretation; the
+[v1.0.1 Effectiveness Assessment](v101-effectiveness-assessment.md) for the
+latest published dogfood assessment and lane-readiness interpretation; the
 [Post-v0.8 Effectiveness Assessment](post-v08-effectiveness-assessment.md)
 remains historical context.
 
@@ -147,7 +147,7 @@ The beta-to-v1.0 line has proved:
   metadata, while historical imports must be run explicitly through
   `code-mower cloud catch-up` or `repo-sync --mode catch-up` and are displayed
   as imported history rather than calibrated reviewer evidence; and
-- a local Codex dogfood proof using a dashboard-issued token: the public beta
+- a local Codex dogfood proof using a dashboard-issued token: the public package
   uploaded current metadata for Code Mower OSS, CodeMower.com, and two private
   reference/product repos, preserving metadata-only payloads and surfacing
   provider/model provenance gaps without blocking operational uploads; and
@@ -188,7 +188,7 @@ The beta-to-v1.0 line has proved:
 - provider metadata helpers now live under `code_mower.providers`, including
   local CLI version probes used by doctor and cloud provenance. This is the
   start of the broader provider-adapter cleanup while keeping the CLI-first API
-  stable for beta users.
+  stable for existing users.
 - Package materialization has started the same intentional split:
   package file manifests now live under `code_mower.package_manifest`, and
   generated package content builders and CLI command inventory now live under
@@ -329,7 +329,8 @@ thesis, privacy posture, and package layout are compelling, but the path from
 "I found this repo" to "I learned which AI reviewer is useful on my codebase"
 still has too much setup friction.
 
-Treat these as product gates before widening beyond friendly early adopters:
+These were v1.0 product gates and remain regression standards as adoption
+widens:
 
 - **Install friction:** GitHub-tag installs are acceptable as a fallback, but
   public adoption should default to the PyPI package path.
@@ -341,19 +342,17 @@ Treat these as product gates before widening beyond friendly early adopters:
   bootstraps a draft corpus from recent merged PRs and known review signals;
   release rehearsals prove that path and docs should keep emphasizing human
   disposition review before lane promotion.
-- **Code confidence:** release hygiene tests prove broad behavior, but v1.0
-  needs more focused unit coverage around doctor checks, cloud bundle privacy,
+- **Code confidence:** release hygiene tests prove broad behavior, and 1.x
+  should keep adding focused unit coverage around doctor checks, cloud bundle privacy,
   calibration math, verdict parsing, and provider-runner seams.
 - **Cloud incentive:** CodeMower.com must show immediate insight after upload,
   not just receipt rows. Cohort benchmarks, recommendation quality, and
   public/dogfood examples are the reasons a careful team would opt in.
 
-The next fresh-eyes round added a sharper engineering-readiness point: Code
-Mower now looks like a real beta from the outside, but v1.0 should not merely
-polish the first-run path. It should also make the implementation look
-intentional to a senior engineer reading the package for the first time. That
-means the remaining "extraction-era" seams are product work, not cleanup
-churn:
+Fresh-eyes review also established an engineering-readiness standard: the 1.x
+implementation should look intentional to a senior engineer reading the
+package for the first time. Remaining "extraction-era" seams are product work,
+not cleanup churn:
 
 - **Provider wrappers:** `codex_audit_pr.py`, `claude_audit_pr.py`,
   `gemini_cli_audit_pr.py`, `local_llm_audit_pr.py`, and similar wrappers
@@ -371,15 +370,15 @@ churn:
 - **Static confidence:** broaden lint/type checks gradually. Ruff should move
   beyond syntax/undefined-name once module boundaries stabilize, and a
   narrowly scoped type-checking gate should start with the most stable domain
-  modules before becoming a repo-wide v1.0 bar.
+  modules before becoming a repo-wide requirement.
 - **Zero-config first value:** `init --easy` and
   `doctor --adoption --repo OWNER/REPO` are good, but a future
   `code-mower try OWNER/REPO` or equivalent should produce a draft
   corpus/value report from recent PR history with minimal setup.
 
-## v1.0 Direction
+## v1.0 Operating Principles
 
-v1.0 should be "easy mode with a path to power":
+v1.0 is "easy mode with a path to power":
 
 - GitHub-first, with private-repo behavior and Actions cost made explicit.
 - Local-first, with cloud export/upload strictly optional.
@@ -429,73 +428,35 @@ leaving room for future orchestrator adapters.
 
 ## Near-Term Roadmap
 
-1. Keep the v1.0 package install path verified from PyPI, and mark the newest
-   GitHub release as Latest.
-2. Run one cold-repo adoption rehearsal from the published package: install,
-   `init --easy`, `doctor --adoption`, `lanes status`, `board serve`, one tiny
-   audited PR, and optional metadata-only cloud upload.
-3. Continue dogfooding metadata uploads from Code Mower, CodeMower.com, and
-   product/reference work while keeping operational uploads separate from
-   calibrated reviewer-quality evidence.
-4. Deliberately route some small follow-up issues through Claude Code,
-   Cursor/Grok Bot, Antigravity, Devin, and other available builders/reviewers
-   so promotion decisions can use measured data rather than Codex-only
-   throughput.
-5. Make the public repository the unambiguous source of truth: keep public docs
-   and releases flowing from `codemower-ai/code-mower`, reduce extraction-era
-   compatibility shims where they confuse contributors, and keep private
-   product repos as consumers of pinned releases.
-6. Keep PyPI-first releases boring: every wider supervised-pilot release should
-   verify GitHub release artifacts, PyPI trusted publishing, exact-version
-   install, and package-install rehearsal from the published package.
-7. Add a short terminal recording or screenshot showing `doctor --adoption`,
-   `lanes status`, `board serve`, and the first value-report path. A static
-   transcript now exists in
-   `docs/first-run-transcript.md`; replace or augment it with a recording
-   before a wider launch.
-8. Enable Supabase Auth providers for CodeMower.com and verify GitHub, Google,
-   and Apple login end to end.
-9. Turn the current team-controlled deletion/export basics into a published
-   retention policy with automated retention jobs before broad cloud-data
-   invitations.
-10. Expand the calibration corpus with known-clean, known-blocked, and subtle
-   architecture-risk PRs.
-11. Run reviewer/lens calibration across Codex, Claude, Antigravity/Gemini,
-   Gitar, and available informational lanes.
-12. Produce durable reviewer value reports with useful-rate, false positives,
-   latency, and cost.
-13. Promote lanes only after evidence shows they deserve informational,
-   selective, or merge-gating status.
-14. Increase tests around verdict parsing, calibration/value-report math,
-    provider runner stubs, and cloud bundle privacy before presenting Code
-    Mower as merge-gate infrastructure.
-15. Extract shared provider-runner primitives so the main provider wrappers are
-    thin adapters around a tested PR-audit pipeline.
-16. Remove remaining shipped-package dual-import and `tools` fallback shims once
-    release rehearsals prove source-checkout users have a clear supported path.
-17. Add a file-size/module-boundary review gate for the root package. Start by
-    splitting `init`, `cloud`, `config`, `cli`, and provider wrappers where it
-    improves contributor comprehension.
-18. Introduce static analysis in stages: broaden Ruff on stable packages first,
-    then add a scoped type-checking gate before making it a v1.0 release
-    requirement.
-19. Triage CLI help into a smaller first-user command set, with advanced
-    operator/internal commands documented separately.
-20. Harden calibration auto-discovery with more real PR shapes, first-user
-    examples, and package-install rehearsal coverage so first reports can be
-    bootstrapped from project history with human review.
-21. Keep first-read README friction low: one-screen pitch, install, doctor
-    sample, demo report, Board demo, and links to deeper docs.
-22. Keep hardening reusable stale-audit lane handling with real product-repo
-    feedback now that `clear-stale` and generated stale-clear workflows ship
-    in the default merge-authority lane support.
-23. Keep repository-native checks central: detect and run each repo's declared
-    ESLint/Vitest/Ruff/pytest/build surface instead of treating Code Mower's own
-    tooling as a universal product-repo lint policy.
-24. Expand builder-experiment capture now that the reviewer/value loop and
-    Board visibility path are producing durable evidence.
-25. Keep commercial implementation, hosted reporting, telemetry products, and
-    monetization plans in the private CodeMower.com repo.
+1. Keep each PyPI release aligned with the GitHub Latest release, README pin,
+   release notes, generated-workflow checks, fresh-clone rehearsal, and exact
+   package-install rehearsal.
+2. Repeat cold-repo and existing-repo adoption rehearsals with experienced
+   users; turn real friction into small, tested follow-up issues.
+3. Continue metadata-only dogfood uploads while keeping operational activity
+   distinct from adjudicated reviewer-quality evidence.
+4. Route bounded work through Claude, Codex, Cursor/Grok Bot, Antigravity,
+   Devin, Muse, and other available lanes so promotion decisions can use
+   measured quality, latency, intervention, and cost data.
+5. Expand the calibration corpus with known-clean, known-blocked, and subtle
+   architecture-risk PRs; promote lanes only when the policy evidence supports
+   it.
+6. Keep the public repository the OSS source of truth. Private product repos
+   consume pinned releases and keep product-specific configuration private.
+7. Add a short public recording of install, `doctor --adoption`, `lanes
+   status`, Board, and the first report; keep the static transcript as the
+   accessible fallback.
+8. Continue extracting shared provider-runner primitives and reducing legacy
+   import shims where that materially improves contributor comprehension.
+9. Broaden static analysis and module-boundary checks gradually around stable
+   contracts rather than as a single repository-wide migration.
+10. Keep repository-native checks central: detect and run each repo's declared
+    lint, test, and build surface instead of treating Code Mower's own tooling
+    as a universal policy.
+11. Improve CodeMower.com authentication, retention, export/deletion, and
+    productivity views before inviting broad cloud-data participation.
+12. Keep commercial implementation, hosted reporting, telemetry products, and
+    monetization plans in the private CodeMower.com repository.
 
 ## Documentation Ownership
 

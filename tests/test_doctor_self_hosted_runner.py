@@ -26,7 +26,7 @@ from code_mower.doctor_checks.self_hosted_runner import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _runner_config(label: str = "bridge-pro-audit") -> dict[str, object]:
+def _runner_config(label: str = "sample-app-audit") -> dict[str, object]:
     return {
         "version": 1,
         "project": {"name": "test", "state_dir": ".code-mower"},
@@ -190,7 +190,7 @@ class SelfHostedRunnerDoctorTests(unittest.TestCase):
             )
 
         self.assertEqual(check.status, "fail")
-        self.assertEqual(check.detail["missing_labels"], ["bridge-pro-audit"])
+        self.assertEqual(check.detail["missing_labels"], ["sample-app-audit"])
 
     def test_runner_labels_from_github_paginates_runner_inventory(self) -> None:
         calls: list[str] = []
@@ -205,7 +205,7 @@ class SelfHostedRunnerDoctorTests(unittest.TestCase):
                         "name": "mac-runner",
                         "labels": [
                             {"name": "self-hosted"},
-                            {"name": "bridge-pro-audit"},
+                            {"name": "sample-app-audit"},
                         ],
                     }
                 ]
@@ -220,7 +220,7 @@ class SelfHostedRunnerDoctorTests(unittest.TestCase):
                 which=lambda _command: "/usr/local/bin/gh",
             )
 
-        self.assertEqual(labels, ("self-hosted", "bridge-pro-audit"))
+        self.assertEqual(labels, ("self-hosted", "sample-app-audit"))
         self.assertEqual(
             calls,
             [

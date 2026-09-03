@@ -74,7 +74,7 @@ To follow a future prerelease instead of the pinned supervised-pilot release:
 pipx install --python "$CODE_MOWER_PYTHON" --pip-args="--pre" code-mower
 ```
 
-To replace an existing pipx install with an exact beta, use `--force` so the
+To replace an existing pipx install with an exact release, use `--force` so the
 old venv cannot keep serving the previous package:
 
 ```bash
@@ -109,7 +109,7 @@ code-mower --version
 If the uv tool directory is not on `PATH`, use uv's printed path hint or run the
 installed command directly from the uv tool bin directory for that session.
 
-To replace an existing uv tool install with an exact beta:
+To replace an existing uv tool install with an exact release:
 
 ```bash
 uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.0.2
@@ -139,7 +139,7 @@ shared workstation install while another builder owns an active PR branch.
 
 ## Release Rehearsal Installs
 
-When validating a newly published beta, bypass installer caches before deciding
+When validating a newly published release, bypass installer caches before deciding
 that PyPI or the package is broken.
 
 For pipx:

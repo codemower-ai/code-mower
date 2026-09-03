@@ -208,7 +208,7 @@ def test_labeler_counts_decision_covered_p2_as_codex_done(monkeypatch) -> None:
     monkeypatch.delenv("CODEX_BOT_AUTHORS", raising=False)
     config = load_lane_config("codex")
     transcript = json.loads(
-        (FIXTURES / "bridge_pro_311_decision_transcript.json").read_text(
+        (FIXTURES / "sample_app_311_decision_transcript.json").read_text(
             encoding="utf-8"
         )
     )

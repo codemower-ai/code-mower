@@ -17,9 +17,12 @@ ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_SUBSTRINGS = (
     "j" + "huber",
     "Jeff" + " Huber",
+    "jeff" + "huber",
     "j" + "huber@gmail",
     "/" + "Users/",
     "/private" + "/tmp",
+    "bridge" + "-pro",
+    "bridge" + "_pro",
     "cube" + "-snap",
     "cube" + "-two-view-debugger",
     "Cube" + "Snap",

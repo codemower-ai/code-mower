@@ -1,8 +1,8 @@
 # Support
 
-Code Mower is alpha software. The fastest path to useful help is to share the
-smallest safe reproduction and the command output that does not contain private
-content.
+Code Mower 1.0 is supervised-pilot software. The fastest path to useful help is
+to share the smallest safe reproduction and command output that does not
+contain private content.
 
 ## Setup And Usage Help
 
@@ -24,7 +24,8 @@ Helpful public reports include:
 - repository host and whether the repo is public or private;
 - provider CLIs involved, without auth output;
 - the exact `code-mower` command you ran; and
-- sanitized `doctor --preflight --json` or `doctor --v05 --json` output.
+- sanitized `doctor --adoption --repo OWNER/REPO --json` output, with
+  `--orchestrator-only` or `--hosted-builders` when that matches the host.
 
 ## What Not To Share Publicly
 

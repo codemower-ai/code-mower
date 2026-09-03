@@ -9,7 +9,24 @@ description = "Multi-reviewer AI code audit orchestration"
 requires-python = ">=3.12"
 readme = "README.md"
 license = "Apache-2.0"
+keywords = ["ai", "code-review", "github-actions", "developer-tools"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = ["PyYAML>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/codemower-ai/code-mower"
+Documentation = "https://github.com/codemower-ai/code-mower#readme"
+Repository = "https://github.com/codemower-ai/code-mower"
+Issues = "https://github.com/codemower-ai/code-mower/issues"
+Changelog = "https://github.com/codemower-ai/code-mower/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 test = [

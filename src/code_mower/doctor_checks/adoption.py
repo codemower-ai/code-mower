@@ -16,6 +16,11 @@ TRUSTED_AUDIT_AUTHOR_VARIABLES = (
     "CLAUDE_AUDIT_BOT_AUTHORS",
     "CODEX_BOT_AUTHORS",
 )
+PUBLIC_IDENTITY_VARIABLES = (
+    "CODE_MOWER_OWNER_LOGIN",
+    "CODE_MOWER_DECISION_AUTHORITIES",
+    "CODE_MOWER_TRUSTED_AUTHORS_JSON",
+)
 GENERATED_SETUP_MARKERS = {
     "generated_config": (".code-mower.generated/code-mower.yml",),
     "installed_gate_workflow": (".github/workflows/code-mower-gate.yml",),
@@ -346,7 +351,27 @@ def check_adoption_setup(
         return tuple(checks)
 
     owner_login = _configured_owner_login(config)
-    if not owner_login or owner_login.lower() == OWNER_LOGIN_PLACEHOLDER.lower():
+    owner_login_variable = (
+        str((trusted_author_variables or {}).get("CODE_MOWER_OWNER_LOGIN") or "")
+        == "present"
+    )
+    if (
+        not owner_login
+        or owner_login.lower() == OWNER_LOGIN_PLACEHOLDER.lower()
+    ) and owner_login_variable:
+        checks.append(
+            DoctorCheck(
+                name="doctor.adoption.owner_login",
+                status=STATUS_PASS,
+                message="owner decision login configured by repository variable",
+                detail={
+                    "owner_login": "",
+                    "source": "CODE_MOWER_OWNER_LOGIN",
+                    "value_hidden": True,
+                },
+            )
+        )
+    elif not owner_login or owner_login.lower() == OWNER_LOGIN_PLACEHOLDER.lower():
         checks.append(
             DoctorCheck(
                 name="doctor.adoption.owner_login",
@@ -355,8 +380,8 @@ def check_adoption_setup(
                 detail={"owner_login": owner_login},
                 remediation=(
                     "Set owner_surface.owner_login to the decision owner's "
-                    "GitHub login before trusting manual decisions or owner "
-                    "notifications."
+                    "GitHub login, or set the CODE_MOWER_OWNER_LOGIN repository "
+                    "variable when personal identity should not be tracked."
                 ),
             )
         )

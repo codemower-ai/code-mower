@@ -6,8 +6,9 @@ run configured tools, and post back to GitHub when explicitly configured.
 
 ## Supported Versions
 
-Security fixes target the latest published alpha tag and `main` until a stable
-release line exists.
+Security fixes target the latest published 1.x release and `main`. Users
+should upgrade to the newest patch release before reporting a vulnerability
+that may already be fixed.
 
 ## Reporting A Vulnerability
 
@@ -15,8 +16,9 @@ Please do not open a public issue with exploit details, credentials, private
 repository URLs, raw audit prompts, raw reviewer outputs, proprietary code, or
 secrets.
 
-Report security concerns privately through GitHub private vulnerability
-reporting when available, or contact the maintainers out of band.
+Report security concerns through
+[GitHub private vulnerability reporting](https://github.com/codemower-ai/code-mower/security/advisories/new)
+when available, or contact the maintainers out of band.
 
 Good reports include:
 

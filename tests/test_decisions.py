@@ -6,6 +6,7 @@ import os
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from code_mower import decisions
 from code_mower.lane_configs import load_lane_config
@@ -56,6 +57,20 @@ Findings:
 
 
 class DecisionMarkerTests(unittest.TestCase):
+    def test_repository_variable_override_wins_over_tracked_default(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "CODE_MOWER_DECISION_AUTHORITIES": "tracked-default",
+                "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "repo-owner,release-bot",
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                decisions.decision_authorities_from_env(),
+                ("repo-owner", "release-bot"),
+            )
+
     def test_decide_renders_parseable_marker(self) -> None:
         out = io.StringIO()
         with redirect_stdout(out):
@@ -442,11 +457,11 @@ Findings:
 
         self.assertFalse(decisions.audit_blockers_are_decision_covered(body, (record,)))
 
-    def test_bridge_pro_311_fixture_decision_covered_p2_yields_codex_done(self) -> None:
+    def test_sample_app_311_fixture_decision_covered_p2_yields_codex_done(self) -> None:
         os.environ.pop("CODEX_BOT_AUTHORS", None)
         config = load_lane_config("codex")
         transcript = json.loads(
-            (FIXTURES / "bridge_pro_311_decision_transcript.json").read_text(
+            (FIXTURES / "sample_app_311_decision_transcript.json").read_text(
                 encoding="utf-8"
             )
         )

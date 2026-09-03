@@ -33,6 +33,7 @@ env:
   CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN: {% raw %}${{ secrets.CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN || '' }}{% endraw %}
   NEEDS_OWNER_LABEL: __NEEDS_OWNER_LABEL_YAML__
   OWNER_LOGIN: __OWNER_LOGIN_YAML__
+  OWNER_LOGIN_OVERRIDE: {% raw %}${{ vars.CODE_MOWER_OWNER_LOGIN || '' }}{% endraw %}
   STATUS_ISSUE: __STATUS_ISSUE__
 
 jobs:
@@ -52,6 +53,7 @@ jobs:
 __GATE_HEALTH_AUTHOR_ENV_ASSIGNMENTS__
         run: |
           set -euo pipefail
+          owner_login="${OWNER_LOGIN_OVERRIDE:-${OWNER_LOGIN}}"
           tools/code_mower gate-health \
             --repo "{% raw %}${{ github.repository }}{% endraw %}" \
             --status-issue "${STATUS_ISSUE}" \
@@ -62,5 +64,5 @@ __GATE_HEALTH_AUTHOR_ENV_ASSIGNMENTS__
             --unknown-streak-history-hours "${CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_HISTORY_HOURS}" \
             --unknown-streak-closed-pr-limit "${CODE_MOWER_GATE_HEALTH_UNKNOWN_STREAK_CLOSED_PR_LIMIT}" \
             --runner-label "${CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL}" \
-            --owner-login "${OWNER_LOGIN}" \
+            --owner-login "${owner_login}" \
             --alert-runner-api-unavailable

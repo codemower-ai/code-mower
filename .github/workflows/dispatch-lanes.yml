@@ -34,7 +34,8 @@ jobs:
       CODE_MOWER_MAX_WIP: ${{ github.event.inputs.max_wip || vars.CODE_MOWER_MAX_WIP || '5' }}
       CODE_MOWER_READY_LABEL: "tier:R"
       CODE_MOWER_OWNER_LABELS_JSON: "[\"needs-owner\",\"owner-decision\",\"owner-sitting\"]"
-      CODE_MOWER_TRUSTED_AUTHORS_JSON: "[\"jeffhuber\"]"
+      CODE_MOWER_TRUSTED_AUTHORS_JSON: "[]"
+      CODE_MOWER_TRUSTED_AUTHORS_JSON_OVERRIDE: ${{ vars.CODE_MOWER_TRUSTED_AUTHORS_JSON || '' }}
       CODE_MOWER_BUILDER_LANES_JSON: "[{\"audit_labels\":\"needs-claude-audit\",\"audit_labels_display\":\"needs-claude-audit\",\"builder_label\":\"builder:codex\",\"builder_labels\":[\"builder:codex\"],\"dispatch_label\":\"dispatched:codex\",\"dispatch_labels\":[\"dispatched:codex\"],\"display_name\":\"Codex\",\"doc\":\"lanes/codex.md\",\"doc_target\":\"docs/lanes/codex.md\",\"doc_template\":\"templates/lanes/codex.md\",\"lane\":\"codex\",\"mac_runner\":\"true\",\"mention\":\"@codex\"},{\"audit_labels\":\"needs-codex-audit\",\"audit_labels_display\":\"needs-codex-audit\",\"builder_label\":\"builder:claude\",\"builder_labels\":[\"builder:claude\"],\"dispatch_label\":\"dispatched:claude\",\"dispatch_labels\":[\"dispatched:claude\"],\"display_name\":\"Claude\",\"doc\":\"lanes/claude.md\",\"doc_target\":\"docs/lanes/claude.md\",\"doc_template\":\"templates/lanes/claude.md\",\"lane\":\"claude\",\"mac_runner\":\"true\",\"mention\":\"Claude lane -\"},{\"audit_labels\":\"needs-codex-audit,needs-claude-audit\",\"audit_labels_display\":\"needs-codex-audit, needs-claude-audit\",\"builder_label\":\"builder:cursor\",\"builder_labels\":[\"builder:cursor\",\"builder:grok-bot\"],\"dispatch_label\":\"dispatched:cursor\",\"dispatch_labels\":[\"dispatched:cursor\",\"dispatched:grok-bot\"],\"display_name\":\"Cursor\",\"doc\":\"lanes/cursor.md\",\"doc_target\":\"docs/lanes/cursor.md\",\"doc_template\":\"templates/lanes/cursor.md\",\"lane\":\"cursor\",\"mac_runner\":\"false\",\"mention\":\"@cursor\"}]"
     steps:
       - name: Dispatch ready issues per lane
@@ -64,7 +65,9 @@ jobs:
           max_wip = int(raw_wip) if raw_wip.isdecimal() and int(raw_wip) > 0 else default_wip
           repo_owner = repo.split("/", 1)[0]
           configured_trusted_authors = json.loads(
-              os.environ.get("CODE_MOWER_TRUSTED_AUTHORS_JSON") or "[]"
+              os.environ.get("CODE_MOWER_TRUSTED_AUTHORS_JSON_OVERRIDE")
+              or os.environ.get("CODE_MOWER_TRUSTED_AUTHORS_JSON")
+              or "[]"
           )
           trusted_authors = {
               str(author).strip().lower()

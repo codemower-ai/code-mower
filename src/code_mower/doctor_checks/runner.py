@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from code_mower import config as code_mower_config
 
 from .adoption import (
+    PUBLIC_IDENTITY_VARIABLES,
     TRUSTED_AUDIT_AUTHOR_VARIABLES,
     check_adoption_posture_guidance,
     check_adoption_setup,
@@ -134,7 +135,10 @@ def run_doctor(
             trusted_author_probe = trusted_author_variable_probe(
                 gh_path=gh_path,
                 slug=trusted_author_repo_slug,
-                variables=TRUSTED_AUDIT_AUTHOR_VARIABLES,
+                variables=(
+                    *TRUSTED_AUDIT_AUTHOR_VARIABLES,
+                    *PUBLIC_IDENTITY_VARIABLES,
+                ),
                 http_timeout=http_timeout,
             )
             statuses = trusted_author_probe.get("statuses")

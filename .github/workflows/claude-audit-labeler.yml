@@ -13,7 +13,8 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"
+  CODE_MOWER_DECISION_AUTHORITIES: ""
+  CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE: ${{ vars.CODE_MOWER_DECISION_AUTHORITIES || '' }}
   CODE_MOWER_AUTHOR_EXCLUSION_JSON: "{\"authors\":{\"chatgpt-codex-connector[bot]\":\"codex\",\"claude[bot]\":\"claude\",\"cursor[bot]\":\"cursor\",\"grok-bot[bot]\":\"cursor\"},\"enabled\":true,\"labels\":{\"builder:claude\":\"claude\",\"builder:codex\":\"codex\",\"builder:cursor\":\"cursor\",\"builder:gitar\":\"gitar\",\"builder:grok-bot\":\"cursor\"},\"trailers\":{\"CODE_MOWER_BUILDER:claude\":\"claude\",\"CODE_MOWER_BUILDER:codex\":\"codex\",\"CODE_MOWER_BUILDER:cursor\":\"cursor\",\"CODE_MOWER_BUILDER:grok-bot\":\"cursor\"}}"
 
 jobs:

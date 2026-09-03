@@ -175,11 +175,11 @@ def evaluate_case(**overrides: object) -> list[Alert]:
         "check_runs": {SHA: []},
         "commits": {9: []},
         "head_times": {},
-        "runners": [{"name": "mac", "status": "online", "labels": [{"name": "bridge-pro-audit"}]}],
+        "runners": [{"name": "mac", "status": "online", "labels": [{"name": "sample-app-audit"}]}],
         "status_comments": [],
         "stale_minutes": 45,
         "dedupe_hours": 6,
-        "runner_label": "bridge-pro-audit",
+        "runner_label": "sample-app-audit",
         "liveness_minutes": 45,
     }
     defaults.update(overrides)
@@ -682,7 +682,7 @@ class GateHealthTests(unittest.TestCase):
             timelines={},
             comments={},
             check_runs={},
-            runners=[{"name": "mac", "status": "offline", "labels": [{"name": "bridge-pro-audit"}]}],
+            runners=[{"name": "mac", "status": "offline", "labels": [{"name": "sample-app-audit"}]}],
             status_comments=[
                 {
                     "created_at": "2026-08-17T04:00:00Z",
@@ -1207,7 +1207,7 @@ class GateHealthTests(unittest.TestCase):
                         "--status-issue",
                         "6",
                         "--runner-label",
-                        "bridge-pro-audit",
+                        "sample-app-audit",
                         "--alert-runner-api-unavailable",
                     ]
                 )
@@ -1316,7 +1316,7 @@ class GateHealthTests(unittest.TestCase):
                         "--status-issue",
                         "6",
                         "--runner-label",
-                        "bridge-pro-audit",
+                        "sample-app-audit",
                         "--runner-check",
                         "required",
                     ]

@@ -35,6 +35,7 @@ jobs:
       CODE_MOWER_READY_LABEL: __BUILD_LOOP_READY_LABEL_YAML__
       CODE_MOWER_OWNER_LABELS_JSON: __BUILD_LOOP_OWNER_LABELS_JSON__
       CODE_MOWER_TRUSTED_AUTHORS_JSON: __BUILD_LOOP_TRUSTED_AUTHORS_JSON__
+      CODE_MOWER_TRUSTED_AUTHORS_JSON_OVERRIDE: {% raw %}${{ vars.CODE_MOWER_TRUSTED_AUTHORS_JSON || '' }}{% endraw %}
       CODE_MOWER_BUILDER_LANES_JSON: __BUILDER_DISPATCH_LANES_JSON__
     steps:
       - name: Dispatch ready issues per lane
@@ -64,7 +65,9 @@ jobs:
           max_wip = int(raw_wip) if raw_wip.isdecimal() and int(raw_wip) > 0 else default_wip
           repo_owner = repo.split("/", 1)[0]
           configured_trusted_authors = json.loads(
-              os.environ.get("CODE_MOWER_TRUSTED_AUTHORS_JSON") or "[]"
+              os.environ.get("CODE_MOWER_TRUSTED_AUTHORS_JSON_OVERRIDE")
+              or os.environ.get("CODE_MOWER_TRUSTED_AUTHORS_JSON")
+              or "[]"
           )
           trusted_authors = {
               str(author).strip().lower()

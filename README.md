@@ -4,8 +4,9 @@ Code Mower helps teams set up AI peer-programmer and reviewer lanes on real
 GitHub pull requests, then measure which builders and reviewers are useful on
 their actual codebase.
 
-Code Mower is beta, bring-your-own-agent-loop software for teams willing to
-calibrate reviewers. It is not a drop-in autonomous merge gate.
+Code Mower 1.0 is supervised-pilot, bring-your-own-agent-loop software for
+teams willing to calibrate reviewers. It is not a drop-in unattended merge
+gate.
 
 The short version:
 
