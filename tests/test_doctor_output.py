@@ -146,6 +146,44 @@ class DoctorOutputTests(unittest.TestCase):
         self.assertTrue(owner_check["owner_action"])
         self.assertEqual(owner_check["owner_action_kind"], "human_automation_token")
 
+    def test_promotion_todos_are_rendered_separately_from_warnings(self) -> None:
+        report = DoctorReport(
+            config_path="code-mower.yml",
+            provider_templates_path="providers.yml",
+            profile="recommended",
+            checks=(
+                DoctorCheck(
+                    name="github.repo.auto_merge",
+                    status=STATUS_WARN,
+                    message="owner/repo does not allow auto-merge",
+                    detail={
+                        "promotion_todo": True,
+                        "promotion_todo_kind": "repo_auto_merge",
+                    },
+                ),
+                DoctorCheck(
+                    name="runtime.pytest",
+                    status=STATUS_WARN,
+                    message="pytest is not installed",
+                ),
+            ),
+        )
+
+        rendered = output.render_doctor_text(report)
+
+        self.assertIn("Checks: 2 total, 1 promotion todos, 1 warnings", rendered)
+        self.assertIn("GitHub (1 promotion todos)", rendered)
+        self.assertIn(
+            "- PROMOTION-TODO github.repo.auto_merge: owner/repo does not allow auto-merge",
+            rendered,
+        )
+        self.assertEqual(report.as_dict()["summary"]["promotion_todos"], 1)
+        self.assertEqual(report.as_dict()["summary"]["warnings"], 1)
+        self.assertEqual(report.as_dict()["groups"]["github"]["promotion_todos"], 1)
+        promotion_check = report.as_dict()["checks"][0]
+        self.assertTrue(promotion_check["promotion_todo"])
+        self.assertEqual(promotion_check["promotion_todo_kind"], "repo_auto_merge")
+
     def test_doctor_output_group_keeps_lane_checks_with_providers(self) -> None:
         check = DoctorCheck(
             name="runtime.local_cli.probe",
@@ -155,6 +193,15 @@ class DoctorOutputTests(unittest.TestCase):
         )
 
         self.assertEqual(output.doctor_output_group(check), "providers")
+
+    def test_doctor_output_group_keeps_supervised_checks_together(self) -> None:
+        check = DoctorCheck(
+            name="supervised_pilot.readiness",
+            status=STATUS_PASS,
+            message="ready",
+        )
+
+        self.assertEqual(output.doctor_output_group(check), "supervised_pilot")
 
 
 if __name__ == "__main__":

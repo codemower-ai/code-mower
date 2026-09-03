@@ -29,7 +29,15 @@ class DoctorRegistryTests(unittest.TestCase):
     def test_default_check_groups_stay_stable(self) -> None:
         self.assertEqual(
             default_check_group_ids(),
-            ("runtime", "setup", "github", "providers", "cloud", "output"),
+            (
+                "runtime",
+                "setup",
+                "github",
+                "providers",
+                "cloud",
+                "supervised_pilot",
+                "output",
+            ),
         )
 
     def test_run_plan_enables_optional_stages_explicitly(self) -> None:
@@ -68,6 +76,30 @@ class DoctorRegistryTests(unittest.TestCase):
         self.assertEqual(
             {stage.id for stage in adoption_plan if stage.optional},
             {"adoption"},
+        )
+
+        pilot_plan = build_doctor_run_plan(
+            github=True,
+            cloud=True,
+            adoption=True,
+            supervised_pilot=True,
+        )
+        self.assertEqual(
+            tuple(stage.id for stage in pilot_plan),
+            (
+                "load-inputs",
+                "select-profile",
+                "runtime",
+                "providers",
+                "github",
+                "cloud",
+                "adoption",
+                "supervised-pilot",
+            ),
+        )
+        self.assertEqual(
+            {stage.id for stage in pilot_plan if stage.optional},
+            {"github", "cloud", "adoption", "supervised-pilot"},
         )
 
     def test_repo_slug_helpers_support_adoption_targeting(self) -> None:
@@ -461,6 +493,51 @@ class DoctorRegistryTests(unittest.TestCase):
                         self.assertEqual(code_mower_doctor.main(argv), 0)
 
                 self.assertEqual(captured["adoption_posture"], expected)
+
+    def test_supervised_pilot_cli_aliases_set_pilot_mode(self) -> None:
+        cases = (
+            (["--supervised-pilot", "--repo", "owner/repo"], "manual"),
+            (["--manual-pilot", "--repo", "owner/repo"], "manual"),
+            (["--promoted-pilot", "--repo", "owner/repo"], "promoted"),
+        )
+        for argv, expected_mode in cases:
+            with self.subTest(expected_mode=expected_mode):
+                captured: dict[str, object] = {}
+
+                def fake_run_doctor(
+                    *,
+                    _captured: dict[str, object] = captured,
+                    **kwargs: object,
+                ) -> DoctorReport:
+                    _captured.update(kwargs)
+                    return DoctorReport(
+                        config_path="code-mower.yml",
+                        provider_templates_path="providers.yml",
+                        profile=str(kwargs.get("profile") or ""),
+                        checks=(),
+                    )
+
+                with (
+                    mock.patch.object(
+                        code_mower_doctor,
+                        "resolve_doctor_config_path",
+                        return_value=ROOT / "code-mower.yml",
+                    ),
+                    mock.patch.object(
+                        code_mower_doctor,
+                        "resolve_doctor_provider_templates_path",
+                        return_value=ROOT / "src/code_mower/templates/providers.yml",
+                    ),
+                    mock.patch.object(code_mower_doctor, "run_doctor", fake_run_doctor),
+                ):
+                    with redirect_stdout(StringIO()):
+                        self.assertEqual(code_mower_doctor.main(argv), 0)
+
+                self.assertTrue(captured["adoption"])
+                self.assertTrue(captured["github"])
+                self.assertTrue(captured["cloud"])
+                self.assertTrue(captured["supervised_pilot"])
+                self.assertEqual(captured["pilot_mode"], expected_mode)
 
     def test_config_source_label_distinguishes_starter_and_explicit_paths(self) -> None:
         with tempfile.TemporaryDirectory() as root:

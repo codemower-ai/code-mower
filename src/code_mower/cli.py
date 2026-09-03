@@ -555,6 +555,7 @@ def _top_level_help(show_all: bool) -> str:
             "Common first run:",
             "  code-mower init --easy",
             "  code-mower doctor --adoption --repo OWNER/REPO",
+            "  code-mower doctor --supervised-pilot --repo OWNER/REPO",
             "  code-mower lanes status --repo OWNER/REPO",
             "  code-mower board serve --repo OWNER/REPO",
             (

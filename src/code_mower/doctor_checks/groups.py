@@ -12,6 +12,7 @@ GROUP_LABELS = OrderedDict(
         ("providers", "Provider lanes"),
         ("github", "GitHub"),
         ("cloud", "Code Mower Cloud"),
+        ("supervised_pilot", "Supervised Pilot"),
         ("output", "Output"),
         ("other", "Other"),
     )
@@ -25,6 +26,8 @@ def doctor_check_group_id(name: str, lane: str | None = None) -> str:
         return "github"
     if name.startswith("cloud."):
         return "cloud"
+    if name.startswith("supervised_pilot."):
+        return "supervised_pilot"
     if name.startswith("output."):
         return "output"
     if lane or name.startswith(("env.", "provider.", "runtime.local_cli")):

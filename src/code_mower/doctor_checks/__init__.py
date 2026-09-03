@@ -28,7 +28,9 @@ from .common import (
 from .github import check_github_setup
 from .github_config import check_repository_posture
 from .github_human_token import (
+    check_gate_automerge_token,
     check_human_automation_token,
+    gate_automerge_token_config,
     human_automation_token_config,
     human_automation_token_required,
 )
@@ -44,6 +46,7 @@ from .models import (
     STATUS_WARN,
     DoctorCheck,
     DoctorReport,
+    is_promotion_todo_check,
 )
 from .output import doctor_output_group, render_doctor_text
 from .presets import (
@@ -76,6 +79,13 @@ from .runtime import (
     check_pytest,
     check_python_runtime,
     check_ripgrep,
+)
+from .supervised_pilot import (
+    check_supervised_pilot,
+    check_supervised_pilot_board_visibility,
+    check_supervised_pilot_mode,
+    check_supervised_pilot_readiness,
+    check_supervised_pilot_runner_posture,
 )
 from .self_hosted_runner import (
     check_runner_actionlint_available,
@@ -115,6 +125,7 @@ __all__ = [
     "check_github_auth_surface",
     "check_macos_runner_launchagent",
     "check_github_setup",
+    "check_gate_automerge_token",
     "check_human_automation_token",
     "trusted_author_variable_probe",
     "trusted_author_variable_statuses",
@@ -129,6 +140,11 @@ __all__ = [
     "check_runner_required_env",
     "check_runner_workflow_labels",
     "check_self_hosted_runner",
+    "check_supervised_pilot",
+    "check_supervised_pilot_board_visibility",
+    "check_supervised_pilot_mode",
+    "check_supervised_pilot_readiness",
+    "check_supervised_pilot_runner_posture",
     "check_pytest",
     "check_python_runtime",
     "check_ripgrep",
@@ -139,8 +155,10 @@ __all__ = [
     "doctor_output_group",
     "effective_lane",
     "evaluate_json_probe",
+    "gate_automerge_token_config",
     "human_automation_token_config",
     "human_automation_token_required",
+    "is_promotion_todo_check",
     "load_inputs",
     "local_cli_probe_remediation",
     "normalize_repo_slug",

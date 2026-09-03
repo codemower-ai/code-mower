@@ -145,6 +145,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             "explicit or inferred GitHub repository and surface setup gaps"
         ),
     )
+    pilot_group = parser.add_mutually_exclusive_group()
+    pilot_group.add_argument(
+        "--supervised-pilot",
+        action="store_true",
+        help=(
+            "v1.0 supervised-pilot preset: run adoption, GitHub, cloud, and "
+            "readiness rollup checks for manual pilot mode"
+        ),
+    )
+    pilot_group.add_argument(
+        "--manual-pilot",
+        action="store_true",
+        help="alias for --supervised-pilot in manual merge-decision mode",
+    )
+    pilot_group.add_argument(
+        "--promoted-pilot",
+        action="store_true",
+        help=(
+            "run supervised-pilot readiness in promoted mode, where missing "
+            "gate, auto-merge, or merge credential checks are blockers"
+        ),
+    )
     posture_group = parser.add_mutually_exclusive_group()
     posture_group.add_argument(
         "--adoption-posture",
@@ -220,6 +242,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.supervised_pilot or args.manual_pilot or args.promoted_pilot:
+        args.adoption = True
+        args.preflight = True
+    pilot_mode = "promoted" if args.promoted_pilot else "manual"
     if args.adoption:
         args.preflight = True
     _apply_first_run_defaults(args)
@@ -250,6 +276,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             adoption=args.adoption,
             adoption_posture=args.adoption_posture,
+            supervised_pilot=bool(
+                args.supervised_pilot or args.manual_pilot or args.promoted_pilot
+            ),
+            pilot_mode=pilot_mode,
             probe_runtime=args.probe_runtime,
             github=args.github,
             cloud=args.cloud,

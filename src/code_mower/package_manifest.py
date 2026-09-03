@@ -228,6 +228,11 @@ PACKAGE_FILES = (
     ("src/code_mower/doctor_checks/runner.py", "src/code_mower/doctor_checks/runner.py", "core"),
     ("src/code_mower/doctor_checks/runtime.py", "src/code_mower/doctor_checks/runtime.py", "core"),
     (
+        "src/code_mower/doctor_checks/supervised_pilot.py",
+        "src/code_mower/doctor_checks/supervised_pilot.py",
+        "core",
+    ),
+    (
         "src/code_mower/doctor_checks/self_hosted_runner.py",
         "src/code_mower/doctor_checks/self_hosted_runner.py",
         "core",

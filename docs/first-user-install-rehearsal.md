@@ -159,32 +159,39 @@ code-mower doctor --easy --json
 This is the right path for early adopters and private-repo pilots such as
 mobile apps or web apps that have never installed Code Mower before.
 
-## Required Setup Failure Transcript
+## Required Setup Transcript
 
-A fresh product repository should fail preflight until the human automation
-token, branch-protection source, and repository auto-merge settings are fixed.
-The important failures look like this in the doctor JSON:
+A fresh product repository reports the human automation token as an owner
+action until the secret is present. Branch protection and repository
+auto-merge stay as promotion to-dos during the manual pilot and become blockers
+only when you run `doctor --promoted-pilot`. The important checks look like
+this in the doctor JSON:
 
 ```bash
-code-mower doctor --preflight --json
+code-mower doctor --supervised-pilot --repo OWNER/REPO --json
 ```
 
 ```json
 {
   "name": "github.human_automation_token",
-  "status": "fail",
+  "status": "warn",
+  "owner_action": true,
+  "owner_action_kind": "human_automation_token",
   "message": "OWNER/REPO is missing the DISPATCH_TOKEN human automation token secret",
   "remediation": "Create one human-owned fine-grained PAT secret with `gh secret set DISPATCH_TOKEN`. Grant repository Contents read, Issues read/write, and Pull requests read/write."
 }
 ```
 
 After the token is present, a branch-protection rule bound to the Actions
-check-run instead of the Code Mower commit status is also a failure:
+check-run instead of the Code Mower commit status is a promotion todo in
+manual pilot mode:
 
 ```json
 {
   "name": "github.branch_protection",
-  "status": "fail",
+  "status": "warn",
+  "promotion_todo": true,
+  "promotion_todo_kind": "branch_protection_gate_binding",
   "message": "OWNER/REPO@main requires code-mower/gate from GitHub Actions instead of Any source",
   "detail": {
     "required_status_check_bindings": [
@@ -204,15 +211,18 @@ The correct branch-protection API shape has `"app_id": null` for
 ```json
 {
   "name": "github.repo.auto_merge",
-  "status": "fail",
+  "status": "warn",
+  "promotion_todo": true,
+  "promotion_todo_kind": "repo_auto_merge",
   "message": "OWNER/REPO does not allow auto-merge",
   "remediation": "Enable repository auto-merge with `gh api -X PATCH repos/OWNER/REPO -f allow_auto_merge=true`."
 }
 ```
 
-These failures are intentional first-run blockers. They prevent the "all checks
-green, nothing merges" state caused by bot-authored automation events or by
-binding branch protection to the wrong status source.
+These promotion todos are intentional. They prevent the "all checks green,
+nothing merges" state caused by bot-authored automation events or by binding
+branch protection to the wrong status source, while still allowing a manual
+reviewer-gate pilot to proceed.
 
 ## Product Repo Comparison
 

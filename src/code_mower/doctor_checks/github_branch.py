@@ -89,7 +89,8 @@ def check_branch_protection(
             detail={
                 "repo": slug,
                 "default_branch": default_branch,
-                "owner_action": adoption,
+                "promotion_todo": adoption,
+                "promotion_todo_kind": "branch_protection_gate_binding",
                 "owner_action_kind": "branch_protection_gate_binding",
                 "required_status_context": required_status_context,
                 "required_status_contexts": contexts,
@@ -114,7 +115,8 @@ def check_branch_protection(
             detail={
                 "repo": slug,
                 "default_branch": default_branch,
-                "owner_action": adoption,
+                "promotion_todo": adoption,
+                "promotion_todo_kind": "branch_protection_gate_requirement",
                 "owner_action_kind": "branch_protection_gate_requirement",
                 "required_status_context": required_status_context,
                 "required_status_check_count": len(contexts),

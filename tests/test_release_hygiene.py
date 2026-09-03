@@ -408,6 +408,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("  lanes", help_text)
         self.assertIn("  project-context", help_text)
         self.assertIn("code-mower doctor --adoption --repo OWNER/REPO", help_text)
+        self.assertIn("code-mower doctor --supervised-pilot --repo OWNER/REPO", help_text)
         self.assertIn("code-mower lanes status --repo OWNER/REPO", help_text)
         self.assertIn("code-mower board serve --repo OWNER/REPO", help_text)
         self.assertNotIn("trailer-comment-labeler", help_text)
@@ -599,6 +600,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                     "checks": 1,
                     "failures": 0,
                     "owner_actions": 0,
+                    "promotion_todos": 0,
                     "warnings": 0,
                     "skipped": 0,
                 },
@@ -607,6 +609,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                     "checks": 1,
                     "failures": 0,
                     "owner_actions": 0,
+                    "promotion_todos": 0,
                     "warnings": 1,
                     "skipped": 0,
                 },
@@ -631,7 +634,15 @@ class ReleaseHygieneTests(unittest.TestCase):
         )
         self.assertEqual(
             doctor_checks.default_check_group_ids(),
-            ("runtime", "setup", "github", "providers", "cloud", "output"),
+            (
+                "runtime",
+                "setup",
+                "github",
+                "providers",
+                "cloud",
+                "supervised_pilot",
+                "output",
+            ),
         )
         self.assertEqual(
             cloud_client.dashboard_url_for_endpoint("https://codemower.com/api/ingest"),

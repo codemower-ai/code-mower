@@ -134,8 +134,11 @@ def check_repo_auto_merge(
             message=f"{slug} metadata did not include auto-merge posture",
             detail={
                 "repo": slug,
-                "owner_action": adoption,
+                "owner_action": not adoption,
+                "promotion_todo": adoption,
+                "promotion_todo_kind": "repo_auto_merge_visibility",
                 "owner_action_kind": "repo_auto_merge_visibility",
+                "adoption_posture": adoption_posture,
             },
             remediation=(
                 "Verify repository auto-merge manually before relying on the "
@@ -160,7 +163,9 @@ def check_repo_auto_merge(
         detail={
             "repo": slug,
             "allow_auto_merge": allow_auto_merge,
-            "owner_action": not allow_auto_merge,
+            "owner_action": not allow_auto_merge and not adoption,
+            "promotion_todo": adoption and not allow_auto_merge,
+            "promotion_todo_kind": "repo_auto_merge",
             "owner_action_kind": "repo_auto_merge",
             "adoption_posture": adoption_posture,
         },

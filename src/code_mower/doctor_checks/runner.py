@@ -31,6 +31,7 @@ from .runtime import (
     check_ripgrep,
 )
 from .self_hosted_runner import check_self_hosted_runner
+from .supervised_pilot import check_supervised_pilot
 
 
 def _provider_templates_source_root() -> Path:
@@ -101,12 +102,15 @@ def run_doctor(
     http_timeout: int = 5,
     actions_cost_sample: int = ACTIONS_COST_SAMPLE_DEFAULT,
     actionlint_bin: str = "actionlint",
+    supervised_pilot: bool = False,
+    pilot_mode: str = "manual",
 ) -> DoctorReport:
     plan = build_doctor_run_plan(
         github=github,
         cloud=cloud,
         runner=runner,
         adoption=adoption or bool(repo_slug),
+        supervised_pilot=supervised_pilot,
     )
     enabled_stages = {stage.id for stage in plan}
     config, templates, checks = load_inputs(config_path, provider_templates_path)
@@ -272,6 +276,7 @@ def run_doctor(
                 actions_cost_sample=actions_cost_sample,
                 adoption=adoption,
                 adoption_posture=adoption_posture,
+                pilot_mode=pilot_mode,
             )
         )
 
@@ -289,6 +294,16 @@ def run_doctor(
                 provider_templates_root=_provider_templates_source_root(),
                 http_timeout=http_timeout,
                 actionlint_bin=actionlint_bin,
+            )
+        )
+
+    if supervised_pilot:
+        checks.extend(
+            check_supervised_pilot(
+                checks,
+                repo_slug=repo_slug,
+                pilot_mode=pilot_mode,
+                adoption_posture=adoption_posture,
             )
         )
 
