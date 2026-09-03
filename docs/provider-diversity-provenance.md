@@ -112,7 +112,9 @@ All provider fixtures include four test cases:
 4. **malformed_extra_key**: Malformed verdict with unsupported extra keys for schema validation
 
 Run `tools/validate_provider_fixtures.py` for a quick local fixture integrity
-check before using these fixtures in calibration or provider comparison work.
+check before using these fixtures in calibration or provider comparison work;
+the telemetry export tests verify that raw fixture comment bodies are not
+uploaded.
 
 ## Metadata-Only Privacy Boundary
 

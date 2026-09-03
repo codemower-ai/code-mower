@@ -150,7 +150,7 @@ def main() -> int:
     print(f"  - {len(EXPECTED_PROVIDERS)} providers with fixture contracts")
     print(f"  - {len(EXPECTED_CASES)} test cases per provider")
     print(f"  - {len(EXPECTED_ARTIFACTS)} verdict artifact fixtures")
-    print("  - Metadata-only privacy boundary maintained")
+    print("  - No forbidden raw payload keys found")
     return 0
 
 
