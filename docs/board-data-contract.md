@@ -270,7 +270,11 @@ Top-level report fields include:
   `cost_usd`, and `total_tokens`;
 - `quality`: reviewer PASS/BLOCKED, catch, blocker, and fix-round counts;
 - `spend`: reviewer run count, total reviewer wall seconds, cost, token totals,
-  and per-lane groups; and
+  and per-lane groups;
+- `providers`: `code_mower.providerScorecards.v1` rows grouped by provider and
+  role with run counts, pass/block rates, adjudication metrics when reported,
+  cost/token availability, infra-failure counts, and advisory promotion caveats
+  pointing to `docs/lane-promotion-policy.md`; and
 - `next_action`: a concise operator action suitable for an epic status comment.
 
 Missing metrics are encoded as JSON `null` and mean unknown, not zero. A missing
@@ -280,7 +284,10 @@ and do not include source code, raw diffs, transcripts, issue body text, raw
 stdout/stderr, auth output, browser history, local secret values, or secrets.
 When multiple `productivity_summary` event files are supplied, the local report
 uses latest-window time metrics only; only additive count, token, and cost
-metrics are eligible for cross-event totals.
+metrics from one headline aggregation subject are eligible for cross-event
+totals. The headline subject priority is `repo`, then `release`, `issue`, then
+`pr`. Provider-, builder-, reviewer-, and lane-scoped events feed provider
+scorecards so dashboards do not double-count the same window.
 
 ## Owner Queue
 

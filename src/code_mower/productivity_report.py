@@ -47,6 +47,44 @@ PRODUCTIVITY_ADDITIVE_METRICS = {
     *PRODUCTIVITY_TOKEN_METRICS,
     "cost_usd",
 }
+PRODUCTIVITY_PROVIDER_SUBJECTS = {"builder", "lane", "provider", "reviewer"}
+PRODUCTIVITY_HEADLINE_SUBJECT_PRIORITY = ("repo", "release", "issue", "pr")
+PRODUCTIVITY_SCORECARDS_SCHEMA = "code_mower.providerScorecards.v1"
+PRODUCTIVITY_SCORECARD_SCHEMA = "code_mower.providerScorecard.v1"
+PROMOTION_POLICY_PATH = "docs/lane-promotion-policy.md"
+INFRA_VERDICTS = {
+    "CANCELLED",
+    "ERROR",
+    "INFRA_ERROR",
+    "PROVIDER_UNAVAILABLE",
+    "TIMEOUT",
+    "UNKNOWN",
+}
+SCORECARD_COUNT_METRICS = (
+    "builder_run_count",
+    "reviewer_run_count",
+    "audit_pass_count",
+    "audit_blocked_count",
+    "reviewer_catch_count",
+    "blocking_bug_count",
+    "blocked_finding_count",
+    "false_blocker_count",
+    "missed_blocker_count",
+    "fix_round_count",
+    "checks_failed_count",
+)
+PUBLIC_SPEND_LANE_KEYS = (
+    "lane",
+    "provider",
+    "role",
+    "reviewer_run_count",
+    "audit_pass_count",
+    "audit_blocked_count",
+    "infra_failure_count",
+    "wall_seconds",
+    "cost_usd",
+    "total_tokens",
+)
 
 
 def _now() -> datetime:
@@ -191,6 +229,55 @@ def _label_verdicts(pr: Mapping[str, Any]) -> list[tuple[str, str]]:
     return verdicts
 
 
+def _dimension_text(event: Mapping[str, Any], key: str) -> str:
+    dimensions = event.get("dimensions") if isinstance(event.get("dimensions"), Mapping) else {}
+    value = dimensions.get(key)
+    return str(value).strip() if value not in (None, "") else ""
+
+
+def _aggregation_subject(event: Mapping[str, Any]) -> str:
+    return _dimension_text(event, "aggregation_subject") or "repo"
+
+
+def _is_provider_subject(event: Mapping[str, Any]) -> bool:
+    return _aggregation_subject(event) in PRODUCTIVITY_PROVIDER_SUBJECTS
+
+
+def _headline_summary_events(events: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    candidates = [event for event in events if not _is_provider_subject(event)]
+    for subject in PRODUCTIVITY_HEADLINE_SUBJECT_PRIORITY:
+        matches = [event for event in candidates if _aggregation_subject(event) == subject]
+        if matches:
+            return matches
+    return candidates
+
+
+def _provider_from_event(event: Mapping[str, Any]) -> str:
+    subject = _aggregation_subject(event)
+    provider = (
+        _dimension_text(event, "provider")
+        or _dimension_text(event, "builder_provider")
+        or _dimension_text(event, "reviewer_provider")
+    )
+    if not provider and subject in PRODUCTIVITY_PROVIDER_SUBJECTS:
+        provider = _dimension_text(event, "aggregation_key")
+    if subject == "lane" and provider:
+        provider = reviewer_spend.provider_from_lane(provider)
+    return provider or str(event.get("provider") or "").strip() or "unknown"
+
+
+def _role_from_event(event: Mapping[str, Any]) -> str:
+    subject = _aggregation_subject(event)
+    role = _dimension_text(event, "role")
+    if role:
+        return role
+    if subject in {"builder", "reviewer"}:
+        return subject
+    if subject == "lane":
+        return "reviewer"
+    return "unknown"
+
+
 def _pull_requests(status: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     remote = status.get("remote") if isinstance(status.get("remote"), Mapping) else {}
     prs = remote.get("pull_requests") if isinstance(remote.get("pull_requests"), list) else []
@@ -310,6 +397,7 @@ def _spend_summary(repo: str, path: Path) -> tuple[dict[str, Any], list[str]]:
     run_count = 0
     pass_count = 0
     blocked_count = 0
+    infra_failure_count = 0
     filtered_rows = 0
     wall_seconds = 0.0
     cost_usd = 0.0
@@ -323,22 +411,31 @@ def _spend_summary(repo: str, path: Path) -> tuple[dict[str, Any], list[str]]:
             filtered_rows += 1
             continue
         lane = str(run.get("lane") or "").strip() or "unknown"
+        provider = reviewer_spend.provider_from_lane(lane)
         verdict = str(run.get("verdict") or "").strip().upper()
         run_count += 1
         if verdict == "PASS":
             pass_count += 1
         elif verdict == "BLOCKED":
             blocked_count += 1
+        elif verdict in INFRA_VERDICTS:
+            infra_failure_count += 1
         lane_group = by_lane.setdefault(
             lane,
             {
                 "lane": lane,
+                "provider": provider,
+                "role": "reviewer",
                 "reviewer_run_count": 0,
                 "audit_pass_count": 0,
                 "audit_blocked_count": 0,
+                "infra_failure_count": 0,
                 "wall_seconds": 0.0,
                 "cost_usd": 0.0,
                 "total_tokens": 0,
+                "wall_reported": False,
+                "cost_reported": False,
+                "token_reported": False,
             },
         )
         lane_group["reviewer_run_count"] += 1
@@ -346,18 +443,23 @@ def _spend_summary(repo: str, path: Path) -> tuple[dict[str, Any], list[str]]:
             lane_group["audit_pass_count"] += 1
         elif verdict == "BLOCKED":
             lane_group["audit_blocked_count"] += 1
+        elif verdict in INFRA_VERDICTS:
+            lane_group["infra_failure_count"] += 1
         if (value := _number(run.get("wall_seconds"))) is not None:
             wall_seen = True
             wall_seconds += float(value)
             lane_group["wall_seconds"] += float(value)
+            lane_group["wall_reported"] = True
         if (value := _number(run.get("cost_usd"))) is not None:
             cost_seen = True
             cost_usd += float(value)
             lane_group["cost_usd"] += float(value)
+            lane_group["cost_reported"] = True
         if (value := _int(run.get("total_tokens"))) is not None:
             token_seen = True
             total_tokens += value
             lane_group["total_tokens"] += value
+            lane_group["token_reported"] = True
     normalized_lanes = []
     for group in by_lane.values():
         group["wall_seconds"] = round(group["wall_seconds"], 3)
@@ -375,17 +477,19 @@ def _spend_summary(repo: str, path: Path) -> tuple[dict[str, Any], list[str]]:
             "total_tokens": total_tokens if token_seen else None,
             "audit_pass_count": pass_count,
             "audit_blocked_count": blocked_count,
+            "infra_failure_count": infra_failure_count,
         },
         warnings,
     )
 
 
 def _cloud_summary(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    latest = events[-1] if events else {}
+    summary_events = _headline_summary_events(events)
+    latest = summary_events[-1] if summary_events else {}
     latest_dimensions = latest.get("dimensions") if isinstance(latest.get("dimensions"), Mapping) else {}
     latest_metrics = latest.get("metrics") if isinstance(latest.get("metrics"), Mapping) else {}
     totals: dict[str, float | int] = {}
-    for event in events:
+    for event in summary_events:
         metrics = event.get("metrics") if isinstance(event.get("metrics"), Mapping) else {}
         for key, value in metrics.items():
             if str(key) not in PRODUCTIVITY_ADDITIVE_METRICS:
@@ -400,6 +504,7 @@ def _cloud_summary(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return {
         "available": bool(events),
         "event_count": len(events),
+        "summary_event_count": len(summary_events),
         "latest_created_at": str(latest.get("created_at") or ""),
         "latest_dimensions": {
             key: str(latest_dimensions.get(key) or "")
@@ -409,6 +514,299 @@ def _cloud_summary(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "latest_metrics": dict(latest_metrics),
         "provided_metric_totals": totals,
     }
+
+
+def _empty_scorecard(provider: str, role: str) -> dict[str, Any]:
+    return {
+        "schema": PRODUCTIVITY_SCORECARD_SCHEMA,
+        "provider": provider,
+        "role": role,
+        "lane_ids": [],
+        "sources": {
+            "reviewer_spend_runs": 0,
+            "cloud_events": 0,
+        },
+        "metrics": {
+            "builder_run_count": 0,
+            "reviewer_run_count": 0,
+            "audit_pass_count": 0,
+            "audit_blocked_count": 0,
+            "reviewer_catch_count": 0,
+            "blocking_bug_count": 0,
+            "blocked_finding_count": 0,
+            "false_blocker_count": 0,
+            "missed_blocker_count": 0,
+            "fix_round_count": 0,
+            "checks_failed_count": 0,
+            "infra_failure_count": 0,
+            "wall_seconds": None,
+            "cost_usd": None,
+            "total_tokens": None,
+        },
+        "reported": {
+            "cost": False,
+            "tokens": False,
+            "wall_seconds": False,
+            "blocking_bugs": False,
+            "false_blockers": False,
+            "missed_blockers": False,
+            "checks_failed": False,
+        },
+        "rates": {},
+        "promotion": {},
+    }
+
+
+def _scorecard_key(provider: str, role: str) -> str:
+    return f"{provider}\0{role}"
+
+
+def _scorecard(
+    rows: dict[str, dict[str, Any]],
+    *,
+    provider: str,
+    role: str,
+) -> dict[str, Any]:
+    key = _scorecard_key(provider, role)
+    if key not in rows:
+        rows[key] = _empty_scorecard(provider, role)
+    return rows[key]
+
+
+def _add_lane_id(row: dict[str, Any], lane_id: str) -> None:
+    if not lane_id:
+        return
+    lane_ids = row["lane_ids"]
+    if lane_id not in lane_ids:
+        lane_ids.append(lane_id)
+
+
+def _add_count_metric(row: dict[str, Any], key: str, value: object) -> bool:
+    number = _int(value)
+    if number is None:
+        return False
+    row["metrics"][key] = int(row["metrics"].get(key) or 0) + number
+    return True
+
+
+def _add_float_metric(row: dict[str, Any], key: str, value: object) -> bool:
+    number = _number(value)
+    if number is None:
+        return False
+    current = _number(row["metrics"].get(key)) or 0
+    row["metrics"][key] = round(float(current) + float(number), 6)
+    return True
+
+
+def _add_token_metric(row: dict[str, Any], value: object) -> bool:
+    number = _int(value)
+    if number is None:
+        return False
+    current = _int(row["metrics"].get("total_tokens")) or 0
+    row["metrics"]["total_tokens"] = current + number
+    row["reported"]["tokens"] = True
+    return True
+
+
+def _add_spend_group(row: dict[str, Any], group: Mapping[str, Any]) -> None:
+    reviewer_runs = int(group.get("reviewer_run_count") or 0)
+    row["sources"]["reviewer_spend_runs"] += reviewer_runs
+    _add_lane_id(row, str(group.get("lane") or ""))
+    for key in ("reviewer_run_count", "audit_pass_count", "audit_blocked_count"):
+        _add_count_metric(row, key, group.get(key))
+    blocked = _int(group.get("audit_blocked_count")) or 0
+    if blocked:
+        row["metrics"]["blocked_finding_count"] += blocked
+    infra_failures = _int(group.get("infra_failure_count")) or 0
+    if infra_failures:
+        row["metrics"]["infra_failure_count"] += infra_failures
+    if group.get("wall_reported") and _add_float_metric(row, "wall_seconds", group.get("wall_seconds")):
+        row["reported"]["wall_seconds"] = True
+    if group.get("cost_reported") and _add_float_metric(row, "cost_usd", group.get("cost_usd")):
+        row["reported"]["cost"] = True
+    if group.get("token_reported"):
+        _add_token_metric(row, group.get("total_tokens"))
+
+
+def _add_cloud_provider_event(row: dict[str, Any], event: Mapping[str, Any]) -> None:
+    metrics = event.get("metrics") if isinstance(event.get("metrics"), Mapping) else {}
+    dimensions = event.get("dimensions") if isinstance(event.get("dimensions"), Mapping) else {}
+    row["sources"]["cloud_events"] += 1
+    lane_id = str(dimensions.get("lane_id") or "").strip()
+    if not lane_id and _aggregation_subject(event) == "lane":
+        lane_id = str(dimensions.get("aggregation_key") or "").strip()
+    _add_lane_id(row, lane_id)
+    local_spend_runs = int(row["sources"].get("reviewer_spend_runs") or 0)
+    for key in SCORECARD_COUNT_METRICS:
+        if key not in metrics:
+            continue
+        if local_spend_runs and key in {
+            "audit_pass_count",
+            "audit_blocked_count",
+            "blocked_finding_count",
+            "reviewer_run_count",
+        }:
+            continue
+        if _add_count_metric(row, key, metrics.get(key)):
+            if key == "blocking_bug_count":
+                row["reported"]["blocking_bugs"] = True
+            elif key == "false_blocker_count":
+                row["reported"]["false_blockers"] = True
+            elif key == "missed_blocker_count":
+                row["reported"]["missed_blockers"] = True
+            elif key == "checks_failed_count":
+                row["reported"]["checks_failed"] = True
+                row["metrics"]["infra_failure_count"] += _int(metrics.get(key)) or 0
+    if (
+        (not row["reported"]["cost"] or not local_spend_runs)
+        and _add_float_metric(row, "cost_usd", metrics.get("cost_usd"))
+    ):
+        row["reported"]["cost"] = True
+    if not row["reported"]["tokens"] or not local_spend_runs:
+        _add_token_metric(row, metrics.get("total_tokens"))
+
+
+def _rate(numerator: object, denominator: object) -> float | None:
+    numerator_value = _number(numerator)
+    denominator_value = _number(denominator)
+    if numerator_value is None or denominator_value in (None, 0):
+        return None
+    return round(float(numerator_value) / float(denominator_value), 3)
+
+
+def _finalize_scorecard(row: dict[str, Any]) -> dict[str, Any]:
+    metrics = row["metrics"]
+    audit_total = int(metrics.get("audit_pass_count") or 0) + int(
+        metrics.get("audit_blocked_count") or 0
+    )
+    reviewer_runs = int(metrics.get("reviewer_run_count") or 0)
+    metrics["cost_usd"] = round(float(metrics["cost_usd"]), 6) if row["reported"]["cost"] else None
+    metrics["wall_seconds"] = (
+        round(float(metrics["wall_seconds"]), 3) if row["reported"]["wall_seconds"] else None
+    )
+    metrics["total_tokens"] = int(metrics["total_tokens"]) if row["reported"]["tokens"] else None
+    row["lane_ids"] = sorted(str(item) for item in row["lane_ids"])
+    row["rates"] = {
+        "audit_pass_rate": _rate(metrics.get("audit_pass_count"), audit_total),
+        "audit_block_rate": _rate(metrics.get("audit_blocked_count"), audit_total),
+        "reviewer_catch_rate": _rate(metrics.get("reviewer_catch_count"), reviewer_runs),
+        "false_blocker_rate": _rate(metrics.get("false_blocker_count"), audit_total)
+        if row["reported"]["false_blockers"]
+        else None,
+        "missed_blocker_rate": _rate(metrics.get("missed_blocker_count"), audit_total)
+        if row["reported"]["missed_blockers"]
+        else None,
+        "average_wall_seconds": _rate(metrics.get("wall_seconds"), reviewer_runs)
+        if row["reported"]["wall_seconds"]
+        else None,
+    }
+    row["promotion"] = _promotion_assessment(row)
+    return row
+
+
+def _promotion_assessment(row: Mapping[str, Any]) -> dict[str, Any]:
+    metrics = row.get("metrics") if isinstance(row.get("metrics"), Mapping) else {}
+    reported = row.get("reported") if isinstance(row.get("reported"), Mapping) else {}
+    role = str(row.get("role") or "")
+    reviewer_runs = int(metrics.get("reviewer_run_count") or 0)
+    builder_runs = int(metrics.get("builder_run_count") or 0)
+    pass_count = int(metrics.get("audit_pass_count") or 0)
+    catches = int(metrics.get("reviewer_catch_count") or 0)
+    infra_failures = int(metrics.get("infra_failure_count") or 0)
+    false_blockers = int(metrics.get("false_blocker_count") or 0)
+    missed_blockers = int(metrics.get("missed_blocker_count") or 0)
+    caveats: list[str] = []
+    if role == "reviewer":
+        if reviewer_runs < 10:
+            caveats.append("needs at least 10 adjudicated reviewer runs")
+        if pass_count < 2:
+            caveats.append("needs at least 2 known-clean PASS runs")
+        if catches < 1 and int(metrics.get("blocking_bug_count") or 0) < 1:
+            caveats.append("needs known-blocked catch evidence")
+        if not reported.get("false_blockers") or not reported.get("missed_blockers"):
+            caveats.append("needs manual outcome evidence for false positives and missed blockers")
+    elif role == "builder":
+        if builder_runs < 5:
+            caveats.append("needs more builder throughput samples")
+        if not reported.get("cost") or not reported.get("tokens"):
+            caveats.append("needs cost/token evidence when the provider exposes it")
+    else:
+        caveats.append("needs explicit builder or reviewer role")
+    if infra_failures:
+        caveats.append("stabilize provider or workflow failures before promotion")
+    if false_blockers or missed_blockers:
+        caveats.append("review adjudicated false positives or missed blockers before promotion")
+    if infra_failures:
+        recommendation = "stabilize_infra"
+    elif caveats:
+        recommendation = "informational"
+    else:
+        recommendation = "candidate_for_policy_review"
+    return {
+        "recommendation": recommendation,
+        "merge_authority": False,
+        "policy": PROMOTION_POLICY_PATH,
+        "caveats": caveats,
+    }
+
+
+def _provider_scorecards(
+    *,
+    spend: Mapping[str, Any],
+    cloud_events: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    rows: dict[str, dict[str, Any]] = {}
+    for group in spend.get("by_lane") or []:
+        if not isinstance(group, Mapping):
+            continue
+        provider = str(group.get("provider") or reviewer_spend.provider_from_lane(str(group.get("lane") or "")))
+        row = _scorecard(rows, provider=provider or "unknown", role=str(group.get("role") or "reviewer"))
+        _add_spend_group(row, group)
+    for event in cloud_events:
+        if not _is_provider_subject(event):
+            continue
+        row = _scorecard(
+            rows,
+            provider=_provider_from_event(event),
+            role=_role_from_event(event),
+        )
+        _add_cloud_provider_event(row, event)
+    scorecards = [_finalize_scorecard(row) for row in rows.values()]
+    scorecards.sort(
+        key=lambda row: (
+            -int(row["metrics"].get("reviewer_catch_count") or 0),
+            -int(row["metrics"].get("reviewer_run_count") or 0),
+            str(row.get("provider") or ""),
+            str(row.get("role") or ""),
+        )
+    )
+    return {
+        "schema": PRODUCTIVITY_SCORECARDS_SCHEMA,
+        "promotion_policy": PROMOTION_POLICY_PATH,
+        "scorecards": scorecards,
+        "notes": [
+            "Scorecards use metadata only; missing cost or token fields mean unavailable, not zero.",
+            "Promotion recommendations are advisory and require docs/lane-promotion-policy.md review before merge authority.",
+        ],
+    }
+
+
+def _public_spend_groups(groups: object) -> list[dict[str, Any]]:
+    if not isinstance(groups, list):
+        return []
+    public_groups: list[dict[str, Any]] = []
+    for group in groups:
+        if not isinstance(group, Mapping):
+            continue
+        row = {key: group.get(key) for key in PUBLIC_SPEND_LANE_KEYS if key in group}
+        if not group.get("wall_reported"):
+            row["wall_seconds"] = None
+        if not group.get("cost_reported"):
+            row["cost_usd"] = None
+        if not group.get("token_reported"):
+            row["total_tokens"] = None
+        public_groups.append(row)
+    return public_groups
 
 
 def _prefer(*values: object) -> object:
@@ -455,6 +853,7 @@ def build_report(
     spend, spend_warnings = _spend_summary(repo, reviewer_spend_path)
     cloud_events, cloud_warnings = _load_productivity_events(cloud_event_paths)
     cloud = _cloud_summary(cloud_events)
+    providers = _provider_scorecards(spend=spend, cloud_events=cloud_events)
     cloud_latest = cloud.get("latest_metrics") if isinstance(cloud.get("latest_metrics"), Mapping) else {}
     cloud_totals = (
         cloud.get("provided_metric_totals")
@@ -645,8 +1044,9 @@ def build_report(
             "wall_seconds": spend.get("wall_seconds"),
             "cost_usd": metrics["cost_usd"],
             "total_tokens": metrics["total_tokens"],
-            "by_lane": spend.get("by_lane") or [],
+            "by_lane": _public_spend_groups(spend.get("by_lane")),
         },
+        "providers": providers,
         "cloud_aggregate": cloud,
         "warnings": warnings,
         "next_action": next_action,
@@ -709,6 +1109,7 @@ def board_payload(
         "metrics": report["metrics"],
         "quality": report["quality"],
         "spend": report["spend"],
+        "providers": report["providers"],
         "source": report["source"],
         "warnings": report["warnings"],
         "next_action": report["next_action"],
@@ -724,6 +1125,8 @@ def render_text(report: Mapping[str, Any]) -> str:
     )
     spend = report.get("spend") if isinstance(report.get("spend"), Mapping) else {}
     cloud = report.get("cloud_aggregate") if isinstance(report.get("cloud_aggregate"), Mapping) else {}
+    providers = report.get("providers") if isinstance(report.get("providers"), Mapping) else {}
+    scorecards = providers.get("scorecards") if isinstance(providers.get("scorecards"), list) else []
     warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
     lines = [
         f"Code Mower productivity report for {report.get('repo') or ''}",
@@ -766,6 +1169,24 @@ def render_text(report: Mapping[str, Any]) -> str:
         ),
         f"Cloud aggregates: {_known_number(cloud.get('event_count'))} productivity_summary event(s)",
     ]
+    if scorecards:
+        lines.append("Provider scorecards:")
+        for row in scorecards[:5]:
+            if not isinstance(row, Mapping):
+                continue
+            row_metrics = row.get("metrics") if isinstance(row.get("metrics"), Mapping) else {}
+            promotion = row.get("promotion") if isinstance(row.get("promotion"), Mapping) else {}
+            lines.append(
+                "- "
+                f"{row.get('provider') or 'unknown'} {row.get('role') or 'unknown'}: "
+                f"reviewer runs {_known_number(row_metrics.get('reviewer_run_count'))}, "
+                f"PASS {_known_number(row_metrics.get('audit_pass_count'))}, "
+                f"BLOCKED {_known_number(row_metrics.get('audit_blocked_count'))}, "
+                f"catches {_known_number(row_metrics.get('reviewer_catch_count'))}, "
+                f"blocked findings {_known_number(row_metrics.get('blocked_finding_count'))}, "
+                f"cost {_known_money(row_metrics.get('cost_usd'))}, "
+                f"promotion {promotion.get('recommendation') or 'informational'}"
+            )
     if warnings:
         lines.append("Warnings: " + "; ".join(str(warning) for warning in warnings[:5]))
     lines.extend(["", f"Next: {report.get('next_action') or 'inspect'}"])

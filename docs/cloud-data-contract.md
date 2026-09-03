@@ -218,9 +218,14 @@ fractional count/token values so future producers do not drift from the
 contract accidentally. CodeMower.com must continue accepting v0.9.x and v1.0
 uploads that omit `productivity_summary`.
 Consumers may total count, token, and cost metrics across multiple
-`productivity_summary` events. Time metrics describe a measured window and must
-stay latest-window or unknown unless a producer emits an explicit aggregate
-window event.
+`productivity_summary` events only within one headline aggregation subject. The
+recommended headline subject priority is `repo`, then `release`, `issue`, then
+`pr`. Time metrics describe a measured window and must stay latest-window or
+unknown unless a producer emits an explicit aggregate window event. Provider-,
+builder-, reviewer-, and lane-scoped `productivity_summary` events are
+scorecard inputs; consumers should not add them into headline repo/release
+totals for the same window. Scorecard promotion recommendations remain advisory
+until reviewed against `docs/lane-promotion-policy.md`.
 
 Local `code_mower.authoringRun.v1` artifacts from `builder-experiment run` may
 also be passed as `--event builder_run=PATH`. The OSS uploader converts them to

@@ -134,8 +134,10 @@ When you want a pasteable effectiveness snapshot, run
 `code-mower productivity report --repo OWNER/REPO` from the repository checkout.
 It reads local Board history, reviewer-spend rows, and optional aggregate
 `productivity_summary` event files, then reports recent lane activity, quality
-signals, fix rounds, owner actions, cost/tokens, and merge/cycle metrics where
-known. Missing fields mean unknown, not zero.
+signals, provider scorecards, promotion caveats, fix rounds, owner actions,
+cost/tokens, and merge/cycle metrics where known. Missing fields mean unknown,
+not zero, and scorecard promotion recommendations stay advisory until reviewed
+against [Lane Promotion Policy](docs/lane-promotion-policy.md).
 When a team wants the same operator picture on CodeMower.com, run
 `code-mower cloud board-snapshot --repo-slug OWNER/REPO --json` to inspect a
 zero-report, metadata-only mirror event, then add `--yes` only after review.
