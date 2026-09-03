@@ -30,6 +30,7 @@ SAFE_EVENT_TYPES = {
     "lane_policy_snapshot",
     "merge_decision",
     "owner_intervention",
+    "productivity_summary",
     "provider_catalog_snapshot",
     "queue_state_snapshot",
     "reviewer_run",
