@@ -426,6 +426,7 @@ def cli_commands(version: str) -> tuple[str, ...]:
         "code-mower next-steps --profile recommended",
         "code-mower next-steps --profile recommended --json",
         "code-mower lanes status --repo owner/repo --json",
+        "code-mower controller run --repo owner/repo --json",
         "code-mower board serve --repo owner/repo",
         "code-mower builder-experiment plan builder-experiment.json --json",
         "code-mower builder-experiment report builder-experiment.json --runs builder-results.json --output builder-experiment-report.md",

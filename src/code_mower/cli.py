@@ -52,6 +52,7 @@ from . import coderabbit_cli_audit_pr
 from . import codex_audit_env_preflight
 from . import codex_audit_pr
 from . import codex_audit_schema_smoke
+from . import controller as code_mower_controller
 from . import code_mower_calibration
 from . import code_mower_context_packs
 from . import code_mower_merge
@@ -440,6 +441,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "config": "Validate or inspect a Code Mower config.",
     "context": "Record local external planning context manifests.",
     "context-packs": "Build selective surrounding-file context packs.",
+    "controller": "Compute supervised-pilot dispatch and merge-policy decisions.",
     "coderabbit-cli": "Run a CodeRabbit CLI informational lane.",
     "codex-audit": "Run a Codex structured audit lane.",
     "codex-audit-env-preflight": "Probe Codex audit environment setup.",
@@ -480,6 +482,7 @@ FIRST_USER_COMMANDS = (
     "reviewer-metrics",
     "cloud",
     "config",
+    "controller",
     "lanes",
     "project-context",
 )
@@ -580,6 +583,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "config": _config_main,
     "context": code_mower_work_orders.context_main,
     "context-packs": code_mower_context_packs.main,
+    "controller": code_mower_controller.main,
     "coderabbit-cli": coderabbit_cli_audit_pr.main,
     "codex-audit": codex_audit_pr.main,
     "codex-audit-env-preflight": codex_audit_env_preflight.main,

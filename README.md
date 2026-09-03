@@ -125,6 +125,10 @@ When a team wants the same operator picture on CodeMower.com, run
 zero-report, metadata-only mirror event, then add `--yes` only after review.
 The v1.0 supervised-pilot automation and event boundary is defined in
 [Supervised Pilot Contract](docs/supervised-pilot-contract.md).
+As that controller lands, `code-mower controller run --repo OWNER/REPO` is the
+dry-run-first policy check: it selects the current dispatch/merge/owner-action
+decision from metadata, can write a sanitized event with `--event-file`, and
+does not mutate GitHub state.
 
 ## See The Value Shape First
 

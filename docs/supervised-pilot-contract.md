@@ -21,6 +21,20 @@ Code Mower may automate:
 - GitHub auto-merge enablement for a PR that is already green; and
 - Board and CodeMower.com metadata events for operator visibility.
 
+The controller CLI starts as a dry-run-first policy surface:
+
+```bash
+code-mower controller run --repo OWNER/REPO
+code-mower controller run --repo OWNER/REPO --mode promoted --json
+code-mower controller run --repo OWNER/REPO --event-file .code-mower/controller-event.json
+```
+
+`dry_run` and `no_merge` modes never mutate GitHub. `promoted` mode must refuse
+to proceed unless branch protection requires `code-mower/gate`, repository
+auto-merge is enabled, and the operator has verified a merge-capable
+credential. Merge execution can be layered on this policy engine, but the event
+contract is intentionally useful before any write path exists.
+
 Code Mower must stop or escalate when:
 
 - the author lane would be asked to gate its own work;
