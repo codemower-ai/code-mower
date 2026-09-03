@@ -156,7 +156,7 @@ after reinstalling, especially when switching between pipx and uv.
 | C. Builder experiment | You want to compare authoring loops before trusting them broadly. | Use a work order or experiment spec, run `code-mower builder-experiment run` around an explicit command, then review the source-free `authoringRun` artifact and normal audit evidence. | [Builder Experiments](docs/builder-experiments.md) |
 
 The current package-index announcement entry point is the tagged
-[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.9.3-beta.1/docs/try-in-10-minutes.md)
+[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v0.9.4-beta.1/docs/try-in-10-minutes.md)
 guide. The v0.9 beta includes the completed native Board work plus the adoption
 and upgrade hardening from recent install rehearsals; v0.9.3 keeps the path
 smooth by clarifying starter-package diagnostics, surfacing richer top-level
@@ -193,7 +193,7 @@ Provider-contract baseline for the next release train:
 
 For release verification,
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the package-index procedure for `v0.9.3-beta.1` / `code-mower==0.9.3b1`. The
+the package-index procedure for `v0.9.4-beta.1` / `code-mower==0.9.4b1`. The
 GitHub release records the workflow and rehearsal evidence for the exact tag.
 
 ## Optional: Plan Before Coding
@@ -379,8 +379,8 @@ measurement work.
 
 ## Installation Status
 
-The current package-index beta baseline is `v0.9.3-beta.1`, with pinned package
-install spec `code-mower==0.9.3b1`. Release evidence is recorded on the GitHub
+The current package-index beta baseline is `v0.9.4-beta.1`, with pinned package
+install spec `code-mower==0.9.4b1`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. The public repository is
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), and
 GitHub releases remain the auditable source for tags, build artifacts, and
