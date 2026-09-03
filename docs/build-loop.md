@@ -139,12 +139,16 @@ observer setup. When `code-mower.yml` is present, the Board also shows a
 supervised-pilot section backed by the controller policy engine: current
 decision, queue counts, selected issue or PR, reviewer evidence, gate state, and
 next action.
+Run `code-mower board record --repo OWNER/REPO` for a one-shot local history
+snapshot, or `code-mower board serve --repo OWNER/REPO --record-events` when
+you want the browser Board to append redacted snapshots while it polls.
 
 For the v1.0 supervised pilot, run the controller in dry-run mode before an
 orchestrator acts on the queue:
 
 ```bash
 code-mower controller run --repo OWNER/REPO
+code-mower controller run --repo OWNER/REPO --dry-run
 code-mower controller run --repo OWNER/REPO --mode promoted --json
 ```
 

@@ -1,5 +1,11 @@
+from contextlib import redirect_stdout
+from io import StringIO
+import os
+from pathlib import Path
+import tempfile
 import unittest
 
+from code_mower import doctor
 from code_mower.doctor_checks import output
 from code_mower.doctor_checks.models import (
     STATUS_PASS,
@@ -11,6 +17,23 @@ from code_mower.doctor_checks.models import (
 
 
 class DoctorOutputTests(unittest.TestCase):
+    def test_missing_config_error_explains_cwd_and_starter_path(self) -> None:
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    code = doctor.main(["code-mower.yml"])
+            finally:
+                os.chdir(original_cwd)
+
+        self.assertEqual(code, 1)
+        message = stdout.getvalue()
+        self.assertIn("Doctor looked for code-mower.yml from cwd", message)
+        self.assertIn("code-mower doctor --easy", message)
+        self.assertIn("repository checkout that contains code-mower.yml", message)
+
     def test_output_groups_checks_without_changing_check_lines(self) -> None:
         report = DoctorReport(
             config_path="code-mower.yml",

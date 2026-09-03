@@ -372,6 +372,7 @@ class ProductivityReportTests(TestCase):
         self.assertFalse(report["source"]["board_events"]["available"])
         self.assertIsNone(report["metrics"]["reviewer_run_count"])
         self.assertIn("board serve", report["next_action"])
+        self.assertIn("board record", report["next_action"])
         self.assertIn(lane_status.LOCAL_PATH_REDACTION, serialized)
         self.assertNotIn(str(Path(tmp)), serialized)
 

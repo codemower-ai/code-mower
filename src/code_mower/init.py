@@ -1506,6 +1506,25 @@ def _resolve_config_path(config_arg: str) -> Path:
     return path
 
 
+def _init_config_error_message(exc: Exception, *, config_arg: str) -> str:
+    requested = str(config_arg)
+    lines = [
+        f"error: {exc}",
+        f"Init loaded config {requested!r} from cwd {Path.cwd()}.",
+    ]
+    if requested == "code-mower.example.yml":
+        lines.append(
+            "For a fresh repo, run `code-mower init --easy` from the repository "
+            "checkout to use the packaged starter config."
+        )
+    else:
+        lines.append(
+            "For an existing repo, run from the checkout that contains "
+            "code-mower.yml or pass its path explicitly."
+        )
+    return "\n".join(lines)
+
+
 def _lane_smoke_tests(
     lane_id: str,
     lane: Mapping[str, Any],
@@ -3085,7 +3104,7 @@ def main(argv: list[str] | None = None) -> int:
                 "github_labels": github_labels,
             }
     except ConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(_init_config_error_message(exc, config_arg=args.config), file=sys.stderr)
         return 1
 
     if args.json:

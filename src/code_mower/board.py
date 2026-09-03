@@ -1030,10 +1030,42 @@ def _probe_board_status(board: Mapping[str, Any], *, timeout: float = 0.75) -> d
         return {"available": False, "message": "Board URL unavailable"}
     try:
         with urllib.request.urlopen(f"{url.rstrip('/')}/api/identity", timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8") or "{}")
-    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
-        return {"available": False, "message": "Board identity probe failed"}
-    return payload if isinstance(payload, dict) else {"available": False, "message": "Board status was not an object"}
+            raw = response.read().decode("utf-8") or "{}"
+    except urllib.error.HTTPError as exc:
+        if exc.code in {404, 405}:
+            return {
+                "available": False,
+                "reason": "legacy_identity_endpoint_missing",
+                "message": "Board identity endpoint is missing",
+            }
+        return {
+            "available": False,
+            "reason": "identity_probe_failed",
+            "message": "Board identity probe failed",
+        }
+    except (OSError, TimeoutError, urllib.error.URLError):
+        return {
+            "available": False,
+            "reason": "identity_probe_failed",
+            "message": "Board identity probe failed",
+        }
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {
+            "available": False,
+            "reason": "legacy_identity_malformed",
+            "message": "Board identity response was not JSON",
+        }
+    return (
+        payload
+        if isinstance(payload, dict)
+        else {
+            "available": False,
+            "reason": "legacy_identity_malformed",
+            "message": "Board status was not an object",
+        }
+    )
 
 
 def _inventory_next_action(boards: list[dict[str, Any]], available: bool) -> tuple[str, str]:
@@ -1082,9 +1114,18 @@ def board_inventory_payload(
             item["installed_version"] = str(version.get("installed_version") or "")
             item["restart_recommended"] = bool(version.get("restart_recommended"))
         elif isinstance(probed, Mapping) and not probed.get("available", True):
-            item["health"] = "unresponsive"
-            item["status_message"] = str(probed.get("message") or "Board status unavailable")
-            item.setdefault("restart_recommended", False)
+            reason = str(probed.get("reason") or "")
+            if reason.startswith("legacy_"):
+                item["health"] = "legacy"
+                item["status_message"] = (
+                    "legacy / restart recommended: "
+                    f"{probed.get('message') or 'Board identity unavailable'}"
+                )
+                item["restart_recommended"] = True
+            else:
+                item["health"] = "unresponsive"
+                item["status_message"] = str(probed.get("message") or "Board status unavailable")
+                item.setdefault("restart_recommended", False)
         else:
             item["health"] = "unknown"
             item.setdefault("restart_recommended", False)
@@ -1114,7 +1155,11 @@ def render_inventory_text(payload: Mapping[str, Any]) -> str:
         repo = board_item.get("repo") or "unknown repo"
         version = board_item.get("serving_version") or "unknown version"
         health = board_item.get("health") or "unknown"
-        restart = " restart recommended" if board_item.get("restart_recommended") else ""
+        if board_item.get("health") == "legacy" and board_item.get("restart_recommended"):
+            health = "legacy / restart recommended"
+            restart = ""
+        else:
+            restart = " restart recommended" if board_item.get("restart_recommended") else ""
         cwd = f" cwd={board_item.get('cwd')}" if board_item.get("cwd") else ""
         lines.append(
             f"- {board_item.get('url') or 'localhost'} pid={board_item.get('pid')} "

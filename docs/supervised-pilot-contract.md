@@ -25,11 +25,14 @@ The controller CLI starts as a dry-run-first policy surface:
 
 ```bash
 code-mower controller run --repo OWNER/REPO
+code-mower controller run --repo OWNER/REPO --dry-run
 code-mower controller run --repo OWNER/REPO --mode promoted --json
 code-mower controller run --repo OWNER/REPO --event-file .code-mower/controller-event.json
 ```
 
-`dry_run` and `no_merge` modes never mutate GitHub. `promoted` mode must refuse
+`--dry-run` is an explicit alias for the default `dry_run` mode, which is useful
+when agent permission systems classify commands by flags. `dry_run` and
+`no_merge` modes never mutate GitHub. `promoted` mode must refuse
 to proceed unless branch protection requires `code-mower/gate`, repository
 auto-merge is enabled, and the operator has verified a merge-capable
 credential. Merge execution can be layered on this policy engine, but the event
