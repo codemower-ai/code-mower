@@ -6,6 +6,14 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
+## v1.0.2
+
+This patch hardens first-user and release-smoke ergonomics after the v1.0.1
+adoption round. It keeps gate semantics, dashboard schemas, and the
+metadata-only privacy boundary unchanged.
+
+### Changed
+
 - `migration package-install-rehearsal` now disables pip cache and retries
   package-index installs after `--allow-package-index`, reducing false release
   blockers while PyPI/TestPyPI finishes fresh-package propagation (#635).
