@@ -132,8 +132,7 @@ and the next action. It is read-only and metadata-only.
 Local cwd paths are redacted by default; pass `--show-local-paths` only when you
 are debugging locally.
 
-Use `lanes status` as the pasteable visibility surface during v0.8 adoption and
-later.
+Use `lanes status` as the pasteable visibility surface during supervised pilots.
 Use `board serve` when you want the same state in a local browser. The board is
 read-only, serves on loopback by default, and does not require a separate
 observer setup. When `code-mower.yml` is present, the Board also shows a

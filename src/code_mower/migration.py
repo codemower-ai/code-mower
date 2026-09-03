@@ -1047,7 +1047,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--allow-package-index",
         action="store_true",
         help=(
-            "allow bare package-index specs such as code-mower==1.0.0; "
+            "allow bare package-index specs such as code-mower==1.0.1; "
             "normal unit/CI rehearsals should use a local path instead"
         ),
     )

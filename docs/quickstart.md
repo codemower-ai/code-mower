@@ -21,11 +21,11 @@ boxes, and contributor checkouts, use the full
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.0
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.1
 code-mower --version
 ```
 
-`1.0.0` is the supervised-pilot release. If you want a future prerelease instead
+`1.0.1` is the supervised-pilot release. If you want a future prerelease instead
 of this exact verified release, use:
 
 ```bash
@@ -36,7 +36,7 @@ For hosted agents or CI boxes without pipx:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 code-mower==1.0.0
+uv tool install --python 3.12 code-mower==1.0.1
 code-mower --version
 ```
 
@@ -430,7 +430,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.0 \
+  --package-spec code-mower==1.0.1 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --json
