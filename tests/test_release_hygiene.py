@@ -67,6 +67,32 @@ class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_current_beta_prerelease(self) -> None:
         self.assertEqual(__version__, "0.9.3b1")
 
+    def test_dogfood_repo_has_real_root_config(self) -> None:
+        config_path = ROOT / "code-mower.yml"
+
+        self.assertTrue(config_path.is_file())
+        config = code_mower_config.load_config(config_path)
+        self.assertEqual(code_mower_config.validate_config(config), [])
+        self.assertEqual(config["repositories"][0]["slug"], "codemower-ai/code-mower")
+        self.assertEqual(config["owner_surface"]["owner_login"], "jeffhuber")
+        self.assertEqual(config["decisions"]["authorities"], ["jeffhuber"])
+        self.assertEqual(config["profiles"]["recommended"]["lanes"], ["codex", "claude_audit"])
+
+        report = doctor_checks.run_doctor(
+            config_path=config_path,
+            provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
+            profile="recommended",
+            repo_slug="codemower-ai/code-mower",
+            adoption=True,
+        )
+        source_check = next(
+            check
+            for check in report.checks
+            if check.name == "doctor.adoption.config_source"
+        )
+        self.assertEqual(source_check.status, "pass")
+        self.assertEqual(source_check.detail["config_source"], "repository_config")
+
     def test_release_workflow_verifies_downloaded_distributions_before_publish(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("  verify-distributions:\n", workflow)
