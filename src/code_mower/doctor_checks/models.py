@@ -12,6 +12,17 @@ STATUS_PASS = "pass"
 STATUS_WARN = "warn"
 STATUS_FAIL = "fail"
 STATUS_SKIP = "skip"
+OWNER_ACTION_DETAIL_KEY = "owner_action"
+
+
+def is_owner_action_check(check: "DoctorCheck") -> bool:
+    """Return true when a warning represents an explicit repo-owner action."""
+
+    return (
+        check.status == STATUS_WARN
+        and isinstance(check.detail, Mapping)
+        and bool(check.detail.get(OWNER_ACTION_DETAIL_KEY))
+    )
 
 
 @dataclass(frozen=True)
@@ -47,13 +58,21 @@ class DoctorReport:
 
     @property
     def warnings(self) -> int:
-        return sum(1 for check in self.checks if check.status == STATUS_WARN)
+        return sum(
+            1
+            for check in self.checks
+            if check.status == STATUS_WARN and not is_owner_action_check(check)
+        )
+
+    @property
+    def owner_actions(self) -> int:
+        return sum(1 for check in self.checks if is_owner_action_check(check))
 
     @property
     def status(self) -> str:
         if self.failures:
             return STATUS_FAIL
-        if self.warnings:
+        if self.warnings or self.owner_actions:
             return STATUS_WARN
         return STATUS_PASS
 
@@ -92,13 +111,19 @@ class DoctorReport:
             if not group_checks:
                 continue
             failures = sum(1 for check in group_checks if check.status == STATUS_FAIL)
-            warnings = sum(1 for check in group_checks if check.status == STATUS_WARN)
+            owner_actions = sum(1 for check in group_checks if is_owner_action_check(check))
+            warnings = sum(
+                1
+                for check in group_checks
+                if check.status == STATUS_WARN and not is_owner_action_check(check)
+            )
             skipped = sum(1 for check in group_checks if check.status == STATUS_SKIP)
             summary[group_id] = {
                 "label": label,
                 "checks": len(group_checks),
                 "failures": failures,
                 "warnings": warnings,
+                "owner_actions": owner_actions,
                 "skipped": skipped,
             }
         return summary
@@ -114,6 +139,7 @@ class DoctorReport:
                 "checks": len(self.checks),
                 "failures": self.failures,
                 "warnings": self.warnings,
+                "owner_actions": self.owner_actions,
             },
             "run_plan": list(self.run_plan),
             "groups": self.group_summary(),

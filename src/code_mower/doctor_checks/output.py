@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from .groups import GROUP_LABELS, doctor_check_group_id
 from .models import STATUS_FAIL, STATUS_SKIP, STATUS_WARN, DoctorCheck
 from .models import DoctorReport
+from .models import is_owner_action_check
 
 
 def doctor_output_group(check: DoctorCheck) -> str:
@@ -29,6 +30,9 @@ def _format_status_summary(report: DoctorReport) -> str:
     parts = [f"{len(report.checks)} total"]
     if report.failures:
         parts.append(f"{report.failures} failed")
+    owner_actions = report.owner_actions
+    if owner_actions:
+        parts.append(f"{owner_actions} owner actions")
     if report.warnings:
         parts.append(f"{report.warnings} warnings")
     skipped = sum(1 for check in report.checks if check.status == STATUS_SKIP)
@@ -51,7 +55,8 @@ def _format_run_plan(report: DoctorReport) -> str | None:
 
 def _format_check(check: DoctorCheck) -> list[str]:
     lane = f" [{check.lane}]" if check.lane else ""
-    lines = [f"- {check.status.upper()} {check.name}{lane}: {check.message}"]
+    status = "OWNER-ACTION" if is_owner_action_check(check) else check.status.upper()
+    lines = [f"- {status} {check.name}{lane}: {check.message}"]
     if check.remediation:
         lines.append(f"  remediation: {check.remediation}")
     return lines
@@ -81,10 +86,16 @@ def render_doctor_text(report: DoctorReport) -> str:
         if not checks:
             continue
         failed = sum(1 for check in checks if check.status == STATUS_FAIL)
-        warnings = sum(1 for check in checks if check.status == STATUS_WARN)
+        owner_actions = sum(1 for check in checks if is_owner_action_check(check))
+        warnings = (
+            sum(1 for check in checks if check.status == STATUS_WARN)
+            - owner_actions
+        )
         summary = []
         if failed:
             summary.append(f"{failed} failed")
+        if owner_actions:
+            summary.append(f"{owner_actions} owner actions")
         if warnings:
             summary.append(f"{warnings} warnings")
         heading = GROUP_LABELS.get(group_id, group_id.title())

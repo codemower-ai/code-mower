@@ -119,6 +119,7 @@ def check_human_automation_token(
     config: Mapping[str, Any],
     lanes: Sequence[tuple[str, Mapping[str, Any]]],
     http_timeout: int,
+    adoption: bool = False,
     adoption_posture: str = "reviewer-gate",
     now: datetime | None = None,
 ) -> DoctorCheck:
@@ -146,7 +147,8 @@ def check_human_automation_token(
         http_timeout=http_timeout,
     )
     if secret_payload is None:
-        status = _blocking_status_for_posture(adoption_posture)
+        status = STATUS_WARN if adoption else _blocking_status_for_posture(adoption_posture)
+        owner_action = status == STATUS_WARN
         return DoctorCheck(
             name="github.human_automation_token",
             status=status,
@@ -158,7 +160,12 @@ def check_human_automation_token(
                     else ""
                 )
             ),
-            detail={**detail, "secret_check": secret_detail},
+            detail={
+                **detail,
+                "owner_action": owner_action,
+                "owner_action_kind": "human_automation_token",
+                "secret_check": secret_detail,
+            },
             remediation=(
                 f"Create one human-owned fine-grained PAT secret with "
                 f"`gh secret set {secret_name}`. Grant repository Contents read, "
@@ -179,6 +186,8 @@ def check_human_automation_token(
             message=f"{slug} is missing the {expires_var} human token expiry metadata",
             detail={
                 **detail,
+                "owner_action": True,
+                "owner_action_kind": "human_automation_token_expiry",
                 "created_at": str(secret_payload.get("created_at") or ""),
                 "updated_at": str(secret_payload.get("updated_at") or ""),
                 "expiry_check": variable_detail,
@@ -210,7 +219,12 @@ def check_human_automation_token(
             name="github.human_automation_token",
             status=STATUS_WARN,
             message=f"{slug} still has placeholder {expires_var} value",
-            detail={**detail, "expires_at": expiry_text},
+            detail={
+                **detail,
+                "owner_action": True,
+                "owner_action_kind": "human_automation_token_expiry",
+                "expires_at": expiry_text,
+            },
             remediation=(
                 f"Set {expires_var} to the PAT expiry date in YYYY-MM-DD "
                 "format, or to `never` for a non-expiring PAT."
@@ -222,7 +236,12 @@ def check_human_automation_token(
             name="github.human_automation_token",
             status=STATUS_WARN,
             message=f"{slug} has an invalid {expires_var} value",
-            detail={**detail, "expires_at": expiry_text},
+            detail={
+                **detail,
+                "owner_action": True,
+                "owner_action_kind": "human_automation_token_expiry",
+                "expires_at": expiry_text,
+            },
             remediation=(
                 f"Set {expires_var} to the PAT expiry date in YYYY-MM-DD "
                 "format, or to `never` for a non-expiring PAT."
@@ -247,6 +266,8 @@ def check_human_automation_token(
         ),
         detail={
             **detail,
+            "owner_action": status != STATUS_PASS,
+            "owner_action_kind": "human_automation_token_expiry",
             "created_at": str(secret_payload.get("created_at") or ""),
             "updated_at": str(secret_payload.get("updated_at") or ""),
             "expires_at": expiry.isoformat(),

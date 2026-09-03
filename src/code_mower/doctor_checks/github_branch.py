@@ -18,6 +18,7 @@ def check_branch_protection(
     default_branch: str,
     http_timeout: int,
     required_status_context: str | None = None,
+    adoption: bool = False,
 ) -> DoctorCheck:
     encoded_branch = urllib.parse.quote(default_branch, safe="")
     protection_payload, protection_detail = _github_api_json(
@@ -77,9 +78,10 @@ def check_branch_protection(
             if str(GITHUB_ACTIONS_APP_ID) in app_ids
             else "a specific GitHub App"
         )
+        status = STATUS_WARN if adoption else STATUS_FAIL
         return DoctorCheck(
             name="github.branch_protection",
-            status=STATUS_FAIL,
+            status=status,
             message=(
                 f"{slug}@{default_branch} requires {required_status_context} "
                 f"from {source_description} instead of Any source"
@@ -87,6 +89,8 @@ def check_branch_protection(
             detail={
                 "repo": slug,
                 "default_branch": default_branch,
+                "owner_action": adoption,
+                "owner_action_kind": "branch_protection_gate_binding",
                 "required_status_context": required_status_context,
                 "required_status_contexts": contexts,
                 "required_status_check_count": len(contexts),
@@ -110,6 +114,8 @@ def check_branch_protection(
             detail={
                 "repo": slug,
                 "default_branch": default_branch,
+                "owner_action": adoption,
+                "owner_action_kind": "branch_protection_gate_requirement",
                 "required_status_context": required_status_context,
                 "required_status_check_count": len(contexts),
                 "required_status_contexts": contexts,
