@@ -127,6 +127,74 @@ def _board_snapshot_fixture() -> dict[str, object]:
                 ],
             },
         },
+        "supervised_pilot": {
+            "schema": "code_mower.supervisedPilot.v1",
+            "enabled": True,
+            "controller_mode": "dry_run",
+            "cycle_state": "ready",
+            "generated_at": "2026-09-02T12:00:00Z",
+            "decision": {
+                "decision_state": "ready_for_merge",
+                "stop_condition": "",
+                "next_action": "ready for merge or auto-merge",
+                "next_detail": "all promoted reviewers passed",
+                "lane_id": "codex",
+                "pr_number": 7,
+                "gate_status": "success",
+                "author_lane_excluded": True,
+                "promoted_reviewers_passed": True,
+                "reviewer_outcomes": [
+                    {
+                        "lane_id": "claude",
+                        "config_lane_id": "claude_audit",
+                        "verdict": "PASS",
+                        "promoted": True,
+                    }
+                ],
+            },
+            "queue": {
+                "metrics": {
+                    "active_lane_count": 1,
+                    "blocked_pr_count": 0,
+                    "open_pr_count": 1,
+                    "owner_action_count": 0,
+                    "ready_issue_count": 1,
+                    "ready_pr_count": 1,
+                    "stale_evidence_count": 0,
+                },
+                "active_lanes": {"codex": 1},
+            },
+            "active_prs": [
+                {
+                    "number": 7,
+                    "title": "super private supervised PR title",
+                    "url": "https://github.com/owner/repo/pull/7",
+                    "branch": "codex/board",
+                    "author": "codex-bot",
+                    "is_draft": False,
+                    "merge_state": "CLEAN",
+                    "updated_at": "2026-09-02T12:00:00Z",
+                    "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
+                    "labels": {"builder": ["builder:codex"], "done": ["claude-audit-done"]},
+                    "checks": [{"name": "code-mower/gate", "state": "success"}],
+                    "next_action": "ready for merge or auto-merge",
+                }
+            ],
+            "active_issues": [
+                {
+                    "number": 8,
+                    "title": "super private supervised issue title",
+                    "url": "https://github.com/owner/repo/issues/8",
+                    "author": "owner",
+                    "updated_at": "2026-09-02T12:00:00Z",
+                    "labels": ["tier:R", "builder:claude"],
+                    "builder_lane": "claude",
+                    "assigned": False,
+                    "dispatched": False,
+                    "owner_action": False,
+                }
+            ],
+        },
     }
 
 
@@ -439,7 +507,14 @@ def test_board_snapshot_event_summarizes_without_local_private_fields() -> None:
     assert event["dimensions"]["pull_requests"][0]["head_sha_prefix"] == "abcdef012345"
     assert event["dimensions"]["agent_cards"][0]["provider"] == "codex"
     assert event["dimensions"]["timelines"]["spend_groups"][0]["total_tokens"] == 1000
+    assert event["metrics"]["supervised_open_pr_count"] == 1
+    assert event["metrics"]["supervised_ready_issue_count"] == 1
+    assert event["dimensions"]["supervised_pilot"]["decision"]["decision_state"] == "ready_for_merge"
+    assert event["dimensions"]["supervised_pilot"]["queue"]["active_lanes"] == {"codex": 1}
+    assert event["dimensions"]["supervised_pilot"]["active_issues"][0]["builder_lane"] == "claude"
     assert "sensitive local PR title" not in serialized
+    assert "super private supervised PR title" not in serialized
+    assert "super private supervised issue title" not in serialized
     assert "private owner note" not in serialized
     assert "private prompt fragment" not in serialized
     assert "gate_rerun_command" not in serialized

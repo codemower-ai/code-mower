@@ -477,6 +477,105 @@ def _safe_spend_groups(value: object) -> list[dict[str, Any]]:
     return groups
 
 
+def _safe_supervised_issue(value: object) -> dict[str, Any]:
+    issue = value if isinstance(value, Mapping) else {}
+    labels = issue.get("labels") if isinstance(issue.get("labels"), list) else []
+    summary: dict[str, Any] = {
+        "number": _int(issue.get("number")) or 0,
+        "url": _safe_url(issue.get("url")),
+        "author": _safe_dimension_text(issue.get("author"), max_length=80),
+        "updated_at": _safe_dimension_text(issue.get("updated_at"), max_length=80),
+        "builder_lane": _safe_dimension_text(issue.get("builder_lane"), max_length=80),
+        "assigned": bool(issue.get("assigned")),
+        "dispatched": bool(issue.get("dispatched")),
+        "owner_action": bool(issue.get("owner_action")),
+        "labels": [
+            label
+            for label in (_safe_dimension_text(label, max_length=80) for label in labels if isinstance(label, str))
+            if label
+        ][:12],
+    }
+    return {key: item for key, item in summary.items() if _is_present_metadata(item)}
+
+
+def _safe_reviewer_outcomes(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    outcomes = []
+    for item in value[:20]:
+        outcome = item if isinstance(item, Mapping) else {}
+        summary: dict[str, Any] = {
+            "lane_id": _safe_dimension_text(outcome.get("lane_id"), max_length=80),
+            "config_lane_id": _safe_dimension_text(outcome.get("config_lane_id"), max_length=80),
+            "verdict": _safe_dimension_text(outcome.get("verdict"), max_length=40),
+            "promoted": bool(outcome.get("promoted")),
+        }
+        outcomes.append(
+            {key: data for key, data in summary.items() if _is_present_metadata(data)}
+        )
+    return outcomes
+
+
+def _safe_supervised_decision(value: object) -> dict[str, Any]:
+    decision = value if isinstance(value, Mapping) else {}
+    summary: dict[str, Any] = {
+        "decision_state": _safe_dimension_text(decision.get("decision_state"), max_length=80),
+        "stop_condition": _safe_dimension_text(decision.get("stop_condition"), max_length=80),
+        "next_action": _safe_dimension_text(decision.get("next_action"), max_length=120),
+        "next_detail": _safe_dimension_text(decision.get("next_detail"), max_length=200),
+        "lane_id": _safe_dimension_text(decision.get("lane_id"), max_length=80),
+        "pr_number": _int(decision.get("pr_number")) or 0,
+        "issue_number": _int(decision.get("issue_number")) or 0,
+        "owner_action_kind": _safe_dimension_text(decision.get("owner_action_kind"), max_length=80),
+        "gate_status": _safe_dimension_text(decision.get("gate_status"), max_length=40),
+        "author_lane_excluded": bool(decision.get("author_lane_excluded")),
+        "promoted_reviewers_passed": bool(decision.get("promoted_reviewers_passed")),
+        "would_mutate": bool(decision.get("would_mutate")),
+        "reviewer_outcomes": _safe_reviewer_outcomes(decision.get("reviewer_outcomes")),
+    }
+    return {key: item for key, item in summary.items() if _is_present_metadata(item)}
+
+
+def _safe_supervised_pilot(value: object) -> dict[str, Any]:
+    supervised = value if isinstance(value, Mapping) else {}
+    queue = _as_mapping(supervised.get("queue"))
+    metrics = _as_mapping(queue.get("metrics"))
+    active_lanes = _as_mapping(queue.get("active_lanes"))
+    active_prs = supervised.get("active_prs") if isinstance(supervised.get("active_prs"), list) else []
+    active_issues = (
+        supervised.get("active_issues")
+        if isinstance(supervised.get("active_issues"), list)
+        else []
+    )
+    summary: dict[str, Any] = {
+        "schema": _safe_dimension_text(supervised.get("schema"), max_length=80),
+        "enabled": bool(supervised.get("enabled")),
+        "controller_mode": _safe_dimension_text(supervised.get("controller_mode"), max_length=40),
+        "cycle_state": _safe_dimension_text(supervised.get("cycle_state"), max_length=80),
+        "generated_at": _safe_dimension_text(supervised.get("generated_at"), max_length=80),
+        "decision": _safe_supervised_decision(supervised.get("decision")),
+        "queue": {
+            "metrics": {
+                "active_lane_count": _int(metrics.get("active_lane_count")) or 0,
+                "blocked_pr_count": _int(metrics.get("blocked_pr_count")) or 0,
+                "open_pr_count": _int(metrics.get("open_pr_count")) or 0,
+                "owner_action_count": _int(metrics.get("owner_action_count")) or 0,
+                "ready_issue_count": _int(metrics.get("ready_issue_count")) or 0,
+                "ready_pr_count": _int(metrics.get("ready_pr_count")) or 0,
+                "stale_evidence_count": _int(metrics.get("stale_evidence_count")) or 0,
+            },
+            "active_lanes": {
+                _safe_dimension_text(key, max_length=80): _int(count) or 0
+                for key, count in active_lanes.items()
+                if _safe_dimension_text(key, max_length=80)
+            },
+        },
+        "active_prs": [_safe_pr_summary(pr) for pr in active_prs[:50]],
+        "active_issues": [_safe_supervised_issue(issue) for issue in active_issues[:50]],
+    }
+    return {key: item for key, item in summary.items() if _is_present_metadata(item)}
+
+
 def build_board_snapshot_event(
     *,
     repo_slug: str,
@@ -490,6 +589,7 @@ def build_board_snapshot_event(
     owner_queue = _as_mapping(snapshot.get("owner_queue"))
     agent_adapters = _as_mapping(snapshot.get("agent_adapters"))
     timelines = _as_mapping(snapshot.get("timelines"))
+    supervised_pilot = _as_mapping(snapshot.get("supervised_pilot"))
     gate_health = _as_mapping(remote.get("gate_health"))
     prs = remote.get("pull_requests") if isinstance(remote.get("pull_requests"), list) else []
     runs = remote.get("workflow_runs") if isinstance(remote.get("workflow_runs"), list) else []
@@ -524,6 +624,18 @@ def build_board_snapshot_event(
             "agent_card_count": len(agent_cards),
             "verdict_count": verdict_count,
             "spend_group_count": len(spend_groups),
+            "supervised_open_pr_count": _int(
+                _as_mapping(_as_mapping(supervised_pilot.get("queue")).get("metrics")).get("open_pr_count")
+            )
+            or 0,
+            "supervised_ready_issue_count": _int(
+                _as_mapping(_as_mapping(supervised_pilot.get("queue")).get("metrics")).get("ready_issue_count")
+            )
+            or 0,
+            "supervised_owner_action_count": _int(
+                _as_mapping(_as_mapping(supervised_pilot.get("queue")).get("metrics")).get("owner_action_count")
+            )
+            or 0,
         },
         "dimensions": {
             "snapshot_schema": "code_mower.cloudBoardSnapshot.v1",
@@ -537,6 +649,7 @@ def build_board_snapshot_event(
             "workflow_runs": [_safe_workflow_run(run) for run in runs[:20]],
             "owner_queue": [_safe_owner_item(item) for item in owner_entries[:50]],
             "agent_cards": [_safe_agent_card(card) for card in agent_cards[:50]],
+            "supervised_pilot": _safe_supervised_pilot(supervised_pilot),
             "timelines": {
                 "verdict_count": verdict_count,
                 "spend_available": bool(spend.get("available")),
