@@ -92,7 +92,8 @@ def render_doctor_text(report: DoctorReport) -> str:
     # Surface the adoption posture hint before provider-specific warning
     # detail so hosted/orchestrator operators do not mistake default
     # local-provider warnings for their intended posture. JSON check IDs
-    # and ordering are unchanged; the hint still renders in its group below.
+    # and ordering are unchanged; the hint renders only here, not again
+    # in its group below.
     for check in report.checks:
         if _adoption_posture_hint(check):
             lines.append(f"Adoption posture: {check.status.upper()} {check.name}: {check.message}")
@@ -106,6 +107,7 @@ def render_doctor_text(report: DoctorReport) -> str:
         return "\n".join(lines) + "\n"
 
     for group_id, checks in _group_checks(report.checks).items():
+        checks = [check for check in checks if not _adoption_posture_hint(check)]
         if not checks:
             continue
         failed = sum(1 for check in checks if check.status == STATUS_FAIL)

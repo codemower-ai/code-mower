@@ -230,13 +230,15 @@ class DoctorOutputTests(unittest.TestCase):
 
         rendered = output.render_doctor_text(report)
 
-        self.assertLess(rendered.index("Adoption posture:"), rendered.index("Setup"))
+        self.assertNotIn("Setup", rendered)
         self.assertLess(rendered.index("Adoption posture:"), rendered.index("Provider lanes"))
         self.assertLess(
             rendered.index("Adoption posture:"),
             rendered.index("- WARN runtime.local_cli [codex]"),
         )
         self.assertIn("doctor.adoption.posture_hint", rendered)
+        self.assertEqual(rendered.count("doctor.adoption.posture_hint"), 1)
+        self.assertEqual(rendered.count("Adoption posture:"), 1)
         # JSON IDs and ordering stay stable; only text gains the early hint.
         self.assertEqual(
             [check["id"] for check in report.as_dict()["checks"]],
