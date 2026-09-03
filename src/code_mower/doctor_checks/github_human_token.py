@@ -173,11 +173,10 @@ def check_human_automation_token(
         http_timeout=http_timeout,
     )
     if variable_payload is None:
-        status = _blocking_status_for_posture(adoption_posture)
         return DoctorCheck(
             name="github.human_automation_token",
-            status=status,
-            message=f"{slug} is missing the {expires_var} human token expiry variable",
+            status=STATUS_WARN,
+            message=f"{slug} is missing the {expires_var} human token expiry metadata",
             detail={
                 **detail,
                 "created_at": str(secret_payload.get("created_at") or ""),
@@ -219,10 +218,9 @@ def check_human_automation_token(
         )
     expiry = _parse_expiry(expiry_text)
     if expiry is None:
-        status = _blocking_status_for_posture(adoption_posture)
         return DoctorCheck(
             name="github.human_automation_token",
-            status=status,
+            status=STATUS_WARN,
             message=f"{slug} has an invalid {expires_var} value",
             detail={**detail, "expires_at": expiry_text},
             remediation=(
@@ -235,7 +233,7 @@ def check_human_automation_token(
     days_remaining = (expiry - today).days
     status = STATUS_PASS
     if days_remaining < 0:
-        status = _blocking_status_for_posture(adoption_posture)
+        status = STATUS_WARN
     elif days_remaining <= EXPIRY_WARNING_DAYS:
         status = STATUS_WARN
 
