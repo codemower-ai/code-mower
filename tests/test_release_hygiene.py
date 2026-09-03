@@ -3254,7 +3254,7 @@ jobs:
         rendered = migration.render_setup_drift_text(payload)
         self.assertIn("Standalone pin: WARN pin_ref_differs", rendered)
 
-    def test_setup_drift_text_omits_absent_standalone_pin_line(self) -> None:
+    def test_setup_drift_text_prints_absent_standalone_pin_line(self) -> None:
         from code_mower import migration
 
         payload = {
@@ -3268,12 +3268,78 @@ jobs:
                 "reason": "pin_file_absent",
                 "expected_ref": "v0.9.3-beta.1",
             },
+            "builder_hint": {
+                "status": "skip",
+                "reason": "no_existing_builder_files",
+                "next_action": "no builder-specific setup files detected",
+            },
             "files": [],
         }
 
         rendered = migration.render_setup_drift_text(payload)
 
-        self.assertNotIn("Standalone pin:", rendered)
+        self.assertIn("Standalone pin: SKIP pin_file_absent expected=v0.9.3-beta.1", rendered)
+
+    def test_setup_drift_reports_builder_hint_when_builders_omitted(self) -> None:
+        from code_mower import migration
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            config = repo / "code-mower.yml"
+            config.write_text("repositories: []\nlanes: {}\n", encoding="utf-8")
+            init_stub = mock.Mock()
+            init_stub.load_config.return_value = {"repositories": [], "lanes": {}}
+            init_stub.config_with_added_repositories.return_value = (
+                {"repositories": [], "lanes": {}},
+                (),
+            )
+            init_stub.render_init_plan.return_value = mock.Mock(data={"generated_files": []})
+            init_stub._repo_root.return_value = ROOT
+            init_stub._parse_builder_lanes.return_value = ()
+            tracked_files = {
+                ".github/workflows/dispatch-lanes.yml",
+                "docs/lanes/codex.md",
+                "docs/lanes/cursor.md",
+            }
+            for relative_path in tracked_files:
+                path = repo / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+
+            with (
+                mock.patch.object(migration, "_load_init_module", return_value=init_stub),
+                mock.patch.object(
+                    migration,
+                    "_setup_drift_config_path",
+                    return_value=config,
+                ),
+                mock.patch.object(
+                    migration,
+                    "_git_tracked_files",
+                    return_value=(tracked_files, True),
+                ),
+            ):
+                payload = migration.render_setup_drift_report(
+                    repo_path=repo,
+                )
+
+        self.assertEqual(payload["status"], "warn")
+        self.assertEqual(
+            payload["builder_hint"]["reason"],
+            "builders_omitted_with_existing_builder_files",
+        )
+        self.assertEqual(payload["builder_hint"]["suggested_builders"], ["codex", "cursor"])
+        self.assertEqual(payload["builder_hint"]["suggested_option"], "--builders codex,cursor")
+        self.assertIn("--builders codex,cursor", payload["next_action"])
+        rendered = migration.render_setup_drift_text(payload)
+        self.assertIn("Builder hint: WARN builders_omitted_with_existing_builder_files", rendered)
+        self.assertIn("Builder hint paths:", rendered)
+
+    def test_setup_drift_known_builder_paths_are_candidates(self) -> None:
+        from code_mower import migration
+
+        self.assertTrue(migration._is_setup_candidate_path(".github/workflows/lane-mac-runner.yml"))
+        self.assertTrue(migration._is_setup_candidate_path("tools/lanes/run_mac_lane.sh"))
 
     def test_setup_drift_next_action_keeps_file_and_pin_drift(self) -> None:
         from code_mower import migration
@@ -3283,6 +3349,10 @@ jobs:
             standalone_pin={
                 "status": "warn",
                 "next_action": "review whether tools/code_mower_standalone_pin.env should move to the current release tag",
+            },
+            builder_hint={
+                "status": "skip",
+                "next_action": "no builder-specific setup files detected",
             },
         )
 
