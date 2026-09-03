@@ -135,12 +135,20 @@ reports, and summarize the local Board/status surface into whitelisted
 metadata: repository, generated time, next action, remote availability, gate
 status, PR number/branch/author/draft/merge/check/label summaries, workflow run
 summaries, owner-queue reason summaries, opt-in agent card summaries, and
-verdict/spend group counts. The uploader intentionally does not send the full
-local Board payload, PR titles, owner note titles, local cwd paths, PIDs, full
-head SHAs, gate rerun commands, source, raw diffs, transcripts, issue body
-text, raw stdout/stderr, auth output, browser history, local secret values, or
-secrets. The event type is additive and optional, so CodeMower.com must continue
-accepting v0.6/v0.7 uploads that omit it.
+verdict/spend group counts. In v1.0, the same event may also include
+`dimensions.supervised_pilot`, a compact controller-backed summary with the
+supervised-pilot schema, controller mode, cycle state, decision state,
+stop condition, next action/detail, lane/check references, reviewer outcome
+states, queue metrics, active lane counts, active PR metadata, and active ready
+issue metadata. Matching top-level metrics may include
+`supervised_open_pr_count`, `supervised_ready_issue_count`, and
+`supervised_owner_action_count`. The uploader intentionally does not send the
+full local Board payload, PR titles, owner note titles, issue titles, local cwd
+paths, PIDs, full head SHAs, gate rerun commands, source, raw diffs,
+transcripts, issue body text, raw stdout/stderr, auth output, browser history,
+local secret values, or secrets. The event type and supervised-pilot fields are
+additive and optional, so CodeMower.com must continue accepting v0.6/v0.7/v0.9
+uploads that omit them.
 
 Supervised-pilot events are additive v1.0 metadata for controller and merge
 visibility. `controller_decision`, `merge_decision`, `queue_state_snapshot`,
