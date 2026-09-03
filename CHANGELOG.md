@@ -8,6 +8,28 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 No unreleased changes yet.
 
+## v0.9.2-beta.1
+
+This beta is a small announcement-hardening cleanup after v0.9.1. It removes
+the retired third-party observe bridge, keeps dispatch-token expiry metadata
+from blocking otherwise configured adopters, and makes stale audit waits easier
+to act on from `lanes status` and Board.
+
+### Changed
+
+- The native Board is now the only local visibility surface; the retired
+  third-party observe bridge, its port probing, and its legacy JSON alias were
+  removed (#579, #580).
+- `doctor --adoption --repo OWNER/REPO` treats missing, placeholder, malformed,
+  or expired `DISPATCH_TOKEN_EXPIRES_AT` metadata as a warning once the
+  `DISPATCH_TOKEN` secret exists; missing dispatch secrets still fail in
+  reviewer-gate posture, and `never` is accepted for intentionally
+  non-expiring tokens (#582, #583).
+- `code-mower lanes status --repo OWNER/REPO` now reports stale
+  `needs-*-audit` waits as a requeue action with a short runner/dispatcher
+  detail, and stale pending gate waits surface a `rerun stale gate` headline
+  while preserving the paste-safe gate rerun command (#581, #584).
+
 ## v0.6.0-beta.3
 
 This beta focuses on cold-adoption hardening from the first real v0.6
