@@ -70,6 +70,10 @@ def _format_check(check: DoctorCheck) -> list[str]:
     return lines
 
 
+def _adoption_posture_hint(check: DoctorCheck) -> bool:
+    return check.name == "doctor.adoption.posture_hint"
+
+
 def render_doctor_text(report: DoctorReport) -> str:
     """Render a doctor report for terminal output."""
     lines = [
@@ -85,6 +89,17 @@ def render_doctor_text(report: DoctorReport) -> str:
         lines.append(f"Run plan: {run_plan}")
     lines.append(f"Checks: {_format_status_summary(report)}")
     lines.append("")
+    # Surface the adoption posture hint before provider-specific warning
+    # detail so hosted/orchestrator operators do not mistake default
+    # local-provider warnings for their intended posture. JSON check IDs
+    # and ordering are unchanged; the hint still renders in its group below.
+    for check in report.checks:
+        if _adoption_posture_hint(check):
+            lines.append(f"Adoption posture: {check.status.upper()} {check.name}: {check.message}")
+            if check.remediation:
+                lines.append(f"  remediation: {check.remediation}")
+            lines.append("")
+            break
 
     if not report.checks:
         lines.append("No checks ran.")
