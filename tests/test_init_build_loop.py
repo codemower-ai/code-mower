@@ -1130,22 +1130,22 @@ fi
 
     def test_build_loop_owner_surface_parameters_render_into_templates(self) -> None:
         cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
-        cfg["owner_surface"]["owner_login"] = "jeffhuber"
-        cfg["owner_surface"]["needs_owner_label"] = "needs-jeff"
+        cfg["owner_surface"]["owner_login"] = "example-maintainer"
+        cfg["owner_surface"]["needs_owner_label"] = "needs-maintainer"
         cfg["owner_surface"]["owner_decision_label"] = "decision-jeff"
         cfg["owner_surface"]["owner_sitting_label"] = "sitting-jeff"
         cfg["owner_surface"]["builder_wip_cap"] = "2"
         cfg["owner_surface"]["lane_runner_labels"] = [
             "self-hosted",
             "macOS",
-            "bridge-pro-lane",
+            "sample-app-lane",
         ]
         cfg["owner_surface"]["lane_runner_enabled_var"] = "BRIDGE_PRO_LANE_ENABLED"
         cfg["owner_surface"]["builder_dispatch_cron"] = "5 6 * * 1"
         cfg["owner_surface"]["lane_runner_cron"] = "10 7 * * MON-FRI"
         cfg["owner_surface"]["lane_runner_max_minutes"] = "180"
         cfg["owner_surface"]["lane_runner_trusted_authors"] = ["github-actions[bot]"]
-        cfg["lanes"]["claude_audit"]["labels"]["needs"] = "needs-jeff-audit"
+        cfg["lanes"]["claude_audit"]["labels"]["needs"] = "needs-maintainer-audit"
         cfg["lanes"]["claude_audit"]["labels"]["done"] = "jeff-audit-done"
         cfg["lanes"]["claude_audit"]["labels"]["blocked"] = "jeff-audit-blocked"
         cfg["builder_identity"]["labels"].pop("builder:codex")
@@ -1188,9 +1188,9 @@ fi
                     "CODE_MOWER_OWNER_LABELS_JSON"
                 ]
             ),
-            ["needs-jeff", "decision-jeff", "sitting-jeff"],
+            ["needs-maintainer", "decision-jeff", "sitting-jeff"],
         )
-        self.assertIn('runs-on: ["self-hosted", "macOS", "bridge-pro-lane"]', mac_runner)
+        self.assertIn('runs-on: ["self-hosted", "macOS", "sample-app-lane"]', mac_runner)
         self.assertIn("vars.BRIDGE_PRO_LANE_ENABLED == 'true'", mac_runner)
         self.assertIn('configured = int("180")', mac_runner)
         self.assertIn("exceeds configured maximum", mac_runner)
@@ -1201,14 +1201,14 @@ fi
         )
         self.assertEqual(mac_runner_workflow["jobs"]["run"]["timeout-minutes"], 195)
         self.assertIn('default: "180"', mac_runner)
-        self.assertIn("`needs-jeff`", readme)
+        self.assertIn("`needs-maintainer`", readme)
         self.assertIn("`decision-jeff`", readme)
         self.assertIn("`sitting-jeff`", readme)
-        self.assertIn("label the issue or PR `needs-jeff`", codex_doc)
+        self.assertIn("label the issue or PR `needs-maintainer`", codex_doc)
         self.assertNotIn("label the issue or PR ``", codex_doc)
         self.assertIn("default `2`", readme)
         self.assertIn(
-            "LANE_TRUSTED_AUTHORS:-'jeffhuber,github-actions[bot]'",
+            "LANE_TRUSTED_AUTHORS:-'example-maintainer,github-actions[bot]'",
             runner,
         )
         self.assertIn(
@@ -1222,11 +1222,11 @@ fi
         self.assertIn('--label "$builder_label"', runner)
         self.assertNotIn('builder_label="builder:${LANE}"', runner)
         self.assertIn(
-            """owner_labels_json='["needs-jeff","decision-jeff","sitting-jeff"]'""",
+            """owner_labels_json='["needs-maintainer","decision-jeff","sitting-jeff"]'""",
             runner,
         )
         self.assertIn(
-            """"claude":{"blocked":"jeff-audit-blocked","done":"jeff-audit-done","needs":"needs-jeff-audit"}""",
+            """"claude":{"blocked":"jeff-audit-blocked","done":"jeff-audit-done","needs":"needs-maintainer-audit"}""",
             runner,
         )
         self.assertIn('claude_needs="$(printf', runner)
@@ -1298,7 +1298,7 @@ fi
 
     def test_build_loop_shell_quotes_mac_runner_template_values(self) -> None:
         cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
-        cfg["owner_surface"]["owner_login"] = "jeffhuber"
+        cfg["owner_surface"]["owner_login"] = "example-maintainer"
         cfg["owner_surface"]["ready_label"] = "tier R"
         cfg["owner_surface"]["needs_owner_label"] = "needs owner"
         cfg["owner_surface"]["owner_decision_label"] = "owner decision"
@@ -1330,7 +1330,7 @@ fi
         self.assertEqual(dispatch_env["CODE_MOWER_READY_LABEL"], "tier R")
         self.assertEqual(
             json.loads(dispatch_env["CODE_MOWER_TRUSTED_AUTHORS_JSON"]),
-            ["jeffhuber", "maintainer-bot"],
+            ["example-maintainer", "maintainer-bot"],
         )
         self.assertEqual(
             json.loads(dispatch_env["CODE_MOWER_OWNER_LABELS_JSON"]),
@@ -1346,7 +1346,7 @@ fi
             runner_text,
         )
         self.assertIn(
-            "configured_trusted_authors=${LANE_TRUSTED_AUTHORS:-jeffhuber,maintainer-bot}",
+            "configured_trusted_authors=${LANE_TRUSTED_AUTHORS:-example-maintainer,maintainer-bot}",
             runner_text,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)

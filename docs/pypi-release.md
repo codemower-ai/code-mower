@@ -230,18 +230,22 @@ Promotion criteria:
 
 ## README Install Command Policy
 
-The primary README command should stay on an explicit beta version until a
-stable `1.0` line exists:
+The primary README command stays on the exact current release so an adopter,
+an agent, and the release rehearsal all install the same artifact:
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
 pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.2
 ```
 
-Do not switch to unpinned `pipx install code-mower` until:
+An unpinned `pipx install code-mower` may be mentioned as a convenience only
+after each release verifies that:
 
 - TestPyPI install has passed.
 - Production PyPI trusted publishing has passed.
 - `pipx install code-mower` has been tested in a clean shell.
 - A fresh toy repo completes `init --easy`, generated smoke tests,
   `doctor --preflight`, a starter value report, and cloud dogfood dry run.
+
+The pinned command remains the canonical copy-paste path even after those
+checks pass; bump it with every release.

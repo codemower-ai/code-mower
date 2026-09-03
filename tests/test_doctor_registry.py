@@ -630,6 +630,28 @@ class DoctorRegistryTests(unittest.TestCase):
         self.assertIn("no repository code-mower.yml was found", source_check.message)
         self.assertIn("run_init_easy_apply", source_check.detail["next_steps"])
 
+    def test_adoption_accepts_owner_login_repository_variable_without_exposing_value(self) -> None:
+        checks = check_adoption_setup(
+            config={
+                "repositories": [{"slug": "owner/example"}],
+                "owner_surface": {"owner_login": ""},
+            },
+            config_path=ROOT / "code-mower.yml",
+            adoption=True,
+            repo_slug="owner/example",
+            repo_source="explicit",
+            using_packaged_example=False,
+            trusted_author_variables={"CODE_MOWER_OWNER_LOGIN": "present"},
+        )
+
+        owner_check = next(
+            check for check in checks if check.name == "doctor.adoption.owner_login"
+        )
+        self.assertEqual(owner_check.status, "pass")
+        self.assertEqual(owner_check.detail["source"], "CODE_MOWER_OWNER_LOGIN")
+        self.assertTrue(owner_check.detail["value_hidden"])
+        self.assertNotIn("example-maintainer", str(owner_check.detail))
+
     def test_adoption_config_source_detects_generated_setup_without_root_config(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)

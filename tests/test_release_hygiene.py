@@ -74,8 +74,9 @@ class ReleaseHygieneTests(unittest.TestCase):
         config = code_mower_config.load_config(config_path)
         self.assertEqual(code_mower_config.validate_config(config), [])
         self.assertEqual(config["repositories"][0]["slug"], "codemower-ai/code-mower")
-        self.assertEqual(config["owner_surface"]["owner_login"], "jeffhuber")
-        self.assertEqual(config["decisions"]["authorities"], ["jeffhuber"])
+        self.assertEqual(config["owner_surface"]["owner_login"], "")
+        self.assertEqual(config["owner_surface"]["status_issue"], "")
+        self.assertEqual(config["decisions"]["authorities"], [])
         self.assertEqual(config["profiles"]["recommended"]["lanes"], ["codex", "claude_audit"])
 
         dispatch_workflow = yaml.safe_load(
@@ -84,7 +85,12 @@ class ReleaseHygieneTests(unittest.TestCase):
         trusted_authors = json.loads(
             dispatch_workflow["jobs"]["dispatch"]["env"]["CODE_MOWER_TRUSTED_AUTHORS_JSON"]
         )
-        self.assertIn("jeffhuber", trusted_authors)
+        self.assertEqual(trusted_authors, [])
+        dispatch_env = dispatch_workflow["jobs"]["dispatch"]["env"]
+        self.assertEqual(
+            dispatch_env["CODE_MOWER_TRUSTED_AUTHORS_JSON_OVERRIDE"],
+            "${{ vars.CODE_MOWER_TRUSTED_AUTHORS_JSON || '' }}",
+        )
 
         report = doctor_checks.run_doctor(
             config_path=config_path,
@@ -122,6 +128,31 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("pytest>=8.0", extras["test"])
         self.assertIn("ruff>=0.8", extras["test"])
         self.assertIn("twine>=5.0", extras["test"])
+
+    def test_public_package_metadata_points_to_the_oss_project(self) -> None:
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+        project = pyproject["project"]
+        self.assertEqual(project["license"], "Apache-2.0")
+        self.assertNotIn(
+            "License :: OSI Approved :: Apache Software License",
+            project["classifiers"],
+        )
+        self.assertFalse(
+            any(value.startswith("Development Status ::") for value in project["classifiers"])
+        )
+        self.assertEqual(
+            project["urls"],
+            {
+                "Homepage": "https://github.com/codemower-ai/code-mower",
+                "Documentation": "https://github.com/codemower-ai/code-mower#readme",
+                "Repository": "https://github.com/codemower-ai/code-mower",
+                "Issues": "https://github.com/codemower-ai/code-mower/issues",
+                "Changelog": (
+                    "https://github.com/codemower-ai/code-mower/blob/main/CHANGELOG.md"
+                ),
+            },
+        )
 
     def test_python_support_contract_is_312_plus(self) -> None:
         pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -1385,8 +1416,17 @@ exit 1
             self.assertIn('export PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}"', wrapper)
             self.assertNotIn('${script_dir}/code_mower', wrapper)
 
-        self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
-        self.assertIn('CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"', gate)
+        self.assertIn('CODE_MOWER_OWNER_LOGIN: ""', gate)
+        self.assertIn(
+            "CODE_MOWER_OWNER_LOGIN_OVERRIDE: ${{ vars.CODE_MOWER_OWNER_LOGIN || '' }}",
+            gate,
+        )
+        self.assertIn('CODE_MOWER_DECISION_AUTHORITIES: ""', gate)
+        self.assertIn(
+            "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE: "
+            "${{ vars.CODE_MOWER_DECISION_AUTHORITIES || '' }}",
+            gate,
+        )
         self.assertIn(
             "CODE_MOWER_GATE_AUTOMERGE_TOKEN: ${{ secrets.CODE_MOWER_GATE_AUTOMERGE_TOKEN || secrets.DISPATCH_TOKEN || '' }}",
             gate,
@@ -1692,10 +1732,10 @@ jobs:
                 {
                     "body": "Head SHA: `" + ("a" * 40) + "`\n"
                     "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
-                    "user": {"login": "jeffhuber"},
+                    "user": {"login": "example-maintainer"},
                 }
             ],
-            env={"CLAUDE_AUDIT_BOT_AUTHORS": "jeffhuber,github-actions[bot]"},
+            env={"CLAUDE_AUDIT_BOT_AUTHORS": "example-maintainer,github-actions[bot]"},
         )
 
         self.assertEqual(result["gate_state"], "success")
@@ -3932,8 +3972,8 @@ jobs:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
         config = dict(code_mower_config.load_config(config_path))
         config["owner_surface"] = {
-            "owner_login": "jeffhuber",
-            "needs_owner_label": "needs-jeff",
+            "owner_login": "example-maintainer",
+            "needs_owner_label": "needs-maintainer",
             "owner_decision_label": "owner-decision",
             "owner_sitting_label": "owner-sitting",
             "gate_override_label": "gate:override",
@@ -3942,7 +3982,7 @@ jobs:
             "gate_health_cron": "*/15 * * * *",
             "gate_health_max_wait_minutes": "45",
             "gate_health_liveness_minutes": "60",
-            "local_audit_runner_label": "bridge-pro-audit",
+            "local_audit_runner_label": "sample-app-audit",
             "ready_label": "tier:R",
             "phase_labels": ["phase:0", "phase:1"],
             "reviewer_spend_path": ".code-mower/reviewer-spend.json",
@@ -3975,7 +4015,7 @@ jobs:
             }
             self.assertTrue(generated.issubset(written))
             self.assertTrue(generated.isdisjoint(placeholder_files))
-            self.assertIn("needs-jeff", plan.data["labels"])
+            self.assertIn("needs-maintainer", plan.data["labels"])
             self.assertIn("owner-decision", plan.data["labels"])
             self.assertIn("owner-sitting", plan.data["labels"])
             self.assertIn("gate:override", plan.data["labels"])
@@ -3984,11 +4024,16 @@ jobs:
                 ".github/workflows/needs-owner-notify.yml"
             ).read_text(encoding="utf-8")
             parsed_notify = yaml.safe_load(notify)
-            self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', notify)
+            self.assertIn('NEEDS_OWNER_LABEL: "needs-maintainer"', notify)
             self.assertIn('OWNER_DECISION_LABEL: "owner-decision"', notify)
             self.assertIn('OWNER_SITTING_LABEL: "owner-sitting"', notify)
-            self.assertIn('OWNER_LOGIN: "jeffhuber"', notify)
-            self.assertEqual(parsed_notify["env"]["NEEDS_OWNER_LABEL"], "needs-jeff")
+            self.assertIn('OWNER_LOGIN: "example-maintainer"', notify)
+            self.assertIn(
+                "OWNER_LOGIN_OVERRIDE: ${{ vars.CODE_MOWER_OWNER_LOGIN || '' }}",
+                notify,
+            )
+            self.assertIn('owner_login="${OWNER_LOGIN_OVERRIDE:-${OWNER_LOGIN}}"', notify)
+            self.assertEqual(parsed_notify["env"]["NEEDS_OWNER_LABEL"], "needs-maintainer")
             self.assertEqual(parsed_notify["env"]["OWNER_DECISION_LABEL"], "owner-decision")
             self.assertEqual(parsed_notify["env"]["OWNER_SITTING_LABEL"], "owner-sitting")
             self.assertEqual(parsed_notify["env"]["GATE_OVERRIDE_LABEL"], "gate:override")
@@ -4000,7 +4045,7 @@ jobs:
                 "github.event.label.name == env.OWNER_SITTING_LABEL || "
                 "github.event.label.name == env.GATE_OVERRIDE_LABEL",
             )
-            self.assertNotIn("github.event.label.name == 'needs-jeff'", notify)
+            self.assertNotIn("github.event.label.name == 'needs-maintainer'", notify)
             self.assertNotIn("github.event.label.name == 'gate:override'", notify)
             self.assertIn(
                 'gh api -X POST "repos/${REPO}/issues/${NUM}/assignees"',
@@ -4022,7 +4067,7 @@ jobs:
             ).read_text(encoding="utf-8")
             self.assertIn('cron: "15 12 * * 1"', weekly)
             self.assertIn('STATUS_ISSUE: "6"', weekly)
-            self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', weekly)
+            self.assertIn('NEEDS_OWNER_LABEL: "needs-maintainer"', weekly)
             self.assertIn('OWNER_DECISION_LABEL: "owner-decision"', weekly)
             self.assertIn('OWNER_SITTING_LABEL: "owner-sitting"', weekly)
             self.assertIn('PHASE_LABELS: "phase:0,phase:1"', weekly)
@@ -4043,13 +4088,21 @@ jobs:
             gate_health = output_dir.joinpath(
                 ".github/workflows/code-mower-gate-health.yml"
             ).read_text(encoding="utf-8")
-            self.assertIn('NEEDS_OWNER_LABEL: "needs-jeff"', gate_health)
-            self.assertIn('OWNER_LOGIN: "jeffhuber"', gate_health)
+            self.assertIn('NEEDS_OWNER_LABEL: "needs-maintainer"', gate_health)
+            self.assertIn('OWNER_LOGIN: "example-maintainer"', gate_health)
+            self.assertIn(
+                "OWNER_LOGIN_OVERRIDE: ${{ vars.CODE_MOWER_OWNER_LOGIN || '' }}",
+                gate_health,
+            )
+            self.assertIn(
+                'owner_login="${OWNER_LOGIN_OVERRIDE:-${OWNER_LOGIN}}"',
+                gate_health,
+            )
             self.assertIn('STATUS_ISSUE: "6"', gate_health)
             self.assertIn('cron: "*/15 * * * *"', gate_health)
             self.assertIn('CODE_MOWER_GATE_HEALTH_MAX_WAIT_MINUTES: ${{ github.event.inputs.max_wait_minutes || \'45\' }}', gate_health)
             self.assertIn('CODE_MOWER_GATE_HEALTH_LIVENESS_MINUTES: ${{ github.event.inputs.liveness_minutes || \'60\' }}', gate_health)
-            self.assertIn('CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL: "bridge-pro-audit"', gate_health)
+            self.assertIn('CODE_MOWER_LOCAL_AUDIT_RUNNER_LABEL: "sample-app-audit"', gate_health)
             self.assertIn("tools/code_mower gate-health", gate_health)
             self.assertIn("needs-codex-audit", gate_health)
             self.assertIn("github-actions[bot]", gate_health)
@@ -4059,11 +4112,11 @@ jobs:
             gate = output_dir.joinpath(
                 ".github/workflows/code-mower-gate.yml"
             ).read_text(encoding="utf-8")
-            self.assertIn('CODE_MOWER_OWNER_LABEL: "needs-jeff"', gate)
+            self.assertIn('CODE_MOWER_OWNER_LABEL: "needs-maintainer"', gate)
             self.assertIn('CODE_MOWER_OWNER_SITTING_LABEL: "owner-sitting"', gate)
-            self.assertIn('CODE_MOWER_OWNER_LOGIN: "jeffhuber"', gate)
+            self.assertIn('CODE_MOWER_OWNER_LOGIN: "example-maintainer"', gate)
             self.assertIn('CODE_MOWER_GATE_OVERRIDE_LABEL: "gate:override"', gate)
-            self.assertIn('CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"', gate)
+            self.assertIn('CODE_MOWER_DECISION_AUTHORITIES: "example-maintainer"', gate)
             self.assertNotIn("permission=admin", gate)
             self.assertIn("override_actor != override_owner", gate)
             self.assertIn("Clear stale Code Mower gate override", gate)
@@ -4073,7 +4126,7 @@ jobs:
                 ".github/workflows/codex-audit-labeler.yml"
             ).read_text(encoding="utf-8")
             self.assertIn(
-                'CODE_MOWER_DECISION_AUTHORITIES: "jeffhuber"',
+                'CODE_MOWER_DECISION_AUTHORITIES: "example-maintainer"',
                 codex_labeler,
             )
 
@@ -4099,7 +4152,7 @@ jobs:
             )
             self.assertEqual(
                 parsed_gate["env"]["CODE_MOWER_OWNER_LOGIN"],
-                "jeffhuber",
+                "example-maintainer",
             )
             self.assertEqual(
                 parsed_gate["env"]["CODE_MOWER_GATE_OVERRIDE_LABEL"],
@@ -4284,11 +4337,11 @@ while [ "$#" -gt 0 ]; do
   shift || true
 done
 if [ "$cmd" = "issue list" ] && [ "$state" = "open" ]; then
-  printf '%s\\n' '[{"number":1,"title":"Raw needs owner","labels":[{"name":"needs-jeff"},{"name":"phase:0"}],"assignees":[]},{"number":2,"title":"Ready","labels":[{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]},{"number":5,"title":"Owner sitting","labels":[{"name":"owner-sitting"},{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]},{"number":7,"title":"Owner decision","labels":[{"name":"needs-jeff"},{"name":"owner-decision"},{"name":"phase:0"}],"assignees":[]}]'
+  printf '%s\\n' '[{"number":1,"title":"Raw needs owner","labels":[{"name":"needs-maintainer"},{"name":"phase:0"}],"assignees":[]},{"number":2,"title":"Ready","labels":[{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]},{"number":5,"title":"Owner sitting","labels":[{"name":"owner-sitting"},{"name":"tier:R"},{"name":"phase:0"}],"assignees":[]},{"number":7,"title":"Owner decision","labels":[{"name":"needs-maintainer"},{"name":"owner-decision"},{"name":"phase:0"}],"assignees":[]}]'
 elif [ "$cmd" = "issue list" ] && [ "$state" = "closed" ]; then
   printf '%s\\n' '[{"number":4,"title":"Done","labels":[{"name":"phase:0"}],"closedAt":"2099-01-01T00:00:00Z","assignees":[]}]'
 elif [ "$cmd" = "pr list" ] && [ "$state" = "open" ]; then
-  printf '%s\\n' '[{"number":3,"title":"Builder PR","labels":[{"name":"builder:codex"},{"name":"needs-codex-audit"},{"name":"needs-jeff"}],"author":{"login":"builder"},"isDraft":false},{"number":6,"title":"Owner sitting PR","labels":[{"name":"builder:claude"},{"name":"owner-sitting"}],"author":{"login":"builder"},"isDraft":false},{"number":8,"title":"Owner decision PR","labels":[{"name":"builder:claude"},{"name":"needs-jeff"},{"name":"owner-decision"}],"author":{"login":"builder"},"isDraft":false}]'
+  printf '%s\\n' '[{"number":3,"title":"Builder PR","labels":[{"name":"builder:codex"},{"name":"needs-codex-audit"},{"name":"needs-maintainer"}],"author":{"login":"builder"},"isDraft":false},{"number":6,"title":"Owner sitting PR","labels":[{"name":"builder:claude"},{"name":"owner-sitting"}],"author":{"login":"builder"},"isDraft":false},{"number":8,"title":"Owner decision PR","labels":[{"name":"builder:claude"},{"name":"needs-maintainer"},{"name":"owner-decision"}],"author":{"login":"builder"},"isDraft":false}]'
 elif [ "$cmd" = "pr list" ] && [ "$state" = "merged" ]; then
   printf '%s\\n' '[]'
 else
@@ -4327,7 +4380,7 @@ fi
                     **os.environ,
                     "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
                     "REPO": "owner/repo",
-                    "NEEDS_OWNER_LABEL": "needs-jeff",
+                    "NEEDS_OWNER_LABEL": "needs-maintainer",
                     "OWNER_DECISION_LABEL": "owner-decision",
                     "OWNER_SITTING_LABEL": "owner-sitting",
                     "READY_LABEL": "tier:R",
@@ -4338,7 +4391,7 @@ fi
                 check=True,
             )
 
-        self.assertIn("## Needs Owner (needs-jeff)", completed.stdout)
+        self.assertIn("## Needs Owner (needs-maintainer)", completed.stdout)
         self.assertIn("`owner-decision` decisions that survived triage", completed.stdout)
         self.assertIn("`owner-sitting` physical-step sittings", completed.stdout)
         owner_section = completed.stdout.split("## Needs Owner", 1)[1].split(
@@ -4906,6 +4959,23 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
 
     def test_privacy_scan_is_clean(self) -> None:
         self.assertEqual(privacy_scan.scan(ROOT), [])
+
+    def test_privacy_scan_rejects_personal_and_private_project_markers(self) -> None:
+        samples = (
+            "jeff" + "huber",
+            "bridge" + "-pro",
+            "bridge" + "_pro",
+            "/" + "Users/example/work",
+        )
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertTrue(
+                    privacy_scan._scan_text(
+                        Path("sample.txt"),
+                        "sample.txt",
+                        sample,
+                    )
+                )
 
     def test_public_demo_calibration_artifacts_are_parseable_and_sanitized(self) -> None:
         demo_dir = ROOT / "examples/demo-calibration"
@@ -7895,6 +7965,7 @@ def main():
 
     def test_readme_describes_calibration_limits_and_roles(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        normalized_readme = " ".join(readme.split())
 
         self.assertIn("## What Calibration Does And Does Not Prove", readme)
         self.assertIn(
@@ -7903,8 +7974,8 @@ def main():
         )
         self.assertIn("[lane promotion policy](docs/lane-promotion-policy.md)", readme)
         self.assertIn("## Start Here", readme)
-        self.assertIn("beta, bring-your-own-agent-loop software", readme)
-        self.assertIn("not a drop-in autonomous merge gate", readme)
+        self.assertIn("supervised-pilot, bring-your-own-agent-loop software", normalized_readme)
+        self.assertIn("not a drop-in unattended merge gate", normalized_readme)
         self.assertIn("## Roles", readme)
         self.assertIn("Claude Code, Codex, Cursor-style", readme)
         self.assertIn("templates now support that loop end to end", readme)

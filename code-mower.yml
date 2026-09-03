@@ -14,12 +14,12 @@ audit:
   max_diff_hard_limit_bytes: "1500000"
 
 owner_surface:
-  owner_login: jeffhuber
+  owner_login: ""
   needs_owner_label: needs-owner
   owner_decision_label: owner-decision
   owner_sitting_label: owner-sitting
   gate_override_label: "gate:override"
-  status_issue: "570"
+  status_issue: ""
   weekly_cron: "0 14 * * 1"
   gate_health_cron: "*/15 * * * *"
   gate_health_max_wait_minutes: "30"
@@ -50,8 +50,7 @@ owner_surface:
   reviewer_value_report_path: .code-mower/reviewer-value-report.md
 
 decisions:
-  authorities:
-    - jeffhuber
+  authorities: []
 
 merge_authority_excludes_author: true
 

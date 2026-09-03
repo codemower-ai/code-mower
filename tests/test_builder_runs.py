@@ -13,18 +13,18 @@ from code_mower.cloud_client import build_cloud_bundle, build_upload_payload, pa
 def test_builder_record_writes_source_free_grok_cursor_event() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        work_order = root / "bridge-pro-bidding.md"
+        work_order = root / "sample-app-bidding.md"
         work_order.write_text("# Work Order: Bridge bidding\n", encoding="utf-8")
         work_order.with_suffix(".json").write_text(
             json.dumps(
                 {
                     "schema": "code_mower.workOrder.v1",
-                    "repo": "jeffhuber/bridge-pro",
+                    "repo": "example-maintainer/sample-app",
                     "source": {
                         "type": "github_issue",
-                        "repo": "jeffhuber/bridge-pro",
+                        "repo": "example-maintainer/sample-app",
                         "issue_number": "12",
-                        "issue_url": "https://github.com/jeffhuber/bridge-pro/issues/12",
+                        "issue_url": "https://github.com/example-maintainer/sample-app/issues/12",
                     },
                 }
             ),
@@ -44,7 +44,7 @@ def test_builder_record_writes_source_free_grok_cursor_event() -> None:
                     "--work-order",
                     str(work_order),
                     "--pr",
-                    "jeffhuber/bridge-pro#13",
+                    "example-maintainer/sample-app#13",
                     "--branch",
                     "cursor/bridge-bidding",
                     "--model",
@@ -70,7 +70,7 @@ def test_builder_record_writes_source_free_grok_cursor_event() -> None:
         assert event["schema"] == "code_mower.benchmarkEvent.v1"
         assert event["event_type"] == "builder_run"
         assert event["provider"] == "grok_bot"
-        assert event["repo_slug"] == "jeffhuber/bridge-pro"
+        assert event["repo_slug"] == "example-maintainer/sample-app"
         assert event["tool"]["role"] == "builder"
         assert event["tool"]["tool_name"] == "grok_bot"
         assert event["tool"]["executor"] == "cursor_cloud_agent"
@@ -78,7 +78,7 @@ def test_builder_record_writes_source_free_grok_cursor_event() -> None:
         assert event["dimensions"]["builder_executor"] == "cursor_cloud_agent"
         assert event["dimensions"]["issue_number"] == "12"
         assert event["dimensions"]["pr_number"] == "13"
-        assert event["dimensions"]["work_order_file"] == "bridge-pro-bidding.md"
+        assert event["dimensions"]["work_order_file"] == "sample-app-bidding.md"
         assert event["metrics"]["elapsed_seconds"] == 42
         assert event["metrics"]["cost_usd"] == 0.25
         assert event["metrics"]["user_interventions"] == 1
@@ -90,7 +90,7 @@ def test_builder_record_writes_source_free_grok_cursor_event() -> None:
             reports=[],
             events=parse_event_args([f"builder_run={output}"]),
             output_dir=root / "bundle",
-            repo_slug="jeffhuber/bridge-pro",
+            repo_slug="example-maintainer/sample-app",
         )
         assert bundle_result["event_types"] == {"builder_run": 1}
         upload = build_upload_payload(bundle_dir=root / "bundle")
@@ -303,7 +303,7 @@ def test_builder_record_rejects_explicit_repo_that_conflicts_with_full_pr_ref() 
                     "--repo",
                     "codemower-ai/code-mower",
                     "--pr",
-                    "jeffhuber/bridge-pro#13",
+                    "example-maintainer/sample-app#13",
                     "--output",
                     str(output),
                     "--json",
@@ -328,7 +328,7 @@ def test_builder_record_rejects_explicit_repo_that_conflicts_with_full_issue_ref
                     "--repo",
                     "codemower-ai/code-mower",
                     "--issue",
-                    "jeffhuber/bridge-pro#12",
+                    "example-maintainer/sample-app#12",
                     "--output",
                     str(output),
                     "--json",
@@ -353,7 +353,7 @@ def test_builder_record_rejects_mismatched_issue_and_pr_repositories() -> None:
                     "--issue",
                     "codemower-ai/code-mower#12",
                     "--pr",
-                    "jeffhuber/bridge-pro#13",
+                    "example-maintainer/sample-app#13",
                     "--output",
                     str(output),
                     "--json",
@@ -390,7 +390,7 @@ def test_builder_record_rejects_mismatched_work_order_and_pr_repositories() -> N
                     "--work-order",
                     str(work_order),
                     "--pr",
-                    "jeffhuber/bridge-pro#13",
+                    "example-maintainer/sample-app#13",
                     "--output",
                     str(output),
                     "--json",
@@ -425,7 +425,7 @@ def test_builder_record_rejects_mismatched_explicit_repo_and_work_order() -> Non
                     "--provider",
                     "grok_bot",
                     "--repo",
-                    "jeffhuber/bridge-pro",
+                    "example-maintainer/sample-app",
                     "--work-order",
                     str(work_order),
                     "--output",
@@ -449,7 +449,7 @@ def test_builder_record_event_id_includes_work_order_repo_identity() -> None:
         second.write_text("# Work Order\n", encoding="utf-8")
         for work_order, repo in (
             (first, "codemower-ai/code-mower"),
-            (second, "jeffhuber/bridge-pro"),
+            (second, "example-maintainer/sample-app"),
         ):
             work_order.with_suffix(".json").write_text(
                 json.dumps(
@@ -480,7 +480,7 @@ def test_builder_record_event_id_includes_work_order_repo_identity() -> None:
         )
 
         assert first_event["repo_slug"] == "codemower-ai/code-mower"
-        assert second_event["repo_slug"] == "jeffhuber/bridge-pro"
+        assert second_event["repo_slug"] == "example-maintainer/sample-app"
         assert first_event["event_id"] != second_event["event_id"]
 
 
@@ -545,10 +545,10 @@ def _write_pr_event(
     path.write_text(
         json.dumps(
             {
-                "repository": {"full_name": "jeffhuber/bridge-pro"},
+                "repository": {"full_name": "example-maintainer/sample-app"},
                 "pull_request": {
                     "number": number,
-                    "html_url": f"https://github.com/jeffhuber/bridge-pro/pull/{number}",
+                    "html_url": f"https://github.com/example-maintainer/sample-app/pull/{number}",
                     "user": {"login": author},
                     "head": {"ref": branch},
                     "body": body,

@@ -109,6 +109,22 @@ decisions:
     - release-manager
 ```
 
+Public repositories can keep personal maintainer identity out of tracked
+`code-mower.yml` and generated workflows. Leave `owner_login` and
+`decisions.authorities` empty, then configure the live repository with
+Actions variables:
+
+```bash
+gh variable set CODE_MOWER_OWNER_LOGIN --repo OWNER/REPO --body YOUR_GITHUB_LOGIN
+gh variable set CODE_MOWER_DECISION_AUTHORITIES --repo OWNER/REPO --body YOUR_GITHUB_LOGIN
+gh variable set CODE_MOWER_TRUSTED_AUTHORS_JSON --repo OWNER/REPO --body '["YOUR_GITHUB_LOGIN"]'
+```
+
+Generated workflows prefer these repository-variable overrides and fall back
+to the tracked config values. Doctor reports only whether the variables are
+present; it does not print their values. Keep identity in tracked config when
+that transparency is appropriate for the project.
+
 When an authorized owner or orchestrator closes an audit finding by policy,
 record a hidden decision marker in the issue or PR conversation:
 
@@ -424,7 +440,7 @@ Runner setup recipe:
    architecture that matches the machine.
 2. Add the custom runner label from `owner_surface.local_audit_runner_label`
    (default `code-mower-audit`). The generated workflow's `runs-on` uses that
-   label, so product repos can set values such as `bridge-pro-audit` and keep
+   label, so product repos can set values such as `sample-app-audit` and keep
    regeneration clean.
 3. Start with `./run.sh` from the same macOS user account that owns provider
    CLI logins. Install it as a service only after smoke tests pass.

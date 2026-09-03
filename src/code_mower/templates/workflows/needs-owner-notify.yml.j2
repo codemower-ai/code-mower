@@ -18,6 +18,7 @@ env:
   OWNER_SITTING_LABEL: __OWNER_SITTING_LABEL_YAML__
   GATE_OVERRIDE_LABEL: __GATE_OVERRIDE_LABEL_YAML__
   OWNER_LOGIN: __OWNER_LOGIN_YAML__
+  OWNER_LOGIN_OVERRIDE: {% raw %}${{ vars.CODE_MOWER_OWNER_LOGIN || '' }}{% endraw %}
 
 jobs:
   notify:
@@ -40,12 +41,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          owner_login="${OWNER_LOGIN_OVERRIDE:-${OWNER_LOGIN}}"
           mention="repository owner"
-          if [ -n "${OWNER_LOGIN:-}" ] && [ "${OWNER_LOGIN}" != "TODO_OWNER_LOGIN" ]; then
+          if [ -n "${owner_login:-}" ] && [ "${owner_login}" != "TODO_OWNER_LOGIN" ]; then
             gh api -X POST "repos/${REPO}/issues/${NUM}/assignees" \
-              -f "assignees[]=${OWNER_LOGIN}" || \
-              echo "::warning::Could not assign ${OWNER_LOGIN} on #${NUM}; token may be read-only."
-            mention="@${OWNER_LOGIN}"
+              -f "assignees[]=${owner_login}" || \
+              echo "::warning::Could not assign ${owner_login} on #${NUM}; token may be read-only."
+            mention="@${owner_login}"
           fi
 
           if [ "${LABEL}" = "${NEEDS_OWNER_LABEL}" ]; then

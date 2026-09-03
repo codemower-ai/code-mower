@@ -1,6 +1,6 @@
-# Code Mower Public Release / v1.0 Checklist
+# Code Mower Public Release Checklist
 
-Use this checklist for public OSS readiness and v1.0 hardening. The standalone
+Use this checklist for public OSS readiness and 1.x hardening. The standalone
 `code-mower` repository is public; the remaining work is to make the first
 install, first doctor run, first audit, and first report boring for users who do
 not know the original reference repos.
@@ -48,7 +48,7 @@ not know the original reference repos.
   mirror removal while preserving their own CI/deploy gates.
 - Hosted/commercial service implementation remains outside the public OSS repo.
 
-## Required For v1.0
+## Release Requirements
 
 - `README.md` is public-safe, product-oriented, and does not require access to
   private product/reference repositories.
@@ -113,9 +113,9 @@ not know the original reference repos.
 - A current post-release effectiveness assessment exists and distinguishes
   operational dogfood evidence from calibrated lane-promotion evidence.
 
-## Alpha Release Gate
+## Release Gate
 
-Before tagging an early alpha, run these from a clean standalone checkout:
+Before tagging a public release, run these from a clean standalone checkout:
 
 ```bash
 scripts/dev-python -m venv .venv
@@ -128,27 +128,26 @@ scripts/dev-python -m venv .venv
 .venv/bin/code-mower migration package-install-rehearsal --package-spec . --python .venv/bin/python --json
 ```
 
-For alpha releases, keep running this from a fresh clone before tagging. Do not
-promote an alpha toward v1.0 unless the generated package can pass the same
-path outside the developer's long-lived worktree.
+Keep running this from a fresh clone before tagging. Do not publish unless the
+generated package passes the same path outside the developer's long-lived
+worktree.
 
 `scripts/dev-python` is the checked-in source checkout interpreter resolver. It
 refuses Python older than 3.12, including stale virtualenvs and old system
 `python3` shims, so release work cannot accidentally use a broken local
 interpreter.
 
-## Post-v1.0 Hardening Candidates
+## Ongoing Hardening Candidates
 
 - Publish a short "easy mode" walkthrough using a toy repo.
 - Keep the newest GitHub release marked Latest so GitHub's latest-release
   endpoint resolves for early adopters.
-- Confirm the release workflow builds source/wheel distributions for every
-  public alpha.
-- Configure PyPI trusted publishing before widening beyond friendly alpha users,
-  or document why the project is intentionally staying GitHub-install-only.
-- Run [docs/pypi-release.md](pypi-release.md) against TestPyPI before
-  switching first-user docs from GitHub-tag install to `pipx install
-  code-mower`.
+- Confirm the release workflow builds source and wheel distributions for every
+  public release.
+- Keep PyPI trusted publishing, GitHub release artifacts, and the GitHub Latest
+  marker aligned for every release.
+- Run [docs/pypi-release.md](pypi-release.md) against the intended package
+  index before changing the canonical pinned install command.
 - Run `code-mower migration release-readiness --json` before any TestPyPI or
   production PyPI promotion. It should pass with zero failed checks for package
   version consistency, release workflow gates, trusted publishing docs, and
@@ -166,7 +165,7 @@ interpreter.
   lanes.
 - Add a short explanation of how local benchmark reports can later be shared with
   the hosted service.
-- Decompose the largest extraction-era modules before v1.0 where it materially
+- Decompose the largest extraction-era modules where it materially
   improves contributor onboarding: calibration, doctor, cloud, package, and
   provider runners.
 - Extract a shared provider-audit runner so provider-specific wrappers contain
@@ -182,8 +181,7 @@ interpreter.
 - Add focused unit tests around the large modules instead of relying mostly on
   release-hygiene integration tests.
 - Add static-analysis gates in stages: broaden Ruff for stable subpackages
-  first, then add a scoped type-checking gate before treating Code Mower as
-  broadly contributor-ready.
+  first, then add scoped type checking as module contracts stabilize.
 - Add a zero-config first-value experiment, such as `code-mower try OWNER/REPO`,
   that can auto-discover recent PR history, generate a draft corpus, and
   produce a value report without asking a new user to understand the full
@@ -196,13 +194,14 @@ interpreter.
 
 ## Ongoing Public-Repo Duties
 
-- Create the first GitHub release.
+- Keep the GitHub Latest release, PyPI package, README pin, and release notes in
+  sync.
 - Keep commercial backend code and commercialization plans in a private repo.
 - Keep product repos private unless there is a separate product reason to make
   them public.
 - Keep private reference-repo names out of public docs unless they are necessary
   examples and the repo owner has intentionally made them public.
-- Re-run the public fresh-clone/install rehearsal before every alpha promotion.
+- Re-run the public fresh-clone/install rehearsal before every release.
 
 ## Product Safety Rule
 
