@@ -8,6 +8,54 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 No changes yet.
 
+## v1.0.1
+
+This patch adds local and hosted productivity intelligence to the v1.0
+supervised-pilot release while keeping gate semantics and the metadata-only
+privacy boundary unchanged.
+
+### Added
+
+- `productivity_summary` is now part of the cloud data contract, and
+  `code-mower productivity report --repo OWNER/REPO` summarizes local Board
+  history, reviewer-spend rows, and optional aggregate productivity events
+  (#613, #614).
+- Board status now embeds a compact productivity summary and provider
+  scorecards so operators can see reviewer activity, spend/latency, blocked
+  findings, and promotion evidence from the local loop (#614, #616).
+- CodeMower.com has a protected productivity dashboard for the same
+  metadata-only event shape, with the server remaining backward-compatible with
+  earlier beta uploads (#615).
+- `code-mower board list` and `code-mower board stop` provide safe
+  multi-instance Board administration after upgrades or parallel agent sessions
+  (#617).
+- v1.0.1 release notes and an effectiveness assessment now record the
+  productivity, quality, cost, provider-readiness, and measurement limits for
+  the dogfood loop (#618).
+
+## v1.0.0
+
+This release is the supervised autonomous pilot baseline. It is ready for
+senior engineers and agent operators to install from PyPI, wire into one
+repository, run visible builder/reviewer lanes, and make evidence-based
+promotion decisions while keeping human or trusted-orchestrator supervision.
+
+### Added
+
+- Supervised controller dry-runs summarize lane state, merge posture, and the
+  policy decision without mutating the repository.
+- `doctor --supervised-pilot`, `--manual-pilot`, and `--promoted-pilot` make
+  adoption posture explicit and classify promotion todos separately from
+  ordinary warnings.
+- Board surfaces the supervised-pilot snapshot locally, including next actions,
+  owner actions, lane health, package/serving-version status, and optional
+  metadata-only agent cards.
+- CodeMower.com can receive metadata-only supervised Board snapshot events, and
+  provider-diversity fixtures cover Claude Code, Codex, Cursor/Grok Bot,
+  Antigravity, Muse, Devin, Gitar, and CodeRabbit-style evidence.
+- The universal orchestrator prompt pack gives supported builders and reviewers
+  the same install, upgrade, privacy, and reporting path.
+
 ## v0.9.4-beta.1
 
 This beta is the final pre-announcement hardening pass for the v0.9 line. It

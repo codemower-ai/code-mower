@@ -15,7 +15,7 @@ else:  # pragma: no cover - exercised after package extraction.
 
 
 def current_alpha_package_spec(version: str) -> str:
-    """Return the documented installable package spec for prerelease users."""
+    """Return the documented installable package spec for public users."""
 
     return code_mower_versioning.public_package_spec(version)
 

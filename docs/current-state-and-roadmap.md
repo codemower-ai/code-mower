@@ -1,8 +1,8 @@
 # Code Mower Current State And Roadmap
 
 This is the short source-of-truth snapshot for the public OSS package, the
-hosted CodeMower.com surface, and the near-term path from the current v1.0 line
-to v1.0.1.
+hosted CodeMower.com surface, and the near-term path from the current v1.0.1
+line toward broader supervised pilots.
 
 ## Positioning
 
@@ -27,25 +27,28 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current package-index release baseline is `v1.0.0`, with pinned package
-install spec `code-mower==1.0.0`. Release evidence is recorded on the GitHub
+The current package-index release baseline is `v1.0.1`, with pinned package
+install spec `code-mower==1.0.1`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. It is intended to be installed
 from the package index for supervised pilots, with GitHub tag/source installs
 kept as a fallback and development path.
 
-The v1.0 supervised-pilot release keeps the Python 3.12+ runtime contract,
+The v1.0.1 supervised-pilot release keeps the Python 3.12+ runtime contract,
 pipx/uv install matrix, non-expiring dispatch-token diagnostics, native redacted
 lane status, the local Board, Board history and admin commands, spend/verdict
 timelines, owner queue, optional metadata-only agent cards, explicit cloud Board
 snapshots, the CodeMower.com Board mirror, and a public Board demo rehearsal. It
 adds controller dry-run policy, supervised-pilot doctor readiness,
 provider-diversity fixtures, the common install/upgrade prompt pack, Board
-multi-instance handling, setup drift reporting, quieter hosted-builder and
-orchestrator-only doctor postures, truth-preserving unavailable/warn states,
-current Codex CLI smoke flags, clearer install/upgrade docs, and explicit
-package-index rehearsal opt-ins. See
-[Post-v0.8 Effectiveness Assessment](post-v08-effectiveness-assessment.md) for
-the dogfood assessment and lane-readiness interpretation.
+multi-instance handling, local productivity reports, Board productivity
+summaries, provider scorecards, CodeMower.com productivity views, setup drift
+reporting, quieter hosted-builder and orchestrator-only doctor postures,
+truth-preserving unavailable/warn states, current Codex CLI smoke flags, clearer
+install/upgrade docs, and explicit package-index rehearsal opt-ins. See the
+[v1.0.1 Effectiveness Assessment](v101-effectiveness-assessment.md) for the
+current dogfood assessment and lane-readiness interpretation; the
+[Post-v0.8 Effectiveness Assessment](post-v08-effectiveness-assessment.md)
+remains historical context.
 
 This baseline keeps the PyPI-first install path, trusted publishing, release
 rehearsal, production dogfood upload shape, catch-up provenance, stale-audit
@@ -127,8 +130,8 @@ The beta-to-v1.0 line has proved:
 - a friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- the current public PyPI package-install rehearsal from `v1.0.0` /
-  `code-mower==1.0.0` with a
+- the current public PyPI package-install rehearsal from `v1.0.1` /
+  `code-mower==1.0.1` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout. The earlier beta.52 package rehearsal remains
@@ -207,6 +210,10 @@ The beta-to-v1.0 line has proved:
   `code-mower board serve`, with local paths redacted by default, explicit
   local-history recording, Board doctor/reset commands, and an explicit
   zero-report `cloud board-snapshot` upload path for CodeMower.com mirrors.
+- local productivity and provider-scorecard visibility through
+  `code-mower productivity report --repo OWNER/REPO` and the Board's embedded
+  productivity block, backed by metadata-only `productivity_summary` events for
+  CodeMower.com.
 
 Code Mower is ready for small, supervised pilots in real repositories. It is not
 yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
@@ -229,6 +236,7 @@ Current live paths:
 - `https://codemower.com/api/ingest`
 - `https://codemower.com/login`
 - `https://codemower.com/dashboard`
+- `https://codemower.com/dashboard/productivity`
 
 The cloud service currently supports:
 
@@ -240,6 +248,8 @@ The cloud service currently supports:
 - dogfood uploads from Code Mower and product development;
 - per-upload and per-event evidence detail URLs plus JSON export links for
   signed-in users; and
+- productivity-summary and provider-scorecard views from metadata-only
+  `productivity_summary` events; and
 - self-service metadata export and deletion for signed-in team members/admins.
 
 The next CodeMower.com product slice is dashboard usefulness rather than raw
@@ -300,9 +310,9 @@ these questions in the first few minutes:
 - Where is the code intentionally structured, and where is it still being
   refactored from extraction-era shape?
 
-The v1.0-to-v1.0.1 work should optimize for that trust test. More provider
-adapters are useful only when install, doctor, first report, privacy, and code
-structure remain boring and credible.
+The v1.0.1 line now gives adopters that trust test plus first productivity
+visibility. More provider adapters are useful only when install, doctor, first
+report, privacy, measurement, and code structure remain boring and credible.
 
 ## v0.5 Beta Learning Addendum
 

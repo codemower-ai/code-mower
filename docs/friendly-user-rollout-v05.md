@@ -4,7 +4,7 @@ This is the operating plan for the first 5-10 friendly users before Code Mower
 widens to 20-50 early adopters.
 
 The filename is historical from the v0.5 planning pass. The live baseline in
-this document is the current v0.8 package beta.
+this document is the current v1.0.1 supervised-pilot release.
 
 Code Mower is beta, bring-your-own-agent-loop software for teams willing to
 calibrate reviewers. It is not a drop-in autonomous merge gate.
@@ -28,10 +28,10 @@ out in the invite:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.0
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.1
 ```
 
-The current package-index release baseline is `v1.0.0`, with pinned package install spec `code-mower==1.0.0`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
+The current package-index release baseline is `v1.0.1`, with pinned package install spec `code-mower==1.0.1`. Release evidence is recorded on the GitHub release and in the first-user install rehearsal.
 
 ## Invite Criteria
 
@@ -108,7 +108,7 @@ secrets.
 
 ## Exit Criteria For Wider Beta
 
-The friendly-user loop is good enough for a wider v0.8/v1.0 push when:
+The friendly-user loop is good enough for a wider supervised-pilot push when:
 
 - at least 5 fresh users complete install, doctor, and first report;
 - at least 3 private repositories complete package-install rehearsal or

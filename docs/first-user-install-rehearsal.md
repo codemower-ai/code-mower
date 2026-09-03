@@ -45,7 +45,7 @@ Use the current public tag or release candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.0 \
+  --package-spec code-mower==1.0.1 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --json
@@ -69,7 +69,7 @@ For a fixed output directory:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.0 \
+  --package-spec code-mower==1.0.1 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-first-user-rehearsal \
@@ -93,7 +93,7 @@ For a GitHub tag fallback, pass the tag URL explicitly:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v1.0.0" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v1.0.1" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -105,14 +105,14 @@ deciding the package index or the release is broken. For pipx:
 
 ```bash
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.0.0
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.0.1
 code-mower --version
 ```
 
 For uv:
 
 ```bash
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.0.0
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.0.1
 code-mower --version
 ```
 
@@ -139,7 +139,7 @@ repository after the package install succeeds:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.0 \
+  --package-spec code-mower==1.0.1 \
   --allow-package-index \
   --repo-path /path/to/external-repo \
   --python "$(command -v python3.12)" \
@@ -231,7 +231,7 @@ When a product repository already has Code Mower wrapper files, the same
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.0 \
+  --package-spec code-mower==1.0.1 \
   --allow-package-index \
   --repo-path /path/to/product-repo \
   --python "$(command -v python3.12)" \
@@ -294,7 +294,7 @@ If this fails, fix the first-user path before cutting or promoting a release.
 Publish and rehearse the package-index artifacts in this order. After the
 release tag exists at the release commit, dispatch both package-index
 publication runs with
-`--ref v1.0.0`; never substitute mutable `main`, because the TestPyPI
+`--ref v1.0.1`; never substitute mutable `main`, because the TestPyPI
 and production PyPI builds must check out identical source.
 
 First, run `release.yml` for TestPyPI only:
@@ -302,7 +302,7 @@ First, run `release.yml` for TestPyPI only:
 ```bash
 gh workflow run release.yml \
   --repo codemower-ai/code-mower \
-  --ref v1.0.0 \
+  --ref v1.0.1 \
   -f publish_testpypi=true \
   -f publish_pypi=false
 ```
@@ -312,7 +312,7 @@ candidate from TestPyPI:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.0 \
+  --package-spec code-mower==1.0.1 \
   --allow-package-index \
   --upgrade-pip \
   --pip-index-url https://test.pypi.org/simple/ \
@@ -327,7 +327,7 @@ Then run `release.yml` for production PyPI only:
 ```bash
 gh workflow run release.yml \
   --repo codemower-ai/code-mower \
-  --ref v1.0.0 \
+  --ref v1.0.1 \
   -f publish_testpypi=false \
   -f publish_pypi=true
 ```
@@ -337,7 +337,7 @@ production package from PyPI:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.0 \
+  --package-spec code-mower==1.0.1 \
   --allow-package-index \
   --upgrade-pip \
   --python "$(command -v python3.12)" \
@@ -357,7 +357,7 @@ repository:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.0 \
+  --package-spec code-mower==1.0.1 \
   --allow-package-index \
   --repo-path "$REPO_PATH" \
   --work-dir "$WORK_DIR" \
