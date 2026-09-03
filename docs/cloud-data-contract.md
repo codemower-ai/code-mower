@@ -96,6 +96,7 @@ Supported event types include:
 - `merge_decision`
 - `queue_state_snapshot`
 - `owner_intervention`
+- `pr_outcome`
 - `productivity_summary`
 
 Events may include provider/lens names, timing, cost, verdict, useful finding
@@ -164,6 +165,46 @@ counts without raw work content. See
 boundary, stop conditions, reviewer outcome references, example fixtures, and
 privacy rules. CodeMower.com must keep accepting v0.9.x uploads that omit these
 event types.
+
+## PR Outcome And Cost
+
+`pr_outcome` is the additive atomic event for Dashboard 2.0. It uses the normal
+`code_mower.benchmarkEvent.v1` envelope with
+`dimensions.pr_outcome_schema=code_mower.prOutcome.v1`. One event describes one
+PR observation; `repo_slug` plus `dimensions.pr_number` is the PR identity.
+Producers should make retries idempotent with the same `event_id`. When a newer
+lifecycle observation uses another event id, consumers select the latest
+`created_at` observation per PR before aggregating.
+
+Required dimensions are `pr_outcome_schema`, positive integer-string
+`pr_number`, ISO 8601 `opened_at`, `outcome` (`open`, `merged`,
+`closed_unmerged`, or `reverted`), and `cost_coverage` (`complete`, `partial`,
+or `unknown`). Merged and reverted outcomes require `merged_at`, closed-unmerged
+requires `closed_at`, and reverted requires `reverted_at`. Timestamps include a
+UTC offset and cannot precede `opened_at`.
+
+Metrics are atomic values, never precomputed dashboard rates:
+
+- `pr_count` is always `1`; optional `fix_round_count`,
+  `reviewer_catch_count`, and `blocking_bug_count` are non-negative integers.
+- `reported_cost_usd` is the observed builder-plus-reviewer spend for the PR.
+  `cost_reported_run_count` and `cost_expected_run_count` expose source coverage.
+- `cost_covered_pr_count` is `1` only for complete cost coverage and `0`
+  otherwise. Partial coverage requires `0 < reported runs < expected runs`.
+  Unknown coverage omits `reported_cost_usd`; missing cost is never zero.
+
+Dashboard Total Spend may sum `reported_cost_usd` across complete and partial
+observations while displaying their coverage mix. Dashboard Cost per PR uses
+only merged observations with `cost_coverage=complete` and computes
+`sum(reported_cost_usd) / sum(cost_covered_pr_count)`. No `cost_per_pr` value is
+uploaded. Events that omit `pr_outcome`, including v0.6 through v1.0 uploads,
+remain valid.
+
+The event contains identifiers, timestamps, categorical outcomes, and numeric
+counts/cost only. Its dimension and metric names are closed in v1, so undeclared
+fields are rejected rather than becoming accidental prose channels. It must not
+contain PR or issue prose, source, diffs, prompts, transcripts, issue body text,
+raw stdout/stderr, auth output, local paths, or secrets.
 
 ## Productivity Metrics
 
