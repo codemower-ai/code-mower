@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import errno
 import json
 import os
@@ -11,6 +12,7 @@ import re
 import signal
 import socket
 import sys
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -21,7 +23,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import metadata
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Any
 from urllib.parse import urlparse
 
@@ -275,6 +277,228 @@ def _record_live_snapshot(
     )
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC).replace(microsecond=0)
+
+
+def _format_timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+STATUS_CACHE_RETRY_BASE_SECONDS = 5.0
+STATUS_CACHE_RETRY_MAX_SECONDS = 60.0
+
+
+class StatusCache:
+    """Thread-safe stale-while-refresh cache for the expensive Board status snapshot.
+
+    ``get()`` always returns immediately: the cached snapshot (``None`` while
+    cold) plus safe metadata about cache freshness. At most one background
+    refresh runs at a time; a caller that finds the cache cold or stale starts
+    that refresh, and concurrent callers just observe ``refresh_in_progress``.
+
+    Every completed snapshot also bumps a monotonic integer ``generation``,
+    reported alongside the snapshot in the metadata. It starts at 0 while the
+    cache is cold, increments only after a refresh completes successfully, and
+    is left untouched by a failed refresh or a failed refresh thread start, so
+    consumers can identify *which* completed snapshot they are holding
+    independently of whether that snapshot is still fresh.
+
+    A failed refresh (or a failed refresh thread start) opens a bounded retry
+    backoff window. Without it the cached snapshot stays stale while
+    ``refresh_in_progress`` returns to false the instant the failure is
+    recorded, so the very next request would start another expensive
+    GitHub/local recomputation -- once per fast poll (~750ms) for as long as the
+    failure persists. During the window ``get()`` still answers immediately from
+    cold/stale metadata but starts nothing and reports ``refresh_in_progress``
+    false, so the browser drops back to its normal interval. The window doubles
+    per consecutive failure from ``retry_base_seconds`` up to
+    ``retry_max_seconds`` and is cleared by the first success.
+    """
+
+    def __init__(
+        self,
+        compute: Any,
+        *,
+        ttl_seconds: float,
+        clock: Any = time.monotonic,
+        now: Any = _utc_now,
+        start_thread: Any = None,
+        retry_base_seconds: float = STATUS_CACHE_RETRY_BASE_SECONDS,
+        retry_max_seconds: float = STATUS_CACHE_RETRY_MAX_SECONDS,
+    ) -> None:
+        self._compute = compute
+        self._ttl_seconds = max(float(ttl_seconds), 0.0)
+        self._clock = clock
+        self._now = now
+        self._start_thread = start_thread or self._default_start_thread
+        self._retry_base_seconds = max(float(retry_base_seconds), 0.0)
+        self._retry_max_seconds = max(float(retry_max_seconds), self._retry_base_seconds)
+        self._lock = Lock()
+        self._snapshot: dict[str, Any] | None = None
+        self._computed_at: datetime | None = None
+        self._computed_monotonic: float | None = None
+        self._refreshing = False
+        self._generation = 0
+        self._last_error: str = ""
+        self._last_error_at: datetime | None = None
+        self._consecutive_failures = 0
+        self._retry_after_monotonic: float | None = None
+
+    @staticmethod
+    def _default_start_thread(target: Any) -> None:
+        Thread(target=target, daemon=True).start()
+
+    @property
+    def generation(self) -> int:
+        """Monotonic count of completed snapshots; 0 while the cache is still cold.
+
+        Only ``_refresh`` advances it, and only after ``compute()`` returned a
+        snapshot, so a failed refresh leaves the generation -- and therefore the
+        identity of the snapshot ``get()`` returns -- unchanged.
+        """
+        with self._lock:
+            return self._generation
+
+    def _retry_delay_locked(self) -> float:
+        """Deterministic doubling backoff for the current failure streak, bounded by the max.
+
+        The delay is ``retry_base_seconds`` doubled once per consecutive
+        failure after the first, capped at ``retry_max_seconds``. The doubling
+        is applied step by step and stops as soon as the cap is reached, so an
+        arbitrarily long outage cannot overflow: evaluating
+        ``retry_base_seconds * 2.0 ** consecutive_failures`` directly raises
+        OverflowError once the streak passes ~1024, which for a Board left in
+        persistent failure would turn every later request into a crash instead
+        of a capped retry. Past the cap every further failure just returns the
+        cap. A zero base (which ``__init__`` also forces when the max is zero)
+        disables the backoff and always yields 0.0.
+        """
+        base = self._retry_base_seconds
+        maximum = self._retry_max_seconds  # __init__ guarantees maximum >= base >= 0
+        if base <= 0.0:
+            return 0.0
+        delay = base
+        for _ in range(max(self._consecutive_failures - 1, 0)):
+            if delay >= maximum:
+                break
+            delay *= 2.0
+        return min(delay, maximum)
+
+    def _record_failure_locked(self, exc: BaseException) -> None:
+        """Record a safe failure summary and arm the retry backoff window.
+
+        Callers must hold ``self._lock``. Only the exception class name is kept
+        (see ``_cache_error_summary``), and the backoff deadline is monotonic,
+        so nothing here can leak paths, output, or credentials.
+        """
+        self._refreshing = False
+        self._last_error = _cache_error_summary(exc)
+        self._last_error_at = self._now()
+        self._consecutive_failures += 1
+        self._retry_after_monotonic = self._clock() + self._retry_delay_locked()
+
+    def get(self) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        with self._lock:
+            snapshot = self._snapshot
+            elapsed = self._clock()
+            age = (
+                max(elapsed - self._computed_monotonic, 0.0)
+                if self._computed_monotonic is not None
+                else None
+            )
+            is_stale = snapshot is None or age is None or age >= self._ttl_seconds
+            retry_in = (
+                max(self._retry_after_monotonic - elapsed, 0.0)
+                if self._retry_after_monotonic is not None
+                else 0.0
+            )
+            in_backoff = retry_in > 0.0
+            should_start = is_stale and not self._refreshing and not in_backoff
+            if should_start:
+                self._refreshing = True
+                self._retry_after_monotonic = None
+            metadata_snapshot = {
+                "state": "cold" if snapshot is None else ("stale" if is_stale else "fresh"),
+                "generated_at": _format_timestamp(self._computed_at) if self._computed_at else "",
+                "age_seconds": round(age, 3) if age is not None else None,
+                "ttl_seconds": self._ttl_seconds,
+                "generation": self._generation,
+                "refresh_in_progress": self._refreshing,
+                "retry_in_seconds": round(retry_in, 3) if in_backoff else None,
+                "last_error": self._last_error,
+                "last_error_at": _format_timestamp(self._last_error_at) if self._last_error_at else "",
+            }
+        if should_start:
+            try:
+                self._start_thread(self._refresh)
+            except Exception as exc:  # noqa: BLE001 - a failed thread start must never crash the endpoint
+                with self._lock:
+                    self._record_failure_locked(exc)
+                    metadata_snapshot["refresh_in_progress"] = False
+                    metadata_snapshot["retry_in_seconds"] = round(self._retry_delay_locked(), 3)
+                    metadata_snapshot["last_error"] = self._last_error
+                    metadata_snapshot["last_error_at"] = _format_timestamp(self._last_error_at)
+        return snapshot, metadata_snapshot
+
+    def _refresh(self) -> None:
+        try:
+            result = self._compute()
+        except Exception as exc:  # noqa: BLE001 - a background refresh must never crash the server
+            with self._lock:
+                self._record_failure_locked(exc)
+            return
+        with self._lock:
+            self._snapshot = result
+            self._computed_at = self._now()
+            self._computed_monotonic = self._clock()
+            self._generation += 1
+            self._refreshing = False
+            self._last_error = ""
+            self._last_error_at = None
+            self._consecutive_failures = 0
+            self._retry_after_monotonic = None
+
+
+def _pending_status_payload(config: BoardConfig) -> dict[str, Any]:
+    """Metadata-only payload served while the status cache has no completed snapshot yet."""
+    payload: dict[str, Any] = {
+        "schema": lane_status.LANE_STATUS_SCHEMA,
+        "repo": config.repo,
+        "generated_at": "",
+        "next_action": "warming first status snapshot",
+        "next_detail": (
+            "Code Mower Board is collecting the first GitHub and local snapshot in the "
+            "background; reload shortly."
+        ),
+        "remote": {"available": False},
+        "local_boards": {"available": False, "boards": []},
+        "local_processes": {"available": False, "processes": []},
+    }
+    payload["board"] = {
+        "schema": "code_mower.board.v1",
+        "mode": "local_recording" if config.record_events else "local_read_only",
+        "version": board_version_payload(),
+        "refresh_seconds": config.refresh_seconds,
+        "local_paths": "shown" if config.show_local_paths else "redacted",
+        "recording": {"enabled": config.record_events, "interval_seconds": config.record_interval_seconds},
+    }
+    payload["agent_adapters"] = agent_adapters_payload(config)
+    payload["owner_queue"] = owner_queue_payload(payload)
+    payload["supervised_pilot"] = _supervised_disabled(
+        "Board is warming its first status snapshot; supervised pilot state is not ready yet"
+    )
+    payload["productivity"] = productivity_report.board_payload(
+        repo=config.repo,
+        repo_path=config.repo_path,
+        store_path=_store_path(config),
+        spend_path=_spend_path(config),
+        current_status=payload,
+        event_limit=config.event_limit,
+    )
+    return payload
+
+
 def _http_url(value: object) -> str:
     text = str(value or "").strip()
     if SECRET_VALUE_RE.search(text):
@@ -289,6 +513,23 @@ def _safe_text(value: object, *, limit: int = 160) -> str:
     if SECRET_VALUE_RE.search(text):
         return "[redacted]"
     return text[:limit]
+
+
+_SAFE_EXCEPTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _cache_error_summary(exc: BaseException) -> str:
+    """Summarize a background refresh failure without leaking exception content.
+
+    ``str(exc)`` can embed local filesystem paths, raw stdout/stderr, auth
+    output, or secrets from whatever failed (a git command, an HTTP client,
+    etc). The Board's metadata-only contract forbids all of that, so the
+    cache only ever reports a stable, code-defined exception class name.
+    """
+    name = exc.__class__.__name__
+    if not _SAFE_EXCEPTION_NAME_RE.match(name):
+        name = "Exception"
+    return f"status refresh failed: {name}"
 
 
 def _head_prefix(value: object) -> str:
@@ -888,6 +1129,35 @@ def render_board_html(config: BoardConfig) -> str:
   <script>
     const REPO = {repo_json};
     const REFRESH_MS = {refresh_json};
+    const FAST_POLL_MS = 750;
+    const FAST_POLL_MAX_ATTEMPTS = 20;
+    // Floor for a TTL-derived delay: a snapshot that is fresh by a hair must
+    // not spin load() in a zero-delay loop.
+    const MIN_POLL_MS = 250;
+    // The server answers a cold cache with a metadata-only payload and a stale
+    // cache with the previous snapshot; while a background refresh is actually
+    // running, wait ~750ms for it instead of a full REFRESH_MS tick. Both
+    // states also occur with no refresh in flight -- the refresh thread failed
+    // to start, or a failed refresh armed the server's retry backoff -- and
+    // then nothing is coming, so fast polling would only burn requests.
+    const awaitingRefresh = (cache) => (cache?.state === "cold" || cache?.state === "stale") && cache?.refresh_in_progress === true;
+    // Only real JSON numbers are trusted. null, "", a numeric string, or a
+    // missing key must fall back to the configured interval rather than coerce
+    // to 0 and schedule a burst of pointless requests.
+    const finiteNumber = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    // Cache age starts when a background refresh completes, not when the page
+    // loaded, so a browser-fixed interval drifts out of phase with the TTL: a
+    // tick can land just under the TTL, see the same fresh snapshot, and only
+    // pick up the next one a full interval later -- an update every ~two
+    // intervals. A fresh response therefore schedules itself near its own
+    // remaining TTL. null means "no usable metadata": use the normal interval.
+    const freshDelayMs = (cache) => {{
+      if (cache?.state !== "fresh") return null;
+      const ttl = finiteNumber(cache?.ttl_seconds);
+      const age = finiteNumber(cache?.age_seconds);
+      if (ttl === null || age === null || ttl <= 0 || age < 0) return null;
+      return Math.min(Math.max((ttl - age) * 1000, MIN_POLL_MS), REFRESH_MS);
+    }};
     const text = (value) => String(value ?? "");
     const esc = (value) => text(value).replace(/[&<>"']/g, c => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
     const put = (id, html) => document.getElementById(id).innerHTML = html;
@@ -1004,20 +1274,49 @@ def render_board_html(config: BoardConfig) -> str:
         return `<div class="row"><div class="line"><b>${{localTime(event.created_at)}}</b>${{pill(remote)}}</div><div>next: <b>${{esc(s.next_action || "inspect")}}</b></div><div class="muted">PRs ${{esc(s.open_prs ?? 0)}} / alerts ${{esc(s.gate_alerts ?? 0)}} / local ${{esc((s.local_boards ?? 0) + (s.local_processes ?? 0))}}</div></div>`;
       }}).join("") : empty(history.message || "No local board events recorded yet."));
     }}
+    let pollTimer = null;
+    let fastPollAttempts = 0;
+    // The only place a timer is ever armed, and it always clears the pending
+    // one first, so exactly one load() is scheduled at a time and no fixed
+    // interval can race the self-scheduled poll into stacked timers.
+    function scheduleNextLoad(delayMs) {{
+      if (pollTimer !== null) {{
+        clearTimeout(pollTimer);
+      }}
+      pollTimer = setTimeout(load, delayMs);
+    }}
+    function nextDelayMs(cache) {{
+      if (awaitingRefresh(cache)) {{
+        // Only a response that is no longer awaiting a refresh resets the
+        // budget. An exhausted counter must stay exhausted while the same
+        // refresh is still pending, otherwise every normal-interval poll would
+        // start a fresh 20-attempt burst and repeat that forever.
+        if (fastPollAttempts >= FAST_POLL_MAX_ATTEMPTS) return REFRESH_MS;
+        fastPollAttempts += 1;
+        return FAST_POLL_MS;
+      }}
+      fastPollAttempts = 0;
+      return freshDelayMs(cache) ?? REFRESH_MS;
+    }}
     async function load() {{
+      // A failed fetch, a malformed payload, and cache metadata that is absent
+      // or unusable all fall back to the configured interval.
+      let delayMs = REFRESH_MS;
       try {{
         const [statusResponse, eventsResponse] = await Promise.all([
           fetch("/api/status", {{cache:"no-store"}}),
           fetch("/api/events", {{cache:"no-store"}})
         ]);
-        render(await statusResponse.json());
+        const statusData = await statusResponse.json();
+        render(statusData);
         renderEvents(await eventsResponse.json());
+        delayMs = nextDelayMs(statusData.board?.cache);
       }} catch (error) {{
         put("summary", `<div class="metric"><span class="muted">Next action</span><b class="warn">reload board</b></div>`);
       }}
+      scheduleNextLoad(delayMs);
     }}
     load();
-    setInterval(load, REFRESH_MS);
   </script>
 </body>
 </html>
@@ -1264,7 +1563,12 @@ def make_handler(
     command_runner: lane_status.CommandRunner = lane_status.run_command,
 ) -> type[BaseHTTPRequestHandler]:
     last_recorded_at: datetime | None = None
+    last_recorded_generation = 0
     recording_lock = Lock()
+    status_cache = StatusCache(
+        lambda: status_payload(config, gh_json_runner=gh_json_runner, command_runner=command_runner),
+        ttl_seconds=config.refresh_seconds,
+    )
 
     class BoardHandler(BaseHTTPRequestHandler):
         server_version = "CodeMowerBoard/0.1"
@@ -1281,7 +1585,7 @@ def make_handler(
             self.wfile.write(body)
 
         def do_GET(self) -> None:
-            nonlocal last_recorded_at
+            nonlocal last_recorded_at, last_recorded_generation
 
             if not _host_header_allowed(self.headers.get("Host")):
                 self._send(HTTPStatus.FORBIDDEN, b"forbidden\n", "text/plain; charset=utf-8")
@@ -1298,40 +1602,70 @@ def make_handler(
                 self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
                 return
             if path == "/api/status":
-                payload = status_payload(
-                    config,
-                    gh_json_runner=gh_json_runner,
-                    command_runner=command_runner,
-                )
+                snapshot, cache_metadata = status_cache.get()
+                payload = copy.deepcopy(snapshot) if snapshot is not None else _pending_status_payload(config)
+                payload["board"]["cache"] = cache_metadata
                 if config.record_events:
-                    with recording_lock:
-                        now = datetime.now(UTC).replace(microsecond=0)
-                        if _recording_due(last_recorded_at, now, config.record_interval_seconds):
-                            payload["board"]["recording"] = _recording_metadata(config, "recording")
-                            try:
-                                result = _record_live_snapshot(payload, config, now=now)
-                            except (ValueError, board_store.BoardStoreError):
-                                last_recorded_at = now
+                    # Recording identity is the cache generation, not cache freshness.
+                    # ``snapshot`` and ``generation`` are read together under the cache
+                    # lock, so the generation always names the completed snapshot in
+                    # hand. Browser polling slower than the TTL can hand us a snapshot
+                    # that a background refresh completed and that then aged out before
+                    # the next request, so gating on ``state == "fresh"`` dropped whole
+                    # generations from local history; gating on the generation records
+                    # each completed snapshot exactly once whether it is still fresh or
+                    # already stale.
+                    generation = cache_metadata.get("generation") or 0
+                    if snapshot is None or generation <= 0:
+                        payload["board"]["recording"] = _recording_metadata(
+                            config,
+                            "pending",
+                            message="waiting for first completed status snapshot",
+                        )
+                    else:
+                        with recording_lock:
+                            now = _utc_now()
+                            if generation <= last_recorded_generation:
+                                # Already persisted, including while a newer refresh is
+                                # in flight. Concurrent requests observing the same
+                                # generation serialize here, so only the first records.
                                 payload["board"]["recording"] = _recording_metadata(
                                     config,
-                                    "error",
-                                    message="could not update local board event store",
+                                    "skipped",
+                                    message="snapshot already recorded",
+                                )
+                            elif not _recording_due(last_recorded_at, now, config.record_interval_seconds):
+                                # Leave this generation eligible: whichever generation is
+                                # current once the interval elapses gets recorded then.
+                                payload["board"]["recording"] = _recording_metadata(
+                                    config,
+                                    "skipped",
+                                    message="record interval not reached",
                                 )
                             else:
-                                last_recorded_at = now
-                                payload["board"]["recording"] = _recording_metadata(
-                                    config,
-                                    "recorded",
-                                    kept=result.kept,
-                                    pruned=result.pruned,
-                                    malformed=result.malformed,
-                                )
-                        else:
-                            payload["board"]["recording"] = _recording_metadata(
-                                config,
-                                "skipped",
-                                message="record interval not reached",
-                            )
+                                try:
+                                    result = _record_live_snapshot(snapshot, config, now=now)
+                                except (ValueError, board_store.BoardStoreError):
+                                    # Same throttling as a successful write: consume the
+                                    # interval and the generation so a failing event
+                                    # store is not retried on every request.
+                                    last_recorded_at = now
+                                    last_recorded_generation = generation
+                                    payload["board"]["recording"] = _recording_metadata(
+                                        config,
+                                        "error",
+                                        message="could not update local board event store",
+                                    )
+                                else:
+                                    last_recorded_at = now
+                                    last_recorded_generation = generation
+                                    payload["board"]["recording"] = _recording_metadata(
+                                        config,
+                                        "recorded",
+                                        kept=result.kept,
+                                        pruned=result.pruned,
+                                        malformed=result.malformed,
+                                    )
                 payload["timelines"] = timelines_payload(config)
                 body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
                 self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
@@ -1631,6 +1965,17 @@ def _record_store_display(args: argparse.Namespace) -> str:
     return board_store.DEFAULT_STORE_RELATIVE_PATH.as_posix()
 
 
+def _positive_int(value: str) -> int:
+    """argparse type for options that must be a positive (>0) integer."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid int value: {value!r}") from None
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
+    return parsed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower board")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1656,7 +2001,9 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--pr-limit", type=int, default=50, help="open PRs to show")
     serve_parser.add_argument("--workflow-limit", type=int, default=20, help="recent Code Mower workflow runs to show")
     serve_parser.add_argument("--stale-minutes", type=int, default=30, help="minutes before gate evidence is stale")
-    serve_parser.add_argument("--refresh-seconds", type=int, default=15, help="browser refresh interval")
+    serve_parser.add_argument(
+        "--refresh-seconds", type=_positive_int, default=15, help="browser refresh interval (must be positive)"
+    )
     serve_parser.add_argument("--show-local-paths", action="store_true", help="show local cwd paths for debugging")
     serve_parser.add_argument("--repo-path", default=".", help="repository checkout used for local Board files")
     serve_parser.add_argument("--store-path", help="custom local Board event store path")

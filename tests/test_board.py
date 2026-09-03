@@ -3,15 +3,19 @@ from __future__ import annotations
 from contextlib import redirect_stderr, redirect_stdout
 import http.client
 import json
+import math
+import re
+import shutil
 import signal
 import socket
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest import TestCase
+from unittest import TestCase, skipUnless
 from unittest.mock import patch
 from io import StringIO
 
@@ -19,6 +23,90 @@ from code_mower import board, board_store, lane_status, reviewer_spend
 
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+
+BOARD_POLL_HARNESS = """
+__CONSTANTS__
+const put = () => {};
+const render = () => {};
+const renderEvents = () => {};
+const timers = [];
+let clearedCount = 0;
+const setTimeout = (fn, ms) => {
+  const timer = {fn, ms};
+  timers.push(timer);
+  return timer;
+};
+const clearTimeout = () => {
+  clearedCount += 1;
+};
+let failNext = false;
+let nextCache = null;
+const fetch = async (url) => {
+  if (failNext) throw new Error("network down");
+  const status = {board: nextCache === null ? {} : {cache: nextCache}};
+  return {json: async () => (url === "/api/status" ? status : {events: []})};
+};
+__SCHEDULING__
+(async () => {
+  const steps = [];
+  for (const step of JSON.parse(process.argv[2])) {
+    failNext = step === "fetch-error";
+    nextCache = failNext ? null : step;
+    const armedBefore = timers.length;
+    const clearedBefore = clearedCount;
+    await load();
+    const armed = timers[timers.length - 1];
+    steps.push({
+      delay: armed.ms,
+      armed: timers.length - armedBefore,
+      cleared: clearedCount - clearedBefore,
+      attempts: fastPollAttempts,
+      pending: pollTimer === armed,
+    });
+  }
+  console.log(JSON.stringify(steps));
+})();
+"""
+
+
+def _run_board_poll_script(steps: list[dict[str, object] | str | None]) -> list[dict[str, object]]:
+    """Replay the Board page's own next-poll decision for a sequence of responses.
+
+    The constants, predicates, and the whole self-scheduling loop are lifted
+    verbatim out of the rendered page, so the test drives the shipped
+    JavaScript rather than a Python restatement of it. Each step runs one real
+    ``load()`` against a stubbed fetch: a cache metadata object, ``None`` for a
+    payload carrying no cache metadata, or ``"fetch-error"`` for a request that
+    fails outright.
+    """
+
+    html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+    constants = re.search(
+        r"^ *const REFRESH_MS = .*?\n( *)const freshDelayMs = .*?\n\1\};\n",
+        html,
+        re.MULTILINE | re.DOTALL,
+    )
+    scheduling = re.search(
+        r"^( *)let pollTimer = null;.*?\n\1async function load\(\) \{.*?\n\1\}\n",
+        html,
+        re.MULTILINE | re.DOTALL,
+    )
+    if constants is None or scheduling is None:  # pragma: no cover - guards the extraction
+        raise AssertionError("board HTML no longer exposes the self-scheduling poll loop")
+    script = BOARD_POLL_HARNESS.replace("__CONSTANTS__", constants.group(0)).replace(
+        "__SCHEDULING__", scheduling.group(0)
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "poll.js"
+        path.write_text(script, encoding="utf-8")
+        completed = subprocess.run(
+            [shutil.which("node") or "node", str(path), json.dumps(steps)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    return json.loads(completed.stdout)
 
 
 def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -118,6 +206,48 @@ lanes:
     )
 
 
+def _fetch_status(base_url: str) -> dict:
+    with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _await_warm_status(base_url: str, *, timeout: float = 5.0) -> dict:
+    """Poll /api/status until the background status cache completes its first refresh."""
+    deadline = time.monotonic() + timeout
+    payload = _fetch_status(base_url)
+    while payload["board"]["cache"]["state"] == "cold" and time.monotonic() < deadline:
+        time.sleep(0.02)
+        payload = _fetch_status(base_url)
+    if payload["board"]["cache"]["state"] == "cold":
+        raise AssertionError("status cache did not warm up in time")
+    return payload
+
+
+def _await_cache_generation(base_url: str, generation: int, *, timeout: float = 5.0) -> dict:
+    """Poll /api/status until the cache reports at least the requested completed generation."""
+    deadline = time.monotonic() + timeout
+    payload = _fetch_status(base_url)
+    while payload["board"]["cache"]["generation"] < generation and time.monotonic() < deadline:
+        time.sleep(0.02)
+        payload = _fetch_status(base_url)
+    if payload["board"]["cache"]["generation"] < generation:
+        raise AssertionError(f"status cache did not reach generation {generation} in time")
+    return payload
+
+
+class _FakeClock:
+    """A controllable monotonic-style clock for deterministic StatusCache tests."""
+
+    def __init__(self, start: float = 0.0) -> None:
+        self.value = start
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, delta: float) -> None:
+        self.value += delta
+
+
 def _occupy_loopback_port(start: int = 5332, stop: int = 5400) -> socket.socket:
     for port in range(start, stop):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -161,6 +291,185 @@ class BoardTests(TestCase):
 
         self.assertIn("owner/repo<\\/script><b>bad<\\/b>", html)
         self.assertNotIn("owner/repo</script><b>bad</b>", html)
+
+    def test_render_board_html_polls_with_one_self_scheduling_timer(self) -> None:
+        html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+
+        self.assertIn("FAST_POLL_MS = 750", html)
+        self.assertIn("FAST_POLL_MAX_ATTEMPTS = 20", html)
+        self.assertIn("MIN_POLL_MS = 250", html)
+        # A stale snapshot with a refresh already in flight is treated exactly
+        # like the cold warming state: the next completed snapshot is seconds
+        # away. Both states require refresh_in_progress, so a cold or stale
+        # cache sitting in the server's retry backoff (or wedged by a failed
+        # thread start) is not fast polled -- no refresh is coming to wait for.
+        self.assertIn(
+            '(cache?.state === "cold" || cache?.state === "stale") && cache?.refresh_in_progress === true',
+            html,
+        )
+        self.assertIn("fastPollAttempts >= FAST_POLL_MAX_ATTEMPTS) return REFRESH_MS", html)
+        # A fresh response paces itself off the server's own TTL metadata
+        # instead of a page-load-anchored interval, and only trusts real JSON
+        # numbers.
+        self.assertIn("const finiteNumber = (value) => (typeof value === \"number\" && Number.isFinite(value) ? value : null);", html)
+        self.assertIn("Math.min(Math.max((ttl - age) * 1000, MIN_POLL_MS), REFRESH_MS)", html)
+        self.assertIn("return freshDelayMs(cache) ?? REFRESH_MS;", html)
+        # One timer variable, one scheduling helper, no competing interval: the
+        # helper clears the pending timer before arming the next one, so a
+        # normal-interval poll and a fast poll can never stack.
+        self.assertNotIn("setInterval", html)
+        self.assertNotIn("fastPollTimer", html)
+        self.assertEqual(html.count("let pollTimer"), 1)
+        self.assertEqual(html.count("setTimeout(load,"), 1)
+        self.assertIn("pollTimer = setTimeout(load, delayMs);", html)
+        self.assertIn("clearTimeout(pollTimer);", html)
+        self.assertLess(html.index("clearTimeout(pollTimer);"), html.index("pollTimer = setTimeout(load, delayMs);"))
+        # Definition plus exactly one call site, on the single path every
+        # load() takes whether it succeeded or threw.
+        self.assertEqual(html.count("scheduleNextLoad("), 2)
+        self.assertIn("      scheduleNextLoad(delayMs);\n    }", html)
+
+    @skipUnless(shutil.which("node"), "node is required to execute the board polling script")
+    def test_board_poll_delay_for_each_cache_state(self) -> None:
+        cold = {"state": "cold", "refresh_in_progress": True}
+        # Each interval case is preceded by an awaiting response so the
+        # assertion proves the budget was actually cleared rather than never
+        # raised.
+        cases = [
+            cold,
+            {"state": "stale", "refresh_in_progress": True},
+            {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": 15.0, "age_seconds": 6.0},
+            cold,
+            {"state": "stale", "refresh_in_progress": False, "retry_in_seconds": 5.0},
+            cold,
+            {"state": "cold", "refresh_in_progress": False, "retry_in_seconds": 5.0},
+            cold,
+            None,
+        ]
+
+        results = _run_board_poll_script(cases)
+
+        # Cold and stale-while-refreshing both fast poll and keep counting
+        # attempts toward the shared cap.
+        self.assertEqual(results[0]["delay"], 750)
+        self.assertEqual(results[0]["attempts"], 1)
+        self.assertEqual(results[1]["delay"], 750)
+        self.assertEqual(results[1]["attempts"], 2)
+        # A completed fresh snapshot waits out its own remaining TTL (15s ttl,
+        # 6s old) rather than a full interval anchored at page load, and resets
+        # the attempt budget.
+        self.assertEqual(results[2]["delay"], 9000)
+        self.assertEqual(results[2]["attempts"], 0)
+        self.assertEqual(results[3]["delay"], 750)
+        # Stale with no refresh in flight (the refresh thread failed to start,
+        # or the server is in its retry backoff) has nothing to wait for, so it
+        # uses the normal interval and resets the budget.
+        self.assertEqual(results[4]["delay"], 15000)
+        self.assertEqual(results[4]["attempts"], 0)
+        self.assertEqual(results[5]["delay"], 750)
+        # Same for a cold cache in the retry backoff: no refresh is running, so
+        # fast polling would just burn a request every 750ms until the backoff
+        # deadline passes.
+        self.assertEqual(results[6]["delay"], 15000)
+        self.assertEqual(results[6]["attempts"], 0)
+        self.assertEqual(results[7]["delay"], 750)
+        # A response without cache metadata never fast polls, and likewise
+        # returns the budget to zero.
+        self.assertEqual(results[8]["delay"], 15000)
+        self.assertEqual(results[8]["attempts"], 0)
+        # Every load arms exactly one timer and clears the one it replaces, so
+        # timers can never stack.
+        self.assertTrue(all(step["armed"] == 1 and step["pending"] for step in results))
+        self.assertEqual([step["cleared"] for step in results], [0] + [1] * (len(cases) - 1))
+
+    @skipUnless(shutil.which("node"), "node is required to execute the board polling script")
+    def test_board_poll_tracks_the_remaining_ttl_of_a_fresh_snapshot(self) -> None:
+        # Cache age is measured from the moment the background refresh
+        # completed, so the page schedules the next load against the age the
+        # server just reported instead of a fixed interval that started at page
+        # load and can sit just under the TTL forever.
+        results = _run_board_poll_script(
+            [
+                {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": 15, "age_seconds": 12},
+                {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": 15, "age_seconds": 0},
+                {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": 15, "age_seconds": 14.99},
+                {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": 15, "age_seconds": 15},
+            ]
+        )
+
+        self.assertEqual(results[0]["delay"], 3000)
+        # A snapshot computed just now still waits no longer than the
+        # configured interval.
+        self.assertEqual(results[1]["delay"], 15000)
+        # A snapshot that is fresh by a hair (or by nothing at all, if it
+        # expired between the server's own age computation and this branch)
+        # floors at MIN_POLL_MS instead of scheduling a zero-delay loop.
+        self.assertEqual(results[2]["delay"], 250)
+        self.assertEqual(results[3]["delay"], 250)
+        self.assertTrue(all(step["attempts"] == 0 for step in results))
+
+    @skipUnless(shutil.which("node"), "node is required to execute the board polling script")
+    def test_board_poll_uses_the_normal_interval_for_unusable_cache_metadata(self) -> None:
+        # Only real JSON numbers may drive the delay: null and "" would coerce
+        # to 0 and schedule a 250ms poll forever, and a non-numeric value would
+        # produce NaN.
+        results = _run_board_poll_script(
+            [
+                {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": 15, "age_seconds": None},
+                {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": None, "age_seconds": 6},
+                {"state": "fresh", "refresh_in_progress": False, "age_seconds": 6},
+                {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": "15", "age_seconds": "6"},
+                {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": 0, "age_seconds": 0},
+                {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": 15, "age_seconds": -1},
+                {"refresh_in_progress": False, "ttl_seconds": 15, "age_seconds": 6},
+            ]
+        )
+
+        self.assertEqual([step["delay"] for step in results], [15000] * 7)
+        self.assertTrue(all(step["armed"] == 1 and step["pending"] for step in results))
+
+    @skipUnless(shutil.which("node"), "node is required to execute the board polling script")
+    def test_board_fast_poll_is_capped_for_a_stale_refreshing_cache(self) -> None:
+        stale = {"state": "stale", "refresh_in_progress": True}
+        fresh = {"state": "fresh", "refresh_in_progress": False, "ttl_seconds": 15, "age_seconds": 0}
+
+        results = _run_board_poll_script([stale] * 22 + [fresh, stale])
+
+        self.assertTrue(all(step["delay"] == 750 for step in results[:20]))
+        self.assertEqual(results[19]["attempts"], 20)
+        # Attempt 21 hits the cap: the browser stops fast polling a cache that
+        # never completes and falls back to the normal interval. The exhausted
+        # counter is *not* reset here, so a later normal-interval poll that
+        # still finds the same pending refresh cannot start another 20-attempt
+        # burst (which would repeat indefinitely).
+        self.assertEqual(results[20], {"delay": 15000, "armed": 1, "cleared": 1, "attempts": 20, "pending": True})
+        self.assertEqual(results[21]["delay"], 15000)
+        self.assertEqual(results[21]["attempts"], 20)
+        # Only a response that is no longer awaiting a refresh clears the
+        # budget; the next pending refresh may then fast poll again.
+        self.assertEqual(results[22]["delay"], 15000)
+        self.assertEqual(results[22]["attempts"], 0)
+        self.assertEqual(results[23]["delay"], 750)
+        self.assertEqual(results[23]["attempts"], 1)
+
+    @skipUnless(shutil.which("node"), "node is required to execute the board polling script")
+    def test_board_poll_reschedules_at_the_normal_interval_after_a_fetch_error(self) -> None:
+        cold = {"state": "cold", "refresh_in_progress": True}
+
+        results = _run_board_poll_script([cold, "fetch-error", cold, "fetch-error"])
+
+        self.assertEqual(results[0]["delay"], 750)
+        # A failed request still schedules the next load -- the loop can never
+        # die -- and backs off to the normal interval. It tells us nothing
+        # about the server's cache, so the fast-poll budget is left alone
+        # rather than reset.
+        self.assertEqual(results[1]["delay"], 15000)
+        self.assertEqual(results[1]["attempts"], 1)
+        self.assertEqual(results[2]["delay"], 750)
+        self.assertEqual(results[2]["attempts"], 2)
+        self.assertEqual(results[3]["delay"], 15000)
+        self.assertEqual(results[3]["attempts"], 2)
+        self.assertTrue(all(step["armed"] == 1 and step["pending"] for step in results))
 
     def test_candidate_ports_only_auto_fall_forward_for_default_port(self) -> None:
         self.assertEqual(
@@ -231,6 +540,33 @@ class BoardTests(TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn("--port", err.getvalue())
+
+    def test_serve_rejects_zero_refresh_seconds(self) -> None:
+        err = StringIO()
+
+        with redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            board.main(["serve", "--repo", "owner/repo", "--refresh-seconds", "0"])
+
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("--refresh-seconds", err.getvalue())
+
+    def test_serve_rejects_negative_refresh_seconds(self) -> None:
+        err = StringIO()
+
+        with redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            board.main(["serve", "--repo", "owner/repo", "--refresh-seconds", "-1"])
+
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("--refresh-seconds", err.getvalue())
+
+    def test_serve_accepts_positive_refresh_seconds(self) -> None:
+        with patch("code_mower.board.serve", return_value=0) as fake_serve:
+            code = board.main(["serve", "--repo", "owner/repo", "--refresh-seconds", "5"])
+
+        self.assertEqual(code, 0)
+        fake_serve.assert_called_once()
+        config = fake_serve.call_args.args[0]
+        self.assertEqual(config.refresh_seconds, 5)
 
     def test_board_inventory_payload_enriches_versions_and_redacts_paths(self) -> None:
         def status_probe(_board_item: dict[str, object]) -> dict[str, object]:
@@ -933,8 +1269,7 @@ class BoardTests(TestCase):
             thread.start()
             try:
                 base_url = f"http://127.0.0.1:{server.server_address[1]}"
-                with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
+                payload = _await_warm_status(base_url)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -963,10 +1298,8 @@ class BoardTests(TestCase):
             thread.start()
             try:
                 base_url = f"http://127.0.0.1:{server.server_address[1]}"
-                with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
-                    first = json.loads(response.read().decode("utf-8"))
-                with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
-                    second = json.loads(response.read().decode("utf-8"))
+                first = _await_warm_status(base_url)
+                second = _fetch_status(base_url)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -994,8 +1327,7 @@ class BoardTests(TestCase):
                     "code_mower.board._record_live_snapshot",
                     side_effect=board_store.BoardStoreError("secret /tmp/private/path"),
                 ):
-                    with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
-                        payload = json.loads(response.read().decode("utf-8"))
+                    payload = _await_warm_status(base_url)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -1006,6 +1338,284 @@ class BoardTests(TestCase):
         self.assertIn("could not update local board event store", serialized)
         self.assertNotIn("secret", serialized)
         self.assertNotIn("/tmp/private/path", serialized)
+
+    def test_http_status_does_not_rerecord_a_stale_snapshot_but_records_the_next_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            release = threading.Event()
+            calls: list[int] = []
+
+            def fake_status_payload(*_args: object, **_kwargs: object) -> dict:
+                calls.append(1)
+                if len(calls) == 2:
+                    self.assertTrue(release.wait(timeout=5))
+                return {
+                    "schema": lane_status.LANE_STATUS_SCHEMA,
+                    "repo": "owner/repo",
+                    "n": len(calls),
+                    "board": {"schema": "code_mower.board.v1", "mode": "local_recording"},
+                }
+
+            handler = board.make_handler(
+                board.BoardConfig(
+                    repo="owner/repo",
+                    store_path=str(store_path),
+                    record_events=True,
+                    record_interval_seconds=0,
+                    refresh_seconds=1,
+                ),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+            server = board.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+                with patch("code_mower.board.status_payload", side_effect=fake_status_payload):
+                    first = _await_warm_status(base_url)
+                    self.assertEqual(first["board"]["cache"]["state"], "fresh")
+                    self.assertEqual(first["board"]["recording"]["status"], "recorded")
+
+                    time.sleep(1.1)  # let the 1-second TTL expire so the cached snapshot goes stale
+
+                    stale = _fetch_status(base_url)
+                    self.assertEqual(stale["board"]["cache"]["state"], "stale")
+                    self.assertTrue(stale["board"]["cache"]["refresh_in_progress"])
+                    self.assertEqual(stale["board"]["cache"]["generation"], 1)
+                    # Same generation as the first response: aging out does not make it
+                    # a new snapshot, so it must not be written to the store twice.
+                    self.assertEqual(stale["board"]["recording"]["status"], "skipped")
+                    self.assertEqual(stale["board"]["recording"]["message"], "snapshot already recorded")
+
+                    mid_report = board_store.event_report(path=store_path, limit=10)
+                    self.assertEqual(mid_report["event_count"], 1)  # generation 1 stays recorded once
+
+                    release.set()
+                    deadline = time.monotonic() + 5
+                    fresh = stale
+                    while fresh["board"]["cache"]["state"] != "fresh" and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                        fresh = _fetch_status(base_url)
+                    self.assertEqual(fresh["board"]["cache"]["state"], "fresh")
+                    self.assertEqual(fresh["board"]["cache"]["generation"], 2)
+                    self.assertEqual(fresh["board"]["recording"]["status"], "recorded")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+            report = board_store.event_report(path=store_path, limit=10)
+
+        self.assertEqual(report["event_count"], 2)
+
+    def test_http_status_records_a_generation_first_observed_after_it_went_stale(self) -> None:
+        """A browser polling slower than the TTL still gets every completed snapshot recorded.
+
+        The background refresh completes while nobody is asking, and the snapshot
+        ages out before the next request. Freshness therefore cannot be the
+        recording identity -- the cache generation is.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            release_second = threading.Event()
+            calls: list[int] = []
+            calls_lock = threading.Lock()
+
+            def fake_status_payload(*_args: object, **_kwargs: object) -> dict:
+                with calls_lock:
+                    calls.append(1)
+                    index = len(calls)
+                if index >= 2:
+                    self.assertTrue(release_second.wait(timeout=5))
+                return {
+                    "schema": lane_status.LANE_STATUS_SCHEMA,
+                    "repo": "owner/repo",
+                    "n": index,
+                    "board": {"schema": "code_mower.board.v1", "mode": "local_recording"},
+                }
+
+            handler = board.make_handler(
+                board.BoardConfig(
+                    repo="owner/repo",
+                    store_path=str(store_path),
+                    record_events=True,
+                    record_interval_seconds=0,
+                    refresh_seconds=1,
+                ),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+            server = board.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+                with patch("code_mower.board.status_payload", side_effect=fake_status_payload):
+                    cold = _fetch_status(base_url)
+                    self.assertEqual(cold["board"]["cache"]["state"], "cold")
+                    self.assertEqual(cold["board"]["cache"]["generation"], 0)
+                    self.assertEqual(cold["board"]["recording"]["status"], "pending")
+
+                    # No request at all until past the 1-second TTL, so generation 1 is
+                    # never observed while it is still fresh.
+                    time.sleep(1.2)
+
+                    stale = _fetch_status(base_url)
+                    self.assertEqual(stale["board"]["cache"]["state"], "stale")
+                    self.assertEqual(stale["board"]["cache"]["generation"], 1)
+                    self.assertEqual(stale["board"]["recording"]["status"], "recorded")
+                    self.assertEqual(board_store.event_report(path=store_path, limit=10)["event_count"], 1)
+
+                    # Repeated stale polls, with refresh 2 still in flight, keep reporting
+                    # the same generation and must never write it a second time.
+                    for _ in range(3):
+                        repeat = _fetch_status(base_url)
+                        self.assertEqual(repeat["board"]["cache"]["generation"], 1)
+                        self.assertTrue(repeat["board"]["cache"]["refresh_in_progress"])
+                        self.assertEqual(repeat["board"]["recording"]["status"], "skipped")
+                        self.assertEqual(repeat["board"]["recording"]["message"], "snapshot already recorded")
+                    self.assertEqual(board_store.event_report(path=store_path, limit=10)["event_count"], 1)
+
+                    release_second.set()
+                    second = _await_cache_generation(base_url, 2)
+                    self.assertEqual(second["board"]["recording"]["status"], "recorded")
+                    report = board_store.event_report(path=store_path, limit=10)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        self.assertEqual(report["event_count"], 2)
+
+    def test_http_status_records_a_generation_once_under_concurrent_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            computed = threading.Event()
+            calls: list[int] = []
+            calls_lock = threading.Lock()
+            statuses: list[str] = []
+            statuses_lock = threading.Lock()
+
+            def fake_status_payload(*_args: object, **_kwargs: object) -> dict:
+                with calls_lock:
+                    calls.append(1)
+                    index = len(calls)
+                payload = {
+                    "schema": lane_status.LANE_STATUS_SCHEMA,
+                    "repo": "owner/repo",
+                    "n": index,
+                    "board": {"schema": "code_mower.board.v1", "mode": "local_recording"},
+                }
+                computed.set()
+                return payload
+
+            handler = board.make_handler(
+                board.BoardConfig(
+                    repo="owner/repo",
+                    store_path=str(store_path),
+                    record_events=True,
+                    record_interval_seconds=0,
+                    refresh_seconds=3600,  # exactly one completed generation for the whole test
+                ),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+            server = board.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+                with patch("code_mower.board.status_payload", side_effect=fake_status_payload):
+                    cold = _fetch_status(base_url)
+                    self.assertEqual(cold["board"]["recording"]["status"], "pending")
+                    self.assertTrue(computed.wait(timeout=5))
+                    time.sleep(0.2)  # let the background refresh publish generation 1
+
+                    barrier = threading.Barrier(8)
+
+                    def worker() -> None:
+                        barrier.wait(timeout=5)
+                        payload = _fetch_status(base_url)
+                        with statuses_lock:
+                            statuses.append(payload["board"]["recording"]["status"])
+
+                    workers = [threading.Thread(target=worker) for _ in range(8)]
+                    for worker_thread in workers:
+                        worker_thread.start()
+                    for worker_thread in workers:
+                        worker_thread.join(timeout=10)
+                    report = board_store.event_report(path=store_path, limit=10)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        # All eight requests race on the same generation; the recording lock lets
+        # exactly one of them win, and none of the others rewrites it.
+        self.assertEqual(len(statuses), 8)
+        self.assertEqual(statuses.count("recorded"), 1)
+        self.assertEqual(statuses.count("skipped"), 7)
+        self.assertEqual(report["event_count"], 1)
+
+    def test_http_status_interval_throttle_keeps_a_new_generation_eligible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "events.jsonl"
+            calls: list[int] = []
+            calls_lock = threading.Lock()
+            recording_now = [datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)]
+
+            def fake_status_payload(*_args: object, **_kwargs: object) -> dict:
+                with calls_lock:
+                    calls.append(1)
+                    index = len(calls)
+                return {
+                    "schema": lane_status.LANE_STATUS_SCHEMA,
+                    "repo": "owner/repo",
+                    "n": index,
+                    "board": {"schema": "code_mower.board.v1", "mode": "local_recording"},
+                }
+
+            handler = board.make_handler(
+                board.BoardConfig(
+                    repo="owner/repo",
+                    store_path=str(store_path),
+                    record_events=True,
+                    record_interval_seconds=60,
+                    refresh_seconds=1,
+                ),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+            server = board.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+                with (
+                    patch("code_mower.board.status_payload", side_effect=fake_status_payload),
+                    patch("code_mower.board._utc_now", side_effect=lambda: recording_now[0]),
+                ):
+                    first = _await_cache_generation(base_url, 1)
+                    self.assertEqual(first["board"]["recording"]["status"], "recorded")
+
+                    # Generation 2 completes well inside the record interval, so it is
+                    # skipped for the interval -- not consumed.
+                    second = _await_cache_generation(base_url, 2, timeout=8)
+                    self.assertEqual(second["board"]["recording"]["status"], "skipped")
+                    self.assertEqual(second["board"]["recording"]["message"], "record interval not reached")
+                    self.assertEqual(board_store.event_report(path=store_path, limit=10)["event_count"], 1)
+
+                    recording_now[0] = datetime(2026, 1, 1, 0, 1, 0, tzinfo=UTC)  # interval elapses
+                    due = _fetch_status(base_url)
+                    self.assertGreaterEqual(due["board"]["cache"]["generation"], 2)
+                    self.assertEqual(due["board"]["recording"]["status"], "recorded")
+                    report = board_store.event_report(path=store_path, limit=10)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        self.assertEqual(report["event_count"], 2)
 
     def test_serve_rejects_invalid_recording_options_before_binding_port(self) -> None:
         err = StringIO()
@@ -1190,11 +1800,15 @@ class BoardTests(TestCase):
             with urllib.request.urlopen(f"{base_url}/", timeout=5) as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn("text/html", response.headers["Content-Type"])
-            with urllib.request.urlopen(f"{base_url}/api/status", timeout=5) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(payload["repo"], "owner/repo")
-                self.assertEqual(payload["remote"]["pull_requests"][0]["number"], 7)
-                self.assertNotIn("/tmp/lane-checkout", json.dumps(payload))
+            cold_payload = _fetch_status(base_url)
+            self.assertEqual(cold_payload["repo"], "owner/repo")
+            self.assertEqual(cold_payload["board"]["cache"]["state"], "cold")
+            self.assertEqual(cold_payload["generated_at"], "")
+            payload = _await_warm_status(base_url)
+            self.assertEqual(payload["repo"], "owner/repo")
+            self.assertEqual(payload["remote"]["pull_requests"][0]["number"], 7)
+            self.assertEqual(payload["board"]["cache"]["state"], "fresh")
+            self.assertNotIn("/tmp/lane-checkout", json.dumps(payload))
             with urllib.request.urlopen(f"{base_url}/api/identity", timeout=5) as response:
                 payload = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(payload["schema"], board.BOARD_IDENTITY_SCHEMA)
@@ -1292,3 +1906,644 @@ class BoardTests(TestCase):
             return int(response.status)
         finally:
             connection.close()
+
+
+class StatusCacheTests(TestCase):
+    """Deterministic coverage for the /api/status stale-while-refresh cache, with no live network calls."""
+
+    def test_cold_get_returns_placeholder_and_starts_exactly_one_refresh(self) -> None:
+        pending: list = []
+        calls: list[int] = []
+
+        def compute() -> dict:
+            calls.append(1)
+            return {"n": len(calls)}
+
+        cache = board.StatusCache(compute, ttl_seconds=10, clock=lambda: 0.0, now=lambda: NOW, start_thread=pending.append)
+
+        snapshot, meta = cache.get()
+
+        self.assertIsNone(snapshot)
+        self.assertEqual(meta["state"], "cold")
+        self.assertTrue(meta["refresh_in_progress"])
+        self.assertEqual(meta["generated_at"], "")
+        self.assertIsNone(meta["age_seconds"])
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(calls, [])
+
+        # A concurrent cold read must observe the in-flight refresh, not start a second one.
+        snapshot_again, meta_again = cache.get()
+        self.assertIsNone(snapshot_again)
+        self.assertTrue(meta_again["refresh_in_progress"])
+        self.assertEqual(len(pending), 1)
+
+    def test_generation_advances_only_once_per_completed_snapshot(self) -> None:
+        """The generation is recording identity, so it must track completions, not freshness."""
+        pending: list = []
+        attempts: list[int] = []
+
+        def compute() -> dict:
+            attempts.append(1)
+            if len(attempts) == 2:
+                raise RuntimeError("github unavailable")
+            return {"n": len(attempts)}
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=5,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=5.0,
+        )
+
+        _snapshot, meta = cache.get()
+        self.assertEqual(meta["generation"], 0)  # cold: nothing has completed yet
+        self.assertEqual(cache.generation, 0)
+
+        pending.pop()()  # the first refresh completes
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 1})
+        self.assertEqual(meta["generation"], 1)
+        self.assertEqual(cache.generation, 1)
+
+        clock.advance(6.0)
+        snapshot, meta = cache.get()  # aging out is not a new snapshot
+        self.assertEqual(snapshot, {"n": 1})
+        self.assertEqual(meta["state"], "stale")
+        self.assertEqual(meta["generation"], 1)
+
+        pending.pop()()  # the second refresh fails
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 1})
+        self.assertEqual(meta["generation"], 1)  # a failed refresh never advances it
+        self.assertEqual(meta["last_error"], "status refresh failed: RuntimeError")
+        self.assertEqual(cache.generation, 1)
+
+        clock.advance(5.0)
+        cache.get()  # starts exactly one retry once the backoff window expires
+        pending.pop()()  # the retry succeeds
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 3})
+        self.assertEqual(meta["generation"], 2)  # one step per completed snapshot
+        self.assertEqual(cache.generation, 2)
+
+    def test_warm_snapshot_is_served_without_recompute_inside_ttl(self) -> None:
+        pending: list = []
+        calls: list[int] = []
+
+        def compute() -> dict:
+            calls.append(1)
+            return {"n": len(calls)}
+
+        clock = _FakeClock(100.0)
+        cache = board.StatusCache(compute, ttl_seconds=10, clock=clock, now=lambda: NOW, start_thread=pending.append)
+
+        cache.get()
+        pending.pop()()  # run the queued refresh, as a background thread would
+
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 1})
+        self.assertEqual(meta["state"], "fresh")
+        self.assertFalse(meta["refresh_in_progress"])
+        self.assertEqual(meta["generated_at"], board._format_timestamp(NOW))
+        self.assertEqual(meta["last_error"], "")
+
+        clock.advance(1.0)
+        snapshot_again, meta_again = cache.get()
+        self.assertEqual(snapshot_again, {"n": 1})
+        self.assertEqual(meta_again["state"], "fresh")
+        self.assertEqual(calls, [1])  # not recomputed while fresh
+
+    def test_stale_snapshot_is_served_while_one_background_refresh_runs(self) -> None:
+        pending: list = []
+        calls: list[int] = []
+
+        def compute() -> dict:
+            calls.append(1)
+            return {"n": len(calls)}
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(compute, ttl_seconds=5, clock=clock, now=lambda: NOW, start_thread=pending.append)
+        cache.get()
+        pending.pop()()
+
+        clock.advance(6.0)
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 1})
+        self.assertEqual(meta["state"], "stale")
+        self.assertTrue(meta["refresh_in_progress"])
+        self.assertEqual(len(pending), 1)
+
+        # A second stale read while the refresh is in flight must not queue another one.
+        snapshot_again, meta_again = cache.get()
+        self.assertEqual(snapshot_again, {"n": 1})
+        self.assertTrue(meta_again["refresh_in_progress"])
+        self.assertEqual(len(pending), 1)
+
+        pending.pop()()
+        snapshot_final, meta_final = cache.get()
+        self.assertEqual(snapshot_final, {"n": 2})
+        self.assertEqual(meta_final["state"], "fresh")
+
+    def test_concurrent_cold_requests_start_exactly_one_background_refresh(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        calls: list[int] = []
+
+        def compute() -> dict:
+            calls.append(1)
+            started.set()
+            self.assertTrue(release.wait(timeout=5))
+            return {"n": len(calls)}
+
+        cache = board.StatusCache(compute, ttl_seconds=10)
+
+        results: list[tuple] = []
+
+        def worker() -> None:
+            results.append(cache.get())
+
+        workers = [threading.Thread(target=worker) for _ in range(8)]
+        for worker_thread in workers:
+            worker_thread.start()
+        self.assertTrue(started.wait(timeout=5))
+        for worker_thread in workers:
+            worker_thread.join(timeout=5)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(results), 8)
+        self.assertTrue(all(snapshot is None for snapshot, _ in results))
+        self.assertTrue(all(meta["refresh_in_progress"] for _, meta in results))
+
+        release.set()
+        deadline = time.monotonic() + 5
+        snapshot = None
+        while time.monotonic() < deadline:
+            snapshot, _meta = cache.get()
+            if snapshot is not None:
+                break
+            time.sleep(0.01)
+        self.assertEqual(snapshot, {"n": 1})
+        self.assertEqual(len(calls), 1)
+
+    def test_failed_refresh_records_safe_summarized_error_and_recovers(self) -> None:
+        pending: list = []
+        attempts: list[int] = []
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+        local_path = "/" + "Users/name/private/repo"
+
+        def compute() -> dict:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError(f"failed at {local_path} with token {secret}")
+            return {"ok": True}
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=5.0,
+        )
+
+        snapshot, _meta = cache.get()
+        self.assertIsNone(snapshot)
+        pending.pop()()  # run the failing refresh
+
+        snapshot, meta = cache.get()
+        self.assertIsNone(snapshot)
+        self.assertEqual(meta["state"], "cold")
+        self.assertEqual(meta["last_error"], "status refresh failed: RuntimeError")
+        self.assertNotIn(secret, meta["last_error"])
+        self.assertNotIn(local_path, meta["last_error"])
+        self.assertFalse(meta["refresh_in_progress"])  # the retry backoff is armed
+        self.assertEqual(meta["retry_in_seconds"], 5.0)
+        self.assertEqual(pending, [])
+
+        clock.advance(5.0)
+        snapshot, meta = cache.get()
+        self.assertIsNone(snapshot)
+        self.assertTrue(meta["refresh_in_progress"])  # this get() started the retry
+        self.assertIsNone(meta["retry_in_seconds"])
+        self.assertEqual(len(pending), 1)
+
+        pending.pop()()  # run the retry, which succeeds
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"ok": True})
+        self.assertEqual(meta["state"], "fresh")
+        self.assertEqual(meta["last_error"], "")
+        self.assertIsNone(meta["retry_in_seconds"])
+
+    def test_persistent_refresh_failure_is_not_recomputed_on_every_request(self) -> None:
+        pending: list = []
+        attempts: list[int] = []
+
+        def compute() -> dict:
+            attempts.append(1)
+            raise RuntimeError("github unavailable")
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=5.0,
+        )
+
+        cache.get()
+        pending.pop()()  # first refresh fails
+        self.assertEqual(attempts, [1])
+
+        # A browser fast-polling every 750ms must not license one expensive
+        # recomputation per poll while the failure persists.
+        for tick in range(6):
+            clock.advance(0.75)
+            snapshot, meta = cache.get()
+            self.assertIsNone(snapshot)
+            self.assertEqual(meta["state"], "cold")
+            self.assertFalse(meta["refresh_in_progress"])
+            self.assertEqual(meta["retry_in_seconds"], round(5.0 - 0.75 * (tick + 1), 3))
+            self.assertEqual(meta["last_error"], "status refresh failed: RuntimeError")
+            self.assertEqual(pending, [])
+            self.assertEqual(attempts, [1])
+
+    def test_persistent_refresh_failure_keeps_serving_the_stale_snapshot(self) -> None:
+        pending: list = []
+        attempts: list[int] = []
+
+        def compute() -> dict:
+            attempts.append(1)
+            if len(attempts) == 1:
+                return {"n": 1}
+            raise RuntimeError("github unavailable")
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=5,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=5.0,
+        )
+        cache.get()
+        pending.pop()()  # first refresh succeeds
+
+        clock.advance(6.0)
+        cache.get()
+        pending.pop()()  # the refresh of the now-stale snapshot fails
+
+        clock.advance(0.75)
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 1})  # the last good snapshot is still served
+        self.assertEqual(meta["state"], "stale")
+        self.assertFalse(meta["refresh_in_progress"])
+        self.assertEqual(meta["retry_in_seconds"], 4.25)
+        self.assertEqual(pending, [])
+        self.assertEqual(attempts, [1, 1])
+
+    def test_exactly_one_retry_starts_after_the_backoff_deadline(self) -> None:
+        pending: list = []
+        attempts: list[int] = []
+
+        def compute() -> dict:
+            attempts.append(1)
+            raise RuntimeError("github unavailable")
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=5.0,
+        )
+        cache.get()
+        pending.pop()()
+
+        clock.advance(4.999)
+        _snapshot, meta = cache.get()
+        self.assertFalse(meta["refresh_in_progress"])  # still inside the window
+        self.assertEqual(meta["retry_in_seconds"], 0.001)
+        self.assertEqual(pending, [])
+
+        clock.advance(0.001)
+        _snapshot, meta = cache.get()
+        self.assertTrue(meta["refresh_in_progress"])
+        self.assertEqual(len(pending), 1)
+
+        # Requests arriving while that single retry is in flight must not queue
+        # another one, and the backoff must not be re-reported as pending.
+        for _ in range(3):
+            _snapshot, meta_again = cache.get()
+            self.assertTrue(meta_again["refresh_in_progress"])
+            self.assertIsNone(meta_again["retry_in_seconds"])
+            self.assertEqual(len(pending), 1)
+
+        pending.pop()()  # the retry fails too
+        self.assertEqual(attempts, [1, 1])
+
+        # The second consecutive failure doubles the window, so the next
+        # request is refused for 10s rather than 5s.
+        clock.advance(5.0)
+        _snapshot, meta = cache.get()
+        self.assertFalse(meta["refresh_in_progress"])
+        self.assertEqual(meta["retry_in_seconds"], 5.0)
+        self.assertEqual(pending, [])
+
+    def test_retry_backoff_doubles_and_is_bounded_by_the_maximum(self) -> None:
+        pending: list = []
+
+        def compute() -> dict:
+            raise RuntimeError("github unavailable")
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=5.0,
+            retry_max_seconds=20.0,
+        )
+
+        observed: list[float] = []
+        for _ in range(5):
+            _snapshot, meta = cache.get()
+            self.assertTrue(meta["refresh_in_progress"])
+            pending.pop()()  # the refresh fails
+            _snapshot, meta = cache.get()
+            observed.append(meta["retry_in_seconds"])
+            clock.advance(meta["retry_in_seconds"])
+
+        # Deterministic doubling, clamped so a long outage never parks the
+        # cache beyond retry_max_seconds.
+        self.assertEqual(observed, [5.0, 10.0, 20.0, 20.0, 20.0])
+
+    def test_retry_delay_never_overflows_for_a_huge_failure_streak(self) -> None:
+        def compute() -> dict:
+            raise RuntimeError("github unavailable")
+
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=_FakeClock(0.0),
+            now=lambda: NOW,
+            start_thread=lambda target: None,
+            retry_base_seconds=5.0,
+            retry_max_seconds=60.0,
+        )
+
+        # A Board left in persistent failure keeps incrementing the streak, so
+        # the delay must stay finite and capped no matter how large it grows.
+        # Computing base * 2.0 ** streak directly raises OverflowError here.
+        for failures in (1, 2, 4, 5, 100, 1024, 10_000, 10**6, 10**18):
+            with self.subTest(failures=failures):
+                with cache._lock:
+                    cache._consecutive_failures = failures
+                    delay = cache._retry_delay_locked()
+                self.assertTrue(math.isfinite(delay))
+                self.assertLessEqual(delay, 60.0)
+                self.assertEqual(delay, min(5.0 * 2 ** min(failures - 1, 10), 60.0))
+
+        # Extreme but finite base/max values stay bounded too.
+        wide = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=_FakeClock(0.0),
+            now=lambda: NOW,
+            start_thread=lambda target: None,
+            retry_base_seconds=1e-9,
+            retry_max_seconds=1e9,
+        )
+        with wide._lock:
+            wide._consecutive_failures = 10**9
+            wide_delay = wide._retry_delay_locked()
+        self.assertTrue(math.isfinite(wide_delay))
+        self.assertEqual(wide_delay, 1e9)
+
+    def test_huge_failure_streak_still_arms_a_capped_retry_window(self) -> None:
+        pending: list = []
+        attempts: list[int] = []
+
+        def compute() -> dict:
+            attempts.append(1)
+            raise RuntimeError("github unavailable")
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=5.0,
+            retry_max_seconds=60.0,
+        )
+
+        with cache._lock:
+            cache._consecutive_failures = 10**9  # a very long outage
+
+        cache.get()
+        pending.pop()()  # one more failure on top of the huge streak
+
+        snapshot, meta = cache.get()
+        self.assertIsNone(snapshot)
+        self.assertEqual(meta["state"], "cold")
+        self.assertFalse(meta["refresh_in_progress"])
+        self.assertEqual(meta["retry_in_seconds"], 60.0)  # capped, not overflowed
+        self.assertEqual(meta["last_error"], "status refresh failed: RuntimeError")
+        self.assertEqual(pending, [])
+        self.assertEqual(attempts, [1])
+
+        # The window still expires normally, so the cache is not wedged.
+        clock.advance(60.0)
+        _snapshot, meta = cache.get()
+        self.assertTrue(meta["refresh_in_progress"])
+        self.assertEqual(len(pending), 1)
+
+    def test_zero_retry_base_disables_the_backoff_window(self) -> None:
+        pending: list = []
+        attempts: list[int] = []
+
+        def compute() -> dict:
+            attempts.append(1)
+            raise RuntimeError("github unavailable")
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=0.0,
+            retry_max_seconds=0.0,
+        )
+
+        cache.get()
+        pending.pop()()  # the refresh fails
+
+        with cache._lock:
+            cache._consecutive_failures = 10**9
+            self.assertEqual(cache._retry_delay_locked(), 0.0)
+
+        # A zero base means no window at all: the next request retries at once
+        # and no bogus retry_in_seconds is reported.
+        _snapshot, meta = cache.get()
+        self.assertIsNone(meta["retry_in_seconds"])
+        self.assertTrue(meta["refresh_in_progress"])
+        self.assertEqual(len(pending), 1)
+
+    def test_retry_max_below_base_pins_the_delay_to_the_base(self) -> None:
+        pending: list = []
+
+        def compute() -> dict:
+            raise RuntimeError("github unavailable")
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=5.0,
+            retry_max_seconds=0.0,  # clamped up to the base by __init__
+        )
+
+        observed: list[float] = []
+        for _ in range(3):
+            _snapshot, meta = cache.get()
+            self.assertTrue(meta["refresh_in_progress"])
+            pending.pop()()  # the refresh fails
+            _snapshot, meta = cache.get()
+            observed.append(meta["retry_in_seconds"])
+            clock.advance(meta["retry_in_seconds"])
+
+        self.assertEqual(observed, [5.0, 5.0, 5.0])  # never doubles past the max
+
+    def test_successful_refresh_clears_the_error_and_the_backoff(self) -> None:
+        pending: list = []
+        attempts: list[int] = []
+        failing = [True]
+
+        def compute() -> dict:
+            attempts.append(1)
+            if failing[0]:
+                raise RuntimeError("github unavailable")
+            return {"n": len(attempts)}
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=5.0,
+        )
+
+        cache.get()
+        pending.pop()()  # failure 1
+        clock.advance(5.0)
+        cache.get()
+        pending.pop()()  # failure 2 -> window doubled to 10s
+        clock.advance(10.0)
+        failing[0] = False
+        cache.get()
+        pending.pop()()  # success
+
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 3})
+        self.assertEqual(meta["state"], "fresh")
+        self.assertEqual(meta["last_error"], "")
+        self.assertEqual(meta["last_error_at"], "")
+        self.assertIsNone(meta["retry_in_seconds"])
+        self.assertFalse(meta["refresh_in_progress"])
+
+        # A later failure starts the backoff over at the base delay rather than
+        # resuming the pre-recovery streak.
+        clock.advance(10.0)
+        failing[0] = True
+        cache.get()
+        pending.pop()()
+        _snapshot, meta = cache.get()
+        self.assertEqual(meta["retry_in_seconds"], 5.0)
+
+    def test_start_thread_failure_resets_refreshing_flag_and_recovers(self) -> None:
+        starts: list = []
+
+        def flaky_start_thread(target) -> None:
+            starts.append(target)
+            if len(starts) == 1:
+                raise RuntimeError("boom: could not spawn OS thread at /tmp/secret-path")
+
+        calls: list[int] = []
+
+        def compute() -> dict:
+            calls.append(1)
+            return {"n": len(calls)}
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=10,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=flaky_start_thread,
+            retry_base_seconds=5.0,
+        )
+
+        snapshot, meta = cache.get()
+
+        self.assertIsNone(snapshot)
+        self.assertEqual(meta["state"], "cold")
+        self.assertFalse(meta["refresh_in_progress"])  # a failed thread start must not wedge the flag forever
+        self.assertEqual(meta["last_error"], "status refresh failed: RuntimeError")
+        self.assertNotIn("secret", meta["last_error"])
+        self.assertNotIn("/tmp", meta["last_error"])
+        self.assertEqual(meta["retry_in_seconds"], 5.0)  # a failed start arms the same backoff
+        self.assertEqual(calls, [])  # compute was never reached
+
+        # The endpoint stays responsive, but requests inside the backoff window
+        # must not keep retrying the thread start on every poll.
+        snapshot_backoff, meta_backoff = cache.get()
+        self.assertIsNone(snapshot_backoff)
+        self.assertFalse(meta_backoff["refresh_in_progress"])
+        self.assertEqual(meta_backoff["retry_in_seconds"], 5.0)
+        self.assertEqual(len(starts), 1)
+
+        # After the deadline, one request retries starting the refresh.
+        clock.advance(5.0)
+        snapshot_again, meta_again = cache.get()
+        self.assertIsNone(snapshot_again)
+        self.assertTrue(meta_again["refresh_in_progress"])
+        self.assertEqual(meta_again["last_error"], "status refresh failed: RuntimeError")
+        self.assertEqual(len(starts), 2)
+
+        starts.pop()()  # run the retried refresh, as a background thread would
+        final_snapshot, final_meta = cache.get()
+        self.assertEqual(final_snapshot, {"n": 1})
+        self.assertEqual(final_meta["state"], "fresh")
+        self.assertEqual(final_meta["last_error"], "")
+
+    def test_cache_error_summary_never_includes_exception_message_content(self) -> None:
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+        local_path = "/" + "Users/name/private/repo"
+        exc = RuntimeError(f"failed at {local_path} with token {secret}\nstdout: some raw output")
+
+        summary = board._cache_error_summary(exc)
+
+        self.assertEqual(summary, "status refresh failed: RuntimeError")
+        self.assertNotIn(secret, summary)
+        self.assertNotIn(local_path, summary)
+        self.assertNotIn("stdout", summary)
