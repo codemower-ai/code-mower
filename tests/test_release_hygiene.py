@@ -67,6 +67,32 @@ class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_current_beta_prerelease(self) -> None:
         self.assertEqual(__version__, "0.9.3b1")
 
+    def test_dogfood_repo_has_real_root_config(self) -> None:
+        config_path = ROOT / "code-mower.yml"
+
+        self.assertTrue(config_path.is_file())
+        config = code_mower_config.load_config(config_path)
+        self.assertEqual(code_mower_config.validate_config(config), [])
+        self.assertEqual(config["repositories"][0]["slug"], "codemower-ai/code-mower")
+        self.assertEqual(config["owner_surface"]["owner_login"], "jeffhuber")
+        self.assertEqual(config["decisions"]["authorities"], ["jeffhuber"])
+        self.assertEqual(config["profiles"]["recommended"]["lanes"], ["codex", "claude_audit"])
+
+        report = doctor_checks.run_doctor(
+            config_path=config_path,
+            provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
+            profile="recommended",
+            repo_slug="codemower-ai/code-mower",
+            adoption=True,
+        )
+        source_check = next(
+            check
+            for check in report.checks
+            if check.name == "doctor.adoption.config_source"
+        )
+        self.assertEqual(source_check.status, "pass")
+        self.assertEqual(source_check.detail["config_source"], "repository_config")
+
     def test_release_workflow_verifies_downloaded_distributions_before_publish(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("  verify-distributions:\n", workflow)
@@ -579,8 +605,17 @@ class ReleaseHygieneTests(unittest.TestCase):
         )
         self.assertIn("remediation: run `claude -p ok` and retry doctor", rendered_doctor)
         easy_config = doctor_checks.resolve_doctor_config_path("code-mower.yml", easy=True)
-        self.assertEqual(easy_config.name, "code-mower.example.yml")
+        self.assertEqual(easy_config.name, "code-mower.yml")
         self.assertTrue(easy_config.exists())
+        self.assertEqual(
+            doctor._doctor_config_source_label(
+                config_arg="code-mower.yml",
+                config_path=easy_config,
+                easy=True,
+                cwd=ROOT,
+            ),
+            "repository_config",
+        )
         self.assertEqual(
             doctor_checks.default_check_group_ids(),
             ("runtime", "setup", "github", "providers", "cloud", "output"),

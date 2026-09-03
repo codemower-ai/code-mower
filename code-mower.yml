@@ -1,0 +1,227 @@
+version: 1
+
+project:
+  name: code-mower
+  state_dir: ${CODE_MOWER_STATE_DIR:-~/.cache/code-mower}
+
+repositories:
+  - slug: codemower-ai/code-mower
+    default_branch: main
+
+audit:
+  budget_usd: ""
+  max_diff_bytes: "180000"
+  max_diff_hard_limit_bytes: "1500000"
+
+owner_surface:
+  owner_login: jeffhuber
+  needs_owner_label: needs-owner
+  owner_decision_label: owner-decision
+  owner_sitting_label: owner-sitting
+  gate_override_label: "gate:override"
+  status_issue: "570"
+  weekly_cron: "0 14 * * 1"
+  gate_health_cron: "*/15 * * * *"
+  gate_health_max_wait_minutes: "30"
+  gate_health_liveness_minutes: "45"
+  local_audit_runner_label: code-mower-audit
+  local_audit_runner_enabled_var: CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED
+  lane_runner_labels:
+    - self-hosted
+    - macOS
+    - code-mower-lane
+  lane_runner_enabled_var: LANE_MAC_RUNNER_ENABLED
+  lane_runner_cron: "*/15 * * * *"
+  lane_runner_max_minutes: "90"
+  lane_runner_trusted_authors: []
+  builder_dispatch_cron: "*/30 * * * *"
+  builder_wip_cap: "5"
+  dispatch_token_env: DISPATCH_TOKEN
+  dispatch_token_expires_var: DISPATCH_TOKEN_EXPIRES_AT
+  ready_label: "tier:R"
+  phase_labels:
+    - "phase:0"
+    - "phase:1"
+    - "phase:2"
+    - "phase:3"
+    - "phase:4"
+    - "phase:5"
+  reviewer_spend_path: .code-mower/reviewer-spend.json
+  reviewer_value_report_path: .code-mower/reviewer-value-report.md
+
+decisions:
+  authorities:
+    - jeffhuber
+
+merge_authority_excludes_author: true
+
+builder_identity:
+  labels:
+    builder:codex: codex
+    builder:claude: claude
+    builder:cursor: cursor
+    builder:gitar: gitar
+    builder:grok-bot: cursor
+    builder:muse: muse
+  authors:
+    chatgpt-codex-connector[bot]: codex
+    claude[bot]: claude
+    cursor[bot]: cursor
+    grok-bot[bot]: cursor
+  branch_prefixes:
+    cursor/: cursor
+  fix_round_mentions:
+    cursor: "@cursor"
+  trailers:
+    CODE_MOWER_BUILDER:codex: codex
+    CODE_MOWER_BUILDER:claude: claude
+    CODE_MOWER_BUILDER:cursor: cursor
+    CODE_MOWER_BUILDER:grok-bot: cursor
+    CODE_MOWER_BUILDER:muse: muse
+
+lanes:
+  codex:
+    type: audit
+    driver: local_cli
+    provider: codex
+    merge_authority: true
+    labels:
+      needs: needs-codex-audit
+      done: codex-audit-done
+      blocked: codex-audit-blocked
+    token_env:
+      - DISPATCH_TOKEN
+      - GITHUB_TOKEN
+    provider_config:
+      command: codex
+      model_env_any:
+        - CODE_MOWER_CODEX_MODEL
+        - CODEX_MODEL
+        - OPENAI_MODEL
+      doctor_probe_args:
+        - --version
+    review_hygiene:
+      workflow: .github/workflows/codex-clear-stale.yml
+      token_env: GITHUB_TOKEN
+
+  claude_audit:
+    type: audit
+    driver: local_cli
+    provider: claude
+    trailer_lane: claude
+    merge_authority: true
+    labels:
+      needs: needs-claude-audit
+      done: claude-audit-done
+      blocked: claude-audit-blocked
+    token_env:
+      - DISPATCH_TOKEN
+      - GITHUB_TOKEN
+    provider_config:
+      command: claude
+      model_env: CLAUDE_AUDIT_MODEL
+      default_model: sonnet
+      doctor_probe_args:
+        - --print
+        - --output-format
+        - json
+        - --no-session-persistence
+        - --setting-sources
+        - local
+        - --strict-mcp-config
+        - --mcp-config
+        - '{"mcpServers":{}}'
+        - --disable-slash-commands
+        - --tools
+        - ""
+        - --model
+        - sonnet
+        - --max-budget-usd
+        - "0.25"
+        - "Reply with exactly: ok"
+      doctor_probe_timeout_seconds: 30
+      doctor_probe_expect_json: true
+      doctor_probe_expect_json_field: result
+      doctor_probe_expect_json_value: ok
+      doctor_probe_error_fields:
+        - is_error
+        - api_error_status
+      doctor_probe_auth_status_fields:
+        - api_error_status
+    review_hygiene:
+      workflow: .github/workflows/claude-clear-stale.yml
+      token_env: GITHUB_TOKEN
+
+  gitar:
+    type: audit
+    driver: saas_event
+    provider: gitar
+    adapter: gitar
+    informational: true
+    events:
+      - issue_comment
+    labels:
+      needs: needs-gitar-audit
+      done: gitar-audit-done
+      blocked: gitar-audit-blocked
+    token_env:
+      - GITAR_AUDIT_LABEL_TOKEN
+      - GITHUB_TOKEN
+    provider_config:
+      bot_authors:
+        - gitar-ai[bot]
+        - gitar-bot
+        - gitar-bot[bot]
+
+  muse_cli:
+    type: audit
+    driver: local_cli
+    provider: muse
+    informational: true
+    enabled_by_default: false
+    trigger_policy: manual
+    spend_policy: included
+    labels:
+      needs: needs-muse-audit
+      done: muse-audit-done
+      blocked: muse-audit-blocked
+    token_env:
+      - GITHUB_TOKEN
+    token_env_any: []
+    provider_config:
+      command: muse
+      command_env: MUSE_CLI_COMMAND
+      model_env: CODE_MOWER_MUSE_MODEL
+      model_env_any:
+        - MUSE_MODEL
+        - META_MUSE_MODEL
+      prompt_transport: jsonl_prompt_file
+      prompt_lenses:
+        - base-audit
+      required_env_any:
+        - META_API_KEY
+        - META_API_KEY_FILE
+      required_env_truthy_any:
+        - MUSE_CLI_USE_AMBIENT_HOME
+      doctor_probe_args:
+        - --version
+
+profiles:
+  recommended:
+    description: Code Mower dogfood merge gate reviewers
+    lanes:
+      - codex
+      - claude_audit
+
+  third_peer:
+    description: Merge gate reviewers plus informational peer signals
+    lanes:
+      - codex
+      - claude_audit
+      - gitar
+      - muse_cli
+
+  cli_research:
+    description: Experimental local CLI reviewer lanes under calibration
+    lanes:
+      - muse_cli
