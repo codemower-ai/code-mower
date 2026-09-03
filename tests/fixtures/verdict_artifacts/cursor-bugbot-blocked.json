@@ -1,0 +1,14 @@
+{
+  "comment_body": "## Cursor BugBot audit (informational lane)\n\nHead SHA: `4444444444444444444444444444444444444444`\nFindings: P0=0, P1=1, P2=0, P3=0\n\nCursor BugBot Audit: BLOCKED\n\nSummary:\n\nPotential null pointer dereference detected.\n\nFindings:\n\n- [P1] Null pointer risk in error handler -- `src/handler.py:78`\n\n<!-- CURSOR_BUGBOT_AUDIT_STATE: cursor-bugbot-audit-blocked -->",
+  "created_at": "2026-09-01T12:15:00Z",
+  "duration_seconds": 18.6,
+  "head_sha_end": "4444444444444444444444444444444444444444",
+  "head_sha_start": "4444444444444444444444444444444444444444",
+  "lane_id": "cursor-bugbot-audit",
+  "posted_comment_url": "https://github.com/codemower-ai/code-mower/pull/11#issuecomment-11",
+  "pr_number": 11,
+  "repo": "codemower-ai/code-mower",
+  "schema": "code_mower.auditVerdictArtifact.v1",
+  "trailer": "<!-- CURSOR_BUGBOT_AUDIT_STATE: cursor-bugbot-audit-blocked -->",
+  "verdict": "BLOCKED"
+}

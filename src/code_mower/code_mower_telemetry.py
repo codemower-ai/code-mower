@@ -91,10 +91,26 @@ def _artifact_pr_from_path(path: Path) -> int | None:
     return None
 
 
+AUDIT_LANE_PROVIDER_ALIASES = {
+    "antigravity-cli-audit": "antigravity",
+    "coderabbit-cli-audit": "coderabbit",
+    "cursor-bugbot-audit": "cursor_bugbot",
+    "grok-audit": "grok_build",
+    "grok-build-audit": "grok_build",
+    "muse-cli-audit": "muse",
+}
+
+
 def _lane_provider(lane_id: str) -> str:
-    if lane_id.endswith("-audit"):
-        return lane_id.removesuffix("-audit")
-    return lane_id or "unknown"
+    normalized = lane_id.strip()
+    if not normalized:
+        return "unknown"
+    alias = AUDIT_LANE_PROVIDER_ALIASES.get(normalized.lower())
+    if alias:
+        return alias
+    if normalized.endswith("-audit"):
+        return normalized.removesuffix("-audit")
+    return normalized
 
 
 def _severity_counts(comment_body: str) -> dict[str, int]:

@@ -85,5 +85,263 @@
       "findings": [],
       "extra": true
     }
+  },
+  "gitar": {
+    "pass": {
+      "schema": "codeMower.gitarAudit.v1",
+      "verdict": "pass",
+      "summary": "Code review approved with no blocking issues.",
+      "findings": []
+    },
+    "blocked": {
+      "schema": "codeMower.gitarAudit.v1",
+      "verdict": "blocked",
+      "summary": "Runtime configuration issue found during deployment verification.",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "Missing environment variable validation",
+          "file": "src/config.py",
+          "line": 45,
+          "detail": "Production deployment requires DATABASE_URL validation before startup."
+        }
+      ]
+    },
+    "placeholder": {
+      "schema": "codeMower.gitarAudit.v1",
+      "verdict": "blocked",
+      "summary": "test",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "test",
+          "file": "a.py",
+          "line": 1,
+          "detail": "test"
+        }
+      ]
+    },
+    "malformed_extra_key": {
+      "schema": "codeMower.gitarAudit.v1",
+      "verdict": "pass",
+      "summary": "Code review approved with no blocking issues.",
+      "findings": [],
+      "extra": true
+    }
+  },
+  "cursor_bugbot": {
+    "pass": {
+      "schema": "codeMower.cursorBugbotAudit.v1",
+      "verdict": "pass",
+      "summary": "BugBot found no bugs in this pull request.",
+      "findings": []
+    },
+    "blocked": {
+      "schema": "codeMower.cursorBugbotAudit.v1",
+      "verdict": "blocked",
+      "summary": "Potential null pointer dereference detected.",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "Null pointer risk in error handler",
+          "file": "src/handler.py",
+          "line": 78,
+          "detail": "The error handler accesses response.data without checking if response is None."
+        }
+      ]
+    },
+    "placeholder": {
+      "schema": "codeMower.cursorBugbotAudit.v1",
+      "verdict": "blocked",
+      "summary": "test",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "test",
+          "file": "a.py",
+          "line": 1,
+          "detail": "test"
+        }
+      ]
+    },
+    "malformed_extra_key": {
+      "schema": "codeMower.cursorBugbotAudit.v1",
+      "verdict": "pass",
+      "summary": "BugBot found no bugs in this pull request.",
+      "findings": [],
+      "extra": true
+    }
+  },
+  "antigravity_cli": {
+    "pass": {
+      "schema": "codeMower.antigravityAudit.v1",
+      "verdict": "pass",
+      "summary": "No merge-blocking issues identified in semantic analysis.",
+      "findings": []
+    },
+    "blocked": {
+      "schema": "codeMower.antigravityAudit.v1",
+      "verdict": "blocked",
+      "summary": "API compatibility break detected in public interface.",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "Breaking change in public API",
+          "file": "src/api/endpoints.py",
+          "line": 123,
+          "detail": "Removed required parameter 'user_id' from get_profile() breaks existing clients."
+        }
+      ]
+    },
+    "placeholder": {
+      "schema": "codeMower.antigravityAudit.v1",
+      "verdict": "blocked",
+      "summary": "test",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "test",
+          "file": "a.py",
+          "line": 1,
+          "detail": "test"
+        }
+      ]
+    },
+    "malformed_extra_key": {
+      "schema": "codeMower.antigravityAudit.v1",
+      "verdict": "pass",
+      "summary": "No merge-blocking issues identified in semantic analysis.",
+      "findings": [],
+      "extra": true
+    }
+  },
+  "devin": {
+    "pass": {
+      "schema": "codeMower.devinAudit.v1",
+      "verdict": "pass",
+      "summary": "Automated review complete. No blocking issues detected.",
+      "findings": []
+    },
+    "blocked": {
+      "schema": "codeMower.devinAudit.v1",
+      "verdict": "blocked",
+      "summary": "Security vulnerability in authentication flow.",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "JWT token validation bypass",
+          "file": "src/auth/middleware.py",
+          "line": 56,
+          "detail": "Authentication middleware skips signature verification when token is expired."
+        }
+      ]
+    },
+    "placeholder": {
+      "schema": "codeMower.devinAudit.v1",
+      "verdict": "blocked",
+      "summary": "test",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "test",
+          "file": "a.py",
+          "line": 1,
+          "detail": "test"
+        }
+      ]
+    },
+    "malformed_extra_key": {
+      "schema": "codeMower.devinAudit.v1",
+      "verdict": "pass",
+      "summary": "Automated review complete. No blocking issues detected.",
+      "findings": [],
+      "extra": true
+    }
+  },
+  "muse_cli": {
+    "pass": {
+      "schema": "codeMower.museAudit.v1",
+      "verdict": "pass",
+      "summary": "Code review passed. No critical issues found.",
+      "findings": []
+    },
+    "blocked": {
+      "schema": "codeMower.museAudit.v1",
+      "verdict": "blocked",
+      "summary": "Resource leak in connection pool management.",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "Database connections not properly closed",
+          "file": "src/db/pool.py",
+          "line": 234,
+          "detail": "Connection pool exhaustion possible when exceptions occur before explicit close."
+        }
+      ]
+    },
+    "placeholder": {
+      "schema": "codeMower.museAudit.v1",
+      "verdict": "blocked",
+      "summary": "test",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "test",
+          "file": "a.py",
+          "line": 1,
+          "detail": "test"
+        }
+      ]
+    },
+    "malformed_extra_key": {
+      "schema": "codeMower.museAudit.v1",
+      "verdict": "pass",
+      "summary": "Code review passed. No critical issues found.",
+      "findings": [],
+      "extra": true
+    }
+  },
+  "grok_build": {
+    "pass": {
+      "schema": "codeMower.grokBuildAudit.v1",
+      "verdict": "pass",
+      "summary": "Build analysis complete. No blocking concerns identified.",
+      "findings": []
+    },
+    "blocked": {
+      "schema": "codeMower.grokBuildAudit.v1",
+      "verdict": "blocked",
+      "summary": "Build configuration introduces performance regression.",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "N+1 query pattern in data loader",
+          "file": "src/loaders/user_loader.py",
+          "line": 89,
+          "detail": "Loop executes separate database query for each user instead of batch loading."
+        }
+      ]
+    },
+    "placeholder": {
+      "schema": "codeMower.grokBuildAudit.v1",
+      "verdict": "blocked",
+      "summary": "test",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "test",
+          "file": "a.py",
+          "line": 1,
+          "detail": "test"
+        }
+      ]
+    },
+    "malformed_extra_key": {
+      "schema": "codeMower.grokBuildAudit.v1",
+      "verdict": "pass",
+      "summary": "Build analysis complete. No blocking concerns identified.",
+      "findings": [],
+      "extra": true
+    }
   }
 }
