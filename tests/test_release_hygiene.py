@@ -367,6 +367,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "plan",
                 "project-context",
                 "prompts",
+                "productivity",
                 "providers",
                 "reviewer-metrics",
                 "saas-reviewer-labeler",

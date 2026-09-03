@@ -74,6 +74,7 @@ from . import migration as code_mower_migration
 from . import muse_cli_audit_pr
 from . import next_steps as code_mower_next_steps
 from . import package as code_mower_package
+from . import productivity_report as code_mower_productivity_report
 from . import prompts as code_mower_prompts
 from . import reviewer_metrics
 from . import saas_reviewer_labeler
@@ -463,6 +464,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "plan": "Create local issue-derived planning artifacts.",
     "project-context": "Create editable local project-context doctrine docs.",
     "prompts": "Inspect prompt/lens customization artifacts.",
+    "productivity": "Report local throughput, reviewer quality, spend, and merge outcomes.",
     "providers": "List or inspect provider template definitions.",
     "reviewer-metrics": "Compute reviewer metrics and value reports.",
     "saas-reviewer-labeler": "Apply labels from hosted reviewer comments.",
@@ -485,6 +487,7 @@ FIRST_USER_COMMANDS = (
     "controller",
     "lanes",
     "project-context",
+    "productivity",
 )
 
 
@@ -557,6 +560,7 @@ def _top_level_help(show_all: bool) -> str:
             "  code-mower doctor --adoption --repo OWNER/REPO",
             "  code-mower doctor --supervised-pilot --repo OWNER/REPO",
             "  code-mower lanes status --repo OWNER/REPO",
+            "  code-mower productivity report --repo OWNER/REPO",
             "  code-mower board serve --repo OWNER/REPO",
             (
                 "  code-mower migration package-install-rehearsal "
@@ -606,6 +610,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "plan": code_mower_work_orders.plan_main,
     "project-context": code_mower_work_orders.project_context_main,
     "prompts": code_mower_prompts.main,
+    "productivity": code_mower_productivity_report.main,
     "providers": _providers_main,
     "reviewer-metrics": reviewer_metrics.main,
     "saas-reviewer-labeler": saas_reviewer_labeler.main,

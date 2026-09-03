@@ -26,6 +26,7 @@ Mower's native status snapshot:
 ```bash
 code-mower lanes status --repo OWNER/REPO
 code-mower lanes status --repo OWNER/REPO --json
+code-mower productivity report --repo OWNER/REPO
 code-mower board serve --repo OWNER/REPO
 ```
 
@@ -34,7 +35,11 @@ comment. It shows open Code Mower PR lanes, audit/gate labels, major checks,
 recent Code Mower workflows, local board/process hints when present, and the
 next operator action. Local cwd paths are redacted by default; use
 `--show-local-paths` only for local debugging. `board serve` opens the same
-state as a local read-only browser view.
+state as a local read-only browser view. `productivity report` reads local
+Board history, reviewer-spend rows, and optional aggregate
+`productivity_summary` event files so the same loop can summarize throughput,
+reviewer catches, fix rounds, owner actions, cost/tokens, and merge/cycle
+metrics where known.
 
 ## 1. Set Repository Variables
 

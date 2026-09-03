@@ -363,6 +363,18 @@ Local cwd paths are redacted by default; pass `--show-local-paths` only when you
 are debugging on your own machine.
 When a PR needs the gate recomputed manually, the text and JSON output include a
 copy-pasteable dispatch command with `pr_number` and the current `head_sha`.
+When you want a concise effectiveness snapshot for a status comment, run:
+
+```bash
+code-mower productivity report --repo OWNER/REPO
+```
+
+The report reads metadata-only local Board history and
+`.code-mower/reviewer-spend.json`, and can also include aggregate
+`productivity_summary` event files with `--cloud-event PATH`. It reports recent
+PR/lane counts, observed reviewer PASS/BLOCKED signals, fix rounds, owner
+actions, cost/tokens, and cloud-provided merge/cycle metrics where known.
+Missing metrics mean unknown, not zero.
 
 For a browser view of the same local-first metadata, run:
 

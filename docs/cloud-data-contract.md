@@ -59,6 +59,9 @@ agent card adapters use `code_mower.boardAgentAdapters.v1` from
 `.code-mower/board/agents/*.json`. Board admin commands use
 `code_mower.boardDoctor.v1` for local diagnostics and
 `code_mower.boardReset.v1` for explicit local-history reset acknowledgements.
+`code-mower productivity report --repo OWNER/REPO` emits local-only
+`code_mower.productivityReport.v1` by reading Board history, reviewer-spend
+rows, and optional aggregate `productivity_summary` event files.
 Those payloads are operator visibility data, not cloud upload data.
 
 Current board/status JSON and local board event-store data are local-only and
@@ -214,6 +217,10 @@ metric names used to compute them. The OSS validator rejects unknown
 fractional count/token values so future producers do not drift from the
 contract accidentally. CodeMower.com must continue accepting v0.9.x and v1.0
 uploads that omit `productivity_summary`.
+Consumers may total count, token, and cost metrics across multiple
+`productivity_summary` events. Time metrics describe a measured window and must
+stay latest-window or unknown unless a producer emits an explicit aggregate
+window event.
 
 Local `code_mower.authoringRun.v1` artifacts from `builder-experiment run` may
 also be passed as `--event builder_run=PATH`. The OSS uploader converts them to

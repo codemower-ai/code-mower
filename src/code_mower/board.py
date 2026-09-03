@@ -26,6 +26,7 @@ from . import board_store
 from . import config as code_mower_config
 from . import controller
 from . import lane_status
+from . import productivity_report
 from . import reviewer_spend
 
 
@@ -206,6 +207,14 @@ def status_payload(
         payload,
         gh_json_runner=gh_json_runner,
     )
+    payload["productivity"] = productivity_report.board_payload(
+        repo=config.repo,
+        repo_path=config.repo_path,
+        store_path=_store_path(config),
+        spend_path=_spend_path(config),
+        current_status=payload,
+        event_limit=config.event_limit,
+    )
     return payload
 
 
@@ -223,6 +232,12 @@ def _recording_metadata(config: BoardConfig, status: str, **extra: Any) -> dict[
     return metadata
 
 
+def _recordable_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    snapshot = dict(payload)
+    snapshot.pop("productivity", None)
+    return snapshot
+
+
 def _record_live_snapshot(
     payload: dict[str, Any],
     config: BoardConfig,
@@ -230,7 +245,7 @@ def _record_live_snapshot(
     now: datetime,
 ) -> board_store.StoreWriteResult:
     return board_store.append_snapshot(
-        payload,
+        _recordable_payload(payload),
         path=_store_path(config),
         now=now,
         retention_days=config.retention_days,
@@ -837,6 +852,7 @@ def render_board_html(config: BoardConfig) -> str:
   <main>
     <div class="summary" id="summary"></div>
     <section><h2>Supervised Pilot</h2><div class="rows" id="supervised"></div></section>
+    <section><h2>Productivity</h2><div class="rows" id="productivity"></div></section>
     <section><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
     <section><h2>Agent Cards</h2><div class="rows" id="agents"></div></section>
     <section><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
@@ -857,6 +873,7 @@ def render_board_html(config: BoardConfig) -> str:
     const empty = (message) => `<div class="muted">${{esc(message)}}</div>`;
     const href = (value) => /^https?:\\/\\//i.test(text(value)) ? text(value) : "#";
     const stateClass = (value) => /fail|error|blocked/i.test(text(value)) ? "bad" : /warn|pending|waiting|queued|progress/i.test(text(value)) ? "warn" : "ok";
+    const display = (value) => value === null || value === undefined || value === "" ? "unknown" : text(value);
     const seconds = (value) => Number.isFinite(Number(value)) ? `${{Number(value).toFixed(1)}}s` : "n/a";
     const money = (value) => Number.isFinite(Number(value)) ? `$${{Number(value).toFixed(3)}}` : "n/a";
     const localTime = (value) => {{
@@ -897,12 +914,19 @@ def render_board_html(config: BoardConfig) -> str:
       const verdicts = timelines.verdicts?.entries || [];
       const spend = timelines.spend || {{}};
       const spendGroups = spend.groups || [];
+      const productivity = data.productivity || {{}};
+      const productivityMetrics = productivity.metrics || {{}};
+      const productivityCurrent = productivity.current || {{}};
+      const productivityWindow = productivity.window?.local_history || {{}};
+      const productivitySpend = productivity.spend || {{}};
+      const productivityQuality = productivity.quality || {{}};
       put("summary", [
         `<div class="metric"><span class="muted">Next action</span><b>${{esc(data.next_action || "inspect")}}</b></div>`,
         data.next_detail ? `<div class="metric"><span class="muted">Detail</span><b>${{esc(data.next_detail)}}</b></div>` : "",
         `<div class="metric"><span class="muted">GitHub</span><b class="${{data.remote?.available ? "ok" : "warn"}}">${{data.remote?.available ? "available" : "unavailable"}}</b></div>`,
         `<div class="metric"><span class="muted">Open PRs</span><b>${{prs.length}}</b></div>`,
         `<div class="metric"><span class="muted">Pilot</span><b class="${{stateClass(supervised.cycle_state || "")}}">${{esc(supervised.cycle_state || "off")}}</b></div>`,
+        `<div class="metric"><span class="muted">Productivity</span><b class="${{stateClass(productivity.status || "")}}">${{esc(productivity.status || "unknown")}}</b></div>`,
         `<div class="metric"><span class="muted">Owner queue</span><b class="${{ownerQueue.length ? "warn" : "ok"}}">${{ownerQueue.length}}</b></div>`,
         `<div class="metric"><span class="muted">Agent cards</span><b>${{agentCards.length}}</b></div>`,
         `<div class="metric"><span class="muted">Gate alerts</span><b class="${{alerts.length ? "warn" : "ok"}}">${{alerts.length}}</b></div>`
@@ -918,6 +942,15 @@ def render_board_html(config: BoardConfig) -> str:
         supervisedPRs.length ? `<div class="row"><b>Active PRs</b><div class="muted">${{supervisedPRs.slice(0, 5).map(pr => `#${{esc(pr.number)}} ${{esc(pr.merge_state || "")}}${{pr.stale ? " stale" : ""}}${{pr.is_draft ? " draft" : ""}}`).join(", ")}}</div></div>` : ""
       ].filter(Boolean).join("") : empty(supervised.message || "Supervised pilot state unavailable.");
       put("supervised", supervisedRows || empty(supervised.message || "No supervised pilot activity."));
+      const productivityRows = [
+        `<div class="row"><div>next: <b>${{esc(productivity.next_action || "inspect")}}</b></div></div>`,
+        `<div class="row"><b>Current</b><div class="line">${{pill(`open PRs ${{display(productivityCurrent.open_pr_count)}}`)}}${{pill(`active lanes ${{display(productivityCurrent.active_lane_count)}}`)}}${{pill(`blocked ${{display(productivityCurrent.blocked_pr_count)}}`)}}${{pill(`owner actions ${{display(productivityCurrent.owner_action_count)}}`)}}</div></div>`,
+        `<div class="row"><b>Throughput</b><div class="line">${{pill(`merged ${{display(productivityMetrics.merged_pr_count)}}`)}}${{pill(`cycle ${{seconds(productivityMetrics.cycle_time_seconds)}}`)}}${{pill(`active ${{seconds(productivityMetrics.active_time_seconds)}}`)}}${{pill(`wait ${{seconds(productivityMetrics.wait_time_seconds)}}`)}}</div><div class="muted">local window ${{display(productivityWindow.start)}} to ${{display(productivityWindow.end)}} (${{seconds(productivityWindow.duration_seconds)}})</div></div>`,
+        `<div class="row"><b>Quality</b><div class="line">${{pill(`reviews ${{display(productivityMetrics.reviewer_run_count)}}`)}}${{pill(`PASS ${{display(productivityQuality.audit_pass_count)}}`)}}${{pill(`BLOCKED ${{display(productivityQuality.audit_blocked_count)}}`)}}${{pill(`catches ${{display(productivityQuality.reviewer_catch_count)}}`)}}${{pill(`fix rounds ${{display(productivityQuality.fix_round_count)}}`)}}</div></div>`,
+        `<div class="row"><b>Cost And Latency</b><div class="line">${{pill(`${{seconds(productivitySpend.wall_seconds)}} reviewer wall`)}}${{pill(`${{display(productivitySpend.total_tokens)}} tokens`)}}${{pill(money(productivitySpend.cost_usd))}}</div></div>`,
+        (productivity.warnings || []).length ? `<div class="row muted">${{esc((productivity.warnings || []).slice(0, 3).join("; "))}}</div>` : ""
+      ].filter(Boolean).join("");
+      put("productivity", productivityRows || empty("No local productivity signals yet."));
       put("owner", ownerQueue.length ? ownerQueue.map(item => `<div class="row"><div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.kind)}}</a>${{pill(item.next_action)}}${{pill(item.head_sha_prefix)}}</div><div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}}${{item.updated_at ? ` updated ${{localTime(item.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.owner_queue?.message || "No owner queue items."));
       put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{localTime(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
       put("prs", prs.length ? prs.map(pr => `<div class="row">
@@ -1106,7 +1139,7 @@ def record_status(
         command_runner=command_runner,
     )
     return board_store.append_snapshot(
-        snapshot,
+        _recordable_payload(snapshot),
         path=_store_path(config),
         retention_days=retention_days,
         max_events=max_events,
