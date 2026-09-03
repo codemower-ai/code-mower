@@ -605,8 +605,17 @@ class ReleaseHygieneTests(unittest.TestCase):
         )
         self.assertIn("remediation: run `claude -p ok` and retry doctor", rendered_doctor)
         easy_config = doctor_checks.resolve_doctor_config_path("code-mower.yml", easy=True)
-        self.assertEqual(easy_config.name, "code-mower.example.yml")
+        self.assertEqual(easy_config.name, "code-mower.yml")
         self.assertTrue(easy_config.exists())
+        self.assertEqual(
+            doctor._doctor_config_source_label(
+                config_arg="code-mower.yml",
+                config_path=easy_config,
+                easy=True,
+                cwd=ROOT,
+            ),
+            "repository_config",
+        )
         self.assertEqual(
             doctor_checks.default_check_group_ids(),
             ("runtime", "setup", "github", "providers", "cloud", "output"),
