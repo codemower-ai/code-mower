@@ -120,6 +120,16 @@ from .productivity import (
     PRODUCTIVITY_WINDOW_GRANULARITIES,
     validate_productivity_summary_payload,
 )
+from .pr_outcomes import (
+    PR_COST_COVERAGE_VALUES,
+    PR_OUTCOME_COST_METRICS,
+    PR_OUTCOME_COUNT_METRICS,
+    PR_OUTCOME_DIMENSIONS,
+    PR_OUTCOME_EVENT_TYPE,
+    PR_OUTCOME_SCHEMA,
+    PR_OUTCOME_VALUES,
+    validate_pr_outcome_payload,
+)
 from .upload import (
     UPLOAD_SCHEMA,
     build_upload_payload,
@@ -145,6 +155,13 @@ __all__ = [
     "PRODUCTIVITY_TIME_METRICS",
     "PRODUCTIVITY_TOKEN_METRICS",
     "PRODUCTIVITY_WINDOW_GRANULARITIES",
+    "PR_COST_COVERAGE_VALUES",
+    "PR_OUTCOME_COST_METRICS",
+    "PR_OUTCOME_COUNT_METRICS",
+    "PR_OUTCOME_DIMENSIONS",
+    "PR_OUTCOME_EVENT_TYPE",
+    "PR_OUTCOME_SCHEMA",
+    "PR_OUTCOME_VALUES",
     "SAFE_EVENT_TYPES",
     "SAFE_REPORT_KINDS",
     "UPLOAD_SCHEMA",
@@ -221,6 +238,7 @@ __all__ = [
     "unexpected_bundle_entries",
     "utc_now",
     "validate_cloud_event",
+    "validate_pr_outcome_payload",
     "validate_metadata_payload",
     "validate_productivity_summary_payload",
     "validate_upload_endpoint",

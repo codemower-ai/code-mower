@@ -32,6 +32,7 @@ from .productivity import (
     PRODUCTIVITY_EVENT_TYPE,
     validate_productivity_summary_payload,
 )
+from .pr_outcomes import PR_OUTCOME_EVENT_TYPE, validate_pr_outcome_payload
 
 
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
@@ -310,6 +311,8 @@ def validate_cloud_event(value: Any) -> dict[str, Any]:
             raise CloudBundleError(f"structured event field {key} must be an object")
     if value["event_type"] == PRODUCTIVITY_EVENT_TYPE:
         validate_productivity_summary_payload(value)
+    if value["event_type"] == PR_OUTCOME_EVENT_TYPE:
+        validate_pr_outcome_payload(value)
     return value
 
 
@@ -787,6 +790,7 @@ def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
         raise CloudBundleError("structured event dimensions must be an object")
     if normalized.get("tool") is None and normalized["event_type"] in {
         "lane_policy_snapshot",
+        PR_OUTCOME_EVENT_TYPE,
         PRODUCTIVITY_EVENT_TYPE,
         "value_report_snapshot",
     }:
