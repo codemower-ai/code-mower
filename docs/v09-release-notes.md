@@ -1,41 +1,40 @@
-# Code Mower v0.9.1-beta.1 Release Notes
+# Code Mower v0.9.2-beta.1 Release Notes
 
-This beta packages the v0.9.1 announcement-hardening pass after the v0.9
-adoption and upgrade release. Install the pinned beta with
+This beta packages a small v0.9.2 cleanup pass after the v0.9.1
+announcement-hardening release. Install the pinned beta with
 `CODE_MOWER_PYTHON="$(command -v python3.12)"` followed by
-`pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.1b1`.
+`pipx install --python "$CODE_MOWER_PYTHON" code-mower==0.9.2b1`.
 
 ## Headline
 
-Code Mower v0.9.1 makes the friendly-adopter loop less surprising: local Board
-state is easier to detect, Board timestamps render in the operator's local time
-with UTC on hover, setup docs avoid raw auth/status output, doctor output is
-clearer for hosted-builder and orchestrator-only machines, trusted author
-repository variables are recognized before warning, and upgrade operators get a
-reviewed-PR path for generated setup drift.
+Code Mower v0.9.2 makes the friendly-adopter loop less surprising by removing
+the retired third-party observe bridge, treating dispatch-token expiry metadata
+as advisory once the dispatch secret exists, and making stale audit waits point
+operators at the audit runner/dispatcher requeue path.
 
 ## What's New
 
-- `code-mower lanes status --repo OWNER/REPO` now detects local Board/listener
-  state on macOS and Linux, including Linux hosts where `lsof` is unavailable.
-- `code-mower board serve --repo OWNER/REPO` scans the standard local port band
-  by default, keeps local paths out of API output, and degrades gracefully when
-  GitHub is temporarily unavailable.
-- Board-visible timestamps now render with the browser's local timezone; the
-  original UTC timestamp remains available as a hover tooltip.
-- Public setup docs now use quiet auth/status probes and warn operators not to
-  paste raw credential or auth output into issues, chats, or reports.
-- `doctor --adoption` gives clearer guidance for configless repositories and
-  points hosted-builder or orchestrator-only users at the matching profiles
-  instead of making missing local CLIs look like broken setup.
-- `doctor --adoption --github --repo OWNER/REPO` recognizes the trusted-author
-  repository variables used by Claude and Codex audit lanes without printing
-  their values.
-- The new existing-repo upgrade guide explains the `setup-drift` to reviewed PR
-  flow, including how to handle repo-only files, generated-file drift, wrapper
-  pins, and builder/reviewer identity hints.
-- Contributor docs now say default checks should stay offline-friendly; live
-  package-index rehearsals remain explicit release/integration checks.
+- The retired third-party observe bridge and its legacy status JSON alias have
+  been removed. The native read-only Board is the supported local visibility
+  surface.
+- `code-mower lanes status --repo OWNER/REPO --json` now reports local Board
+  listeners under `local_boards` only, with paths redacted by default.
+- `doctor --adoption --repo OWNER/REPO` keeps a missing or placeholder
+  `DISPATCH_TOKEN_EXPIRES_AT` repository variable at warning level once the
+  `DISPATCH_TOKEN` secret exists. Missing dispatch secrets still fail in
+  reviewer-gate posture.
+- Repositories that intentionally use a non-expiring dispatch token can set
+  `DISPATCH_TOKEN_EXPIRES_AT=never`; doctor reports that as a passing,
+  non-expiring token posture.
+- `code-mower lanes status --repo OWNER/REPO` now distinguishes stale
+  `needs-*-audit` waits from generic stuck checks and tells operators to check
+  the audit runner/dispatcher and requeue the named lane.
+- Stale pending gate waits now surface `rerun stale gate` at the PR and report
+  headline level, while preserving the paste-safe gate rerun command.
+- Board shows the same `next_detail` guidance that appears in the CLI text and
+  JSON output.
+- `code-mower board serve --repo OWNER/REPO` remains the recommended local
+  read-only dashboard after install, init, and doctor.
 
 ## Privacy
 

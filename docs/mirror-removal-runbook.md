@@ -32,7 +32,7 @@ Run:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==0.9.1b1 \
+  --package-spec code-mower==0.9.2b1 \
   --allow-package-index \
   --repo-path /path/to/product-repo \
   --json
