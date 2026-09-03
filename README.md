@@ -107,8 +107,11 @@ For the same redacted metadata in a local browser view, run
 `code-mower board serve --repo OWNER/REPO` and open the printed localhost URL.
 Plain `board serve` is read-only. If the default Board port is busy, the CLI
 uses a nearby free loopback port and prints the URL; an explicit `--port` stays
-strict and reports a friendly conflict. To build local history while the browser
-view is open, run `code-mower board serve --repo OWNER/REPO --record-events`; it
+strict and reports a friendly conflict. Use `code-mower board list` to see which
+local Board serves which repo/version, and `code-mower board stop --port PORT
+--yes` to stop a stale high-confidence local Board listener from that
+inventory. To build local history while the browser view is open, run
+`code-mower board serve --repo OWNER/REPO --record-events`; it
 records at most one snapshot every 60 seconds by default. The Board header shows
 the Code Mower version serving the page and flags when a restart is needed after
 an upgrade. To append one snapshot without serving the browser view, run

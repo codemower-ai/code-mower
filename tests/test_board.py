@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import redirect_stderr, redirect_stdout
 import http.client
 import json
+import signal
 import socket
 import subprocess
 import tempfile
@@ -175,6 +176,8 @@ class BoardTests(TestCase):
         self.assertIn("65535", board._explicit_port_conflict_message("127.0.0.1", 65534))
         self.assertNotIn("65536", board._explicit_port_conflict_message("127.0.0.1", 65534))
         self.assertNotIn("such as", board._explicit_port_conflict_message("127.0.0.1", 65535))
+        self.assertIn("code-mower board list", board._explicit_port_conflict_message("127.0.0.1", 5332))
+        self.assertIn("code-mower board stop --port 5332 --yes", board._explicit_port_conflict_message("127.0.0.1", 5332))
 
     def test_bind_board_server_falls_forward_when_default_port_is_busy(self) -> None:
         with _occupy_loopback_port() as occupied:
@@ -207,7 +210,7 @@ class BoardTests(TestCase):
 
         self.assertIsNone(server)
         self.assertIn(f"port {busy_port} is already in use", err.getvalue())
-        self.assertIn("Pass --port", err.getvalue())
+        self.assertIn("pass --port", err.getvalue())
 
     def test_serve_treats_abbreviated_port_flag_as_explicit(self) -> None:
         with _occupy_loopback_port() as occupied:
@@ -228,6 +231,109 @@ class BoardTests(TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn("--port", err.getvalue())
+
+    def test_board_inventory_payload_enriches_versions_and_redacts_paths(self) -> None:
+        def status_probe(_board_item: dict[str, object]) -> dict[str, object]:
+            return {
+                "schema": lane_status.LANE_STATUS_SCHEMA,
+                "repo": "owner/repo",
+                "board": {
+                    "version": {
+                        "serving_version": "0.9.3b1",
+                        "installed_version": "0.9.4b1",
+                        "restart_recommended": True,
+                    }
+                },
+            }
+
+        payload = board.board_inventory_payload(command_runner=_command_runner, status_probe=status_probe)
+
+        self.assertEqual(payload["schema"], board.BOARD_INVENTORY_SCHEMA)
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["boards"][0]["repo"], "owner/repo")
+        self.assertEqual(payload["boards"][0]["url"], "http://127.0.0.1:5332/")
+        self.assertEqual(payload["boards"][0]["serving_version"], "0.9.3b1")
+        self.assertEqual(payload["boards"][0]["installed_version"], "0.9.4b1")
+        self.assertTrue(payload["boards"][0]["restart_recommended"])
+        self.assertEqual(payload["boards"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertEqual(payload["next_action"], "restart stale Board")
+        self.assertIn("port(s) 5332", payload["next_detail"])
+
+    def test_board_inventory_payload_handles_missing_process_permissions(self) -> None:
+        payload = board.board_inventory_payload(
+            command_runner=lambda _args: _completed("", returncode=1),
+            status_probe=None,
+        )
+
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["boards"], [])
+        self.assertEqual(payload["next_action"], "fix local process inspection")
+
+    def test_board_inventory_payload_marks_unresponsive_listener(self) -> None:
+        payload = board.board_inventory_payload(
+            command_runner=_command_runner,
+            status_probe=lambda _board_item: {"available": False, "message": "connection refused"},
+        )
+
+        self.assertEqual(payload["boards"][0]["health"], "unresponsive")
+        self.assertEqual(payload["next_action"], "inspect unresponsive Board")
+        self.assertIn("did not answer", payload["next_detail"])
+
+    def test_stop_board_requires_confirmation_and_stops_matching_board(self) -> None:
+        stopped: list[tuple[int, int]] = []
+
+        dry_run = board.stop_board(port=5332, command_runner=_command_runner, killer=lambda *_args: stopped.append(_args))
+
+        self.assertEqual(dry_run["status"], "confirmation_required")
+        self.assertEqual(stopped, [])
+
+        result = board.stop_board(
+            port=5332,
+            yes=True,
+            command_runner=_command_runner,
+            killer=lambda pid, sig: stopped.append((pid, sig)),
+        )
+
+        self.assertEqual(result["status"], "stopped")
+        self.assertEqual(stopped, [(123, signal.SIGTERM)])
+        self.assertEqual(result["stopped"][0]["repo"], "owner/repo")
+        self.assertEqual(result["matches"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertEqual(result["stopped"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertNotIn("/tmp/lane-checkout", json.dumps(result))
+
+    def test_stop_board_does_not_stop_unknown_process(self) -> None:
+        stopped: list[tuple[int, int]] = []
+
+        result = board.stop_board(
+            pid=999,
+            yes=True,
+            command_runner=_command_runner,
+            killer=lambda pid, sig: stopped.append((pid, sig)),
+        )
+
+        self.assertEqual(result["status"], "not_found")
+        self.assertEqual(stopped, [])
+
+    def test_stop_board_does_not_stop_medium_confidence_listener(self) -> None:
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:4] == ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]:
+                return _completed("p321\ncPython\nn127.0.0.1:5332\n")
+            if args == ["ps", "-p", "321", "-o", "command="]:
+                return _completed("python -m http.server 5332\n")
+            if args == ["lsof", "-a", "-p", "321", "-d", "cwd", "-Fn"]:
+                return _completed("p321\nn/tmp/not-code-mower\n")
+            return _completed("", returncode=1)
+
+        stopped: list[tuple[int, int]] = []
+        result = board.stop_board(
+            port=5332,
+            yes=True,
+            command_runner=command_runner,
+            killer=lambda pid, sig: stopped.append((pid, sig)),
+        )
+
+        self.assertEqual(result["status"], "not_found")
+        self.assertEqual(stopped, [])
 
     def test_status_payload_redacts_local_paths_by_default(self) -> None:
         payload = board.status_payload(
@@ -1071,6 +1177,12 @@ class BoardTests(TestCase):
                 self.assertEqual(payload["repo"], "owner/repo")
                 self.assertEqual(payload["remote"]["pull_requests"][0]["number"], 7)
                 self.assertNotIn("/tmp/lane-checkout", json.dumps(payload))
+            with urllib.request.urlopen(f"{base_url}/api/identity", timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(payload["schema"], board.BOARD_IDENTITY_SCHEMA)
+                self.assertEqual(payload["repo"], "owner/repo")
+                self.assertEqual(payload["board"]["version"]["serving_version"], board.CODE_MOWER_VERSION)
+                self.assertNotIn("remote", payload)
             with urllib.request.urlopen(f"{base_url}/api/events", timeout=5) as response:
                 payload = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(payload["schema"], board_store.BOARD_EVENT_STORE_SCHEMA)

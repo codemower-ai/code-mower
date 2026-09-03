@@ -391,6 +391,10 @@ an explicit `--port` fails with a friendly conflict instead. The printed URL is
 local to that machine or VM unless you create your own tunnel. `lanes status`
 discovers local Board listeners best-effort across common macOS and Linux tools;
 if listener inventory is restricted, GitHub PR/check status still reports.
+Use `code-mower board list` to see local Board listeners with repo/version and
+restart hints. Use `code-mower board stop --port PORT --yes` or
+`code-mower board stop --pid PID --yes` only when you want to stop a listener
+that the inventory identified as a high-confidence Code Mower Board process.
 Visible Board timestamps render in the browser's local timezone and keep the
 original UTC value in hover text for precise handoffs.
 The Board header shows the Code Mower version currently serving the page and
