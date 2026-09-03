@@ -75,6 +75,7 @@ PACKAGE_FILES = (
     ("src/code_mower/cloud_client/upload.py", "src/code_mower/cloud_client/upload.py", "core"),
     ("tools/code_mower_config.py", "src/code_mower/config.py", "core"),
     ("tools/code_mower_context_packs.py", "src/code_mower/code_mower_context_packs.py", "core"),
+    ("src/code_mower/controller.py", "src/code_mower/controller.py", "core"),
     ("tools/code_mower_doctor.py", "src/code_mower/doctor.py", "core"),
     ("src/code_mower/doctor_checks/__init__.py", "src/code_mower/doctor_checks/__init__.py", "core"),
     ("src/code_mower/doctor_checks/adoption.py", "src/code_mower/doctor_checks/adoption.py", "core"),

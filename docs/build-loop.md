@@ -138,6 +138,19 @@ Use `board serve` when you want the same state in a local browser. The board is
 read-only, serves on loopback by default, and does not require a separate
 observer setup.
 
+For the v1.0 supervised pilot, run the controller in dry-run mode before an
+orchestrator acts on the queue:
+
+```bash
+code-mower controller run --repo OWNER/REPO
+code-mower controller run --repo OWNER/REPO --mode promoted --json
+```
+
+The controller reads the same metadata surface as `lanes status`, adds ready
+issue selection from safe labels, applies the merge-policy checks, and emits a
+sanitized `controller_decision`, `merge_decision`, `queue_state_snapshot`, or
+`owner_intervention` event when requested with `--event-file`.
+
 ## Required Tokens
 
 `DISPATCH_TOKEN` should be a human-owned fine-grained PAT or delegated machine

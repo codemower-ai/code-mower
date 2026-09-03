@@ -340,6 +340,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "config",
                 "context",
                 "context-packs",
+                "controller",
                 "coderabbit-cli",
                 "codex-audit",
                 "codex-audit-env-preflight",
@@ -395,6 +396,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("  board", help_text)
         self.assertIn("  calibration", help_text)
         self.assertIn("  cloud", help_text)
+        self.assertIn("  controller", help_text)
         self.assertIn("  lanes", help_text)
         self.assertIn("  project-context", help_text)
         self.assertIn("code-mower doctor --adoption --repo OWNER/REPO", help_text)
@@ -420,6 +422,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("codex-audit-env-preflight", help_text)
         self.assertIn("claude-bounce", help_text)
         self.assertIn("builder-experiment", help_text)
+        self.assertIn("controller", help_text)
         self.assertIn("context", help_text)
         self.assertNotIn("observe", help_text)
         self.assertIn("work-order", help_text)
