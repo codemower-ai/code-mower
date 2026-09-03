@@ -14,7 +14,9 @@ python3.12 -m venv .venv
 
 ## Local Checks
 
-Run the focused checks before opening a pull request:
+Run the focused checks before opening a pull request. These checks should stay
+local-source and offline-friendly by default; they must not depend on PyPI,
+TestPyPI, live package-index propagation, or external provider network calls.
 
 ```bash
 .venv/bin/python scripts/privacy_scan.py
@@ -28,6 +30,17 @@ For packaging changes, also run:
 
 ```bash
 .venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python python3.12 --json
+```
+
+Package-index rehearsals are release/integration checks, not default unit
+tests. Use the local checkout package spec for ordinary CI and PR work. Add
+`--allow-package-index` only when deliberately validating a published
+TestPyPI/PyPI candidate or release:
+
+```bash
+.venv/bin/python -m code_mower.migration package-install-rehearsal \
+  --package-spec . \
+  --json
 ```
 
 ## Privacy And Examples
