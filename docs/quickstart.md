@@ -226,6 +226,9 @@ trusted-author repository variables by name/status only and never prints their
 values.
 The generated `smoke-tests.sh` should run without leaving bytecode caches or
 other setup noise in your first PR.
+If this repository already has Code Mower generated support, use
+[Upgrade An Existing Repository](upgrade-existing-repo.md) before copying a new
+generated tree over existing workflows, wrappers, or pins.
 
 For direct local audit wrapper runs, pass a GitHub posting token with
 `GITHUB_TOKEN` or `--read-token-from-stdin`, and pass repository paths as

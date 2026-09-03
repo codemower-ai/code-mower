@@ -35,6 +35,7 @@ session. Choose the install path first from
 | `code-mower doctor --preflight --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
 | `code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json` | Check hosted-builder or orchestrator setup without requiring local Codex/Claude CLIs on this machine. | no | optional GitHub/provider probes |
 | `code-mower next-steps --profile recommended --repo OWNER/REPO` | Print the next recommended setup actions. | no | no |
+| `code-mower migration setup-drift --repo-path .` | Classify existing generated setup files before an upgrade PR without printing source or diffs. | no | no |
 | `code-mower migration package-install-rehearsal ...` | Prove install, toy repo, starter report, and cloud dry-run path. | yes, scratch workspace | no uploads |
 | `code-mower calibration auto-discover --repo OWNER/REPO --last-n 20 --output .code-mower/draft-calibration-corpus.json` | Bootstrap a draft corpus from recent merged PRs and review signals. | yes, local output file | GitHub |
 | `code-mower calibration value-report ...` | Generate a local reviewer value report. | yes, local output file | no |
