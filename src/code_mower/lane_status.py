@@ -481,7 +481,16 @@ def _global_next(report: Mapping[str, Any]) -> str:
             if local_active
             else "remote unavailable; fix GitHub access"
         )
-    for action in ("fix BLOCKED audit", "fix failing check", "rebase/behind", "waiting for audits or owner input", "waiting for checks", "ready for merge or auto-merge"):
+    for action in (
+        "fix BLOCKED audit",
+        "fix failing check",
+        "rebase/behind",
+        "requeue stale audit",
+        "rerun stale gate",
+        "waiting for audits or owner input",
+        "waiting for checks",
+        "ready for merge or auto-merge",
+    ):
         if any(pr.get("next_action") == action for pr in prs):
             return action
     return "inspect PRs" if prs else ("local lanes visible; connect them to PR evidence" if local_active else "no active lanes")

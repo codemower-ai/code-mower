@@ -149,6 +149,7 @@ class LaneStatusTests(TestCase):
         pr = report["remote"]["pull_requests"][0]
         self.assertTrue(pr["stale"])
         self.assertEqual(pr["next_action"], "requeue stale audit")
+        self.assertEqual(report["next_action"], "requeue stale audit")
         self.assertIn("codex", pr["next_detail"])
         self.assertIn("runner/dispatcher", pr["next_detail"])
         rendered = lane_status.render_text(report)
@@ -186,6 +187,7 @@ class LaneStatusTests(TestCase):
 
         pr = report["remote"]["pull_requests"][0]
         self.assertEqual(pr["next_action"], "rerun stale gate")
+        self.assertEqual(report["next_action"], "rerun stale gate")
         self.assertIn("current head", pr["next_detail"])
         rendered = lane_status.render_text(report)
         self.assertIn("next: rerun stale gate", rendered)
