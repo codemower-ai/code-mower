@@ -2322,6 +2322,40 @@ def ensure_github_labels(
     }
 
 
+PACKAGED_STARTER_CONFIG_NAME = "code-mower.example.yml"
+
+
+def config_source_kind(config_path: str) -> str:
+    """Identify whether an init config path is the packaged starter or an explicit repo config."""
+
+    if Path(config_path).name == PACKAGED_STARTER_CONFIG_NAME:
+        return "packaged_starter"
+    return "explicit_repository_config"
+
+
+def root_adoption_config_present(repo_root: str | Path | None = None) -> bool:
+    """Check whether a root code-mower.yml exists without changing config selection."""
+
+    root = Path(repo_root) if repo_root is not None else Path.cwd()
+    try:
+        return (root / ADOPTION_CONFIG_PATH).is_file()
+    except OSError:
+        return False
+
+
+def setup_drift_next_step(*, profile_id: str) -> str:
+    """Exact next step when a root config exists but the packaged starter was selected."""
+
+    quoted_profile = shlex.quote(profile_id)
+    return (
+        "root code-mower.yml exists but the packaged starter config was selected; "
+        f"rerun with `code-mower init code-mower.yml --profile {quoted_profile} --dry-run` "
+        "to use the explicit repository config, or compare with "
+        "`code-mower migration setup-drift --repo-path .` "
+        "(see docs/upgrade-existing-repo.md)"
+    )
+
+
 def render_init_plan(
     config: Mapping[str, Any],
     profile_id: str = "recommended",
@@ -2331,6 +2365,7 @@ def render_init_plan(
     package_command: str | None = None,
     add_repositories: tuple[str, ...] = (),
     builders: tuple[str, ...] = (),
+    repo_root: str | Path | None = None,
 ) -> RenderedPlan:
     issues = validate_config(config)
     if issues:
@@ -2748,6 +2783,13 @@ def render_init_plan(
             "owner_surface.status_issue is unset; weekly status workflow will skip until configured"
         )
 
+    source_kind = config_source_kind(config_path)
+    has_root_config = root_adoption_config_present(repo_root)
+    drift_hint = (
+        setup_drift_next_step(profile_id=profile.profile_id)
+        if source_kind == "packaged_starter" and has_root_config
+        else ""
+    )
     data = {
         "mode": "dry-run",
         "profile": {
@@ -2755,6 +2797,12 @@ def render_init_plan(
             "description": profile.description,
             "lanes": list(profile.lanes),
         },
+        "config_source": {
+            "kind": source_kind,
+            "requested_path": config_path,
+            "root_config_present": has_root_config,
+        },
+        "setup_drift_hint": drift_hint,
         "labels": sorted(set(labels)),
         "workflows": workflows,
         "generated_files": generated_files,
@@ -2809,13 +2857,20 @@ def render_init_plan(
         "warnings": warnings,
     }
 
+    if source_kind == "packaged_starter":
+        source_line = f"Config source: packaged starter ({config_path})"
+    else:
+        source_line = f"Config source: explicit repository config ({config_path})"
     lines = [
         "Code Mower init dry-run",
         f"Profile: {profile.profile_id}",
         f"Description: {profile.description}",
+        source_line,
         "",
         "Selected lanes:",
     ]
+    if drift_hint:
+        lines.extend(["", f"Setup drift: {drift_hint}"])
     for lane_id, lane in selected_lanes.items():
         if lane.get("merge_authority"):
             role = "merge-authority"
@@ -3067,6 +3122,7 @@ def main(argv: list[str] | None = None) -> int:
             config_path=rendered_config_path,
             add_repositories=added_repos,
             builders=builder_lanes,
+            repo_root=Path.cwd(),
         )
         label_repo = ""
         should_ensure_github_labels = bool(

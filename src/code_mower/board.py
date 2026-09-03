@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -918,7 +918,11 @@ def _adapter_card(
     return card
 
 
-def agent_adapters_payload(config: BoardConfig) -> dict[str, Any]:
+def agent_adapters_payload(
+    config: BoardConfig,
+    *,
+    pid_alive: Callable[[int], bool] | None = None,
+) -> dict[str, Any]:
     path = _agent_adapters_path(config)
     payload: dict[str, Any] = {
         "schema": BOARD_AGENT_ADAPTERS_SCHEMA,
@@ -928,6 +932,7 @@ def agent_adapters_payload(config: BoardConfig) -> dict[str, Any]:
         "path_exists": path.exists(),
         "agents": [],
         "warnings": [],
+        "stale_cards": 0,
         "message": "no local agent adapter files found",
     }
     if not path.exists():
@@ -936,6 +941,7 @@ def agent_adapters_payload(config: BoardConfig) -> dict[str, Any]:
         payload["warnings"].append({"file": "", "message": "agent adapter path is not a directory"})
         payload["message"] = "could not read local agent adapter files"
         return payload
+    probe = pid_alive or _default_pid_alive
     for adapter_file in sorted(path.glob("*.json"))[:50]:
         try:
             raw = json.loads(adapter_file.read_text(encoding="utf-8"))
@@ -949,9 +955,60 @@ def agent_adapters_payload(config: BoardConfig) -> dict[str, Any]:
         if not cards:
             payload["warnings"].append({"file": adapter_file.name, "message": "agent adapter file had no cards"})
             continue
+        for card in cards:
+            pid = card.get("pid")
+            # Safely ignore stale launcher metadata: a card whose process is
+            # gone is marked stale instead of being treated as a live agent.
+            if isinstance(pid, int) and not probe(pid):
+                card["stale"] = True
+                payload["stale_cards"] += 1
         payload["agents"].extend(cards)
     payload["message"] = "" if payload["agents"] else "no local agent adapter cards found"
     return payload
+
+
+def prune_stale_agent_adapters(
+    adapters_path: str | Path,
+    *,
+    pid_alive: Callable[[int], bool] | None = None,
+) -> dict[str, Any]:
+    """Delete only Code Mower-owned stale launcher metadata files.
+
+    Only `*.json` files directly inside the resolved agent-adapters directory
+    are candidates, and only when every pid-bearing card they contain refers
+    to a process that is gone. Files with live pids, files without pid cards,
+    and anything outside the directory are never touched.
+    """
+
+    probe = pid_alive or _default_pid_alive
+    result: dict[str, Any] = {"pruned": [], "kept": [], "errors": []}
+    directory = Path(adapters_path)
+    try:
+        candidates = sorted(directory.glob("*.json"))[:50]
+    except OSError as exc:
+        result["errors"].append({"file": "", "message": str(exc)})
+        return result
+    for adapter_file in candidates:
+        try:
+            raw = json.loads(adapter_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            result["kept"].append(adapter_file.name)
+            continue
+        pids = []
+        for item in _adapter_items(raw):
+            parsed_pid = _int(item.get("pid"))
+            if parsed_pid is not None:
+                pids.append(parsed_pid)
+        if not pids or any(probe(pid) for pid in pids):
+            result["kept"].append(adapter_file.name)
+            continue
+        try:
+            adapter_file.unlink()
+        except OSError as exc:
+            result["errors"].append({"file": adapter_file.name, "message": str(exc)})
+        else:
+            result["pruned"].append(adapter_file.name)
+    return result
 
 
 def _spend_timeline(config: BoardConfig, *, limit: int) -> dict[str, Any]:
@@ -1391,6 +1448,35 @@ def _redact_inventory_paths(payload: dict[str, Any]) -> None:
                 board["cwd_redacted"] = True
 
 
+BOARD_COMMAND_TERMS = (
+    "code-mower board",
+    "code_mower.board",
+    "code_mower.cli board",
+    "board serve",
+)
+
+
+def _command_looks_like_board(command: str) -> bool:
+    lowered = command.lower()
+    return any(term in lowered for term in BOARD_COMMAND_TERMS)
+
+
+def _default_pid_alive(pid: int) -> bool:
+    """Best-effort liveness probe that never signals the target process."""
+
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def board_inventory_payload(
     *,
     show_local_paths: bool = False,
@@ -1470,6 +1556,20 @@ def render_inventory_text(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _revalidated_board_command(
+    pid: int,
+    command_runner: lane_status.CommandRunner,
+) -> str:
+    """Re-read a target command line so stop never signals a reused pid."""
+
+    try:
+        completed = command_runner(["ps", "-p", str(pid), "-o", "command="])
+    except (OSError, ValueError):
+        return ""
+    stdout = getattr(completed, "stdout", "") or ""
+    return str(stdout).strip()
+
+
 def stop_board(
     *,
     port: int | None = None,
@@ -1478,6 +1578,9 @@ def stop_board(
     show_local_paths: bool = False,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     killer: Any = os.kill,
+    prune_stale_agents: bool = False,
+    agent_adapters_path: str | Path | None = None,
+    pid_alive: Callable[[int], bool] | None = None,
 ) -> dict[str, Any]:
     if (port is None) == (pid is None):
         return {
@@ -1522,6 +1625,19 @@ def stop_board(
             if not target_pid or target_pid in seen:
                 continue
             seen.add(target_pid)
+            # Guard against pid reuse between inventory and signal: only a
+            # still-matching Board command line may be signaled, never a
+            # broad or unrelated process that recycled the pid.
+            if not _command_looks_like_board(
+                _revalidated_board_command(target_pid, command_runner)
+            ):
+                payload["errors"].append(
+                    {
+                        "pid": target_pid,
+                        "message": "target no longer matches a Code Mower Board listener; refusing to signal",
+                    }
+                )
+                continue
             try:
                 killer(target_pid, signal.SIGTERM)
                 payload["stopped"].append(
@@ -1540,6 +1656,16 @@ def stop_board(
                 payload["errors"].append({"pid": target_pid, "message": str(exc)})
         payload["status"] = "stopped" if payload["stopped"] and not payload["errors"] else "partial" if payload["stopped"] else "failed"
         payload["message"] = "stopped matching Code Mower Board listener(s)" if payload["stopped"] else "could not stop matching Code Mower Board listener(s)"
+    if prune_stale_agents and yes:
+        adapters_dir = (
+            Path(agent_adapters_path)
+            if agent_adapters_path
+            else Path(".") / DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH
+        )
+        payload["pruned_agents"] = prune_stale_agent_adapters(
+            adapters_dir,
+            pid_alive=pid_alive,
+        )
     if not show_local_paths:
         _redact_inventory_paths(payload)
     return payload
@@ -1553,6 +1679,12 @@ def render_stop_text(payload: Mapping[str, Any]) -> str:
     errors = payload.get("errors") if isinstance(payload.get("errors"), list) else []
     for item in errors:
         lines.append(f"- error pid={item.get('pid')}: {item.get('message')}")
+    pruned = payload.get("pruned_agents") if isinstance(payload.get("pruned_agents"), Mapping) else {}
+    for name in pruned.get("pruned") or []:
+        lines.append(f"- pruned stale launcher metadata: {name}")
+    for item in pruned.get("errors") or []:
+        if isinstance(item, Mapping):
+            lines.append(f"- prune error {item.get('file') or 'unknown file'}: {item.get('message')}")
     return "\n".join(line for line in lines if line) + "\n"
 
 
@@ -1987,6 +2119,12 @@ def main(argv: list[str] | None = None) -> int:
     stop_selector.add_argument("--port", type=int, help="loopback port serving the Board")
     stop_selector.add_argument("--pid", type=int, help="process id serving the Board")
     stop_parser.add_argument("--yes", action="store_true", help="stop the matching Board listener")
+    stop_parser.add_argument(
+        "--prune-stale-agents",
+        action="store_true",
+        help="with --yes, delete only stale launcher metadata files whose pids are gone",
+    )
+    stop_parser.add_argument("--agent-adapters-path", default=None, help="launcher metadata directory to prune")
     stop_parser.add_argument("--show-local-paths", action="store_true", help="show local cwd paths for debugging")
     stop_parser.add_argument("--json", action="store_true")
     serve_parser = subparsers.add_parser("serve")
@@ -2067,6 +2205,8 @@ def main(argv: list[str] | None = None) -> int:
             pid=args.pid,
             yes=args.yes,
             show_local_paths=args.show_local_paths,
+            prune_stale_agents=args.prune_stale_agents,
+            agent_adapters_path=args.agent_adapters_path,
         )
         output = json.dumps(payload, indent=2, sort_keys=True) + "\n" if args.json else render_stop_text(payload)
         print(output, end="")
