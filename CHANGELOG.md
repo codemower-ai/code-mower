@@ -20,6 +20,10 @@ provider posture, and optional cloud sharing loop are still hardening.
 - `doctor --adoption` now gives a plainer posture hint for hosted/orchestrator
   machines, and trusted audit-author variable probes report failed GitHub reads
   as `not_confirmed` instead of implying confirmed missing configuration (#593).
+- `code-mower migration setup-drift --repo-path .` now includes a read-only
+  standalone pin summary so existing repos can see when
+  `tools/code_mower_standalone_pin.env` points at a different Code Mower ref
+  than the currently running package (#595).
 
 ## v0.9.2-beta.1
 

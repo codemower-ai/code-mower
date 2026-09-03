@@ -3099,6 +3099,180 @@ jobs:
         self.assertIn("tools/run_codex_audit_pr.sh", payload["product_support_files"])
         self.assertIn("tools/safe_gh_comment.py", payload["product_support_files"])
 
+    def test_setup_drift_reports_standalone_pin_states(self) -> None:
+        from code_mower import migration
+
+        cases = (
+            (
+                'CODE_MOWER_STANDALONE_REF="v0.9.2-beta.1"\n',
+                "pass",
+                "matches_running_package",
+                "v0.9.2-beta.1",
+            ),
+            (
+                'CODE_MOWER_STANDALONE_REF="v0.9.1-beta.1"\n',
+                "warn",
+                "pin_ref_differs",
+                "v0.9.1-beta.1",
+            ),
+            (
+                'CODE_MOWER_STANDALONE_REF="<pin-a-reviewed-code-mower-commit-or-tag>"\n',
+                "warn",
+                "pin_ref_placeholder",
+                None,
+            ),
+            (
+                'CODE_MOWER_STANDALONE_REF="token:value"\n',
+                "warn",
+                "pin_ref_differs",
+                "<redacted-ref>",
+            ),
+        )
+        for text, status, reason, current_ref in cases:
+            with self.subTest(reason=reason):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo = Path(tmp)
+                    pin = repo / "tools" / "code_mower_standalone_pin.env"
+                    pin.parent.mkdir(parents=True)
+                    pin.write_text(text, encoding="utf-8")
+
+                    payload = migration._standalone_pin_drift_summary(
+                        repo,
+                        package_version="0.9.2b1",
+                    )
+
+            self.assertEqual(payload["status"], status)
+            self.assertEqual(payload["reason"], reason)
+            self.assertEqual(payload["expected_ref"], "v0.9.2-beta.1")
+            if current_ref is None:
+                self.assertNotIn("current_ref", payload)
+            else:
+                self.assertEqual(payload["current_ref"], current_ref)
+            self.assertNotIn(
+                "pin-a-reviewed-code-mower-commit-or-tag",
+                str(payload),
+            )
+
+    def test_setup_drift_warns_on_non_utf8_standalone_pin(self) -> None:
+        from code_mower import migration
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            pin = repo / "tools" / "code_mower_standalone_pin.env"
+            pin.parent.mkdir(parents=True)
+            pin.write_bytes(b"\xff\xfe\x00")
+
+            payload = migration._standalone_pin_drift_summary(
+                repo,
+                package_version="0.9.2b1",
+            )
+
+        self.assertEqual(payload["status"], "warn")
+        self.assertEqual(payload["reason"], "pin_file_unreadable")
+        self.assertEqual(payload["read_error"], "UnicodeDecodeError")
+        self.assertNotIn("token:value", str(payload))
+
+    def test_setup_drift_payload_includes_standalone_pin_summary(self) -> None:
+        from code_mower import migration
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            config = repo / "code-mower.yml"
+            config.write_text("repositories: []\nlanes: {}\n", encoding="utf-8")
+            pin = repo / "tools" / "code_mower_standalone_pin.env"
+            pin.parent.mkdir(parents=True)
+            pin.write_text('CODE_MOWER_STANDALONE_REF="v0.9.1-beta.1"\n', encoding="utf-8")
+            init_stub = mock.Mock()
+            init_stub.load_config.return_value = {"repositories": [], "lanes": {}}
+            init_stub.config_with_added_repositories.return_value = (
+                {"repositories": [], "lanes": {}},
+                (),
+            )
+            init_stub.render_init_plan.return_value = mock.Mock(data={"generated_files": []})
+            init_stub._repo_root.return_value = ROOT
+            init_stub._parse_builder_lanes.return_value = ()
+
+            with (
+                mock.patch.object(migration, "_load_init_module", return_value=init_stub),
+                mock.patch.object(
+                    migration,
+                    "_setup_drift_config_path",
+                    return_value=config,
+                ),
+                mock.patch.object(migration, "_git_tracked_files", return_value=(set(), True)),
+            ):
+                payload = migration.render_setup_drift_report(
+                    repo_path=repo,
+                )
+
+        self.assertEqual(payload["status"], "warn")
+        self.assertEqual(payload["changed_count"], 0)
+        self.assertEqual(payload["standalone_pin"]["reason"], "pin_ref_differs")
+        self.assertEqual(
+            payload["next_action"],
+            "review whether tools/code_mower_standalone_pin.env should move to the current release tag",
+        )
+        rendered = migration.render_setup_drift_text(payload)
+        self.assertIn("Standalone pin: WARN pin_ref_differs", rendered)
+
+    def test_setup_drift_text_omits_absent_standalone_pin_line(self) -> None:
+        from code_mower import migration
+
+        payload = {
+            "status": "pass",
+            "repo_path": "/tmp/repo",
+            "profile": "recommended",
+            "counts": {"same": 0, "differs": 0, "new": 0, "repo-only": 0, "missing-from-output": 0},
+            "next_action": "generated setup matches tracked Code Mower files",
+            "standalone_pin": {
+                "status": "skip",
+                "reason": "pin_file_absent",
+                "expected_ref": "v0.9.2-beta.1",
+            },
+            "files": [],
+        }
+
+        rendered = migration.render_setup_drift_text(payload)
+
+        self.assertNotIn("Standalone pin:", rendered)
+
+    def test_setup_drift_next_action_keeps_file_and_pin_drift(self) -> None:
+        from code_mower import migration
+
+        action = migration._setup_drift_next_action(
+            changed_count=2,
+            standalone_pin={
+                "status": "warn",
+                "next_action": "review whether tools/code_mower_standalone_pin.env should move to the current release tag",
+            },
+        )
+
+        self.assertIn("review differs", action)
+        self.assertIn("standalone_pin.env", action)
+
+    def test_migration_script_entrypoint_runs_setup_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "src/code_mower/migration.py"),
+                    "setup-drift",
+                    "--repo-path",
+                    tmp,
+                    "--json",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=30,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["mode"], "setup-drift")
+        self.assertEqual(payload["standalone_pin"]["status"], "skip")
+
     def test_init_apply_generates_real_reviewer_workflows(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
         plan = code_mower_init.render_init_plan(
