@@ -71,7 +71,54 @@ and local diagnostics:
   When `restart_recommended` is true, stop and restart
   `code-mower board serve --repo OWNER/REPO` so the browser uses the newly
   installed package. The response also embeds `productivity` as
-  `code_mower.boardProductivity.v1`.
+  `code_mower.boardProductivity.v1`. The GitHub/local snapshot behind this
+  response is served from a thread-safe stale-while-refresh cache bounded by
+  `board.refresh_seconds`: a cold request returns a metadata-only
+  warming payload immediately and starts one background refresh, a
+  warm/stale request returns the latest completed snapshot immediately while
+  at most one refresh runs, and cache health is exposed as `board.cache`
+  (`state`, `generation`, `age_seconds`, `refresh_in_progress`,
+  `retry_in_seconds`, and a summarized `last_error`). `board.cache.generation`
+  is a monotonic count of completed snapshots: it is `0` while the cache is
+  cold, increments by one after each refresh that completes successfully, and
+  is left unchanged by a refresh that fails or a refresh thread that fails to
+  start. It is a plain counter and identifies *which* completed snapshot the
+  response carries, independently of whether that snapshot is still fresh. A refresh that fails — including a refresh thread
+  that fails to start — arms a bounded retry backoff: the cache keeps answering
+  immediately from its cold/stale metadata but starts nothing and reports
+  `refresh_in_progress` false with `retry_in_seconds` set to the seconds left
+  in the window, so a persistent GitHub or local failure cannot trigger a fresh
+  expensive recomputation on every request. The first request after the window
+  expires starts exactly one retry; the window doubles per consecutive failure
+  from 5s up to 60s and is cleared by the first success (which also clears
+  `last_error`). `retry_in_seconds` is null whenever no backoff is pending.
+  Cold-start behavior is unchanged: the very first request still starts a
+  refresh immediately. The Board browser UI paces itself off this metadata:
+  every response schedules exactly one next `/api/status` load through a single
+  timer, and there is no separate fixed interval running alongside it.
+  - Whenever a completed snapshot is already on its way — `board.cache.state`
+    is `cold` or `stale` with `board.cache.refresh_in_progress` true — the next
+    load is ~750ms out (capped at 20 consecutive attempts), so the snapshot
+    appears promptly instead of waiting a full `board.refresh_seconds`.
+  - A `fresh` response schedules against its own remaining TTL, computed from
+    the numeric `board.cache.ttl_seconds` and `age_seconds`, floored at 250ms
+    and capped at the configured interval. Cache age starts when a background
+    refresh completes, not when the page loaded, so a fixed browser interval
+    drifted out of phase with the TTL: a tick could land just under the TTL,
+    re-render the same snapshot, and only pick up the next one an interval
+    later, updating roughly every two intervals.
+  - Everything else uses the normal `board.refresh_seconds` interval: the
+    fast-poll cap is reached, `cold` or `stale` with no refresh in flight (the
+    refresh thread failed to start, or the retry backoff is pending), cache
+    metadata that is absent or not a usable number, or a request that failed
+    outright.
+
+  Only a response that is no longer awaiting a refresh resets the fast-poll
+  attempt budget; once the cap is reached the budget stays exhausted while the
+  same refresh is still pending, so a refresh that never completes cannot
+  restart the burst. This adds no extra GitHub fan-out: the fast poll only
+  re-reads the cached endpoint and the server-side cache still allows one
+  in-flight refresh.
 - GET `/api/identity` returns `code_mower.boardIdentity.v1`, a lightweight
   repo/version/restart payload used by `code-mower board list`.
 - GET `/api/events` returns `code_mower.boardEventStore.v1` from local
@@ -134,8 +181,26 @@ The board wrapper adds:
   `--show-local-paths` is explicitly requested.
 - `board.recording`: live local-history recording metadata. Recording is
   disabled by default. When `--record-events` is explicitly requested, this
-  includes the configured interval and a safe status such as `recorded`,
-  `skipped`, or `error`.
+  includes the configured interval and a safe status such as `pending`,
+  `recorded`, `skipped`, or `error`. Recording identity is
+  `board.cache.generation`, not cache freshness:
+  - `pending` while no snapshot has completed yet (`generation` is `0`), with
+    the message `waiting for first completed status snapshot`.
+  - `recorded` the first time a request observes a completed generation that
+    has not been recorded and the record interval is due. A browser polling
+    slower than `board.refresh_seconds` can first see a generation only after
+    it has already aged out, so a `stale` response records it too; gating on
+    `state == "fresh"` silently dropped those generations from local history.
+  - `skipped` with `snapshot already recorded` for a generation that was
+    already written, including while a newer refresh is in flight. The
+    recording lock makes this hold across concurrent requests, so a generation
+    is written at most once.
+  - `skipped` with `record interval not reached` when a new generation exists
+    but the interval is not due. The generation stays eligible, so whichever
+    generation is current once the interval elapses is recorded then.
+  - `error` with `could not update local board event store` when the write
+    fails. The failure consumes the interval and the generation exactly like a
+    successful write, so a failing store is not retried on every request.
 
 The browser UI fetches `/api/status` from a loopback-only HTTP server. It does
 not mutate GitHub and does not upload payloads. Plain `board serve` does not
