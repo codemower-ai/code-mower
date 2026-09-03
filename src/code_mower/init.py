@@ -2326,7 +2326,13 @@ PACKAGED_STARTER_CONFIG_NAME = "code-mower.example.yml"
 
 
 def config_source_kind(config_path: str) -> str:
-    """Identify whether an init config path is the packaged starter or an explicit repo config."""
+    """Basename heuristic for direct plan renders.
+
+    `main` instead classifies from resolution context (packaged fallback
+    versus a file the user supplied) and passes the explicit result via
+    `render_init_plan(source_kind=...)`, so an explicitly supplied local
+    file named like the starter is never misclassified.
+    """
 
     if Path(config_path).name == PACKAGED_STARTER_CONFIG_NAME:
         return "packaged_starter"
@@ -2366,6 +2372,7 @@ def render_init_plan(
     add_repositories: tuple[str, ...] = (),
     builders: tuple[str, ...] = (),
     repo_root: str | Path | None = None,
+    source_kind: str | None = None,
 ) -> RenderedPlan:
     issues = validate_config(config)
     if issues:
@@ -2783,11 +2790,16 @@ def render_init_plan(
             "owner_surface.status_issue is unset; weekly status workflow will skip until configured"
         )
 
-    source_kind = config_source_kind(config_path)
+    resolved_source_kind = source_kind or config_source_kind(config_path)
+    # A packaged fallback resolves to a long absolute install path; display
+    # the stable starter name instead so output stays portable.
+    display_config_path = (
+        PACKAGED_STARTER_CONFIG_NAME if resolved_source_kind == "packaged_starter" else config_path
+    )
     has_root_config = root_adoption_config_present(repo_root)
     drift_hint = (
         setup_drift_next_step(profile_id=profile.profile_id)
-        if source_kind == "packaged_starter" and has_root_config
+        if resolved_source_kind == "packaged_starter" and has_root_config
         else ""
     )
     data = {
@@ -2798,8 +2810,8 @@ def render_init_plan(
             "lanes": list(profile.lanes),
         },
         "config_source": {
-            "kind": source_kind,
-            "requested_path": config_path,
+            "kind": resolved_source_kind,
+            "requested_path": display_config_path,
             "root_config_present": has_root_config,
         },
         "setup_drift_hint": drift_hint,
@@ -2857,10 +2869,10 @@ def render_init_plan(
         "warnings": warnings,
     }
 
-    if source_kind == "packaged_starter":
-        source_line = f"Config source: packaged starter ({config_path})"
+    if resolved_source_kind == "packaged_starter":
+        source_line = f"Config source: packaged starter ({display_config_path})"
     else:
-        source_line = f"Config source: explicit repository config ({config_path})"
+        source_line = f"Config source: explicit repository config ({display_config_path})"
     lines = [
         "Code Mower init dry-run",
         f"Profile: {profile.profile_id}",
@@ -3109,8 +3121,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         builder_lanes = _parse_builder_lanes(args.builders)
         config_source = _resolve_config_path(args.config)
+        # An explicitly supplied local file keeps its identity even when its
+        # basename matches the starter; only a resolved packaged fallback
+        # counts as the packaged starter.
+        packaged_fallback = config_source != Path(args.config)
         rendered_config_path = (
-            str(config_source) if config_source != Path(args.config) else args.config
+            str(config_source) if packaged_fallback else args.config
         )
         config, added_repos = config_with_added_repositories(
             load_config(config_source),
@@ -3123,6 +3139,7 @@ def main(argv: list[str] | None = None) -> int:
             add_repositories=added_repos,
             builders=builder_lanes,
             repo_root=Path.cwd(),
+            source_kind="packaged_starter" if packaged_fallback else "explicit_repository_config",
         )
         label_repo = ""
         should_ensure_github_labels = bool(

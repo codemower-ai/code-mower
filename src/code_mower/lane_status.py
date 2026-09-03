@@ -447,6 +447,18 @@ def _process_command(pid: int, command_runner: CommandRunner) -> str:
     return _stdout(command_runner, ["ps", "-p", str(pid), "-o", "command="]).strip()
 
 
+CODE_MOWER_BOARD_COMMAND_TERMS = (
+    "code-mower board",
+    "code_mower.board",
+    "code_mower.cli board",
+)
+
+
+def command_looks_like_code_mower_board(command: str) -> bool:
+    lowered = command.lower()
+    return any(term in lowered for term in CODE_MOWER_BOARD_COMMAND_TERMS)
+
+
 def collect_local_boards(command_runner: CommandRunner = _run_command) -> dict[str, Any]:
     listeners = _listener_inventory(command_runner)
     if not listeners:
@@ -456,13 +468,9 @@ def collect_local_boards(command_runner: CommandRunner = _run_command) -> dict[s
         pid = int(listener["pid"])
         command = _process_command(pid, command_runner)
         cwd = _process_cwd(pid, command_runner)
-        haystack = f"{listener['process']} {command} {cwd}".lower()
         default_port = listener["port"] in LOCAL_BOARD_DEFAULT_PORTS
         process_name = str(listener["process"]).lower()
-        board_like = any(
-            term in haystack
-            for term in ("code-mower board", "code_mower.board", "code_mower.cli board", "board serve")
-        )
+        board_like = command_looks_like_code_mower_board(command)
         runtime_like = process_name in LOCAL_BOARD_PROCESS_NAMES or process_name.startswith("python")
         if board_like or (default_port and runtime_like):
             confidence = "high" if board_like else "medium"

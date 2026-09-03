@@ -861,7 +861,25 @@ def _float(value: object) -> float | None:
 
 def _int(value: object) -> int | None:
     number = _float(value)
-    return int(number) if number is not None else None
+    if number is None:
+        return None
+    try:
+        return int(number)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _positive_pid(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value.strip()):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
 def _adapter_items(raw: object) -> list[Mapping[str, Any]]:
@@ -974,19 +992,29 @@ def prune_stale_agent_adapters(
 ) -> dict[str, Any]:
     """Delete only Code Mower-owned stale launcher metadata files.
 
-    Only `*.json` files directly inside the resolved agent-adapters directory
-    are candidates, and only when every pid-bearing card they contain refers
-    to a process that is gone. Files with live pids, files without pid cards,
-    and anything outside the directory are never touched.
+    Every `*.json` file directly inside the agent-adapters directory is a
+    candidate, and only when every pid-bearing card it contains refers to a
+    process that is gone. Files with live pids, files without pid cards, and
+    anything outside the directory are never touched. A symlinked adapters
+    directory is refused before any listing or deletion.
     """
 
     probe = pid_alive or _default_pid_alive
     result: dict[str, Any] = {"pruned": [], "kept": [], "errors": []}
     directory = Path(adapters_path)
     try:
-        candidates = sorted(directory.glob("*.json"))[:50]
-    except OSError as exc:
-        result["errors"].append({"file": "", "message": str(exc)})
+        if directory.is_symlink():
+            result["errors"].append(
+                {"file": "", "message": "refusing to prune agent adapter files through a symlink"}
+            )
+            return result
+    except OSError:
+        result["errors"].append({"file": "", "message": "could not list agent adapter files"})
+        return result
+    try:
+        candidates = sorted(directory.glob("*.json"))
+    except OSError:
+        result["errors"].append({"file": "", "message": "could not list agent adapter files"})
         return result
     for adapter_file in candidates:
         try:
@@ -995,17 +1023,23 @@ def prune_stale_agent_adapters(
             result["kept"].append(adapter_file.name)
             continue
         pids = []
+        invalid_pid = False
         for item in _adapter_items(raw):
-            parsed_pid = _int(item.get("pid"))
+            if "pid" not in item:
+                continue
+            parsed_pid = _positive_pid(item.get("pid"))
+            if parsed_pid is None:
+                invalid_pid = True
+                break
             if parsed_pid is not None:
                 pids.append(parsed_pid)
-        if not pids or any(probe(pid) for pid in pids):
+        if invalid_pid or not pids or any(probe(pid) for pid in pids):
             result["kept"].append(adapter_file.name)
             continue
         try:
             adapter_file.unlink()
-        except OSError as exc:
-            result["errors"].append({"file": adapter_file.name, "message": str(exc)})
+        except OSError:
+            result["errors"].append({"file": adapter_file.name, "message": "could not delete stale agent adapter file"})
         else:
             result["pruned"].append(adapter_file.name)
     return result
@@ -1301,7 +1335,7 @@ def render_board_html(config: BoardConfig) -> str:
       ].filter(Boolean).join("");
       put("productivity", productivityRows || empty("No local productivity signals yet."));
       put("owner", ownerQueue.length ? ownerQueue.map(item => `<div class="row"><div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.kind)}}</a>${{pill(item.next_action)}}${{pill(item.head_sha_prefix)}}</div><div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}}${{item.updated_at ? ` updated ${{localTime(item.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.owner_queue?.message || "No owner queue items."));
-      put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{localTime(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
+      put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.stale ? pill("stale") : ""}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{localTime(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
       put("prs", prs.length ? prs.map(pr => `<div class="row">
         <div class="line"><a href="${{esc(href(pr.url))}}">#${{esc(pr.number)}} ${{esc(pr.title)}}</a>${{pill(pr.merge_state)}}${{pr.is_draft ? pill("draft") : ""}}${{pr.stale ? pill("stale") : ""}}</div>
         <div class="muted">${{esc(pr.branch)}} by ${{esc(pr.author)}}${{pr.updated_at ? ` updated ${{localTime(pr.updated_at)}}` : ""}}</div>
@@ -1448,17 +1482,8 @@ def _redact_inventory_paths(payload: dict[str, Any]) -> None:
                 board["cwd_redacted"] = True
 
 
-BOARD_COMMAND_TERMS = (
-    "code-mower board",
-    "code_mower.board",
-    "code_mower.cli board",
-    "board serve",
-)
-
-
 def _command_looks_like_board(command: str) -> bool:
-    lowered = command.lower()
-    return any(term in lowered for term in BOARD_COMMAND_TERMS)
+    return lane_status.command_looks_like_code_mower_board(command)
 
 
 def _default_pid_alive(pid: int) -> bool:
@@ -1582,6 +1607,53 @@ def stop_board(
     agent_adapters_path: str | Path | None = None,
     pid_alive: Callable[[int], bool] | None = None,
 ) -> dict[str, Any]:
+    prune_only = port is None and pid is None
+    if prune_only:
+        if not prune_stale_agents:
+            return {
+                "schema": BOARD_STOP_SCHEMA,
+                "status": "invalid_selector",
+                "message": "pass exactly one of --port or --pid",
+                "stopped": [],
+                "errors": [],
+            }
+        if not yes:
+            return {
+                "schema": BOARD_STOP_SCHEMA,
+                "status": "confirmation_required",
+                "message": "pass --yes to prune stale launcher metadata",
+                "stopped": [],
+                "errors": [],
+            }
+        adapters_dir = (
+            Path(agent_adapters_path)
+            if agent_adapters_path
+            else Path(".") / DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH
+        )
+        pruned_agents = prune_stale_agent_adapters(
+            adapters_dir,
+            pid_alive=pid_alive,
+        )
+        prune_errors = pruned_agents.get("errors") or []
+        if prune_errors:
+            prune_status = "partial" if pruned_agents.get("pruned") else "failed"
+            prune_message = "stale launcher metadata pruning encountered errors"
+        else:
+            prune_status = "pruned"
+            prune_message = "pruned stale launcher metadata without stopping any Board listener"
+        payload: dict[str, Any] = {
+            "schema": BOARD_STOP_SCHEMA,
+            "status": prune_status,
+            "message": prune_message,
+            "selector": {"port": None, "pid": None},
+            "matches": [],
+            "stopped": [],
+            "errors": [],
+            "pruned_agents": pruned_agents,
+        }
+        if not show_local_paths:
+            _redact_inventory_paths(payload)
+        return payload
     if (port is None) == (pid is None):
         return {
             "schema": BOARD_STOP_SCHEMA,
@@ -1652,8 +1724,10 @@ def stop_board(
                 payload["errors"].append({"pid": target_pid, "message": "process no longer exists"})
             except PermissionError:
                 payload["errors"].append({"pid": target_pid, "message": "permission denied"})
-            except OSError as exc:
-                payload["errors"].append({"pid": target_pid, "message": str(exc)})
+            except OSError:
+                payload["errors"].append(
+                    {"pid": target_pid, "message": "could not signal Board process"}
+                )
         payload["status"] = "stopped" if payload["stopped"] and not payload["errors"] else "partial" if payload["stopped"] else "failed"
         payload["message"] = "stopped matching Code Mower Board listener(s)" if payload["stopped"] else "could not stop matching Code Mower Board listener(s)"
     if prune_stale_agents and yes:
@@ -1666,6 +1740,16 @@ def stop_board(
             adapters_dir,
             pid_alive=pid_alive,
         )
+        if payload["pruned_agents"].get("errors"):
+            if payload.get("stopped"):
+                payload["status"] = "partial"
+                payload["message"] = (
+                    "stopped matching Code Mower Board listener(s), but stale launcher "
+                    "metadata pruning encountered errors"
+                )
+            else:
+                payload["status"] = "failed"
+                payload["message"] = "stale launcher metadata pruning encountered errors"
     if not show_local_paths:
         _redact_inventory_paths(payload)
     return payload
@@ -2115,7 +2199,7 @@ def main(argv: list[str] | None = None) -> int:
     list_parser.add_argument("--show-local-paths", action="store_true", help="show local cwd paths for debugging")
     list_parser.add_argument("--json", action="store_true")
     stop_parser = subparsers.add_parser("stop")
-    stop_selector = stop_parser.add_mutually_exclusive_group(required=True)
+    stop_selector = stop_parser.add_mutually_exclusive_group(required=False)
     stop_selector.add_argument("--port", type=int, help="loopback port serving the Board")
     stop_selector.add_argument("--pid", type=int, help="process id serving the Board")
     stop_parser.add_argument("--yes", action="store_true", help="stop the matching Board listener")
@@ -2124,7 +2208,6 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="with --yes, delete only stale launcher metadata files whose pids are gone",
     )
-    stop_parser.add_argument("--agent-adapters-path", default=None, help="launcher metadata directory to prune")
     stop_parser.add_argument("--show-local-paths", action="store_true", help="show local cwd paths for debugging")
     stop_parser.add_argument("--json", action="store_true")
     serve_parser = subparsers.add_parser("serve")
@@ -2206,11 +2289,10 @@ def main(argv: list[str] | None = None) -> int:
             yes=args.yes,
             show_local_paths=args.show_local_paths,
             prune_stale_agents=args.prune_stale_agents,
-            agent_adapters_path=args.agent_adapters_path,
         )
         output = json.dumps(payload, indent=2, sort_keys=True) + "\n" if args.json else render_stop_text(payload)
         print(output, end="")
-        return 0 if payload.get("status") == "stopped" else 2 if payload.get("status") in {"invalid_selector", "confirmation_required"} else 1
+        return 0 if payload.get("status") in {"stopped", "pruned"} else 2 if payload.get("status") in {"invalid_selector", "confirmation_required"} else 1
     if args.command == "serve":
         return serve(
             BoardConfig(

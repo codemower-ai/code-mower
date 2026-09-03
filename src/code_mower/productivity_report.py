@@ -1088,9 +1088,9 @@ def _next_action(
             f"local history, or code-mower board record --repo {repo} for one snapshot"
         )
     if not spend.get("run_count"):
-        return "capture reviewer spend rows from audit wrappers for cost/latency"
+        return "optionally capture reviewer spend rows from audit wrappers for cost/latency completeness"
     if not cloud.get("event_count"):
-        return "add or upload productivity_summary events to compare release windows"
+        return "optionally add productivity_summary event files with --cloud-event PATH to compare release windows"
     return "continue supervised loop and compare the next report window"
 
 
@@ -1104,9 +1104,13 @@ def _evidence_block(
 ) -> dict[str, Any]:
     """Separate command success from evidence readiness.
 
+    Code Mower is local-first and cloud is optional: useful local Board
+    history alone makes a report ready. Reviewer spend and cloud events are
+    optional completeness enhancements that improve coverage but never block
+    readiness.
     Empty or partial evidence stays a successful command; this additive block
-    explicitly reports insufficient evidence and the Board recording and
-    event-store next steps needed to fill it.
+    explicitly reports the coverage level, the per-source flags, and the
+    Board recording and event-store next steps needed to fill the gaps.
     """
 
     board_history = bool(store_available) and int(board_metrics.get("snapshot_count") or 0) > 0
@@ -1122,17 +1126,31 @@ def _evidence_block(
         )
     if not reviewer_spend_ready:
         missing.append("reviewer spend")
-        steps.append("capture reviewer spend rows from audit wrappers for cost/latency")
+        steps.append(
+            "optionally capture reviewer spend rows from audit wrappers for cost/latency completeness"
+        )
     if not cloud_events_ready:
         missing.append("cloud events")
-        steps.append("add or upload productivity_summary events to compare release windows")
-    ready = not missing
-    if ready:
+        steps.append(
+            "optionally add productivity_summary event files with --cloud-event PATH to compare release windows"
+        )
+    present_count = sum((board_history, reviewer_spend_ready, cloud_events_ready))
+    if present_count == 3:
+        coverage = "complete"
+    elif present_count == 0:
+        coverage = "empty"
+    else:
+        coverage = "partial"
+    ready = board_history
+    if coverage == "complete":
         detail = "board history, reviewer spend, and cloud events are all present"
+    elif ready:
+        detail = "local board history is present; optional enhancements (" + ", ".join(missing) + " missing): " + "; ".join(steps)
     else:
         detail = "insufficient evidence (" + ", ".join(missing) + " missing): " + "; ".join(steps)
     return {
         "ready": ready,
+        "coverage": coverage,
         "board_history": board_history,
         "reviewer_spend": reviewer_spend_ready,
         "cloud_events": cloud_events_ready,

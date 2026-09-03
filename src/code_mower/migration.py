@@ -741,6 +741,11 @@ def render_setup_drift_report(
         raise ValueError(f"repo path is not a directory: {repo_path}")
     code_mower_init = _load_init_module()
     config_path = _setup_drift_config_path(repo_path, config, code_mower_init)
+    source_kind = (
+        "explicit_repository_config"
+        if config is not None or (repo_path / "code-mower.yml").is_file()
+        else "packaged_starter"
+    )
     builder_lanes = code_mower_init._parse_builder_lanes(builders) if builders else ()
     loaded_config, added_repos = code_mower_init.config_with_added_repositories(
         code_mower_init.load_config(config_path),
@@ -752,6 +757,8 @@ def render_setup_drift_report(
         config_path=str(config_path),
         add_repositories=added_repos,
         builders=builder_lanes,
+        repo_root=repo_path,
+        source_kind=source_kind,
     )
     generated = _generated_setup_files_from_plan(
         plan,

@@ -344,11 +344,16 @@ Top-level report fields include:
   role with run counts, pass/block rates, adjudication metrics when reported,
   cost/token availability, infra-failure counts, and advisory promotion caveats
   pointing to `docs/lane-promotion-policy.md`;
-- `evidence`: command success separated from evidence readiness. `ready` is
-  true only when Board history, reviewer spend, and cloud events are all
-  present; otherwise `missing` names the absent sources and `detail` gives the
-  Board recording and event-store next steps. Empty or partial evidence stays
-  a successful command with `status` and `next_action` unchanged; and
+- `evidence`: command success separated from evidence readiness. Code Mower
+  is local-first and cloud is optional: `ready` is true when useful local
+  Board history is present, even without reviewer spend or cloud events.
+  Reviewer spend and cloud events are optional completeness enhancements
+  that improve coverage but never block readiness. Per-source `board_history`,
+  `reviewer_spend`, and `cloud_events` flags stay explicit, `coverage`
+  distinguishes `empty`, `partial`, and `complete`, `missing` names the
+  absent sources, and `detail` gives the Board recording and event-store
+  next steps. Empty or partial evidence stays a successful command with
+  `status` and `next_action` unchanged; and
 - `next_action`: a concise operator action suitable for an epic status comment.
 
 Missing metrics are encoded as JSON `null` and mean unknown, not zero. A missing
@@ -439,7 +444,10 @@ Mower Board listener, and it re-reads the target command line immediately
 before signaling so a recycled pid pointing at an unrelated process is refused
 instead of signaled. Medium-confidence default-port listener hints are never
 stopped automatically. Without `--yes`, the command exits with
-`confirmation_required` and does not signal any process.
+`confirmation_required` and does not signal any process. Exactly one of
+`--port` or `--pid` is required when a stop target is requested;
+`code-mower board stop --prune-stale-agents --yes` prunes without a selector,
+exits with `pruned`, and never signals any process.
 
 `code-mower board doctor --repo OWNER/REPO` emits
 `code_mower.boardDoctor.v1`, a local diagnostic summary for Board inputs,

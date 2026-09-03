@@ -4,11 +4,63 @@ import subprocess
 import tempfile
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
+from code_mower import init as code_mower_init
 from code_mower import migration
 
 
 class SetupDriftTests(TestCase):
+    def test_setup_drift_renders_config_presence_for_target_repo(self) -> None:
+        source_config = (
+            Path(__file__).parents[1] / "src" / "code_mower" / "templates" / "code-mower.example.yml"
+        )
+        observed: dict[str, Path] = {}
+        original_render = code_mower_init.render_init_plan
+
+        def capture_render(*args: object, **kwargs: object) -> object:
+            observed["repo_root"] = Path(str(kwargs.get("repo_root")))
+            return original_render(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp) / "target"
+            repo_path.mkdir()
+            (repo_path / "code-mower.yml").write_text(
+                source_config.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
+            elsewhere = Path(tmp) / "elsewhere"
+            elsewhere.mkdir()
+            with patch.object(code_mower_init, "render_init_plan", side_effect=capture_render):
+                with patch("pathlib.Path.cwd", return_value=elsewhere):
+                    migration.render_setup_drift_report(repo_path=repo_path)
+
+        self.assertEqual(observed["repo_root"], repo_path.resolve())
+
+    def test_setup_drift_keeps_explicit_starter_named_config_explicit(self) -> None:
+        source_config = (
+            Path(__file__).parents[1] / "src" / "code_mower" / "templates" / "code-mower.example.yml"
+        )
+        observed: dict[str, object] = {}
+        original_render = code_mower_init.render_init_plan
+
+        def capture_render(*args: object, **kwargs: object) -> object:
+            observed["source_kind"] = kwargs.get("source_kind")
+            return original_render(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            explicit_config = repo_path / "code-mower.example.yml"
+            explicit_config.write_text(source_config.read_text(encoding="utf-8"), encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
+            with patch.object(code_mower_init, "render_init_plan", side_effect=capture_render):
+                migration.render_setup_drift_report(
+                    repo_path=repo_path,
+                    config=str(explicit_config),
+                )
+
+        self.assertEqual(observed["source_kind"], "explicit_repository_config")
+
     def test_classify_setup_drift_covers_expected_states(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_path = Path(tmp)
