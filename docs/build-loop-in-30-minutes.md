@@ -60,7 +60,7 @@ audit evidence, skip to section 2.
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.1
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.2
 gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
