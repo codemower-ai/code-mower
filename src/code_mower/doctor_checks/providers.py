@@ -176,6 +176,7 @@ def check_lane_runtime(
     probe_runtime: bool,
     http_timeout: int,
     adoption_posture: str = "reviewer-gate",
+    missing_workflow_is_warning: bool = False,
 ) -> list[DoctorCheck]:
     hygiene_source = source_lane if source_lane is not None else lane
     checks = [
@@ -184,6 +185,7 @@ def check_lane_runtime(
             hygiene_source,
             effective_lane=lane,
             repo_root=repo_root,
+            missing_workflow_is_warning=missing_workflow_is_warning,
         )
     ]
     driver = str(lane.get("driver", ""))

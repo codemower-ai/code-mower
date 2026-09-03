@@ -109,12 +109,13 @@ def run_doctor(
         adoption=adoption or bool(repo_slug),
     )
     enabled_stages = {stage.id for stage in plan}
-    # `doctor --easy` can inspect the packaged example before a repo has written
-    # code-mower.yml. In that mode the example should teach the user about stale
-    # guards without failing because product workflow files are not installed yet.
-    repo_root = None if config_path.name == "code-mower.example.yml" else config_path.parent
     config, templates, checks = load_inputs(config_path, provider_templates_path)
     using_packaged_example = config_path.name == "code-mower.example.yml"
+    # `doctor --easy` can inspect the packaged example before a repo has written
+    # code-mower.yml. In that mode the example should teach the user about stale
+    # guards without failing because product workflow files are not installed
+    # yet, but it may still verify workflows already present in the checkout.
+    repo_root = Path.cwd() if using_packaged_example else config_path.parent
     trusted_author_variables = None
     trusted_author_repo_slug = repo_slug
     if not trusted_author_repo_slug and isinstance(config, Mapping):
@@ -237,6 +238,7 @@ def run_doctor(
                 effective,
                 source_lane=lane,
                 repo_root=repo_root,
+                missing_workflow_is_warning=using_packaged_example,
                 adoption_posture=adoption_posture,
                 probe_runtime=probe_runtime,
                 http_timeout=http_timeout,

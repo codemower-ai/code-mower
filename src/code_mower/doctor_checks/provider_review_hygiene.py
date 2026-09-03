@@ -21,6 +21,7 @@ def check_review_hygiene(
     *,
     effective_lane: Mapping[str, Any] | None = None,
     repo_root: Path | None = None,
+    missing_workflow_is_warning: bool = False,
 ) -> DoctorCheck:
     """Verify that merge-authority lanes have stale terminal-label protection."""
 
@@ -108,24 +109,35 @@ def check_review_hygiene(
     if not workflow_path.is_absolute():
         workflow_path = repo_root / workflow_path
     if not workflow_path.is_file():
+        status = STATUS_WARN if missing_workflow_is_warning else STATUS_FAIL
+        message = (
+            "starter config names stale terminal-label workflow, but it is not "
+            f"present in this checkout yet: {workflow}"
+            if missing_workflow_is_warning
+            else "merge-authority lane stale terminal-label workflow is "
+            f"configured but missing from the repo: {workflow}"
+        )
+        remediation = (
+            "This is expected before generated workflows are applied. Run "
+            "`code-mower init --easy --apply` from the repository root, review "
+            "and commit the generated clear-stale workflow, then rerun doctor."
+            if missing_workflow_is_warning
+            else "Run `code-mower init --easy --apply` from the repository "
+            "root, commit the generated clear-stale workflow, then rerun "
+            "doctor before relying on this lane as merge authority."
+        )
         return DoctorCheck(
             name="provider.review_hygiene",
-            status=STATUS_FAIL,
+            status=status,
             lane=lane_id,
-            message=(
-                "merge-authority lane stale terminal-label workflow is "
-                f"configured but missing from the repo: {workflow}"
-            ),
+            message=message,
             detail={
                 **detail,
                 "workflow_exists": False,
                 "workflow_path": str(workflow_path),
+                "missing_workflow_is_warning": missing_workflow_is_warning,
             },
-            remediation=(
-                "Run `code-mower init --easy --apply` from the repository "
-                "root, commit the generated clear-stale workflow, then rerun "
-                "doctor before relying on this lane as merge authority."
-            ),
+            remediation=remediation,
         )
     detail = {
         **detail,

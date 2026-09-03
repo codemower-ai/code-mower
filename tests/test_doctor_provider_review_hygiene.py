@@ -84,6 +84,28 @@ class DoctorProviderReviewHygieneTests(unittest.TestCase):
         self.assertIn(".github/workflows/codex-clear-stale.yml", check.detail["workflow_path"])
         self.assertIn("code-mower init --easy --apply", check.remediation)
 
+    def test_starter_lane_warns_when_configured_workflow_is_missing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            check = check_review_hygiene(
+                "codex",
+                {
+                    "merge_authority": True,
+                    "review_hygiene": {
+                        "workflow": ".github/workflows/codex-clear-stale.yml",
+                        "token_env": "GITHUB_TOKEN",
+                    },
+                },
+                repo_root=repo_root,
+                missing_workflow_is_warning=True,
+            )
+
+        self.assertEqual(check.status, "warn")
+        self.assertIn("starter config", check.message)
+        self.assertEqual(check.detail["workflow_exists"], False)
+        self.assertTrue(check.detail["missing_workflow_is_warning"])
+        self.assertIn("expected before generated workflows are applied", check.remediation)
+
     def test_merge_authority_lane_passes_when_configured_workflow_exists(self) -> None:
         with TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

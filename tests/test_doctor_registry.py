@@ -588,11 +588,14 @@ class DoctorRegistryTests(unittest.TestCase):
             )
 
     def test_packaged_example_config_does_not_require_installed_stale_workflow(self) -> None:
-        report = run_doctor(
-            config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
-            provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
-            profile="recommended",
-        )
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            with mock.patch("pathlib.Path.cwd", return_value=root_path):
+                report = run_doctor(
+                    config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
+                    provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
+                    profile="recommended",
+                )
 
         limits_check = next(
             check for check in report.checks if check.name == "config.audit_limits"
@@ -612,6 +615,35 @@ class DoctorRegistryTests(unittest.TestCase):
                 for check in hygiene_checks
             )
         )
+
+    def test_packaged_example_config_verifies_installed_stale_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            workflow_dir = root_path / ".github" / "workflows"
+            workflow_dir.mkdir(parents=True)
+            (workflow_dir / "codex-clear-stale.yml").write_text(
+                "name: codex clear stale\n",
+                encoding="utf-8",
+            )
+            (workflow_dir / "claude-clear-stale.yml").write_text(
+                "name: claude clear stale\n",
+                encoding="utf-8",
+            )
+            with mock.patch("pathlib.Path.cwd", return_value=root_path):
+                report = run_doctor(
+                    config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
+                    provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
+                    profile="recommended",
+                )
+
+        hygiene_checks = {
+            check.lane: check
+            for check in report.checks
+            if check.name == "provider.review_hygiene"
+        }
+        self.assertEqual(hygiene_checks["codex"].status, "pass")
+        self.assertEqual(hygiene_checks["claude_audit"].status, "pass")
+        self.assertTrue(hygiene_checks["codex"].detail["workflow_exists"])
 
     def test_runner_doctor_uses_repository_template_source_root(self) -> None:
         from code_mower.doctor_checks import runner as doctor_runner
