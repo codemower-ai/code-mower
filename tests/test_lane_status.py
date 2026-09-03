@@ -117,6 +117,82 @@ class LaneStatusTests(TestCase):
         self.assertIn("next: waiting for audits or owner input", rendered)
         self.assertIn(f"rerun gate: {expected}", rendered)
 
+    def test_stale_needed_audit_names_runner_requeue_path(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 35,
+                        "title": "Refresh lane guidance",
+                        "url": "https://github.com/owner/repo/pull/35",
+                        "headRefName": "codex/stale-audit",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "alice"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": (NOW - timedelta(hours=2)).isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "needs-codex-audit"}],
+                        "statusCheckRollup": [{"context": "code-mower/gate", "state": "FAILURE"}],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        report = lane_status.collect_status(
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertTrue(pr["stale"])
+        self.assertEqual(pr["next_action"], "requeue stale audit")
+        self.assertEqual(report["next_action"], "requeue stale audit")
+        self.assertIn("codex", pr["next_detail"])
+        self.assertIn("runner/dispatcher", pr["next_detail"])
+        rendered = lane_status.render_text(report)
+        self.assertIn("next: requeue stale audit", rendered)
+        self.assertIn("detail: stale audit request for codex", rendered)
+
+    def test_stale_gate_only_wait_keeps_gate_rerun_command(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 36,
+                        "title": "Republish gate",
+                        "url": "https://github.com/owner/repo/pull/36",
+                        "headRefName": "codex/gate",
+                        "headRefOid": "1234567890abcdef1234567890abcdef12345678",
+                        "author": {"login": "alice"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": (NOW - timedelta(hours=2)).isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "claude-audit-done"}],
+                        "statusCheckRollup": [{"context": "code-mower/gate", "state": "PENDING"}],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        report = lane_status.collect_status(
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["next_action"], "rerun stale gate")
+        self.assertEqual(report["next_action"], "rerun stale gate")
+        self.assertIn("current head", pr["next_detail"])
+        rendered = lane_status.render_text(report)
+        self.assertIn("next: rerun stale gate", rendered)
+        self.assertIn("rerun gate: gh workflow run code-mower-gate.yml", rendered)
+
     def test_collect_status_degrades_when_github_unavailable_and_shows_local_state(self) -> None:
         def gh_json(_args: list[str]) -> object:
             raise lane_status.LaneStatusUnavailable("gh pr failed")

@@ -19,10 +19,12 @@ WORKFLOW_TERMS = ("code mower", "code-mower", "gate", "audit", "dispatch", "labe
 CHECK_TERMS = ("code-mower", "gate", "package", "audit", "label", "dispatch", "gitar", "clear-stale")
 GATE_RERUN_ACTIONS = {
     "fix failing check",
+    "rerun stale gate",
     "waiting for audits or owner input",
     "waiting for checks",
     "ready for merge or auto-merge",
 }
+PENDING_STATES = {"", "pending", "queued", "in_progress", "requested"}
 PROCESS_PROVIDERS = {
     "antigravity": "antigravity",
     "claude": "claude",
@@ -132,6 +134,38 @@ def _has_state(checks: Sequence[Mapping[str, str]], states: set[str]) -> bool:
     return any(check.get("state", "") in states for check in checks)
 
 
+def _audit_need_lanes(labels: Mapping[str, Sequence[str]]) -> tuple[str, ...]:
+    lanes = []
+    for label in labels.get("needs", ()):
+        if label.startswith("needs-") and label.endswith("-audit"):
+            lanes.append(label.removeprefix("needs-").removesuffix("-audit"))
+    return tuple(lanes)
+
+
+def _has_pending_gate(checks: Sequence[Mapping[str, str]]) -> bool:
+    return any("gate" in check.get("name", "").lower() and check.get("state", "") in PENDING_STATES for check in checks)
+
+
+def _stale_next_action_and_detail(
+    labels: Mapping[str, Sequence[str]],
+    checks: Sequence[Mapping[str, str]],
+    stale: bool,
+    next_action: str,
+) -> tuple[str, str]:
+    if not stale or labels.get("blocked"):
+        return next_action, ""
+    audit_lanes = _audit_need_lanes(labels)
+    if audit_lanes:
+        lane_text = ", ".join(audit_lanes)
+        return (
+            "requeue stale audit",
+            f"stale audit request for {lane_text}; check the audit runner/dispatcher and requeue the lane",
+        )
+    if _has_pending_gate(checks):
+        return "rerun stale gate", "stale gate status; rerun the gate workflow for the current head"
+    return next_action, "stale pending evidence; inspect recent workflows and requeue the stuck lane"
+
+
 def _next_action(
     labels: Mapping[str, Sequence[str]],
     checks: Sequence[Mapping[str, str]],
@@ -148,7 +182,7 @@ def _next_action(
         return "rebase/behind"
     if labels.get("needs"):
         return "waiting for audits or owner input"
-    if _has_state(checks, {"", "pending", "queued", "in_progress", "requested"}):
+    if _has_state(checks, PENDING_STATES):
         return "waiting for checks"
     if merge_state == "CLEAN" and labels.get("done"):
         return "ready for merge or auto-merge"
@@ -171,7 +205,7 @@ def _stale(
     labels: Mapping[str, Any],
     checks: Sequence[Mapping[str, str]],
 ) -> bool:
-    if not (labels.get("needs") or _has_state(checks, {"pending", "queued", "in_progress", "requested"})):
+    if not (labels.get("needs") or _has_state(checks, PENDING_STATES)):
         return False
     try:
         updated = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
@@ -199,6 +233,8 @@ def _summarize_pr(
     number = int(pr.get("number") or 0)
     head_sha = _text(pr.get("headRefOid"))
     next_action = _next_action(labels, checks, merge_state, is_draft)
+    stale = _stale(updated_at, now, stale_minutes, labels, checks)
+    next_action, next_detail = _stale_next_action_and_detail(labels, checks, stale, next_action)
     return {
         "number": number,
         "title": _text(pr.get("title")),
@@ -211,8 +247,9 @@ def _summarize_pr(
         "updated_at": updated_at,
         "labels": labels,
         "checks": checks,
-        "stale": _stale(updated_at, now, stale_minutes, labels, checks),
+        "stale": stale,
         "next_action": next_action,
+        "next_detail": next_detail,
         "gate_rerun_command": _gate_rerun_command(repo, number, head_sha),
     }
 
@@ -444,7 +481,16 @@ def _global_next(report: Mapping[str, Any]) -> str:
             if local_active
             else "remote unavailable; fix GitHub access"
         )
-    for action in ("fix BLOCKED audit", "fix failing check", "rebase/behind", "waiting for audits or owner input", "waiting for checks", "ready for merge or auto-merge"):
+    for action in (
+        "fix BLOCKED audit",
+        "fix failing check",
+        "rebase/behind",
+        "requeue stale audit",
+        "rerun stale gate",
+        "waiting for audits or owner input",
+        "waiting for checks",
+        "ready for merge or auto-merge",
+    ):
         if any(pr.get("next_action") == action for pr in prs):
             return action
     return "inspect PRs" if prs else ("local lanes visible; connect them to PR evidence" if local_active else "no active lanes")
@@ -500,6 +546,8 @@ def render_text(report: Mapping[str, Any]) -> str:
             lines.append(f"  labels: {_label_text(pr['labels'])}")
             lines.append(f"  checks: {_check_text(pr['checks'])}")
             lines.append(f"  next: {pr['next_action']}")
+            if pr.get("next_detail"):
+                lines.append(f"  detail: {pr['next_detail']}")
             if pr.get("gate_rerun_command") and pr.get("next_action") in GATE_RERUN_ACTIONS:
                 lines.append(f"  rerun gate: {pr['gate_rerun_command']}")
     elif remote.get("available"):
