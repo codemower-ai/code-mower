@@ -1364,6 +1364,41 @@ exit 1
         self.assertIn("--liveness-minutes", gate_health)
         self.assertIn("CODE_MOWER_GATE_HEALTH_RUNNER_TOKEN", gate_health)
 
+    def test_dispatch_token_workflow_templates_use_pull_request_target_and_sandbox_pr_head(
+        self,
+    ) -> None:
+        template_configs = (
+            (
+                "code-mower-agent-pr-labeler.yml.j2",
+                ["opened", "reopened", "synchronize"],
+                "label",
+            ),
+            (
+                "code-mower-fix-round-dispatch.yml.j2",
+                ["labeled"],
+                "dispatch",
+            ),
+        )
+        for rel_dir in ("templates/workflows", "src/code_mower/templates/workflows"):
+            for filename, expected_types, job_name in template_configs:
+                with self.subTest(directory=rel_dir, workflow=filename):
+                    path = ROOT / rel_dir / filename
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn("pull_request_target:", text)
+                    self.assertNotIn("pull_request:\n", text)
+                    for expected_type in expected_types:
+                        self.assertIn(expected_type, text)
+                    self.assertIn(f"  {job_name}:", text)
+                    self.assertIn(
+                        "github.event.pull_request.head.repo.full_name == github.repository",
+                        text,
+                    )
+                    self.assertIn("pull-requests: write", text)
+                    self.assertIn("issues: write", text)
+                    self.assertNotIn("actions/checkout", text)
+                    self.assertNotIn("ref: ${{ github.event.pull_request.head.sha }}", text)
+                    self.assertIn("secrets.__DISPATCH_TOKEN_ENV__", text)
+
     def test_local_audit_label_expression_uses_exact_label_membership(self) -> None:
         entries = ({"needs_label": "needs-codex-audit"},)
 
@@ -3603,6 +3638,23 @@ jobs:
             self.assertIn("needs-codex-audit", agent_labeler)
             self.assertIn("needs-claude-audit", agent_labeler)
             self.assertNotIn("__AGENT_PR", agent_labeler)
+            agent_parsed = yaml.safe_load(agent_labeler)
+            agent_on = agent_parsed.get("on") or agent_parsed[True]
+            self.assertIn("pull_request_target", agent_on)
+            self.assertNotIn("pull_request", agent_on)
+            self.assertEqual(
+                agent_on["pull_request_target"]["types"],
+                ["opened", "reopened", "synchronize"],
+            )
+            self.assertEqual(
+                agent_parsed["permissions"],
+                {"pull-requests": "write", "issues": "write"},
+            )
+            self.assertEqual(
+                agent_parsed["jobs"]["label"]["if"],
+                "github.event.pull_request.head.repo.full_name == github.repository",
+            )
+            self.assertNotIn("actions/checkout", agent_labeler)
 
             fix_round = output_dir.joinpath(
                 ".github/workflows/code-mower-fix-round-dispatch.yml"
@@ -3625,6 +3677,23 @@ jobs:
             self.assertIn("GitHub API rate limit hit", fix_round)
             self.assertIn("comments_output", fix_round)
             self.assertNotIn("__FIX_ROUND", fix_round)
+            fix_parsed = yaml.safe_load(fix_round)
+            fix_on = fix_parsed.get("on") or fix_parsed[True]
+            self.assertIn("pull_request_target", fix_on)
+            self.assertNotIn("pull_request", fix_on)
+            self.assertEqual(
+                fix_on["pull_request_target"]["types"],
+                ["labeled"],
+            )
+            self.assertEqual(
+                fix_parsed["permissions"],
+                {"pull-requests": "write", "issues": "write"},
+            )
+            self.assertEqual(
+                fix_parsed["jobs"]["dispatch"]["if"],
+                "github.event.pull_request.head.repo.full_name == github.repository",
+            )
+            self.assertNotIn("actions/checkout", fix_round)
             self.assertIn("cancel-in-progress: true", local_cli_audit)
             self.assertIn("name: audit (${{ matrix.lane.lane }})", local_cli_audit)
             self.assertIn("strategy:\n      fail-fast: false", local_cli_audit)
