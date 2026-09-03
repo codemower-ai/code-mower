@@ -7895,6 +7895,9 @@ def main():
         cloud_contract = (ROOT / "docs" / "cloud-data-contract.md").read_text(
             encoding="utf-8",
         )
+        troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(
+            encoding="utf-8",
+        )
         readme_flat = " ".join(readme.split())
         quickstart_flat = " ".join(quickstart.split())
 
@@ -7923,6 +7926,10 @@ def main():
         self.assertIn("code_mower.boardTimelines.v1", board_contract)
         self.assertIn("code_mower.boardOwnerQueue.v1", board_contract)
         self.assertIn("code_mower.boardAgentAdapters.v1", board_contract)
+        self.assertIn("GET `/api/status`", board_contract)
+        self.assertIn("restart_recommended", board_contract)
+        self.assertIn("Board Shows An Older Version After Upgrade", troubleshooting)
+        self.assertIn("curl -fsS http://127.0.0.1:PORT/api/status", troubleshooting)
         self.assertIn("timelines.verdicts.entries[]", board_contract)
         self.assertIn("timelines.spend", board_contract)
         self.assertIn("owner_queue.entries[]", board_contract)
@@ -8116,6 +8123,12 @@ def main():
         self.assertIn("Claude Code, Codex, and Cursor or Grok Bot", prompt_pack_flat)
         self.assertIn("Gitar and Antigravity as informational", prompt_pack_flat)
         self.assertIn("Devin is an explicitly opt-in hosted builder", prompt_pack_flat)
+        self.assertIn("docs/install.md", prompt_pack)
+        self.assertIn("docs/upgrade-existing-repo.md", prompt_pack)
+        self.assertIn("--orchestrator-only", prompt_pack)
+        self.assertIn("--hosted-builders", prompt_pack)
+        self.assertIn("docs/install.md", build_loop_30)
+        self.assertIn("docs/upgrade-existing-repo.md", build_loop_30)
         self.assertIn("Keep one writer per PR branch", prompt_pack)
         self.assertIn("Do not argue an audit BLOCKED away", prompt_pack)
         self.assertIn("docs/lane-promotion-policy.md", prompt_pack)
