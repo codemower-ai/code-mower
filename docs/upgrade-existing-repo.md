@@ -45,6 +45,13 @@ them as repo-only upgrade noise:
 code-mower migration setup-drift --repo-path . --builders codex,claude,cursor
 ```
 
+Run setup-drift from the full repository checkout. Thin workspaces, empty
+directories, or paths without git tracking can make every generated file appear
+`new`; the report prints a repo path hint when that posture is likely. If the
+repo only has reviewer-lane workflows and no builder-dispatch files, the
+builder hint says so and you should pass `--builders` only when builder lanes
+are actually part of that repository.
+
 The report classifies paths only; it does not include source, diffs,
 transcripts, issue body text, auth output, local secret values, or secrets.
 

@@ -139,6 +139,11 @@ gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo OWNER/REPO --body YYYY-MM-DD
 gh variable set DISPATCH_TOKEN_EXPIRES_AT --repo OWNER/REPO --body never
 ```
 
+In adoption mode, a missing or placeholder expiry variable is reported as an
+owner action warning so setup can continue. A missing `DISPATCH_TOKEN` secret
+still prevents generated dispatch workflows from posting human-authored labels,
+comments, or builder mentions.
+
 If `doctor --adoption` reports trusted-author variables as `not_confirmed`, it
 could not read the repository Actions variable through GitHub. Confirm `gh auth`
 has access to the target repo, then set `CLAUDE_AUDIT_BOT_AUTHORS` and
