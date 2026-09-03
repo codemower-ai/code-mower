@@ -33,6 +33,7 @@ BOARD_TIMELINES_SCHEMA = "code_mower.boardTimelines.v1"
 BOARD_OWNER_QUEUE_SCHEMA = "code_mower.boardOwnerQueue.v1"
 BOARD_AGENT_ADAPTERS_SCHEMA = "code_mower.boardAgentAdapters.v1"
 BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"
+SUPERVISED_PILOT_SCHEMA = "code_mower.supervisedPilot.v1"
 DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH = Path(".code-mower") / "board" / "agents"
 SECRET_VALUE_RE = re.compile(
     r"(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})"
@@ -176,6 +177,7 @@ def status_payload(
     *,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     payload = lane_status.collect_status(
         repo=config.repo,
@@ -185,6 +187,7 @@ def status_payload(
         workflow_limit=config.workflow_limit,
         stale_minutes=config.stale_minutes,
         show_local_paths=config.show_local_paths,
+        now=now,
     )
     payload["board"] = {
         "schema": "code_mower.board.v1",
@@ -199,6 +202,7 @@ def status_payload(
     }
     payload["agent_adapters"] = agent_adapters_payload(config)
     payload["owner_queue"] = owner_queue_payload(payload)
+    payload["supervised"] = supervised_pilot_payload(payload, now=now)
     return payload
 
 
@@ -325,6 +329,199 @@ def owner_queue_payload(status: dict[str, Any]) -> dict[str, Any]:
         "count": len(entries),
         "entries": entries,
         "message": "" if entries else "no owner queue items",
+    }
+
+
+def _issue_state(labels: list[str], has_pr: bool) -> str:
+    if any("needs-owner" in label for label in labels):
+        return "needs_owner"
+    if any("blocked" in label for label in labels):
+        return "blocked"
+    if has_pr:
+        return "reviewing"
+    if any("dispatched" in label for label in labels):
+        return "dispatched"
+    return "building"
+
+
+def _pr_review_state(labels: dict[str, Any]) -> str:
+    blocked = labels.get("blocked") or []
+    done = labels.get("done") or []
+    needs = labels.get("needs") or []
+    if blocked:
+        return "blocked"
+    if done:
+        return "approved"
+    if needs:
+        return "in_review"
+    return "pending"
+
+
+def _pr_gate_state(checks: list[dict[str, Any]], is_stale: bool) -> str:
+    if is_stale:
+        return "stale"
+    if not checks:
+        return "pending"
+    gate_checks = [c for c in checks if "gate" in str(c.get("name") or "").lower()]
+    if not gate_checks:
+        return "pending"
+    states = {str(c.get("state") or "").lower() for c in gate_checks}
+    if any(s in {"failure", "failed", "error"} for s in states):
+        return "failed"
+    if any(s in {"success", "completed"} for s in states):
+        return "passed"
+    if any(s in {"pending", "in_progress", "queued"} for s in states):
+        return "running"
+    return "pending"
+
+
+def _cycle_state(active_issues: list[dict[str, Any]], active_prs: list[dict[str, Any]]) -> str:
+    if not active_issues and not active_prs:
+        return "idle"
+    has_blocked = any(
+        item.get("state") == "blocked" or item.get("review_state") == "blocked"
+        for item in [*active_issues, *active_prs]
+    )
+    if has_blocked:
+        return "blocked"
+    has_needs_owner = any(
+        item.get("state") == "needs_owner" or item.get("needs_owner")
+        for item in [*active_issues, *active_prs]
+    )
+    has_active = any(
+        item.get("state") in {"building", "dispatched"}
+        or item.get("review_state") in {"in_review", "pending"}
+        for item in [*active_issues, *active_prs]
+    )
+    if has_active and not has_needs_owner:
+        return "active"
+    return "waiting"
+
+
+def _supervised_next_action(cycle_state: str, active_issues: list[dict[str, Any]], active_prs: list[dict[str, Any]]) -> str:
+    if cycle_state == "idle":
+        return "waiting for ready issues"
+    if cycle_state == "blocked":
+        for pr in active_prs:
+            if pr.get("review_state") == "blocked":
+                return f"fix BLOCKED audit on PR #{pr.get('number', 0)}"
+        for issue in active_issues:
+            if issue.get("state") == "blocked":
+                return f"fix blocked issue #{issue.get('number', 0)}"
+        return "fix BLOCKED audit"
+    if cycle_state == "waiting":
+        needs_owner = [pr for pr in active_prs if pr.get("needs_owner")]
+        if needs_owner:
+            return f"owner decision needed on PR #{needs_owner[0].get('number', 0)}"
+        return "waiting for checks"
+    for pr in active_prs:
+        if pr.get("next_action"):
+            return pr["next_action"]
+    for issue in active_issues:
+        if issue.get("next_action"):
+            return issue["next_action"]
+    return "inspect active lanes"
+
+
+def supervised_pilot_payload(status: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    remote = status.get("remote") if isinstance(status.get("remote"), dict) else {}
+    if not remote.get("available"):
+        return {
+            "schema": SUPERVISED_PILOT_SCHEMA,
+            "enabled": False,
+            "cycle_state": "error",
+            "active_issues": [],
+            "active_prs": [],
+            "lanes": {"builders": {}, "reviewers": {}},
+            "next_action": "GitHub required for supervised pilot state",
+            "message": "GitHub unavailable",
+        }
+    
+    prs = remote.get("pull_requests") if isinstance(remote.get("pull_requests"), list) else []
+    
+    active_prs: list[dict[str, Any]] = []
+    builder_lanes: dict[str, dict[str, Any]] = {}
+    reviewer_lanes: dict[str, dict[str, Any]] = {}
+    
+    for pr in prs:
+        if not isinstance(pr, dict):
+            continue
+        labels = pr.get("labels") if isinstance(pr.get("labels"), dict) else {}
+        builder_label_list = labels.get("builder") or []
+        needs_label_list = labels.get("needs") or []
+        
+        builder_lane = None
+        if builder_label_list and isinstance(builder_label_list, list):
+            for label in builder_label_list:
+                if isinstance(label, str) and label.startswith("builder:"):
+                    builder_lane = label.split(":", 1)[1]
+                    break
+        
+        pr_number = _int(pr.get("number")) or 0
+        review_state = _pr_review_state(labels)
+        gate_state = _pr_gate_state(pr.get("checks") or [], pr.get("stale") or False)
+        needs_owner = any("needs-owner" in str(label) for label in needs_label_list if isinstance(label, str))
+        
+        active_prs.append({
+            "number": pr_number,
+            "title": str(pr.get("title") or ""),
+            "url": _http_url(pr.get("url")),
+            "branch": str(pr.get("branch") or ""),
+            "head_sha": str(pr.get("head_sha") or ""),
+            "head_sha_prefix": _head_prefix(pr.get("head_sha")),
+            "author": str(pr.get("author") or ""),
+            "builder_lane": builder_lane or "unknown",
+            "review_state": review_state,
+            "gate_state": gate_state,
+            "merge_state": str(pr.get("merge_state") or ""),
+            "is_draft": pr.get("is_draft") or False,
+            "needs_owner": needs_owner,
+            "next_action": str(pr.get("next_action") or "inspect PR"),
+            "labels": labels,
+            "updated_at": str(pr.get("updated_at") or ""),
+        })
+        
+        if builder_lane:
+            if builder_lane not in builder_lanes:
+                builder_lanes[builder_lane] = {
+                    "wip_count": 0,
+                    "wip_cap": 2,
+                    "available": True,
+                    "active_prs": [],
+                }
+            builder_lanes[builder_lane]["wip_count"] += 1
+            builder_lanes[builder_lane]["active_prs"].append(pr_number)
+        
+        for label in needs_label_list:
+            if isinstance(label, str) and label.startswith("needs-") and "-audit" in label:
+                lane_name = label.replace("needs-", "").replace("-audit", "")
+                if lane_name not in reviewer_lanes:
+                    reviewer_lanes[lane_name] = {
+                        "queue_depth": 0,
+                        "active_prs": [],
+                    }
+                reviewer_lanes[lane_name]["queue_depth"] += 1
+                reviewer_lanes[lane_name]["active_prs"].append(pr_number)
+    
+    active_issues: list[dict[str, Any]] = []
+    
+    cycle_state = _cycle_state(active_issues, active_prs)
+    next_action = _supervised_next_action(cycle_state, active_issues, active_prs)
+    current_time = (now or datetime.now(UTC)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    
+    return {
+        "schema": SUPERVISED_PILOT_SCHEMA,
+        "enabled": True,
+        "cycle_state": cycle_state,
+        "active_issues": active_issues,
+        "active_prs": active_prs,
+        "lanes": {
+            "builders": builder_lanes,
+            "reviewers": reviewer_lanes,
+        },
+        "next_action": next_action,
+        "last_cycle_at": current_time,
+        "message": "" if active_prs or active_issues else "no active issues or PRs",
     }
 
 
@@ -652,6 +849,7 @@ def render_board_html(config: BoardConfig) -> str:
   </header>
   <main>
     <div class="summary" id="summary"></div>
+    <section><h2>Supervised Pilot</h2><div class="rows" id="supervised"></div></section>
     <section><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
     <section><h2>Agent Cards</h2><div class="rows" id="agents"></div></section>
     <section><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
@@ -715,6 +913,27 @@ def render_board_html(config: BoardConfig) -> str:
         `<div class="metric"><span class="muted">Agent cards</span><b>${{agentCards.length}}</b></div>`,
         `<div class="metric"><span class="muted">Gate alerts</span><b class="${{alerts.length ? "warn" : "ok"}}">${{alerts.length}}</b></div>`
       ].join(""));
+      const supervised = data.supervised || {{}};
+      const supervisedPRs = supervised.active_prs || [];
+      const supervisedIssues = supervised.active_issues || [];
+      const builders = supervised.lanes?.builders || {{}};
+      const reviewers = supervised.lanes?.reviewers || {{}};
+      if (supervised.enabled) {{
+        const stateClass = supervised.cycle_state === "blocked" ? "bad" : supervised.cycle_state === "active" ? "ok" : supervised.cycle_state === "idle" ? "muted" : "warn";
+        put("supervised", [
+          `<div class="row"><div class="line"><b>Cycle State:</b> <span class="${{stateClass}}">${{esc(supervised.cycle_state || "unknown")}}</span>${{pill(supervised.next_action || "inspect")}}</div></div>`,
+          supervisedIssues.length ? `<div class="row"><b>Active Issues (${{supervisedIssues.length}}):</b></div>` : "",
+          ...supervisedIssues.map(issue => `<div class="row"><div class="line"><a href="${{esc(href(issue.url))}}">Issue #${{esc(issue.number)}}</a>${{pill(issue.state)}}${{issue.builder_lane ? pill(issue.builder_lane) : ""}}</div><div class="muted">${{esc(issue.title)}} - ${{esc(issue.next_action)}}</div></div>`),
+          supervisedPRs.length ? `<div class="row"><b>Active PRs (${{supervisedPRs.length}}):</b></div>` : "",
+          ...supervisedPRs.map(pr => `<div class="row"><div class="line"><a href="${{esc(href(pr.url))}}">PR #${{esc(pr.number)}}</a>${{pill(pr.review_state)}}${{pill(pr.gate_state)}}${{pr.builder_lane ? pill(pr.builder_lane) : ""}}${{pr.needs_owner ? pill("needs-owner") : ""}}</div><div class="muted">${{esc(pr.title)}} by ${{esc(pr.author)}} - ${{esc(pr.next_action)}}</div></div>`),
+          Object.keys(builders).length ? `<div class="row"><b>Builder Lanes:</b></div>` : "",
+          ...Object.entries(builders).map(([name, lane]) => `<div class="row"><div class="line"><b>${{esc(name)}}</b>${{pill(`WIP ${{lane.wip_count}}/${{lane.wip_cap}}`)}}${{pill(lane.available ? "available" : "at-cap")}}</div><div class="muted">PRs: ${{lane.active_prs.join(", ") || "none"}}</div></div>`),
+          Object.keys(reviewers).length ? `<div class="row"><b>Reviewer Lanes:</b></div>` : "",
+          ...Object.entries(reviewers).map(([name, lane]) => `<div class="row"><div class="line"><b>${{esc(name)}}</b>${{pill(`queue ${{lane.queue_depth}}`)}} </div><div class="muted">PRs: ${{lane.active_prs.join(", ") || "none"}}</div></div>`)
+        ].filter(Boolean).join("") || empty(supervised.message || "Supervised pilot enabled but no active work."));
+      }} else {{
+        put("supervised", empty(supervised.message || "Supervised pilot not enabled."));
+      }}
       put("owner", ownerQueue.length ? ownerQueue.map(item => `<div class="row"><div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.kind)}}</a>${{pill(item.next_action)}}${{pill(item.head_sha_prefix)}}</div><div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}}${{item.updated_at ? ` updated ${{localTime(item.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.owner_queue?.message || "No owner queue items."));
       put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{localTime(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
       put("prs", prs.length ? prs.map(pr => `<div class="row">

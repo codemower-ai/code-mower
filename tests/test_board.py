@@ -1062,3 +1062,184 @@ class BoardTests(TestCase):
             return int(response.status)
         finally:
             connection.close()
+
+    def test_supervised_pilot_shows_active_prs_and_lanes(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 600,
+                        "title": "Implement Board visibility",
+                        "url": "https://github.com/owner/repo/pull/600",
+                        "headRefName": "cursor/board-visibility",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "cursor-bot"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [
+                            {"name": "builder:cursor"},
+                            {"name": "needs-claude-audit"},
+                        ],
+                        "statusCheckRollup": [
+                            {"context": "code-mower/gate", "state": "PENDING"},
+                        ],
+                    },
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            raise lane_status.LaneStatusUnavailable("mock unavailable")
+
+        payload = board.status_payload(
+            board.BoardConfig(repo="owner/repo"),
+            gh_json_runner=gh_json,
+            command_runner=lambda _: _completed(""),
+            now=NOW,
+        )
+
+        supervised = payload.get("supervised", {})
+        self.assertEqual(supervised["schema"], board.SUPERVISED_PILOT_SCHEMA)
+        self.assertTrue(supervised["enabled"])
+        self.assertEqual(supervised["cycle_state"], "active")
+        self.assertEqual(len(supervised["active_prs"]), 1)
+        
+        pr = supervised["active_prs"][0]
+        self.assertEqual(pr["number"], 600)
+        self.assertEqual(pr["builder_lane"], "cursor")
+        self.assertEqual(pr["review_state"], "in_review")
+        self.assertEqual(pr["gate_state"], "running")
+        
+        builders = supervised["lanes"]["builders"]
+        self.assertIn("cursor", builders)
+        self.assertEqual(builders["cursor"]["wip_count"], 1)
+        self.assertEqual(builders["cursor"]["active_prs"], [600])
+        
+        reviewers = supervised["lanes"]["reviewers"]
+        self.assertIn("claude", reviewers)
+        self.assertEqual(reviewers["claude"]["queue_depth"], 1)
+        self.assertEqual(reviewers["claude"]["active_prs"], [600])
+
+    def test_supervised_pilot_shows_blocked_state_with_blocked_audit(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 601,
+                        "title": "Fix linting",
+                        "url": "https://github.com/owner/repo/pull/601",
+                        "headRefName": "cursor/fix-linting",
+                        "headRefOid": "def1234567890abcdef1234567890abcdef12345",
+                        "author": {"login": "cursor-bot"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [
+                            {"name": "builder:cursor"},
+                            {"name": "codex-audit-blocked"},
+                        ],
+                        "statusCheckRollup": [
+                            {"context": "code-mower/gate", "state": "FAILURE"},
+                        ],
+                    },
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            raise lane_status.LaneStatusUnavailable("mock unavailable")
+
+        payload = board.status_payload(
+            board.BoardConfig(repo="owner/repo"),
+            gh_json_runner=gh_json,
+            command_runner=lambda _: _completed(""),
+            now=NOW,
+        )
+
+        supervised = payload.get("supervised", {})
+        self.assertEqual(supervised["cycle_state"], "blocked")
+        self.assertEqual(supervised["next_action"], "fix BLOCKED audit on PR #601")
+        
+        pr = supervised["active_prs"][0]
+        self.assertEqual(pr["review_state"], "blocked")
+        self.assertEqual(pr["gate_state"], "failed")
+
+    def test_supervised_pilot_shows_idle_when_no_active_work(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return []
+            if args[:2] == ["run", "list"]:
+                return []
+            raise lane_status.LaneStatusUnavailable("mock unavailable")
+
+        payload = board.status_payload(
+            board.BoardConfig(repo="owner/repo"),
+            gh_json_runner=gh_json,
+            command_runner=lambda _: _completed(""),
+            now=NOW,
+        )
+
+        supervised = payload.get("supervised", {})
+        self.assertTrue(supervised["enabled"])
+        self.assertEqual(supervised["cycle_state"], "idle")
+        self.assertEqual(supervised["next_action"], "waiting for ready issues")
+        self.assertEqual(len(supervised["active_prs"]), 0)
+        self.assertEqual(len(supervised["active_issues"]), 0)
+
+    def test_supervised_pilot_disabled_when_github_unavailable(self) -> None:
+        def gh_json(_args: list[str]) -> object:
+            raise lane_status.LaneStatusUnavailable("mock unavailable")
+
+        payload = board.status_payload(
+            board.BoardConfig(repo="owner/repo"),
+            gh_json_runner=gh_json,
+            command_runner=lambda _: _completed(""),
+            now=NOW,
+        )
+
+        supervised = payload.get("supervised", {})
+        self.assertEqual(supervised["schema"], board.SUPERVISED_PILOT_SCHEMA)
+        self.assertFalse(supervised["enabled"])
+        self.assertEqual(supervised["cycle_state"], "error")
+        self.assertEqual(supervised["next_action"], "GitHub required for supervised pilot state")
+
+    def test_supervised_pilot_shows_needs_owner_state(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 602,
+                        "title": "Major refactor",
+                        "url": "https://github.com/owner/repo/pull/602",
+                        "headRefName": "cursor/major-refactor",
+                        "headRefOid": "abc9876543210fedcba9876543210fedcba98765",
+                        "author": {"login": "cursor-bot"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [
+                            {"name": "builder:cursor"},
+                            {"name": "needs-owner"},
+                        ],
+                        "statusCheckRollup": [],
+                    },
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            raise lane_status.LaneStatusUnavailable("mock unavailable")
+
+        payload = board.status_payload(
+            board.BoardConfig(repo="owner/repo"),
+            gh_json_runner=gh_json,
+            command_runner=lambda _: _completed(""),
+            now=NOW,
+        )
+
+        supervised = payload.get("supervised", {})
+        self.assertEqual(supervised["cycle_state"], "waiting")
+        self.assertIn("owner decision needed", supervised["next_action"])
+        
+        pr = supervised["active_prs"][0]
+        self.assertTrue(pr["needs_owner"])
+
+    def test_supervised_pilot_renders_in_html(self) -> None:
+        html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+        self.assertIn("Supervised Pilot", html)
+        self.assertIn("id=\"supervised\"", html)
