@@ -8,6 +8,31 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 No changes yet.
 
+## v0.9.4-beta.1
+
+This beta is the final pre-announcement hardening pass for the v0.9 line. It
+keeps the privacy boundary, gate semantics, and generated workflow names
+unchanged while tightening the first-run, upgrade, and dogfood paths.
+
+### Changed
+
+- Added a root `code-mower.yml` dogfood config for the Code Mower repository so
+  local checks and release workflows exercise a real adopter-style config
+  instead of packaged starter defaults (#590).
+- `doctor --adoption` now reports owner actions separately from ordinary
+  warnings in text and JSON output, while preserving stricter non-adoption
+  reviewer-gate failures (#602).
+- `code-mower migration setup-drift --repo-path .` now always reports
+  standalone pin posture and warns when existing builder/dispatch files are
+  present but `--builders` was omitted, including Codex, Claude, Cursor, and
+  self-hosted Mac runner hints (#603).
+- Adoption docs and the orchestrator prompt pack now point cold agents at the
+  same-tag install and upgrade docs, hosted-agent doctor postures, and Board
+  `/api/status` restart diagnostics (#604).
+- Release notes call out the experimental Muse CLI lane (`muse_cli`,
+  `builder:muse`, `needs-muse-audit`) as calibration-only until repository
+  evidence supports promotion.
+
 ## v0.9.3-beta.1
 
 This beta is a small confidence-polish release after the v0.9.2 adoption pass.

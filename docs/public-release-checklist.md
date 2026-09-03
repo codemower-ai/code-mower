@@ -11,11 +11,11 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has alpha/beta releases and reports its version with
   `code-mower --version`.
-- The current package-index beta entrypoint is `code-mower==0.9.3b1`, with
+- The current package-index beta entrypoint is `code-mower==0.9.4b1`, with
   `code-mower doctor --adoption --repo OWNER/REPO` as the human-facing
   first-run setup diagnostic and `code-mower lanes status --repo OWNER/REPO`
   as the operator snapshot. The corresponding GitHub tag is
-  `v0.9.3-beta.1`; `doctor --preflight` and `doctor --v05` remain
+  `v0.9.4-beta.1`; `doctor --preflight` and `doctor --v05` remain
   compatibility presets for scripts.
 - The v0.9 package beta includes Python 3.12+ install hardening,
   hosted-builder doctor postures, non-expiring token diagnostics, native
