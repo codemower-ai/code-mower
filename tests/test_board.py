@@ -73,6 +73,50 @@ def _command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
     return _completed("", returncode=1)
 
 
+def _write_board_config(path: Path) -> None:
+    path.write_text(
+        """
+version: 1
+project:
+  name: demo
+  state_dir: .code-mower
+repositories:
+  - slug: owner/repo
+    default_branch: main
+owner_surface:
+  ready_label: tier:R
+  needs_owner_label: needs-owner
+  builder_wip_cap: 2
+merge_authority_excludes_author: true
+builder_identity:
+  labels:
+    builder:codex: codex
+    builder:cursor: cursor
+lanes:
+  codex:
+    type: audit
+    driver: local_cli
+    provider: codex
+    merge_authority: true
+    labels:
+      needs: needs-codex-audit
+      done: codex-audit-done
+      blocked: codex-audit-blocked
+  claude_audit:
+    type: audit
+    driver: local_cli
+    provider: claude
+    trailer_lane: claude
+    merge_authority: true
+    labels:
+      needs: needs-claude-audit
+      done: claude-audit-done
+      blocked: claude-audit-blocked
+""",
+        encoding="utf-8",
+    )
+
+
 def _occupy_loopback_port(start: int = 5332, stop: int = 5400) -> socket.socket:
     for port in range(start, stop):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -98,6 +142,8 @@ class BoardTests(TestCase):
         self.assertIn("Recent Local History", html)
         self.assertIn("Reviewer Verdict Timeline", html)
         self.assertIn("Spend And Latency", html)
+        self.assertIn("Supervised Pilot", html)
+        self.assertIn('id="supervised"', html)
         self.assertIn("const href", html)
         self.assertIn('id="version"', html)
         self.assertIn("servingVersion", html)
@@ -564,6 +610,53 @@ class BoardTests(TestCase):
         self.assertTrue(payload["owner_queue"]["available"])
         self.assertEqual(payload["owner_queue"]["entries"], [])
         self.assertEqual(payload["owner_queue"]["message"], "no owner queue items")
+
+    def test_status_payload_includes_supervised_controller_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_board_config(Path(tmp) / "code-mower.yml")
+
+            def gh_json(args: list[str]) -> object:
+                if args[:2] == ["issue", "list"]:
+                    return [
+                        {
+                            "number": 12,
+                            "url": "https://github.com/owner/repo/issues/12",
+                            "author": {"login": "owner"},
+                            "labels": [{"name": "tier:R"}, {"name": "builder:cursor"}],
+                            "assignees": [],
+                            "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        }
+                    ]
+                return _gh_json(args)
+
+            payload = board.status_payload(
+                board.BoardConfig(repo="owner/repo", repo_path=tmp),
+                gh_json_runner=gh_json,
+                command_runner=_command_runner,
+            )
+
+        supervised = payload["supervised_pilot"]
+        self.assertEqual(supervised["schema"], board.controller.SUPERVISED_PILOT_SCHEMA)
+        self.assertTrue(supervised["enabled"])
+        self.assertEqual(supervised["cycle_state"], "ready")
+        self.assertEqual(supervised["decision"]["decision_state"], "ready_to_merge")
+        self.assertEqual(supervised["decision"]["pr_number"], 7)
+        self.assertEqual(supervised["queue"]["metrics"]["ready_issue_count"], 1)
+        self.assertEqual(supervised["active_issues"][0]["number"], 12)
+        self.assertNotIn(str(Path(tmp)), json.dumps(supervised))
+
+    def test_supervised_pilot_disabled_without_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = board.status_payload(
+                board.BoardConfig(repo="owner/repo", repo_path=tmp),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+            )
+
+        supervised = payload["supervised_pilot"]
+        self.assertFalse(supervised["enabled"])
+        self.assertEqual(supervised["cycle_state"], "unavailable")
+        self.assertIn("code-mower.yml not found", supervised["message"])
 
     def test_owner_queue_payload_detects_attention_states(self) -> None:
         payload = board.owner_queue_payload(

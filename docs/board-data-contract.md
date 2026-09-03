@@ -40,6 +40,11 @@ board's `/api/status` response. It summarizes PRs that need operator attention.
 the board's `/api/status` response. It reads opt-in metadata files from
 `.code-mower/board/agents/*.json` by default.
 
+`code_mower.supervisedPilot.v1` is the local supervised-pilot payload embedded
+as `supervised_pilot` in the board's `/api/status` response when
+`code-mower.yml` is present. It is derived from the same controller policy
+engine used by `code-mower controller run`.
+
 `code_mower.cloudBoardSnapshot.v1` is the summarized cloud mirror event
 dimension schema emitted only by the explicit
 `code-mower cloud board-snapshot --repo-slug OWNER/REPO` command.
@@ -129,6 +134,33 @@ When the default port is already in use, `board serve` falls forward to a nearby
 free loopback port and prints the selected URL. An explicit `--port` stays
 strict so scripts and bookmarks fail clearly instead of silently moving. The
 printed URL is local to that machine or VM unless the operator creates a tunnel.
+
+## `code_mower.supervisedPilot.v1`
+
+When `code-mower.yml` is available, the Board adds a `supervised_pilot` block to
+`/api/status`. The block is local-only and summarizes the controller's current
+read-only decision:
+
+- `schema`: always `code_mower.supervisedPilot.v1`.
+- `enabled`: whether the Board could load and validate `code-mower.yml`.
+- `cycle_state`: compact UI state such as `idle`, `dispatch`, `waiting`,
+  `blocked`, `owner_action`, or `ready`.
+- `controller_mode`: currently `dry_run` for Board display.
+- `decision`: selected controller decision with PR or issue number, URL, branch,
+  author login, short SHA prefix, gate status, reviewer outcomes, stop
+  condition, owner action kind, and next-action text when present.
+- `queue`: active lane counts, coarse queue metrics, and ready-issue errors.
+- `active_prs`: the same open PR metadata already exposed through
+  `remote.pull_requests[]`, narrowed for the supervised display.
+- `active_issues`: ready issue references from safe labels only. This includes
+  issue number, URL, author login, updated time, builder lane, assignment and
+  dispatch booleans, owner-action boolean, and label names. It does not include
+  issue titles or body text.
+
+If the config is missing or invalid, `enabled` is false and `message` tells the
+operator to add or validate `code-mower.yml`. If GitHub is unavailable but the
+config is valid, the controller reports a safe owner-action state instead of
+raising.
 
 ## Local Event Store
 
