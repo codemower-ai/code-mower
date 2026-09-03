@@ -39,7 +39,7 @@ code-mower --version
   listeners easier to inspect and retire after upgrades.
 - The docs now include a v1.0.1 effectiveness assessment that separates
   measured Code Mower dogfood evidence from qualitative adoption feedback on
-  Bridge Pro, CubeSnap/ctvd, and other candidate agent hosts.
+  private reference/product repos and other candidate agent hosts.
 
 ## Recommended Update
 

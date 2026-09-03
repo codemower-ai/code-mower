@@ -15,7 +15,7 @@ without local calibration.
 | Code Mower OSS v1.0.1 loop | Local Board/spend window from 2026-09-02 21:42 UTC through 2026-09-03 14:06 UTC | 416 Board events, 163 reviewer runs, 47 blocked audit verdicts, 9 recorded reviewer catches, 2 fix rounds, 0 recorded owner interventions, and USD 51.61 of Claude-reported reviewer spend. |
 | CodeMower.com dashboard | Since the v0.6.0-beta.3 baseline | 4 dashboard PRs merged, including Board snapshots, full-window portfolio counts, supervised Board snapshots, and the v1.0.1 productivity dashboard. |
 | CodeMower.com local spend sample | Local dashboard checkout | 2 reviewer-spend rows: 1 PASS and 1 BLOCKED from Claude, with USD 0.55 recorded cost and 184 seconds of reviewer wall time. |
-| Bridge Pro and CubeSnap/ctvd | Available local artifacts | Adoption reports and qualitative install feedback exist, but the local checkouts available to this session did not contain Board history or reviewer-spend artifacts suitable for quantitative aggregation. |
+| Private reference/product repos | Available local artifacts | Adoption reports and qualitative install feedback exist, but the local checkouts available to this session did not contain Board history or reviewer-spend artifacts suitable for quantitative aggregation. |
 
 ## What Worked
 
@@ -56,7 +56,7 @@ without local calibration.
   throughput for teams without an experienced orchestrator.
 - Reviewer spend is incomplete for providers that do not expose cost or token
   summaries in structured output.
-- Bridge Pro, CubeSnap/ctvd, and hosted-agent install reports are useful
+- Private reference/product repo and hosted-agent install reports are useful
   adoption signal, but the local artifacts available here are not enough to
   compute apples-to-apples PR velocity or defect-catch rates.
 - The current supervised-pilot posture still assumes a human or trusted
@@ -65,7 +65,7 @@ without local calibration.
 ## Next Measurement Work
 
 - Add current-productivity uploads as a routine release task for Code Mower,
-  CodeMower.com, Bridge Pro, and CubeSnap/ctvd.
+  CodeMower.com, and private reference/product repos.
 - Record builder-run sidecars for Cursor/Grok Bot, Antigravity, Devin, and Muse
   whenever they work on Code Mower issues, so provider scorecards compare
   builder outcomes as well as reviewer verdicts.
