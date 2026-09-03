@@ -111,6 +111,9 @@ All provider fixtures include four test cases:
 3. **placeholder**: Blocked verdict with placeholder data for guardrail testing
 4. **malformed_extra_key**: Malformed verdict with unsupported extra keys for schema validation
 
+Run `tools/validate_provider_fixtures.py` for a quick local fixture integrity
+check before using these fixtures in calibration or provider comparison work.
+
 ## Metadata-Only Privacy Boundary
 
 All fixtures and telemetry events strictly preserve the metadata-only boundary:
