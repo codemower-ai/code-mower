@@ -93,7 +93,7 @@ def _artifact_pr_from_path(path: Path) -> int | None:
 
 AUDIT_LANE_PROVIDER_ALIASES = {
     "antigravity-cli-audit": "antigravity",
-    "coderabbit-cli-audit": "coderabbit_cli",
+    "coderabbit-cli-audit": "coderabbit",
     "cursor-bugbot-audit": "cursor_bugbot",
     "grok-audit": "grok_build",
     "grok-build-audit": "grok_build",
