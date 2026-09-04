@@ -36,7 +36,7 @@ else:
 
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[ab]\d+|rc\d+)?$")
-VALID_CONTEXTS = {"cold_install", "unknown"}
+VALID_CONTEXTS = {"cold_install", "upgrade", "unknown"}
 
 
 @dataclass
@@ -276,6 +276,71 @@ def _resolve_config_path(repo_path: Path | None) -> Path:
     return Path("code-mower.yml")
 
 
+def _run_upgrade_rehearsal(
+    *,
+    starting_spec: str,
+    target_spec: str,
+    timeout: int,
+) -> dict[str, Any]:
+    """Perform two-stage upgrade rehearsal in a single environment.
+
+    Returns dict with 'version' key containing the final installed version,
+    or raises on failure.
+    """
+    import tempfile
+    import shutil
+
+    work_dir = Path(tempfile.mkdtemp(prefix="code-mower-upgrade-"))
+    try:
+        venv_path = work_dir / "venv"
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_path)],
+            check=True,
+            timeout=timeout,
+            capture_output=True,
+        )
+
+        pip_exe = venv_path / "bin" / "pip"
+        if not pip_exe.exists():
+            pip_exe = venv_path / "Scripts" / "pip.exe"
+
+        subprocess.run(
+            [str(pip_exe), "install", starting_spec],
+            check=True,
+            timeout=timeout,
+            capture_output=True,
+        )
+
+        verify_result = subprocess.run(
+            [str(venv_path / "bin" / "code-mower"), "--version"],
+            check=True,
+            timeout=30,
+            capture_output=True,
+            text=True,
+        )
+        starting_version = verify_result.stdout.strip()
+
+        subprocess.run(
+            [str(pip_exe), "install", "--upgrade", target_spec],
+            check=True,
+            timeout=timeout,
+            capture_output=True,
+        )
+
+        final_result = subprocess.run(
+            [str(venv_path / "bin" / "code-mower"), "--version"],
+            check=True,
+            timeout=30,
+            capture_output=True,
+            text=True,
+        )
+        final_version = final_result.stdout.strip()
+
+        return {"version": final_version, "starting_version": starting_version}
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 def run_release_qualification(
     *,
     release_tag: str,
@@ -317,6 +382,9 @@ def run_release_qualification(
         qualification_context = "unknown"
     _validate_qualification_context(qualification_context)
 
+    if qualification_context == "upgrade" and not starting_version:
+        raise ValueError("starting_version required for upgrade context")
+
     ending_version = ""
     config_path = _resolve_config_path(repo_path)
     config_source = f"file:{config_path}" if config_path.is_file() else "default"
@@ -351,19 +419,41 @@ def run_release_qualification(
     else:
         rehearsal_start = time.time()
         try:
-            rehearsal_result = run_package_install_rehearsal(
-                package_spec=package_spec,
-                repo_path=repo_path,
-                timeout=timeout,
-                allow_package_index=True,
-            )
-            rehearsal_version_raw = rehearsal_result.get("version", "")
-            rehearsal_version = _normalize_version(rehearsal_version_raw)
-            ending_version = rehearsal_version
-            if rehearsal_version != normalized_version:
-                rehearsal_status = "fail"
+            if qualification_context == "upgrade":
+                starting_spec = f"{package_identity}=={starting_version}"
+
+                upgrade_result = _run_upgrade_rehearsal(
+                    starting_spec=starting_spec,
+                    target_spec=package_spec,
+                    timeout=timeout,
+                )
+                rehearsal_version_raw = upgrade_result.get("version", "")
+                rehearsal_version = _normalize_version(rehearsal_version_raw)
+                ending_version = rehearsal_version
+
+                starting_installed_raw = upgrade_result.get("starting_version", "")
+                starting_installed = _normalize_version(starting_installed_raw)
+                if starting_installed != starting_version:
+                    raise ValueError(f"Failed to install starting version {starting_version}")
+
+                if rehearsal_version != normalized_version:
+                    rehearsal_status = "fail"
+                else:
+                    rehearsal_status = "pass"
             else:
-                rehearsal_status = "pass"
+                rehearsal_result = run_package_install_rehearsal(
+                    package_spec=package_spec,
+                    repo_path=repo_path,
+                    timeout=timeout,
+                    allow_package_index=True,
+                )
+                rehearsal_version_raw = rehearsal_result.get("version", "")
+                rehearsal_version = _normalize_version(rehearsal_version_raw)
+                ending_version = rehearsal_version
+                if rehearsal_version != normalized_version:
+                    rehearsal_status = "fail"
+                else:
+                    rehearsal_status = "pass"
         except Exception:
             rehearsal_status = "fail"
 

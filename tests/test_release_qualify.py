@@ -37,9 +37,31 @@ class ReleaseQualifyTests(unittest.TestCase):
         self.assertIn("must be empty or normalized", str(ctx.exception))
         self.assertNotIn("/path", str(ctx.exception))
 
-    def test_upgrade_context_rejected(self) -> None:
-        """Upgrade context is rejected as unsupported."""
-        with tempfile.TemporaryDirectory() as tmpdir:
+    def test_upgrade_context_requires_starting_version(self) -> None:
+        """Upgrade context requires starting_version in execute mode."""
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch("code_mower.release_qualify.doctor_checks.run_doctor") as mock_doctor,
+            mock.patch("code_mower.release_qualify.lane_status.collect_status") as mock_lanes,
+            mock.patch("code_mower.release_qualify.code_mower_board.doctor_payload") as mock_board,
+        ):
+            mock_report = mock.Mock()
+            mock_report.status = "pass"
+            mock_report.warnings = 0
+            mock_report.owner_actions = 0
+            mock_doctor.return_value = mock_report
+
+            mock_lanes.return_value = {
+                "schema": "code_mower.laneStatus.v1",
+                "remote": {"available": True},
+            }
+
+            mock_board.return_value = {
+                "schema": "code_mower.boardDoctor.v1",
+                "status": "pass",
+                "checks": [],
+            }
+
             output_path = Path(tmpdir) / "result.json"
 
             with self.assertRaises(ValueError) as ctx:
@@ -48,10 +70,66 @@ class ReleaseQualifyTests(unittest.TestCase):
                     package_spec="code-mower==1.0.0",
                     output_path=output_path,
                     qualification_context="upgrade",
-                    dry_run=True,
+                    starting_version="",
+                    dry_run=False,
                 )
-            self.assertIn("must be one of", str(ctx.exception))
-            self.assertIn("cold_install", str(ctx.exception))
+            self.assertIn("starting_version required", str(ctx.exception))
+
+    def test_upgrade_context_two_stage_rehearsal(self) -> None:
+        """Upgrade context runs two-stage rehearsal: starting then target."""
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch("code_mower.release_qualify.doctor_checks.run_doctor") as mock_doctor,
+            mock.patch("code_mower.release_qualify.lane_status.collect_status") as mock_lanes,
+            mock.patch("code_mower.release_qualify.code_mower_board.doctor_payload") as mock_board,
+            mock.patch("code_mower.release_qualify._run_upgrade_rehearsal") as mock_upgrade,
+        ):
+            mock_report = mock.Mock()
+            mock_report.status = "pass"
+            mock_report.warnings = 0
+            mock_report.owner_actions = 0
+            mock_doctor.return_value = mock_report
+
+            mock_lanes.return_value = {
+                "schema": "code_mower.laneStatus.v1",
+                "remote": {"available": True},
+            }
+
+            mock_board.return_value = {
+                "schema": "code_mower.boardDoctor.v1",
+                "status": "pass",
+                "checks": [],
+            }
+
+            mock_upgrade.return_value = {
+                "version": "code-mower 1.0.0",
+                "starting_version": "code-mower 0.9.0",
+            }
+
+            output_path = Path(tmpdir) / "result.json"
+
+            release_qualify.run_release_qualification(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                output_path=output_path,
+                qualification_context="upgrade",
+                starting_version="0.9.0",
+                dry_run=False,
+            )
+
+            mock_upgrade.assert_called_once_with(
+                starting_spec="code-mower==0.9.0",
+                target_spec="code-mower==1.0.0",
+                timeout=180,
+            )
+
+            with output_path.open() as f:
+                result = json.load(f)
+
+            self.assertEqual(result["qualification_context"], "upgrade")
+            self.assertEqual(result["starting_version"], "0.9.0")
+            self.assertEqual(result["ending_version"], "1.0.0")
+            self.assertEqual(result["outcome"], "pass")
 
     def test_exact_package_index_required(self) -> None:
         """Only exact package-index specs are accepted."""
