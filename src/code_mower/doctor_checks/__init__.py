@@ -13,6 +13,8 @@ from .cloud import (
     token_file_mentions_cloud_token,
 )
 from .adoption import (
+    DEFAULT_CAMPAIGN_PROVIDERS,
+    check_adoption_campaign_readiness,
     check_adoption_posture_guidance,
     check_adoption_setup,
     config_with_repository_target,
@@ -120,6 +122,8 @@ __all__ = [
     "auth_probe_output_detail",
     "build_doctor_run_plan",
     "check_cloud_token_surface",
+    "DEFAULT_CAMPAIGN_PROVIDERS",
+    "check_adoption_campaign_readiness",
     "check_adoption_posture_guidance",
     "check_adoption_setup",
     "check_github_auth_surface",
