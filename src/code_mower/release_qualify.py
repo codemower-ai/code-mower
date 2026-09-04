@@ -534,6 +534,97 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     qualify.add_argument("--json", action="store_true")
 
+    campaign = subparsers.add_parser(
+        "campaign",
+        help="Run or manage multi-provider release qualification campaign",
+    )
+    campaign.add_argument(
+        "action",
+        nargs="?",
+        default=None,
+        choices=["create", "status", "resume", "dispatch"],
+        help="Optional campaign action (create, status, resume, dispatch)",
+    )
+    campaign.add_argument(
+        "--release-tag",
+        default="",
+        help="Exact release tag (e.g., v1.0.0)",
+    )
+    campaign.add_argument(
+        "--package-spec",
+        default="",
+        help="Exact package-index spec (e.g., code-mower==1.0.0)",
+    )
+    campaign.add_argument(
+        "--providers",
+        default="",
+        help="Comma-separated provider list (default: claude,codex,antigravity,muse,cursor_bugbot,devin)",
+    )
+    campaign.add_argument(
+        "--qualification-context",
+        default="cold_install",
+        help="Qualification context (cold_install/upgrade/unknown)",
+    )
+    campaign.add_argument(
+        "--starting-version",
+        default="",
+        help="Starting version (required for upgrade qualification)",
+    )
+    campaign.add_argument(
+        "--repo-path",
+        type=Path,
+        default=None,
+        help="Repository path (defaults to current directory)",
+    )
+    campaign.add_argument(
+        "--repo-slug",
+        default="",
+        help="Optional repository slug (OWNER/REPO)",
+    )
+    campaign.add_argument(
+        "--issue",
+        default="",
+        help="Optional GitHub issue number for remote or comment dispatch",
+    )
+    campaign.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply mutations, remote dispatch, or paid work (default is dry-run)",
+    )
+    campaign.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an existing campaign (poll running or dispatch pending)",
+    )
+    campaign.add_argument(
+        "--status",
+        action="store_true",
+        help="Inspect status of an existing campaign without dispatching",
+    )
+    campaign.add_argument(
+        "--campaign-id",
+        default="",
+        help="Optional campaign identifier",
+    )
+    campaign.add_argument(
+        "--campaigns-dir",
+        type=Path,
+        default=None,
+        help="Directory to store campaign files (defaults to .code-mower/campaigns)",
+    )
+    campaign.add_argument(
+        "--record-result",
+        type=Path,
+        default=None,
+        help="Path to an adoption result JSON to record for a provider",
+    )
+    campaign.add_argument(
+        "--record-provider",
+        default="",
+        help="Provider identity when manually recording an adoption result",
+    )
+    campaign.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
 
     if args.command == "qualify":
@@ -566,6 +657,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as e:
             print(f"error: qualification failed: {e}", file=sys.stderr)
             return 1
+
+    if args.command == "campaign":
+        try:
+            from . import release_campaigns
+        except ImportError:
+            import release_campaigns  # type: ignore
+        providers_list = (
+            [p.strip() for p in args.providers.split(",") if p.strip()]
+            if args.providers
+            else ()
+        )
+        return release_campaigns.campaign_command(
+            action=args.action,
+            release_tag=args.release_tag,
+            package_spec=args.package_spec,
+            providers=providers_list,
+            qualification_context=args.qualification_context,
+            starting_version=args.starting_version,
+            repo_path=args.repo_path,
+            repo_slug=args.repo_slug,
+            issue=args.issue,
+            apply=args.apply,
+            resume=args.resume,
+            status=args.status,
+            campaign_id=args.campaign_id,
+            campaigns_dir=args.campaigns_dir,
+            record_result=args.record_result,
+            record_provider=args.record_provider,
+            emit_json=args.json,
+        )
 
     return 1
 
