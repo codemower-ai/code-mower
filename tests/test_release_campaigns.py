@@ -1241,7 +1241,8 @@ class ReleaseCampaignTests(unittest.TestCase):
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
-            self.assertEqual(len(dispatch_calls), 1)
+            # Cursor BugBot has trigger_comments, so 2 calls: dispatch + trigger
+            self.assertEqual(len(dispatch_calls), 2)
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
@@ -2591,6 +2592,718 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
+    def test_cursor_bugbot_accepts_known_trusted_bot_author(self) -> None:
+        """Cursor BugBot's registry defaults trust cursor[bot]'s bound reply."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "cursor[bot]"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "complete")
+
+    def test_cursor_bugbot_rejects_spoofed_author(self) -> None:
+        """A perfectly identity-bound marker from an untrusted commenter is ignored for Cursor BugBot too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "random-attacker"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "running")
+            self.assertIsNone(saved["providers"][0]["adoption_result"])
+
+    def test_cursor_bugbot_bot_authors_env_override_adds_trusted_login(self) -> None:
+        """CURSOR_BUGBOT_BOT_AUTHORS extends (not replaces) Cursor BugBot's default trusted authors."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "self-hosted-cursor-runner"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+                env={"CURSOR_BUGBOT_BOT_AUTHORS": "self-hosted-cursor-runner"},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "complete")
+
+    def test_devin_dispatch_includes_trigger_comments(self) -> None:
+        """Devin dispatch body includes trigger_comments so the remote knows how to start."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="99",
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(len(bodies), 2)
+            dispatch_body = bodies[0]
+            trigger_body = bodies[1]
+
+            # Dispatch body should document the trigger commands
+            self.assertIn("@devin run", dispatch_body)
+            self.assertIn("devin run", dispatch_body)
+            self.assertIn("**Trigger comments:**", dispatch_body)
+            self.assertIn("`@devin run`, `devin run`", dispatch_body)
+
+            # Trigger body should be just the trigger command itself
+            self.assertEqual(trigger_body.splitlines()[0], "@devin run")
+            self.assertIn("CODE_MOWER_RELEASE_TRIGGER", trigger_body)
+
+    def test_cursor_bugbot_dispatch_posts_trigger_comment(self) -> None:
+        """Cursor BugBot dispatch posts the trigger command as a separate actionable comment."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="99",
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(len(bodies), 2)
+            dispatch_body = bodies[0]
+            trigger_body = bodies[1]
+
+            # Dispatch body should document the trigger commands
+            self.assertIn("bugbot run", dispatch_body)
+            self.assertIn("@cursor review", dispatch_body)
+
+            # The actionable command stays first; the hidden marker makes a
+            # crash-after-post retry externally idempotent.
+            self.assertEqual(trigger_body.splitlines()[0], "bugbot run")
+            self.assertIn("CODE_MOWER_RELEASE_TRIGGER", trigger_body)
+
+    def test_failed_trigger_post_retries_on_resume(self) -> None:
+        """Failed trigger posts are persisted and retried on resume without redispatching."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+            call_count = {"dispatch": 0, "trigger": 0}
+
+            def failing_then_succeeding_runner(args, **kwargs):
+                """First trigger post fails, second succeeds."""
+                argv = list(args)
+                body_path = Path(argv[argv.index("--body-file") + 1])
+                body = body_path.read_text(encoding="utf-8")
+                bodies.append(body)
+
+                # Detect if this is dispatch or trigger based on body content
+                if "CODE_MOWER_RELEASE_CAMPAIGN" in body:
+                    call_count["dispatch"] += 1
+                    is_trigger = False
+                else:
+                    call_count["trigger"] += 1
+                    is_trigger = True
+
+                class MockCompleted:
+                    pass
+
+                completed = MockCompleted()
+                # First trigger fails, second succeeds
+                completed.returncode = 1 if (is_trigger and call_count["trigger"] == 1) else 0
+                completed.stdout = ""
+                completed.stderr = ""
+                return completed
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            # Initial dispatch with trigger failure
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="42",
+                apply=True,
+                command_runner=failing_then_succeeding_runner,
+                gh_json_runner=mock_gh_json,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            # Should have dispatch comment + failed trigger attempt
+            self.assertEqual(len(bodies), 2)
+            self.assertEqual(call_count["dispatch"], 1)
+            self.assertEqual(call_count["trigger"], 1)
+
+            campaign = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert campaign is not None
+            self.assertEqual(campaign["providers"][0]["state"], "running")
+            self.assertEqual(campaign["providers"][0]["trigger_posted"], False)
+            self.assertIn("trigger comment may not have posted", campaign["providers"][0]["next_detail"])
+
+            # Resume should retry trigger without redispatching
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=True,
+                gh_json_runner=mock_gh_json,
+                command_runner=failing_then_succeeding_runner,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            # Should have 1 more trigger attempt, no new dispatch
+            self.assertEqual(len(bodies), 3)
+            self.assertEqual(call_count["dispatch"], 1)  # Still 1
+            self.assertEqual(call_count["trigger"], 2)  # Now 2
+
+            retried = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert retried is not None
+            self.assertEqual(retried["providers"][0]["trigger_posted"], True)
+            self.assertIn("poll cursor_bugbot remote progress marker", retried["providers"][0]["next_action"])
+
+    def test_crash_after_dispatch_before_trigger_is_retriable(self) -> None:
+        """Simulates process crash after dispatch but before trigger is recorded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            # Create campaign that simulates a crash after dispatch checkpoint
+            # but before trigger post completes
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["attempted_at"] = "2024-01-01T00:00:00Z"
+            campaign.providers[0]["dispatched_at"] = "2024-01-01T00:00:00Z"
+            campaign.providers[0]["trigger_posted"] = False  # Crash before trigger recorded
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            bodies: list[str] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            # Resume should retry the trigger
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=mock_gh_json,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            # Should have posted exactly 1 trigger (no redispatch)
+            self.assertEqual(len(bodies), 1)
+            self.assertIn("bugbot run", bodies[0])
+            self.assertNotIn("CODE_MOWER_RELEASE_CAMPAIGN", bodies[0])
+
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            self.assertEqual(resumed["providers"][0]["trigger_posted"], True)
+
+    def test_resume_withholds_trigger_until_dispatch_is_confirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["dispatch_reconciliation_key"] = "dispatch-key"
+            provider["trigger_reconciliation_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": False}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            bodies: list[str] = []
+            forged_marker = json.dumps(
+                {
+                    "schema": release_campaigns.DISPATCH_SCHEMA,
+                    "campaign_id": campaign.campaign_id,
+                    "provider": "cursor_bugbot",
+                    "idempotency_key": provider["idempotency_key"],
+                },
+                sort_keys=True,
+            )
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: (
+                    {
+                        "comments": [
+                            {
+                                "author": {"login": "untrusted-user"},
+                                "body": (
+                                    "<!-- CODE_MOWER_RELEASE_CAMPAIGN: "
+                                    f"{forged_marker} -->"
+                                ),
+                            }
+                        ]
+                    },
+                    "",
+                ),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            self.assertFalse(resumed["providers"][0]["trigger_posted"])
+            self.assertIn("retry the dispatch", resumed["providers"][0]["next_action"])
+
+    def test_poll_failure_never_recommends_uncertain_redispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["dispatch_reconciliation_key"] = "dispatch-key"
+            provider["trigger_reconciliation_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": False}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: (None, "GitHub unavailable"),
+                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            action = resumed["providers"][0]["next_action"]
+            self.assertIn("reconciliation", action)
+            self.assertNotIn("retry the dispatch", action)
+
+    def test_resume_reconciles_posted_trigger_marker_without_reposting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["trigger_reconciliation_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            trigger_marker = json.dumps(
+                {
+                    "schema": release_campaigns.TRIGGER_MARKER_SCHEMA,
+                    "campaign_id": "campaign-v1.0.0",
+                    "provider": "cursor_bugbot",
+                    "reconciliation_key": "trigger-key",
+                },
+                sort_keys=True,
+            )
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: (
+                    {
+                        "comments": [
+                            {
+                                "author": {"login": "cursor[bot]"},
+                                "body": "bugbot run\n\n"
+                                f"<!-- CODE_MOWER_RELEASE_TRIGGER: {trigger_marker} -->",
+                            }
+                        ]
+                    },
+                    "",
+                ),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            self.assertTrue(resumed["providers"][0]["trigger_posted"])
+
+    def test_dispatch_nonce_cannot_forge_trigger_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["dispatch_reconciliation_key"] = "public-dispatch-key"
+            provider["trigger_reconciliation_key"] = "private-trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            forged_marker = json.dumps(
+                {
+                    "schema": release_campaigns.TRIGGER_MARKER_SCHEMA,
+                    "campaign_id": campaign.campaign_id,
+                    "provider": "cursor_bugbot",
+                    "reconciliation_key": "public-dispatch-key",
+                },
+                sort_keys=True,
+            )
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: (
+                    {
+                        "comments": [
+                            {
+                                "body": "bugbot run\n\n"
+                                f"<!-- CODE_MOWER_RELEASE_TRIGGER: {forged_marker} -->"
+                            }
+                        ]
+                    },
+                    "",
+                ),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(len(bodies), 1)
+            self.assertIn("bugbot run", bodies[0])
+            self.assertIn("private-trigger-key", bodies[0])
+            self.assertNotIn("public-dispatch-key", bodies[0])
+            resumed = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert resumed is not None
+            self.assertTrue(resumed["providers"][0]["trigger_posted"])
+
+    def test_completed_result_is_consumed_before_trigger_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["trigger_reconciliation_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": provider["idempotency_key"],
+                "adoption_result": _mock_adoption_result(
+                    release_tag="v1.0.0",
+                    provider="cursor_bugbot",
+                    outcome="pass",
+                ),
+            }
+            result_marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: (
+                    {
+                        "comments": [
+                            {"author": {"login": "cursor[bot]"}, "body": result_marker}
+                        ]
+                    },
+                    "",
+                ),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            self.assertEqual(resumed["providers"][0]["state"], "complete")
+
+    def test_resume_without_apply_never_posts_missing_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["trigger_reconciliation_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: ({"comments": []}, ""),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            self.assertFalse(resumed["providers"][0]["trigger_posted"])
+            self.assertIn("--resume --apply", resumed["providers"][0]["next_action"])
+
+    def test_resume_treats_legacy_missing_trigger_field_as_unposted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider.pop("trigger_posted", None)
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: ({"comments": []}, ""),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert resumed is not None
+            self.assertFalse(resumed["providers"][0]["trigger_posted"])
+            self.assertIn("--resume --apply", resumed["providers"][0]["next_action"])
+
+    def test_explicit_retry_does_not_duplicate_trigger(self) -> None:
+        """Explicit --retry-provider should not post trigger twice in one run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            # Create campaign with failed trigger
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["attempted_at"] = "2024-01-01T00:00:00Z"
+            campaign.providers[0]["dispatched_at"] = "2024-01-01T00:00:00Z"
+            campaign.providers[0]["trigger_posted"] = False
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            bodies: list[str] = []
+            call_count = {"dispatch": 0, "trigger": 0}
+
+            def counting_runner(args, **kwargs):
+                argv = list(args)
+                body_path = Path(argv[argv.index("--body-file") + 1])
+                body = body_path.read_text(encoding="utf-8")
+                bodies.append(body)
+
+                if "CODE_MOWER_RELEASE_CAMPAIGN" in body:
+                    call_count["dispatch"] += 1
+                else:
+                    call_count["trigger"] += 1
+
+                class MockCompleted:
+                    pass
+                completed = MockCompleted()
+                completed.returncode = 0
+                completed.stdout = ""
+                completed.stderr = ""
+                return completed
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            # Explicit retry with apply
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                retry_provider="cursor_bugbot",
+                apply=True,
+                repo_slug="owner/repo",
+                issue="42",
+                command_runner=counting_runner,
+                gh_json_runner=mock_gh_json,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            # Should have 1 dispatch + 1 trigger (not 2 triggers)
+            self.assertEqual(call_count["dispatch"], 1)
+            self.assertEqual(call_count["trigger"], 1)
+            self.assertEqual(len(bodies), 2)
+
 
 def _dispatch_marker_from_body(body: str) -> dict[str, Any]:
     """Parse the machine-readable dispatch marker out of a posted comment body."""
@@ -2710,7 +3423,8 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             )
 
             release_campaigns.campaign_command(**common_kwargs)
-            self.assertEqual(len(bodies), 1)
+            # Cursor BugBot has trigger_comments, so 2 bodies: dispatch + trigger
+            self.assertEqual(len(bodies), 2)
             first = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert first is not None
             self.assertEqual(first["providers"][0]["state"], "running")
@@ -2720,7 +3434,8 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
                 ret = release_campaigns.campaign_command(**common_kwargs)
 
             self.assertEqual(ret, 0)
-            self.assertEqual(len(bodies), 1)
+            # No new bodies during idempotent redispatch, still 2 total
+            self.assertEqual(len(bodies), 2)
             self.assertNotIn("Traceback", stderr.getvalue())
 
             self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
@@ -2820,10 +3535,12 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
             release_campaigns.campaign_command(**dispatch_kwargs)
-            self.assertEqual(len(bodies), 1)
+            # Cursor BugBot has trigger_comments, so 2 bodies: dispatch + trigger
+            self.assertEqual(len(bodies), 2)
 
             release_campaigns.campaign_command(**dispatch_kwargs)
-            self.assertEqual(len(bodies), 1)
+            # No new bodies during idempotent redispatch, still 2 total
+            self.assertEqual(len(bodies), 2)
 
             self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -2977,7 +3694,8 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
             bodies: list[str] = []
             saved = self._dispatch_upgrade_campaign(campaigns_dir, bodies)
 
-            self.assertEqual(len(bodies), 1)
+            # Cursor BugBot has trigger_comments, so 2 bodies: dispatch + trigger
+            self.assertEqual(len(bodies), 2)
             body = bodies[0]
             marker = _dispatch_marker_from_body(body)
             self.assertEqual(marker["schema"], release_campaigns.DISPATCH_SCHEMA)
@@ -3010,7 +3728,8 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
-            self.assertEqual(len(bodies), 1)
+            # Cursor BugBot has trigger_comments, so 2 bodies: dispatch + trigger
+            self.assertEqual(len(bodies), 2)
             marker = _dispatch_marker_from_body(bodies[0])
             self.assertEqual(marker["qualification_context"], "cold_install")
             self.assertNotIn("starting_version", marker)
@@ -3848,7 +4567,8 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
 
             self.assertEqual(release_campaigns.campaign_command(**dispatch_kwargs), 0)
 
-            self.assertEqual(len(calls), 1)
+            # Cursor BugBot has trigger_comments, so 2 calls: dispatch + trigger
+            self.assertEqual(len(calls), 2)
             self.assertIn("--repo", calls[0])
             self.assertEqual(calls[0][calls[0].index("--repo") + 1], "owner/repo")
 
@@ -3863,7 +4583,8 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
                 ret = release_campaigns.campaign_command(**dispatch_kwargs)
 
             self.assertEqual(ret, 0)
-            self.assertEqual(len(calls), 1)
+            # No new calls during idempotent redispatch, still 2 total
+            self.assertEqual(len(calls), 2)
             self.assertNotIn("Traceback", stderr.getvalue())
             self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
 
@@ -4036,7 +4757,8 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
 
             self.assertEqual(ret, 0)
             self.assertNotIn("Traceback", stderr.getvalue())
-            self.assertEqual(len(calls), 1)
+            # Cursor BugBot has trigger_comments, so 2 calls: dispatch + trigger
+            self.assertEqual(len(calls), 2)
             advanced = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert advanced is not None
             self.assertEqual(advanced["qualification_context"], "upgrade")
@@ -4069,7 +4791,8 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
 
             self.assertEqual(ret, 0)
             self.assertNotIn("Traceback", stderr.getvalue())
-            self.assertEqual(len(calls), 1)
+            # Cursor BugBot has trigger_comments, so 2 calls: dispatch + trigger
+            self.assertEqual(len(calls), 2)
             advanced = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert advanced is not None
             self.assertEqual(advanced["providers"][0]["state"], "running")
@@ -6779,7 +7502,8 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
                     gh_json_runner=mock_gh_json,
                     env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
                 )
-            self.assertEqual(len(bodies), 1)
+            # Cursor BugBot has trigger_comments, so 2 comments posted: dispatch + trigger
+            self.assertEqual(len(bodies), 2)
             dispatched = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert dispatched is not None
             self.assertFalse(dispatched["dry_run"])
@@ -6796,7 +7520,8 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
 
             polled = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert polled is not None
-            self.assertEqual(len(bodies), 1)
+            # No new comments during poll, still 2 total
+            self.assertEqual(len(bodies), 2)
             self.assertFalse(polled["dry_run"])
             self.assertEqual(polled["providers"][0]["dispatch_mode"], "applied")
             self.assertEqual(polled["providers"][0]["state"], "running")

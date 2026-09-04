@@ -56,6 +56,7 @@ else:
 CAMPAIGN_SCHEMA = "code_mower.releaseCampaign.v1"
 DISPATCH_SCHEMA = "code_mower.releaseCampaignDispatch.v1"
 RESULT_MARKER_SCHEMA = "code_mower.releaseCampaignResult.v1"
+TRIGGER_MARKER_SCHEMA = "code_mower.releaseCampaignTrigger.v1"
 BOARD_RELEASE_CAMPAIGNS_SCHEMA = "code_mower.boardReleaseCampaigns.v1"
 DEFAULT_CAMPAIGNS_RELATIVE_DIR = Path(".code-mower") / "campaigns"
 DEFAULT_ADAPTER_TIMEOUT_SECONDS = 900
@@ -825,6 +826,8 @@ def _dispatch_github_comment(
     idempotency_key: str,
     *,
     starting_version: str = "",
+    trigger_comments: tuple[str, ...] = (),
+    reconciliation_key: str = "",
     command_runner: lane_status.CommandRunner = lane_status.run_command,
 ) -> tuple[bool, dict[str, Any], str]:
     """Post the dispatch comment that tells a remote provider exactly what to qualify.
@@ -835,6 +838,9 @@ def _dispatch_github_comment(
     never told it would be guessing. A dispatch that cannot state the starting
     version of an upgrade campaign is refused rather than posted. Cold-install
     (and ``unknown``) campaigns have no starting version and omit the field.
+
+    When ``trigger_comments`` is supplied, the dispatch body includes them so
+    a remote provider knows exactly which comment to watch for.
     """
     if not repo_slug or not issue_number:
         return False, {}, _safe_error("missing_issue_number")
@@ -852,10 +858,16 @@ def _dispatch_github_comment(
     }
     if starting_version:
         dispatch_marker["starting_version"] = starting_version
+    if reconciliation_key:
+        dispatch_marker["reconciliation_key"] = reconciliation_key
     marker_str = json.dumps(dispatch_marker, sort_keys=True)
     starting_version_line = (
         f"- **Starting Version:** `{starting_version}`\n" if starting_version else ""
     )
+    trigger_comments_line = ""
+    if trigger_comments:
+        formatted_triggers = ", ".join(f"`{tc}`" for tc in trigger_comments)
+        trigger_comments_line = f"- **Trigger comments:** {formatted_triggers}\n"
     starting_version_requirement = (
         f" The embedded `adoption_result` must report `qualification_context` "
         f"`{qualification_context}` and `starting_version` `{starting_version}`; "
@@ -871,6 +883,7 @@ def _dispatch_github_comment(
         f"- **Provider:** `{provider}`\n"
         f"- **Context:** `{qualification_context}`\n"
         f"{starting_version_line}"
+        f"{trigger_comments_line}"
         f"- **Idempotency Key:** `{idempotency_key}`\n\n"
         f"Reply with a comment containing a `CODE_MOWER_ADOPTION_RESULT` "
         f"marker wrapping schema `{RESULT_MARKER_SCHEMA}` with matching "
@@ -911,6 +924,105 @@ def _dispatch_github_comment(
         return False, {}, _safe_error("github_dispatch_failed")
 
     return True, {"issue_number": str(issue_number), "comment_posted": True}, ""
+
+
+def _post_trigger_comment(
+    repo_slug: str,
+    issue_number: int | str,
+    trigger_command: str,
+    *,
+    campaign_id: str,
+    provider: str,
+    reconciliation_key: str,
+    command_runner: lane_status.CommandRunner = lane_status.run_command,
+) -> tuple[bool, dict[str, Any], str]:
+    """Post the trigger command as a separate comment to actually start the provider.
+
+    For manually triggered hosted providers (Devin, Cursor BugBot), the dispatch
+    comment documents what to qualify, but the provider starts only when it sees
+    its configured trigger comment. Post that trigger as a plain comment body so
+    the provider will actually begin the qualification run.
+    """
+    if (
+        not repo_slug
+        or not issue_number
+        or not trigger_command
+        or not campaign_id
+        or not provider
+        or not reconciliation_key
+    ):
+        return False, {}, "missing trigger prerequisites"
+
+    marker = json.dumps(
+        {
+            "schema": TRIGGER_MARKER_SCHEMA,
+            "campaign_id": campaign_id,
+            "provider": provider,
+            "reconciliation_key": reconciliation_key,
+        },
+        sort_keys=True,
+    )
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as fh:
+        trigger_path = Path(fh.name)
+        fh.write(f"{trigger_command}\n\n<!-- CODE_MOWER_RELEASE_TRIGGER: {marker} -->\n")
+
+    try:
+        completed = command_runner(
+            [
+                "gh",
+                "issue",
+                "comment",
+                str(issue_number),
+                "--repo",
+                repo_slug,
+                "--body-file",
+                str(trigger_path),
+            ]
+        )
+    except (OSError, ValueError):
+        return False, {}, "trigger comment post failed"
+    finally:
+        try:
+            trigger_path.unlink()
+        except OSError:
+            pass
+
+    returncode = getattr(completed, "returncode", 1)
+    if returncode != 0:
+        return False, {}, "trigger comment post failed"
+
+    return True, {"trigger_posted": True}, ""
+
+
+def _has_matching_release_marker(
+    comments: Sequence[Mapping[str, Any]],
+    marker_name: str,
+    expected: Mapping[str, str],
+) -> bool:
+    """Match a side effect using its pre-persisted, unguessable reconciliation key."""
+    if not expected.get("reconciliation_key"):
+        return False
+    pattern = re.compile(
+        rf"<!--\s*{re.escape(marker_name)}:\s*(\{{.*?\}})\s*-->",
+        re.DOTALL,
+    )
+    for comment in comments:
+        body = comment.get("body")
+        if not isinstance(body, str):
+            continue
+        match = pattern.search(body)
+        if match is None:
+            continue
+        try:
+            payload = json.loads(match.group(1))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        if all(str(payload.get(key) or "") == value for key, value in expected.items()):
+            return True
+    return False
 
 
 def _poll_github_comments(
@@ -1596,61 +1708,181 @@ def dispatch_or_advance_campaign(
             provider_data["next_action"] = "none"
             continue
 
-        # 3. If running, poll for a bound result marker
+        # 3. If running, check trigger status and retry if needed, then poll
         if current_state == "running":
-            dispatch_ref = provider_data.get("dispatch_ref", {})
+            raw_dispatch_ref = provider_data.get("dispatch_ref", {})
+            dispatch_ref = dict(raw_dispatch_ref) if isinstance(raw_dispatch_ref, Mapping) else {}
             ref_issue = dispatch_ref.get("issue_number") or issue_number
-            found_result = None
+            comments: list[dict[str, Any]] = []
+            poll_error = ""
             if ref_issue and repo_slug:
-                comments, error = _poll_github_comments(
+                comments, poll_error = _poll_github_comments(
                     repo_slug,
                     ref_issue,
                     gh_json_runner=gh_json_runner,
                 )
-                if error:
-                    provider_data["error"] = error
-                else:
-                    provider_data["error"] = ""
-                    trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
-                    for comment in comments:
-                        if not _is_trusted_github_author(_comment_author_login(comment), trusted_authors):
-                            # Identity binding (campaign/provider/tag/idempotency key)
-                            # alone is not enough -- those fields are visible in the
-                            # public dispatch comment, so only a configured trusted
-                            # author's reply is ever considered.
-                            continue
-                        body = str(comment.get("body") or "")
-                        found_result = _extract_bound_adoption_result(
-                            body,
-                            campaign_id=campaign_id,
-                            provider=provider,
-                            release_tag=release_tag,
-                            idempotency_key=str(provider_data.get("idempotency_key") or ""),
-                            qualification_context=context,
-                            starting_version=starting_version,
-                            package_identity=package_identity,
+
+            # A completed result is authoritative and must be consumed before
+            # considering any retry side effect. Otherwise a missing trigger
+            # marker could restart a provider that has already finished.
+            found_result = None
+            if poll_error:
+                provider_data["error"] = poll_error
+            else:
+                provider_data["error"] = ""
+                trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
+                for comment in comments:
+                    if not _is_trusted_github_author(
+                        _comment_author_login(comment), trusted_authors
+                    ):
+                        continue
+                    found_result = _extract_bound_adoption_result(
+                        str(comment.get("body") or ""),
+                        campaign_id=campaign_id,
+                        provider=provider,
+                        release_tag=release_tag,
+                        idempotency_key=str(provider_data.get("idempotency_key") or ""),
+                        qualification_context=context,
+                        starting_version=starting_version,
+                        package_identity=package_identity,
+                    )
+                    if found_result:
+                        provider_data["adoption_result"] = found_result
+                        provider_data["elapsed_seconds"] = float(
+                            found_result.get("elapsed_seconds") or 0.0
                         )
-                        if found_result:
-                            provider_data["adoption_result"] = found_result
-                            provider_data["elapsed_seconds"] = float(
-                                found_result.get("elapsed_seconds") or 0.0
+                        provider_data["completed_at"] = now_utc
+                        outcome = found_result.get("outcome")
+                        if outcome in {"pass", "pass_with_warnings"}:
+                            provider_data["state"] = "complete"
+                            provider_data["next_action"] = "none"
+                            provider_data["next_detail"] = ""
+                        else:
+                            provider_data["state"] = "blocked"
+                            provider_data["next_action"] = (
+                                f"inspect {provider} qualification failures"
                             )
-                            provider_data["completed_at"] = now_utc
-                            outcome = found_result.get("outcome")
-                            if outcome in {"pass", "pass_with_warnings"}:
-                                provider_data["state"] = "complete"
-                                provider_data["next_action"] = "none"
-                            else:
-                                provider_data["state"] = "blocked"
-                                provider_data["next_action"] = (
-                                    f"inspect {provider} qualification failures"
-                                )
-                            break
-            if found_result is not None or not is_explicit_retry:
-                # Ordinary resume is poll-only and never redispatches. An
-                # explicit retry that already found a valid trusted result
-                # is complete/blocked from polling above -- it must not be
-                # redispatched either.
+                            provider_data["next_detail"] = f"outcome: {outcome}"
+                        break
+            if found_result is not None:
+                continue
+
+            # For manually triggered providers, retry trigger if not yet posted.
+            # Skip this automatic retry if an explicit --retry-provider is active,
+            # since the explicit redispatch path will post its own trigger.
+            # Also gate on apply: trigger retry is a write operation, not a poll.
+            trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
+            provider_data.setdefault("trigger_posted", not bool(trigger_comments))
+            trigger_posted = provider_data["trigger_posted"]
+
+            if trigger_comments and not trigger_posted and not is_explicit_retry:
+                dispatch_key = str(provider_data.get("dispatch_reconciliation_key") or "")
+                trigger_key = str(provider_data.get("trigger_reconciliation_key") or "")
+                if not dispatch_key or not trigger_key:
+                    dispatch_key = dispatch_key or uuid.uuid4().hex
+                    trigger_key = trigger_key or uuid.uuid4().hex
+                    provider_data["dispatch_reconciliation_key"] = dispatch_key
+                    provider_data["trigger_reconciliation_key"] = trigger_key
+                    # Persist both nonces before any external side effect. The
+                    # trigger nonce is deliberately absent from the dispatch
+                    # comment, so it cannot be copied to forge trigger success.
+                    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+
+                dispatch_posted = bool(dispatch_ref.get("comment_posted"))
+                dispatch_expected = {
+                    "schema": DISPATCH_SCHEMA,
+                    "campaign_id": campaign_id,
+                    "provider": provider,
+                    "idempotency_key": str(provider_data.get("idempotency_key") or ""),
+                    "reconciliation_key": dispatch_key,
+                }
+                if not dispatch_posted and not poll_error:
+                    dispatch_posted = _has_matching_release_marker(
+                        comments,
+                        "CODE_MOWER_RELEASE_CAMPAIGN",
+                        dispatch_expected,
+                    )
+                    if dispatch_posted:
+                        dispatch_ref["comment_posted"] = True
+                        provider_data["dispatch_ref"] = dispatch_ref
+
+                trigger_expected = {
+                    "schema": TRIGGER_MARKER_SCHEMA,
+                    "campaign_id": campaign_id,
+                    "provider": provider,
+                    "reconciliation_key": trigger_key,
+                }
+                if poll_error:
+                    provider_data["next_action"] = f"retry {provider} trigger reconciliation"
+                    provider_data["next_detail"] = "GitHub comments are temporarily unavailable"
+                elif not dispatch_posted:
+                    provider_data["next_action"] = (
+                        f"run with --apply --retry-provider {provider} to retry the dispatch"
+                    )
+                    provider_data["next_detail"] = (
+                        "trigger withheld because the campaign dispatch is not confirmed"
+                    )
+                elif _has_matching_release_marker(
+                    comments,
+                    "CODE_MOWER_RELEASE_TRIGGER",
+                    trigger_expected,
+                ):
+                    # The trigger nonce is never published in the earlier
+                    # dispatch marker. Possession therefore authenticates this
+                    # exact side effect without assuming which human-owned
+                    # token posted the trigger comment.
+                    provider_data["trigger_posted"] = True
+                    provider_data["next_action"], provider_data["next_detail"] = (
+                        _provider_next_action(
+                            provider,
+                            lane,
+                            "running",
+                            command_available=True,
+                            has_credentials=True,
+                            has_issue=True,
+                            dry_run=False,
+                        )
+                    )
+                elif not apply:
+                    provider_data["next_action"] = (
+                        f"run with --resume --apply to retry the {provider} trigger"
+                    )
+                    provider_data["next_detail"] = (
+                        "trigger reconciliation is read-only without --apply"
+                    )
+                elif ref_issue and repo_slug:
+                    trigger_ok, _trigger_ref, _trigger_err = _post_trigger_comment(
+                        repo_slug,
+                        ref_issue,
+                        trigger_comments[0],
+                        campaign_id=campaign_id,
+                        provider=provider,
+                        reconciliation_key=trigger_key,
+                        command_runner=command_runner,
+                    )
+                    provider_data["trigger_posted"] = trigger_ok
+                    if trigger_ok:
+                        provider_data["next_action"], provider_data["next_detail"] = (
+                            _provider_next_action(
+                                provider,
+                                lane,
+                                "running",
+                                command_available=True,
+                                has_credentials=True,
+                                has_issue=True,
+                                dry_run=False,
+                            )
+                        )
+                    else:
+                        provider_data["next_action"] = f"retry {provider} trigger comment post"
+                        provider_data["next_detail"] = "trigger comment post failed on retry"
+                _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+                # After trigger reconciliation, continue to result polling below.
+
+            if not is_explicit_retry:
+                # Ordinary resume is poll/reconciliation-only and never
+                # redispatches. Explicit retry may continue below only after
+                # the trusted result scan above found no completed evidence.
                 continue
             # Explicit retry of a still-running provider with no valid
             # trusted result yet: fall through to the capability checks and
@@ -1936,6 +2168,14 @@ def dispatch_or_advance_campaign(
                     "issue_number": str(issue_number),
                     "comment_posted": False,
                 }
+                # A crash after the dispatch post but before the trigger post
+                # must remain retriable, so record the trigger as not-yet-posted
+                # for manually triggered providers before the pre-post save.
+                trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
+                provider_data["trigger_posted"] = not bool(trigger_comments)
+                if trigger_comments:
+                    provider_data["dispatch_reconciliation_key"] = uuid.uuid4().hex
+                    provider_data["trigger_reconciliation_key"] = uuid.uuid4().hex
                 (
                     provider_data["next_action"],
                     provider_data["next_detail"],
@@ -1949,6 +2189,7 @@ def dispatch_or_advance_campaign(
                     dry_run=False,
                 )
                 _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+                trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
                 ok, ref, err = _dispatch_github_comment(
                     repo_slug,
                     issue_number,
@@ -1959,6 +2200,10 @@ def dispatch_or_advance_campaign(
                     context,
                     provider_data["idempotency_key"],
                     starting_version=starting_version,
+                    trigger_comments=trigger_comments,
+                    reconciliation_key=str(
+                        provider_data.get("dispatch_reconciliation_key") or ""
+                    ),
                     command_runner=command_runner,
                 )
                 if ok:
@@ -1978,6 +2223,35 @@ def dispatch_or_advance_campaign(
                         has_issue=True,
                         dry_run=False,
                     )
+                    # Make the confirmed dispatch durable before posting a
+                    # trigger that may start a paid provider run.
+                    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+                    # For manually triggered providers, post the trigger command
+                    # as a separate comment so the provider will actually start.
+                    if trigger_comments:
+                        trigger_ok, _trigger_ref, _trigger_err = _post_trigger_comment(
+                            repo_slug,
+                            issue_number,
+                            trigger_comments[0],
+                            campaign_id=campaign_id,
+                            provider=provider,
+                            reconciliation_key=str(
+                                provider_data["trigger_reconciliation_key"]
+                            ),
+                            command_runner=command_runner,
+                        )
+                        # Persist trigger status so resume can retry on failure
+                        provider_data["trigger_posted"] = trigger_ok
+                        if not trigger_ok:
+                            provider_data["next_action"] = (
+                                f"retry {provider} trigger comment post"
+                            )
+                            provider_data["next_detail"] = (
+                                f"{provider_data['next_detail']}; trigger comment may not have posted"
+                            )
+                    else:
+                        # Non-trigger providers are immediately pollable
+                        provider_data["trigger_posted"] = True
                 else:
                     # The dispatch failed *in process*, so this run knows the
                     # outcome and records it: the checkpoint's provisional
