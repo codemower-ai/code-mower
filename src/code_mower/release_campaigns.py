@@ -696,24 +696,54 @@ def _load_bound_result_file(
     a result for another distribution must never qualify this campaign's
     package.
     """
-    if not package_identity:
-        return None
     try:
         with path.open("r", encoding="utf-8") as fh:
             candidate = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not is_bound_adoption_result(
+        candidate,
+        provider=provider,
+        release_tag=release_tag,
+        qualification_context=qualification_context,
+        starting_version=starting_version,
+        package_identity=package_identity,
+    ):
+        return None
+    return candidate
+
+
+def is_bound_adoption_result(
+    candidate: Any,
+    *,
+    provider: str,
+    release_tag: str,
+    qualification_context: str,
+    starting_version: str,
+    package_identity: str,
+) -> bool:
+    """Report whether an adoption result passes schema *and* campaign identity binding.
+
+    The one place the binding rules are written down, so a result loaded from a
+    drop-in file, and a result already stored in campaign state and revalidated
+    later (before it is converted into a cloud event), are held to exactly the
+    same contract. An empty ``package_identity`` means the campaign's own spec
+    binds nothing, so nothing can be bound to it: that fails closed.
+    """
+    if not package_identity or not isinstance(candidate, dict):
+        return False
+    try:
         validate_adoption_result_payload(
             candidate, expected_package_identity=package_identity
         )
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
-    if (
+    except (TypeError, ValueError):
+        return False
+    return not (
         candidate.get("release_tag") != release_tag
         or candidate.get("provider") != provider
         or candidate.get("qualification_context") != qualification_context
         or candidate.get("starting_version") != starting_version
-    ):
-        return None
-    return candidate
+    )
 
 
 def _extract_bound_adoption_result(
@@ -2024,6 +2054,430 @@ def record_manual_result(
     return campaign
 
 
+def _load_cloud_client() -> Any:
+    """Import the cloud client lazily, on the upload path only.
+
+    Campaign creation, dispatch, polling, and status must keep working with no
+    cloud surface loaded at all, so the import happens where it is used rather
+    than at module import time. It also keeps the dependency one-directional:
+    ``code_mower.board`` imports this module lazily for its campaign
+    projection, and the cloud client imports ``board``.
+    """
+    if __package__ in {None, ""}:  # pragma: no cover - script-mode fallback
+        from code_mower import cloud_client
+    else:
+        from . import cloud_client
+    return cloud_client
+
+
+CAMPAIGN_UPLOAD_SCHEMA = "code_mower.releaseCampaignUpload.v1"
+CAMPAIGN_UPLOAD_SOURCE = "code-mower release campaign upload"
+
+# The only package identity the cloud `adoption_run` contract accepts. A
+# campaign for another distribution is refused with one bounded error instead of
+# being reported as six malformed provider results.
+CAMPAIGN_UPLOAD_PACKAGE_IDENTITY = "code-mower"
+
+# Why a *completed* provider's stored adoption result could not be converted
+# into the closed adoption_run event contract. Closed and bounded like
+# SAFE_ERROR_CODES: a rejection reports one of these codes and nothing else --
+# never a validator message, a file path, or any part of the stored result.
+CAMPAIGN_UPLOAD_REJECT_CODES = frozenset(
+    {
+        "provider_list_invalid",
+        "provider_entry_invalid",
+        "adoption_result_missing",
+        "adoption_result_invalid",
+        "adoption_result_unconvertible",
+    }
+)
+
+# A campaign's provider list holds at most one entry per known provider, so this
+# bound is far above anything the tool itself writes. It exists because a stored
+# campaign file is untrusted input: the upload converter iterates `providers`
+# only after confirming it is an actual bounded list, so a hand-edited file
+# carrying `null`, a number, a string, or a million entries is refused with one
+# bounded rejection instead of raising TypeError or being walked element by
+# element.
+MAX_CAMPAIGN_UPLOAD_PROVIDERS = 64
+
+_PROVIDER_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+def _safe_provider_name(value: Any) -> str:
+    """Project a stored provider name, or ``unknown`` for anything else.
+
+    Campaign files are untrusted input on this path -- the upload summary is
+    printed and uploaded-adjacent -- so a hand-edited provider field can only
+    ever surface as a safe identifier.
+    """
+    return value if isinstance(value, str) and _PROVIDER_NAME_PATTERN.match(value) else "unknown"
+
+
+def _skipped_provider_row(entry: Mapping[str, Any], provider: str, state: str) -> dict[str, str]:
+    error = entry.get("error")
+    return {
+        "provider": provider,
+        "state": state,
+        "reason": error if isinstance(error, str) and error in SAFE_ERROR_CODES else "",
+    }
+
+
+def build_campaign_upload_events(
+    campaign: Mapping[str, Any],
+    *,
+    team_id: str = "",
+    install_id: str = "",
+    source: str = CAMPAIGN_UPLOAD_SOURCE,
+) -> dict[str, Any]:
+    """Convert every completed provider's revalidated result into adoption_run events.
+
+    Completion is the campaign's own record, but it is never taken on trust:
+    each stored result is revalidated against the closed adoption-result schema
+    and rebound to this campaign's provider, release tag, package identity,
+    qualification context, and starting version -- the same contract
+    :func:`is_bound_adoption_result` applies to a drop-in result file -- before
+    :func:`cloud_client.adoption_result_to_event` converts it. Conversion itself
+    enforces the metadata-only adoption_run contract, so missing model, token,
+    and cost data stays unavailable rather than zero-filled, and no report text,
+    output, path, or prose can reach an event.
+
+    A provider that is not complete is *skipped* and counted separately: an
+    incomplete or unavailable provider has no evidence to publish, which is not
+    an error. A provider that *is* complete but whose stored result is missing,
+    unbindable, or malformed is *rejected*, with one bounded code from
+    :data:`CAMPAIGN_UPLOAD_REJECT_CODES`. The caller refuses the whole upload in
+    that case: silently skipping it would publish a partial event set while
+    reporting success, and repairing it would fabricate evidence.
+
+    The stored ``providers`` value is itself untrusted: it is converted only
+    when it is an actual list or tuple of at most
+    :data:`MAX_CAMPAIGN_UPLOAD_PROVIDERS` entries. A hand-edited campaign whose
+    ``providers`` is missing, ``null``, a scalar, a string, a mapping, or
+    oversized is refused whole with a single ``provider_list_invalid``
+    rejection -- the same bounded ``invalid_results`` outcome as an unusable
+    result, never a ``TypeError`` and never an element-by-element walk of an
+    unbounded value.
+
+    Each entry's stored ``state`` is untrusted in the same way. It is compared
+    against :data:`VALID_PROVIDER_STATES` only after it is known to be a string,
+    because an unhashable hand-edited value such as a list or a mapping makes
+    that membership test raise ``TypeError`` rather than answer ``False``. A
+    state of any unrecognized type reads as ``unavailable`` -- exactly as a
+    stray string state already does -- so the provider is skipped, has no
+    evidence published, and its raw stored value never reaches the summary.
+
+    The event list is ordered by provider name, so the same campaign always
+    produces the same event set in the same order -- what a preview shows is
+    exactly what ``--yes`` uploads.
+    """
+    cloud = _load_cloud_client()
+    release_tag = str(campaign.get("release_tag") or "")
+    qualification_context = str(campaign.get("qualification_context") or "")
+    starting_version = str(campaign.get("starting_version") or "")
+    repo_slug = str(campaign.get("repo_slug") or "")
+    package_identity = campaign_package_identity(str(campaign.get("package_spec") or ""))
+
+    converted: list[tuple[str, dict[str, Any]]] = []
+    skipped: list[dict[str, str]] = []
+    rejected: list[dict[str, str]] = []
+    complete_count = 0
+
+    entries = campaign.get("providers")
+    if not isinstance(entries, (list, tuple)) or len(entries) > MAX_CAMPAIGN_UPLOAD_PROVIDERS:
+        return {
+            "events": [],
+            "accepted_providers": [],
+            "skipped_providers": [],
+            "rejected_providers": [
+                {"provider": "unknown", "state": "unknown", "reason": "provider_list_invalid"}
+            ],
+            "provider_count": 0,
+            "complete_count": 0,
+            "package_identity": package_identity,
+            "repo_slug": repo_slug,
+        }
+
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            complete_count += 1
+            rejected.append(
+                {"provider": "unknown", "state": "unknown", "reason": "provider_entry_invalid"}
+            )
+            continue
+        provider = _safe_provider_name(entry.get("provider"))
+        # Membership is tested only once the stored state is known to be a
+        # string: an unhashable hand-edited value (a list, a mapping) makes
+        # `value in VALID_PROVIDER_STATES` raise TypeError instead of answering
+        # False. Anything unrecognized reads as `unavailable`, as a stray string
+        # state already does.
+        state = entry.get("state")
+        if not isinstance(state, str) or state not in VALID_PROVIDER_STATES:
+            state = "unavailable"
+        if state != "complete":
+            skipped.append(_skipped_provider_row(entry, provider, str(state)))
+            continue
+        complete_count += 1
+        result = entry.get("adoption_result")
+        if not isinstance(result, Mapping) or not result:
+            rejected.append(
+                {"provider": provider, "state": state, "reason": "adoption_result_missing"}
+            )
+            continue
+        if not is_bound_adoption_result(
+            dict(result),
+            provider=provider,
+            release_tag=release_tag,
+            qualification_context=qualification_context,
+            starting_version=starting_version,
+            package_identity=package_identity,
+        ):
+            rejected.append(
+                {"provider": provider, "state": state, "reason": "adoption_result_invalid"}
+            )
+            continue
+        try:
+            event = cloud.adoption_result_to_event(
+                dict(result),
+                repo_slug=repo_slug,
+                team_id=team_id,
+                install_id=install_id,
+                source=source,
+            )
+        except cloud.CloudBundleError:
+            # The converter's message describes the offending field, but it is
+            # derived from stored campaign content; only the bounded code
+            # crosses into the summary.
+            rejected.append(
+                {
+                    "provider": provider,
+                    "state": state,
+                    "reason": "adoption_result_unconvertible",
+                }
+            )
+            continue
+        converted.append((provider, event))
+
+    converted.sort(key=lambda item: item[0])
+    return {
+        "events": [event for _, event in converted],
+        "accepted_providers": [provider for provider, _ in converted],
+        "skipped_providers": sorted(skipped, key=lambda row: row["provider"]),
+        "rejected_providers": sorted(rejected, key=lambda row: row["provider"]),
+        "provider_count": len(entries),
+        "complete_count": complete_count,
+        "package_identity": package_identity,
+        "repo_slug": repo_slug,
+    }
+
+
+def _campaign_upload_next_action(
+    *,
+    status: str,
+    event_count: int,
+    rejected: Sequence[Mapping[str, str]],
+    skipped: Sequence[Mapping[str, str]],
+    token_status: str,
+) -> tuple[str, str]:
+    """The one bounded, safe next action for an upload outcome.
+
+    Every branch names a command the caller can actually run next, and nothing
+    else: no stored result content, no endpoint response text, no paths.
+    """
+    if status == "invalid_results":
+        names = ", ".join(sorted({str(row.get("provider") or "unknown") for row in rejected}))
+        return (
+            f"inspect stored qualification results for: {names}",
+            "re-record them with --record-result, or retry those providers",
+        )
+    if status == "no_events":
+        return (
+            "complete at least one provider before uploading",
+            f"{len(skipped)} provider(s) have no completed qualification evidence",
+        )
+    if status == "uploaded":
+        return ("none", f"{event_count} adoption_run event(s) uploaded")
+    if token_status == "ambiguous":
+        return (
+            "select one Code Mower Cloud token profile with --install-id or --token-file",
+            "several stored token profiles matched, so none was selected",
+        )
+    if token_status != "ok":
+        return (
+            "run `code-mower cloud setup --token-stdin` before uploading with --yes",
+            "no Code Mower Cloud token was resolved for this upload",
+        )
+    return (
+        "re-run `code-mower release campaign upload --yes` to upload",
+        f"{event_count} adoption_run event(s) previewed; nothing left this machine",
+    )
+
+
+def render_campaign_upload_text(result: Mapping[str, Any]) -> str:
+    counts = result.get("counts", {})
+    lines = [
+        f"Release Campaign Upload: {result.get('release_tag')} ({result.get('campaign_id')})",
+        f"Status: {result.get('status')}",
+        f"Endpoint: {result.get('endpoint')}",
+        f"Events: {counts.get('events', 0)} adoption_run event(s) "
+        f"from {counts.get('accepted', 0)} complete provider(s)",
+        f"Skipped: {counts.get('skipped', 0)} provider(s) without completed evidence",
+        f"Rejected: {counts.get('rejected', 0)} completed provider(s) with unusable results",
+        "Model/token/cost: unavailable (metadata-only, never zero-filled)",
+        f"Next: {result.get('next_action')}",
+    ]
+    if result.get("next_detail"):
+        lines.append(f"Detail: {result.get('next_detail')}")
+    if result.get("status") == "dry_run":
+        lines.append("Network: skipped (pass --yes to upload)")
+    return "\n".join(lines)
+
+
+def campaign_upload(
+    campaign: Mapping[str, Any],
+    *,
+    endpoint: str = "",
+    token_env: str = "",
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
+    install_id: str = "",
+    team_id: str = "",
+    yes: bool = False,
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    """Preview or perform the cloud upload of one campaign's completed evidence.
+
+    Preview is the default and is the same computation as the applied upload:
+    both build the identical deterministic event set and the identical payload,
+    and only the final network post is conditional on ``yes``. The token
+    resolver, endpoint resolution, bundle/metadata validation, idempotent event
+    ids, and HTTP posting are all the shared cloud client's -- none of it is
+    reimplemented here.
+
+    Returns a metadata-only summary. Raises ``CloudBundleError`` (the cloud
+    client's) for a bounded local failure such as an unresolvable token; the
+    caller renders it. A campaign whose completed results cannot all be
+    converted returns ``status: invalid_results`` and uploads nothing.
+    """
+    cloud = _load_cloud_client()
+    resolved_token_env = token_env or cloud.DEFAULT_TOKEN_ENV
+    requested_endpoint = endpoint or os.environ.get(
+        "CODE_MOWER_CLOUD_ENDPOINT", cloud.DEFAULT_UPLOAD_ENDPOINT
+    )
+    token_resolution = cloud.resolve_cloud_token(
+        token_env=resolved_token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    resolved_endpoint = cloud.resolve_cloud_endpoint(requested_endpoint, token_resolution)
+    resolved_team_id, resolved_install_id = cloud.resolve_cloud_identity(
+        team_id=team_id,
+        install_id=install_id,
+        resolution=token_resolution,
+    )
+
+    package_identity = campaign_package_identity(str(campaign.get("package_spec") or ""))
+    if package_identity != CAMPAIGN_UPLOAD_PACKAGE_IDENTITY:
+        raise cloud.CloudBundleError(
+            "the cloud adoption_run contract accepts only "
+            f"{CAMPAIGN_UPLOAD_PACKAGE_IDENTITY!r} release qualification; this "
+            "campaign qualifies a different package, so its results are not uploadable"
+        )
+
+    plan = build_campaign_upload_events(
+        campaign,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+    )
+    events = plan["events"]
+    summary: dict[str, Any] = {
+        "schema": CAMPAIGN_UPLOAD_SCHEMA,
+        "mode": "release-campaign-upload",
+        "campaign_id": str(campaign.get("campaign_id") or ""),
+        "release_tag": str(campaign.get("release_tag") or ""),
+        "qualification_context": str(campaign.get("qualification_context") or ""),
+        "package_identity": package_identity,
+        "endpoint": resolved_endpoint,
+        "token_status": token_resolution.status,
+        "requires_yes": not yes,
+        "upload_mode": "metadata_only",
+        "counts": {
+            "providers": plan["provider_count"],
+            "complete": plan["complete_count"],
+            "skipped": len(plan["skipped_providers"]),
+            "accepted": len(plan["accepted_providers"]),
+            "rejected": len(plan["rejected_providers"]),
+            "events": len(events),
+        },
+        "accepted_providers": plan["accepted_providers"],
+        "skipped_providers": plan["skipped_providers"],
+        "rejected_providers": plan["rejected_providers"],
+        # The event set is derived deterministically from stored results, and
+        # each id is the converter's content-addressed uuid5, so a preview and
+        # every later upload of the same evidence carry the same ids: repeating
+        # an upload is idempotent rather than duplicative.
+        "event_ids": [str(event.get("event_id") or "") for event in events],
+        "unavailable_measurements": ["cost", "model", "token"],
+    }
+
+    if plan["rejected_providers"]:
+        status = "invalid_results"
+    elif not events:
+        status = "no_events"
+    else:
+        status = "uploaded" if yes else "dry_run"
+    summary["status"] = status
+    summary["would_upload"] = status == "uploaded"
+    summary["next_action"], summary["next_detail"] = _campaign_upload_next_action(
+        status=status,
+        event_count=len(events),
+        rejected=plan["rejected_providers"],
+        skipped=plan["skipped_providers"],
+        token_status=token_resolution.status,
+    )
+    if status in {"invalid_results", "no_events"}:
+        return summary
+
+    payload = cloud.build_event_upload_payload(
+        events=events,
+        repo_slug=plan["repo_slug"],
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+    )
+    if not yes:
+        summary["upload"] = cloud.build_dogfood_dry_run_preview(
+            endpoint=resolved_endpoint,
+            payload=payload,
+        )
+        return summary
+    token = cloud.require_upload_token(
+        endpoint=resolved_endpoint,
+        resolution=token_resolution,
+        local_endpoint=cloud.is_local_http_endpoint(resolved_endpoint),
+    )
+    try:
+        summary["upload"] = cloud.post_upload_payload(
+            payload=payload,
+            endpoint=resolved_endpoint,
+            token=token,
+            timeout=timeout,
+        )
+    except cloud.CloudBundleError as exc:
+        # A failed post's message can carry the endpoint's own response body --
+        # arbitrary remote text. The campaign surface stays bounded, so the
+        # failure is reported without it. Nothing was recorded either way, and
+        # event ids are content-addressed, so re-running the upload republishes
+        # the same events rather than duplicating them.
+        raise cloud.CloudBundleError(
+            "release campaign upload did not complete: the cloud endpoint "
+            "rejected the upload or could not be reached; re-run "
+            "`code-mower release campaign upload --yes` (event ids are "
+            "idempotent) or check `code-mower cloud doctor`"
+        ) from exc
+    return summary
+
+
 def render_campaign_text(campaign: Mapping[str, Any]) -> str:
     lines = [
         f"Release Campaign: {campaign.get('release_tag')} ({campaign.get('qualification_context')})",
@@ -2210,7 +2664,7 @@ def _validate_retry_provider(
     return canonical, ""
 
 
-CAMPAIGN_ACTIONS = ("create", "status", "resume", "dispatch")
+CAMPAIGN_ACTIONS = ("create", "status", "resume", "dispatch", "upload")
 
 # The boolean flags that are older spellings of an action, and the action each
 # one asks for. Both remain supported: `--status` is the original spelling of
@@ -2231,6 +2685,8 @@ _LEGACY_ACTION_FLAGS: tuple[tuple[str, str], ...] = (
 #   dispatch   |    no    |   yes     -- `dispatch` and `--resume` are two
 #                                        spellings of "advance the existing
 #                                        campaign" and route identically
+#   upload     |    no    |    no     -- upload publishes evidence the campaign
+#                                        already has; it never advances one
 #
 # An omitted action (``None``) is not a row: it states no action of its own, so
 # either flag simply supplies one, and the two together are caught as a status
@@ -2240,6 +2696,7 @@ _COMPATIBLE_LEGACY_FLAGS: Mapping[str, frozenset[str]] = {
     "status": frozenset({"--status"}),
     "resume": frozenset({"--resume"}),
     "dispatch": frozenset({"--resume"}),
+    "upload": frozenset(),
 }
 
 
@@ -2320,6 +2777,51 @@ def _status_mutation_conflict(
     )
 
 
+def _upload_intent_conflict(
+    *,
+    action: str | None,
+    record_result: Path | None,
+    retry_provider: str,
+    apply: bool,
+    yes: bool,
+) -> str:
+    """Report a bounded conflict between an upload request and another intent.
+
+    ``upload`` publishes evidence an existing campaign already holds. It never
+    dispatches, retries, records, or advances anything, so a flag that asks for
+    one of those states a second intent with no honest reading -- executing it
+    would perform paid or mutating work under a read-only spelling, and ignoring
+    it would drop work the caller asked for while reporting success.
+
+    ``--yes`` is the mirror image: it authorizes the upload's network post and
+    means nothing to any other action, so carrying it elsewhere is refused
+    rather than silently ignored (a caller who spelled ``resume --yes`` expecting
+    an upload would otherwise be told the campaign advanced and never learn that
+    nothing was published).
+    """
+    if action == "upload":
+        intents: list[str] = []
+        if apply:
+            intents.append("--apply")
+        if record_result is not None:
+            intents.append("--record-result")
+        if retry_provider:
+            intents.append("--retry-provider")
+        if not intents:
+            return ""
+        return (
+            "upload publishes an existing campaign's completed evidence and cannot be "
+            f"combined with {', '.join(intents)}; run that campaign action first, then "
+            "upload"
+        )
+    if yes:
+        return (
+            "--yes authorizes the upload network post and applies only to the 'upload' "
+            "action; re-run as `campaign upload --yes`"
+        )
+    return ""
+
+
 def _command_intent_conflict(
     *,
     action: str | None,
@@ -2328,6 +2830,7 @@ def _command_intent_conflict(
     apply: bool,
     resume: bool,
     status: bool,
+    yes: bool = False,
 ) -> str:
     """Report the one bounded reason this invocation states conflicting intents.
 
@@ -2339,7 +2842,9 @@ def _command_intent_conflict(
 
     Status is checked first so that a status request carrying *any* mutating
     intent -- including a conflicting action -- is reported as the read-only
-    violation it is; what remains is the action/legacy-flag matrix.
+    violation it is; then the upload/``--yes`` pairing, which is read-only over
+    campaign state in the same way; what remains is the action/legacy-flag
+    matrix.
     """
     if status or action == "status":
         conflict = _status_mutation_conflict(
@@ -2351,6 +2856,15 @@ def _command_intent_conflict(
         )
         if conflict:
             return conflict
+    conflict = _upload_intent_conflict(
+        action=action,
+        record_result=record_result,
+        retry_provider=retry_provider,
+        apply=apply,
+        yes=yes,
+    )
+    if conflict:
+        return conflict
     return _action_flag_conflict(action=action, status=status, resume=resume)
 
 
@@ -2493,6 +3007,14 @@ def campaign_command(
     record_result: Path | None = None,
     record_provider: str = "",
     retry_provider: str = "",
+    yes: bool = False,
+    endpoint: str = "",
+    token_env: str = "",
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
+    install_id: str = "",
+    team_id: str = "",
+    timeout: float = 20.0,
     emit_json: bool = False,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
@@ -2500,7 +3022,7 @@ def campaign_command(
     adapter_runner: AdapterRunner = run_local_adapter_command,
     env: Mapping[str, str] | None = None,
 ) -> int:
-    """Create, inspect, or advance a release qualification campaign.
+    """Create, inspect, advance, or publish a release qualification campaign.
 
     Every *potentially mutating* invocation runs under an exclusive advisory
     lock on the campaign directory (see :func:`locked_campaigns_dir`), held
@@ -2516,8 +3038,13 @@ def campaign_command(
     covers create, implicit create/advance, resume, dispatch, ``--record-result``,
     ``--retry-provider``, and the repository-slug fill.
 
-    A status invocation -- ``status=True`` or ``action="status"`` -- takes no
-    lock at all, because it is always read-only: combining it with a mutating
+    A status invocation -- ``status=True`` or ``action="status"`` -- and an
+    ``upload`` invocation take no lock at all, because both are read-only over
+    campaign state. ``upload`` reads one campaign snapshot, converts the
+    evidence it already holds into cloud events, and posts them; it writes no
+    campaign file, so locking it would only make a long network post block
+    dispatch and polling for the whole campaign directory. Combining status with
+    a mutating
     intent (``record_result``, ``retry_provider``, ``apply``, ``resume``, or a
     conflicting non-status action) is refused with a bounded error before any
     lock, mutation, poll, or dispatch, so such a request neither mutates under a
@@ -2566,6 +3093,7 @@ def campaign_command(
         apply=apply,
         resume=resume,
         status=status,
+        yes=yes,
     )
     if conflict:
         print(f"error: {conflict}", file=sys.stderr)
@@ -2573,7 +3101,7 @@ def campaign_command(
 
     # What remains is exactly the read-only route; every other spelling is
     # potentially mutating and takes the campaign directory lock.
-    is_read_only_status = is_status_request
+    is_read_only_status = is_status_request or action == "upload"
 
     with ExitStack() as stack:
         if not is_read_only_status:
@@ -2619,6 +3147,14 @@ def campaign_command(
             record_result=record_result,
             record_provider=record_provider,
             retry_provider=retry_provider,
+            yes=yes,
+            endpoint=endpoint,
+            token_env=token_env,
+            token_file=token_file,
+            token_dir=token_dir,
+            install_id=install_id,
+            team_id=team_id,
+            timeout=timeout,
             emit_json=emit_json,
             command_runner=command_runner,
             gh_json_runner=gh_json_runner,
@@ -2647,6 +3183,14 @@ def _campaign_command_impl(
     record_result: Path | None = None,
     record_provider: str = "",
     retry_provider: str = "",
+    yes: bool = False,
+    endpoint: str = "",
+    token_env: str = "",
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
+    install_id: str = "",
+    team_id: str = "",
+    timeout: float = 20.0,
     emit_json: bool = False,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
@@ -2692,6 +3236,7 @@ def _campaign_command_impl(
     is_resume = resume or action == "resume"
     is_dispatch = action == "dispatch"
     is_create = action == "create"
+    is_upload = action == "upload"
 
     existing, identifier, identifier_error = _load_requested_campaign(
         campaign_id=campaign_id,
@@ -2745,6 +3290,43 @@ def _campaign_command_impl(
         else:
             print(render_campaign_text(existing))
         return 0
+
+    if is_upload:
+        # Upload publishes what an existing campaign already recorded; like
+        # `resume`/`dispatch` it never falls through to creating one, and like
+        # `status` it writes no campaign state.
+        if existing is None:
+            target = f" for {identifier!r}" if identifier else ""
+            print(
+                f"error: no existing campaign{target} to upload; create and complete "
+                f"one first with --release-tag <tag>",
+                file=sys.stderr,
+            )
+            return 1
+        cloud = _load_cloud_client()
+        try:
+            result = campaign_upload(
+                existing,
+                endpoint=endpoint,
+                token_env=token_env,
+                token_file=token_file,
+                token_dir=token_dir,
+                install_id=install_id,
+                team_id=team_id,
+                yes=yes,
+                timeout=timeout,
+            )
+        except cloud.CloudBundleError as exc:
+            # Every message reaching here is locally generated and bounded: the
+            # endpoint's own response text is converted to a fixed line inside
+            # `campaign_upload` before it can be printed.
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if emit_json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(render_campaign_upload_text(result))
+        return 1 if result["status"] == "invalid_results" else 0
 
     if existing:
         # An existing campaign is never replaced by a fresh queued one: the

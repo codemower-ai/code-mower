@@ -5936,6 +5936,9 @@ class ContradictoryCampaignIntentTests(unittest.TestCase):
             ("resume", True, True),
             ("dispatch", True, False),
             ("dispatch", True, True),
+            ("upload", False, True),
+            ("upload", True, False),
+            ("upload", True, True),
             (None, True, True),
         }
         for action in (None, *release_campaigns.CAMPAIGN_ACTIONS):
@@ -7819,6 +7822,530 @@ class HostedDispatchCrashWindowTests(unittest.TestCase):
             self.assertTrue(provider_entry["dispatched_at"])
             self.assertTrue(provider_entry["attempted_at"])
             self.assertEqual(stored["status"], "running")
+
+
+class CampaignUploadTests(unittest.TestCase):
+    """`release campaign upload`: preview-first cloud publication of campaign evidence.
+
+    Everything here is mocked at the HTTP boundary: no test may reach the
+    network, read the developer's real token profiles, or write campaign state.
+    """
+
+    FAKE_CREDENTIAL = "cmw_live_abcdefghijklmnop"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.campaigns_dir = self.tmp / "campaigns"
+        # An empty, explicit token directory: never the developer's real
+        # ~/.config/code-mower/tokens.
+        self.token_dir = self.tmp / "tokens"
+        self.token_dir.mkdir(parents=True)
+
+    @contextlib.contextmanager
+    def _cloud_env(self, credential: str = "") -> Any:
+        """Run with a hermetic environment carrying only the cloud token, if any."""
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+        }
+        if credential:
+            env[release_campaigns._load_cloud_client().DEFAULT_TOKEN_ENV] = credential
+        with mock.patch.dict(os.environ, env, clear=True):
+            yield
+
+    def _seed(
+        self,
+        *,
+        providers: tuple[str, ...] = ("claude", "codex"),
+        complete: tuple[str, ...] = ("claude",),
+    ) -> dict[str, Any]:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=list(providers),
+                campaigns_dir=self.campaigns_dir,
+            )
+            campaign = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", self.campaigns_dir
+            )
+            assert campaign is not None
+            for provider in complete:
+                campaign = release_campaigns.record_manual_result(
+                    campaign,
+                    provider,
+                    _mock_adoption_result(provider=provider),
+                    campaigns_dir=self.campaigns_dir,
+                )
+        return campaign
+
+    def _upload(self, **kwargs: Any) -> tuple[int, dict[str, Any] | None, str, str]:
+        """Run the upload action, returning (exit code, parsed JSON, stdout, stderr)."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = release_campaigns.campaign_command(
+                action="upload",
+                release_tag="v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                token_dir=self.token_dir,
+                emit_json=True,
+                **kwargs,
+            )
+        stdout = out.getvalue()
+        parsed = json.loads(stdout) if stdout.strip() else None
+        return code, parsed, stdout, err.getvalue()
+
+    @staticmethod
+    def _capturing_post(response: dict[str, Any] | None = None) -> Any:
+        posted: list[dict[str, Any]] = []
+
+        def _post(*, payload: dict[str, Any], endpoint: str, token: str, timeout: float) -> dict[str, Any]:
+            posted.append(payload)
+            return {
+                "mode": "cloud-upload",
+                "endpoint": endpoint,
+                "status": 200,
+                "response": response or {"ok": True},
+            }
+
+        _post.posted = posted  # type: ignore[attr-defined]
+        return _post
+
+    def _stored_bytes(self) -> dict[str, bytes]:
+        return {
+            path.name: path.read_bytes()
+            for path in sorted(self.campaigns_dir.glob("*.json"))
+        }
+
+    def test_zero_completed_providers_uploads_nothing(self) -> None:
+        """No completed provider means no evidence: reported truthfully, never posted."""
+        self._seed(complete=())
+        post = self._capturing_post()
+        with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+            release_campaigns._load_cloud_client(), "post_upload_payload", post
+        ):
+            code, result, _, _ = self._upload(yes=True)
+
+        self.assertEqual(code, 0)
+        assert result is not None
+        self.assertEqual(result["status"], "no_events")
+        self.assertEqual(result["counts"]["accepted"], 0)
+        self.assertEqual(result["counts"]["complete"], 0)
+        self.assertEqual(result["counts"]["skipped"], 2)
+        self.assertEqual(result["event_ids"], [])
+        self.assertEqual(post.posted, [])
+        self.assertIn("complete at least one provider", result["next_action"])
+
+    def test_some_completed_providers_convert_only_completed_results(self) -> None:
+        """Completed providers convert; incomplete/unavailable ones are skipped, not faked."""
+        self._seed(complete=("claude",))
+        with self._cloud_env():
+            code, result, _, _ = self._upload()
+
+        self.assertEqual(code, 0)
+        assert result is not None
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["accepted_providers"], ["claude"])
+        self.assertEqual(result["counts"], {
+            "providers": 2,
+            "complete": 1,
+            "skipped": 1,
+            "accepted": 1,
+            "rejected": 0,
+            "events": 1,
+        })
+        self.assertEqual(
+            [row["provider"] for row in result["skipped_providers"]], ["codex"]
+        )
+        self.assertEqual(result["upload"]["event_types"], {"adoption_run": 1})
+        self.assertFalse(result["upload"]["would_upload"])
+
+    def test_all_completed_providers_convert_in_deterministic_order(self) -> None:
+        """Every completed result crosses; the event set is ordered, not incidental."""
+        self._seed(complete=("claude", "codex"))
+        with self._cloud_env():
+            code, result, _, _ = self._upload()
+
+        self.assertEqual(code, 0)
+        assert result is not None
+        self.assertEqual(result["accepted_providers"], ["claude", "codex"])
+        self.assertEqual(result["counts"]["events"], 2)
+        self.assertEqual(result["skipped_providers"], [])
+        self.assertEqual(len(set(result["event_ids"])), 2)
+
+    def test_dry_run_and_applied_upload_share_one_event_set(self) -> None:
+        """What the preview shows is exactly what --yes uploads."""
+        self._seed(complete=("claude", "codex"))
+        post = self._capturing_post()
+        with self._cloud_env(self.FAKE_CREDENTIAL):
+            _, preview, _, _ = self._upload()
+            with mock.patch.object(
+                release_campaigns._load_cloud_client(), "post_upload_payload", post
+            ):
+                code, applied, _, _ = self._upload(yes=True)
+
+        self.assertEqual(code, 0)
+        assert preview is not None and applied is not None
+        self.assertEqual(preview["event_ids"], applied["event_ids"])
+        self.assertEqual(len(post.posted), 1)
+        posted_ids = [event["event_id"] for event in post.posted[0]["events"]]
+        self.assertEqual(posted_ids, preview["event_ids"])
+        self.assertEqual(post.posted[0]["upload_mode"], "metadata_only")
+        self.assertEqual(post.posted[0]["reports"], [])
+
+    def test_repeat_upload_reuses_idempotent_event_ids(self) -> None:
+        """Uploading the same evidence twice republishes the same ids, never new ones."""
+        self._seed(complete=("claude",))
+        post = self._capturing_post()
+        with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+            release_campaigns._load_cloud_client(), "post_upload_payload", post
+        ):
+            _, first, _, _ = self._upload(yes=True)
+            _, second, _, _ = self._upload(yes=True)
+
+        assert first is not None and second is not None
+        self.assertEqual(first["event_ids"], second["event_ids"])
+        self.assertEqual(len(post.posted), 2)
+        self.assertEqual(post.posted[0]["events"], post.posted[1]["events"])
+
+    def test_upload_writes_no_campaign_state(self) -> None:
+        """Upload publishes; it never advances, records, or rewrites a campaign."""
+        self._seed(complete=("claude",))
+        before = self._stored_bytes()
+        post = self._capturing_post()
+        with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+            release_campaigns._load_cloud_client(), "post_upload_payload", post
+        ):
+            self._upload(yes=True)
+
+        self.assertEqual(before, self._stored_bytes())
+
+    def test_malformed_stored_result_is_a_bounded_error(self) -> None:
+        """A completed provider with an unusable result stops the upload; nothing partial posts."""
+        self._seed(complete=("claude", "codex"))
+        path = self.campaigns_dir / "campaign-v1.0.0.json"
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        for provider in stored["providers"]:
+            if provider["provider"] == "claude":
+                # Hand-edited/corrupted evidence: still marked complete, but the
+                # result no longer satisfies the adoption-result schema.
+                provider["adoption_result"].pop("steps")
+            if provider["provider"] == "codex":
+                provider["adoption_result"] = None
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        post = self._capturing_post()
+        with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+            release_campaigns._load_cloud_client(), "post_upload_payload", post
+        ):
+            code, result, stdout, _ = self._upload(yes=True)
+
+        self.assertEqual(code, 1)
+        assert result is not None
+        self.assertEqual(result["status"], "invalid_results")
+        self.assertEqual(post.posted, [])
+        self.assertEqual(result["counts"]["rejected"], 2)
+        self.assertEqual(result["counts"]["accepted"], 0)
+        self.assertEqual(result["event_ids"], [])
+        reasons = {row["reason"] for row in result["rejected_providers"]}
+        self.assertEqual(reasons, {"adoption_result_invalid", "adoption_result_missing"})
+        self.assertTrue(reasons <= release_campaigns.CAMPAIGN_UPLOAD_REJECT_CODES)
+        self.assertIn("inspect stored qualification results", result["next_action"])
+        # The rejection names providers and a bounded code -- never the
+        # validator's message or any part of the stored result.
+        self.assertNotIn("steps", stdout)
+
+    def test_malformed_provider_list_is_a_bounded_rejection(self) -> None:
+        """A `providers` value that is not a bounded list is refused, never iterated.
+
+        A stored campaign file is untrusted input, so the converter must not
+        assume `providers` is the list the tool writes. `null`, a scalar, a
+        string, a mapping, or an oversized list each has to produce the
+        documented bounded `invalid_results` summary -- not a TypeError, and not
+        a per-element walk of an unbounded value.
+        """
+        self._seed(complete=("claude",))
+        path = self.campaigns_dir / "campaign-v1.0.0.json"
+        seeded = json.loads(path.read_text(encoding="utf-8"))
+        oversized = [{"provider": "claude", "state": "queued"}] * (
+            release_campaigns.MAX_CAMPAIGN_UPLOAD_PROVIDERS + 1
+        )
+        for label, providers in (
+            ("null", None),
+            ("integer", 7),
+            ("string", "claude"),
+            ("mapping", {"claude": {"state": "complete"}}),
+            ("oversized", oversized),
+        ):
+            with self.subTest(providers=label):
+                stored = dict(seeded)
+                stored["providers"] = providers
+                path.write_text(json.dumps(stored), encoding="utf-8")
+
+                post = self._capturing_post()
+                with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+                    release_campaigns._load_cloud_client(), "post_upload_payload", post
+                ):
+                    code, result, _, stderr = self._upload(yes=True)
+
+                self.assertEqual(code, 1, stderr)
+                assert result is not None
+                self.assertEqual(result["status"], "invalid_results")
+                # Nothing left this machine, and no partial event set was built.
+                self.assertEqual(post.posted, [])
+                self.assertEqual(result["event_ids"], [])
+                self.assertEqual(result["accepted_providers"], [])
+                self.assertEqual(result["counts"]["events"], 0)
+                self.assertEqual(result["counts"]["accepted"], 0)
+                self.assertEqual(result["counts"]["rejected"], 1)
+                reasons = {row["reason"] for row in result["rejected_providers"]}
+                self.assertEqual(reasons, {"provider_list_invalid"})
+                self.assertTrue(reasons <= release_campaigns.CAMPAIGN_UPLOAD_REJECT_CODES)
+
+    def test_unhashable_provider_state_is_skipped_and_never_leaks(self) -> None:
+        """A list or mapping `state` reads as unavailable, in preview and in apply.
+
+        A stored state is untrusted: a hand-edited but valid JSON campaign can
+        carry an unhashable value there, which a bare `state in
+        VALID_PROVIDER_STATES` test raises `TypeError` on instead of answering
+        `False`. Such a state is unrecognized like any other, so its provider is
+        skipped -- while a genuinely complete sibling still uploads -- and the
+        raw stored value reaches neither the summary nor the payload.
+        """
+        marker = "hand-edited-state-marker"
+        path = self.campaigns_dir / "campaign-v1.0.0.json"
+        for label, state in (
+            ("list", ["complete", marker]),
+            ("mapping", {"state": "complete", "note": marker}),
+        ):
+            with self.subTest(state=label):
+                self._seed(complete=("claude",))
+                stored = json.loads(path.read_text(encoding="utf-8"))
+                for provider in stored["providers"]:
+                    if provider["provider"] == "codex":
+                        provider["state"] = state
+                path.write_text(json.dumps(stored), encoding="utf-8")
+
+                preview_post = self._capturing_post()
+                with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+                    release_campaigns._load_cloud_client(), "post_upload_payload", preview_post
+                ):
+                    preview_code, preview, preview_out, preview_err = self._upload()
+
+                # Preview computes the same event set and posts nothing.
+                self.assertEqual(preview_code, 0, preview_err)
+                assert preview is not None
+                self.assertEqual(preview["status"], "dry_run")
+                self.assertEqual(preview_post.posted, [])
+
+                post = self._capturing_post()
+                with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+                    release_campaigns._load_cloud_client(), "post_upload_payload", post
+                ):
+                    code, result, stdout, stderr = self._upload(yes=True)
+
+                self.assertEqual(code, 0, stderr)
+                assert result is not None
+                self.assertEqual(result["status"], "uploaded")
+                # The unusable state is not an error: the campaign's real
+                # evidence still uploads, and only the malformed provider is
+                # dropped.
+                self.assertEqual(result["accepted_providers"], ["claude"])
+                self.assertEqual(result["rejected_providers"], [])
+                self.assertEqual(result["counts"]["events"], 1)
+                self.assertEqual(preview["event_ids"], result["event_ids"])
+                self.assertEqual(len(post.posted), 1)
+                self.assertEqual(len(post.posted[0]["events"]), 1)
+
+                skipped = {row["provider"]: row for row in result["skipped_providers"]}
+                self.assertEqual(skipped["codex"]["state"], "unavailable")
+                self.assertTrue(
+                    skipped["codex"]["reason"] in release_campaigns.SAFE_ERROR_CODES
+                    or skipped["codex"]["reason"] == ""
+                )
+                # Nothing derived from the hand-edited value is printed or posted.
+                for text in (preview_out, preview_err, stdout, stderr, json.dumps(post.posted)):
+                    self.assertNotIn(marker, text)
+
+    def test_missing_token_refuses_the_network_upload(self) -> None:
+        """--yes without a resolvable token fails closed with local remediation."""
+        self._seed(complete=("claude",))
+        post = self._capturing_post()
+        with self._cloud_env(), mock.patch.object(
+            release_campaigns._load_cloud_client(), "post_upload_payload", post
+        ):
+            code, result, _, stderr = self._upload(yes=True)
+
+        self.assertEqual(code, 1)
+        self.assertIsNone(result)
+        self.assertEqual(post.posted, [])
+        self.assertIn("CODE_MOWER_CLOUD_TOKEN", stderr)
+        self.assertIn("code-mower cloud setup", stderr)
+
+    def test_ambiguous_token_profiles_refuse_the_network_upload(self) -> None:
+        """Several stored profiles select none of them, and say how to choose."""
+        self._seed(complete=("claude",))
+        for name in ("one", "two"):
+            (self.token_dir / f"{name}.env").write_text(
+                f"CODE_MOWER_CLOUD_TOKEN={self.FAKE_CREDENTIAL}\n", encoding="utf-8"
+            )
+        post = self._capturing_post()
+        with self._cloud_env(), mock.patch.object(
+            release_campaigns._load_cloud_client(), "post_upload_payload", post
+        ):
+            preview_code, preview, _, _ = self._upload()
+            code, result, _, stderr = self._upload(yes=True)
+
+        self.assertEqual(preview_code, 0)
+        assert preview is not None
+        self.assertEqual(preview["token_status"], "ambiguous")
+        self.assertIn("--install-id", preview["next_action"])
+        self.assertEqual(code, 1)
+        self.assertIsNone(result)
+        self.assertEqual(post.posted, [])
+        self.assertIn("--install-id", stderr)
+        self.assertNotIn(self.FAKE_CREDENTIAL, stderr)
+
+    def test_network_failure_is_reported_without_endpoint_response_text(self) -> None:
+        """A failed post is bounded: no server body, and a safe retry instruction."""
+        self._seed(complete=("claude",))
+        cloud = release_campaigns._load_cloud_client()
+
+        def _failing_post(**_: Any) -> dict[str, Any]:
+            raise cloud.CloudBundleError(
+                "upload failed with HTTP 500: <html>internal-detail-abc123</html>"
+            )
+
+        with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+            cloud, "post_upload_payload", _failing_post
+        ):
+            code, result, _, stderr = self._upload(yes=True)
+
+        self.assertEqual(code, 1)
+        self.assertIsNone(result)
+        self.assertNotIn("internal-detail-abc123", stderr)
+        self.assertNotIn("<html>", stderr)
+        self.assertIn("did not complete", stderr)
+        self.assertIn("idempotent", stderr)
+
+    def test_upload_output_carries_no_secrets_or_local_paths(self) -> None:
+        """Preview and applied output stay metadata-only and path-free."""
+        self._seed(complete=("claude", "codex"))
+        cloud = release_campaigns._load_cloud_client()
+        post = self._capturing_post()
+        with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+            cloud, "post_upload_payload", post
+        ):
+            _, preview, preview_out, _ = self._upload()
+            _, applied, applied_out, _ = self._upload(yes=True)
+
+        assert preview is not None and applied is not None
+        for rendered, payload in ((preview_out, preview), (applied_out, applied)):
+            self.assertNotIn(self.FAKE_CREDENTIAL, rendered)
+            self.assertNotIn(str(self.tmp), rendered)
+            self.assertNotIn(str(Path.home()), rendered)
+            # The same metadata-only validator the upload boundary uses.
+            cloud.validate_metadata_payload(payload)
+        posted = post.posted[0]
+        cloud.validate_metadata_payload(posted)
+        self.assertNotIn(self.FAKE_CREDENTIAL, json.dumps(posted))
+        self.assertNotIn(str(self.tmp), json.dumps(posted))
+
+    def test_upload_requires_an_existing_campaign(self) -> None:
+        """Upload never falls through to creating a campaign it could publish."""
+        with self._cloud_env():
+            code, result, _, stderr = self._upload()
+
+        self.assertEqual(code, 1)
+        self.assertIsNone(result)
+        self.assertIn("no existing campaign", stderr)
+        self.assertEqual(sorted(self.campaigns_dir.glob("*.json")), [])
+
+    def test_upload_refuses_conflicting_campaign_intents(self) -> None:
+        """Upload states one intent: it never dispatches, retries, or records."""
+        self._seed()
+        for kwargs, expected in (
+            ({"apply": True}, "--apply"),
+            ({"retry_provider": "claude"}, "--retry-provider"),
+            ({"record_result": Path("result.json")}, "--record-result"),
+            ({"resume": True}, "--resume"),
+            ({"status": True}, "read-only"),
+        ):
+            with self.subTest(kwargs=sorted(kwargs)), self._cloud_env():
+                code, result, _, stderr = self._upload(**kwargs)
+                self.assertEqual(code, 1)
+                self.assertIsNone(result)
+                self.assertIn(expected, stderr)
+
+    def test_yes_outside_upload_is_refused_rather_than_ignored(self) -> None:
+        """`--yes` authorizes an upload post and means nothing to another action."""
+        self._seed()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self._cloud_env():
+            code = release_campaigns.campaign_command(
+                action="resume",
+                release_tag="v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                yes=True,
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--yes", err.getvalue())
+        self.assertIn("upload", err.getvalue())
+
+    def test_cli_upload_action_previews_without_network(self) -> None:
+        """End to end through the CLI parser: preview is the default."""
+        self._seed(complete=("claude",))
+        post = self._capturing_post()
+        out = io.StringIO()
+        with self._cloud_env(), mock.patch.object(
+            release_campaigns._load_cloud_client(), "post_upload_payload", post
+        ), contextlib.redirect_stdout(out):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "upload",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--token-dir",
+                    str(self.token_dir),
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(post.posted, [])
+        rendered = out.getvalue()
+        self.assertIn("Release Campaign Upload: v1.0.0", rendered)
+        self.assertIn("Network: skipped (pass --yes to upload)", rendered)
+
+    def test_cloud_dogfood_adoption_run_event_path_stays_compatible(self) -> None:
+        """The existing `cloud dogfood --event adoption_run=...` route is unchanged.
+
+        Both routes convert one adoption result through the same converter, so
+        an operator who already uploads results file-by-file and one who uploads
+        a whole campaign publish the same idempotent event id for the same
+        evidence.
+        """
+        campaign = self._seed(complete=("claude",))
+        cloud = release_campaigns._load_cloud_client()
+        result_path = self.tmp / "adoption-result.json"
+        result_path.write_text(
+            json.dumps(_mock_adoption_result(provider="claude")), encoding="utf-8"
+        )
+
+        file_events = cloud.parse_event_args([f"adoption_run={result_path}"])
+        with self._cloud_env():
+            plan = release_campaigns.build_campaign_upload_events(campaign)
+
+        self.assertEqual(len(file_events), 1)
+        self.assertEqual(len(plan["events"]), 1)
+        self.assertEqual(file_events[0]["event_id"], plan["events"][0]["event_id"])
+        self.assertEqual(
+            file_events[0]["dimensions"], plan["events"][0]["dimensions"]
+        )
 
 
 if __name__ == "__main__":
