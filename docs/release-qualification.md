@@ -144,3 +144,42 @@ code-mower release campaign --release-tag v1.0.0 \
 ```
 
 The recorded file is validated against the same closed schema as automated results.
+
+Once providers have completed, publish the campaign's evidence to Code Mower
+Cloud. Preview first; the preview and the upload use the same event set:
+
+```bash
+code-mower release campaign upload --release-tag v1.0.0 --json
+code-mower release campaign upload --release-tag v1.0.0 --yes --json
+```
+
+- **Preview by default:** without `--yes` nothing leaves the machine. The
+  preview reports the exact events, event ids, and counts the `--yes` run will
+  upload, so it can be inspected first.
+- **Completed evidence only:** every provider whose result is `complete` is
+  revalidated against the closed adoption-result schema and rebound to this
+  campaign's provider, release tag, package identity, qualification context, and
+  starting version before it is converted to one metadata-only `adoption_run`
+  event. Incomplete and unavailable providers are counted as skipped, never
+  fabricated. A provider that is complete but whose stored result is missing or
+  no longer valid is *rejected*: the upload stops with a bounded error naming the
+  provider and a safe reason code, rather than publishing a partial event set or
+  repairing the result.
+- **Idempotent:** each event id is derived from the result's own content, so
+  repeating an upload republishes the same events instead of duplicating them.
+  A failed post can simply be re-run.
+- **Metadata-only:** report text, source, diffs, prompts, transcripts, issue
+  bodies, raw output, auth output, local paths, and secrets are never uploaded,
+  and missing model, token, and cost data stays unavailable rather than
+  zero-filled. See the [Cloud Data Contract](cloud-data-contract.md).
+- **Read-only:** upload never dispatches, retries, records, or advances a
+  campaign, so it cannot be combined with `--apply`, `--resume`,
+  `--retry-provider`, `--record-result`, or `--status`. It takes no campaign
+  directory lock and writes no campaign state.
+
+Token, endpoint, and identity resolution are the shared cloud ones:
+`--token-env`, `--token-file`, `--token-dir`, `--install-id`, `--team-id`,
+`--endpoint`, and `--timeout` behave as they do for `code-mower cloud upload`,
+including `code-mower cloud setup` profiles. Uploading one result file at a time
+with `code-mower cloud dogfood --event adoption_run=path/to/result.json`
+still works and produces the same event ids.

@@ -269,6 +269,16 @@ idempotent. Newer observations of the same campaign use another event id, and
 consumers select the latest `created_at` observation per release before
 aggregating.
 
+Two local routes produce these events, and both go through one converter, so
+the same result always yields the same event id: `code-mower cloud dogfood
+--event adoption_run=path/to/result.json` (and `cloud export`) converts one
+result file at a time, while `code-mower release campaign upload` converts every
+completed provider result a campaign holds. The campaign route previews by
+default and posts only with `--yes`, using the identical event set both times;
+providers that are not complete are counted as skipped, and a completed provider
+whose stored result no longer validates stops the upload with a bounded error
+instead of publishing a partial set.
+
 Required dimensions are `adoption_run_schema`, `release_tag`
 (`v<major>.<minor>.<patch>[-<stage>.<num>]`), `package_identity`
 (`code-mower`), `normalized_version`, `qualification_context`

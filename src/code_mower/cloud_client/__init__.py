@@ -149,7 +149,9 @@ from .pr_outcomes import (
 )
 from .upload import (
     UPLOAD_SCHEMA,
+    build_event_upload_payload,
     build_upload_payload,
+    build_upload_payload_from_manifest,
     post_upload_payload,
 )
 from .work_types import (
@@ -224,7 +226,9 @@ __all__ = [
     "build_provider_catalog_snapshot_events",
     "build_workflow_run_event",
     "build_cloud_bundle",
+    "build_event_upload_payload",
     "build_upload_payload",
+    "build_upload_payload_from_manifest",
     "build_board_snapshot_event",
     "build_provenance_summary",
     "board_snapshot_upload",

@@ -838,11 +838,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "action",
         nargs="?",
         default=None,
-        choices=["create", "status", "resume", "dispatch"],
+        choices=["create", "status", "resume", "dispatch", "upload"],
         help=(
             "Optional campaign action. create: start a new campaign (fails if one "
             "already exists for the identifier). status: inspect only. "
             "resume/dispatch: advance an existing campaign (fails if none exists). "
+            "upload: convert every completed provider's qualification result into "
+            "metadata-only cloud adoption_run events; preview by default, network "
+            "upload only with --yes. "
             "Omitting the action creates a new campaign, or advances the existing "
             "one when the identifier already names a campaign. An action may be "
             "spelled with the equivalent legacy flag (status with --status, "
@@ -968,6 +971,53 @@ def main(argv: Sequence[str] | None = None) -> int:
             "action."
         ),
     )
+    campaign.add_argument(
+        "--yes",
+        action="store_true",
+        help=(
+            "Perform the upload network post for the `upload` action; without it "
+            "upload prints the same event set as an inspectable preview and "
+            "nothing leaves this machine. Applies only to `upload`"
+        ),
+    )
+    campaign.add_argument(
+        "--endpoint",
+        default="",
+        help="Cloud upload endpoint for `upload` (defaults to CODE_MOWER_CLOUD_ENDPOINT)",
+    )
+    campaign.add_argument(
+        "--token-env",
+        default="",
+        help="Environment variable holding the Code Mower Cloud token for `upload`",
+    )
+    campaign.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help="Token env file to use for `upload` when the token env is not set",
+    )
+    campaign.add_argument(
+        "--token-dir",
+        type=Path,
+        default=None,
+        help="Directory with Code Mower Cloud token profiles to use for `upload`",
+    )
+    campaign.add_argument(
+        "--install-id",
+        default="",
+        help="Stored token profile name and install identity to use for `upload`",
+    )
+    campaign.add_argument(
+        "--team-id",
+        default="",
+        help="Team identity to attribute uploaded adoption_run events to",
+    )
+    campaign.add_argument(
+        "--timeout",
+        type=float,
+        default=20.0,
+        help="Upload request timeout in seconds",
+    )
     campaign.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
@@ -1040,6 +1090,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 record_result=args.record_result,
                 record_provider=args.record_provider,
                 retry_provider=args.retry_provider,
+                yes=args.yes,
+                endpoint=args.endpoint,
+                token_env=args.token_env,
+                token_file=args.token_file,
+                token_dir=args.token_dir,
+                install_id=args.install_id,
+                team_id=args.team_id,
+                timeout=args.timeout,
                 emit_json=args.json,
             )
         except ValueError as e:
