@@ -3206,6 +3206,41 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertFalse(resumed["providers"][0]["trigger_posted"])
             self.assertIn("--resume --apply", resumed["providers"][0]["next_action"])
 
+    def test_resume_treats_legacy_missing_trigger_field_as_unposted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider.pop("trigger_posted", None)
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: ({"comments": []}, ""),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert resumed is not None
+            self.assertFalse(resumed["providers"][0]["trigger_posted"])
+            self.assertIn("--resume --apply", resumed["providers"][0]["next_action"])
+
     def test_explicit_retry_does_not_duplicate_trigger(self) -> None:
         """Explicit --retry-provider should not post trigger twice in one run."""
         with tempfile.TemporaryDirectory() as tmp:

@@ -1772,7 +1772,8 @@ def dispatch_or_advance_campaign(
             # since the explicit redispatch path will post its own trigger.
             # Also gate on apply: trigger retry is a write operation, not a poll.
             trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
-            trigger_posted = provider_data.get("trigger_posted", True)
+            provider_data.setdefault("trigger_posted", not bool(trigger_comments))
+            trigger_posted = provider_data["trigger_posted"]
 
             if trigger_comments and not trigger_posted and not is_explicit_retry:
                 dispatch_key = str(provider_data.get("dispatch_reconciliation_key") or "")
