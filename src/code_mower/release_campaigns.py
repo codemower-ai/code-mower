@@ -1656,11 +1656,13 @@ def dispatch_or_advance_campaign(
 
         # 3. If running, check trigger status and retry if needed, then poll
         if current_state == "running":
-            # For manually triggered providers, retry trigger if not yet posted
+            # For manually triggered providers, retry trigger if not yet posted.
+            # Skip this automatic retry if an explicit --retry-provider is active,
+            # since the explicit redispatch path will post its own trigger.
             trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
             trigger_posted = provider_data.get("trigger_posted", True)
 
-            if trigger_comments and not trigger_posted:
+            if trigger_comments and not trigger_posted and not is_explicit_retry:
                 # Dispatch succeeded but trigger failed or was interrupted
                 # Retry trigger without reposting the dispatch comment
                 dispatch_ref = provider_data.get("dispatch_ref", {})
@@ -2029,6 +2031,11 @@ def dispatch_or_advance_campaign(
                     "issue_number": str(issue_number),
                     "comment_posted": False,
                 }
+                # A crash after the dispatch post but before the trigger post
+                # must remain retriable, so record the trigger as not-yet-posted
+                # for manually triggered providers before the pre-post save.
+                trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
+                provider_data["trigger_posted"] = not bool(trigger_comments)
                 (
                     provider_data["next_action"],
                     provider_data["next_detail"],
