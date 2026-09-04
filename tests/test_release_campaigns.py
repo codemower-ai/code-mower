@@ -9649,6 +9649,58 @@ class CampaignWatchTests(unittest.TestCase):
         # deadline, so completion in the final interval is observable.
         self.assertEqual(poll_call_count, 3)
 
+    def test_watch_bounds_campaign_lock_by_remaining_time(self) -> None:
+        self._seed_campaign()
+        observed_timeouts: list[float] = []
+
+        @contextlib.contextmanager
+        def recording_lock(_campaigns_dir: Path, **kwargs: Any) -> Any:
+            observed_timeouts.append(kwargs["timeout_seconds"])
+            yield
+
+        with mock.patch.object(
+            release_campaigns,
+            "locked_campaigns_dir",
+            recording_lock,
+        ):
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                interval=10.0,
+                timeout=20.0,
+                emit_json=True,
+                time_fn=self.clock.time,
+                sleep_fn=self.clock.sleep,
+            )
+
+        self.assertEqual(summary["stop_reason"], "timeout")
+        self.assertEqual(observed_timeouts, [20.0, 10.0, 0.0])
+
+    def test_watch_lock_timeout_returns_stable_timeout_summary(self) -> None:
+        self._seed_campaign()
+
+        @contextlib.contextmanager
+        def unavailable_lock(_campaigns_dir: Path, **_kwargs: Any) -> Any:
+            raise release_campaigns.FileLockError("private lock detail")
+            yield
+
+        with mock.patch.object(
+            release_campaigns,
+            "locked_campaigns_dir",
+            unavailable_lock,
+        ):
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                timeout=1.0,
+                emit_json=True,
+                time_fn=self.clock.time,
+                sleep_fn=self.clock.sleep,
+            )
+
+        self.assertEqual(summary["stop_reason"], "timeout")
+        self.assertNotIn("private lock detail", json.dumps(summary))
+
     def test_watch_interrupt_during_initial_lock_or_poll(self) -> None:
         """KeyboardInterrupt during initial lock or poll produces the same interrupt summary and exit 130."""
         self._seed_campaign(
@@ -9709,7 +9761,7 @@ class CampaignWatchTests(unittest.TestCase):
         out_lock = io.StringIO()
 
         @contextlib.contextmanager
-        def interrupting_lock(campaigns_dir: Path) -> Any:
+        def interrupting_lock(campaigns_dir: Path, **_kwargs: Any) -> Any:
             raise KeyboardInterrupt()
             yield
 
@@ -9827,6 +9879,21 @@ class CampaignWatchTests(unittest.TestCase):
                 "starting_version": "",
                 "providers": [None],
             },
+            {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-malformed",
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "providers": [
+                    {
+                        "provider": "claude",
+                        "state": "running",
+                        "elapsed_seconds": "not-a-number",
+                    }
+                ],
+            },
         ]
 
         for payload in payloads:
@@ -9850,6 +9917,7 @@ class CampaignWatchTests(unittest.TestCase):
                     {
                         "invalid campaign identity",
                         "invalid campaign provider collection",
+                        "invalid campaign provider metrics",
                         "no campaign found for 'campaign-malformed'",
                     },
                 )
@@ -10182,9 +10250,9 @@ class CampaignWatchTests(unittest.TestCase):
         real_save = release_campaigns.save_campaign
 
         @contextlib.contextmanager
-        def tracking_lock(dir_path: Path) -> Any:
+        def tracking_lock(dir_path: Path, **kwargs: Any) -> Any:
             nonlocal is_locked
-            with real_lock(dir_path) as lock_file:
+            with real_lock(dir_path, **kwargs) as lock_file:
                 is_locked = True
                 try:
                     yield lock_file

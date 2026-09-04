@@ -481,7 +481,13 @@ def _aggregate_campaign_status(
 
 
 @contextmanager
-def locked_campaigns_dir(campaigns_dir: Path) -> Iterator[IO[str]]:
+def locked_campaigns_dir(
+    campaigns_dir: Path,
+    *,
+    timeout_seconds: float = 900.0,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> Iterator[IO[str]]:
     """Hold an exclusive advisory lock over one campaign directory.
 
     Every *mutating* campaign command serializes on this lock across its whole
@@ -505,7 +511,12 @@ def locked_campaigns_dir(campaigns_dir: Path) -> Iterator[IO[str]]:
     """
     campaigns_dir.mkdir(parents=True, exist_ok=True)
     lock_path = campaigns_dir / CAMPAIGNS_LOCK_FILENAME
-    with exclusive_file_lock(lock_path) as lock_file:
+    with exclusive_file_lock(
+        lock_path,
+        timeout_seconds=timeout_seconds,
+        sleep=sleep,
+        monotonic=monotonic,
+    ) as lock_file:
         yield lock_file
 
 
@@ -3042,6 +3053,15 @@ def _watch_campaign_validation_error(campaign: Any) -> str:
             resolve_provider_lane(provider)
         except ValueError:
             return "invalid campaign provider collection"
+        raw_elapsed = provider_data.get("elapsed_seconds", 0.0)
+        if isinstance(raw_elapsed, bool):
+            return "invalid campaign provider metrics"
+        try:
+            elapsed = float(raw_elapsed or 0.0)
+        except (TypeError, ValueError):
+            return "invalid campaign provider metrics"
+        if not math.isfinite(elapsed) or elapsed < 0:
+            return "invalid campaign provider metrics"
     return ""
 
 
@@ -3291,7 +3311,12 @@ def campaign_watch(
     stop_reason: str | None = None
 
     try:
-        with locked_campaigns_dir(campaigns_dir):
+        with locked_campaigns_dir(
+            campaigns_dir,
+            timeout_seconds=max(deadline - time_fn(), 0.0),
+            sleep=sleep_fn,
+            monotonic=time_fn,
+        ):
             if target_absent and not target_path.is_file():
                 save_campaign(target_campaign, campaigns_dir)
             reloaded = load_campaign_by_id(cid, campaigns_dir)
@@ -3375,7 +3400,12 @@ def campaign_watch(
                 sleep_fn(sleep_time)
 
                 polls += 1
-                with locked_campaigns_dir(campaigns_dir):
+                with locked_campaigns_dir(
+                    campaigns_dir,
+                    timeout_seconds=max(deadline - time_fn(), 0.0),
+                    sleep=sleep_fn,
+                    monotonic=time_fn,
+                ):
                     reloaded = load_campaign_by_id(cid, campaigns_dir)
                     if reloaded is None:
                         stop_reason = "invalid_campaign"
@@ -3469,6 +3499,8 @@ def campaign_watch(
 
     except KeyboardInterrupt:
         stop_reason = "interrupt"
+    except FileLockError:
+        stop_reason = "timeout"
 
     elapsed_final = time_fn() - start_time
     stop_reason = stop_reason or "timeout"

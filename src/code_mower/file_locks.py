@@ -11,11 +11,11 @@ platform-agnostic and both are fixed by the same change.
 
 Two backends, selected by what the interpreter actually provides:
 
-* **POSIX** (``fcntl``): a blocking ``flock(LOCK_EX)``, unchanged from what the
-  callers did before. The kernel owns the lock, so it is dropped when the
+* **POSIX** (``fcntl``): a non-blocking ``flock(LOCK_EX | LOCK_NB)`` retried on
+  a bounded schedule. The kernel owns the lock, so it is dropped when the
   holding descriptor closes -- including on an uncaught exception, a
-  ``SIGKILL``, or an abrupt process exit. There is no stale-lock protocol, no
-  owner/pid bookkeeping, and no timeout to tune; a crashed holder blocks nobody.
+  ``SIGKILL``, or an abrupt process exit. There is no stale-lock protocol or
+  owner/pid bookkeeping; a crashed holder blocks nobody.
 * **Windows** (``msvcrt``): ``msvcrt.locking`` over a single byte at offset 0.
   A one-byte region is locked rather than the whole file because Windows region
   locks are byte-range based and locking past end-of-file is legal, so an empty
@@ -81,8 +81,24 @@ def _backend() -> str:
     return "unsupported"
 
 
-def _acquire_posix(handle: IO[str]) -> None:
-    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+def _acquire_posix(
+    handle: IO[str],
+    *,
+    timeout_seconds: float,
+    retry_seconds: float,
+    sleep: Callable[[float], None],
+    monotonic: Callable[[], float],
+) -> None:
+    deadline = monotonic() + max(timeout_seconds, 0.0)
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise FileLockError("timed out waiting for an exclusive lock") from None
+            sleep(min(max(retry_seconds, 0.0), remaining))
 
 
 def _release_posix(handle: IO[str]) -> None:
@@ -107,9 +123,10 @@ def _acquire_windows(
             # Held by another handle. Check the deadline first so a zero timeout
             # fails immediately, then sleep before retrying -- a bare retry loop
             # would pin a core for the whole wait.
-            if monotonic() >= deadline:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
                 raise FileLockError("timed out waiting for an exclusive lock") from None
-            sleep(max(retry_seconds, 0.0))
+            sleep(min(max(retry_seconds, 0.0), remaining))
 
 
 def _release_windows(handle: IO[str]) -> None:
@@ -132,9 +149,10 @@ def exclusive_file_lock(
     descriptor it locked. The lock is released and the file closed on the way
     out, including when the body raises.
 
-    ``timeout_seconds``, ``retry_seconds``, ``sleep``, and ``monotonic`` apply
-    only to the Windows backend; the POSIX backend blocks in the kernel until
-    the lock is available, which is the pre-existing behavior.
+    ``timeout_seconds``, ``retry_seconds``, ``sleep``, and ``monotonic`` bound
+    acquisition on both backends. The defaults preserve the long wait allowed
+    for campaign adapters, while callers with their own deadline can pass the
+    remaining budget.
     """
     backend = _backend()
     if backend == "unsupported":  # pragma: no cover - no such CPython build
@@ -144,7 +162,13 @@ def exclusive_file_lock(
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
         if backend == "posix":
-            _acquire_posix(handle)
+            _acquire_posix(
+                handle,
+                timeout_seconds=timeout_seconds,
+                retry_seconds=retry_seconds,
+                sleep=sleep,
+                monotonic=monotonic,
+            )
         else:
             _acquire_windows(
                 handle,

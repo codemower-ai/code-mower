@@ -150,6 +150,23 @@ class PosixBackendTests(unittest.TestCase):
             worker.join(timeout=30)
             self.assertTrue(acquired.is_set())
 
+    def test_a_contended_lock_honors_a_short_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = Path(tmp) / "state" / ".lock"
+            with file_locks.exclusive_file_lock(lock_path):
+                with self.assertRaises(file_locks.FileLockError) as ctx:
+                    with file_locks.exclusive_file_lock(
+                        lock_path,
+                        timeout_seconds=0.01,
+                        retry_seconds=0.005,
+                    ):
+                        pass
+
+            self.assertEqual(
+                str(ctx.exception),
+                "timed out waiting for an exclusive lock",
+            )
+
 
 class WindowsBackendTests(unittest.TestCase):
     """The Windows backend's protocol, exercised on any platform via a fake."""
