@@ -3054,12 +3054,11 @@ def _watch_campaign_validation_error(campaign: Any) -> str:
         except ValueError:
             return "invalid campaign provider collection"
         raw_elapsed = provider_data.get("elapsed_seconds", 0.0)
-        if isinstance(raw_elapsed, bool):
+        if raw_elapsed is None:
+            raw_elapsed = 0.0
+        if isinstance(raw_elapsed, bool) or not isinstance(raw_elapsed, int | float):
             return "invalid campaign provider metrics"
-        try:
-            elapsed = float(raw_elapsed or 0.0)
-        except (TypeError, ValueError):
-            return "invalid campaign provider metrics"
+        elapsed = float(raw_elapsed)
         if not math.isfinite(elapsed) or elapsed < 0:
             return "invalid campaign provider metrics"
     return ""

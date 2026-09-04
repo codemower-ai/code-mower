@@ -9894,6 +9894,21 @@ class CampaignWatchTests(unittest.TestCase):
                     }
                 ],
             },
+            {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-malformed",
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "providers": [
+                    {
+                        "provider": "claude",
+                        "state": "running",
+                        "elapsed_seconds": "5.0",
+                    }
+                ],
+            },
         ]
 
         for payload in payloads:
