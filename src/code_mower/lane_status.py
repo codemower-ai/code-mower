@@ -56,14 +56,17 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
-def _run_gh_json(args: Sequence[str]) -> Any:
-    completed = subprocess.run(
-        ["gh", *args],
-        check=False,
-        text=True,
-        capture_output=True,
-        timeout=20,
-    )
+def _run_gh_json(args: Sequence[str], *, timeout: float = 20.0) -> Any:
+    try:
+        completed = subprocess.run(
+            ["gh", *args],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LaneStatusUnavailable(f"gh {args[0] if args else 'command'} timed out") from exc
     if completed.returncode != 0:
         raise LaneStatusUnavailable(f"gh {args[0] if args else 'command'} failed")
     try:
@@ -76,8 +79,8 @@ def _run_command(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(list(args), check=False, text=True, capture_output=True, timeout=3)
 
 
-def run_gh_json(args: Sequence[str]) -> Any:
-    return _run_gh_json(args)
+def run_gh_json(args: Sequence[str], *, timeout: float = 20.0) -> Any:
+    return _run_gh_json(args, timeout=timeout)
 
 
 def run_command(args: Sequence[str]) -> subprocess.CompletedProcess[str]:

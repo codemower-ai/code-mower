@@ -6783,6 +6783,9 @@ class ContradictoryCampaignIntentTests(unittest.TestCase):
             ("upload", False, True),
             ("upload", True, False),
             ("upload", True, True),
+            ("watch", False, True),
+            ("watch", True, False),
+            ("watch", True, True),
             (None, True, True),
         }
         for action in (None, *release_campaigns.CAMPAIGN_ACTIONS):
@@ -9218,6 +9221,1489 @@ class CampaignUploadTests(unittest.TestCase):
         self.assertEqual(
             file_events[0]["dimensions"], plan["events"][0]["dimensions"]
         )
+
+
+class FakeClock:
+    """Monotonic fake clock for deterministic time and sleep control."""
+
+    def __init__(self, start: float = 100.0) -> None:
+        self.current = start
+        self.sleep_calls: list[float] = []
+
+    def time(self) -> float:
+        return self.current
+
+    def sleep(self, seconds: float) -> None:
+        self.sleep_calls.append(seconds)
+        self.current += seconds
+
+
+class CampaignWatchTests(unittest.TestCase):
+    """Tests for bounded release campaign watch operation."""
+
+    def setUp(self) -> None:
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.tmp = Path(self.tmp_dir.name)
+        self.campaigns_dir = self.tmp / ".code-mower" / "campaigns"
+        self.campaigns_dir.mkdir(parents=True, exist_ok=True)
+        self.clock = FakeClock()
+
+    def tearDown(self) -> None:
+        self.tmp_dir.cleanup()
+
+    def _seed_campaign(
+        self,
+        *,
+        campaign_id: str = "campaign-v1.0.0",
+        release_tag: str = "v1.0.0",
+        status: str = "running",
+        providers: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if providers is None:
+            providers = [
+                {
+                    "provider": "claude",
+                    "lane_id": "claude_code",
+                    "driver": "local_cli",
+                    "state": "running",
+                    "environment": "local",
+                    "elapsed_seconds": 10.0,
+                    "idempotency_key": "idemp-claude",
+                    "dispatch_mode": "applied",
+                    "next_action": "wait for claude to finish",
+                    "next_detail": "",
+                },
+                {
+                    "provider": "codex",
+                    "lane_id": "codex_cli",
+                    "driver": "local_cli",
+                    "state": "complete",
+                    "environment": "local",
+                    "elapsed_seconds": 15.0,
+                    "idempotency_key": "idemp-codex",
+                    "dispatch_mode": "applied",
+                    "next_action": "none",
+                    "next_detail": "",
+                },
+            ]
+        c = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": campaign_id,
+            "release_tag": release_tag,
+            "package_identity": "code-mower",
+            "package_spec": f"code-mower=={release_tag.lstrip('v')}",
+            "normalized_version": release_tag.lstrip("v"),
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "repo_slug": "codemower/code-mower",
+            "status": status,
+            "dry_run": False,
+            "elapsed_seconds": 25.0,
+            "created_at": "2026-09-04T12:00:00Z",
+            "updated_at": "2026-09-04T12:00:00Z",
+            "next_action": "poll running providers",
+            "next_detail": "",
+            "providers": providers,
+        }
+        release_campaigns.save_campaign(c, self.campaigns_dir)
+        return c
+
+    def test_watch_no_change_suppression(self) -> None:
+        """Polls that observe no change suppress output until a real state transition occurs."""
+        self._seed_campaign()
+        out = io.StringIO()
+        err = io.StringIO()
+        poll_count = 0
+
+        def custom_sleep(seconds: float) -> None:
+            nonlocal poll_count
+            poll_count += 1
+            self.clock.sleep(seconds)
+            if poll_count >= 3:
+                c = release_campaigns.load_campaign_by_id("campaign-v1.0.0", self.campaigns_dir)
+                assert c is not None
+                c["status"] = "complete"
+                c["providers"][0]["state"] = "complete"
+                c["providers"][0]["next_action"] = "none"
+                release_campaigns.save_campaign(c, self.campaigns_dir)
+
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=10.0,
+            timeout=60.0,
+            stdout=out,
+            stderr=err,
+            time_fn=self.clock.time,
+            sleep_fn=custom_sleep,
+        )
+
+        self.assertEqual(summary["stop_reason"], "complete")
+        self.assertEqual(summary["polls"], 3)
+        rendered = out.getvalue()
+        self.assertEqual(rendered.count("Release Campaign: v1.0.0"), 1)
+        self.assertEqual(rendered.count("Transition: claude running -> complete"), 1)
+        self.assertEqual(rendered.count("Transition: campaign status running -> complete"), 1)
+        self.assertEqual(rendered.count("Final result: complete"), 1)
+        lines = [line.strip() for line in rendered.strip().split("\n") if line.strip()]
+        transition_lines = [line for line in lines if line.startswith("Transition:")]
+        self.assertEqual(len(transition_lines), 2)
+
+    def test_watch_complete_stop(self) -> None:
+        """Watch stops with stop_reason='complete' and exit 0 when all providers pass."""
+        self._seed_campaign(
+            status="complete",
+            providers=[
+                {
+                    "provider": "claude",
+                    "state": "complete",
+                    "environment": "local",
+                    "elapsed_seconds": 10.0,
+                },
+                {
+                    "provider": "codex",
+                    "state": "complete",
+                    "environment": "local",
+                    "elapsed_seconds": 15.0,
+                },
+            ],
+        )
+        out = io.StringIO()
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Final result: complete", out.getvalue())
+
+    def test_watch_blocked_stop_and_retry_guidance(self) -> None:
+        """Watch stops distinctly for blocked status and emits actionable retry guidance."""
+        self._seed_campaign()
+        out = io.StringIO()
+
+        def fail_on_poll(seconds: float) -> None:
+            self.clock.sleep(seconds)
+            c = release_campaigns.load_campaign_by_id("campaign-v1.0.0", self.campaigns_dir)
+            assert c is not None
+            c["status"] = "blocked"
+            c["providers"][0]["state"] = "blocked"
+            c["providers"][0]["attempted_at"] = "2026-09-04T12:00:00Z"
+            c["providers"][0]["error"] = "doctor_failed"
+            c["providers"][0]["next_action"] = "inspect claude qualification failures"
+            release_campaigns.save_campaign(c, self.campaigns_dir)
+
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=5.0,
+            timeout=30.0,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=fail_on_poll,
+        )
+        self.assertEqual(summary["stop_reason"], "blocked")
+        self.assertEqual(summary["status"], "blocked")
+        self.assertIn("--retry-provider claude", summary["retry_guidance"])
+        self.assertIn("--campaign-id campaign-v1.0.0", summary["retry_guidance"])
+        self.assertNotIn("--release-tag", summary["retry_guidance"])
+        rendered = out.getvalue()
+        self.assertIn("Final result: blocked", rendered)
+        self.assertIn("Retry guidance: inspect failures and retry with", rendered)
+        self.assertIn("--retry-provider claude", rendered)
+
+    def test_watch_owner_action_stop(self) -> None:
+        """Watch stops with stop_reason='owner_action' when no providers are running but campaign is incomplete."""
+        self._seed_campaign(
+            status="pending",
+            providers=[
+                {
+                    "provider": "claude",
+                    "state": "complete",
+                    "environment": "local",
+                    "elapsed_seconds": 10.0,
+                },
+                {
+                    "provider": "devin",
+                    "state": "unavailable",
+                    "environment": "hosted",
+                    "elapsed_seconds": 0.0,
+                    "next_action": "configure DEVIN_AUDIT_LABEL_TOKEN",
+                },
+            ],
+        )
+        out = io.StringIO()
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Final result: owner_action", out.getvalue())
+        self.assertIn("resolve provider prerequisites", out.getvalue())
+
+    def test_watch_timeout_stop(self) -> None:
+        """Watch stops with stop_reason='timeout' when duration exceeds bounded timeout."""
+        self._seed_campaign()
+        out = io.StringIO()
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=10.0,
+            timeout=35.0,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 1)
+        rendered = out.getvalue()
+        self.assertIn("Final result: timeout", rendered)
+        self.assertIn("Retry guidance: re-run 'code-mower release campaign watch", rendered)
+        self.assertIn("--campaign-id campaign-v1.0.0", rendered)
+        self.assertNotIn("--release-tag", rendered)
+        self.assertEqual(len(self.clock.sleep_calls), 4)
+
+    def test_github_poll_accepts_production_json_shape_and_safe_failure(self) -> None:
+        comments, error = release_campaigns._poll_github_comments(
+            "codemower/code-mower",
+            123,
+            gh_json_runner=lambda _args: {
+                "comments": [{"body": "complete", "author": {"login": "trusted-bot"}}]
+            },
+        )
+        self.assertEqual(error, "")
+        self.assertEqual(comments[0]["body"], "complete")
+
+        def unavailable(_args: Any) -> Any:
+            raise release_campaigns.lane_status.LaneStatusUnavailable("private detail")
+
+        comments, error = release_campaigns._poll_github_comments(
+            "codemower/code-mower",
+            123,
+            gh_json_runner=unavailable,
+        )
+        self.assertEqual(comments, [])
+        self.assertEqual(error, "github_poll_unavailable")
+
+    def test_watch_bounds_production_github_calls_by_remaining_time(self) -> None:
+        self._seed_campaign(
+            providers=[
+                {
+                    "provider": "devin",
+                    "lane_id": "fake_hosted",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 0.0,
+                    "dispatch_ref": {"issue_number": "123"},
+                    "idempotency_key": "idemp-devin",
+                }
+            ]
+        )
+        with mock.patch.object(
+            release_campaigns.lane_status,
+            "_run_gh_json",
+            return_value={"comments": []},
+        ) as run_gh_json:
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                issue="123",
+                interval=10.0,
+                timeout=20.0,
+                emit_json=True,
+                time_fn=self.clock.time,
+                sleep_fn=self.clock.sleep,
+            )
+
+        self.assertEqual(summary["stop_reason"], "timeout")
+        self.assertEqual(run_gh_json.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["timeout"] for call in run_gh_json.call_args_list],
+            [20.0, 10.0],
+        )
+
+    def test_watch_interrupt_stop(self) -> None:
+        """Watch handles KeyboardInterrupt gracefully, stops with stop_reason='interrupt' and exit 130."""
+        self._seed_campaign()
+        out = io.StringIO()
+
+        def raise_sigint(seconds: float) -> None:
+            raise KeyboardInterrupt()
+
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=10.0,
+            timeout=60.0,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=raise_sigint,
+        )
+        self.assertEqual(exit_code, 130)
+        rendered = out.getvalue()
+        self.assertIn("Final result: interrupt", rendered)
+        self.assertIn("re-run 'code-mower release campaign watch", rendered)
+
+    def test_watch_slow_initial_poll(self) -> None:
+        """A slow initial poll that reaches or exceeds timeout stops immediately without loop polling."""
+        self._seed_campaign(
+            providers=[
+                {
+                    "provider": "devin",
+                    "lane_id": "fake_hosted",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 10.0,
+                    "dispatch_ref": {"issue_number": "123"},
+                    "idempotency_key": "idemp-devin",
+                }
+            ]
+        )
+        out = io.StringIO()
+
+        def slow_gh_json(*args: Any, **kwargs: Any) -> tuple[Any, str]:
+            # Simulate a slow initial remote poll taking 25.0s (exceeding timeout of 20.0s)
+            self.clock.current += 25.0
+            return {"comments": []}, ""
+
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            interval=5.0,
+            timeout=20.0,
+            gh_json_runner=slow_gh_json,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 1)
+        rendered = out.getvalue()
+        self.assertIn("Final result: timeout", rendered)
+        self.assertIn("Retry guidance: re-run 'code-mower release campaign watch", rendered)
+        self.assertEqual(len(self.clock.sleep_calls), 0)
+
+        # Directly verify campaign_watch summary contract
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            interval=5.0,
+            timeout=20.0,
+            gh_json_runner=slow_gh_json,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(summary["stop_reason"], "timeout")
+        self.assertEqual(summary["polls"], 0)
+        self.assertEqual(summary["elapsed_seconds"], 25.0)
+
+    def test_watch_deadline_after_sleep(self) -> None:
+        """Sleeping to the deadline still performs the final bounded poll."""
+        self._seed_campaign(
+            providers=[
+                {
+                    "provider": "devin",
+                    "lane_id": "fake_hosted",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 10.0,
+                    "dispatch_ref": {"issue_number": "123"},
+                    "idempotency_key": "idemp-devin",
+                }
+            ]
+        )
+        out = io.StringIO()
+        poll_call_count = 0
+
+        def counting_gh_json(*args: Any, **kwargs: Any) -> tuple[Any, str]:
+            nonlocal poll_call_count
+            poll_call_count += 1
+            return {"comments": []}, ""
+
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            interval=10.0,
+            timeout=20.0,
+            gh_json_runner=counting_gh_json,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 1)
+        rendered = out.getvalue()
+        self.assertIn("Final result: timeout", rendered)
+        self.assertEqual(self.clock.sleep_calls, [10.0, 10.0])
+        # Initial poll at t=0 plus one after each bounded sleep, including the
+        # deadline, so completion in the final interval is observable.
+        self.assertEqual(poll_call_count, 3)
+
+    def test_watch_bounds_campaign_lock_by_remaining_time(self) -> None:
+        self._seed_campaign()
+        observed_timeouts: list[float] = []
+
+        @contextlib.contextmanager
+        def recording_lock(_campaigns_dir: Path, **kwargs: Any) -> Any:
+            observed_timeouts.append(kwargs["timeout_seconds"])
+            yield
+
+        with mock.patch.object(
+            release_campaigns,
+            "locked_campaigns_dir",
+            recording_lock,
+        ):
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                interval=10.0,
+                timeout=20.0,
+                emit_json=True,
+                time_fn=self.clock.time,
+                sleep_fn=self.clock.sleep,
+            )
+
+        self.assertEqual(summary["stop_reason"], "timeout")
+        self.assertEqual(observed_timeouts, [20.0, 10.0, 0.0])
+
+    def test_watch_lock_timeout_returns_stable_timeout_summary(self) -> None:
+        self._seed_campaign()
+
+        @contextlib.contextmanager
+        def unavailable_lock(_campaigns_dir: Path, **_kwargs: Any) -> Any:
+            raise release_campaigns.FileLockError("private lock detail")
+            yield
+
+        with mock.patch.object(
+            release_campaigns,
+            "locked_campaigns_dir",
+            unavailable_lock,
+        ):
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                timeout=1.0,
+                emit_json=True,
+                time_fn=self.clock.time,
+                sleep_fn=self.clock.sleep,
+            )
+
+        self.assertEqual(summary["stop_reason"], "timeout")
+        self.assertNotIn("private lock detail", json.dumps(summary))
+
+    def test_watch_storage_failure_returns_stable_invalid_summary(self) -> None:
+        self._seed_campaign()
+
+        @contextlib.contextmanager
+        def broken_storage(_campaigns_dir: Path, **_kwargs: Any) -> Any:
+            raise OSError("private /tmp/campaign path")
+            yield
+
+        with mock.patch.object(
+            release_campaigns,
+            "locked_campaigns_dir",
+            broken_storage,
+        ):
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                emit_json=True,
+                time_fn=self.clock.time,
+                sleep_fn=self.clock.sleep,
+            )
+
+        self.assertEqual(summary["stop_reason"], "invalid_campaign")
+        self.assertEqual(summary["error"], "campaign storage is unavailable")
+        self.assertNotIn("/tmp/campaign", json.dumps(summary))
+
+    def test_watch_interrupt_during_initial_lock_or_poll(self) -> None:
+        """KeyboardInterrupt during initial lock or poll produces the same interrupt summary and exit 130."""
+        self._seed_campaign(
+            providers=[
+                {
+                    "provider": "devin",
+                    "lane_id": "fake_hosted",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 10.0,
+                    "dispatch_ref": {"issue_number": "123"},
+                    "idempotency_key": "idemp-devin",
+                }
+            ]
+        )
+
+        # 1. Interrupt during initial remote poll
+        out_poll = io.StringIO()
+
+        def interrupting_gh_json(*args: Any, **kwargs: Any) -> tuple[Any, str]:
+            raise KeyboardInterrupt()
+
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            interval=10.0,
+            timeout=60.0,
+            gh_json_runner=interrupting_gh_json,
+            stdout=out_poll,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 130)
+        rendered_poll = out_poll.getvalue()
+        self.assertIn("Final result: interrupt", rendered_poll)
+        self.assertIn("re-run 'code-mower release campaign watch", rendered_poll)
+
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            interval=10.0,
+            timeout=60.0,
+            gh_json_runner=interrupting_gh_json,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(summary["stop_reason"], "interrupt")
+        self.assertEqual(summary["polls"], 0)
+        self.assertEqual(summary["mode"], "release-campaign-watch")
+        self.assertEqual(summary["schema"], release_campaigns.CAMPAIGN_WATCH_SCHEMA)
+        self.assertIn("re-run 'code-mower release campaign watch", summary["retry_guidance"])
+
+        # 2. Interrupt during initial lock acquisition
+        out_lock = io.StringIO()
+
+        @contextlib.contextmanager
+        def interrupting_lock(campaigns_dir: Path, **_kwargs: Any) -> Any:
+            raise KeyboardInterrupt()
+            yield
+
+        with mock.patch.object(release_campaigns, "locked_campaigns_dir", interrupting_lock):
+            exit_code_lock = release_campaigns.campaign_command(
+                action="watch",
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                interval=10.0,
+                timeout=60.0,
+                stdout=out_lock,
+                time_fn=self.clock.time,
+                sleep_fn=self.clock.sleep,
+            )
+        self.assertEqual(exit_code_lock, 130)
+        rendered_lock = out_lock.getvalue()
+        self.assertIn("Final result: interrupt", rendered_lock)
+        self.assertIn("re-run 'code-mower release campaign watch", rendered_lock)
+
+    def test_watch_remote_unavailable_outage(self) -> None:
+        """Watch stops distinctly with stop_reason='remote_unavailable' during remote provider outage."""
+        self._seed_campaign(
+            providers=[
+                {
+                    "provider": "devin",
+                    "lane_id": "fake_hosted",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 10.0,
+                    "dispatch_ref": {"issue_number": "123"},
+                    "idempotency_key": "idemp-devin",
+                }
+            ]
+        )
+        out = io.StringIO()
+
+        def fail_gh_json(*args: Any, **kwargs: Any) -> tuple[Any, str]:
+            return None, "network down"
+
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            gh_json_runner=fail_gh_json,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 1)
+        rendered = out.getvalue()
+        self.assertIn("Final result: remote_unavailable", rendered)
+        self.assertIn("verify GitHub connectivity", rendered)
+
+    def test_watch_invalid_campaign_missing_and_ambiguous(self) -> None:
+        """Watch stops distinctly with stop_reason='invalid_campaign' on missing or ambiguous campaigns."""
+        out = io.StringIO()
+        err = io.StringIO()
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="nonexistent-campaign",
+            campaigns_dir=self.campaigns_dir,
+            stdout=out,
+            stderr=err,
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertIn("no campaign found", err.getvalue())
+
+        self._seed_campaign(campaign_id="campaign-1", release_tag="v2.0.0")
+        self._seed_campaign(campaign_id="campaign-2", release_tag="v2.0.0")
+        out = io.StringIO()
+        err = io.StringIO()
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            release_tag="v2.0.0",
+            campaigns_dir=self.campaigns_dir,
+            stdout=out,
+            stderr=err,
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertIn("matches 2 campaigns", err.getvalue())
+
+    def test_watch_invalid_campaign_malformed_id(self) -> None:
+        """Watch stops with stop_reason='invalid_campaign' for invalid campaign ID."""
+        out = io.StringIO()
+        err = io.StringIO()
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="invalid/id/with/slashes",
+            campaigns_dir=self.campaigns_dir,
+            stdout=out,
+            stderr=err,
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertIn("campaign_id must", err.getvalue())
+
+    def test_watch_malformed_stored_payloads_emit_stable_json(self) -> None:
+        malformed_path = self.campaigns_dir / "campaign-malformed.json"
+        payloads = [
+            {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "providers": [],
+            },
+            {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-malformed",
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "providers": [None],
+            },
+            {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-malformed",
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "providers": [
+                    {
+                        "provider": "claude",
+                        "state": "running",
+                        "elapsed_seconds": "not-a-number",
+                    }
+                ],
+            },
+            {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-malformed",
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "providers": [
+                    {
+                        "provider": "claude",
+                        "state": "running",
+                        "elapsed_seconds": "5.0",
+                    }
+                ],
+            },
+        ]
+
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                malformed_path.write_text(json.dumps(payload), encoding="utf-8")
+                out = io.StringIO()
+                exit_code = release_campaigns.campaign_command(
+                    action="watch",
+                    campaign_id="campaign-malformed",
+                    campaigns_dir=self.campaigns_dir,
+                    emit_json=True,
+                    stdout=out,
+                )
+                self.assertEqual(exit_code, 1)
+                summary = json.loads(out.getvalue())
+                self.assertEqual(summary["schema"], release_campaigns.CAMPAIGN_WATCH_SCHEMA)
+                self.assertEqual(summary["status"], "invalid")
+                self.assertEqual(summary["stop_reason"], "invalid_campaign")
+                self.assertIn(
+                    summary["error"],
+                    {
+                        "invalid campaign identity",
+                        "invalid campaign provider collection",
+                        "invalid campaign provider metrics",
+                        "no campaign found for 'campaign-malformed'",
+                    },
+                )
+
+        direct_summary = release_campaigns.campaign_watch(
+            campaign=payloads[0],
+            campaigns_dir=self.campaigns_dir,
+            emit_json=True,
+        )
+        self.assertEqual(direct_summary["stop_reason"], "invalid_campaign")
+        self.assertEqual(direct_summary["error"], "invalid campaign identity")
+
+    def test_watch_repo_slug_is_effective_and_cannot_change_identity(self) -> None:
+        campaign = self._seed_campaign(
+            status="running",
+            providers=[
+                {
+                    "provider": "cursor_bugbot",
+                    "lane_id": "cursor_bugbot",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 0.0,
+                    "idempotency_key": "cursor-key",
+                    "dispatch_mode": "applied",
+                    "trigger_posted": False,
+                    "dispatch_reconciliation_key": "dispatch-key",
+                    "trigger_reconciliation_key": "trigger-key",
+                    "dispatch_ref": {"issue_number": "42", "comment_posted": True},
+                    "next_action": "poll cursor_bugbot remote progress marker",
+                    "next_detail": "",
+                }
+            ],
+        )
+        campaign["repo_slug"] = ""
+        release_campaigns.save_campaign(campaign, self.campaigns_dir)
+        seen_repos: list[str] = []
+
+        wrapper = {
+            "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+            "campaign_id": campaign["campaign_id"],
+            "provider": "cursor_bugbot",
+            "release_tag": campaign["release_tag"],
+            "idempotency_key": "cursor-key",
+            "adoption_result": _mock_adoption_result(
+                release_tag="v1.0.0",
+                provider="cursor_bugbot",
+                outcome="pass",
+            ),
+        }
+        result_marker = (
+            "<!-- CODE_MOWER_ADOPTION_RESULT: "
+            f"{json.dumps(wrapper, sort_keys=True)} -->"
+        )
+
+        def gh_json(args: list[str], **kwargs: Any) -> tuple[dict[str, Any], str]:
+            seen_repos.append("owner/repo" if "owner/repo" in args else "")
+            return {
+                "comments": [
+                    {"author": {"login": "cursor[bot]"}, "body": result_marker}
+                ]
+            }, ""
+
+        out = io.StringIO()
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            repo_slug="owner/repo",
+            interval=1.0,
+            timeout=1.0,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+            gh_json_runner=gh_json,
+            env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+        )
+
+        self.assertEqual(summary["stop_reason"], "complete")
+        self.assertTrue(
+            any(
+                transition.get("provider") == "cursor_bugbot"
+                and transition.get("from_state") == "running"
+                and transition.get("to_state") == "complete"
+                for transition in summary["transitions"]
+            )
+        )
+        self.assertIn("Transition: cursor_bugbot running -> complete", out.getvalue())
+        self.assertEqual(seen_repos, ["owner/repo"])
+        persisted = release_campaigns.load_campaign_by_id(
+            "campaign-v1.0.0", self.campaigns_dir
+        )
+        assert persisted is not None
+        self.assertEqual(persisted["repo_slug"], "")
+        self.assertEqual(persisted["providers"][0]["state"], "complete")
+
+        campaign["repo_slug"] = "owner/original"
+        release_campaigns.save_campaign(campaign, self.campaigns_dir)
+        conflict = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            repo_slug="owner/different",
+            emit_json=True,
+        )
+        self.assertEqual(conflict["stop_reason"], "invalid_campaign")
+        self.assertEqual(
+            conflict["error"], "requested repo slug does not match stored campaign"
+        )
+
+    def test_watch_does_not_create_reconciliation_state_for_older_campaign(self) -> None:
+        campaign = self._seed_campaign(
+            status="running",
+            providers=[
+                {
+                    "provider": "cursor_bugbot",
+                    "lane_id": "cursor_bugbot",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 0.0,
+                    "idempotency_key": "cursor-key",
+                    "dispatch_mode": "applied",
+                    "trigger_posted": False,
+                    "dispatch_ref": {"issue_number": "42", "comment_posted": True},
+                    "error": "",
+                    "next_action": "poll cursor_bugbot remote progress marker",
+                    "next_detail": "",
+                }
+            ],
+        )
+        before = json.loads(json.dumps(campaign))
+
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=1.0,
+            timeout=1.0,
+            emit_json=True,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+            gh_json_runner=lambda _args: {"comments": []},
+        )
+
+        self.assertEqual(summary["stop_reason"], "timeout")
+        persisted = release_campaigns.load_campaign_by_id(
+            "campaign-v1.0.0", self.campaigns_dir
+        )
+        self.assertEqual(persisted, before)
+        self.assertNotIn("dispatch_reconciliation_key", persisted["providers"][0])
+        self.assertNotIn("trigger_reconciliation_key", persisted["providers"][0])
+
+    def test_watch_polls_once_at_timeout_boundary(self) -> None:
+        self._seed_campaign()
+
+        def finish_during_sleep(seconds: float) -> None:
+            self.clock.sleep(seconds)
+            campaign = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", self.campaigns_dir
+            )
+            assert campaign is not None
+            campaign["status"] = "complete"
+            campaign["providers"][0]["state"] = "complete"
+            campaign["providers"][0]["next_action"] = "none"
+            release_campaigns.save_campaign(campaign, self.campaigns_dir)
+
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=10.0,
+            timeout=10.0,
+            stdout=io.StringIO(),
+            time_fn=self.clock.time,
+            sleep_fn=finish_during_sleep,
+        )
+
+        self.assertEqual(summary["polls"], 1)
+        self.assertEqual(summary["stop_reason"], "complete")
+
+    def test_watch_positive_interval_and_timeout_validation(self) -> None:
+        """Non-positive, non-numeric, or non-finite interval/timeout are rejected."""
+        self._seed_campaign()
+        for bad_interval in [-5.0, 0.0, float("nan"), float("inf"), True, False]:
+            err = io.StringIO()
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                interval=bad_interval,  # type: ignore[arg-type]
+                timeout=60.0,
+                stderr=err,
+            )
+            self.assertEqual(summary["stop_reason"], "invalid_campaign")
+            self.assertIn("interval must be a positive number of seconds", err.getvalue())
+
+        for bad_timeout in [-10.0, 0.0, float("nan"), float("inf"), True, False]:
+            err = io.StringIO()
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                interval=10.0,
+                timeout=bad_timeout,  # type: ignore[arg-type]
+                stderr=err,
+            )
+            self.assertEqual(summary["stop_reason"], "invalid_campaign")
+            self.assertIn("timeout must be a positive number of seconds", err.getvalue())
+
+    def test_watch_intent_conflicts(self) -> None:
+        """Watch rejects conflicting mutating actions, and non-watch rejects --interval."""
+        err = io.StringIO()
+        res = release_campaigns.campaign_command(action="watch", apply=True, stderr=err)
+        self.assertEqual(res, 1)
+        self.assertIn("watch polls campaign progress without executing or mutating", err.getvalue())
+
+        err = io.StringIO()
+        res = release_campaigns.campaign_command(action="watch", yes=True, stderr=err)
+        self.assertEqual(res, 1)
+        self.assertIn("applies only to the 'upload' action", err.getvalue())
+
+        err = io.StringIO()
+        res = release_campaigns.campaign_command(
+            action="watch", retry_provider="claude", stderr=err
+        )
+        self.assertEqual(res, 1)
+        self.assertIn("cannot be combined with --retry-provider", err.getvalue())
+
+        err = io.StringIO()
+        res = release_campaigns.campaign_command(
+            action="status", interval=5.0, stderr=err
+        )
+        self.assertEqual(res, 1)
+        self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+    def test_watch_json_mode_schema_and_metadata_only(self) -> None:
+        """JSON mode emits exactly one metadata-only summary matching code_mower.releaseCampaignWatch.v1."""
+        self._seed_campaign(
+            status="complete",
+            providers=[
+                {
+                    "provider": "claude",
+                    "state": "complete",
+                    "environment": "local",
+                    "elapsed_seconds": 10.0,
+                }
+            ],
+        )
+        out = io.StringIO()
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            emit_json=True,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 0)
+        parsed = json.loads(out.getvalue())
+        self.assertEqual(parsed["schema"], release_campaigns.CAMPAIGN_WATCH_SCHEMA)
+        self.assertEqual(parsed["mode"], "release-campaign-watch")
+        self.assertEqual(parsed["campaign_id"], "campaign-v1.0.0")
+        self.assertEqual(parsed["release_tag"], "v1.0.0")
+        self.assertEqual(parsed["status"], "complete")
+        self.assertEqual(parsed["stop_reason"], "complete")
+        self.assertIsInstance(parsed["transitions"], list)
+        self.assertIsInstance(parsed["providers"], list)
+        self.assertIn("interval_seconds", parsed)
+        self.assertIn("timeout_seconds", parsed)
+        self.assertIn("elapsed_seconds", parsed)
+        json_text = out.getvalue()
+        self.assertNotIn(str(self.campaigns_dir), json_text)
+        self.assertNotIn("TOKEN", json_text)
+
+    def test_watch_idempotency_and_no_implicit_execution(self) -> None:
+        """Watch preserves idempotency and never calls local adapters or dispatches comments."""
+        self._seed_campaign(
+            providers=[
+                {
+                    "provider": "claude",
+                    "state": "running",
+                    "environment": "local",
+                    "elapsed_seconds": 5.0,
+                    "attempted_at": "2026-09-04T12:00:00Z",
+                    "idempotency_key": "idemp-claude",
+                }
+            ]
+        )
+        adapter_calls: list[Any] = []
+        cmd_calls: list[Any] = []
+
+        def fake_adapter(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            adapter_calls.append(args)
+            return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+        def fake_cmd(*args: Any, **kwargs: Any) -> tuple[int, str, str]:
+            cmd_calls.append(args)
+            return 0, "", ""
+
+        polls = 0
+
+        def sleep_two(seconds: float) -> None:
+            nonlocal polls
+            polls += 1
+            self.clock.sleep(seconds)
+            if polls >= 2:
+                c = release_campaigns.load_campaign_by_id("campaign-v1.0.0", self.campaigns_dir)
+                assert c is not None
+                c["status"] = "complete"
+                c["providers"][0]["state"] = "complete"
+                release_campaigns.save_campaign(c, self.campaigns_dir)
+
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=10.0,
+            timeout=60.0,
+            adapter_runner=fake_adapter,
+            command_runner=fake_cmd,
+            time_fn=self.clock.time,
+            sleep_fn=sleep_two,
+            stdout=io.StringIO(),
+        )
+        self.assertEqual(summary["stop_reason"], "complete")
+        self.assertEqual(adapter_calls, [])
+        self.assertEqual(cmd_calls, [])
+        reloaded = release_campaigns.load_campaign_by_id("campaign-v1.0.0", self.campaigns_dir)
+        assert reloaded is not None
+        self.assertEqual(reloaded["providers"][0]["attempted_at"], "2026-09-04T12:00:00Z")
+
+    def test_watch_via_release_qualify_main_cli(self) -> None:
+        """release_qualify CLI dispatches watch command correctly."""
+        self._seed_campaign(
+            status="complete",
+            providers=[
+                {
+                    "provider": "claude",
+                    "state": "complete",
+                    "environment": "local",
+                    "elapsed_seconds": 10.0,
+                }
+            ],
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "watch",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--json",
+                ]
+            )
+        self.assertEqual(code, 0)
+        parsed = json.loads(out.getvalue())
+        self.assertEqual(parsed["schema"], release_campaigns.CAMPAIGN_WATCH_SCHEMA)
+        self.assertEqual(parsed["stop_reason"], "complete")
+
+    def test_watch_in_memory_publication_under_lock_and_concurrency(self) -> None:
+        """watch_release_campaign publishes in-memory campaign under directory lock and re-checks existence."""
+        campaign_data = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-in-memory",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "status": "complete",
+            "providers": [
+                {
+                    "provider": "claude",
+                    "lane_id": "lane-claude",
+                    "state": "complete",
+                    "environment": "local",
+                    "elapsed_seconds": 5.0,
+                }
+            ],
+        }
+
+        # 1. Lock assertion: verify directory lock is held when save_campaign is invoked
+        lock_held_during_save = False
+        is_locked = False
+        real_lock = release_campaigns.locked_campaigns_dir
+        real_save = release_campaigns.save_campaign
+
+        @contextlib.contextmanager
+        def tracking_lock(dir_path: Path, **kwargs: Any) -> Any:
+            nonlocal is_locked
+            with real_lock(dir_path, **kwargs) as lock_file:
+                is_locked = True
+                try:
+                    yield lock_file
+                finally:
+                    is_locked = False
+
+        def tracking_save(campaign: Any, dir_path: Path) -> Path:
+            nonlocal lock_held_during_save
+            lock_held_during_save = is_locked
+            return real_save(campaign, dir_path)
+
+        target_file = self.campaigns_dir / release_campaigns.campaign_filename("campaign-in-memory")
+        self.assertFalse(target_file.is_file())
+
+        with (
+            mock.patch.object(release_campaigns, "locked_campaigns_dir", tracking_lock),
+            mock.patch.object(release_campaigns, "save_campaign", tracking_save),
+        ):
+            summary = release_campaigns.campaign_watch(
+                campaign=campaign_data,
+                campaigns_dir=self.campaigns_dir,
+                stdout=io.StringIO(),
+            )
+
+        self.assertTrue(lock_held_during_save)
+        self.assertTrue(target_file.is_file())
+        self.assertEqual(summary["status"], "complete")
+        self.assertEqual(summary["stop_reason"], "complete")
+
+        # 2. Concurrency re-check assertion:
+        # If another watcher/writer already created the target file before this watcher enters the lock,
+        # re-checking inside the lock ensures save_campaign is NOT called again.
+        save_calls = 0
+
+        def counting_save(campaign: Any, dir_path: Path) -> Path:
+            nonlocal save_calls
+            save_calls += 1
+            return real_save(campaign, dir_path)
+
+        with (
+            mock.patch.object(release_campaigns, "save_campaign", counting_save),
+            mock.patch.object(
+                release_campaigns,
+                "dispatch_or_advance_campaign",
+                side_effect=lambda c, **kwargs: dict(c),
+            ),
+        ):
+            self.assertTrue(target_file.is_file())
+            summary2 = release_campaigns.campaign_watch(
+                campaign=campaign_data,
+                campaigns_dir=self.campaigns_dir,
+                stdout=io.StringIO(),
+            )
+            self.assertEqual(save_calls, 0)
+            self.assertEqual(summary2["stop_reason"], "complete")
+
+        # 3. Concurrent watcher threads racing with in-memory campaign:
+        concurrent_cid = "campaign-concurrent-race"
+        concurrent_file = self.campaigns_dir / release_campaigns.campaign_filename(concurrent_cid)
+        concurrent_data = dict(campaign_data)
+        concurrent_data["campaign_id"] = concurrent_cid
+        self.assertFalse(concurrent_file.is_file())
+
+        concurrent_saves = 0
+        save_lock = threading.Lock()
+
+        def thread_safe_counting_save(campaign: Any, dir_path: Path) -> Path:
+            nonlocal concurrent_saves
+            with save_lock:
+                concurrent_saves += 1
+            return real_save(campaign, dir_path)
+
+        errors: list[Exception] = []
+        results: list[dict[str, Any]] = []
+
+        def run_watcher() -> None:
+            try:
+                res = release_campaigns.campaign_watch(
+                    campaign=dict(concurrent_data),
+                    campaigns_dir=self.campaigns_dir,
+                    stdout=io.StringIO(),
+                )
+                results.append(res)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=run_watcher) for _ in range(5)]
+        with (
+            mock.patch.object(release_campaigns, "save_campaign", thread_safe_counting_save),
+            mock.patch.object(
+                release_campaigns,
+                "dispatch_or_advance_campaign",
+                side_effect=lambda c, **kwargs: dict(c),
+            ),
+        ):
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 5)
+        self.assertTrue(concurrent_file.is_file())
+        # Exactly one watcher published the campaign; all other concurrent watchers observed existence inside the lock
+        self.assertEqual(concurrent_saves, 1)
+        for r in results:
+            self.assertEqual(r["stop_reason"], "complete")
+
+    def test_option_scope_enforcement_and_no_mutation(self) -> None:
+        """--interval is valid only for watch; --timeout is valid only for watch and upload.
+
+        Actions where options are out of scope reject them with a bounded non-zero error
+        and perform no campaign mutation.
+        """
+        # Seed an existing campaign
+        self._seed_campaign(campaign_id="campaign-v1.0.0", release_tag="v1.0.0", status="running")
+        campaign_path = self.campaigns_dir / release_campaigns.campaign_filename("campaign-v1.0.0")
+        initial_stat = campaign_path.stat()
+        initial_content = campaign_path.read_text(encoding="utf-8")
+
+        # 1. Non-watch actions reject --interval
+        for act in ["status", "create", "resume", "dispatch", "upload"]:
+            err = io.StringIO()
+            res = release_campaigns.campaign_command(
+                action=act,
+                campaign_id="campaign-v1.0.0",
+                release_tag="v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                interval=5.0,
+                stderr=err,
+            )
+            self.assertEqual(res, 1)
+            self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+        # Action omitted with --interval
+        err = io.StringIO()
+        res = release_campaigns.campaign_command(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=5.0,
+            stderr=err,
+        )
+        self.assertEqual(res, 1)
+        self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+        # Legacy flags with --interval
+        for legacy_kwarg in [{"status": True}, {"resume": True}]:
+            err = io.StringIO()
+            res = release_campaigns.campaign_command(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                interval=5.0,
+                stderr=err,
+                **legacy_kwarg,
+            )
+            self.assertEqual(res, 1)
+            self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+        # 2. Actions other than watch and upload reject --timeout
+        for act in ["status", "create", "resume", "dispatch"]:
+            err = io.StringIO()
+            res = release_campaigns.campaign_command(
+                action=act,
+                campaign_id="campaign-v1.0.0",
+                release_tag="v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                timeout=30.0,
+                stderr=err,
+            )
+            self.assertEqual(res, 1)
+            self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # Action omitted with --timeout
+        err = io.StringIO()
+        res = release_campaigns.campaign_command(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            timeout=30.0,
+            stderr=err,
+        )
+        self.assertEqual(res, 1)
+        self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # Legacy flags with --timeout
+        for legacy_kwarg in [{"status": True}, {"resume": True}]:
+            err = io.StringIO()
+            res = release_campaigns.campaign_command(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                timeout=30.0,
+                stderr=err,
+                **legacy_kwarg,
+            )
+            self.assertEqual(res, 1)
+            self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # 3. Assert NO campaign mutation occurred on disk
+        self.assertEqual(campaign_path.read_text(encoding="utf-8"), initial_content)
+        current_stat = campaign_path.stat()
+        self.assertEqual(current_stat.st_mtime_ns, initial_stat.st_mtime_ns)
+
+        # 4. Valid actions accept options
+        # watch accepts both --interval and --timeout
+        out = io.StringIO()
+        res = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=5.0,
+            timeout=10.0,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(res, 1)  # stops with timeout because still running
+        self.assertIn("Final result: timeout", out.getvalue())
+
+        # upload accepts --timeout (preview mode by default, without --yes)
+        self._seed_campaign(
+            campaign_id="campaign-upload-test",
+            release_tag="v1.0.0",
+            status="running",
+            providers=[
+                {
+                    "provider": "claude",
+                    "lane_id": "lane-claude",
+                    "state": "running",
+                    "environment": "local",
+                    "elapsed_seconds": 1.0,
+                }
+            ],
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            res = release_campaigns.campaign_command(
+                action="upload",
+                campaign_id="campaign-upload-test",
+                campaigns_dir=self.campaigns_dir,
+                timeout=45.0,
+            )
+        self.assertEqual(res, 0)
+        self.assertIn("Release Campaign Upload", out.getvalue())
+
+    def test_cli_option_scope_enforcement(self) -> None:
+        """CLI enforces option scope for --interval and --timeout with bounded errors."""
+        self._seed_campaign(campaign_id="campaign-v1.0.0", release_tag="v1.0.0")
+
+        # --interval on status
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "status",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--interval",
+                    "5.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+        # --timeout on status
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "status",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--timeout",
+                    "30.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # --timeout on create
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "create",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--package-spec",
+                    "code-mower==2.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--timeout",
+                    "30.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # --interval on upload
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "upload",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--interval",
+                    "5.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+        # --timeout on omitted action (implicit create/advance)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--timeout",
+                    "30.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # --timeout on legacy --status flag
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "--status",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--timeout",
+                    "30.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
 
 
 if __name__ == "__main__":

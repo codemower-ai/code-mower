@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -58,12 +59,15 @@ DISPATCH_SCHEMA = "code_mower.releaseCampaignDispatch.v1"
 RESULT_MARKER_SCHEMA = "code_mower.releaseCampaignResult.v1"
 TRIGGER_MARKER_SCHEMA = "code_mower.releaseCampaignTrigger.v1"
 BOARD_RELEASE_CAMPAIGNS_SCHEMA = "code_mower.boardReleaseCampaigns.v1"
+CAMPAIGN_WATCH_SCHEMA = "code_mower.releaseCampaignWatch.v1"
 DEFAULT_CAMPAIGNS_RELATIVE_DIR = Path(".code-mower") / "campaigns"
 DEFAULT_ADAPTER_TIMEOUT_SECONDS = 900
 # Margin between the outer campaign adapter timeout and the inner provider
 # budget the maintained adapters enforce on their own subprocess. Keep in sync
 # with campaign_adapters.INNER_TIMEOUT_MARGIN_SECONDS.
 ADAPTER_INNER_TIMEOUT_MARGIN_SECONDS = 30
+DEFAULT_WATCH_INTERVAL_SECONDS = 10.0
+DEFAULT_WATCH_TIMEOUT_SECONDS = 600.0
 
 # Campaign identifiers are storage keys: each one maps to exactly one file named
 # `<campaign_id>.json`. The mapping is one-to-one and lossless -- no character is
@@ -478,7 +482,13 @@ def _aggregate_campaign_status(
 
 
 @contextmanager
-def locked_campaigns_dir(campaigns_dir: Path) -> Iterator[IO[str]]:
+def locked_campaigns_dir(
+    campaigns_dir: Path,
+    *,
+    timeout_seconds: float = 900.0,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> Iterator[IO[str]]:
     """Hold an exclusive advisory lock over one campaign directory.
 
     Every *mutating* campaign command serializes on this lock across its whole
@@ -502,7 +512,12 @@ def locked_campaigns_dir(campaigns_dir: Path) -> Iterator[IO[str]]:
     """
     campaigns_dir.mkdir(parents=True, exist_ok=True)
     lock_path = campaigns_dir / CAMPAIGNS_LOCK_FILENAME
-    with exclusive_file_lock(lock_path) as lock_file:
+    with exclusive_file_lock(
+        lock_path,
+        timeout_seconds=timeout_seconds,
+        sleep=sleep,
+        monotonic=monotonic,
+    ) as lock_file:
         yield lock_file
 
 
@@ -1033,9 +1048,21 @@ def _poll_github_comments(
 ) -> tuple[list[dict[str, Any]], str]:
     if not repo_slug or not issue_number:
         return [], _safe_error("github_poll_unavailable")
-    data, error = gh_json_runner(
-        ["issue", "view", str(issue_number), "--repo", repo_slug, "--json", "comments"]
-    )
+    try:
+        result = gh_json_runner(
+            ["issue", "view", str(issue_number), "--repo", repo_slug, "--json", "comments"]
+        )
+    except (
+        OSError,
+        ValueError,
+        lane_status.LaneStatusUnavailable,
+        subprocess.TimeoutExpired,
+    ):
+        return [], _safe_error("github_poll_unavailable")
+    if isinstance(result, tuple) and len(result) == 2:
+        data, error = result
+    else:
+        data, error = result, ""
     if error:
         return [], _safe_error("github_poll_unavailable")
     if not isinstance(data, dict):
@@ -1142,6 +1169,19 @@ def _validate_adapter_timeout(value: Any) -> int:
     if parsed <= 0:
         raise ValueError("campaign_adapter_timeout_seconds must be a positive integer")
     return parsed
+
+
+def _validate_positive_duration(value: Any, name: str) -> float:
+    """Validate that value is a positive finite float number of seconds."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive number of seconds")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a positive number of seconds") from exc
+    if not math.isfinite(number) or number <= 0.0:
+        raise ValueError(f"{name} must be a positive number of seconds")
+    return number
 
 
 def _build_adapter_argv(
@@ -1615,6 +1655,8 @@ def dispatch_or_advance_campaign(
     adapter_runner: AdapterRunner = run_local_adapter_command,
     env: Mapping[str, str] | None = None,
     retry_provider: str = "",
+    repo_slug_override: str = "",
+    poll_only: bool = False,
 ) -> dict[str, Any]:
     """Execute dispatch, polling, or status progression on a campaign.
 
@@ -1630,6 +1672,7 @@ def dispatch_or_advance_campaign(
     between "already attempted" and "never dispatched".
     """
     current_env = os.environ if env is None else env
+    campaign_before_poll = copy.deepcopy(campaign) if poll_only else None
     repo_path = repo_path or Path.cwd()
     campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
     results_dir = campaigns_dir / "results"
@@ -1638,7 +1681,8 @@ def dispatch_or_advance_campaign(
     # Applied is monotonic (see `campaign_has_been_applied`): this run may turn
     # a dry-run campaign into an applied one, but a poll that omits `--apply`
     # never turns an applied campaign back into a preview.
-    campaign["dry_run"] = not (apply or campaign_has_been_applied(campaign))
+    if not poll_only:
+        campaign["dry_run"] = not (apply or campaign_has_been_applied(campaign))
     campaign_id = str(campaign.get("campaign_id") or "")
     release_tag = str(campaign.get("release_tag") or "")
     package_spec = str(campaign.get("package_spec") or "")
@@ -1648,7 +1692,11 @@ def dispatch_or_advance_campaign(
     package_identity = campaign_package_identity(package_spec)
     context = str(campaign.get("qualification_context") or "cold_install")
     starting_version = str(campaign.get("starting_version") or "")
-    repo_slug = str(campaign.get("repo_slug") or "")
+    # A watch may need a repository solely to poll an older campaign that did
+    # not persist one. Use that value for this invocation without assigning it
+    # to the campaign, so observed provider transitions can be saved while the
+    # campaign's repository identity remains unchanged.
+    repo_slug = str(campaign.get("repo_slug") or repo_slug_override or "")
 
     retry_canonical = ""
     if retry_provider:
@@ -1705,7 +1753,8 @@ def dispatch_or_advance_campaign(
 
         # 2. If already complete, preserve state
         if current_state == "complete":
-            provider_data["next_action"] = "none"
+            if not poll_only:
+                provider_data["next_action"] = "none"
             continue
 
         # 3. If running, check trigger status and retry if needed, then poll
@@ -1772,12 +1821,56 @@ def dispatch_or_advance_campaign(
             # since the explicit redispatch path will post its own trigger.
             # Also gate on apply: trigger retry is a write operation, not a poll.
             trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
-            provider_data.setdefault("trigger_posted", not bool(trigger_comments))
-            trigger_posted = provider_data["trigger_posted"]
+            if not poll_only:
+                provider_data.setdefault("trigger_posted", not bool(trigger_comments))
+            trigger_posted = provider_data.get("trigger_posted", not bool(trigger_comments))
 
             if trigger_comments and not trigger_posted and not is_explicit_retry:
                 dispatch_key = str(provider_data.get("dispatch_reconciliation_key") or "")
                 trigger_key = str(provider_data.get("trigger_reconciliation_key") or "")
+                if poll_only:
+                    if poll_error or not dispatch_key or not trigger_key:
+                        continue
+                    dispatch_expected = {
+                        "schema": DISPATCH_SCHEMA,
+                        "campaign_id": campaign_id,
+                        "provider": provider,
+                        "idempotency_key": str(provider_data.get("idempotency_key") or ""),
+                        "reconciliation_key": dispatch_key,
+                    }
+                    dispatch_posted = bool(dispatch_ref.get("comment_posted"))
+                    if not dispatch_posted and _has_matching_release_marker(
+                        comments,
+                        "CODE_MOWER_RELEASE_CAMPAIGN",
+                        dispatch_expected,
+                    ):
+                        dispatch_ref["comment_posted"] = True
+                        provider_data["dispatch_ref"] = dispatch_ref
+                        dispatch_posted = True
+                    trigger_expected = {
+                        "schema": TRIGGER_MARKER_SCHEMA,
+                        "campaign_id": campaign_id,
+                        "provider": provider,
+                        "reconciliation_key": trigger_key,
+                    }
+                    if dispatch_posted and _has_matching_release_marker(
+                        comments,
+                        "CODE_MOWER_RELEASE_TRIGGER",
+                        trigger_expected,
+                    ):
+                        provider_data["trigger_posted"] = True
+                        provider_data["next_action"], provider_data["next_detail"] = (
+                            _provider_next_action(
+                                provider,
+                                lane,
+                                "running",
+                                command_available=True,
+                                has_credentials=True,
+                                has_issue=True,
+                                dry_run=False,
+                            )
+                        )
+                    continue
                 if not dispatch_key or not trigger_key:
                     dispatch_key = dispatch_key or uuid.uuid4().hex
                     trigger_key = trigger_key or uuid.uuid4().hex
@@ -1887,6 +1980,9 @@ def dispatch_or_advance_campaign(
             # Explicit retry of a still-running provider with no valid
             # trusted result yet: fall through to the capability checks and
             # applied-dispatch section below for exactly one redispatch.
+
+        if poll_only:
+            continue
 
         # 3.5 Retry preview safety: --retry-provider without --apply must be
         # read-only. This covers a still-running provider with no new result
@@ -2278,7 +2374,8 @@ def dispatch_or_advance_campaign(
             provider_data["next_action"] = f"record manual adoption result for {provider}"
             provider_data["next_detail"] = "manual adapter fallback"
 
-    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+    if not poll_only or campaign != campaign_before_poll:
+        _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
     return campaign
 
 
@@ -2815,6 +2912,713 @@ def render_campaign_text(campaign: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _watch_retry_guidance(stop_reason: str, campaign: Mapping[str, Any]) -> str:
+    rtag = str(campaign.get("release_tag") or "")
+    cid = str(campaign.get("campaign_id") or "")
+    id_flag = f"--campaign-id {cid}" if cid else f"--release-tag {rtag}"
+    if stop_reason == "complete":
+        return ""
+    if stop_reason == "blocked":
+        blocked_providers = [
+            str(p.get("provider") or "")
+            for p in campaign.get("providers", [])
+            if isinstance(p, Mapping) and p.get("state") == "blocked"
+        ]
+        if blocked_providers:
+            first_p = blocked_providers[0]
+            return (
+                f"inspect failures and retry with 'code-mower release campaign "
+                f"{id_flag} --retry-provider {first_p} --apply'"
+            )
+        return (
+            f"inspect failures and retry with 'code-mower release campaign "
+            f"{id_flag} --retry-provider <provider> --apply'"
+        )
+    if stop_reason == "owner_action":
+        return (
+            "resolve provider prerequisites (credentials, issue, adapter) or record a "
+            "manual result with --record-result"
+        )
+    if stop_reason in {"timeout", "interrupt"}:
+        return f"re-run 'code-mower release campaign watch {id_flag}' to resume watching"
+    if stop_reason == "remote_unavailable":
+        return (
+            f"verify GitHub connectivity and re-run 'code-mower release campaign watch {id_flag}'"
+        )
+    if stop_reason == "invalid_campaign":
+        return "verify campaign identifier or create a new campaign with --release-tag <tag>"
+    return ""
+
+
+def _campaign_discrete_state(
+    campaign: Mapping[str, Any],
+) -> tuple[str, tuple[tuple[str, str, str], ...]]:
+    status = str(campaign.get("status") or "")
+    providers = []
+    for p in campaign.get("providers", []):
+        if isinstance(p, Mapping):
+            providers.append(
+                (
+                    str(p.get("provider") or ""),
+                    str(p.get("state") or ""),
+                    str(p.get("error") or ""),
+                )
+            )
+    return (status, tuple(providers))
+
+
+def _describe_transitions(
+    old_c: Mapping[str, Any],
+    new_c: Mapping[str, Any],
+    elapsed: float,
+) -> list[dict[str, Any]]:
+    transitions: list[dict[str, Any]] = []
+    old_providers = {
+        str(p.get("provider") or ""): p
+        for p in old_c.get("providers", [])
+        if isinstance(p, Mapping)
+    }
+    for new_p in new_c.get("providers", []):
+        if not isinstance(new_p, Mapping):
+            continue
+        pname = str(new_p.get("provider") or "")
+        old_p = old_providers.get(pname, {})
+        old_pstate = str(old_p.get("state") or "")
+        new_pstate = str(new_p.get("state") or "")
+        old_error = str(old_p.get("error") or "")
+        new_error = str(new_p.get("error") or "")
+        if old_pstate != new_pstate or old_error != new_error:
+            transitions.append(
+                {
+                    "provider": pname,
+                    "from_state": old_pstate,
+                    "to_state": new_pstate,
+                    "from_error": old_error,
+                    "to_error": new_error,
+                    "elapsed_seconds": round(elapsed, 2),
+                }
+            )
+    old_status = str(old_c.get("status") or "")
+    new_status = str(new_c.get("status") or "")
+    if old_status != new_status:
+        transitions.append(
+            {
+                "campaign_status": True,
+                "from_status": old_status,
+                "to_status": new_status,
+                "elapsed_seconds": round(elapsed, 2),
+            }
+        )
+    return transitions
+
+
+def _build_watch_summary(
+    *,
+    campaign_id: str,
+    release_tag: str,
+    package_identity: str,
+    qualification_context: str,
+    status: str,
+    stop_reason: str,
+    polls: int,
+    elapsed_seconds: float,
+    interval_seconds: float,
+    timeout_seconds: float,
+    next_action: str = "",
+    next_detail: str = "",
+    retry_guidance: str = "",
+    transitions: Sequence[Mapping[str, Any]] = (),
+    providers: Sequence[Mapping[str, Any]] = (),
+    error: str = "",
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "schema": CAMPAIGN_WATCH_SCHEMA,
+        "mode": "release-campaign-watch",
+        "campaign_id": campaign_id,
+        "release_tag": release_tag,
+        "package_identity": package_identity,
+        "qualification_context": qualification_context,
+        "status": status,
+        "stop_reason": stop_reason,
+        "polls": polls,
+        "elapsed_seconds": round(elapsed_seconds, 2),
+        "interval_seconds": interval_seconds,
+        "timeout_seconds": timeout_seconds,
+        "next_action": next_action,
+        "next_detail": next_detail,
+        "retry_guidance": retry_guidance,
+        "transitions": list(transitions),
+        "providers": [
+            {
+                "provider": str(p.get("provider") or ""),
+                "state": str(p.get("state") or ""),
+                "elapsed_seconds": round(float(p.get("elapsed_seconds") or 0.0), 2),
+                "next_action": str(p.get("next_action") or ""),
+                "next_detail": str(p.get("next_detail") or ""),
+                "error": str(p.get("error") or ""),
+            }
+            for p in providers
+            if isinstance(p, Mapping)
+        ],
+    }
+    if error:
+        summary["error"] = error
+    return summary
+
+
+def _watch_campaign_validation_error(campaign: Any) -> str:
+    """Return a bounded reason when stored campaign data is unsafe to watch."""
+    if not isinstance(campaign, Mapping) or campaign.get("schema") != CAMPAIGN_SCHEMA:
+        return "invalid campaign payload"
+    try:
+        campaign_id = validate_campaign_id(campaign.get("campaign_id"))
+        valid_tag, normalized_version, _ = _validate_tag_format(campaign.get("release_tag"))
+        if not valid_tag:
+            raise ValueError
+        _package_identity, package_version = _parse_exact_package_spec(
+            campaign.get("package_spec")
+        )
+        if package_version != normalized_version:
+            raise ValueError
+        context = campaign.get("qualification_context")
+        starting_version = campaign.get("starting_version")
+        _validate_qualification_context(context)
+        _validate_starting_version(starting_version)
+        if context == "upgrade" and not starting_version:
+            raise ValueError
+        if context != "upgrade" and starting_version:
+            raise ValueError
+        if not campaign_id:
+            raise ValueError
+    except (TypeError, ValueError):
+        return "invalid campaign identity"
+
+    providers = campaign.get("providers")
+    if not isinstance(providers, list):
+        return "invalid campaign provider collection"
+    for provider_data in providers:
+        if not isinstance(provider_data, dict):
+            return "invalid campaign provider collection"
+        provider = provider_data.get("provider")
+        if not isinstance(provider, str) or not provider:
+            return "invalid campaign provider collection"
+        try:
+            resolve_provider_lane(provider)
+        except ValueError:
+            return "invalid campaign provider collection"
+        raw_elapsed = provider_data.get("elapsed_seconds", 0.0)
+        if raw_elapsed is None:
+            raw_elapsed = 0.0
+        if isinstance(raw_elapsed, bool) or not isinstance(raw_elapsed, int | float):
+            return "invalid campaign provider metrics"
+        elapsed = float(raw_elapsed)
+        if not math.isfinite(elapsed) or elapsed < 0:
+            return "invalid campaign provider metrics"
+    return ""
+
+
+def _watch_repo_slug(
+    campaign: Mapping[str, Any], requested_repo_slug: str
+) -> tuple[str, str]:
+    """Resolve a poll-only repository override, or reject an identity conflict."""
+    stored_repo_slug = str(campaign.get("repo_slug") or "")
+    if requested_repo_slug and stored_repo_slug and requested_repo_slug != stored_repo_slug:
+        return "", "requested repo slug does not match stored campaign"
+    return stored_repo_slug or requested_repo_slug, ""
+
+
+def campaign_watch(
+    campaign: Mapping[str, Any] | None = None,
+    *,
+    campaign_id: str = "",
+    release_tag: str = "",
+    campaigns_dir: Path | None = None,
+    repo_path: Path | None = None,
+    repo_slug: str = "",
+    issue: str | int = "",
+    interval: float | None = None,
+    timeout: float | None = None,
+    emit_json: bool = False,
+    stdout: IO[str] | None = None,
+    stderr: IO[str] | None = None,
+    time_fn: Callable[[], float] = time.monotonic,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    which_fn: Callable[[str], str | None] = shutil.which,
+    command_runner: lane_status.CommandRunner = lane_status.run_command,
+    gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
+    adapter_runner: AdapterRunner = run_local_adapter_command,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Poll a stored release campaign at a positive interval and bounded timeout.
+
+    Stops distinctly for complete, genuine owner action or blocked state, timeout,
+    interrupt, remote unavailable, and invalid campaign. Text mode prints the initial
+    state, real state transitions, and final result only; JSON mode emits one stable
+    metadata-only final summary.
+    """
+    out = stdout if stdout is not None else sys.stdout
+    err = stderr if stderr is not None else sys.stderr
+    repo_path = repo_path or Path.cwd()
+    campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
+
+    val_interval = DEFAULT_WATCH_INTERVAL_SECONDS if interval is None else interval
+    val_timeout = DEFAULT_WATCH_TIMEOUT_SECONDS if timeout is None else timeout
+
+    try:
+        validated_interval = _validate_positive_duration(val_interval, "interval")
+        validated_timeout = _validate_positive_duration(val_timeout, "timeout")
+    except ValueError as exc:
+        summary = _build_watch_summary(
+            campaign_id=campaign_id or (str(campaign.get("campaign_id") or "") if campaign else ""),
+            release_tag=release_tag or (str(campaign.get("release_tag") or "") if campaign else ""),
+            package_identity="",
+            qualification_context="",
+            status="invalid",
+            stop_reason="invalid_campaign",
+            polls=0,
+            elapsed_seconds=0.0,
+            interval_seconds=0.0,
+            timeout_seconds=0.0,
+            next_action="pass positive interval and timeout",
+            next_detail=str(exc),
+            retry_guidance="specify positive numbers for --interval and --timeout",
+            error=str(exc),
+        )
+        if not emit_json:
+            print(f"error: {exc}", file=err)
+        return summary
+
+    target_campaign: Any = dict(campaign) if isinstance(campaign, Mapping) else campaign
+    if target_campaign is None:
+        if campaign_id:
+            try:
+                validate_campaign_id(campaign_id)
+            except ValueError as exc:
+                summary = _build_watch_summary(
+                    campaign_id=campaign_id,
+                    release_tag=release_tag,
+                    package_identity="",
+                    qualification_context="",
+                    status="invalid",
+                    stop_reason="invalid_campaign",
+                    polls=0,
+                    elapsed_seconds=0.0,
+                    interval_seconds=validated_interval,
+                    timeout_seconds=validated_timeout,
+                    next_action="pass a valid campaign id",
+                    next_detail=str(exc),
+                    retry_guidance="use lowercase letters, digits, '.', '_', and '-'",
+                    error=str(exc),
+                )
+                if not emit_json:
+                    print(f"error: {exc}", file=err)
+                return summary
+
+        loaded, identifier, id_error = _load_requested_campaign(
+            campaign_id=campaign_id,
+            release_tag=release_tag,
+            campaigns_dir=campaigns_dir,
+        )
+        if id_error:
+            summary = _build_watch_summary(
+                campaign_id=campaign_id or identifier,
+                release_tag=release_tag,
+                package_identity="",
+                qualification_context="",
+                status="invalid",
+                stop_reason="invalid_campaign",
+                polls=0,
+                elapsed_seconds=0.0,
+                interval_seconds=validated_interval,
+                timeout_seconds=validated_timeout,
+                next_action="resolve ambiguous release tag with --campaign-id",
+                next_detail=id_error,
+                retry_guidance="pass --campaign-id to uniquely select a campaign",
+                error=id_error,
+            )
+            if not emit_json:
+                print(f"error: {id_error}", file=err)
+            return summary
+        if loaded is None and identifier:
+            msg = f"no campaign found for {identifier!r}"
+            summary = _build_watch_summary(
+                campaign_id=campaign_id or identifier,
+                release_tag=release_tag,
+                package_identity="",
+                qualification_context="",
+                status="invalid",
+                stop_reason="invalid_campaign",
+                polls=0,
+                elapsed_seconds=0.0,
+                interval_seconds=validated_interval,
+                timeout_seconds=validated_timeout,
+                next_action="create a campaign first",
+                next_detail=msg,
+                retry_guidance="verify campaign identifier or create a new campaign with --release-tag <tag>",
+                error=msg,
+            )
+            if not emit_json:
+                print(f"error: {msg}", file=err)
+            return summary
+        if loaded is None:
+            all_c = list_campaigns(campaigns_dir)
+            if not all_c:
+                msg = "no campaigns found"
+                summary = _build_watch_summary(
+                    campaign_id=campaign_id,
+                    release_tag=release_tag,
+                    package_identity="",
+                    qualification_context="",
+                    status="invalid",
+                    stop_reason="invalid_campaign",
+                    polls=0,
+                    elapsed_seconds=0.0,
+                    interval_seconds=validated_interval,
+                    timeout_seconds=validated_timeout,
+                    next_action="create a campaign first",
+                    next_detail=msg,
+                    retry_guidance="create a campaign with code-mower release campaign --release-tag <tag>",
+                    error=msg,
+                )
+                if not emit_json:
+                    print(f"error: {msg}", file=err)
+                return summary
+            loaded = all_c[0]
+        target_campaign = loaded
+
+    validation_error = _watch_campaign_validation_error(target_campaign)
+    if validation_error:
+        msg = validation_error
+        summary = _build_watch_summary(
+            campaign_id=campaign_id,
+            release_tag=release_tag,
+            package_identity="",
+            qualification_context="",
+            status="invalid",
+            stop_reason="invalid_campaign",
+            polls=0,
+            elapsed_seconds=0.0,
+            interval_seconds=validated_interval,
+            timeout_seconds=validated_timeout,
+            next_action="check campaign file schema",
+            next_detail=msg,
+            retry_guidance="verify campaign storage file",
+            error=msg,
+        )
+        if not emit_json:
+            print(f"error: {msg}", file=err)
+        return summary
+
+    watch_repo_slug, repo_slug_error = _watch_repo_slug(
+        target_campaign, repo_slug
+    )
+    if repo_slug_error:
+        summary = _build_watch_summary(
+            campaign_id=str(target_campaign.get("campaign_id") or campaign_id),
+            release_tag=str(target_campaign.get("release_tag") or release_tag),
+            package_identity="",
+            qualification_context=str(
+                target_campaign.get("qualification_context") or ""
+            ),
+            status="invalid",
+            stop_reason="invalid_campaign",
+            polls=0,
+            elapsed_seconds=0.0,
+            interval_seconds=validated_interval,
+            timeout_seconds=validated_timeout,
+            next_action="use the repository recorded by the campaign",
+            next_detail=repo_slug_error,
+            retry_guidance="omit --repo-slug or pass the stored repository",
+            error=repo_slug_error,
+        )
+        if not emit_json:
+            print(f"error: {repo_slug_error}", file=err)
+        return summary
+
+    cid = str(target_campaign.get("campaign_id") or "")
+    rtag = str(target_campaign.get("release_tag") or "")
+    pkg_spec = str(target_campaign.get("package_spec") or "")
+    pkg_id = campaign_package_identity(pkg_spec)
+    qcontext = str(target_campaign.get("qualification_context") or "cold_install")
+
+    target_path = campaigns_dir / campaign_filename(cid)
+    target_absent = not target_path.is_file()
+
+    # Initial check / poll at t=0
+    start_time = time_fn()
+    deadline = start_time + validated_timeout
+
+    def watch_gh_json(args: Sequence[str]) -> Any:
+        """Bound production GitHub calls to this watch's remaining wall time."""
+        if gh_json_runner is lane_status.run_gh_json:
+            remaining = deadline - time_fn()
+            if remaining <= 0:
+                return {"comments": []}
+            return lane_status.run_gh_json(args, timeout=remaining)
+        return gh_json_runner(args)
+
+    polls = 0
+    all_transitions: list[dict[str, Any]] = []
+    current_campaign: dict[str, Any] = dict(target_campaign)
+    stop_reason: str | None = None
+    watch_error = ""
+    initial_transitions: list[dict[str, Any]] = []
+
+    try:
+        with locked_campaigns_dir(
+            campaigns_dir,
+            timeout_seconds=max(deadline - time_fn(), 0.0),
+            sleep=sleep_fn,
+            monotonic=time_fn,
+        ):
+            if target_absent and not target_path.is_file():
+                save_campaign(target_campaign, campaigns_dir)
+            reloaded = load_campaign_by_id(cid, campaigns_dir)
+            if reloaded is None:
+                msg = f"campaign {cid!r} could not be loaded from storage"
+                summary = _build_watch_summary(
+                    campaign_id=cid,
+                    release_tag=rtag,
+                    package_identity=pkg_id,
+                    qualification_context=qcontext,
+                    status="invalid",
+                    stop_reason="invalid_campaign",
+                    polls=0,
+                    elapsed_seconds=time_fn() - start_time,
+                    interval_seconds=validated_interval,
+                    timeout_seconds=validated_timeout,
+                    error=msg,
+                )
+                if not emit_json:
+                    print(f"error: {msg}", file=err)
+                return summary
+            watch_repo_slug, _ = _watch_repo_slug(reloaded, repo_slug)
+            initial_snapshot = copy.deepcopy(reloaded)
+            current_campaign = dispatch_or_advance_campaign(
+                reloaded,
+                apply=False,
+                issue_number=issue,
+                repo_path=repo_path,
+                campaigns_dir=campaigns_dir,
+                which_fn=which_fn,
+                command_runner=command_runner,
+                gh_json_runner=watch_gh_json,
+                adapter_runner=adapter_runner,
+                env=env,
+                repo_slug_override=watch_repo_slug,
+                poll_only=True,
+            )
+            initial_transitions = _describe_transitions(
+                initial_snapshot,
+                current_campaign,
+                time_fn() - start_time,
+            )
+            all_transitions.extend(initial_transitions)
+
+        if not emit_json:
+            print(render_campaign_text(current_campaign), file=out)
+            for transition in initial_transitions:
+                if transition.get("campaign_status"):
+                    print(
+                        "Transition: campaign status "
+                        f"{transition['from_status']} -> {transition['to_status']}",
+                        file=out,
+                    )
+                else:
+                    transition_error = (
+                        f" (error: {transition['to_error']})"
+                        if transition.get("to_error")
+                        else ""
+                    )
+                    print(
+                        f"Transition: {transition['provider']} "
+                        f"{transition['from_state']} -> {transition['to_state']}"
+                        f"{transition_error}",
+                        file=out,
+                    )
+
+        # Check terminal/owner-action conditions on initial state
+        outage_providers = [
+            p
+            for p in current_campaign.get("providers", [])
+            if isinstance(p, Mapping)
+            and p.get("state") == "running"
+            and p.get("error") == "github_poll_unavailable"
+        ]
+        if outage_providers:
+            stop_reason = "remote_unavailable"
+        elif current_campaign.get("status") == "complete":
+            stop_reason = "complete"
+        elif current_campaign.get("status") == "blocked":
+            stop_reason = "blocked"
+        else:
+            running_providers = [
+                p
+                for p in current_campaign.get("providers", [])
+                if isinstance(p, Mapping) and p.get("state") == "running"
+            ]
+            if not running_providers:
+                stop_reason = "owner_action"
+            elif time_fn() - start_time >= validated_timeout:
+                stop_reason = "timeout"
+
+        if stop_reason is None:
+            # Watch loop for running campaign
+            current_discrete_state = _campaign_discrete_state(current_campaign)
+            while True:
+                now = time_fn()
+                elapsed = now - start_time
+                if elapsed >= validated_timeout:
+                    stop_reason = "timeout"
+                    break
+
+                remaining = validated_timeout - elapsed
+                sleep_time = min(validated_interval, remaining)
+                if sleep_time <= 0:
+                    stop_reason = "timeout"
+                    break
+
+                sleep_fn(sleep_time)
+
+                polls += 1
+                with locked_campaigns_dir(
+                    campaigns_dir,
+                    timeout_seconds=max(deadline - time_fn(), 0.0),
+                    sleep=sleep_fn,
+                    monotonic=time_fn,
+                ):
+                    reloaded = load_campaign_by_id(cid, campaigns_dir)
+                    if reloaded is None:
+                        stop_reason = "invalid_campaign"
+                        break
+                    watch_repo_slug, repo_slug_error = _watch_repo_slug(
+                        reloaded, repo_slug
+                    )
+                    if repo_slug_error:
+                        current_campaign["next_action"] = (
+                            "use the repository recorded by the campaign"
+                        )
+                        current_campaign["next_detail"] = repo_slug_error
+                        stop_reason = "invalid_campaign"
+                        break
+                    updated = dispatch_or_advance_campaign(
+                        reloaded,
+                        apply=False,
+                        issue_number=issue,
+                        repo_path=repo_path,
+                        campaigns_dir=campaigns_dir,
+                        which_fn=which_fn,
+                        command_runner=command_runner,
+                        gh_json_runner=watch_gh_json,
+                        adapter_runner=adapter_runner,
+                        env=env,
+                        repo_slug_override=watch_repo_slug,
+                        poll_only=True,
+                    )
+
+                now_after_poll = time_fn()
+                elapsed_after_poll = now_after_poll - start_time
+                new_discrete_state = _campaign_discrete_state(updated)
+                if new_discrete_state != current_discrete_state:
+                    step_transitions = _describe_transitions(
+                        current_campaign, updated, elapsed_after_poll
+                    )
+                    all_transitions.extend(step_transitions)
+                    if not emit_json:
+                        for t in step_transitions:
+                            if t.get("campaign_status"):
+                                print(
+                                    f"Transition: campaign status {t['from_status']} -> {t['to_status']}",
+                                    file=out,
+                                )
+                            else:
+                                err_s = f" (error: {t['to_error']})" if t.get("to_error") else ""
+                                print(
+                                    f"Transition: {t['provider']} {t['from_state']} -> {t['to_state']}{err_s}",
+                                    file=out,
+                                )
+                    current_campaign = updated
+                    current_discrete_state = new_discrete_state
+                else:
+                    # No-change suppression
+                    current_campaign = updated
+
+                # Check outage / remote unavailable
+                outage_providers = [
+                    p
+                    for p in updated.get("providers", [])
+                    if isinstance(p, Mapping)
+                    and p.get("state") == "running"
+                    and p.get("error") == "github_poll_unavailable"
+                ]
+                if outage_providers:
+                    stop_reason = "remote_unavailable"
+                    break
+
+                # Check complete
+                if updated.get("status") == "complete":
+                    stop_reason = "complete"
+                    break
+
+                # Check blocked
+                if updated.get("status") == "blocked":
+                    stop_reason = "blocked"
+                    break
+
+                # Check owner action (all running finished but campaign not complete)
+                running_left = [
+                    p
+                    for p in updated.get("providers", [])
+                    if isinstance(p, Mapping) and p.get("state") == "running"
+                ]
+                if not running_left:
+                    stop_reason = "owner_action"
+                    break
+
+                if time_fn() - start_time >= validated_timeout:
+                    stop_reason = "timeout"
+                    break
+
+    except KeyboardInterrupt:
+        stop_reason = "interrupt"
+    except FileLockError:
+        stop_reason = "timeout"
+    except OSError:
+        stop_reason = "invalid_campaign"
+        watch_error = "campaign storage is unavailable"
+        current_campaign["next_action"] = "check campaign storage access"
+        current_campaign["next_detail"] = watch_error
+
+    elapsed_final = time_fn() - start_time
+    stop_reason = stop_reason or "timeout"
+    retry_guidance = _watch_retry_guidance(stop_reason, current_campaign)
+    if not emit_json:
+        detail = current_campaign.get("next_detail") or current_campaign.get("next_action") or ""
+        detail_str = f" ({detail})" if detail else ""
+        print(f"Final result: {stop_reason}{detail_str}", file=out)
+        if retry_guidance:
+            print(f"Retry guidance: {retry_guidance}", file=out)
+
+    return _build_watch_summary(
+        campaign_id=cid,
+        release_tag=rtag,
+        package_identity=pkg_id,
+        qualification_context=qcontext,
+        status=str(current_campaign.get("status") or ""),
+        stop_reason=stop_reason,
+        polls=polls,
+        elapsed_seconds=elapsed_final,
+        interval_seconds=validated_interval,
+        timeout_seconds=validated_timeout,
+        next_action=str(current_campaign.get("next_action") or ""),
+        next_detail=str(current_campaign.get("next_detail") or ""),
+        retry_guidance=retry_guidance,
+        transitions=all_transitions,
+        providers=current_campaign.get("providers", []),
+        error=watch_error,
+    )
+
+
 def _board_text(source: Mapping[str, Any], key: str, default: str) -> str:
     """Project a persisted string field for the Board, dropping malformed values.
 
@@ -2982,7 +3786,7 @@ def _validate_retry_provider(
     return canonical, ""
 
 
-CAMPAIGN_ACTIONS = ("create", "status", "resume", "dispatch", "upload")
+CAMPAIGN_ACTIONS = ("create", "status", "resume", "dispatch", "upload", "watch")
 
 # The boolean flags that are older spellings of an action, and the action each
 # one asks for. Both remain supported: `--status` is the original spelling of
@@ -3005,6 +3809,7 @@ _LEGACY_ACTION_FLAGS: tuple[tuple[str, str], ...] = (
 #                                        campaign" and route identically
 #   upload     |    no    |    no     -- upload publishes evidence the campaign
 #                                        already has; it never advances one
+#   watch      |    no    |    no     -- watch monitors an existing campaign
 #
 # An omitted action (``None``) is not a row: it states no action of its own, so
 # either flag simply supplies one, and the two together are caught as a status
@@ -3015,6 +3820,7 @@ _COMPATIBLE_LEGACY_FLAGS: Mapping[str, frozenset[str]] = {
     "resume": frozenset({"--resume"}),
     "dispatch": frozenset({"--resume"}),
     "upload": frozenset(),
+    "watch": frozenset(),
 }
 
 
@@ -3140,6 +3946,42 @@ def _upload_intent_conflict(
     return ""
 
 
+def _watch_intent_conflict(
+    *,
+    action: str | None,
+    record_result: Path | None,
+    retry_provider: str,
+    apply: bool,
+    yes: bool,
+    interval: float | None = None,
+    timeout: float | None = None,
+) -> str:
+    if action == "watch":
+        intents: list[str] = []
+        if apply:
+            intents.append("--apply")
+        if record_result is not None:
+            intents.append("--record-result")
+        if retry_provider:
+            intents.append("--retry-provider")
+        if yes:
+            intents.append("--yes")
+        if not intents:
+            return ""
+        return (
+            "watch polls campaign progress without executing or mutating providers and cannot be "
+            f"combined with {', '.join(intents)}; run that campaign action first, then watch"
+        )
+    if interval is not None and action != "watch":
+        return "--interval applies only to the 'watch' action; re-run as `campaign watch`"
+    if timeout is not None and action not in {"watch", "upload"}:
+        return (
+            "--timeout applies only to the 'watch' and 'upload' actions; re-run as "
+            "`campaign watch` or `campaign upload`"
+        )
+    return ""
+
+
 def _command_intent_conflict(
     *,
     action: str | None,
@@ -3149,6 +3991,8 @@ def _command_intent_conflict(
     resume: bool,
     status: bool,
     yes: bool = False,
+    interval: float | None = None,
+    timeout: float | None = None,
 ) -> str:
     """Report the one bounded reason this invocation states conflicting intents.
 
@@ -3180,6 +4024,17 @@ def _command_intent_conflict(
         retry_provider=retry_provider,
         apply=apply,
         yes=yes,
+    )
+    if conflict:
+        return conflict
+    conflict = _watch_intent_conflict(
+        action=action,
+        record_result=record_result,
+        retry_provider=retry_provider,
+        apply=apply,
+        yes=yes,
+        interval=interval,
+        timeout=timeout,
     )
     if conflict:
         return conflict
@@ -3332,13 +4187,18 @@ def campaign_command(
     token_dir: Path | None = None,
     install_id: str = "",
     team_id: str = "",
-    timeout: float = 20.0,
+    timeout: float | None = None,
+    interval: float | None = None,
     emit_json: bool = False,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     which_fn: Callable[[str], str | None] = shutil.which,
     adapter_runner: AdapterRunner = run_local_adapter_command,
     env: Mapping[str, str] | None = None,
+    time_fn: Callable[[], float] = time.monotonic,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    stdout: IO[str] | None = None,
+    stderr: IO[str] | None = None,
 ) -> int:
     """Create, inspect, advance, or publish a release qualification campaign.
 
@@ -3356,12 +4216,15 @@ def campaign_command(
     covers create, implicit create/advance, resume, dispatch, ``--record-result``,
     ``--retry-provider``, and the repository-slug fill.
 
-    A status invocation -- ``status=True`` or ``action="status"`` -- and an
-    ``upload`` invocation take no lock at all, because both are read-only over
-    campaign state. ``upload`` reads one campaign snapshot, converts the
+    A status invocation -- ``status=True`` or ``action="status"`` --, an
+    ``upload`` invocation, and a ``watch`` invocation take no lock at top level.
+    ``upload`` reads one campaign snapshot, converts the
     evidence it already holds into cloud events, and posts them; it writes no
     campaign file, so locking it would only make a long network post block
-    dispatch and polling for the whole campaign directory. Combining status with
+    dispatch and polling for the whole campaign directory. ``watch`` acquires
+    the campaign directory lock inside each individual poll iteration rather
+    than holding it across the entire watch timeout, preserving directory lock
+    availability for other readers and commands. Combining status with
     a mutating
     intent (``record_result``, ``retry_provider``, ``apply``, ``resume``, or a
     conflicting non-status action) is refused with a bounded error before any
@@ -3381,18 +4244,26 @@ def campaign_command(
     reading, and is refused with a bounded error rather than silently resolved
     to whichever of the two the command body happens to test first.
 
+    Option scope is enforced before any locks or lookups: ``--interval`` is
+    valid only for the ``watch`` action, and ``--timeout`` is valid only for
+    ``watch`` and ``upload`` (which use it for watch duration and request timeout
+    respectively). Supplying either option to an action where it would be
+    silently ignored is rejected with a bounded error before touching campaign
+    state.
+
     An explicit ``campaign_id`` is validated first, before either route, so a
     malformed identifier produces a bounded error and never creates a campaign
     directory, a lock file, or any other on-disk state.
     """
     repo_path = repo_path or Path.cwd()
     campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
+    err = stderr if stderr is not None else sys.stderr
 
-    if campaign_id:
+    if campaign_id and action != "watch":
         try:
             validate_campaign_id(campaign_id)
         except ValueError as exc:
-            print(f"error: {exc}", file=sys.stderr)
+            print(f"error: {exc}", file=err)
             return 1
 
     # Command intent is validated as a whole, once, before anything else: a
@@ -3412,14 +4283,16 @@ def campaign_command(
         resume=resume,
         status=status,
         yes=yes,
+        interval=interval,
+        timeout=timeout,
     )
     if conflict:
-        print(f"error: {conflict}", file=sys.stderr)
+        print(f"error: {conflict}", file=err)
         return 1
 
     # What remains is exactly the read-only route; every other spelling is
     # potentially mutating and takes the campaign directory lock.
-    is_read_only_status = is_status_request or action == "upload"
+    is_read_only_status = is_status_request or action in {"upload", "watch"}
 
     with ExitStack() as stack:
         if not is_read_only_status:
@@ -3435,7 +4308,7 @@ def campaign_command(
                     "error: could not acquire the release campaign directory lock; "
                     "another campaign command is holding it, so retry once that "
                     "command finishes",
-                    file=sys.stderr,
+                    file=err,
                 )
                 return 1
             except OSError:
@@ -3444,7 +4317,7 @@ def campaign_command(
                 print(
                     "error: could not acquire the release campaign directory lock; "
                     "check that the campaigns directory exists and is writable",
-                    file=sys.stderr,
+                    file=err,
                 )
                 return 1
         return _campaign_command_impl(
@@ -3473,12 +4346,17 @@ def campaign_command(
             install_id=install_id,
             team_id=team_id,
             timeout=timeout,
+            interval=interval,
             emit_json=emit_json,
             command_runner=command_runner,
             gh_json_runner=gh_json_runner,
             which_fn=which_fn,
             adapter_runner=adapter_runner,
             env=env,
+            time_fn=time_fn,
+            sleep_fn=sleep_fn,
+            stdout=stdout,
+            stderr=stderr,
         )
 
 
@@ -3508,13 +4386,18 @@ def _campaign_command_impl(
     token_dir: Path | None = None,
     install_id: str = "",
     team_id: str = "",
-    timeout: float = 20.0,
+    timeout: float | None = None,
+    interval: float | None = None,
     emit_json: bool = False,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     which_fn: Callable[[str], str | None] = shutil.which,
     adapter_runner: AdapterRunner = run_local_adapter_command,
     env: Mapping[str, str] | None = None,
+    time_fn: Callable[[], float] = time.monotonic,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    stdout: IO[str] | None = None,
+    stderr: IO[str] | None = None,
 ) -> int:
     """Body of :func:`campaign_command`.
 
@@ -3555,6 +4438,38 @@ def _campaign_command_impl(
     is_dispatch = action == "dispatch"
     is_create = action == "create"
     is_upload = action == "upload"
+    is_watch = action == "watch"
+
+    if is_watch:
+        summary = campaign_watch(
+            campaign_id=campaign_id,
+            release_tag=release_tag,
+            campaigns_dir=campaigns_dir,
+            repo_path=repo_path,
+            repo_slug=repo_slug,
+            issue=issue,
+            interval=interval,
+            timeout=timeout,
+            emit_json=emit_json,
+            stdout=stdout,
+            stderr=stderr,
+            time_fn=time_fn,
+            sleep_fn=sleep_fn,
+            which_fn=which_fn,
+            command_runner=command_runner,
+            gh_json_runner=gh_json_runner,
+            adapter_runner=adapter_runner,
+            env=env,
+        )
+        if emit_json:
+            out = stdout if stdout is not None else sys.stdout
+            print(json.dumps(summary, indent=2, sort_keys=True), file=out)
+        stop_reason = summary.get("stop_reason")
+        if stop_reason == "complete":
+            return 0
+        if stop_reason == "interrupt":
+            return 130
+        return 1
 
     existing, identifier, identifier_error = _load_requested_campaign(
         campaign_id=campaign_id,
@@ -3632,7 +4547,7 @@ def _campaign_command_impl(
                 install_id=install_id,
                 team_id=team_id,
                 yes=yes,
-                timeout=timeout,
+                timeout=timeout if timeout is not None else 20.0,
             )
         except cloud.CloudBundleError as exc:
             # Every message reaching here is locally generated and bounded: the

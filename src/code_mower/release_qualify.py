@@ -831,21 +831,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             "poll, or dispatch, rather than silently dropping the mutation. An "
             "explicit action combined with a flag naming a different one (such "
             "as `create --resume`) is refused the same way, before any lookup, "
-            "directory creation, lock, or dispatch."
+            "directory creation, lock, or dispatch. Option scope is enforced: "
+            "`--interval` is accepted only for `watch`, and `--timeout` only for "
+            "`watch` and `upload`."
         ),
     )
     campaign.add_argument(
         "action",
         nargs="?",
         default=None,
-        choices=["create", "status", "resume", "dispatch", "upload"],
+        choices=["create", "status", "resume", "dispatch", "upload", "watch"],
         help=(
             "Optional campaign action. create: start a new campaign (fails if one "
             "already exists for the identifier). status: inspect only. "
             "resume/dispatch: advance an existing campaign (fails if none exists). "
+            "watch: poll a stored campaign at a positive interval and bounded timeout "
+            "(--interval, --timeout). "
             "upload: convert every completed provider's qualification result into "
-            "metadata-only cloud adoption_run events; preview by default, network "
-            "upload only with --yes. "
+            "metadata-only cloud adoption_run events (--timeout for bounded network post); "
+            "preview by default, network upload only with --yes. "
             "Omitting the action creates a new campaign, or advances the existing "
             "one when the identifier already names a campaign. An action may be "
             "spelled with the equivalent legacy flag (status with --status, "
@@ -1013,10 +1017,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Team identity to attribute uploaded adoption_run events to",
     )
     campaign.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        help="Polling interval in seconds; valid only for the 'watch' action (defaults to 10.0)",
+    )
+    campaign.add_argument(
         "--timeout",
         type=float,
-        default=20.0,
-        help="Upload request timeout in seconds",
+        default=None,
+        help=(
+            "Timeout in seconds; valid only for the 'watch' action (bounded "
+            "duration, defaults to 600.0) and the 'upload' action (request "
+            "timeout, defaults to 20.0)"
+        ),
     )
     campaign.add_argument("--json", action="store_true")
 
@@ -1098,6 +1112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 install_id=args.install_id,
                 team_id=args.team_id,
                 timeout=args.timeout,
+                interval=args.interval,
                 emit_json=args.json,
             )
         except ValueError as e:

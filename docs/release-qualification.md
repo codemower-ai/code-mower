@@ -221,7 +221,17 @@ code-mower release campaign \
 
 ### Per-Release Operation
 
-Any provider without a working adapter, credentials, or a bound remote result stays `unavailable`/manual. Record its result explicitly once qualification has actually happened elsewhere:
+The normal release qualification sequence consists of three steps: **dispatch**, **watch**, and **upload**.
+
+#### 1. Dispatch
+
+Create and dispatch qualification tasks to automated local adapters and hosted providers:
+
+```bash
+code-mower release campaign dispatch --release-tag v1.0.0 --apply --repo-slug OWNER/REPO --issue 123
+```
+
+Any provider without an automated adapter, credentials, or a bound remote result stays `unavailable`/manual. Record its verified result explicitly once qualification has occurred:
 
 ```bash
 code-mower release campaign --release-tag v1.0.0 \
@@ -230,6 +240,36 @@ code-mower release campaign --release-tag v1.0.0 \
 ```
 
 The recorded file is validated against the same closed schema as automated results.
+
+#### 2. Watch
+
+Follow campaign progression through a bounded watch operation:
+
+```bash
+code-mower release campaign watch --release-tag v1.0.0
+```
+
+Configure custom polling intervals or bounded timeouts as needed, or request machine-readable JSON:
+
+```bash
+code-mower release campaign watch --release-tag v1.0.0 --interval 5 --timeout 300
+code-mower release campaign watch --release-tag v1.0.0 --json
+```
+
+- **Bounded polling:** Polls the stored campaign at a configurable positive interval (`--interval`, default `10.0`s) and bounded duration (`--timeout`, default `600.0`s). Both must be positive numbers. `--interval` is valid only for `watch`. `--timeout` is valid only for `watch` (bounded duration) and `upload` (request timeout); supplying either option to an action where it would be silently ignored is rejected with a bounded error without mutating campaign state.
+- **Distinct stopping states:** Stops distinctly with appropriate exit codes for:
+  - `complete` (exit 0): All providers have reached passing qualification states.
+  - `owner_action` (exit 1): Running work has finished but campaign requires owner intervention (e.g. missing credentials, unconfigured adapter, or pending manual recording).
+  - `blocked` (exit 1): One or more providers recorded failing qualification results.
+  - `timeout` (exit 1): The bounded timeout expired while providers were still in-flight.
+  - `interrupt` (exit 130): Interrupted via signal or SIGINT/Ctrl+C.
+  - `remote_unavailable` (exit 1): GitHub API or remote service encountered an outage during polling.
+  - `invalid_campaign` (exit 1): Campaign is missing, malformed, ambiguous, or invalid arguments were supplied.
+- **Clean output & no-change suppression:** Text mode prints the initial campaign state, real state transitions (ticks without state changes are suppressed), and a final result line with actionable retry guidance.
+- **Stable JSON contract:** `--json` mode emits one stable metadata-only final summary adhering to `code_mower.releaseCampaignWatch.v1` containing campaign metadata, duration metrics, transition records, provider statuses, and retry guidance.
+- **Safe polling:** Watching never executes adapters, posts dispatches, retries providers, or uploads, but it may persist newly observed remote provider transitions through the existing poll path. It takes the campaign directory lock only during each individual poll read/update rather than holding it continuously, preserving Board readability and directory accessibility.
+
+#### 3. Upload
 
 Once providers have completed, publish the campaign's evidence to Code Mower
 Cloud. Preview first; the preview and the upload use the same event set:
@@ -265,7 +305,7 @@ code-mower release campaign upload --release-tag v1.0.0 --yes --json
 
 Token, endpoint, and identity resolution are the shared cloud ones:
 `--token-env`, `--token-file`, `--token-dir`, `--install-id`, `--team-id`,
-`--endpoint`, and `--timeout` behave as they do for `code-mower cloud upload`,
+`--endpoint`, and `--timeout` (bounded request timeout, default 20.0s; valid only for `upload` and `watch`) behave as they do for `code-mower cloud upload`,
 including `code-mower cloud setup` profiles. Uploading one result file at a time
 with `code-mower cloud dogfood --event adoption_run=path/to/result.json`
 still works and produces the same event ids.
