@@ -1654,8 +1654,43 @@ def dispatch_or_advance_campaign(
             provider_data["next_action"] = "none"
             continue
 
-        # 3. If running, poll for a bound result marker
+        # 3. If running, check trigger status and retry if needed, then poll
         if current_state == "running":
+            # For manually triggered providers, retry trigger if not yet posted
+            trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
+            trigger_posted = provider_data.get("trigger_posted", True)
+
+            if trigger_comments and not trigger_posted:
+                # Dispatch succeeded but trigger failed or was interrupted
+                # Retry trigger without reposting the dispatch comment
+                dispatch_ref = provider_data.get("dispatch_ref", {})
+                ref_issue = dispatch_ref.get("issue_number") or issue_number
+
+                if ref_issue and repo_slug:
+                    trigger_ok, _trigger_ref, _trigger_err = _post_trigger_comment(
+                        repo_slug,
+                        ref_issue,
+                        trigger_comments[0],
+                        command_runner=command_runner,
+                    )
+                    provider_data["trigger_posted"] = trigger_ok
+                    if trigger_ok:
+                        provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
+                            provider,
+                            lane,
+                            "running",
+                            command_available=True,
+                            has_credentials=True,
+                            has_issue=True,
+                            dry_run=False,
+                        )
+                    else:
+                        provider_data["next_action"] = f"retry {provider} trigger comment post"
+                        provider_data["next_detail"] = "trigger comment post failed on retry"
+                    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+                    # After trigger retry, continue to poll section below
+
+            # Poll for bound result marker
             dispatch_ref = provider_data.get("dispatch_ref", {})
             ref_issue = dispatch_ref.get("issue_number") or issue_number
             found_result = None
@@ -2047,13 +2082,18 @@ def dispatch_or_advance_campaign(
                             trigger_comments[0],
                             command_runner=command_runner,
                         )
-                        # The trigger post is best-effort: the dispatch already
-                        # succeeded and the provider is pollable, so a trigger
-                        # failure is logged but does not demote the provider.
+                        # Persist trigger status so resume can retry on failure
+                        provider_data["trigger_posted"] = trigger_ok
                         if not trigger_ok:
+                            provider_data["next_action"] = (
+                                f"retry {provider} trigger comment post"
+                            )
                             provider_data["next_detail"] = (
                                 f"{provider_data['next_detail']}; trigger comment may not have posted"
                             )
+                    else:
+                        # Non-trigger providers are immediately pollable
+                        provider_data["trigger_posted"] = True
                 else:
                     # The dispatch failed *in process*, so this run knows the
                     # outcome and records it: the checkpoint's provisional

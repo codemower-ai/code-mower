@@ -2783,6 +2783,86 @@ class ReleaseCampaignTests(unittest.TestCase):
             # Trigger body should be just the first trigger command
             self.assertEqual(trigger_body.strip(), "bugbot run")
 
+    def test_failed_trigger_post_retries_on_resume(self) -> None:
+        """Failed trigger posts are persisted and retried on resume without redispatching."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+            call_count = {"dispatch": 0, "trigger": 0}
+
+            def failing_then_succeeding_runner(args, **kwargs):
+                """First trigger post fails, second succeeds."""
+                argv = list(args)
+                body_path = Path(argv[argv.index("--body-file") + 1])
+                body = body_path.read_text(encoding="utf-8")
+                bodies.append(body)
+
+                # Detect if this is dispatch or trigger based on body content
+                if "CODE_MOWER_RELEASE_CAMPAIGN" in body:
+                    call_count["dispatch"] += 1
+                    is_trigger = False
+                else:
+                    call_count["trigger"] += 1
+                    is_trigger = True
+
+                class MockCompleted:
+                    pass
+
+                completed = MockCompleted()
+                # First trigger fails, second succeeds
+                completed.returncode = 1 if (is_trigger and call_count["trigger"] == 1) else 0
+                completed.stdout = ""
+                completed.stderr = ""
+                return completed
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            # Initial dispatch with trigger failure
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="42",
+                apply=True,
+                command_runner=failing_then_succeeding_runner,
+                gh_json_runner=mock_gh_json,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            # Should have dispatch comment + failed trigger attempt
+            self.assertEqual(len(bodies), 2)
+            self.assertEqual(call_count["dispatch"], 1)
+            self.assertEqual(call_count["trigger"], 1)
+
+            campaign = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert campaign is not None
+            self.assertEqual(campaign["providers"][0]["state"], "running")
+            self.assertEqual(campaign["providers"][0]["trigger_posted"], False)
+            self.assertIn("trigger comment may not have posted", campaign["providers"][0]["next_detail"])
+
+            # Resume should retry trigger without redispatching
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                gh_json_runner=mock_gh_json,
+                command_runner=failing_then_succeeding_runner,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            # Should have 1 more trigger attempt, no new dispatch
+            self.assertEqual(len(bodies), 3)
+            self.assertEqual(call_count["dispatch"], 1)  # Still 1
+            self.assertEqual(call_count["trigger"], 2)  # Now 2
+
+            retried = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert retried is not None
+            self.assertEqual(retried["providers"][0]["trigger_posted"], True)
+            self.assertIn("poll cursor_bugbot remote progress marker", retried["providers"][0]["next_action"])
+
 
 def _dispatch_marker_from_body(body: str) -> dict[str, Any]:
     """Parse the machine-readable dispatch marker out of a posted comment body."""
