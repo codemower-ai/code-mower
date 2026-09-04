@@ -40,7 +40,7 @@ history opens the repository. They should be able to confirm:
 
 ## Current v1.0 Baseline
 
-The current public-release baseline is `v1.0.3` of the standalone
+The current public-release baseline is `v1.0.4` of the standalone
 package. Before widening the release, record:
 
 - non-editable package-install rehearsal in a clean venv;
@@ -49,7 +49,7 @@ package. Before widening the release, record:
   runs: TestPyPI first with `publish_testpypi=true`, `publish_pypi=false`,
   then production PyPI with `publish_testpypi=false`, `publish_pypi=true`;
 - package-install rehearsals against the exact TestPyPI and PyPI artifacts as
-  `code-mower==1.0.3` after those workflow runs finish, with workflow run
+  `code-mower==1.0.4` after those workflow runs finish, with workflow run
   links recorded as release evidence;
 - public-tag/source install validation as a fallback path;
 - production dogfood uploads from Code Mower OSS, CodeMower.com, and two
@@ -182,7 +182,7 @@ It has not yet proved:
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.3
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.4
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated
 code-mower doctor --preflight
@@ -192,7 +192,7 @@ code-mower --help-all
 code-mower next-steps --profile recommended
 code-mower migration wrapper-rehearsal --repo-path /path/to/product-repo --json
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.3 \
+  --package-spec code-mower==1.0.4 \
   --allow-package-index \
   --repo-path /path/to/repo \
   --json
