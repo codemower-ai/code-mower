@@ -84,6 +84,19 @@ def _fake_local_cli_lane(*, command: str = "fake-provider-cli") -> ProviderLane:
     )
 
 
+def _fake_hosted_bridge_lane(*, bot_authors: tuple[str, ...] = ()) -> ProviderLane:
+    """A hosted_bridge lane with no registry defaults, for controlled trust tests."""
+    return ProviderLane(
+        lane_id="fake_hosted",
+        lane_type="audit",
+        driver="hosted_bridge",
+        provider="devin",
+        labels=LaneLabels(needs="needs-fake", done="fake-done", blocked="fake-blocked"),
+        trigger_policy="manual",
+        provider_config={"bot_authors": bot_authors} if bot_authors else {},
+    )
+
+
 class ResolveProviderLaneTests(unittest.TestCase):
     """resolve_provider_lane must fail closed on unknown provider names."""
 
@@ -515,6 +528,64 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert saved is not None
             self.assertEqual(saved["providers"][0]["error"], "adapter_configuration_invalid")
 
+    def test_repo_config_unreadable_or_invalid_yaml_is_adapter_configuration_invalid(self) -> None:
+        """An existing but structurally invalid code-mower.yml must not be treated as no override."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            (repo_path / "code-mower.yml").write_text(
+                "- this\n- is-a-list\n- not-a-mapping\n",
+                encoding="utf-8",
+            )
+            adapter_mock = mock.MagicMock()
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["muse"],
+                repo_path=repo_path,
+                campaigns_dir=campaigns_dir,
+                apply=True,
+                which_fn=lambda _cmd: "/bin/muse",
+                adapter_runner=adapter_mock,
+            )
+
+            adapter_mock.assert_not_called()
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["error"], "adapter_configuration_invalid")
+            serialized = json.dumps(saved)
+            self.assertNotIn("not-a-mapping", serialized)
+
+    def test_repo_config_non_mapping_lanes_is_adapter_configuration_invalid(self) -> None:
+        """A present but non-mapping top-level `lanes` key must not be treated as no override."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            (repo_path / "code-mower.yml").write_text(
+                "version: 1\nlanes: not-a-mapping\n",
+                encoding="utf-8",
+            )
+            adapter_mock = mock.MagicMock()
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["muse"],
+                repo_path=repo_path,
+                campaigns_dir=campaigns_dir,
+                apply=True,
+                which_fn=lambda _cmd: "/bin/muse",
+                adapter_runner=adapter_mock,
+            )
+
+            adapter_mock.assert_not_called()
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["error"], "adapter_configuration_invalid")
+            serialized = json.dumps(saved)
+            self.assertNotIn("not-a-mapping", serialized)
+
     def test_idempotent_resume_does_not_reinvoke_adapter(self) -> None:
         """Resume does not re-dispatch already completed providers."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -677,6 +748,145 @@ class ReleaseCampaignTests(unittest.TestCase):
                 release_tag="v1.0.0", resume=True, retry_provider="cursor_bugbot", **common_kwargs
             )
             self.assertEqual(len(dispatch_calls), 2)
+
+    def _running_cursor_bugbot_campaign(self, campaigns_dir: Path) -> "release_campaigns.ReleaseCampaign":
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_bugbot"],
+            repo_slug="owner/repo",
+        )
+        campaign.status = "running"
+        campaign.providers[0]["state"] = "running"
+        campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+        campaign.providers[0]["attempted_at"] = "2026-09-04T00:00:00Z"
+        campaign.providers[0]["dispatched_at"] = "2026-09-04T00:00:00Z"
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+        return campaign
+
+    @staticmethod
+    def _no_op_dispatch_command_runner(calls: list[Any]):
+        def _run(args, **kwargs):
+            calls.append(args)
+
+            class MockCompleted:
+                returncode = 0
+                stdout = "{}"
+                stderr = ""
+
+            return MockCompleted()
+
+        return _run
+
+    def test_retry_provider_running_polls_first_and_completes_without_redispatch(self) -> None:
+        """An explicit retry of a running provider polls first; a valid trusted result
+
+        completes it and issues no redispatch.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._running_cursor_bugbot_campaign(campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "cursor[bot]"}, "body": marker}]}, ""
+
+            dispatch_calls: list[Any] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="99",
+                resume=True,
+                apply=True,
+                retry_provider="cursor_bugbot",
+                gh_json_runner=mock_gh_json,
+                command_runner=self._no_op_dispatch_command_runner(dispatch_calls),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(dispatch_calls, [])
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "complete")
+
+    def test_retry_provider_running_redispatches_once_when_no_valid_result(self) -> None:
+        """An explicit retry of a running provider with no valid trusted result
+
+        proceeds to exactly one redispatch.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._running_cursor_bugbot_campaign(campaigns_dir)
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            dispatch_calls: list[Any] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="99",
+                resume=True,
+                apply=True,
+                retry_provider="cursor_bugbot",
+                gh_json_runner=mock_gh_json,
+                command_runner=self._no_op_dispatch_command_runner(dispatch_calls),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(len(dispatch_calls), 1)
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "running")
+
+    def test_ordinary_resume_of_running_provider_never_redispatches(self) -> None:
+        """Ordinary resume (no --retry-provider) of a running provider stays poll-only,
+
+        even when polling finds no valid trusted result.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._running_cursor_bugbot_campaign(campaigns_dir)
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            dispatch_calls: list[Any] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="99",
+                resume=True,
+                apply=True,
+                gh_json_runner=mock_gh_json,
+                command_runner=self._no_op_dispatch_command_runner(dispatch_calls),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(dispatch_calls, [])
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "running")
 
     def test_retry_provider_rejected_when_not_in_campaign(self) -> None:
         """--retry-provider must be validated against campaign membership."""
@@ -1266,7 +1476,51 @@ class ReleaseCampaignTests(unittest.TestCase):
             marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
 
             def mock_gh_json(args, **kwargs):
-                # devin's reference lane has no bot_authors configured at all.
+                return {"comments": [{"author": {"login": "devin-ai-integration[bot]"}, "body": marker}]}, ""
+
+            fake_lane = _fake_hosted_bridge_lane()
+            with mock.patch.object(release_campaigns, "resolve_provider_lane", return_value=("devin", fake_lane)):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    repo_slug="owner/repo",
+                    gh_json_runner=mock_gh_json,
+                )
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "running")
+
+    def test_devin_accepts_known_trusted_bot_author(self) -> None:
+        """Devin's registry defaults trust devin-ai-integration[bot]'s bound reply."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="devin", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "devin",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
                 return {"comments": [{"author": {"login": "devin-ai-integration[bot]"}, "body": marker}]}, ""
 
             release_campaigns.campaign_command(
@@ -1279,7 +1533,95 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "complete")
+
+    def test_devin_rejects_spoofed_author(self) -> None:
+        """A perfectly identity-bound marker from an untrusted commenter is ignored for Devin too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="devin", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "devin",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "random-attacker"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
+            self.assertIsNone(saved["providers"][0]["adoption_result"])
+
+    def test_devin_bot_authors_env_override_adds_trusted_login(self) -> None:
+        """DEVIN_BOT_AUTHORS extends (not replaces) Devin's default trusted authors."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="devin", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "devin",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "self-hosted-devin-runner"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+                env={"DEVIN_BOT_AUTHORS": "self-hosted-devin-runner"},
+            )
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "complete")
 
 
 if __name__ == "__main__":

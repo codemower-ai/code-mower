@@ -732,10 +732,12 @@ def _load_campaign_adapter_overrides(
     Only `campaign_adapter_argv` and `campaign_adapter_timeout_seconds` are
     read from the matching lane's `provider_config`; every other key in the
     repo config is ignored here so this does not widen the general config
-    contract. A missing repo config, or a lane with no matching entry, is not
-    an override (empty mapping, no error). A structurally malformed lane or
-    provider_config entry returns `adapter_configuration_invalid` instead of
-    raising -- the specific override values are validated by the caller.
+    contract. A missing repo config, a missing `lanes` key, or a lane with no
+    matching entry is not an override (empty mapping, no error). An existing
+    repo config that fails to load, or is structurally malformed (a present
+    non-mapping `lanes`, lane, or provider_config entry), returns
+    `adapter_configuration_invalid` instead of silently treating the config
+    as absent -- the specific override values are validated by the caller.
     """
     config_path = repo_path / "code-mower.yml"
     if not config_path.is_file():
@@ -744,11 +746,13 @@ def _load_campaign_adapter_overrides(
     try:
         loaded = code_mower_config.load_config(config_path)
     except (OSError, code_mower_config.ConfigError):
-        return {}, ""
+        return {}, _safe_error("adapter_configuration_invalid")
 
     lanes_cfg = loaded.get("lanes")
-    if not isinstance(lanes_cfg, Mapping):
+    if lanes_cfg is None:
         return {}, ""
+    if not isinstance(lanes_cfg, Mapping):
+        return {}, _safe_error("adapter_configuration_invalid")
 
     lane_cfg = None
     for key in _campaign_adapter_override_lane_keys(lane):
@@ -1016,6 +1020,7 @@ def dispatch_or_advance_campaign(
             provider_data["next_detail"] = ""
             continue
         current_state = str(provider_data.get("state") or "queued")
+        is_explicit_retry = bool(retry_canonical) and provider == retry_canonical
 
         # 1. Check local result drop-in first (manual override or adapter output)
         local_result_file = results_dir / f"{campaign_id}_{provider}.json"
@@ -1049,6 +1054,7 @@ def dispatch_or_advance_campaign(
         if current_state == "running":
             dispatch_ref = provider_data.get("dispatch_ref", {})
             ref_issue = dispatch_ref.get("issue_number") or issue_number
+            found_result = None
             if ref_issue and repo_slug:
                 comments, error = _poll_github_comments(
                     repo_slug,
@@ -1091,7 +1097,15 @@ def dispatch_or_advance_campaign(
                                     f"inspect {provider} qualification failures"
                                 )
                             break
-            continue
+            if found_result is not None or not is_explicit_retry:
+                # Ordinary resume is poll-only and never redispatches. An
+                # explicit retry that already found a valid trusted result
+                # is complete/blocked from polling above -- it must not be
+                # redispatched either.
+                continue
+            # Explicit retry of a still-running provider with no valid
+            # trusted result yet: fall through to the capability checks and
+            # applied-dispatch section below for exactly one redispatch.
 
         # 4. Check capabilities and readiness
         cmd_found = _find_command(lane, which_fn=which_fn)
@@ -1159,7 +1173,6 @@ def dispatch_or_advance_campaign(
 
         attempt_gated = lane.driver in {"local_cli", "saas_event", "hosted_bridge"}
         already_attempted = bool(provider_data.get("attempted_at"))
-        is_explicit_retry = bool(retry_canonical) and provider == retry_canonical
         if attempt_gated and already_attempted and not is_explicit_retry:
             # A prior applied attempt (success, failure, or uncertain outcome)
             # was already made and persisted -- resume must not silently repeat
