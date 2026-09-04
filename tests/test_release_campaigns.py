@@ -10035,6 +10035,48 @@ class CampaignWatchTests(unittest.TestCase):
             conflict["error"], "requested repo slug does not match stored campaign"
         )
 
+    def test_watch_does_not_create_reconciliation_state_for_older_campaign(self) -> None:
+        campaign = self._seed_campaign(
+            status="running",
+            providers=[
+                {
+                    "provider": "cursor_bugbot",
+                    "lane_id": "cursor_bugbot",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 0.0,
+                    "idempotency_key": "cursor-key",
+                    "dispatch_mode": "applied",
+                    "trigger_posted": False,
+                    "dispatch_ref": {"issue_number": "42", "comment_posted": True},
+                    "error": "",
+                    "next_action": "poll cursor_bugbot remote progress marker",
+                    "next_detail": "",
+                }
+            ],
+        )
+        before = json.loads(json.dumps(campaign))
+
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=1.0,
+            timeout=1.0,
+            emit_json=True,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+            gh_json_runner=lambda _args: {"comments": []},
+        )
+
+        self.assertEqual(summary["stop_reason"], "timeout")
+        persisted = release_campaigns.load_campaign_by_id(
+            "campaign-v1.0.0", self.campaigns_dir
+        )
+        self.assertEqual(persisted, before)
+        self.assertNotIn("dispatch_reconciliation_key", persisted["providers"][0])
+        self.assertNotIn("trigger_reconciliation_key", persisted["providers"][0])
+
     def test_watch_polls_once_at_timeout_boundary(self) -> None:
         self._seed_campaign()
 

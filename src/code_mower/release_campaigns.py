@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -1655,6 +1656,7 @@ def dispatch_or_advance_campaign(
     env: Mapping[str, str] | None = None,
     retry_provider: str = "",
     repo_slug_override: str = "",
+    poll_only: bool = False,
 ) -> dict[str, Any]:
     """Execute dispatch, polling, or status progression on a campaign.
 
@@ -1670,6 +1672,7 @@ def dispatch_or_advance_campaign(
     between "already attempted" and "never dispatched".
     """
     current_env = os.environ if env is None else env
+    campaign_before_poll = copy.deepcopy(campaign) if poll_only else None
     repo_path = repo_path or Path.cwd()
     campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
     results_dir = campaigns_dir / "results"
@@ -1678,7 +1681,8 @@ def dispatch_or_advance_campaign(
     # Applied is monotonic (see `campaign_has_been_applied`): this run may turn
     # a dry-run campaign into an applied one, but a poll that omits `--apply`
     # never turns an applied campaign back into a preview.
-    campaign["dry_run"] = not (apply or campaign_has_been_applied(campaign))
+    if not poll_only:
+        campaign["dry_run"] = not (apply or campaign_has_been_applied(campaign))
     campaign_id = str(campaign.get("campaign_id") or "")
     release_tag = str(campaign.get("release_tag") or "")
     package_spec = str(campaign.get("package_spec") or "")
@@ -1749,7 +1753,8 @@ def dispatch_or_advance_campaign(
 
         # 2. If already complete, preserve state
         if current_state == "complete":
-            provider_data["next_action"] = "none"
+            if not poll_only:
+                provider_data["next_action"] = "none"
             continue
 
         # 3. If running, check trigger status and retry if needed, then poll
@@ -1816,12 +1821,56 @@ def dispatch_or_advance_campaign(
             # since the explicit redispatch path will post its own trigger.
             # Also gate on apply: trigger retry is a write operation, not a poll.
             trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
-            provider_data.setdefault("trigger_posted", not bool(trigger_comments))
-            trigger_posted = provider_data["trigger_posted"]
+            if not poll_only:
+                provider_data.setdefault("trigger_posted", not bool(trigger_comments))
+            trigger_posted = provider_data.get("trigger_posted", not bool(trigger_comments))
 
             if trigger_comments and not trigger_posted and not is_explicit_retry:
                 dispatch_key = str(provider_data.get("dispatch_reconciliation_key") or "")
                 trigger_key = str(provider_data.get("trigger_reconciliation_key") or "")
+                if poll_only:
+                    if poll_error or not dispatch_key or not trigger_key:
+                        continue
+                    dispatch_expected = {
+                        "schema": DISPATCH_SCHEMA,
+                        "campaign_id": campaign_id,
+                        "provider": provider,
+                        "idempotency_key": str(provider_data.get("idempotency_key") or ""),
+                        "reconciliation_key": dispatch_key,
+                    }
+                    dispatch_posted = bool(dispatch_ref.get("comment_posted"))
+                    if not dispatch_posted and _has_matching_release_marker(
+                        comments,
+                        "CODE_MOWER_RELEASE_CAMPAIGN",
+                        dispatch_expected,
+                    ):
+                        dispatch_ref["comment_posted"] = True
+                        provider_data["dispatch_ref"] = dispatch_ref
+                        dispatch_posted = True
+                    trigger_expected = {
+                        "schema": TRIGGER_MARKER_SCHEMA,
+                        "campaign_id": campaign_id,
+                        "provider": provider,
+                        "reconciliation_key": trigger_key,
+                    }
+                    if dispatch_posted and _has_matching_release_marker(
+                        comments,
+                        "CODE_MOWER_RELEASE_TRIGGER",
+                        trigger_expected,
+                    ):
+                        provider_data["trigger_posted"] = True
+                        provider_data["next_action"], provider_data["next_detail"] = (
+                            _provider_next_action(
+                                provider,
+                                lane,
+                                "running",
+                                command_available=True,
+                                has_credentials=True,
+                                has_issue=True,
+                                dry_run=False,
+                            )
+                        )
+                    continue
                 if not dispatch_key or not trigger_key:
                     dispatch_key = dispatch_key or uuid.uuid4().hex
                     trigger_key = trigger_key or uuid.uuid4().hex
@@ -1931,6 +1980,9 @@ def dispatch_or_advance_campaign(
             # Explicit retry of a still-running provider with no valid
             # trusted result yet: fall through to the capability checks and
             # applied-dispatch section below for exactly one redispatch.
+
+        if poll_only:
+            continue
 
         # 3.5 Retry preview safety: --retry-provider without --apply must be
         # read-only. This covers a still-running provider with no new result
@@ -2322,7 +2374,8 @@ def dispatch_or_advance_campaign(
             provider_data["next_action"] = f"record manual adoption result for {provider}"
             provider_data["next_detail"] = "manual adapter fallback"
 
-    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+    if not poll_only or campaign != campaign_before_poll:
+        _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
     return campaign
 
 
@@ -3350,6 +3403,7 @@ def campaign_watch(
                 adapter_runner=adapter_runner,
                 env=env,
                 repo_slug_override=watch_repo_slug,
+                poll_only=True,
             )
 
         if not emit_json:
@@ -3431,6 +3485,7 @@ def campaign_watch(
                         adapter_runner=adapter_runner,
                         env=env,
                         repo_slug_override=watch_repo_slug,
+                        poll_only=True,
                     )
 
                 now_after_poll = time_fn()
