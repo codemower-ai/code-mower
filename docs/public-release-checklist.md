@@ -11,11 +11,11 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has public releases and reports its version with
   `code-mower --version`.
-- The current package-index release entrypoint is `code-mower==1.0.4`, with
+- The current package-index release entrypoint is `code-mower==1.0.5`, with
   `code-mower doctor --adoption --repo OWNER/REPO` as the human-facing
   first-run setup diagnostic and `code-mower lanes status --repo OWNER/REPO`
   as the operator snapshot. The corresponding GitHub tag is
-  `v1.0.4`; `doctor --preflight` and `doctor --v05` remain
+  `v1.0.5`; `doctor --preflight` and `doctor --v05` remain
   compatibility presets for scripts.
 - The v1.0 supervised-pilot release includes Python 3.12+ install hardening,
   hosted-builder doctor postures, non-expiring token diagnostics, native
@@ -24,7 +24,9 @@ not know the original reference repos.
   supervised controller dry-run policy, promoted/manual pilot readiness,
   provider-diversity fixtures, the universal orchestrator prompt pack, Board
   multi-instance handling, setup drift reporting, explicit package-index
-  rehearsal opt-ins, and the public Board demo rehearsal.
+  rehearsal opt-ins, the public Board demo rehearsal, local release
+  qualification, resumable provider campaigns, Board campaign visibility, and
+  opt-in metadata-only `adoption_run` cloud reporting.
 - The README now shows a shortened `doctor --adoption --repo OWNER/REPO`
   example so fresh users can see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and

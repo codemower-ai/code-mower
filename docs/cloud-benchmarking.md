@@ -29,9 +29,9 @@ observability/evaluation backend.
 
 ## Release Stages
 
-### Current v1.0.4: Metadata-Only Upload, Board Mirror, And Productivity
+### Current v1.0.5: Metadata-Only Upload, Board, Productivity, And Qualification
 
-The current v1.0.4 line keeps cloud sharing opt-in for adopters who explicitly
+The current v1.0.5 line keeps cloud sharing opt-in for adopters who explicitly
 want to share sanitized benchmark metadata, summarized Board mirrors, or
 aggregate productivity metrics with Code Mower Cloud. The OSS tool is still
 local-first:
@@ -43,13 +43,18 @@ code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 code-mower cloud dogfood --json
 code-mower cloud dogfood --event productivity_summary=productivity-summary.json --json
 code-mower cloud board-snapshot --repo-slug OWNER/REPO --json
+code-mower release qualify --release-tag v1.0.5 --package-spec code-mower==1.0.5 --output adoption-result.json --execute
+code-mower cloud export --event adoption_run=adoption-result.json --repo-slug OWNER/REPO --json
 ```
 
 Dry run is the first-class experience. A network upload only happens when the
 caller passes `--yes`, and the default payload is metadata-only. Rich report
 text requires `--include-reports`; Board snapshot uploads contain zero reports.
 Productivity uploads use explicit `productivity_summary` events, so operators
-can review the JSON before sending it.
+can review the JSON before sending it. Release qualification uses the closed
+`adoption_run` event contract for categorical outcomes and numeric counts only;
+it does not upload command output and does not establish builder quality or
+reviewer promotion evidence.
 
 ### v1.0 Baseline: Local-First, Cloud-Ready
 
