@@ -50,6 +50,16 @@ VALID_OUTCOMES = {"pass", "pass_with_warnings", "fail", "incomplete"}
 # and compared for exact equality, so they are held to this bounded alphabet
 # rather than accepted as free-form text.
 NORMALIZED_PACKAGE_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+# An exact package-index spec, `<name>==<version>`, and the only place a spec is
+# taken apart. The name half is the grammar a package index itself accepts --
+# letters, digits, `-`, `_` and `.` -- so `zope.interface` and `code.mower` parse
+# and are then normalized; the version half is bounded to the characters a
+# version can contain, so extras, environment markers, and inexact operators are
+# not mistaken for a version.
+EXACT_PACKAGE_SPEC_PATTERN = re.compile(
+    r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
+    r"==(?P<version>[A-Za-z0-9][A-Za-z0-9.!+_-]*)$"
+)
 # The one package Code Mower's *own* built-in qualification runner can qualify:
 # its install rehearsal installs the distribution into a clean virtualenv and
 # then drives the `code-mower` console script to read the installed version
@@ -195,24 +205,44 @@ def _normalize_package_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name.strip()).lower()
 
 
-def _extract_package_identity(package_spec: str) -> str:
-    """Extract the normalized package identity from an exact package-index spec.
+def _parse_exact_package_spec(package_spec: str) -> tuple[str, str]:
+    """Parse an exact `name==version` package-index spec once, into both halves.
 
-    The spec must be an exact `name==version` package-index spec: paths, URLs,
-    VCS specs, and inexact requirements have no single package identity that a
-    qualification result could be bound to. The identity is *derived from the
-    spec* rather than assumed to be Code Mower, so a campaign created for an
-    exact spec binds its results to that package. Code Mower's own built-in
-    runner is separately limited to the package it can actually install and
-    verify (see `BUILTIN_QUALIFICATION_PACKAGE`).
+    Returns the PEP 503-normalized package identity and the exact version the
+    spec pins. Every caller that needs either half goes through this one
+    function: a second, slightly different spelling of the name grammar
+    elsewhere would let a spec parse for one purpose and not the other --
+    `zope.interface==5.0.0` yielding an identity while its version came back
+    unreadable, and the campaign then being refused for a version mismatch it
+    does not have.
+
+    The spec must be an exact package-index spec: paths, URLs, VCS specs, extras,
+    and inexact requirements have no single package identity and version that a
+    qualification result could be bound to, and are refused. The identity is
+    *derived from the spec* rather than assumed to be Code Mower, so a campaign
+    created for an exact spec binds its results to that package. Code Mower's own
+    built-in runner is separately limited to the package it can actually install
+    and verify (see `BUILTIN_QUALIFICATION_PACKAGE`).
     """
-    if _package_spec_uses_package_index(package_spec):
-        match = re.match(r"^([\w.-]+)==", package_spec.strip())
+    candidate = package_spec.strip()
+    if _package_spec_uses_package_index(candidate):
+        match = EXACT_PACKAGE_SPEC_PATTERN.match(candidate)
         if match:
-            identity = _normalize_package_name(match.group(1))
+            identity = _normalize_package_name(match.group("name"))
             if NORMALIZED_PACKAGE_NAME_PATTERN.match(identity):
-                return identity
-    raise ValueError("package spec must be an exact package-index spec (name==version)")
+                return identity, match.group("version")
+    raise ValueError(
+        "Only exact package-index specs supported: package spec must be <name>==<version>"
+    )
+
+
+def _extract_package_identity(package_spec: str) -> str:
+    """The normalized package identity of an exact package-index spec.
+
+    A thin projection of :func:`_parse_exact_package_spec` for callers that need
+    only the identity, so identity and version never come from separate parses.
+    """
+    return _parse_exact_package_spec(package_spec)[0]
 
 
 def _validate_tag_format(release_tag: str) -> tuple[bool, str, str]:
@@ -561,16 +591,13 @@ def run_release_qualification(
     if not valid:
         raise ValueError(error)
 
-    if not _package_spec_uses_package_index(package_spec):
-        raise ValueError("Only exact package-index specs supported")
-
-    spec_match = re.match(r"^[\w-]+==(.+)$", package_spec)
-    if not spec_match or not VERSION_PATTERN.match(spec_match.group(1)):
-        raise ValueError("Package spec must be exact index spec")
-    if spec_match.group(1) != normalized_version:
+    # One parse of the spec yields both the identity this run binds its result to
+    # and the version it pins, so the two can never be judged by different
+    # grammars.
+    package_identity, spec_version = _parse_exact_package_spec(package_spec)
+    if spec_version != normalized_version:
         raise ValueError(f"Version mismatch: tag {normalized_version} vs spec version")
 
-    package_identity = _extract_package_identity(package_spec)
     if package_identity != BUILTIN_QUALIFICATION_PACKAGE:
         # Not a general narrowing of package identity -- campaigns bind whatever
         # exact spec they were created with. This runner specifically installs

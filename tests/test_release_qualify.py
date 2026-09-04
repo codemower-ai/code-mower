@@ -737,5 +737,84 @@ class AdoptionResultPackageIdentityTests(unittest.TestCase):
         self.assertIn("does not match the campaign package", str(ctx.exception))
 
 
+class ExactPackageSpecParseTests(unittest.TestCase):
+    """One parse yields both halves of an exact spec, for every caller."""
+
+    def test_identity_and_version_come_out_together(self) -> None:
+        for spec, identity, version in (
+            ("code-mower==1.0.0", "code-mower", "1.0.0"),
+            ("code.mower==1.0.0", "code-mower", "1.0.0"),
+            ("Code_Mower==1.0.0rc1", "code-mower", "1.0.0rc1"),
+            ("zope.interface==5.0.0", "zope-interface", "5.0.0"),
+            ("  other-widget==1.0.0  ", "other-widget", "1.0.0"),
+        ):
+            with self.subTest(spec=spec):
+                self.assertEqual(
+                    release_qualify._parse_exact_package_spec(spec), (identity, version)
+                )
+                self.assertEqual(release_qualify._extract_package_identity(spec), identity)
+
+    def test_inexact_and_malformed_specs_are_rejected_with_one_message(self) -> None:
+        for spec in (
+            "",
+            ".",
+            "code-mower",
+            "code-mower>=1.0.0",
+            "code-mower==",
+            "==1.0.0",
+            "code-mower[extra]==1.0.0",
+            'code-mower==1.0.0; python_version<"3"',
+            "/tmp/code-mower",
+            "git+https://example.invalid/x.git",
+        ):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError) as ctx:
+                    release_qualify._parse_exact_package_spec(spec)
+                self.assertIn(
+                    "Only exact package-index specs supported", str(ctx.exception)
+                )
+
+    def test_builtin_runner_accepts_a_dotted_spelling_of_its_own_package(self) -> None:
+        """`code.mower==1.0.0` is `code-mower==1.0.0` to a package index.
+
+        The runner used to read the version back with a name grammar that
+        stopped at the dot and refuse the spec as inexact.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "result.json"
+            result = release_qualify.run_release_qualification(
+                release_tag="v1.0.0",
+                package_spec="code.mower==1.0.0",
+                output_path=output_path,
+                repo_path=Path(tmp),
+                dry_run=True,
+            )
+            self.assertEqual(result["package_identity"], "code-mower")
+            self.assertEqual(result["normalized_version"], "1.0.0")
+
+    def test_builtin_runner_still_refuses_another_package_however_spelled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError) as ctx:
+                release_qualify.run_release_qualification(
+                    release_tag="v5.0.0",
+                    package_spec="zope.interface==5.0.0",
+                    output_path=Path(tmp) / "result.json",
+                    repo_path=Path(tmp),
+                )
+            self.assertIn("only supports the code-mower package", str(ctx.exception))
+            self.assertFalse((Path(tmp) / "result.json").exists())
+
+    def test_builtin_runner_reports_a_dotted_spec_version_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError) as ctx:
+                release_qualify.run_release_qualification(
+                    release_tag="v1.0.0",
+                    package_spec="code.mower==1.0.1",
+                    output_path=Path(tmp) / "result.json",
+                    repo_path=Path(tmp),
+                )
+            self.assertIn("Version mismatch", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,7 @@ if __package__ in {None, ""}:
         _detect_host_class,
         _detect_runtime_class,
         _extract_package_identity,
+        _parse_exact_package_spec,
         _validate_qualification_context,
         _validate_starting_version,
         _validate_tag_format,
@@ -44,6 +45,7 @@ else:
         _detect_host_class,
         _detect_runtime_class,
         _extract_package_identity,
+        _parse_exact_package_spec,
         _validate_qualification_context,
         _validate_starting_version,
         _validate_tag_format,
@@ -1262,9 +1264,13 @@ def initialize_campaign(
     if not package_spec:
         package_spec = f"code-mower=={normalized_version}"
 
-    package_identity = _extract_package_identity(package_spec)
-    spec_match = re.match(r"^[\w-]+==(.+)$", package_spec)
-    if not spec_match or spec_match.group(1) != normalized_version:
+    # A single parse of the spec supplies both the identity this campaign binds
+    # its results to and the version it pins. Re-reading the version with a
+    # separate, narrower name grammar used to refuse exact specs whose
+    # distribution name contains a dot -- `zope.interface==5.0.0`, or the
+    # documented `code.mower==1.0.0` -- as a version mismatch they did not have.
+    package_identity, spec_version = _parse_exact_package_spec(package_spec)
+    if spec_version != normalized_version:
         raise ValueError(f"Version mismatch: tag {normalized_version} vs spec {package_spec}")
 
     _validate_qualification_context(qualification_context)

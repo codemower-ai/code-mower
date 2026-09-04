@@ -6379,5 +6379,184 @@ class AmbiguousProviderLaneOverrideTests(unittest.TestCase):
         self.assertIn("muse, muse_cli", detail)
 
 
+class ExactPackageSpecParsingTests(unittest.TestCase):
+    """A campaign's identity and its pinned version come from one parse.
+
+    The identity used to be derived with a parser that accepts the dotted
+    distribution names a package index accepts, while the version was read back
+    out of the same string with a narrower `[\\w-]+` name grammar. Exact specs
+    such as `zope.interface==5.0.0` -- and the documented `code.mower==1.0.0` --
+    were therefore refused for a version mismatch they did not have.
+    """
+
+    ADAPTER_CONFIG = (
+        "version: 1\n"
+        "lanes:\n"
+        "  muse_cli:\n"
+        "    provider_config:\n"
+        "      campaign_adapter_argv:\n"
+        "        - \"{command}\"\n"
+        "        - qualify\n"
+        "        - --output\n"
+        "        - \"{output}\"\n"
+    )
+
+    def test_dotted_and_underscore_names_create_campaigns(self) -> None:
+        """Spellings one package index treats as one package all create."""
+        cases = (
+            ("v5.0.0", "zope.interface==5.0.0", "zope-interface", "5.0.0"),
+            ("v1.0.0", "code.mower==1.0.0", "code-mower", "1.0.0"),
+            ("v1.0.0", "code_mower==1.0.0", "code-mower", "1.0.0"),
+            ("v1.0.0", "Code_Mower==1.0.0", "code-mower", "1.0.0"),
+            ("v1.0.0", "code-mower==1.0.0", "code-mower", "1.0.0"),
+            ("v5.0.0", "zope.interface_extra==5.0.0", "zope-interface-extra", "5.0.0"),
+            ("v1.0.0-rc.1", "zope.interface==1.0.0rc1", "zope-interface", "1.0.0rc1"),
+        )
+        for tag, spec, identity, version in cases:
+            with self.subTest(spec=spec):
+                campaign = release_campaigns.initialize_campaign(
+                    release_tag=tag,
+                    package_spec=spec,
+                    providers=["muse"],
+                )
+                self.assertEqual(campaign.package_identity, identity)
+                self.assertEqual(campaign.normalized_version, version)
+                # The spec is stored exactly as given; only the identity derived
+                # from it is normalized.
+                self.assertEqual(campaign.package_spec, spec)
+                self.assertEqual(
+                    release_campaigns.campaign_package_identity(spec), identity
+                )
+
+    def test_a_mismatched_tag_is_still_refused_for_a_dotted_name(self) -> None:
+        """The version half is read, not skipped, for names with dots."""
+        with self.assertRaises(ValueError) as ctx:
+            release_campaigns.initialize_campaign(
+                release_tag="v5.0.0",
+                package_spec="zope.interface==5.0.1",
+                providers=["muse"],
+            )
+        message = str(ctx.exception)
+        self.assertIn("Version mismatch", message)
+        self.assertIn("5.0.0", message)
+        self.assertIn("zope.interface==5.0.1", message)
+
+    def test_malformed_and_inexact_specs_are_refused_as_inexact(self) -> None:
+        """Anything that is not `<name>==<version>` fails as an inexact spec.
+
+        Not as a version mismatch: the spec names no single package and version
+        a result could ever be bound to, and saying so is the accurate error.
+        """
+        for spec in (
+            ".",
+            "code-mower",
+            "code-mower>=1.0.0",
+            "code-mower==",
+            "==1.0.0",
+            "-code-mower==1.0.0",
+            "code-mower[extra]==1.0.0",
+            'code-mower==1.0.0; python_version<"3"',
+            "code-mower==1.0.0 --index-url https://example.invalid/simple",
+            "/tmp/code-mower",
+            "./code-mower",
+            "git+https://example.invalid/x.git",
+            "https://example.invalid/x.whl",
+        ):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError) as ctx:
+                    release_campaigns.initialize_campaign(
+                        release_tag="v1.0.0",
+                        package_spec=spec,
+                        providers=["muse"],
+                    )
+                message = str(ctx.exception)
+                self.assertIn("Only exact package-index specs supported", message)
+                self.assertNotIn("Version mismatch", message)
+                self.assertEqual(release_campaigns.campaign_package_identity(spec), "")
+
+    def test_the_cli_refuses_a_malformed_spec_without_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                code = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec=f"{tmp}/checkout",
+                    providers=["muse"],
+                    campaigns_dir=campaigns_dir,
+                )
+            self.assertEqual(code, 1)
+            message = stderr.getvalue()
+            self.assertIn("Only exact package-index specs supported", message)
+            self.assertNotIn("Traceback", message)
+            self.assertNotIn(tmp, message)
+            self.assertIsNone(
+                release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            )
+
+    def test_every_spec_with_an_identity_also_yields_its_version(self) -> None:
+        """No spec parses for identity and then fails to parse for version."""
+        for spec in (
+            "zope.interface==5.0.0",
+            "code.mower==1.0.0",
+            "Code_Mower==1.0.0",
+            "CODE--MOWER==1.0.0",
+            "other-widget==1.0.0",
+        ):
+            with self.subTest(spec=spec):
+                identity, version = release_qualify._parse_exact_package_spec(spec)
+                self.assertEqual(
+                    identity, release_campaigns.campaign_package_identity(spec)
+                )
+                self.assertEqual(version, spec.split("==", 1)[1])
+
+    def test_a_dotted_campaign_binds_results_to_the_normalized_identity(self) -> None:
+        """Result binding compares the normalized identity, not the spelling."""
+        for result_identity, expected_state, expected_error in (
+            ("code-mower", "complete", ""),
+            ("other-widget", "blocked", "adapter_result_invalid"),
+        ):
+            with self.subTest(result_identity=result_identity):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_path = Path(tmp)
+                    campaigns_dir = repo_path / ".code-mower" / "campaigns"
+                    (repo_path / "code-mower.yml").write_text(
+                        self.ADAPTER_CONFIG, encoding="utf-8"
+                    )
+
+                    def fake_adapter_runner(argv, timeout, _identity=result_identity):
+                        output_path = Path(argv[argv.index("--output") + 1])
+                        adoption_res = _mock_adoption_result(
+                            release_tag="v1.0.0", provider="muse", outcome="pass"
+                        )
+                        adoption_res["package_identity"] = _identity
+                        with output_path.open("w", encoding="utf-8") as fh:
+                            json.dump(adoption_res, fh)
+                        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                        io.StringIO()
+                    ):
+                        release_campaigns.campaign_command(
+                            release_tag="v1.0.0",
+                            package_spec="code.mower==1.0.0",
+                            providers=["muse"],
+                            repo_path=repo_path,
+                            campaigns_dir=campaigns_dir,
+                            apply=True,
+                            which_fn=lambda _cmd: "/bin/muse",
+                            adapter_runner=fake_adapter_runner,
+                        )
+
+                    saved = release_campaigns.load_campaign_by_id(
+                        "campaign-v1.0.0", campaigns_dir
+                    )
+                    assert saved is not None
+                    self.assertEqual(saved["package_spec"], "code.mower==1.0.0")
+                    self.assertEqual(saved["package_identity"], "code-mower")
+                    self.assertEqual(saved["providers"][0]["state"], expected_state)
+                    self.assertEqual(saved["providers"][0]["error"], expected_error)
+
+
 if __name__ == "__main__":
     unittest.main()
