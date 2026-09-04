@@ -29,7 +29,7 @@ code-mower release qualify \
   --qualification-context cold_install
 ```
 
-Preview mode emits a `planned` package-install step and produces a non-passing outcome. Use this to validate environment and configuration before running the full qualification.
+Preview mode (`execution_state: planned`) validates environment and configuration without installing the package. It emits a `planned` package-install step. **Preview results are not qualifying** — use only to check readiness before running `--execute`.
 
 Runs from current directory by default. Specify `--repo-path` to qualify a different checkout.
 
@@ -48,6 +48,7 @@ Runs from current directory by default. Specify `--repo-path` to qualify a diffe
 - `provider`, `executor`: Safe identifiers
 - `host_class`, `runtime_class`: Environment classification
 - `elapsed_seconds`: Total time
+- `execution_state`: planned (preview) or executed (qualifying run)
 - `outcome`: pass/pass_with_warnings/fail
 - `steps`: List with id, status, elapsed_seconds, warning_count, owner_action_count
 

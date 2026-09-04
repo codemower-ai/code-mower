@@ -285,6 +285,7 @@ def run_package_install_rehearsal(
     pip_no_cache: bool = False,
     pip_install_attempts: int | None = None,
     pip_retry_delay_seconds: float = 15.0,
+    preinstall_package_spec: str = "",
 ) -> dict[str, Any]:
     requested_package_spec = package_spec
     uses_package_index = _package_spec_uses_package_index(requested_package_spec)
@@ -336,6 +337,40 @@ def run_package_install_rehearsal(
             steps=steps,
             timeout=timeout,
         )
+
+    if preinstall_package_spec:
+        len(steps)
+        _run_pip_install_with_retries(
+            _pip_install_command(
+                venv_python,
+                preinstall_package_spec,
+                pip_index_url=pip_index_url,
+                pip_extra_index_urls=pip_extra_index_urls,
+                pip_no_cache=pip_cache_disabled,
+            ),
+            cwd=work_dir,
+            env=None,
+            steps=steps,
+            timeout=timeout,
+            attempts=pip_install_max_attempts,
+            retry_delay_seconds=pip_retry_delay_seconds,
+            package_index=True,
+        )
+        _run_rehearsal_step(
+            [str(venv_python), "-m", "pip", "check"],
+            cwd=work_dir,
+            env=None,
+            steps=steps,
+            timeout=timeout,
+        )
+        _run_rehearsal_step(
+            [str(code_mower_bin), "--version"],
+            cwd=work_dir,
+            env=None,
+            steps=steps,
+            timeout=timeout,
+        ).stdout.strip()
+
     pip_install_start = len(steps)
     _run_pip_install_with_retries(
         _pip_install_command(

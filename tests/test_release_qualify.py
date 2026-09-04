@@ -82,7 +82,7 @@ class ReleaseQualifyTests(unittest.TestCase):
             mock.patch("code_mower.release_qualify.doctor_checks.run_doctor") as mock_doctor,
             mock.patch("code_mower.release_qualify.lane_status.collect_status") as mock_lanes,
             mock.patch("code_mower.release_qualify.code_mower_board.doctor_payload") as mock_board,
-            mock.patch("code_mower.release_qualify._run_upgrade_rehearsal") as mock_upgrade,
+            mock.patch("code_mower.release_qualify.run_package_install_rehearsal") as mock_rehearsal,
         ):
             mock_report = mock.Mock()
             mock_report.status = "pass"
@@ -101,9 +101,8 @@ class ReleaseQualifyTests(unittest.TestCase):
                 "checks": [],
             }
 
-            mock_upgrade.return_value = {
+            mock_rehearsal.return_value = {
                 "version": "code-mower 1.0.0",
-                "starting_version": "code-mower 0.9.0",
             }
 
             output_path = Path(tmpdir) / "result.json"
@@ -117,11 +116,12 @@ class ReleaseQualifyTests(unittest.TestCase):
                 dry_run=False,
             )
 
-            mock_upgrade.assert_called_once_with(
-                starting_spec="code-mower==0.9.0",
-                target_spec="code-mower==1.0.0",
-                timeout=180,
-            )
+            mock_rehearsal.assert_called_once()
+            call_args = mock_rehearsal.call_args
+            self.assertEqual(call_args.kwargs["package_spec"], "code-mower==1.0.0")
+            self.assertEqual(call_args.kwargs["timeout"], 180)
+            self.assertEqual(call_args.kwargs["allow_package_index"], True)
+            self.assertEqual(call_args.kwargs["preinstall_package_spec"], "code-mower==0.9.0")
 
             with output_path.open() as f:
                 result = json.load(f)
@@ -129,6 +129,7 @@ class ReleaseQualifyTests(unittest.TestCase):
             self.assertEqual(result["qualification_context"], "upgrade")
             self.assertEqual(result["starting_version"], "0.9.0")
             self.assertEqual(result["ending_version"], "1.0.0")
+            self.assertEqual(result["execution_state"], "executed")
             self.assertEqual(result["outcome"], "pass")
 
     def test_exact_package_index_required(self) -> None:
@@ -164,17 +165,24 @@ class ReleaseQualifyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "result.json"
 
-            release_qualify.run_release_qualification(
-                release_tag="v1.0.0-rc.1",
-                package_spec="code-mower==1.0.0rc1",
-                output_path=output_path,
-                dry_run=True,
-            )
+            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
+                mock_doctor.return_value = release_qualify.StepResult(
+                    id="doctor", status="pass", elapsed_seconds=1.0,
+                    warning_count=0, owner_action_count=0
+                )
+
+                release_qualify.run_release_qualification(
+                    release_tag="v1.0.0-rc.1",
+                    package_spec="code-mower==1.0.0rc1",
+                    output_path=output_path,
+                    dry_run=True,
+                )
 
             self.assertTrue(output_path.exists())
             with open(output_path, encoding="utf-8") as f:
                 result = json.load(f)
-            self.assertEqual(result["outcome"], "fail")
+            self.assertEqual(result["execution_state"], "planned")
+            self.assertEqual(result["outcome"], "pass")
             self.assertEqual(result["package_identity"], "code-mower")
 
     def test_doctor_uses_real_config(self) -> None:
@@ -335,8 +343,8 @@ class ReleaseQualifyTests(unittest.TestCase):
         self.assertEqual(release_qualify._aggregate_outcome([warn_step]), "pass_with_warnings")
         self.assertEqual(release_qualify._aggregate_outcome([unavail_step]), "pass_with_warnings")
         self.assertEqual(release_qualify._aggregate_outcome([pass_step]), "pass")
-        self.assertEqual(release_qualify._aggregate_outcome([planned_step]), "fail")
-        self.assertEqual(release_qualify._aggregate_outcome([planned_step, pass_step]), "fail")
+        self.assertEqual(release_qualify._aggregate_outcome([planned_step]), "pass")
+        self.assertEqual(release_qualify._aggregate_outcome([planned_step, pass_step]), "pass")
 
     def test_dry_run_emits_planned_step(self) -> None:
         """Dry-run emits package_install step with planned status."""
@@ -360,7 +368,8 @@ class ReleaseQualifyTests(unittest.TestCase):
             install_step = [s for s in result["steps"] if s["id"] == "package_install"][0]
             self.assertEqual(install_step["status"], "planned")
             self.assertEqual(result["ending_version"], "")
-            self.assertEqual(result["outcome"], "fail")
+            self.assertEqual(result["execution_state"], "planned")
+            self.assertEqual(result["outcome"], "pass")
 
     def test_execute_normalizes_rehearsal_version(self) -> None:
         """Execute normalizes rehearsal version from CLI format."""
@@ -462,6 +471,139 @@ class ReleaseQualifyTests(unittest.TestCase):
                 self.assertNotIn("command", step)
                 self.assertNotIn("stdout", step)
                 self.assertNotIn("message", step)
+
+    def test_upgrade_preinstall_and_target_in_order(self) -> None:
+        """Upgrade context installs preinstall then target in same rehearsal."""
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch("code_mower.release_qualify.doctor_checks.run_doctor") as mock_doctor,
+            mock.patch("code_mower.release_qualify.lane_status.collect_status") as mock_lanes,
+            mock.patch("code_mower.release_qualify.code_mower_board.doctor_payload") as mock_board,
+            mock.patch("code_mower.release_qualify.run_package_install_rehearsal") as mock_rehearsal,
+        ):
+            mock_report = mock.Mock()
+            mock_report.status = "pass"
+            mock_report.warnings = 0
+            mock_report.owner_actions = 0
+            mock_doctor.return_value = mock_report
+
+            mock_lanes.return_value = {
+                "schema": "code_mower.laneStatus.v1",
+                "remote": {"available": True},
+            }
+
+            mock_board.return_value = {
+                "schema": "code_mower.boardDoctor.v1",
+                "status": "pass",
+                "checks": [],
+            }
+
+            mock_rehearsal.return_value = {"version": "code-mower 1.0.5"}
+
+            output_path = Path(tmpdir) / "result.json"
+
+            release_qualify.run_release_qualification(
+                release_tag="v1.0.5",
+                package_spec="code-mower==1.0.5",
+                output_path=output_path,
+                qualification_context="upgrade",
+                starting_version="1.0.4",
+                dry_run=False,
+            )
+
+            call_args = mock_rehearsal.call_args
+            self.assertEqual(call_args.kwargs["package_spec"], "code-mower==1.0.5")
+            self.assertEqual(call_args.kwargs["preinstall_package_spec"], "code-mower==1.0.4")
+            self.assertEqual(call_args.kwargs["allow_package_index"], True)
+
+    def test_upgrade_version_mismatch_fails(self) -> None:
+        """Upgrade context fails when rehearsal version doesn't match target."""
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch("code_mower.release_qualify.doctor_checks.run_doctor") as mock_doctor,
+            mock.patch("code_mower.release_qualify.lane_status.collect_status") as mock_lanes,
+            mock.patch("code_mower.release_qualify.code_mower_board.doctor_payload") as mock_board,
+            mock.patch("code_mower.release_qualify.run_package_install_rehearsal") as mock_rehearsal,
+        ):
+            mock_report = mock.Mock()
+            mock_report.status = "pass"
+            mock_report.warnings = 0
+            mock_report.owner_actions = 0
+            mock_doctor.return_value = mock_report
+
+            mock_lanes.return_value = {
+                "schema": "code_mower.laneStatus.v1",
+                "remote": {"available": True},
+            }
+
+            mock_board.return_value = {
+                "schema": "code_mower.boardDoctor.v1",
+                "status": "pass",
+                "checks": [],
+            }
+
+            mock_rehearsal.return_value = {"version": "code-mower 1.0.4"}
+
+            output_path = Path(tmpdir) / "result.json"
+
+            result = release_qualify.run_release_qualification(
+                release_tag="v1.0.5",
+                package_spec="code-mower==1.0.5",
+                output_path=output_path,
+                qualification_context="upgrade",
+                starting_version="1.0.4",
+                dry_run=False,
+            )
+
+            install_step = [s for s in result["steps"] if s["id"] == "package_install"][0]
+            self.assertEqual(install_step["status"], "fail")
+            self.assertEqual(result["outcome"], "fail")
+
+    def test_dry_run_is_visibly_non_qualifying(self) -> None:
+        """Dry-run has execution_state=planned, distinct from executed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "result.json"
+
+            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
+                mock_doctor.return_value = release_qualify.StepResult(
+                    id="doctor", status="pass", elapsed_seconds=1.0,
+                    warning_count=0, owner_action_count=0
+                )
+
+                result = release_qualify.run_release_qualification(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    output_path=output_path,
+                    dry_run=True,
+                )
+
+            self.assertEqual(result["execution_state"], "planned")
+            install_step = [s for s in result["steps"] if s["id"] == "package_install"][0]
+            self.assertEqual(install_step["status"], "planned")
+            self.assertEqual(result["ending_version"], "")
+
+    def test_unknown_helper_status_fails_closed(self) -> None:
+        """Unknown helper status maps to fail, not pass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "result.json"
+
+            with mock.patch("code_mower.release_qualify.doctor_checks.run_doctor") as mock_doctor:
+                mock_report = mock.Mock()
+                mock_report.status = "critical"
+                mock_report.warnings = 0
+                mock_report.owner_actions = 0
+                mock_doctor.return_value = mock_report
+
+                result = release_qualify.run_release_qualification(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    output_path=output_path,
+                    dry_run=True,
+                )
+
+            doctor_step = [s for s in result["steps"] if s["id"] == "doctor"][0]
+            self.assertEqual(doctor_step["status"], "fail")
+            self.assertEqual(result["outcome"], "fail")
 
 
 if __name__ == "__main__":
