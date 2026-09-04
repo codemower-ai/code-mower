@@ -38,6 +38,7 @@ from .productivity import (
     validate_productivity_summary_payload,
 )
 from .pr_outcomes import PR_OUTCOME_EVENT_TYPE, validate_pr_outcome_payload
+from .work_types import validate_work_type_metadata
 
 
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
@@ -320,6 +321,7 @@ def validate_cloud_event(value: Any) -> dict[str, Any]:
         validate_pr_outcome_payload(value)
     if value["event_type"] == ADOPTION_RUN_EVENT_TYPE:
         validate_adoption_run_payload(value)
+    validate_work_type_metadata(value["dimensions"], value["event_type"], value["tool"])
     return value
 
 
