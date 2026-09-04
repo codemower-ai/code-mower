@@ -827,6 +827,7 @@ def _dispatch_github_comment(
     *,
     starting_version: str = "",
     trigger_comments: tuple[str, ...] = (),
+    reconciliation_key: str = "",
     command_runner: lane_status.CommandRunner = lane_status.run_command,
 ) -> tuple[bool, dict[str, Any], str]:
     """Post the dispatch comment that tells a remote provider exactly what to qualify.
@@ -857,6 +858,8 @@ def _dispatch_github_comment(
     }
     if starting_version:
         dispatch_marker["starting_version"] = starting_version
+    if reconciliation_key:
+        dispatch_marker["reconciliation_key"] = reconciliation_key
     marker_str = json.dumps(dispatch_marker, sort_keys=True)
     starting_version_line = (
         f"- **Starting Version:** `{starting_version}`\n" if starting_version else ""
@@ -930,7 +933,7 @@ def _post_trigger_comment(
     *,
     campaign_id: str,
     provider: str,
-    idempotency_key: str,
+    reconciliation_key: str,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
 ) -> tuple[bool, dict[str, Any], str]:
     """Post the trigger command as a separate comment to actually start the provider.
@@ -946,7 +949,7 @@ def _post_trigger_comment(
         or not trigger_command
         or not campaign_id
         or not provider
-        or not idempotency_key
+        or not reconciliation_key
     ):
         return False, {}, "missing trigger prerequisites"
 
@@ -955,7 +958,7 @@ def _post_trigger_comment(
             "schema": TRIGGER_MARKER_SCHEMA,
             "campaign_id": campaign_id,
             "provider": provider,
-            "idempotency_key": idempotency_key,
+            "reconciliation_key": reconciliation_key,
         },
         sort_keys=True,
     )
@@ -997,7 +1000,9 @@ def _has_matching_release_marker(
     marker_name: str,
     expected: Mapping[str, str],
 ) -> bool:
-    """Return whether GitHub already contains the exact campaign side-effect marker."""
+    """Match a side effect using its pre-persisted, unguessable reconciliation key."""
+    if not expected.get("reconciliation_key"):
+        return False
     pattern = re.compile(
         rf"<!--\s*{re.escape(marker_name)}:\s*(\{{.*?\}})\s*-->",
         re.DOTALL,
@@ -1770,12 +1775,21 @@ def dispatch_or_advance_campaign(
             trigger_posted = provider_data.get("trigger_posted", True)
 
             if trigger_comments and not trigger_posted and not is_explicit_retry:
+                reconciliation_key = str(provider_data.get("comment_reconciliation_key") or "")
+                if not reconciliation_key:
+                    reconciliation_key = uuid.uuid4().hex
+                    provider_data["comment_reconciliation_key"] = reconciliation_key
+                    # Persist the nonce before any external side effect so a
+                    # crash-after-post can reconcile the same marker on resume.
+                    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+
                 dispatch_posted = bool(dispatch_ref.get("comment_posted"))
                 dispatch_expected = {
                     "schema": DISPATCH_SCHEMA,
                     "campaign_id": campaign_id,
                     "provider": provider,
                     "idempotency_key": str(provider_data.get("idempotency_key") or ""),
+                    "reconciliation_key": reconciliation_key,
                 }
                 if not dispatch_posted and not poll_error:
                     dispatch_posted = _has_matching_release_marker(
@@ -1787,19 +1801,11 @@ def dispatch_or_advance_campaign(
                         dispatch_ref["comment_posted"] = True
                         provider_data["dispatch_ref"] = dispatch_ref
 
-                trigger_key = str(provider_data.get("trigger_idempotency_key") or "")
-                if not trigger_key:
-                    trigger_key = uuid.uuid4().hex
-                    provider_data["trigger_idempotency_key"] = trigger_key
-                    # Persist the nonce before any external side effect so a
-                    # crash-after-post can reconcile the same marker on resume.
-                    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
-
                 trigger_expected = {
                     "schema": TRIGGER_MARKER_SCHEMA,
                     "campaign_id": campaign_id,
                     "provider": provider,
-                    "idempotency_key": trigger_key,
+                    "reconciliation_key": reconciliation_key,
                 }
                 if poll_error:
                     provider_data["next_action"] = f"retry {provider} trigger reconciliation"
@@ -1842,7 +1848,7 @@ def dispatch_or_advance_campaign(
                         trigger_comments[0],
                         campaign_id=campaign_id,
                         provider=provider,
-                        idempotency_key=trigger_key,
+                        reconciliation_key=reconciliation_key,
                         command_runner=command_runner,
                     )
                     provider_data["trigger_posted"] = trigger_ok
@@ -2157,7 +2163,7 @@ def dispatch_or_advance_campaign(
                 trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
                 provider_data["trigger_posted"] = not bool(trigger_comments)
                 if trigger_comments:
-                    provider_data["trigger_idempotency_key"] = uuid.uuid4().hex
+                    provider_data["comment_reconciliation_key"] = uuid.uuid4().hex
                 (
                     provider_data["next_action"],
                     provider_data["next_detail"],
@@ -2183,6 +2189,9 @@ def dispatch_or_advance_campaign(
                     provider_data["idempotency_key"],
                     starting_version=starting_version,
                     trigger_comments=trigger_comments,
+                    reconciliation_key=str(
+                        provider_data.get("comment_reconciliation_key") or ""
+                    ),
                     command_runner=command_runner,
                 )
                 if ok:
@@ -2214,7 +2223,9 @@ def dispatch_or_advance_campaign(
                             trigger_comments[0],
                             campaign_id=campaign_id,
                             provider=provider,
-                            idempotency_key=str(provider_data["trigger_idempotency_key"]),
+                            reconciliation_key=str(
+                                provider_data["comment_reconciliation_key"]
+                            ),
                             command_runner=command_runner,
                         )
                         # Persist trigger status so resume can retry on failure

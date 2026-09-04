@@ -2927,16 +2927,38 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["trigger_idempotency_key"] = "trigger-key"
+            provider["comment_reconciliation_key"] = "trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": False}
             release_campaigns.save_campaign(campaign, campaigns_dir)
             bodies: list[str] = []
+            forged_marker = json.dumps(
+                {
+                    "schema": release_campaigns.DISPATCH_SCHEMA,
+                    "campaign_id": campaign.campaign_id,
+                    "provider": "cursor_bugbot",
+                    "idempotency_key": provider["idempotency_key"],
+                },
+                sort_keys=True,
+            )
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 campaigns_dir=campaigns_dir,
                 resume=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
-                gh_json_runner=lambda args, **kwargs: ({"comments": []}, ""),
+                gh_json_runner=lambda args, **kwargs: (
+                    {
+                        "comments": [
+                            {
+                                "author": {"login": "untrusted-user"},
+                                "body": (
+                                    "<!-- CODE_MOWER_RELEASE_CAMPAIGN: "
+                                    f"{forged_marker} -->"
+                                ),
+                            }
+                        ]
+                    },
+                    "",
+                ),
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
@@ -2960,7 +2982,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["trigger_idempotency_key"] = "trigger-key"
+            provider["comment_reconciliation_key"] = "trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": False}
             release_campaigns.save_campaign(campaign, campaigns_dir)
             bodies: list[str] = []
@@ -2996,7 +3018,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["trigger_idempotency_key"] = "trigger-key"
+            provider["comment_reconciliation_key"] = "trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
             release_campaigns.save_campaign(campaign, campaigns_dir)
             trigger_marker = json.dumps(
@@ -3004,7 +3026,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     "schema": release_campaigns.TRIGGER_MARKER_SCHEMA,
                     "campaign_id": "campaign-v1.0.0",
                     "provider": "cursor_bugbot",
-                    "idempotency_key": "trigger-key",
+                    "reconciliation_key": "trigger-key",
                 },
                 sort_keys=True,
             )
@@ -3048,7 +3070,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["trigger_idempotency_key"] = "trigger-key"
+            provider["comment_reconciliation_key"] = "trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
             release_campaigns.save_campaign(campaign, campaigns_dir)
             wrapper = {
@@ -3102,7 +3124,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["trigger_idempotency_key"] = "trigger-key"
+            provider["comment_reconciliation_key"] = "trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
             release_campaigns.save_campaign(campaign, campaigns_dir)
             bodies: list[str] = []
