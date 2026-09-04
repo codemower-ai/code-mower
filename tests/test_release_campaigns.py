@@ -9747,6 +9747,104 @@ class CampaignWatchTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("campaign_id must", err.getvalue())
 
+    def test_watch_malformed_stored_payloads_emit_stable_json(self) -> None:
+        malformed_path = self.campaigns_dir / "campaign-malformed.json"
+        payloads = [
+            {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "providers": [],
+            },
+            {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-malformed",
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "providers": [None],
+            },
+        ]
+
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                malformed_path.write_text(json.dumps(payload), encoding="utf-8")
+                out = io.StringIO()
+                exit_code = release_campaigns.campaign_command(
+                    action="watch",
+                    campaign_id="campaign-malformed",
+                    campaigns_dir=self.campaigns_dir,
+                    emit_json=True,
+                    stdout=out,
+                )
+                self.assertEqual(exit_code, 1)
+                summary = json.loads(out.getvalue())
+                self.assertEqual(summary["schema"], release_campaigns.CAMPAIGN_WATCH_SCHEMA)
+                self.assertEqual(summary["status"], "invalid")
+                self.assertEqual(summary["stop_reason"], "invalid_campaign")
+                self.assertIn(
+                    summary["error"],
+                    {
+                        "invalid campaign identity",
+                        "invalid campaign provider collection",
+                        "no campaign found for 'campaign-malformed'",
+                    },
+                )
+
+        direct_summary = release_campaigns.campaign_watch(
+            campaign=payloads[0],
+            campaigns_dir=self.campaigns_dir,
+            emit_json=True,
+        )
+        self.assertEqual(direct_summary["stop_reason"], "invalid_campaign")
+        self.assertEqual(direct_summary["error"], "invalid campaign identity")
+
+    def test_watch_repo_slug_is_effective_and_cannot_change_identity(self) -> None:
+        campaign = self._seed_campaign(status="complete")
+        campaign["repo_slug"] = ""
+        release_campaigns.save_campaign(campaign, self.campaigns_dir)
+        seen_repo_slugs: list[str] = []
+
+        def capture_campaign(value: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            seen_repo_slugs.append(str(value.get("repo_slug") or ""))
+            return dict(value)
+
+        with mock.patch.object(
+            release_campaigns,
+            "dispatch_or_advance_campaign",
+            side_effect=capture_campaign,
+        ):
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                repo_slug="owner/repo",
+                stdout=io.StringIO(),
+            )
+
+        self.assertEqual(summary["stop_reason"], "complete")
+        self.assertEqual(seen_repo_slugs, ["owner/repo"])
+        persisted = release_campaigns.load_campaign_by_id(
+            "campaign-v1.0.0", self.campaigns_dir
+        )
+        assert persisted is not None
+        self.assertEqual(persisted["repo_slug"], "")
+
+        campaign["repo_slug"] = "owner/original"
+        release_campaigns.save_campaign(campaign, self.campaigns_dir)
+        conflict = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            repo_slug="owner/different",
+            emit_json=True,
+        )
+        self.assertEqual(conflict["stop_reason"], "invalid_campaign")
+        self.assertEqual(
+            conflict["error"], "requested repo slug does not match stored campaign"
+        )
+
     def test_watch_positive_interval_and_timeout_validation(self) -> None:
         """Non-positive, non-numeric, or non-finite interval/timeout are rejected."""
         self._seed_campaign()

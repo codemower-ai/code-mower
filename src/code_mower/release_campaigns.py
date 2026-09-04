@@ -2985,6 +2985,62 @@ def _build_watch_summary(
     return summary
 
 
+def _watch_campaign_validation_error(campaign: Any) -> str:
+    """Return a bounded reason when stored campaign data is unsafe to watch."""
+    if not isinstance(campaign, Mapping) or campaign.get("schema") != CAMPAIGN_SCHEMA:
+        return "invalid campaign payload"
+    try:
+        campaign_id = validate_campaign_id(campaign.get("campaign_id"))
+        valid_tag, normalized_version, _ = _validate_tag_format(campaign.get("release_tag"))
+        if not valid_tag:
+            raise ValueError
+        _package_identity, package_version = _parse_exact_package_spec(
+            campaign.get("package_spec")
+        )
+        if package_version != normalized_version:
+            raise ValueError
+        context = campaign.get("qualification_context")
+        starting_version = campaign.get("starting_version")
+        _validate_qualification_context(context)
+        _validate_starting_version(starting_version)
+        if context == "upgrade" and not starting_version:
+            raise ValueError
+        if context != "upgrade" and starting_version:
+            raise ValueError
+        if not campaign_id:
+            raise ValueError
+    except (TypeError, ValueError):
+        return "invalid campaign identity"
+
+    providers = campaign.get("providers")
+    if not isinstance(providers, list):
+        return "invalid campaign provider collection"
+    for provider_data in providers:
+        if not isinstance(provider_data, dict):
+            return "invalid campaign provider collection"
+        provider = provider_data.get("provider")
+        if not isinstance(provider, str) or not provider:
+            return "invalid campaign provider collection"
+        try:
+            resolve_provider_lane(provider)
+        except ValueError:
+            return "invalid campaign provider collection"
+    return ""
+
+
+def _watch_repo_slug_override(
+    campaign: Mapping[str, Any], requested_repo_slug: str
+) -> tuple[dict[str, Any], str]:
+    """Apply a read-only repository override, or reject an identity conflict."""
+    projected = dict(campaign)
+    stored_repo_slug = str(campaign.get("repo_slug") or "")
+    if requested_repo_slug and stored_repo_slug and requested_repo_slug != stored_repo_slug:
+        return projected, "requested repo slug does not match stored campaign"
+    if requested_repo_slug and not stored_repo_slug:
+        projected["repo_slug"] = requested_repo_slug
+    return projected, ""
+
+
 def campaign_watch(
     campaign: Mapping[str, Any] | None = None,
     *,
@@ -3046,7 +3102,7 @@ def campaign_watch(
             print(f"error: {exc}", file=err)
         return summary
 
-    target_campaign = dict(campaign) if campaign is not None else None
+    target_campaign: Any = dict(campaign) if isinstance(campaign, Mapping) else campaign
     if target_campaign is None:
         if campaign_id:
             try:
@@ -3144,8 +3200,9 @@ def campaign_watch(
             loaded = all_c[0]
         target_campaign = loaded
 
-    if not isinstance(target_campaign, dict) or target_campaign.get("schema") != CAMPAIGN_SCHEMA:
-        msg = "invalid campaign payload"
+    validation_error = _watch_campaign_validation_error(target_campaign)
+    if validation_error:
+        msg = validation_error
         summary = _build_watch_summary(
             campaign_id=campaign_id,
             release_tag=release_tag,
@@ -3164,6 +3221,32 @@ def campaign_watch(
         )
         if not emit_json:
             print(f"error: {msg}", file=err)
+        return summary
+
+    target_campaign, repo_slug_error = _watch_repo_slug_override(
+        target_campaign, repo_slug
+    )
+    if repo_slug_error:
+        summary = _build_watch_summary(
+            campaign_id=str(target_campaign.get("campaign_id") or campaign_id),
+            release_tag=str(target_campaign.get("release_tag") or release_tag),
+            package_identity="",
+            qualification_context=str(
+                target_campaign.get("qualification_context") or ""
+            ),
+            status="invalid",
+            stop_reason="invalid_campaign",
+            polls=0,
+            elapsed_seconds=0.0,
+            interval_seconds=validated_interval,
+            timeout_seconds=validated_timeout,
+            next_action="use the repository recorded by the campaign",
+            next_detail=repo_slug_error,
+            retry_guidance="omit --repo-slug or pass the stored repository",
+            error=repo_slug_error,
+        )
+        if not emit_json:
+            print(f"error: {repo_slug_error}", file=err)
         return summary
 
     cid = str(target_campaign.get("campaign_id") or "")
@@ -3205,6 +3288,7 @@ def campaign_watch(
                 if not emit_json:
                     print(f"error: {msg}", file=err)
                 return summary
+            reloaded, _ = _watch_repo_slug_override(reloaded, repo_slug)
             current_campaign = dispatch_or_advance_campaign(
                 reloaded,
                 apply=False,
@@ -3272,6 +3356,16 @@ def campaign_watch(
                 with locked_campaigns_dir(campaigns_dir):
                     reloaded = load_campaign_by_id(cid, campaigns_dir)
                     if reloaded is None:
+                        stop_reason = "invalid_campaign"
+                        break
+                    reloaded, repo_slug_error = _watch_repo_slug_override(
+                        reloaded, repo_slug
+                    )
+                    if repo_slug_error:
+                        current_campaign["next_action"] = (
+                            "use the repository recorded by the campaign"
+                        )
+                        current_campaign["next_detail"] = repo_slug_error
                         stop_reason = "invalid_campaign"
                         break
                     updated = dispatch_or_advance_campaign(
