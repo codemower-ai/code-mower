@@ -267,7 +267,7 @@ code-mower release campaign watch --release-tag v1.0.0 --json
   - `invalid_campaign` (exit 1): Campaign is missing, malformed, ambiguous, or invalid arguments were supplied.
 - **Clean output & no-change suppression:** Text mode prints the initial campaign state, real state transitions (ticks without state changes are suppressed), and a final result line with actionable retry guidance.
 - **Stable JSON contract:** `--json` mode emits one stable metadata-only final summary adhering to `code_mower.releaseCampaignWatch.v1` containing campaign metadata, duration metrics, transition records, provider statuses, and retry guidance.
-- **Safe & non-mutating:** Watching never executes provider adapters, never posts hosted comments, never retries providers, and never uploads. It takes the campaign directory lock only during each individual poll read/update rather than holding it continuously, preserving Board readability and directory accessibility.
+- **Safe polling:** Watching never executes adapters, posts dispatches, retries providers, or uploads, but it may persist newly observed remote provider transitions through the existing poll path. It takes the campaign directory lock only during each individual poll read/update rather than holding it continuously, preserving Board readability and directory accessibility.
 
 #### 3. Upload
 

@@ -9489,6 +9489,186 @@ class CampaignWatchTests(unittest.TestCase):
         self.assertIn("Final result: interrupt", rendered)
         self.assertIn("re-run 'code-mower release campaign watch", rendered)
 
+    def test_watch_slow_initial_poll(self) -> None:
+        """A slow initial poll that reaches or exceeds timeout stops immediately without loop polling."""
+        self._seed_campaign(
+            providers=[
+                {
+                    "provider": "devin",
+                    "lane_id": "fake_hosted",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 10.0,
+                    "dispatch_ref": {"issue_number": "123"},
+                    "idempotency_key": "idemp-devin",
+                }
+            ]
+        )
+        out = io.StringIO()
+
+        def slow_gh_json(*args: Any, **kwargs: Any) -> tuple[Any, str]:
+            # Simulate a slow initial remote poll taking 25.0s (exceeding timeout of 20.0s)
+            self.clock.current += 25.0
+            return {"comments": []}, ""
+
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            interval=5.0,
+            timeout=20.0,
+            gh_json_runner=slow_gh_json,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 1)
+        rendered = out.getvalue()
+        self.assertIn("Final result: timeout", rendered)
+        self.assertIn("Retry guidance: re-run 'code-mower release campaign watch", rendered)
+        self.assertEqual(len(self.clock.sleep_calls), 0)
+
+        # Directly verify campaign_watch summary contract
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            interval=5.0,
+            timeout=20.0,
+            gh_json_runner=slow_gh_json,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(summary["stop_reason"], "timeout")
+        self.assertEqual(summary["polls"], 0)
+        self.assertEqual(summary["elapsed_seconds"], 25.0)
+
+    def test_watch_deadline_after_sleep(self) -> None:
+        """Sleeping until the deadline stops the watch without starting another poll after the deadline."""
+        self._seed_campaign(
+            providers=[
+                {
+                    "provider": "devin",
+                    "lane_id": "fake_hosted",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 10.0,
+                    "dispatch_ref": {"issue_number": "123"},
+                    "idempotency_key": "idemp-devin",
+                }
+            ]
+        )
+        out = io.StringIO()
+        poll_call_count = 0
+
+        def counting_gh_json(*args: Any, **kwargs: Any) -> tuple[Any, str]:
+            nonlocal poll_call_count
+            poll_call_count += 1
+            return {"comments": []}, ""
+
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            interval=10.0,
+            timeout=20.0,
+            gh_json_runner=counting_gh_json,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 1)
+        rendered = out.getvalue()
+        self.assertIn("Final result: timeout", rendered)
+        self.assertEqual(self.clock.sleep_calls, [10.0, 10.0])
+        # Exactly 2 polls: initial poll at t=0 and poll 1 after first sleep.
+        # After second sleep to t=20.0 (the deadline), no poll is started.
+        self.assertEqual(poll_call_count, 2)
+
+    def test_watch_interrupt_during_initial_lock_or_poll(self) -> None:
+        """KeyboardInterrupt during initial lock or poll produces the same interrupt summary and exit 130."""
+        self._seed_campaign(
+            providers=[
+                {
+                    "provider": "devin",
+                    "lane_id": "fake_hosted",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 10.0,
+                    "dispatch_ref": {"issue_number": "123"},
+                    "idempotency_key": "idemp-devin",
+                }
+            ]
+        )
+
+        # 1. Interrupt during initial remote poll
+        out_poll = io.StringIO()
+
+        def interrupting_gh_json(*args: Any, **kwargs: Any) -> tuple[Any, str]:
+            raise KeyboardInterrupt()
+
+        exit_code = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            interval=10.0,
+            timeout=60.0,
+            gh_json_runner=interrupting_gh_json,
+            stdout=out_poll,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(exit_code, 130)
+        rendered_poll = out_poll.getvalue()
+        self.assertIn("Final result: interrupt", rendered_poll)
+        self.assertIn("re-run 'code-mower release campaign watch", rendered_poll)
+
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            issue="123",
+            interval=10.0,
+            timeout=60.0,
+            gh_json_runner=interrupting_gh_json,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(summary["stop_reason"], "interrupt")
+        self.assertEqual(summary["polls"], 0)
+        self.assertEqual(summary["mode"], "release-campaign-watch")
+        self.assertEqual(summary["schema"], release_campaigns.CAMPAIGN_WATCH_SCHEMA)
+        self.assertIn("re-run 'code-mower release campaign watch", summary["retry_guidance"])
+
+        # 2. Interrupt during initial lock acquisition
+        out_lock = io.StringIO()
+
+        @contextlib.contextmanager
+        def interrupting_lock(campaigns_dir: Path) -> Any:
+            raise KeyboardInterrupt()
+            yield
+
+        with mock.patch.object(release_campaigns, "locked_campaigns_dir", interrupting_lock):
+            exit_code_lock = release_campaigns.campaign_command(
+                action="watch",
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                interval=10.0,
+                timeout=60.0,
+                stdout=out_lock,
+                time_fn=self.clock.time,
+                sleep_fn=self.clock.sleep,
+            )
+        self.assertEqual(exit_code_lock, 130)
+        rendered_lock = out_lock.getvalue()
+        self.assertIn("Final result: interrupt", rendered_lock)
+        self.assertIn("re-run 'code-mower release campaign watch", rendered_lock)
+
     def test_watch_remote_unavailable_outage(self) -> None:
         """Watch stops distinctly with stop_reason='remote_unavailable' during remote provider outage."""
         self._seed_campaign(

@@ -3177,195 +3177,177 @@ def campaign_watch(
         save_campaign(target_campaign, campaigns_dir)
 
     # Initial check / poll at t=0
-    with locked_campaigns_dir(campaigns_dir):
-        reloaded = load_campaign_by_id(cid, campaigns_dir)
-        if reloaded is None:
-            msg = f"campaign {cid!r} could not be loaded from storage"
-            summary = _build_watch_summary(
-                campaign_id=cid,
-                release_tag=rtag,
-                package_identity=pkg_id,
-                qualification_context=qcontext,
-                status="invalid",
-                stop_reason="invalid_campaign",
-                polls=0,
-                elapsed_seconds=0.0,
-                interval_seconds=validated_interval,
-                timeout_seconds=validated_timeout,
-                error=msg,
-            )
-            if not emit_json:
-                print(f"error: {msg}", file=err)
-            return summary
-        current_campaign = dispatch_or_advance_campaign(
-            reloaded,
-            apply=False,
-            issue_number=issue,
-            repo_path=repo_path,
-            campaigns_dir=campaigns_dir,
-            which_fn=which_fn,
-            command_runner=command_runner,
-            gh_json_runner=gh_json_runner,
-            adapter_runner=adapter_runner,
-            env=env,
-        )
-
-    if not emit_json:
-        print(render_campaign_text(current_campaign), file=out)
-
-    # Check terminal/owner-action conditions on initial state
-    stop_reason: str | None = None
-    outage_providers = [
-        p
-        for p in current_campaign.get("providers", [])
-        if isinstance(p, Mapping)
-        and p.get("state") == "running"
-        and p.get("error") == "github_poll_unavailable"
-    ]
-    if outage_providers:
-        stop_reason = "remote_unavailable"
-    elif current_campaign.get("status") == "complete":
-        stop_reason = "complete"
-    elif current_campaign.get("status") == "blocked":
-        stop_reason = "blocked"
-    else:
-        running_providers = [
-            p
-            for p in current_campaign.get("providers", [])
-            if isinstance(p, Mapping) and p.get("state") == "running"
-        ]
-        if not running_providers:
-            stop_reason = "owner_action"
-
-    if stop_reason is not None:
-        retry_guidance = _watch_retry_guidance(stop_reason, current_campaign)
-        if not emit_json:
-            detail = current_campaign.get("next_detail") or current_campaign.get("next_action") or ""
-            detail_str = f" ({detail})" if detail else ""
-            print(f"Final result: {stop_reason}{detail_str}", file=out)
-            if retry_guidance:
-                print(f"Retry guidance: {retry_guidance}", file=out)
-        return _build_watch_summary(
-            campaign_id=cid,
-            release_tag=rtag,
-            package_identity=pkg_id,
-            qualification_context=qcontext,
-            status=str(current_campaign.get("status") or ""),
-            stop_reason=stop_reason,
-            polls=0,
-            elapsed_seconds=0.0,
-            interval_seconds=validated_interval,
-            timeout_seconds=validated_timeout,
-            next_action=str(current_campaign.get("next_action") or ""),
-            next_detail=str(current_campaign.get("next_detail") or ""),
-            retry_guidance=retry_guidance,
-            transitions=[],
-            providers=current_campaign.get("providers", []),
-        )
-
-    # Watch loop for running campaign
     start_time = time_fn()
     polls = 0
-    current_discrete_state = _campaign_discrete_state(current_campaign)
     all_transitions: list[dict[str, Any]] = []
+    current_campaign: dict[str, Any] = dict(target_campaign)
+    stop_reason: str | None = None
 
     try:
-        while True:
-            now = time_fn()
-            elapsed = now - start_time
-            if elapsed >= validated_timeout:
-                stop_reason = "timeout"
-                break
-
-            remaining = validated_timeout - elapsed
-            sleep_time = min(validated_interval, remaining)
-            if sleep_time <= 0:
-                stop_reason = "timeout"
-                break
-
-            sleep_fn(sleep_time)
-
-            polls += 1
-            with locked_campaigns_dir(campaigns_dir):
-                reloaded = load_campaign_by_id(cid, campaigns_dir)
-                if reloaded is None:
-                    stop_reason = "invalid_campaign"
-                    break
-                updated = dispatch_or_advance_campaign(
-                    reloaded,
-                    apply=False,
-                    issue_number=issue,
-                    repo_path=repo_path,
-                    campaigns_dir=campaigns_dir,
-                    which_fn=which_fn,
-                    command_runner=command_runner,
-                    gh_json_runner=gh_json_runner,
-                    adapter_runner=adapter_runner,
-                    env=env,
+        with locked_campaigns_dir(campaigns_dir):
+            reloaded = load_campaign_by_id(cid, campaigns_dir)
+            if reloaded is None:
+                msg = f"campaign {cid!r} could not be loaded from storage"
+                summary = _build_watch_summary(
+                    campaign_id=cid,
+                    release_tag=rtag,
+                    package_identity=pkg_id,
+                    qualification_context=qcontext,
+                    status="invalid",
+                    stop_reason="invalid_campaign",
+                    polls=0,
+                    elapsed_seconds=time_fn() - start_time,
+                    interval_seconds=validated_interval,
+                    timeout_seconds=validated_timeout,
+                    error=msg,
                 )
-
-            now_after_poll = time_fn()
-            elapsed_after_poll = now_after_poll - start_time
-            new_discrete_state = _campaign_discrete_state(updated)
-            if new_discrete_state != current_discrete_state:
-                step_transitions = _describe_transitions(
-                    current_campaign, updated, elapsed_after_poll
-                )
-                all_transitions.extend(step_transitions)
                 if not emit_json:
-                    for t in step_transitions:
-                        if t.get("campaign_status"):
-                            print(
-                                f"Transition: campaign status {t['from_status']} -> {t['to_status']}",
-                                file=out,
-                            )
-                        else:
-                            err_s = f" (error: {t['to_error']})" if t.get("to_error") else ""
-                            print(
-                                f"Transition: {t['provider']} {t['from_state']} -> {t['to_state']}{err_s}",
-                                file=out,
-                            )
-                current_campaign = updated
-                current_discrete_state = new_discrete_state
-            else:
-                # No-change suppression
-                current_campaign = updated
+                    print(f"error: {msg}", file=err)
+                return summary
+            current_campaign = dispatch_or_advance_campaign(
+                reloaded,
+                apply=False,
+                issue_number=issue,
+                repo_path=repo_path,
+                campaigns_dir=campaigns_dir,
+                which_fn=which_fn,
+                command_runner=command_runner,
+                gh_json_runner=gh_json_runner,
+                adapter_runner=adapter_runner,
+                env=env,
+            )
 
-            # Check outage / remote unavailable
-            outage_providers = [
+        if not emit_json:
+            print(render_campaign_text(current_campaign), file=out)
+
+        # Check terminal/owner-action conditions on initial state
+        outage_providers = [
+            p
+            for p in current_campaign.get("providers", [])
+            if isinstance(p, Mapping)
+            and p.get("state") == "running"
+            and p.get("error") == "github_poll_unavailable"
+        ]
+        if outage_providers:
+            stop_reason = "remote_unavailable"
+        elif current_campaign.get("status") == "complete":
+            stop_reason = "complete"
+        elif current_campaign.get("status") == "blocked":
+            stop_reason = "blocked"
+        else:
+            running_providers = [
                 p
-                for p in updated.get("providers", [])
-                if isinstance(p, Mapping)
-                and p.get("state") == "running"
-                and p.get("error") == "github_poll_unavailable"
-            ]
-            if outage_providers:
-                stop_reason = "remote_unavailable"
-                break
-
-            # Check complete
-            if updated.get("status") == "complete":
-                stop_reason = "complete"
-                break
-
-            # Check blocked
-            if updated.get("status") == "blocked":
-                stop_reason = "blocked"
-                break
-
-            # Check owner action (all running finished but campaign not complete)
-            running_left = [
-                p
-                for p in updated.get("providers", [])
+                for p in current_campaign.get("providers", [])
                 if isinstance(p, Mapping) and p.get("state") == "running"
             ]
-            if not running_left:
+            if not running_providers:
                 stop_reason = "owner_action"
-                break
-
-            if time_fn() - start_time >= validated_timeout:
+            elif time_fn() - start_time >= validated_timeout:
                 stop_reason = "timeout"
-                break
+
+        if stop_reason is None:
+            # Watch loop for running campaign
+            current_discrete_state = _campaign_discrete_state(current_campaign)
+            while True:
+                now = time_fn()
+                elapsed = now - start_time
+                if elapsed >= validated_timeout:
+                    stop_reason = "timeout"
+                    break
+
+                remaining = validated_timeout - elapsed
+                sleep_time = min(validated_interval, remaining)
+                if sleep_time <= 0:
+                    stop_reason = "timeout"
+                    break
+
+                sleep_fn(sleep_time)
+
+                if time_fn() - start_time >= validated_timeout:
+                    stop_reason = "timeout"
+                    break
+
+                polls += 1
+                with locked_campaigns_dir(campaigns_dir):
+                    reloaded = load_campaign_by_id(cid, campaigns_dir)
+                    if reloaded is None:
+                        stop_reason = "invalid_campaign"
+                        break
+                    updated = dispatch_or_advance_campaign(
+                        reloaded,
+                        apply=False,
+                        issue_number=issue,
+                        repo_path=repo_path,
+                        campaigns_dir=campaigns_dir,
+                        which_fn=which_fn,
+                        command_runner=command_runner,
+                        gh_json_runner=gh_json_runner,
+                        adapter_runner=adapter_runner,
+                        env=env,
+                    )
+
+                now_after_poll = time_fn()
+                elapsed_after_poll = now_after_poll - start_time
+                new_discrete_state = _campaign_discrete_state(updated)
+                if new_discrete_state != current_discrete_state:
+                    step_transitions = _describe_transitions(
+                        current_campaign, updated, elapsed_after_poll
+                    )
+                    all_transitions.extend(step_transitions)
+                    if not emit_json:
+                        for t in step_transitions:
+                            if t.get("campaign_status"):
+                                print(
+                                    f"Transition: campaign status {t['from_status']} -> {t['to_status']}",
+                                    file=out,
+                                )
+                            else:
+                                err_s = f" (error: {t['to_error']})" if t.get("to_error") else ""
+                                print(
+                                    f"Transition: {t['provider']} {t['from_state']} -> {t['to_state']}{err_s}",
+                                    file=out,
+                                )
+                    current_campaign = updated
+                    current_discrete_state = new_discrete_state
+                else:
+                    # No-change suppression
+                    current_campaign = updated
+
+                # Check outage / remote unavailable
+                outage_providers = [
+                    p
+                    for p in updated.get("providers", [])
+                    if isinstance(p, Mapping)
+                    and p.get("state") == "running"
+                    and p.get("error") == "github_poll_unavailable"
+                ]
+                if outage_providers:
+                    stop_reason = "remote_unavailable"
+                    break
+
+                # Check complete
+                if updated.get("status") == "complete":
+                    stop_reason = "complete"
+                    break
+
+                # Check blocked
+                if updated.get("status") == "blocked":
+                    stop_reason = "blocked"
+                    break
+
+                # Check owner action (all running finished but campaign not complete)
+                running_left = [
+                    p
+                    for p in updated.get("providers", [])
+                    if isinstance(p, Mapping) and p.get("state") == "running"
+                ]
+                if not running_left:
+                    stop_reason = "owner_action"
+                    break
+
+                if time_fn() - start_time >= validated_timeout:
+                    stop_reason = "timeout"
+                    break
 
     except KeyboardInterrupt:
         stop_reason = "interrupt"
