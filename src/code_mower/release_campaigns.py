@@ -2212,6 +2212,69 @@ def _validate_retry_provider(
 
 CAMPAIGN_ACTIONS = ("create", "status", "resume", "dispatch")
 
+# The boolean flags that are older spellings of an action, and the action each
+# one asks for. Both remain supported: `--status` is the original spelling of
+# `status`, and `--resume` of `resume`.
+_LEGACY_ACTION_FLAGS: tuple[tuple[str, str], ...] = (
+    ("--status", "status"),
+    ("--resume", "resume"),
+)
+
+# The authoritative action/legacy-flag matrix. Each row lists the legacy flags
+# an explicit action may be spelled with; every pairing absent from a row states
+# two different intents in one invocation and is refused.
+#
+#              | --status | --resume
+#   create     |    no    |    no     -- create starts a campaign, the flags
+#   status     |   yes    |    no        advance or read an existing one
+#   resume     |    no    |   yes
+#   dispatch   |    no    |   yes     -- `dispatch` and `--resume` are two
+#                                        spellings of "advance the existing
+#                                        campaign" and route identically
+#
+# An omitted action (``None``) is not a row: it states no action of its own, so
+# either flag simply supplies one, and the two together are caught as a status
+# request carrying the mutating `--resume` intent.
+_COMPATIBLE_LEGACY_FLAGS: Mapping[str, frozenset[str]] = {
+    "create": frozenset(),
+    "status": frozenset({"--status"}),
+    "resume": frozenset({"--resume"}),
+    "dispatch": frozenset({"--resume"}),
+}
+
+
+def _action_flag_conflict(*, action: str | None, status: bool, resume: bool) -> str:
+    """Report a bounded conflict between an explicit action and a legacy flag.
+
+    Consults :data:`_COMPATIBLE_LEGACY_FLAGS`, which is the single place the
+    action/flag matrix is written down. Before it existed, each combination was
+    resolved by whichever branch of the command body happened to test its
+    boolean first, and `create --resume` -- two contradictory actions in one
+    invocation -- reached the body with both ``is_create`` and ``is_resume``
+    true and was answered by the resume branch, so an explicit `create` request
+    failed with "no existing campaign to resume" (and, when a campaign did
+    exist, with "already exists"). Neither answers the request that was made.
+    The combination is refused here instead, before any lookup, directory
+    creation, lock, write, dispatch, poll, or adapter call.
+    """
+    allowed = _COMPATIBLE_LEGACY_FLAGS.get(action or "")
+    if allowed is None:
+        # No action, or one this table does not describe: nothing to contradict.
+        return ""
+    supplied = {"--status": status, "--resume": resume}
+    offending = [
+        (flag, flag_action)
+        for flag, flag_action in _LEGACY_ACTION_FLAGS
+        if supplied[flag] and flag not in allowed
+    ]
+    if not offending:
+        return ""
+    named = ", ".join(f"{flag} (the {flag_action!r} action)" for flag, flag_action in offending)
+    return (
+        f"the {action!r} action cannot be combined with {named}; "
+        "one invocation states one campaign action, so re-run with exactly one of them"
+    )
+
 
 def _status_mutation_conflict(
     *,
@@ -2255,6 +2318,40 @@ def _status_mutation_conflict(
         f"status is read-only and cannot be combined with {', '.join(intents)}; "
         "re-run the mutating request without --status/the status action"
     )
+
+
+def _command_intent_conflict(
+    *,
+    action: str | None,
+    record_result: Path | None,
+    retry_provider: str,
+    apply: bool,
+    resume: bool,
+    status: bool,
+) -> str:
+    """Report the one bounded reason this invocation states conflicting intents.
+
+    The single validation gate for command intent: every contradictory
+    action/flag combination is decided here, from the tables above, before the
+    command touches the campaign directory at all. A request refused here has
+    made no lookup, created no directory or lock file, written no state, run no
+    adapter, and posted or polled nothing.
+
+    Status is checked first so that a status request carrying *any* mutating
+    intent -- including a conflicting action -- is reported as the read-only
+    violation it is; what remains is the action/legacy-flag matrix.
+    """
+    if status or action == "status":
+        conflict = _status_mutation_conflict(
+            action=action,
+            record_result=record_result,
+            retry_provider=retry_provider,
+            apply=apply,
+            resume=resume,
+        )
+        if conflict:
+            return conflict
+    return _action_flag_conflict(action=action, status=status, resume=resume)
 
 
 def _load_requested_campaign(
@@ -2432,6 +2529,13 @@ def campaign_command(
     writes nothing; the same is true of the Board projection built on
     ``list_campaigns``, which is likewise lock-free.
 
+    Command intent itself is validated before either route as well, from one
+    authoritative table (:data:`_COMPATIBLE_LEGACY_FLAGS`): an explicit action
+    combined with a legacy flag naming a different action -- ``create`` with
+    ``resume=True`` most importantly -- is a contradiction with no honest
+    reading, and is refused with a bounded error rather than silently resolved
+    to whichever of the two the command body happens to test first.
+
     An explicit ``campaign_id`` is validated first, before either route, so a
     malformed identifier produces a bounded error and never creates a campaign
     directory, a lock file, or any other on-disk state.
@@ -2446,22 +2550,26 @@ def campaign_command(
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-    # `status` is read-only, unconditionally: a mutating intent spelled
-    # alongside it is rejected here rather than executed under a read-only
-    # spelling or silently dropped. Nothing has been locked, read, or written
-    # yet, so a rejected request leaves no trace at all.
+    # Command intent is validated as a whole, once, before anything else: a
+    # request that states two conflicting intents is refused here rather than
+    # resolved by whichever branch of the body tests its boolean first. `status`
+    # is read-only unconditionally, so a mutating intent spelled alongside it is
+    # never executed under a read-only spelling nor silently dropped; and an
+    # explicit action is never combined with a legacy flag naming a different
+    # one. Nothing has been locked, read, or written yet, so a rejected request
+    # leaves no trace at all.
     is_status_request = status or action == "status"
-    if is_status_request:
-        conflict = _status_mutation_conflict(
-            action=action,
-            record_result=record_result,
-            retry_provider=retry_provider,
-            apply=apply,
-            resume=resume,
-        )
-        if conflict:
-            print(f"error: {conflict}", file=sys.stderr)
-            return 1
+    conflict = _command_intent_conflict(
+        action=action,
+        record_result=record_result,
+        retry_provider=retry_provider,
+        apply=apply,
+        resume=resume,
+        status=status,
+    )
+    if conflict:
+        print(f"error: {conflict}", file=sys.stderr)
+        return 1
 
     # What remains is exactly the read-only route; every other spelling is
     # potentially mutating and takes the campaign directory lock.
@@ -2561,6 +2669,12 @@ def _campaign_command_impl(
     other branch, so the lock-free route reads and prints and nothing more. The
     two can no longer be requested together -- ``campaign_command`` rejects a
     status request carrying any mutating intent before either route begins.
+
+    The ``is_*`` booleans below therefore describe a request that has already
+    been checked for self-contradiction: at most one of ``is_create``,
+    ``is_status``, and ``is_resume``/``is_dispatch`` can be true, so the order
+    in which the branches test them no longer decides which of two conflicting
+    intents wins.
 
     ``qualification_context`` carries an "unspecified" sentinel: the empty
     string means the caller did not ask for a context at all. That distinction

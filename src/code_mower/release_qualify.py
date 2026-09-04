@@ -828,7 +828,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "or the `status` action combined with a mutating intent "
             "(--retry-provider, --record-result, --apply, --resume, or another "
             "action) is rejected with a bounded error before any lock, mutation, "
-            "poll, or dispatch, rather than silently dropping the mutation."
+            "poll, or dispatch, rather than silently dropping the mutation. An "
+            "explicit action combined with a flag naming a different one (such "
+            "as `create --resume`) is refused the same way, before any lookup, "
+            "directory creation, lock, or dispatch."
         ),
     )
     campaign.add_argument(
@@ -841,7 +844,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "already exists for the identifier). status: inspect only. "
             "resume/dispatch: advance an existing campaign (fails if none exists). "
             "Omitting the action creates a new campaign, or advances the existing "
-            "one when the identifier already names a campaign."
+            "one when the identifier already names a campaign. An action may be "
+            "spelled with the equivalent legacy flag (status with --status, "
+            "resume/dispatch with --resume), but never with a flag naming a "
+            "different action: `create --resume` is rejected, not resolved."
         ),
     )
     campaign.add_argument(

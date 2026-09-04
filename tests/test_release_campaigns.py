@@ -5712,6 +5712,321 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
         self.assertIn("rather than silently dropping the mutation", help_text)
 
 
+class ContradictoryCampaignIntentTests(unittest.TestCase):
+    """One invocation states one campaign action, or it is refused outright.
+
+    `create` starts a campaign; `--resume` advances an existing one. Asked for
+    together they contradict each other, and there is no honest way to run
+    either: whichever one the command body happened to test first would answer a
+    request nobody made. `create --resume` reached the body with both
+    `is_create` and `is_resume` true and was answered by the resume branch, so
+    an explicit `create` of a campaign that did not exist failed with "no
+    existing campaign to resume" -- after taking the directory lock, which
+    created the campaign directory and a lock file for a request that was never
+    going to run.
+
+    Command intent is now decided by one authoritative table before the command
+    touches the campaign directory at all, so a contradictory request exits
+    non-zero with a bounded conflict message and leaves no directory, no lock
+    file, no campaign state, and no adapter call or network request behind. The
+    compatible spellings -- an action alongside the legacy flag that names the
+    *same* action -- keep working exactly as before.
+    """
+
+    @staticmethod
+    def _seed(campaigns_dir: Path) -> dict[str, Any]:
+        campaigns_dir.mkdir(parents=True, exist_ok=True)
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_bugbot"],
+            repo_slug="owner/repo",
+        ).to_dict()
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+        return campaign
+
+    @staticmethod
+    def _snapshot(campaigns_dir: Path) -> dict[str, bytes]:
+        if not campaigns_dir.exists():
+            return {}
+        return {p.name: p.read_bytes() for p in sorted(campaigns_dir.iterdir())}
+
+    @contextlib.contextmanager
+    def _counting_lock(self) -> Any:
+        real_lock = release_campaigns.locked_campaigns_dir
+        entries: list[Path] = []
+
+        @contextlib.contextmanager
+        def counting(campaigns_dir: Path) -> Any:
+            entries.append(campaigns_dir)
+            with real_lock(campaigns_dir) as handle:
+                yield handle
+
+        with mock.patch.object(release_campaigns, "locked_campaigns_dir", counting):
+            yield entries
+
+    def _run(
+        self,
+        campaigns_dir: Path,
+        kwargs: dict[str, Any],
+    ) -> tuple[int, list[Path], list[list[str]], list[list[str]], str, str]:
+        """Run one request with every outward effect recorded rather than performed."""
+        gh_calls: list[list[str]] = []
+        adapter_calls: list[list[str]] = []
+
+        def recording_adapter(argv, timeout):
+            adapter_calls.append(list(argv))
+            raise AssertionError("no adapter may run for a contradictory request")
+
+        def recording_gh_json(args, **_kwargs):
+            gh_calls.append(list(args))
+            return {"comments": []}, ""
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with self._counting_lock() as entries:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["cursor_bugbot"],
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                    issue="99",
+                    command_runner=_capturing_dispatch_argv_runner(gh_calls),
+                    gh_json_runner=recording_gh_json,
+                    adapter_runner=recording_adapter,
+                    **kwargs,
+                )
+        return ret, list(entries), gh_calls, adapter_calls, stdout.getvalue(), stderr.getvalue()
+
+    # The contradictory half of the action/legacy-flag matrix, with the phrases
+    # the refusal must name so the caller can see which two intents collided.
+    _CONTRADICTIONS: tuple[tuple[str, dict[str, Any], tuple[str, ...]], ...] = (
+        ("create + --resume", {"action": "create", "resume": True}, ("'create'", "--resume")),
+        ("create + --status", {"action": "create", "status": True}, ("'create'",)),
+        ("resume + --status", {"action": "resume", "status": True}, ("'resume'",)),
+        ("dispatch + --status", {"action": "dispatch", "status": True}, ("'dispatch'",)),
+        ("status + --resume", {"action": "status", "resume": True}, ("--resume",)),
+        ("--status + --resume", {"status": True, "resume": True}, ("--resume",)),
+    )
+
+    def test_create_with_resume_is_rejected_before_any_campaign_state_exists(self) -> None:
+        """The exact regression: a nonexistent campaign, an explicit create, --resume."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            ret, entries, gh_calls, adapter_calls, out, err = self._run(
+                campaigns_dir, {"action": "create", "resume": True}
+            )
+
+            self.assertEqual(ret, 1)
+            # Nothing was looked up, locked, created, dispatched, or polled.
+            self.assertEqual(entries, [])
+            self.assertFalse(campaigns_dir.exists())
+            self.assertEqual(gh_calls, [])
+            self.assertEqual(adapter_calls, [])
+            self.assertEqual(out, "")
+            # The refusal names the conflict, not one side's ordinary failure.
+            self.assertIn("'create'", err)
+            self.assertIn("--resume", err)
+            self.assertNotIn("no existing campaign", err)
+            self.assertNotIn("Traceback", err)
+            self.assertNotIn(tmp, err)
+            self.assertLessEqual(len(err.splitlines()), 2)
+
+    def test_create_with_resume_is_rejected_for_an_existing_campaign_too(self) -> None:
+        """Not an "already exists" report either: the request itself is incoherent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+            before = self._snapshot(campaigns_dir)
+
+            ret, entries, gh_calls, adapter_calls, out, err = self._run(
+                campaigns_dir, {"action": "create", "resume": True}
+            )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(entries, [])
+            self.assertEqual(gh_calls, [])
+            self.assertEqual(adapter_calls, [])
+            self.assertEqual(out, "")
+            self.assertIn("'create'", err)
+            self.assertIn("--resume", err)
+            self.assertNotIn("already exists", err)
+            self.assertNotIn("Traceback", err)
+            # The stored campaign is untouched, and no lock file was added.
+            self.assertEqual(self._snapshot(campaigns_dir), before)
+
+    def test_every_contradiction_is_refused_without_touching_the_directory(self) -> None:
+        for named, kwargs, phrases in self._CONTRADICTIONS:
+            for seeded in (False, True):
+                with self.subTest(intent=named, seeded=seeded):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        campaigns_dir = Path(tmp) / "campaigns"
+                        if seeded:
+                            self._seed(campaigns_dir)
+                        before = self._snapshot(campaigns_dir)
+
+                        ret, entries, gh_calls, adapter_calls, out, err = self._run(
+                            campaigns_dir, kwargs
+                        )
+
+                        self.assertEqual(ret, 1)
+                        self.assertEqual(entries, [])
+                        self.assertEqual(gh_calls, [])
+                        self.assertEqual(adapter_calls, [])
+                        self.assertEqual(out, "")
+                        self.assertEqual(self._snapshot(campaigns_dir), before)
+                        if not seeded:
+                            self.assertFalse(campaigns_dir.exists())
+                        for phrase in phrases:
+                            self.assertIn(phrase, err)
+                        self.assertNotIn("Traceback", err)
+                        self.assertNotIn(tmp, err)
+
+    def test_the_valid_action_matrix_still_works(self) -> None:
+        """Backwards compatibility, stated explicitly: each action and its legacy flag."""
+        # (name, kwargs, needs_existing_campaign)
+        valid: tuple[tuple[str, dict[str, Any], bool], ...] = (
+            ("create", {"action": "create"}, False),
+            ("implicit create", {}, False),
+            ("resume action", {"action": "resume"}, True),
+            ("--resume", {"resume": True}, True),
+            ("resume action + --resume", {"action": "resume", "resume": True}, True),
+            ("dispatch action", {"action": "dispatch"}, True),
+            ("dispatch action + --resume", {"action": "dispatch", "resume": True}, True),
+            ("implicit advance", {}, True),
+            ("status action", {"action": "status"}, True),
+            ("--status", {"status": True}, True),
+            ("status action + --status", {"action": "status", "status": True}, True),
+        )
+        for named, kwargs, needs_existing in valid:
+            with self.subTest(spelling=named):
+                with tempfile.TemporaryDirectory() as tmp:
+                    campaigns_dir = Path(tmp) / "campaigns"
+                    if needs_existing:
+                        self._seed(campaigns_dir)
+
+                    ret, _entries, _gh, adapter_calls, out, _err = self._run(
+                        campaigns_dir, kwargs
+                    )
+
+                    self.assertEqual(ret, 0)
+                    self.assertEqual(adapter_calls, [])
+                    self.assertIn("Release Campaign: v1.0.0", out)
+                    stored = release_campaigns.load_campaign_by_id(
+                        "campaign-v1.0.0", campaigns_dir
+                    )
+                    assert stored is not None
+                    self.assertEqual(stored["release_tag"], "v1.0.0")
+
+    def test_the_table_decides_every_action_and_legacy_flag_pair(self) -> None:
+        """The matrix is data, not a branch: every pair is covered by one table."""
+        self.assertEqual(
+            sorted(release_campaigns._COMPATIBLE_LEGACY_FLAGS),
+            sorted(release_campaigns.CAMPAIGN_ACTIONS),
+        )
+        expected_conflict = {
+            ("create", False, True),
+            ("create", True, False),
+            ("create", True, True),
+            ("status", False, True),
+            ("status", True, True),
+            ("resume", True, False),
+            ("resume", True, True),
+            ("dispatch", True, False),
+            ("dispatch", True, True),
+            (None, True, True),
+        }
+        for action in (None, *release_campaigns.CAMPAIGN_ACTIONS):
+            for status in (False, True):
+                for resume in (False, True):
+                    with self.subTest(action=action, status=status, resume=resume):
+                        conflict = release_campaigns._command_intent_conflict(
+                            action=action,
+                            record_result=None,
+                            retry_provider="",
+                            apply=False,
+                            resume=resume,
+                            status=status,
+                        )
+                        if (action, status, resume) in expected_conflict:
+                            self.assertTrue(conflict)
+                            self.assertNotIn("\n", conflict)
+                        else:
+                            self.assertEqual(conflict, "")
+
+    def test_cli_create_with_resume_exits_non_zero_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = release_qualify.main(
+                    [
+                        "campaign",
+                        "create",
+                        "--resume",
+                        "--release-tag",
+                        "v1.0.0",
+                        "--package-spec",
+                        "code-mower==1.0.0",
+                        "--providers",
+                        "codex",
+                        "--campaigns-dir",
+                        str(campaigns_dir),
+                        "--repo-path",
+                        tmp,
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            # No campaign directory, so no campaign file and no `.campaigns.lock`.
+            self.assertFalse(campaigns_dir.exists())
+            message = stderr.getvalue()
+            self.assertIn("'create'", message)
+            self.assertIn("--resume", message)
+            self.assertNotIn("Traceback", message)
+            self.assertNotIn("campaign failed", message)
+            self.assertNotIn(tmp, message)
+            self.assertEqual(len(message.strip().splitlines()), 1)
+
+    def test_cli_create_with_resume_is_rejected_beside_an_existing_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+            before = self._snapshot(campaigns_dir)
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = release_qualify.main(
+                    [
+                        "campaign",
+                        "create",
+                        "--resume",
+                        "--release-tag",
+                        "v1.0.0",
+                        "--campaigns-dir",
+                        str(campaigns_dir),
+                        "--repo-path",
+                        tmp,
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(self._snapshot(campaigns_dir), before)
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_cli_help_documents_the_action_flag_contract(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            with self.assertRaises(SystemExit):
+                release_qualify.main(["campaign", "--help"])
+        help_text = " ".join(stdout.getvalue().split())
+        self.assertIn("`create --resume` is rejected, not resolved", help_text)
+
+
 class ResultMarkerParsingTests(unittest.TestCase):
     """The result marker is one line of JSON, matched end to end and parsed fail-closed.
 
