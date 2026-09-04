@@ -124,7 +124,7 @@ scripts/dev-python -m venv .venv
 .venv/bin/python -m ruff check .
 .venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json
 .venv/bin/code-mower doctor --preflight --json
-.venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python .venv/bin/python --json
+.venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url "$(pwd)" --ref HEAD --python .venv/bin/python --json
 .venv/bin/code-mower migration package-install-rehearsal --package-spec . --python .venv/bin/python --json
 ```
 

@@ -2,6 +2,12 @@
 
 The `code-mower release qualify` command runs local release qualification with a stable adoption-result schema.
 
+Release qualification proves that an exact package can be installed and can
+exercise Code Mower's operational surfaces in a provider environment. It does
+not compare builder quality, calibrate reviewer findings, justify lane
+promotion, or measure model cost. Use [Builder Experiments](builder-experiments.md)
+and the [Lane Promotion Policy](lane-promotion-policy.md) for those decisions.
+
 ## Usage
 
 ```bash

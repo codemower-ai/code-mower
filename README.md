@@ -243,6 +243,9 @@ For release verification,
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
 the package-index procedure for `v1.0.4` / `code-mower==1.0.4`. The
 GitHub release records the workflow and rehearsal evidence for the exact tag.
+After publication, [Release Qualification](docs/release-qualification.md)
+coordinates provider-specific install and operational checks without treating
+them as builder-quality or reviewer-promotion evidence.
 
 ## Optional: Plan Before Coding
 
@@ -488,6 +491,7 @@ first so local work exercises the same package entrypoint users install.
 - [First Run Transcript](docs/first-run-transcript.md)
 - [First-User Demo Transcript](docs/first-user-demo-transcript.md)
 - [First-User Install Rehearsal](docs/first-user-install-rehearsal.md)
+- [Release Qualification](docs/release-qualification.md)
 - [Launch Command Surface](docs/launch-command-surface.md)
 - [v0.6 Truth Baseline](docs/v06-truth-baseline.md)
 - [v0.6 Release Notes](docs/v06-release-notes.md)

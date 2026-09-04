@@ -29,7 +29,7 @@ TestPyPI, live package-index propagation, or external provider network calls.
 For packaging changes, also run:
 
 ```bash
-.venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python python3.12 --json
+.venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url "$(pwd)" --ref HEAD --python python3.12 --json
 ```
 
 Package-index rehearsals are release/integration checks, not default unit
