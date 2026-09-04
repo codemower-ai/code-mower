@@ -132,7 +132,7 @@ def _validate_tag_format(release_tag: str) -> tuple[bool, str, str]:
         release_tag,
     )
     if not match:
-        return False, "", f"release tag must match v<major>.<minor>.<patch>[-<stage>.<num>]"
+        return False, "", "release tag must match v<major>.<minor>.<patch>[-<stage>.<num>]"
     base = match.group(1)
     stage = match.group(2)
     num = match.group(3)
