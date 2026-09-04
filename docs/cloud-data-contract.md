@@ -82,6 +82,7 @@ capture reviewer and workflow facts without raw code artifacts.
 
 Supported event types include:
 
+- `adoption_run`
 - `dogfood_upload`
 - `builder_run`
 - `reviewer_run`
@@ -206,6 +207,64 @@ counts/cost only. Its dimension and metric names are closed in v1, so undeclared
 fields are rejected rather than becoming accidental prose channels. It must not
 contain PR or issue prose, source, diffs, prompts, transcripts, issue body text,
 raw stdout/stderr, auth output, local paths, or secrets.
+
+## Adoption Run And Release Qualification
+
+`adoption_run` is the additive atomic event for release-qualification
+campaigns. It uses the normal `code_mower.benchmarkEvent.v1` envelope with
+`dimensions.adoption_run_schema=code_mower.adoptionRun.v1`. One event describes
+one `code_mower.adoptionResult.v1` observation produced by
+`code-mower release qualify`; the release identity is `release_tag` plus
+`normalized_version`, `qualification_context`, and `provider`. The converter
+derives a deterministic `event_id` from the source result content, so retrying
+an export/upload of the same result file reuses the same event id and stays
+idempotent. Newer observations of the same campaign use another event id, and
+consumers select the latest `created_at` observation per release before
+aggregating.
+
+Required dimensions are `adoption_run_schema`, `release_tag`
+(`v<major>.<minor>.<patch>[-<stage>.<num>]`), `package_identity`
+(`code-mower`), `normalized_version`, `qualification_context`
+(`cold_install`, `upgrade`, or `unknown`), `provider`, `executor`,
+`host_class` (`local`, `ci`, `github_actions`, or `unknown`),
+`runtime_class` (`python_<major>.<minor>` or `unknown`), `execution_state`
+(`planned` or `executed`), `outcome` (`pass`, `pass_with_warnings`, `fail`,
+or `incomplete`), `result_timestamp` (ISO 8601 with a UTC offset), and
+`provenance_coverage` (`complete`, `partial`, or `unknown`). Optional
+dimensions are `starting_version` and `ending_version`, which must be empty or
+normalized versions. Tag and spec versions must agree: the tag-derived
+normalized version must equal `normalized_version`. Upgrade context requires a
+`starting_version` lower than the target; other contexts must leave it empty.
+Executed runs must not report `incomplete`, and planned runs must report
+`incomplete` or `fail`. Complete provenance coverage requires a known
+provider, executor, host class, and runtime class.
+
+Metrics are atomic values, never precomputed dashboard rates:
+
+- `adoption_run_count` is always `1`; `step_count` is the observed step total,
+  and `step_pass_count`, `step_warn_count`, `step_fail_count`,
+  `step_unavailable_count`, and `step_planned_count` are non-negative integers
+  that must sum to `step_count`.
+- `elapsed_seconds` is the observed qualification wall time and must be finite
+  and non-negative.
+- `warning_count` and `owner_action_count` are non-negative integer summaries
+  across steps.
+
+Missing model, token, cost, and optional measurements stay unavailable and
+omitted, never zero-filled: the closed metric set contains no cost, token, or
+model metrics, and the reporter tool provenance uses
+`model_source=not_applicable` because no AI model generated the operational
+event. No `cost_per_run` or dashboard rate is uploaded.
+
+The event contains identifiers, coarse environment classes, categorical
+outcomes, and numeric counts/timings only. Its dimension and metric names are
+closed in v1, so undeclared fields are rejected rather than becoming accidental
+prose, path, or output channels. Dimensions must also stay single-line and
+path-free. It must not contain report text (never uploaded by default),
+command output, source, diffs, prompts, transcripts, issue body text, raw
+stdout/stderr, auth output, local paths, or secrets. Events that omit
+`adoption_run`, including v0.6 through v1.0.4 uploads, remain valid, and
+CodeMower.com must keep accepting uploads that omit this event type.
 
 ## Productivity Metrics
 
