@@ -2084,12 +2084,22 @@ CAMPAIGN_UPLOAD_PACKAGE_IDENTITY = "code-mower"
 # never a validator message, a file path, or any part of the stored result.
 CAMPAIGN_UPLOAD_REJECT_CODES = frozenset(
     {
+        "provider_list_invalid",
         "provider_entry_invalid",
         "adoption_result_missing",
         "adoption_result_invalid",
         "adoption_result_unconvertible",
     }
 )
+
+# A campaign's provider list holds at most one entry per known provider, so this
+# bound is far above anything the tool itself writes. It exists because a stored
+# campaign file is untrusted input: the upload converter iterates `providers`
+# only after confirming it is an actual bounded list, so a hand-edited file
+# carrying `null`, a number, a string, or a million entries is refused with one
+# bounded rejection instead of raising TypeError or being walked element by
+# element.
+MAX_CAMPAIGN_UPLOAD_PROVIDERS = 64
 
 _PROVIDER_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
@@ -2140,6 +2150,15 @@ def build_campaign_upload_events(
     that case: silently skipping it would publish a partial event set while
     reporting success, and repairing it would fabricate evidence.
 
+    The stored ``providers`` value is itself untrusted: it is converted only
+    when it is an actual list or tuple of at most
+    :data:`MAX_CAMPAIGN_UPLOAD_PROVIDERS` entries. A hand-edited campaign whose
+    ``providers`` is missing, ``null``, a scalar, a string, a mapping, or
+    oversized is refused whole with a single ``provider_list_invalid``
+    rejection -- the same bounded ``invalid_results`` outcome as an unusable
+    result, never a ``TypeError`` and never an element-by-element walk of an
+    unbounded value.
+
     The event list is ordered by provider name, so the same campaign always
     produces the same event set in the same order -- what a preview shows is
     exactly what ``--yes`` uploads.
@@ -2156,7 +2175,22 @@ def build_campaign_upload_events(
     rejected: list[dict[str, str]] = []
     complete_count = 0
 
-    for entry in campaign.get("providers", []):
+    entries = campaign.get("providers")
+    if not isinstance(entries, (list, tuple)) or len(entries) > MAX_CAMPAIGN_UPLOAD_PROVIDERS:
+        return {
+            "events": [],
+            "accepted_providers": [],
+            "skipped_providers": [],
+            "rejected_providers": [
+                {"provider": "unknown", "state": "unknown", "reason": "provider_list_invalid"}
+            ],
+            "provider_count": 0,
+            "complete_count": 0,
+            "package_identity": package_identity,
+            "repo_slug": repo_slug,
+        }
+
+    for entry in entries:
         if not isinstance(entry, Mapping):
             complete_count += 1
             rejected.append(
@@ -2216,7 +2250,7 @@ def build_campaign_upload_events(
         "accepted_providers": [provider for provider, _ in converted],
         "skipped_providers": sorted(skipped, key=lambda row: row["provider"]),
         "rejected_providers": sorted(rejected, key=lambda row: row["provider"]),
-        "provider_count": len(campaign.get("providers", [])),
+        "provider_count": len(entries),
         "complete_count": complete_count,
         "package_identity": package_identity,
         "repo_slug": repo_slug,

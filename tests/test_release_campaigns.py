@@ -8057,6 +8057,53 @@ class CampaignUploadTests(unittest.TestCase):
         # validator's message or any part of the stored result.
         self.assertNotIn("steps", stdout)
 
+    def test_malformed_provider_list_is_a_bounded_rejection(self) -> None:
+        """A `providers` value that is not a bounded list is refused, never iterated.
+
+        A stored campaign file is untrusted input, so the converter must not
+        assume `providers` is the list the tool writes. `null`, a scalar, a
+        string, a mapping, or an oversized list each has to produce the
+        documented bounded `invalid_results` summary -- not a TypeError, and not
+        a per-element walk of an unbounded value.
+        """
+        self._seed(complete=("claude",))
+        path = self.campaigns_dir / "campaign-v1.0.0.json"
+        seeded = json.loads(path.read_text(encoding="utf-8"))
+        oversized = [{"provider": "claude", "state": "queued"}] * (
+            release_campaigns.MAX_CAMPAIGN_UPLOAD_PROVIDERS + 1
+        )
+        for label, providers in (
+            ("null", None),
+            ("integer", 7),
+            ("string", "claude"),
+            ("mapping", {"claude": {"state": "complete"}}),
+            ("oversized", oversized),
+        ):
+            with self.subTest(providers=label):
+                stored = dict(seeded)
+                stored["providers"] = providers
+                path.write_text(json.dumps(stored), encoding="utf-8")
+
+                post = self._capturing_post()
+                with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+                    release_campaigns._load_cloud_client(), "post_upload_payload", post
+                ):
+                    code, result, _, stderr = self._upload(yes=True)
+
+                self.assertEqual(code, 1, stderr)
+                assert result is not None
+                self.assertEqual(result["status"], "invalid_results")
+                # Nothing left this machine, and no partial event set was built.
+                self.assertEqual(post.posted, [])
+                self.assertEqual(result["event_ids"], [])
+                self.assertEqual(result["accepted_providers"], [])
+                self.assertEqual(result["counts"]["events"], 0)
+                self.assertEqual(result["counts"]["accepted"], 0)
+                self.assertEqual(result["counts"]["rejected"], 1)
+                reasons = {row["reason"] for row in result["rejected_providers"]}
+                self.assertEqual(reasons, {"provider_list_invalid"})
+                self.assertTrue(reasons <= release_campaigns.CAMPAIGN_UPLOAD_REJECT_CODES)
+
     def test_missing_token_refuses_the_network_upload(self) -> None:
         """--yes without a resolvable token fails closed with local remediation."""
         self._seed(complete=("claude",))
