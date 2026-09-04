@@ -734,7 +734,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "`--status` and Board reads take no lock, need no writable campaign "
             "directory, and stay available during a long applied run. Campaign "
             "files are published with an atomic rename, so a read never observes "
-            "a half-written campaign."
+            "a half-written campaign. Status is strictly read-only: `--status` "
+            "or the `status` action combined with a mutating intent "
+            "(--retry-provider, --record-result, --apply, --resume, or another "
+            "action) is rejected with a bounded error before any lock, mutation, "
+            "poll, or dispatch, rather than silently dropping the mutation."
         ),
     )
     campaign.add_argument(
@@ -753,7 +757,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     campaign.add_argument(
         "--release-tag",
         default="",
-        help="Exact release tag (e.g., v1.0.0)",
+        help=(
+            "Exact release tag (e.g., v1.0.0). Used alone it selects the campaign "
+            "whose stored release tag matches exactly -- never a campaign stored "
+            "under that text as a custom --campaign-id. If several campaigns "
+            "share the tag the request is rejected as ambiguous; name one with "
+            "--campaign-id"
+        ),
     )
     campaign.add_argument(
         "--package-spec",
@@ -817,7 +827,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Inspect status of an existing campaign without dispatching. With an "
             "explicit --campaign-id/--release-tag this reports that campaign or "
-            "fails; without one it reports the most recently updated campaign"
+            "fails; without one it reports the most recently updated campaign. "
+            "Read-only: it cannot be combined with --retry-provider, "
+            "--record-result, --apply, --resume, or a non-status action"
         ),
     )
     campaign.add_argument(
@@ -855,7 +867,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Explicitly retry one provider's applied dispatch/adapter attempt "
             "(must already be a campaign member). This is the only way to "
-            "repeat a provider whose applied attempt was already made."
+            "repeat a provider whose applied attempt was already made. It "
+            "mutates, so it cannot be combined with --status or the status "
+            "action."
         ),
     )
     campaign.add_argument("--json", action="store_true")

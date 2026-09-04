@@ -152,9 +152,21 @@ _ADAPTER_ERROR_STATE = {
     "adapter_result_mismatch": "blocked",
 }
 
+# A result marker is emitted, and documented, as a *single-line* HTML comment
+# wrapping exactly one JSON object. The pattern therefore anchors the complete
+# marker line and captures greedily through the last closing brace on it, so the
+# capture always ends at the JSON object's own final brace. The previous lazy,
+# DOTALL pattern ended the capture at the first `}` that happened to be followed
+# by `-->`, which a `}-->` sequence inside a permitted JSON *string* value could
+# supply: a correctly bound, trusted result was then truncated into unparseable
+# JSON and silently discarded. DOTALL is deliberately absent and both ends are
+# anchored, so a marker can neither run past its own line nor pick up trailing
+# text; a malformed marker still fails closed at the `json.loads` below.
 RESULT_MARKER_RE = re.compile(
-    r"<!--\s*CODE_MOWER_ADOPTION_RESULT:\s*(\{.*?\})\s*-->",
-    re.DOTALL,
+    r"^[^\S\n]*<!--[^\S\n]*CODE_MOWER_ADOPTION_RESULT:[^\S\n]*"
+    r"(\{.*\})"
+    r"[^\S\n]*-->[^\S\n]*$",
+    re.MULTILINE,
 )
 
 # Argv-only adapter invocation: (argv, timeout_seconds) -> CompletedProcess.
@@ -230,6 +242,12 @@ class ReleaseCampaign:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+# How many campaign ids an ambiguous-release-tag error may name before it
+# degrades to a count. Keeps the message bounded no matter how many campaign
+# files share a tag.
+AMBIGUOUS_RELEASE_TAG_ID_LIMIT = 4
 
 
 def default_campaigns_dir(repo_path: Path | str = ".") -> Path:
@@ -537,6 +555,75 @@ def load_campaign(
     return None
 
 
+def load_campaign_by_release_tag(
+    release_tag: str,
+    campaigns_dir: Path,
+) -> tuple[dict[str, Any] | None, str]:
+    """Resolve the single campaign whose stored ``release_tag`` is exactly ``release_tag``.
+
+    Returns ``(campaign, error)``. ``error`` is empty both when one campaign
+    matches and when none does; it is non-empty only when the tag is ambiguous.
+
+    This is deliberately *not* :func:`load_campaign`. That function accepts an
+    id or a tag, and it starts with a direct-filename shortcut for anything
+    shaped like a campaign id -- so a release tag that happens to also be a
+    valid id (``v1.0.0`` is one) would load ``v1.0.0.json`` and answer with
+    whatever campaign a custom ``--campaign-id`` had stored there, even when
+    that campaign is for an entirely different release. A tag-only request must
+    never be answered with another release's state, so this lookup ignores
+    filenames entirely and matches only on the stored ``release_tag`` field.
+
+    Nothing here selects between several matches. Campaign ids map one-to-one
+    onto files, but a custom ``--campaign-id`` lets two campaigns carry the same
+    release tag, and picking one of them would depend on directory order --
+    silently advancing, dispatching, or reporting an arbitrary campaign. The
+    ambiguity is reported instead, bounded (a fixed number of ids at most), and
+    the caller is told to name the campaign with ``--campaign-id``.
+    """
+    if not release_tag or not campaigns_dir.is_dir():
+        return None, ""
+
+    matches: list[dict[str, Any]] = []
+    for entry in sorted(campaigns_dir.glob("*.json")):
+        if entry.name.startswith(CAMPAIGN_TEMP_PREFIX):
+            continue
+        try:
+            with entry.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict) or data.get("schema") != CAMPAIGN_SCHEMA:
+            continue
+        if data.get("release_tag") != release_tag:
+            continue
+        matches.append(data)
+
+    if not matches:
+        return None, ""
+    if len(matches) == 1:
+        return matches[0], ""
+
+    # Only well-formed ids are named back, and only a few of them: a stored file
+    # is untrusted input, so neither its count nor its contents may widen this
+    # message beyond a bounded, path-free line.
+    named = sorted(
+        str(c.get("campaign_id"))
+        for c in matches
+        if is_valid_campaign_id(c.get("campaign_id"))
+    )
+    listed = ", ".join(named[:AMBIGUOUS_RELEASE_TAG_ID_LIMIT])
+    if not listed:
+        detail = ""
+    elif len(named) > AMBIGUOUS_RELEASE_TAG_ID_LIMIT:
+        detail = f" ({listed}, ...)"
+    else:
+        detail = f" ({listed})"
+    return None, (
+        f"release tag {release_tag!r} matches {len(matches)} campaigns{detail}; "
+        "name the one you mean with --campaign-id"
+    )
+
+
 def list_campaigns(campaigns_dir: Path) -> list[dict[str, Any]]:
     if not campaigns_dir.is_dir():
         return []
@@ -705,7 +792,8 @@ def _dispatch_github_comment(
         f"Reply with a comment containing a `CODE_MOWER_ADOPTION_RESULT` "
         f"marker wrapping schema `{RESULT_MARKER_SCHEMA}` with matching "
         f"campaign_id, provider, release_tag, and idempotency_key, plus an "
-        f"embedded `adoption_result`.{starting_version_requirement} "
+        f"embedded `adoption_result`. The marker must be a single-line HTML "
+        f"comment on a line of its own.{starting_version_requirement} "
         f"See docs/release-qualification.md.\n\n"
         f"<!-- CODE_MOWER_RELEASE_CAMPAIGN: {marker_str} -->\n"
     )
@@ -1818,6 +1906,53 @@ def _validate_retry_provider(
     return canonical, ""
 
 
+CAMPAIGN_ACTIONS = ("create", "status", "resume", "dispatch")
+
+
+def _status_mutation_conflict(
+    *,
+    action: str | None,
+    record_result: Path | None,
+    retry_provider: str,
+    apply: bool,
+    resume: bool,
+) -> str:
+    """Report a bounded conflict between a status request and a mutating intent.
+
+    ``status`` is a read-only spelling: it reads campaign files and prints them,
+    takes no lock, and writes nothing. A mutating flag carried alongside it
+    therefore has no honest reading. Executing it would mean mutating under a
+    read-only spelling -- and lock-free, since the read-only route deliberately
+    skips the campaign directory lock, so a `--status --retry-provider` run
+    would dispatch outside the serialization contract. Ignoring it (what
+    ``--status --retry-provider`` used to do: take the lock, then fall into the
+    status branch and print) silently drops work the caller asked for and
+    reports success. Neither is acceptable, so the combination is refused here,
+    before any lock, mutation, poll, or dispatch.
+    """
+    intents: list[str] = []
+    if retry_provider:
+        intents.append("--retry-provider")
+    if record_result is not None:
+        intents.append("--record-result")
+    if apply:
+        intents.append("--apply")
+    if resume:
+        intents.append("--resume")
+    if action is not None and action != "status":
+        # `action` is a fixed choice on the command line, but this is a library
+        # entry point too: an unrecognized value is described, never echoed.
+        intents.append(
+            f"the {action!r} action" if action in CAMPAIGN_ACTIONS else "a non-status action"
+        )
+    if not intents:
+        return ""
+    return (
+        f"status is read-only and cannot be combined with {', '.join(intents)}; "
+        "re-run the mutating request without --status/the status action"
+    )
+
+
 def _load_requested_campaign(
     *,
     campaign_id: str,
@@ -1832,6 +1967,17 @@ def _load_requested_campaign(
     ``--campaign-id`` resolves to a campaign for a different release tag than
     the one the caller also named, the request is rejected rather than answered
     with the unrelated campaign's data.
+
+    The two identifiers are resolved by two different lookups, on purpose. An
+    id addresses exactly one file, so ``--campaign-id`` uses :func:`load_campaign`
+    (and, when a tag was named too, both fields must still agree). A tag is not
+    a storage key, so a tag-only request uses
+    :func:`load_campaign_by_release_tag`, which matches the stored
+    ``release_tag`` field and nothing else: routing it through
+    :func:`load_campaign` would let a tag that is *also* a well-formed campaign
+    id (``v1.0.0``) hit that function's direct-filename shortcut and return a
+    custom-id campaign belonging to another release. A tag shared by several
+    campaigns is reported as ambiguous rather than resolved arbitrarily.
     """
     identifier = campaign_id or release_tag
     if not identifier:
@@ -1847,7 +1993,10 @@ def _load_requested_campaign(
                 f"campaign {campaign_id!r} does not match --release-tag {release_tag!r}",
             )
         return found, identifier, ""
-    return load_campaign(release_tag, campaigns_dir), identifier, ""
+    found, ambiguity = load_campaign_by_release_tag(release_tag, campaigns_dir)
+    if ambiguity:
+        return None, identifier, ambiguity
+    return found, identifier, ""
 
 
 def _existing_campaign_conflict(
@@ -1963,9 +2112,13 @@ def campaign_command(
     covers create, implicit create/advance, resume, dispatch, ``--record-result``,
     ``--retry-provider``, and the repository-slug fill.
 
-    A *read-only* status invocation -- ``status=True`` or ``action="status"``
-    with no ``record_result`` and no ``retry_provider`` -- takes no lock at all.
-    It only reads campaign files, and those are published with a single atomic
+    A status invocation -- ``status=True`` or ``action="status"`` -- takes no
+    lock at all, because it is always read-only: combining it with a mutating
+    intent (``record_result``, ``retry_provider``, ``apply``, ``resume``, or a
+    conflicting non-status action) is refused with a bounded error before any
+    lock, mutation, poll, or dispatch, so such a request neither mutates under a
+    read-only spelling nor has its mutation silently dropped. Status only reads
+    campaign files, and those are published with a single atomic
     rename, so it can never observe a half-written or blended campaign. Locking
     it would make ``--status`` block behind a long applied run holding the lock
     and would demand a writable campaign directory to answer a question that
@@ -1986,12 +2139,26 @@ def campaign_command(
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-    # `--record-result` and `--retry-provider` both mutate stored state even when
-    # spelled alongside `status`, so only a status request carrying neither is
-    # treated as read-only; anything else keeps the serialized route.
-    is_read_only_status = (
-        (status or action == "status") and record_result is None and not retry_provider
-    )
+    # `status` is read-only, unconditionally: a mutating intent spelled
+    # alongside it is rejected here rather than executed under a read-only
+    # spelling or silently dropped. Nothing has been locked, read, or written
+    # yet, so a rejected request leaves no trace at all.
+    is_status_request = status or action == "status"
+    if is_status_request:
+        conflict = _status_mutation_conflict(
+            action=action,
+            record_result=record_result,
+            retry_provider=retry_provider,
+            apply=apply,
+            resume=resume,
+        )
+        if conflict:
+            print(f"error: {conflict}", file=sys.stderr)
+            return 1
+
+    # What remains is exactly the read-only route; every other spelling is
+    # potentially mutating and takes the campaign directory lock.
+    is_read_only_status = is_status_request
 
     with ExitStack() as stack:
         if not is_read_only_status:
@@ -2071,7 +2238,9 @@ def _campaign_command_impl(
     The early ``record_result``/``is_status`` branches below are ordered to
     match that split: the record path (which mutates) is reached only on the
     locked route, and the status path returns before the first write of any
-    other branch, so the lock-free route reads and prints and nothing more.
+    other branch, so the lock-free route reads and prints and nothing more. The
+    two can no longer be requested together -- ``campaign_command`` rejects a
+    status request carrying any mutating intent before either route begins.
 
     ``qualification_context`` carries an "unspecified" sentinel: the empty
     string means the caller did not ask for a context at all. That distinction
@@ -2245,6 +2414,25 @@ def _campaign_command_impl(
         return 1
 
     campaign_dict = campaign_obj.to_dict()
+
+    # Creation reaches here only when no *stored campaign* answers the request,
+    # which is not quite the same as "no file occupies this id": a campaign id
+    # is a storage key, and a tag-only request resolves by release tag, so the
+    # id this campaign would be created under can still be taken -- by a
+    # campaign for another release stored under a custom id, or by a file that
+    # failed to load as a campaign. Saving would overwrite it. Refuse instead;
+    # an existing campaign is never replaced, and neither is anything else in
+    # the campaign directory.
+    created_id = str(campaign_dict.get("campaign_id") or "")
+    if (campaigns_dir / campaign_filename(created_id)).exists():
+        print(
+            f"error: campaign id {created_id!r} is already in use by a stored campaign "
+            f"file; pass --campaign-id with an unused id to create a campaign for "
+            f"release tag {release_tag!r}",
+            file=sys.stderr,
+        )
+        return 1
+
     retry_canonical, retry_error = _validate_retry_provider(retry_provider, campaign_dict)
     if retry_error:
         print(f"error: {retry_error}", file=sys.stderr)

@@ -4365,19 +4365,21 @@ class CampaignLockFreeStatusTests(unittest.TestCase):
                     _, locks = run(**kwargs)
                     self.assertEqual(locks, 0)
 
-            # Every mutating spelling keeps the lock, including a status flag
-            # carried alongside record/retry semantics. All but the first are
+            # A status request carrying a mutating intent is not a mutating
+            # spelling to be locked -- it is refused outright, before any lock
+            # (see CampaignStatusIsReadOnlyTests).
+            for kwargs in (
+                {"status": True, "retry_provider": "cursor_bugbot", "release_tag": "v1.0.0"},
+                {"status": True, "record_result": Path(tmp) / "result.json"},
+            ):
+                with self.subTest(rejected=kwargs):
+                    ret, locks = run(**kwargs)
+                    self.assertEqual(ret, 1)
+                    self.assertEqual(locks, 0)
+
+            # Every mutating spelling keeps the lock. All but the first are
             # rejected after the lock is taken, so nothing here writes either.
             mutating: tuple[tuple[dict[str, Any], int], ...] = (
-                (
-                    {
-                        "status": True,
-                        "retry_provider": "cursor_bugbot",
-                        "release_tag": "v1.0.0",
-                    },
-                    0,
-                ),
-                ({"status": True, "record_result": Path(tmp) / "result.json"}, 1),
                 ({"action": "create", "release_tag": "v1.0.0"}, 1),
                 ({"action": "resume", "release_tag": "v1.0.0", "package_spec": "other==2"}, 1),
                 ({"action": "dispatch", "release_tag": "v1.0.0", "package_spec": "other==2"}, 1),
@@ -4485,6 +4487,675 @@ class CampaignAtomicWriteTests(unittest.TestCase):
             listed = release_campaigns.list_campaigns(campaigns_dir)
             self.assertEqual([c["campaign_id"] for c in listed], ["campaign-v1.0.0"])
             self.assertIsNone(release_campaigns.load_campaign("other", campaigns_dir))
+
+
+class CampaignReleaseTagLookupTests(unittest.TestCase):
+    """A release tag resolves only against stored release tags, never against a filename.
+
+    A campaign id is a storage key -- `<id>.json` -- and a release tag is not.
+    Resolving a tag-only request through the id-shaped lookup let a tag that is
+    itself a well-formed campaign id (``v1.0.0``) hit that lookup's
+    direct-filename shortcut and return whatever campaign a custom
+    ``--campaign-id`` had stored under that name, even one for a different
+    release. Status would then report another release's state, and resume or
+    dispatch would advance and pay for it.
+    """
+
+    @staticmethod
+    def _seed(
+        campaigns_dir: Path,
+        *,
+        campaign_id: str,
+        release_tag: str,
+        normalized: str,
+        repo_slug: str = "",
+    ) -> dict[str, Any]:
+        campaign = release_campaigns.initialize_campaign(
+            release_tag=release_tag,
+            package_spec=f"code-mower=={normalized}",
+            providers=["cursor_bugbot"],
+            campaign_id=campaign_id,
+            repo_slug=repo_slug,
+        ).to_dict()
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+        return campaign
+
+    @staticmethod
+    def _snapshot(campaigns_dir: Path) -> dict[str, bytes]:
+        """Stored campaigns only: a rejected mutating route may leave its lock file."""
+        return {
+            p.name: p.read_bytes()
+            for p in sorted(campaigns_dir.iterdir())
+            if p.name != release_campaigns.CAMPAIGNS_LOCK_FILENAME
+        }
+
+    def _collision(self, campaigns_dir: Path, *, repo_slug: str = "") -> dict[str, Any]:
+        """A v2.0.0 campaign stored under the custom id ``v1.0.0`` -- also a valid id."""
+        self.assertTrue(release_campaigns.is_valid_campaign_id("v1.0.0"))
+        return self._seed(
+            campaigns_dir,
+            campaign_id="v1.0.0",
+            release_tag="v2.0.0",
+            normalized="2.0.0",
+            repo_slug=repo_slug,
+        )
+
+    def test_lookup_by_release_tag_ignores_a_colliding_campaign_id(self) -> None:
+        """The unit contract: the stored release_tag field is the only thing matched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._collision(campaigns_dir)
+
+            found, error = release_campaigns.load_campaign_by_release_tag(
+                "v1.0.0", campaigns_dir
+            )
+            self.assertIsNone(found)
+            self.assertEqual(error, "")
+
+            # The id-shaped lookup is exactly what must not be used here: it
+            # answers the same request with the unrelated v2.0.0 campaign.
+            by_id = release_campaigns.load_campaign("v1.0.0", campaigns_dir)
+            assert by_id is not None
+            self.assertEqual(by_id["release_tag"], "v2.0.0")
+
+            found, error = release_campaigns.load_campaign_by_release_tag(
+                "v2.0.0", campaigns_dir
+            )
+            assert found is not None
+            self.assertEqual(error, "")
+            self.assertEqual(found["campaign_id"], "v1.0.0")
+
+    def test_status_by_release_tag_never_reports_a_colliding_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._collision(campaigns_dir)
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    status=True,
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    emit_json=True,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("no campaign found", stderr.getvalue())
+            self.assertNotIn("v2.0.0", stdout.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_resume_by_release_tag_never_advances_a_colliding_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._collision(campaigns_dir)
+            before = self._snapshot(campaigns_dir)
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="resume",
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertIn("no existing campaign", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertEqual(self._snapshot(campaigns_dir), before)
+
+    def test_dispatch_by_release_tag_never_dispatches_a_colliding_campaign(self) -> None:
+        """The expensive case: an applied dispatch must not be posted for another release."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._collision(campaigns_dir, repo_slug="owner/repo")
+            before = self._snapshot(campaigns_dir)
+
+            calls: list[list[str]] = []
+            polls: list[list[str]] = []
+
+            def recording_gh_json(args, **kwargs):
+                polls.append(list(args))
+                return {"comments": []}, ""
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="dispatch",
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                    issue="99",
+                    apply=True,
+                    command_runner=_capturing_dispatch_argv_runner(calls),
+                    gh_json_runner=recording_gh_json,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(calls, [])
+            self.assertEqual(polls, [])
+            self.assertIn("no existing campaign", stderr.getvalue())
+            self.assertEqual(self._snapshot(campaigns_dir), before)
+
+    def test_unique_release_tag_resolves_a_custom_id_campaign(self) -> None:
+        """The tag lookup is not merely restrictive: it finds the campaign that owns the tag."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(
+                campaigns_dir,
+                campaign_id="hand-picked-name",
+                release_tag="v1.0.0",
+                normalized="1.0.0",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                ret = release_campaigns.campaign_command(
+                    status=True,
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    emit_json=True,
+                )
+
+            self.assertEqual(ret, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["campaign_id"], "hand-picked-name")
+            self.assertEqual(payload["release_tag"], "v1.0.0")
+
+    def test_duplicate_release_tag_is_rejected_as_ambiguous(self) -> None:
+        """Two campaigns for one tag: fail boundedly instead of picking by directory order."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(
+                campaigns_dir,
+                campaign_id="first-campaign",
+                release_tag="v1.0.0",
+                normalized="1.0.0",
+            )
+            self._seed(
+                campaigns_dir,
+                campaign_id="second-campaign",
+                release_tag="v1.0.0",
+                normalized="1.0.0",
+            )
+            before = self._snapshot(campaigns_dir)
+
+            found, error = release_campaigns.load_campaign_by_release_tag(
+                "v1.0.0", campaigns_dir
+            )
+            self.assertIsNone(found)
+            self.assertIn("--campaign-id", error)
+
+            for kwargs in (
+                {"status": True},
+                {"action": "resume"},
+                {"action": "dispatch", "apply": True},
+            ):
+                with self.subTest(kwargs=kwargs):
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                        stderr
+                    ):
+                        ret = release_campaigns.campaign_command(
+                            release_tag="v1.0.0",
+                            campaigns_dir=campaigns_dir,
+                            **kwargs,
+                        )
+                    self.assertEqual(ret, 1)
+                    self.assertEqual(stdout.getvalue(), "")
+                    message = stderr.getvalue()
+                    self.assertIn("matches 2 campaigns", message)
+                    self.assertIn("--campaign-id", message)
+                    self.assertNotIn("Traceback", message)
+                    self.assertLess(len(message), 400)
+
+            # Naming one of them resolves the ambiguity without touching the other.
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                ret = release_campaigns.campaign_command(
+                    status=True,
+                    campaign_id="second-campaign",
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    emit_json=True,
+                )
+            self.assertEqual(ret, 0)
+            self.assertEqual(json.loads(stdout.getvalue())["campaign_id"], "second-campaign")
+            self.assertEqual(self._snapshot(campaigns_dir), before)
+
+    def test_ambiguous_release_tag_error_is_bounded_by_campaign_count(self) -> None:
+        """However many campaigns share a tag, the message names at most a few ids."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            for index in range(release_campaigns.AMBIGUOUS_RELEASE_TAG_ID_LIMIT + 3):
+                self._seed(
+                    campaigns_dir,
+                    campaign_id=f"campaign-{index}",
+                    release_tag="v1.0.0",
+                    normalized="1.0.0",
+                )
+
+            _, error = release_campaigns.load_campaign_by_release_tag("v1.0.0", campaigns_dir)
+            named = [token for token in error.split() if token.startswith("campaign-")]
+            self.assertLessEqual(
+                len(named), release_campaigns.AMBIGUOUS_RELEASE_TAG_ID_LIMIT
+            )
+            self.assertLess(len(error), 400)
+
+    def test_campaign_id_and_release_tag_must_still_both_match(self) -> None:
+        """Supplying both identifiers keeps requiring both stored fields to agree."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._collision(campaigns_dir)
+            before = self._snapshot(campaigns_dir)
+
+            for kwargs in ({"status": True}, {"action": "resume"}):
+                with self.subTest(kwargs=kwargs):
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                        stderr
+                    ):
+                        ret = release_campaigns.campaign_command(
+                            campaign_id="v1.0.0",
+                            release_tag="v1.0.0",
+                            campaigns_dir=campaigns_dir,
+                            **kwargs,
+                        )
+                    self.assertEqual(ret, 1)
+                    self.assertEqual(stdout.getvalue(), "")
+                    self.assertIn("does not match", stderr.getvalue())
+            self.assertEqual(self._snapshot(campaigns_dir), before)
+
+    def test_creation_never_overwrites_a_file_holding_another_campaign(self) -> None:
+        """Creating by tag must not publish over the id a foreign campaign already occupies."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(
+                campaigns_dir,
+                campaign_id="campaign-v1.0.0",
+                release_tag="v2.0.0",
+                normalized="2.0.0",
+            )
+            before = self._snapshot(campaigns_dir)
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="create",
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertIn("already in use", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertEqual(self._snapshot(campaigns_dir), before)
+
+            # A free id creates normally.
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                ret = release_campaigns.campaign_command(
+                    action="create",
+                    release_tag="v1.0.0",
+                    campaign_id="campaign-one-oh",
+                    campaigns_dir=campaigns_dir,
+                )
+            self.assertEqual(ret, 0)
+            stored, error = release_campaigns.load_campaign_by_release_tag(
+                "v1.0.0", campaigns_dir
+            )
+            assert stored is not None
+            self.assertEqual(error, "")
+            self.assertEqual(stored["campaign_id"], "campaign-one-oh")
+
+
+class CampaignStatusIsReadOnlyTests(unittest.TestCase):
+    """`status` is a read-only spelling; a mutating intent alongside it is refused.
+
+    The read-only route deliberately skips the campaign directory lock, so
+    honoring a mutation under a status spelling would also run it outside the
+    serialization contract. The previous behavior did the opposite and dropped
+    it: `--status --retry-provider` took the lock, fell into the status branch,
+    printed the campaign, and exited 0 -- the retry never happened and nothing
+    said so. Both are refused now, before any lock, mutation, poll, or dispatch.
+    """
+
+    @staticmethod
+    def _seed(campaigns_dir: Path) -> dict[str, Any]:
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_bugbot"],
+            repo_slug="owner/repo",
+        ).to_dict()
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+        return campaign
+
+    @staticmethod
+    def _snapshot(campaigns_dir: Path) -> dict[str, bytes]:
+        return {p.name: p.read_bytes() for p in sorted(campaigns_dir.iterdir())}
+
+    @contextlib.contextmanager
+    def _counting_lock(self) -> Any:
+        real_lock = release_campaigns.locked_campaigns_dir
+        entries: list[Path] = []
+
+        @contextlib.contextmanager
+        def counting(campaigns_dir: Path) -> Any:
+            entries.append(campaigns_dir)
+            with real_lock(campaigns_dir) as handle:
+                yield handle
+
+        with mock.patch.object(release_campaigns, "locked_campaigns_dir", counting):
+            yield entries
+
+    def _mutating_intents(self, tmp: Path) -> tuple[tuple[str, dict[str, Any]], ...]:
+        result_path = tmp / "result.json"
+        result_path.write_text(
+            json.dumps(_mock_adoption_result(provider="cursor_bugbot")), encoding="utf-8"
+        )
+        return (
+            ("--retry-provider", {"retry_provider": "cursor_bugbot"}),
+            (
+                "--record-result",
+                {"record_result": result_path, "record_provider": "cursor_bugbot"},
+            ),
+            ("--apply", {"apply": True}),
+            ("--resume", {"resume": True}),
+            ("the 'resume' action", {"action": "resume"}),
+            ("the 'dispatch' action", {"action": "dispatch"}),
+            ("the 'create' action", {"action": "create"}),
+        )
+
+    def _run_rejected(
+        self,
+        campaigns_dir: Path,
+        kwargs: dict[str, Any],
+    ) -> tuple[int, list[Path], list[list[str]], list[list[str]], str, str]:
+        """Run one request with every outward effect recorded rather than performed."""
+        gh_calls: list[list[str]] = []
+        adapter_calls: list[list[str]] = []
+
+        def recording_adapter(argv, timeout):
+            adapter_calls.append(list(argv))
+            raise AssertionError("adapter must not run for a status request")
+
+        def recording_gh_json(args, **_kwargs):
+            gh_calls.append(list(args))
+            return {"comments": []}, ""
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with self._counting_lock() as entries:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                    issue="99",
+                    command_runner=_capturing_dispatch_argv_runner(gh_calls),
+                    gh_json_runner=recording_gh_json,
+                    adapter_runner=recording_adapter,
+                    **kwargs,
+                )
+        return ret, list(entries), gh_calls, adapter_calls, stdout.getvalue(), stderr.getvalue()
+
+    def test_status_with_a_mutating_intent_is_rejected_before_any_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+            before = self._snapshot(campaigns_dir)
+
+            for named, intent in self._mutating_intents(Path(tmp)):
+                # Both spellings of a status request, except where the intent is
+                # itself an action (which cannot be combined with `status`).
+                spellings: tuple[dict[str, Any], ...] = (
+                    ({"status": True},)
+                    if "action" in intent
+                    else ({"status": True}, {"action": "status"})
+                )
+                for spelling in spellings:
+                    with self.subTest(intent=named, spelling=spelling):
+                        ret, entries, gh_calls, adapter_calls, out, err = self._run_rejected(
+                            campaigns_dir, {**spelling, **intent}
+                        )
+
+                        self.assertEqual(ret, 1)
+                        self.assertEqual(entries, [])
+                        self.assertEqual(gh_calls, [])
+                        self.assertEqual(adapter_calls, [])
+                        self.assertEqual(out, "")
+                        self.assertIn("status is read-only", err)
+                        self.assertIn(named, err)
+                        self.assertNotIn("Traceback", err)
+                        self.assertEqual(self._snapshot(campaigns_dir), before)
+
+    def test_status_with_retry_provider_does_not_silently_drop_the_retry(self) -> None:
+        """The exact regression: the retry is neither executed nor quietly discarded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._seed(campaigns_dir)
+            campaign["providers"][0]["state"] = "running"
+            campaign["providers"][0]["attempted_at"] = "2026-09-04T08:00:00Z"
+            campaign["providers"][0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            before = self._snapshot(campaigns_dir)
+
+            gh_calls: list[list[str]] = []
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    status=True,
+                    retry_provider="cursor_bugbot",
+                    release_tag="v1.0.0",
+                    repo_slug="owner/repo",
+                    issue="99",
+                    apply=False,
+                    campaigns_dir=campaigns_dir,
+                    command_runner=_capturing_dispatch_argv_runner(gh_calls),
+                )
+
+            # Not executed: no dispatch, no state change.
+            self.assertEqual(gh_calls, [])
+            self.assertEqual(self._snapshot(campaigns_dir), before)
+            # Not dropped: non-zero exit and an explicit reason, not a status report.
+            self.assertEqual(ret, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("--retry-provider", stderr.getvalue())
+
+    def test_status_with_record_result_records_nothing(self) -> None:
+        """The rejected record is genuinely not applied -- and still works without --status."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+            result_path = Path(tmp) / "result.json"
+            result_path.write_text(
+                json.dumps(_mock_adoption_result(provider="cursor_bugbot")), encoding="utf-8"
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                ret = release_campaigns.campaign_command(
+                    status=True,
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    record_result=result_path,
+                    record_provider="cursor_bugbot",
+                )
+            self.assertEqual(ret, 1)
+            stored = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert stored is not None
+            self.assertEqual(stored["providers"][0]["state"], "queued")
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    record_result=result_path,
+                    record_provider="cursor_bugbot",
+                )
+            self.assertEqual(ret, 0)
+            stored = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert stored is not None
+            self.assertEqual(stored["providers"][0]["state"], "complete")
+
+    def test_plain_status_still_reports_and_stays_lock_free(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+            before = self._snapshot(campaigns_dir)
+
+            for spelling in ({"status": True}, {"action": "status"}):
+                with self.subTest(spelling=spelling):
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with self._counting_lock() as entries:
+                        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                            stderr
+                        ):
+                            ret = release_campaigns.campaign_command(
+                                release_tag="v1.0.0",
+                                campaigns_dir=campaigns_dir,
+                                **spelling,
+                            )
+                    self.assertEqual(ret, 0)
+                    self.assertEqual(entries, [])
+                    self.assertEqual(stderr.getvalue(), "")
+                    self.assertIn("Release Campaign: v1.0.0", stdout.getvalue())
+                    self.assertEqual(self._snapshot(campaigns_dir), before)
+
+    def test_cli_help_documents_the_read_only_status_contract(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            with self.assertRaises(SystemExit):
+                release_qualify.main(["campaign", "--help"])
+        # argparse rewraps help text, so compare on a whitespace-collapsed copy.
+        help_text = " ".join(stdout.getvalue().split())
+        self.assertIn("Status is strictly read-only", help_text)
+        self.assertIn("before any lock, mutation, poll, or dispatch", help_text)
+        self.assertIn("rather than silently dropping the mutation", help_text)
+
+
+class ResultMarkerParsingTests(unittest.TestCase):
+    """The result marker is one line of JSON, matched end to end and parsed fail-closed.
+
+    Markers are emitted as single-line HTML comments. The pattern anchors the
+    whole line and captures greedily to the JSON object's own final brace, so a
+    literal `-->` inside a permitted string value cannot end the capture early.
+    The previous lazy, DOTALL pattern ended it at the first `}` followed by
+    `-->`, which a quoted example of the marker format supplies -- truncating a
+    correctly bound, trusted result into unparseable JSON and discarding it.
+    """
+
+    @staticmethod
+    def _wrapper(campaign: Any, **extra: Any) -> dict[str, Any]:
+        return {
+            "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+            "campaign_id": campaign.campaign_id,
+            "provider": "cursor_bugbot",
+            "release_tag": "v1.0.0",
+            "idempotency_key": campaign.providers[0]["idempotency_key"],
+            "adoption_result": _mock_adoption_result(
+                release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass"
+            ),
+            **extra,
+        }
+
+    @staticmethod
+    def _running_campaign(campaigns_dir: Path) -> Any:
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_bugbot"],
+            repo_slug="owner/repo",
+        )
+        campaign.status = "running"
+        campaign.providers[0]["state"] = "running"
+        campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+        return campaign
+
+    @staticmethod
+    def _poll(campaigns_dir: Path, body: str) -> dict[str, Any]:
+        def mock_gh_json(args, **kwargs):
+            return {"comments": [{"author": {"login": "cursor[bot]"}, "body": body}]}, ""
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+        saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+        assert saved is not None
+        return saved
+
+    def test_regex_captures_json_containing_a_literal_comment_terminator(self) -> None:
+        payload = {"note": "reply with <!-- CODE_MOWER_ADOPTION_RESULT: {...} -->", "n": 1}
+        line = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(payload)} -->"
+        match = release_campaigns.RESULT_MARKER_RE.search(f"Done!\n\n{line}\n")
+        assert match is not None
+        self.assertEqual(json.loads(match.group(1)), payload)
+
+    def test_trusted_result_survives_a_comment_terminator_in_a_string_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._running_campaign(campaigns_dir)
+            wrapper = self._wrapper(
+                campaign,
+                note="format: <!-- CODE_MOWER_ADOPTION_RESULT: {json} --> (one line)",
+            )
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+            self.assertIn("} -->", json.dumps(wrapper))
+
+            saved = self._poll(campaigns_dir, f"Review complete!\n\n{marker}\n")
+            self.assertEqual(saved["providers"][0]["state"], "complete")
+            self.assertEqual(saved["status"], "complete")
+            # The free-form note is diagnostic only and never reaches campaign state.
+            self.assertNotIn("note", json.dumps(saved))
+
+    def test_bound_result_is_still_accepted_without_any_terminator_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._running_campaign(campaigns_dir)
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(self._wrapper(campaign))} -->"
+            saved = self._poll(campaigns_dir, f"Review complete!\n\n{marker}\n")
+            self.assertEqual(saved["providers"][0]["state"], "complete")
+
+    def test_malformed_markers_fail_closed(self) -> None:
+        """Unparseable or non-JSON markers are ignored; the provider keeps running."""
+        bodies = (
+            "<!-- CODE_MOWER_ADOPTION_RESULT: {not json at all} -->",
+            '<!-- CODE_MOWER_ADOPTION_RESULT: {"schema": "x", -->',
+            "<!-- CODE_MOWER_ADOPTION_RESULT: -->",
+            "<!-- CODE_MOWER_ADOPTION_RESULT: [] -->",
+        )
+        for body in bodies:
+            with self.subTest(body=body):
+                with tempfile.TemporaryDirectory() as tmp:
+                    campaigns_dir = Path(tmp) / "campaigns"
+                    self._running_campaign(campaigns_dir)
+                    saved = self._poll(campaigns_dir, body)
+                    self.assertEqual(saved["providers"][0]["state"], "running")
+
+    def test_a_marker_split_across_lines_is_not_accepted(self) -> None:
+        """Markers are single-line by contract; a multi-line one fails closed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._running_campaign(campaigns_dir)
+            body = (
+                "<!-- CODE_MOWER_ADOPTION_RESULT:\n"
+                f"{json.dumps(self._wrapper(campaign))}\n"
+                "-->"
+            )
+            saved = self._poll(campaigns_dir, body)
+            self.assertEqual(saved["providers"][0]["state"], "running")
 
 
 if __name__ == "__main__":
