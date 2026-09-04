@@ -3034,6 +3034,60 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert resumed is not None
             self.assertTrue(resumed["providers"][0]["trigger_posted"])
 
+    def test_completed_result_is_consumed_before_trigger_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["trigger_idempotency_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": provider["idempotency_key"],
+                "adoption_result": _mock_adoption_result(
+                    release_tag="v1.0.0",
+                    provider="cursor_bugbot",
+                    outcome="pass",
+                ),
+            }
+            result_marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: (
+                    {
+                        "comments": [
+                            {"author": {"login": "cursor[bot]"}, "body": result_marker}
+                        ]
+                    },
+                    "",
+                ),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            self.assertEqual(resumed["providers"][0]["state"], "complete")
+
     def test_resume_without_apply_never_posts_missing_trigger(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"

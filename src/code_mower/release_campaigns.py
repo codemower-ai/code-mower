@@ -1717,6 +1717,51 @@ def dispatch_or_advance_campaign(
                     gh_json_runner=gh_json_runner,
                 )
 
+            # A completed result is authoritative and must be consumed before
+            # considering any retry side effect. Otherwise a missing trigger
+            # marker could restart a provider that has already finished.
+            found_result = None
+            if poll_error:
+                provider_data["error"] = poll_error
+            else:
+                provider_data["error"] = ""
+                trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
+                for comment in comments:
+                    if not _is_trusted_github_author(
+                        _comment_author_login(comment), trusted_authors
+                    ):
+                        continue
+                    found_result = _extract_bound_adoption_result(
+                        str(comment.get("body") or ""),
+                        campaign_id=campaign_id,
+                        provider=provider,
+                        release_tag=release_tag,
+                        idempotency_key=str(provider_data.get("idempotency_key") or ""),
+                        qualification_context=context,
+                        starting_version=starting_version,
+                        package_identity=package_identity,
+                    )
+                    if found_result:
+                        provider_data["adoption_result"] = found_result
+                        provider_data["elapsed_seconds"] = float(
+                            found_result.get("elapsed_seconds") or 0.0
+                        )
+                        provider_data["completed_at"] = now_utc
+                        outcome = found_result.get("outcome")
+                        if outcome in {"pass", "pass_with_warnings"}:
+                            provider_data["state"] = "complete"
+                            provider_data["next_action"] = "none"
+                            provider_data["next_detail"] = ""
+                        else:
+                            provider_data["state"] = "blocked"
+                            provider_data["next_action"] = (
+                                f"inspect {provider} qualification failures"
+                            )
+                            provider_data["next_detail"] = f"outcome: {outcome}"
+                        break
+            if found_result is not None:
+                continue
+
             # For manually triggered providers, retry trigger if not yet posted.
             # Skip this automatic retry if an explicit --retry-provider is active,
             # since the explicit redispatch path will post its own trigger.
@@ -1817,53 +1862,10 @@ def dispatch_or_advance_campaign(
                 _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
                 # After trigger reconciliation, continue to result polling below.
 
-            # Poll for bound result marker
-            found_result = None
-            if ref_issue and repo_slug:
-                if poll_error:
-                    provider_data["error"] = poll_error
-                else:
-                    provider_data["error"] = ""
-                    trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
-                    for comment in comments:
-                        if not _is_trusted_github_author(_comment_author_login(comment), trusted_authors):
-                            # Identity binding (campaign/provider/tag/idempotency key)
-                            # alone is not enough -- those fields are visible in the
-                            # public dispatch comment, so only a configured trusted
-                            # author's reply is ever considered.
-                            continue
-                        body = str(comment.get("body") or "")
-                        found_result = _extract_bound_adoption_result(
-                            body,
-                            campaign_id=campaign_id,
-                            provider=provider,
-                            release_tag=release_tag,
-                            idempotency_key=str(provider_data.get("idempotency_key") or ""),
-                            qualification_context=context,
-                            starting_version=starting_version,
-                            package_identity=package_identity,
-                        )
-                        if found_result:
-                            provider_data["adoption_result"] = found_result
-                            provider_data["elapsed_seconds"] = float(
-                                found_result.get("elapsed_seconds") or 0.0
-                            )
-                            provider_data["completed_at"] = now_utc
-                            outcome = found_result.get("outcome")
-                            if outcome in {"pass", "pass_with_warnings"}:
-                                provider_data["state"] = "complete"
-                                provider_data["next_action"] = "none"
-                            else:
-                                provider_data["state"] = "blocked"
-                                provider_data["next_action"] = (
-                                    f"inspect {provider} qualification failures"
-                                )
-                            break
-            if found_result is not None or not is_explicit_retry:
-                # Ordinary resume is poll-only and never redispatches. An
-                # explicit retry that already found a valid trusted result
-                # is complete/blocked from polling above -- it must not be
-                # redispatched either.
+            if not is_explicit_retry:
+                # Ordinary resume is poll/reconciliation-only and never
+                # redispatches. Explicit retry may continue below only after
+                # the trusted result scan above found no completed evidence.
                 continue
             # Explicit retry of a still-running provider with no valid
             # trusted result yet: fall through to the capability checks and
