@@ -21,7 +21,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from code_mower import board, release_campaigns, release_qualify
+from code_mower import board, file_locks, release_campaigns, release_qualify
 from code_mower.provider_registry import LaneLabels, ProviderLane
 
 
@@ -5380,6 +5380,375 @@ class ResultMarkerParsingTests(unittest.TestCase):
             )
             saved = self._poll(campaigns_dir, body)
             self.assertEqual(saved["providers"][0]["state"], "running")
+
+
+class CampaignLockContentionTests(unittest.TestCase):
+    """Bounded contention from the portable lock backend is a bounded command error.
+
+    The Windows lock backend cannot block in the kernel, so it gives up after a
+    bounded wait and raises `FileLockError` -- a `RuntimeError`, not an
+    `OSError`. The command's lock handler caught only `OSError`, so on Windows a
+    contended campaign directory ended a mutating command in a raw traceback
+    instead of the bounded, path-free refusal every other campaign error
+    surface gives.
+    """
+
+    @staticmethod
+    def _contended() -> Any:
+        """Stand in for the lock helper, failing the way the Windows backend does."""
+        return mock.patch.object(
+            release_campaigns,
+            "exclusive_file_lock",
+            side_effect=file_locks.FileLockError("timed out waiting for an exclusive lock"),
+        )
+
+    def test_lock_contention_is_a_bounded_path_free_command_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with self._contended():
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    code = release_campaigns.campaign_command(
+                        action="create",
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=["codex"],
+                        campaigns_dir=campaigns_dir,
+                    )
+
+            self.assertEqual(code, 1)
+            message = stderr.getvalue()
+            self.assertIn("could not acquire", message)
+            self.assertNotIn("Traceback", message)
+            self.assertNotIn("FileLockError", message)
+            self.assertNotIn(str(campaigns_dir), message)
+            self.assertNotIn(tmp, message)
+            # Failing closed: contention writes no campaign at all.
+            self.assertEqual(release_campaigns.list_campaigns(campaigns_dir), [])
+
+    def test_lock_contention_through_the_cli_reports_the_contention_message(self) -> None:
+        """The CLI surfaces the contention refusal itself, not a generic guard."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with self._contended():
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    code = release_qualify.main(
+                        [
+                            "campaign",
+                            "create",
+                            "--release-tag",
+                            "v1.0.0",
+                            "--package-spec",
+                            "code-mower==1.0.0",
+                            "--providers",
+                            "codex",
+                            "--campaigns-dir",
+                            str(campaigns_dir),
+                        ]
+                    )
+
+            self.assertEqual(code, 1)
+            message = stderr.getvalue()
+            self.assertIn(
+                "could not acquire the release campaign directory lock", message
+            )
+            self.assertIn("another campaign command is holding it", message)
+            self.assertNotIn("Traceback", message)
+            self.assertNotIn(str(campaigns_dir), message)
+            self.assertLessEqual(len(message.splitlines()), 1)
+
+    def test_an_unlockable_directory_still_reports_the_writability_message(self) -> None:
+        """The pre-existing OSError route is unchanged and still distinguishable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.object(
+                release_campaigns,
+                "exclusive_file_lock",
+                side_effect=PermissionError(13, "Permission denied"),
+            ):
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    code = release_campaigns.campaign_command(
+                        action="create",
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=["codex"],
+                        campaigns_dir=campaigns_dir,
+                    )
+
+            self.assertEqual(code, 1)
+            message = stderr.getvalue()
+            self.assertIn("exists and is writable", message)
+            self.assertNotIn("Traceback", message)
+            self.assertNotIn("Permission denied", message)
+
+    def test_status_is_unaffected_by_contention(self) -> None:
+        """Status takes no lock, so a wedged holder cannot block a read."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    action="create",
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                )
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with self._contended():
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    code = release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        status=True,
+                    )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("Release Campaign: v1.0.0", stdout.getvalue())
+
+
+class AdapterArgvPlaceholderFailureTests(unittest.TestCase):
+    """Every malformed `campaign_adapter_argv` placeholder is one bounded config error.
+
+    `str.format` reports a bad placeholder in more ways than a missing field:
+    `{repo_path.parent}` is an `AttributeError` and `{output[dir]}` is a
+    `TypeError`, because the substitutions are plain strings. Only `KeyError`
+    and `IndexError` were caught, so those two escaped the applied run *after*
+    `attempted_at` had been persisted -- a raw traceback, and a provider left
+    looking queued that an ordinary resume would then skip.
+    """
+
+    @staticmethod
+    def _lane_with(*argv_tail: str) -> ProviderLane:
+        return ProviderLane(
+            lane_id="fake_cli",
+            lane_type="audit",
+            driver="local_cli",
+            provider="codex",
+            labels=LaneLabels(needs="needs-fake", done="fake-done", blocked="fake-blocked"),
+            trigger_policy="manual",
+            provider_config={
+                "command": "fake-provider-cli",
+                "campaign_adapter_argv": ("{command}", *argv_tail),
+            },
+        )
+
+    def _run(self, campaigns_dir: Path, lane: ProviderLane) -> tuple[int, str, dict[str, Any]]:
+        adapter_mock = mock.MagicMock()
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(
+            release_campaigns, "resolve_provider_lane", return_value=("codex", lane)
+        ):
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=adapter_mock,
+                )
+        adapter_mock.assert_not_called()
+        saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+        assert saved is not None
+        return code, stderr.getvalue(), saved
+
+    def _assert_bounded_configuration_failure(self, saved: dict[str, Any]) -> None:
+        provider_entry = saved["providers"][0]
+        self.assertEqual(provider_entry["state"], "unavailable")
+        self.assertEqual(provider_entry["error"], "adapter_configuration_invalid")
+        # The attempt was claimed and is now reported as a failure, rather than
+        # left looking like un-attempted queued work a resume would skip.
+        self.assertTrue(provider_entry["attempted_at"])
+        # Clear retry guidance: what to fix, and the manual way out.
+        self.assertIn("campaign_adapter_argv", provider_entry["next_action"])
+        self.assertIn("record manual result", provider_entry["next_action"])
+
+    def test_an_attribute_access_placeholder_is_a_bounded_configuration_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            lane = self._lane_with("--repo", "{repo_path.parent}")
+            code, stderr, saved = self._run(campaigns_dir, lane)
+
+            self.assertEqual(code, 0)
+            self.assertNotIn("Traceback", stderr)
+            self.assertNotIn("AttributeError", stderr)
+            self._assert_bounded_configuration_failure(saved)
+            serialized = json.dumps(saved)
+            self.assertNotIn("repo_path.parent", serialized)
+            self.assertNotIn(tmp, serialized)
+
+    def test_a_non_integer_subscript_placeholder_is_the_same_failure(self) -> None:
+        """`{output[dir]}` raises TypeError, which escaped exactly the same way."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            lane = self._lane_with("--output", "{output[dir]}")
+            code, stderr, saved = self._run(campaigns_dir, lane)
+
+            self.assertEqual(code, 0)
+            self.assertNotIn("Traceback", stderr)
+            self.assertNotIn("TypeError", stderr)
+            self._assert_bounded_configuration_failure(saved)
+            self.assertNotIn("output[dir]", json.dumps(saved))
+
+    def test_the_builder_raises_one_bounded_value_error_for_every_spelling(self) -> None:
+        """At the unit boundary each spelling is one ValueError naming only the lane."""
+        lane = _fake_local_cli_lane()
+        for token in ("{repo_path.parent}", "{output[dir]}", "{bogus}", "{output[999]}"):
+            with self.subTest(token=token):
+                with self.assertRaises(ValueError) as ctx:
+                    release_campaigns._build_adapter_argv(
+                        lane,
+                        "/bin/fake-provider-cli",
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        qualification_context="cold_install",
+                        starting_version="",
+                        output_path=Path("/tmp/out.json"),
+                        repo_path=Path("/tmp/repo"),
+                        argv_template=("{command}", token),
+                    )
+                message = str(ctx.exception)
+                self.assertEqual(
+                    message, "invalid campaign_adapter_argv template for lane 'fake_cli'"
+                )
+                self.assertNotIn(token, message)
+
+    def test_a_resume_after_the_failure_reports_it_instead_of_skipping(self) -> None:
+        """The provider stays visible with its error, not silently passed over."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            lane = self._lane_with("--repo", "{repo_path.parent}")
+            self._run(campaigns_dir, lane)
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    status=True,
+                )
+
+            self.assertEqual(code, 0)
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertIn("codex: unavailable", stdout.getvalue())
+            self.assertIn("fix campaign_adapter_argv", stdout.getvalue())
+
+
+class CampaignCliExceptionGuardTests(unittest.TestCase):
+    """An unexpected campaign exception ends as one bounded line, never a traceback.
+
+    The `qualify` subcommand has always guarded its implementation call; the
+    `campaign` subcommand did not, so anything the campaign implementation did
+    not anticipate reached the interpreter and printed a raw traceback -- which
+    on this metadata-only surface can also echo local paths.
+    """
+
+    @staticmethod
+    def _argv(campaigns_dir: Path, *extra: str) -> list[str]:
+        return [
+            "campaign",
+            "--release-tag",
+            "v1.0.0",
+            "--package-spec",
+            "code-mower==1.0.0",
+            "--providers",
+            "codex",
+            "--campaigns-dir",
+            str(campaigns_dir),
+            *extra,
+        ]
+
+    def test_an_unexpected_exception_is_bounded_and_non_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            secret = str(campaigns_dir / "private-detail")
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.object(
+                release_campaigns,
+                "campaign_command",
+                side_effect=RuntimeError(f"boom {secret}"),
+            ):
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    code = release_qualify.main(self._argv(campaigns_dir))
+
+            self.assertEqual(code, 1)
+            message = stderr.getvalue()
+            self.assertEqual(message.strip(), "error: campaign failed: RuntimeError")
+            self.assertNotIn("Traceback", message)
+            self.assertNotIn(secret, message)
+            self.assertNotIn(tmp, message)
+
+    def test_an_unexpected_value_error_keeps_its_bounded_message(self) -> None:
+        """ValueError is the campaign code's own bounded spelling, as for qualify."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.object(
+                release_campaigns,
+                "campaign_command",
+                side_effect=ValueError("unregistered campaign error code: 'nope'"),
+            ):
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    code = release_qualify.main(self._argv(campaigns_dir))
+
+            self.assertEqual(code, 1)
+            message = stderr.getvalue()
+            self.assertEqual(
+                message.strip(), "error: unregistered campaign error code: 'nope'"
+            )
+            self.assertNotIn("Traceback", message)
+
+    def test_the_guard_does_not_swallow_a_process_exit(self) -> None:
+        """SystemExit and KeyboardInterrupt are not application errors."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            for exc in (SystemExit(3), KeyboardInterrupt()):
+                with self.subTest(exc=type(exc).__name__):
+                    with mock.patch.object(
+                        release_campaigns, "campaign_command", side_effect=exc
+                    ):
+                        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                            io.StringIO()
+                        ):
+                            with self.assertRaises(type(exc)):
+                                release_qualify.main(self._argv(campaigns_dir))
+
+    def test_a_specific_bounded_error_still_passes_through_unchanged(self) -> None:
+        """The guard adds a floor; it does not reword what the command already says."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = release_qualify.main(
+                    self._argv(campaigns_dir, "--campaign-id", "not a valid id")
+                )
+
+            self.assertEqual(code, 1)
+            message = stderr.getvalue()
+            self.assertIn("campaign_id must use only", message)
+            self.assertNotIn("campaign failed", message)
+            self.assertNotIn("Traceback", message)
+            self.assertFalse(campaigns_dir.exists())
+
+    def test_an_ordinary_campaign_still_succeeds_under_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = release_qualify.main(self._argv(campaigns_dir, "create"))
+
+            self.assertEqual(code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            created = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert created is not None
+            self.assertEqual(created["schema"], release_campaigns.CAMPAIGN_SCHEMA)
 
 
 if __name__ == "__main__":

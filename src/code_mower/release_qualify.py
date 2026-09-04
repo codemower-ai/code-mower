@@ -917,26 +917,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.providers
             else ()
         )
-        return release_campaigns.campaign_command(
-            action=args.action,
-            release_tag=args.release_tag,
-            package_spec=args.package_spec,
-            providers=providers_list,
-            qualification_context=args.qualification_context,
-            starting_version=args.starting_version,
-            repo_path=args.repo_path,
-            repo_slug=args.repo_slug,
-            issue=args.issue,
-            apply=args.apply,
-            resume=args.resume,
-            status=args.status,
-            campaign_id=args.campaign_id,
-            campaigns_dir=args.campaigns_dir,
-            record_result=args.record_result,
-            record_provider=args.record_provider,
-            retry_provider=args.retry_provider,
-            emit_json=args.json,
-        )
+        # Same guard shape as `qualify` above: the campaign implementation
+        # already answers every anticipated failure with its own bounded,
+        # path-free message and a non-zero exit, and those returns pass straight
+        # through here. This only catches what nothing else did, so an
+        # unexpected implementation exception ends as one bounded line instead
+        # of a raw traceback. The generic arm reports the exception *type*
+        # rather than its text, because an arbitrary exception's message may
+        # carry a local path and the campaign surface stays metadata-only.
+        try:
+            return release_campaigns.campaign_command(
+                action=args.action,
+                release_tag=args.release_tag,
+                package_spec=args.package_spec,
+                providers=providers_list,
+                qualification_context=args.qualification_context,
+                starting_version=args.starting_version,
+                repo_path=args.repo_path,
+                repo_slug=args.repo_slug,
+                issue=args.issue,
+                apply=args.apply,
+                resume=args.resume,
+                status=args.status,
+                campaign_id=args.campaign_id,
+                campaigns_dir=args.campaigns_dir,
+                record_result=args.record_result,
+                record_provider=args.record_provider,
+                retry_provider=args.retry_provider,
+                emit_json=args.json,
+            )
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        except Exception as e:
+            print(f"error: campaign failed: {type(e).__name__}", file=sys.stderr)
+            return 1
 
     return 1
 

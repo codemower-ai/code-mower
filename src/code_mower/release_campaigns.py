@@ -23,7 +23,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from code_mower import config as code_mower_config
     from code_mower import lane_status
-    from code_mower.file_locks import exclusive_file_lock
+    from code_mower.file_locks import FileLockError, exclusive_file_lock
     from code_mower.provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from code_mower.release_qualify import (
         _detect_host_class,
@@ -38,7 +38,7 @@ if __package__ in {None, ""}:
 else:
     from . import config as code_mower_config
     from . import lane_status
-    from .file_locks import exclusive_file_lock
+    from .file_locks import FileLockError, exclusive_file_lock
     from .provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from .release_qualify import (
         _detect_host_class,
@@ -977,7 +977,16 @@ def _build_adapter_argv(
     }
     try:
         return [token.format(**substitutions) for token in validated_template]
-    except (KeyError, IndexError) as exc:
+    except (AttributeError, IndexError, KeyError, TypeError) as exc:
+        # Every way a malformed placeholder can fail against these plain string
+        # substitutions is one configuration error: an unknown field name
+        # (KeyError), a positional or out-of-range index (IndexError),
+        # attribute access such as `{repo_path.parent}` (AttributeError), and
+        # non-integer subscripting such as `{output[dir]}` (TypeError). They all
+        # become the same bounded `adapter_configuration_invalid` for the
+        # caller. Letting the last two escape instead raised out of an applied
+        # run *after* `attempted_at` was stamped, leaving a provider that looked
+        # queued but that an ordinary resume would skip.
         raise ValueError(f"invalid campaign_adapter_argv template for lane {lane.lane_id!r}") from exc
 
 
@@ -2183,6 +2192,19 @@ def campaign_command(
         if not is_read_only_status:
             try:
                 stack.enter_context(locked_campaigns_dir(campaigns_dir))
+            except FileLockError:
+                # The Windows backend cannot block in the kernel, so it gives up
+                # after a bounded wait and raises this instead of an OSError.
+                # Contention is not a broken directory, so it gets its own
+                # message -- equally bounded and path-free -- rather than the
+                # writability advice below.
+                print(
+                    "error: could not acquire the release campaign directory lock; "
+                    "another campaign command is holding it, so retry once that "
+                    "command finishes",
+                    file=sys.stderr,
+                )
+                return 1
             except OSError:
                 # Bounded and path-free, like every other campaign error surface:
                 # the errno text and the local directory path are never echoed.
