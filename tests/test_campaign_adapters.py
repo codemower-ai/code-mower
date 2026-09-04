@@ -70,7 +70,7 @@ def _ok(
 class ArgvBuilderTests(unittest.TestCase):
     """Each maintained transport builds its verified noninteractive surface."""
 
-    def test_codex_argv_uses_exec_with_stdin_and_schema(self) -> None:
+    def test_codex_argv_uses_writable_ephemeral_workspace(self) -> None:
         argv = campaign_adapters.build_codex_argv(
             codex_bin="/bin/codex",
             schema_path="/tmp/schema.json",
@@ -85,6 +85,20 @@ class ArgvBuilderTests(unittest.TestCase):
         self.assertIn("--output-last-message", argv)
         self.assertIn("--model", argv)
         self.assertEqual(argv[-1], "-")  # prompt travels on stdin
+        # Disposable writable workspace with narrowly scoped network access:
+        # the agent must be able to create a virtualenv and install the
+        # release, while the run stays ephemeral and isolated.
+        self.assertNotIn("--sandbox", argv)
+        self.assertNotIn("read-only", argv)
+        self.assertNotIn("danger-full-access", argv)
+        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        self.assertIn("--ephemeral", argv)
+        self.assertIn("--approve-for-me", argv)
+        self.assertIn("-c", argv)
+        self.assertIn("sandbox_workspace_write.network_access=true", argv)
+        self.assertIn("-C", argv)
+        self.assertIn("--skip-git-repo-check", argv)
+        self.assertIn("--ignore-user-config", argv)
         no_model = campaign_adapters.build_codex_argv(
             codex_bin="/bin/codex",
             schema_path="/tmp/schema.json",
@@ -93,34 +107,72 @@ class ArgvBuilderTests(unittest.TestCase):
         )
         self.assertNotIn("--model", no_model)
 
-    def test_claude_argv_uses_print_with_json_envelope(self) -> None:
+    def test_claude_argv_grants_only_scoped_bash(self) -> None:
         argv = campaign_adapters.build_claude_argv(
             claude_bin="/bin/claude",
             model="sonnet",
             max_budget_usd="5.00",
             schema_json="{}",
+            workspace_dir="/tmp/work",
         )
         self.assertEqual(argv[0], "/bin/claude")
         for flag in ("--print", "--output-format", "json", "--model", "sonnet",
                      "--max-budget-usd", "5.00", "--json-schema"):
             self.assertIn(flag, argv)
         self.assertIn("--no-session-persistence", argv)
+        # Exactly one tool (Bash), pre-allowed so the noninteractive run
+        # never prompts; nothing else is granted.
+        tools_idx = argv.index("--tools")
+        self.assertEqual(argv[tools_idx + 1], "Bash")
+        self.assertNotIn("", argv)
+        allowed_idx = argv.index("--allowedTools")
+        self.assertEqual(argv[allowed_idx + 1], "Bash")
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertNotIn("bypassPermissions", argv)
+        # Bash is scoped to the disposable workspace.
+        add_dir_idx = argv.index("--add-dir")
+        self.assertEqual(argv[add_dir_idx + 1], "/tmp/work")
+        self.assertIn("--disable-slash-commands", argv)
+        self.assertIn("--strict-mcp-config", argv)
+        unscoped = campaign_adapters.build_claude_argv(
+            claude_bin="/bin/claude",
+            model="sonnet",
+            max_budget_usd="5.00",
+            schema_json="{}",
+        )
+        self.assertNotIn("--add-dir", unscoped)
 
     def test_antigravity_argv_uses_prompt_file_and_timeout(self) -> None:
         argv = campaign_adapters.build_antigravity_argv(
             agy_bin="/bin/agy",
             workspace_dir="/tmp/work/ws",
-            prompt_file_name="campaign.prompt-input.txt",
+            prompt_file="/tmp/work/ws/campaign.prompt-input.txt",
             timeout_seconds=870,
             model="gemini-3",
         )
         self.assertEqual(argv[0], "/bin/agy")
         self.assertIn("--print", argv)
+        self.assertIn("--sandbox", argv)
+        self.assertIn("--dangerously-skip-permissions", argv)
         self.assertIn("--print-timeout", argv)
         self.assertIn("870s", argv)
         self.assertIn("--model", argv)
-        # The prompt travels in a file, not on the command line.
-        self.assertFalse(any("prompt-input" in token and len(token) > 200 for token in argv))
+        self.assertIn("/tmp/work/ws/campaign.prompt-input.txt", argv[-1])
+
+    def test_shared_prompt_pins_virtualenv_interpreter_commands(self) -> None:
+        prompt = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+        )
+        self.assertIn("python3 -m venv .venv", prompt)
+        self.assertIn(".venv/bin/python -m pip install", prompt)
+        self.assertIn("importlib.metadata.version", prompt)
+        self.assertIn(".venv/bin/code-mower doctor --help", prompt)
 
     def test_muse_argv_uses_exec_with_prompt_file_and_workspace(self) -> None:
         argv = campaign_adapters.build_muse_argv(
@@ -137,6 +189,11 @@ class ArgvBuilderTests(unittest.TestCase):
                      "--max-model-steps", "12",
                      "--model", "muse", "--reasoning-effort", "high"):
             self.assertIn(flag, argv)
+        self.assertNotIn("--disable-shell", argv)
+        self.assertNotIn("--disable-write", argv)
+        self.assertIn("--disable-web-tools", argv)
+        self.assertIn("--no-foreign-personal-context", argv)
+        self.assertIn("--no-session-log", argv)
 
 
 class AdapterTransportTests(unittest.TestCase):

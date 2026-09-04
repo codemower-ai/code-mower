@@ -34,7 +34,8 @@ provider          verified CLI         invocation surface
 ``claude``        Claude Code 2.1.258  ``--print`` with stdin, ``--output-format json``,
                                       explicit tool/permission controls, ``--json-schema``
 ``antigravity``   agy 1.1.26          ``--print`` with a prompt file, ``--sandbox``,
-                                      ``--add-dir``, ``--print-timeout``
+                                      noninteractive approval, ``--add-dir``,
+                                      ``--print-timeout``
 ``muse``          Muse Code 1.0.3      ``exec`` with ``--json``, ``--prompt-file``,
                                       ``--workspace``
 ================= ==================== ====================================================
@@ -221,17 +222,21 @@ def build_qualification_prompt(
     """
     if qualification_context == "upgrade":
         install_plan = (
-            f"1. Create a fresh disposable directory and virtualenv there.\n"
-            f"2. Install the starting version first "
-            f"(`pip install {package_identity}=={starting_version}`) to rehearse "
+            "1. In the current disposable directory, run "
+            "`python3 -m venv .venv`. Use only `.venv/bin/python` and installed "
+            "entry points for the remaining steps.\n"
+            f"2. Install the starting version with `.venv/bin/python -m pip install "
+            f"{package_identity}=={starting_version}` to rehearse "
             f"an upgrade from exactly that version.\n"
-            f"3. Upgrade to the exact release spec (`pip install \"{package_spec}\"`)."
+            f"3. Upgrade with `.venv/bin/python -m pip install \"{package_spec}\"`."
         )
     else:
         install_plan = (
-            "1. Create a fresh disposable directory and virtualenv there.\n"
-            f"2. Install the exact release spec into it "
-            f"(`pip install \"{package_spec}\"`). No other version is acceptable."
+            "1. In the current disposable directory, run "
+            "`python3 -m venv .venv`. Use only `.venv/bin/python` and installed "
+            "entry points for the remaining steps.\n"
+            f"2. Install the exact release with `.venv/bin/python -m pip install "
+            f"\"{package_spec}\"`. No other version is acceptable."
         )
     lines = [
         f"You are the {provider} release-qualification agent for Code Mower.",
@@ -253,9 +258,11 @@ def build_qualification_prompt(
         "Procedure (measure wall-clock seconds for each step):",
         install_plan,
         f"4. Assert the installed {package_identity} version is exactly",
-        f"   {normalized_version} (read it back from the installed metadata).",
-        "5. Smoke-check the installed distribution: show its entry-point help",
-        "   (for code-mower also run `code-mower doctor`) and confirm the",
+        f"   {normalized_version}, using `.venv/bin/python -c` and",
+        "   `importlib.metadata.version` to read installed metadata.",
+        "5. Smoke-check the installed distribution using its `.venv/bin/`",
+        "   entry point (for code-mower run `.venv/bin/code-mower --help` and",
+        "   `.venv/bin/code-mower doctor --help`) and confirm the",
         "   operational surfaces respond.",
         "6. Report failures honestly: a failed step has status fail and the",
         "   overall outcome follows the rule below. Never invent timings or",
@@ -292,15 +299,23 @@ def build_codex_argv(
 ) -> list[str]:
     """Argv for ``codex exec``: stdin prompt, JSONL events, output schema.
 
-    The final agent message is additionally written by Codex itself to
+    The agent works in the disposable ``workdir`` (``-C``). The
+    ``--approve-for-me`` route supplies Codex's workspace-write sandbox so it
+    can create a virtualenv, install the release, and run smoke checks there.
+    Network access is narrowly enabled only for that sandbox (package
+    downloads); the run stays ephemeral and isolated -- never
+    ``danger-full-access``. The final
+    agent message is additionally written by Codex itself to
     ``last_message_path`` (``--output-last-message``); that file is parsed
     transiently and never leaves the adapter's temporary directory.
     """
     argv = [
         codex_bin,
         "exec",
-        "--sandbox",
-        "read-only",
+        "--ephemeral",
+        "--approve-for-me",
+        "-c",
+        "sandbox_workspace_write.network_access=true",
         "--skip-git-repo-check",
         "--ignore-user-config",
         "--json",
@@ -323,13 +338,17 @@ def build_claude_argv(
     model: str,
     max_budget_usd: str,
     schema_json: str,
+    workspace_dir: str = "",
 ) -> list[str]:
     """Argv for ``claude --print``: stdin prompt, single JSON envelope.
 
     Mirrors the audit wrapper's isolation flags: no session persistence,
-    local settings only, an empty MCP config, no slash commands, and no tools.
+    local settings only, an empty MCP config, and no slash commands. The
+    agent gets exactly one tool -- ``Bash`` -- pre-allowed so the
+    noninteractive run never prompts, scoped to the disposable workspace via
+    ``--add-dir``; no other tool is granted.
     """
-    return [
+    argv = [
         claude_bin,
         "--print",
         "--output-format",
@@ -342,21 +361,30 @@ def build_claude_argv(
         '{"mcpServers":{}}',
         "--disable-slash-commands",
         "--tools",
-        "",
-        "--model",
-        model,
-        "--max-budget-usd",
-        max_budget_usd,
-        "--json-schema",
-        schema_json,
+        "Bash",
+        "--allowedTools",
+        "Bash",
     ]
+    if workspace_dir:
+        argv.extend(["--add-dir", workspace_dir])
+    argv.extend(
+        [
+            "--model",
+            model,
+            "--max-budget-usd",
+            max_budget_usd,
+            "--json-schema",
+            schema_json,
+        ]
+    )
+    return argv
 
 
 def build_antigravity_argv(
     *,
     agy_bin: str,
     workspace_dir: str,
-    prompt_file_name: str,
+    prompt_file: str,
     timeout_seconds: int,
     model: str = "",
 ) -> list[str]:
@@ -364,11 +392,14 @@ def build_antigravity_argv(
 
     Mirrors the Antigravity audit wrapper (via the Gemini CLI wrapper): the
     prompt lives in a file inside the workspace and the agent is pointed at it
-    with a short instruction, sandboxed to that workspace.
+    with a short instruction, sandboxed to that workspace. Headless agy cannot
+    prompt for command permission, so permission checks are auto-approved only
+    inside that retained sandbox.
     """
     argv = [
         agy_bin,
         "--sandbox",
+        "--dangerously-skip-permissions",
         "--add-dir",
         workspace_dir,
         "--print-timeout",
@@ -379,7 +410,7 @@ def build_antigravity_argv(
     argv.extend(
         [
             "--print",
-            f"Read {prompt_file_name} from the current workspace. Follow it as "
+            f"Read {prompt_file} from the allowed workspace. Follow it as "
             "the complete Code Mower release-qualification prompt. Return only "
             "the requested JSON result.",
         ]
@@ -399,9 +430,12 @@ def build_muse_argv(
 ) -> list[str]:
     """Argv for ``muse exec``: JSONL events with a prompt file.
 
-    Mirrors the Muse audit wrapper: Meta provider, no approvals (headless),
-    shell/write/web tools disabled, no foreign personal context, no session
-    log, and policy-gated workspace tools rooted at the workspace.
+    Meta provider, no approvals (headless), and policy-gated workspace tools
+    rooted at the disposable workspace. The managed shell and workspace
+    writes stay enabled -- every qualification step (virtualenv, install,
+    version read-back, smoke checks) executes commands there -- while the
+    workspace sandbox, no foreign personal context, no session log, and
+    disabled web tools keep the run isolated.
     """
     argv = [
         muse_bin,
@@ -415,8 +449,6 @@ def build_muse_argv(
         "meta",
         "--approval-mode",
         "never",
-        "--disable-shell",
-        "--disable-write",
         "--disable-web-tools",
         "--no-foreign-personal-context",
         "--no-session-log",
@@ -716,6 +748,7 @@ def run_campaign_adapter(
                     schema_json=json.dumps(
                         ADOPTION_RESULT_JSON_SCHEMA, separators=(",", ":")
                     ),
+                    workspace_dir=str(workdir),
                 )
                 completed = provider_runner(argv, prompt, timeout_seconds, workdir)
                 if completed.returncode != 0:
@@ -731,7 +764,7 @@ def run_campaign_adapter(
                 argv = build_antigravity_argv(
                     agy_bin=resolved_bin,
                     workspace_dir=str(workspace_dir),
-                    prompt_file_name=prompt_path.name,
+                    prompt_file=str(prompt_path),
                     timeout_seconds=timeout_seconds,
                     model=agy_model,
                 )

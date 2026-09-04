@@ -633,6 +633,41 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
+    def test_repo_config_can_enable_or_disable_maintained_adapter(self) -> None:
+        """Bare YAML booleans control the maintained adapter without becoming strings."""
+        _, lane = release_campaigns.resolve_provider_lane("muse")
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as tmp:
+                repo_path = Path(tmp)
+                (repo_path / "code-mower.yml").write_text(
+                    "version: 1\n"
+                    "lanes:\n"
+                    "  muse_cli:\n"
+                    "    provider_config:\n"
+                    f"      campaign_adapter_enabled: {str(enabled).lower()}\n",
+                    encoding="utf-8",
+                )
+
+                overrides, error, detail = release_campaigns._load_campaign_adapter_overrides(
+                    lane,
+                    repo_path,
+                )
+                self.assertEqual(error, "")
+                self.assertEqual(detail, "")
+                self.assertIs(overrides["campaign_adapter_enabled"], enabled)
+
+                argv_template, timeout_value, error, detail = (
+                    release_campaigns._resolve_campaign_adapter_config(lane, repo_path)
+                )
+                self.assertEqual(error, "")
+                self.assertEqual(detail, "")
+                if enabled:
+                    self.assertTrue(argv_template)
+                    self.assertEqual(timeout_value, 900)
+                else:
+                    self.assertIsNone(argv_template)
+                    self.assertIsNone(timeout_value)
+
     def test_repo_config_missing_is_no_override(self) -> None:
         """No code-mower.yml at repo_path means no override, not an error.
 
