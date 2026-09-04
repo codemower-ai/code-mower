@@ -208,6 +208,53 @@ fields are rejected rather than becoming accidental prose channels. It must not
 contain PR or issue prose, source, diffs, prompts, transcripts, issue body text,
 raw stdout/stderr, auth output, local paths, or secrets.
 
+## Work Type Taxonomy And Lane Attribution
+
+Work-type dimensions are additive, versioned metadata that may be attached
+only to `builder_run`, `reviewer_run`, `work_order`, and `productivity_summary`
+events so Dashboard 2.0 can compare builders and reviewers by development
+work type. They use `dimensions.work_type_schema=code_mower.workType.v1`.
+Events that omit these dimensions, including all uploads before this
+contract, remain valid; validation only runs when `work_type_schema` is
+present. `work_type_schema` on any other event type (for example
+`workflow_run` or `dogfood_upload`) is rejected outright.
+
+`dimensions.work_type` is one of `web`, `backend`, `ios`, `macos`, `android`,
+`infrastructure`, `documentation`, or `unknown`. `dimensions.work_type_source`
+records classification precedence: `explicit_user` metadata wins first,
+deterministic `repository_metadata` (for example a GitHub primary language)
+or coarse `file_category_metadata` (a bucket label such as `web-frontend`,
+never a filename) is checked second, and `unknown` otherwise. `work_type`
+`unknown` requires source `unknown` or `explicit_user`.
+
+`dimensions.work_type_role` is event-shape-pinned, not free text:
+`builder_run` events must record `work_type_role=builder` and
+`reviewer_run` events must record `work_type_role=reviewer`; any other value
+on those event types is rejected rather than silently reattributed.
+`work_order` and `productivity_summary` events leave `work_type_role`
+optional and it is never guessed — when absent, `work_type_attribution` must
+also be absent.
+
+When `work_type_role` is present it stays distinct from
+`dimensions.work_type_attribution`, which is `builder_credit`,
+`reviewer_credit`, or `excluded_self_review`. Builder role requires
+`builder_credit`; reviewer role must use `reviewer_credit` or
+`excluded_self_review`. When `work_type_lane_id` equals
+`work_type_builder_lane_id`, an author lane cannot count as independent
+review: the reviewer role must record `excluded_self_review` rather than
+`reviewer_credit`.
+
+Optional `work_type_provider` and `work_type_model` mirror the same
+provider/model identity already carried on `tool`. When both the work-type
+identity and `tool.provider`/`tool.model` are present, they must agree after
+the same whitespace-collapsing normalization tool provenance already uses;
+disagreement is rejected. Either side may be omitted, which keeps
+provider/model-free work-type events backward-compatible.
+
+Work-type metadata must not include filenames, source, diffs, prompts, or
+issue text; repository and file-category inputs are already-coarse category
+labels, never paths.
+
 ## Adoption Run And Release Qualification
 
 `adoption_run` is the additive atomic event for release-qualification
