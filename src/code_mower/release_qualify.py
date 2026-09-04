@@ -269,9 +269,7 @@ def _infer_repo_slug(repo_path: Path | None) -> str:
 def _resolve_config_path(repo_path: Path | None) -> Path:
     """Resolve repository config path."""
     if repo_path:
-        config = repo_path / "code-mower.yml"
-        if config.is_file():
-            return config
+        return repo_path / "code-mower.yml"
     return Path("code-mower.yml")
 
 
