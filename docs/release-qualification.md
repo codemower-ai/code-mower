@@ -164,6 +164,12 @@ Cursor BugBot (also known as Cursor/Grok Bot, or Cursor Cloud Agents) is a hoste
 **Environment override:**
 Set `CURSOR_BUGBOT_BOT_AUTHORS` to a comma-separated list of additional trusted GitHub logins. This extends (does not replace) the default trusted authors, allowing self-hosted or alternative Cursor integrations to be trusted.
 
+**Trigger comments:**
+- `bugbot run`
+- `@cursor review`
+
+After the dispatch comment is posted, one of these trigger commands is posted as a separate comment to actually start the BugBot qualification run.
+
 **Example dispatch:**
 ```bash
 code-mower release campaign \
