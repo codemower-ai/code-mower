@@ -1659,10 +1659,11 @@ def dispatch_or_advance_campaign(
             # For manually triggered providers, retry trigger if not yet posted.
             # Skip this automatic retry if an explicit --retry-provider is active,
             # since the explicit redispatch path will post its own trigger.
+            # Also gate on apply: trigger retry is a write operation, not a poll.
             trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
             trigger_posted = provider_data.get("trigger_posted", True)
 
-            if trigger_comments and not trigger_posted and not is_explicit_retry:
+            if trigger_comments and not trigger_posted and not is_explicit_retry and apply:
                 # Dispatch succeeded but trigger failed or was interrupted
                 # Retry trigger without reposting the dispatch comment
                 dispatch_ref = provider_data.get("dispatch_ref", {})

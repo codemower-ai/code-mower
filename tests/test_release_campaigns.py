@@ -2848,6 +2848,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 release_tag="v1.0.0",
                 campaigns_dir=campaigns_dir,
                 resume=True,
+                apply=True,
                 gh_json_runner=mock_gh_json,
                 command_runner=failing_then_succeeding_runner,
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
@@ -2894,6 +2895,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 release_tag="v1.0.0",
                 campaigns_dir=campaigns_dir,
                 resume=True,
+                apply=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
                 gh_json_runner=mock_gh_json,
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
@@ -2907,6 +2909,50 @@ class ReleaseCampaignTests(unittest.TestCase):
             resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert resumed is not None
             self.assertEqual(resumed["providers"][0]["trigger_posted"], True)
+
+    def test_trigger_retry_respects_dry_run_resume(self) -> None:
+        """Resume without --apply must not post trigger comments (dry-run contract)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            # Create campaign with failed trigger
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["attempted_at"] = "2024-01-01T00:00:00Z"
+            campaign.providers[0]["dispatched_at"] = "2024-01-01T00:00:00Z"
+            campaign.providers[0]["trigger_posted"] = False  # Trigger needs to be posted
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            bodies: list[str] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            # Resume WITHOUT apply should not post the trigger
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=False,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=mock_gh_json,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            # Should have posted NOTHING (dry-run)
+            self.assertEqual(len(bodies), 0)
+
+            # Trigger should still be marked as not posted
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            self.assertEqual(resumed["providers"][0]["trigger_posted"], False)
 
     def test_explicit_retry_does_not_duplicate_trigger(self) -> None:
         """Explicit --retry-provider should not post trigger twice in one run."""
