@@ -2722,6 +2722,31 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
+    def test_devin_dispatch_includes_trigger_comments(self) -> None:
+        """Devin dispatch body includes trigger_comments so the remote knows how to start."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="99",
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(len(bodies), 1)
+            body = bodies[0]
+            self.assertIn("@devin run", body)
+            self.assertIn("devin run", body)
+            self.assertIn("**Trigger comments:**", body)
+            self.assertIn("`@devin run`, `devin run`", body)
+
 
 def _dispatch_marker_from_body(body: str) -> dict[str, Any]:
     """Parse the machine-readable dispatch marker out of a posted comment body."""

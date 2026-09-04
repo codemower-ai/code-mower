@@ -825,6 +825,7 @@ def _dispatch_github_comment(
     idempotency_key: str,
     *,
     starting_version: str = "",
+    trigger_comments: tuple[str, ...] = (),
     command_runner: lane_status.CommandRunner = lane_status.run_command,
 ) -> tuple[bool, dict[str, Any], str]:
     """Post the dispatch comment that tells a remote provider exactly what to qualify.
@@ -835,6 +836,9 @@ def _dispatch_github_comment(
     never told it would be guessing. A dispatch that cannot state the starting
     version of an upgrade campaign is refused rather than posted. Cold-install
     (and ``unknown``) campaigns have no starting version and omit the field.
+    
+    When ``trigger_comments`` is supplied, the dispatch body includes them so
+    a remote provider knows exactly which comment to watch for.
     """
     if not repo_slug or not issue_number:
         return False, {}, _safe_error("missing_issue_number")
@@ -856,6 +860,10 @@ def _dispatch_github_comment(
     starting_version_line = (
         f"- **Starting Version:** `{starting_version}`\n" if starting_version else ""
     )
+    trigger_comments_line = ""
+    if trigger_comments:
+        formatted_triggers = ", ".join(f"`{tc}`" for tc in trigger_comments)
+        trigger_comments_line = f"- **Trigger comments:** {formatted_triggers}\n"
     starting_version_requirement = (
         f" The embedded `adoption_result` must report `qualification_context` "
         f"`{qualification_context}` and `starting_version` `{starting_version}`; "
@@ -871,6 +879,7 @@ def _dispatch_github_comment(
         f"- **Provider:** `{provider}`\n"
         f"- **Context:** `{qualification_context}`\n"
         f"{starting_version_line}"
+        f"{trigger_comments_line}"
         f"- **Idempotency Key:** `{idempotency_key}`\n\n"
         f"Reply with a comment containing a `CODE_MOWER_ADOPTION_RESULT` "
         f"marker wrapping schema `{RESULT_MARKER_SCHEMA}` with matching "
@@ -1949,6 +1958,7 @@ def dispatch_or_advance_campaign(
                     dry_run=False,
                 )
                 _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+                trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
                 ok, ref, err = _dispatch_github_comment(
                     repo_slug,
                     issue_number,
@@ -1959,6 +1969,7 @@ def dispatch_or_advance_campaign(
                     context,
                     provider_data["idempotency_key"],
                     starting_version=starting_version,
+                    trigger_comments=trigger_comments,
                     command_runner=command_runner,
                 )
                 if ok:

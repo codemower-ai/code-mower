@@ -177,6 +177,8 @@ code-mower release campaign \
 
 **Aliases:** `cursor`, `cursor_bugbot`, `cursor_grok_bot`, `cursor_cloud_agent`, `grok_bot` all resolve to the canonical `cursor_bugbot` provider.
 
+**Note:** Cursor BugBot is an opt-in paid provider (`enabled_by_default: false`, `trigger_policy: manual`, `spend_policy: paid`). It must be explicitly requested via `--providers cursor_bugbot` and is not included in the default provider set.
+
 #### Devin Setup
 
 Devin is a hosted paid provider using the `hosted_bridge` driver.
