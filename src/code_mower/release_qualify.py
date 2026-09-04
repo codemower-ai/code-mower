@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -36,9 +37,38 @@ else:
 
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[ab]\d+|rc\d+)?$")
+RUNTIME_CLASS_PATTERN = re.compile(r"^python_\d+\.\d+$")
 VALID_CONTEXTS = {"cold_install", "upgrade", "unknown"}
 VALID_STEP_STATUSES = {"pass", "fail", "warn", "unavailable", "planned"}
 VALID_EXECUTION_STATES = {"planned", "executed"}
+VALID_HOST_CLASSES = {"local", "ci", "github_actions", "unknown"}
+VALID_OUTCOMES = {"pass", "pass_with_warnings", "fail", "incomplete"}
+
+ADOPTION_RESULT_SCHEMA = "code_mower.adoptionResult.v1"
+ADOPTION_RESULT_FIELDS = frozenset(
+    {
+        "schema",
+        "timestamp_utc",
+        "release_tag",
+        "package_identity",
+        "normalized_version",
+        "qualification_context",
+        "starting_version",
+        "ending_version",
+        "provider",
+        "executor",
+        "host_class",
+        "runtime_class",
+        "execution_state",
+        "elapsed_seconds",
+        "outcome",
+        "steps",
+    }
+)
+ADOPTION_RESULT_STEP_FIELDS = frozenset(
+    {"id", "status", "elapsed_seconds", "warning_count", "owner_action_count"}
+)
+MAX_ADOPTION_RESULT_STEPS = 32
 
 
 @dataclass
@@ -183,6 +213,122 @@ def _aggregate_outcome(steps: list[StepResult], *, execution_state: str = "execu
     if has_warn or has_unavailable:
         return "pass_with_warnings"
     return "pass"
+
+
+def _finite_non_negative(value: object, field: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"adoption result {field} must be finite and non-negative")
+
+
+def validate_adoption_result_payload(result: object) -> None:
+    """Strictly validate one closed-schema local adoptionResult payload.
+
+    Rejects any undeclared top-level or step field so raw output, local
+    paths, prompts, or secrets accidentally attached by an adapter, a
+    manual upload, or a GitHub comment can never enter campaign state.
+    """
+    if not isinstance(result, dict):
+        raise ValueError("adoption result must be a JSON object")
+
+    unknown = sorted(set(result) - ADOPTION_RESULT_FIELDS)
+    if unknown:
+        raise ValueError(f"adoption result has unsupported field(s): {unknown}")
+    missing = sorted(ADOPTION_RESULT_FIELDS - set(result))
+    if missing:
+        raise ValueError(f"adoption result missing required field(s): {missing}")
+
+    if result.get("schema") != ADOPTION_RESULT_SCHEMA:
+        raise ValueError(f"unsupported adoption result schema {result.get('schema')!r}")
+
+    valid_tag, normalized_version, tag_error = _validate_tag_format(str(result.get("release_tag") or ""))
+    if not valid_tag:
+        raise ValueError(tag_error)
+    if result.get("normalized_version") != normalized_version:
+        raise ValueError("adoption result release_tag and normalized_version disagree")
+    if result.get("package_identity") != "code-mower":
+        raise ValueError("adoption result package_identity must be 'code-mower'")
+
+    context = result.get("qualification_context")
+    _validate_qualification_context(str(context or ""))
+    starting_version = str(result.get("starting_version") or "")
+    _validate_starting_version(starting_version)
+    ending_version = str(result.get("ending_version") or "")
+    if ending_version and not VERSION_PATTERN.match(ending_version):
+        raise ValueError("adoption result ending_version must be empty or a normalized version")
+    if context == "upgrade":
+        if not starting_version:
+            raise ValueError("adoption result upgrade context requires starting_version")
+        if _version_key(starting_version) >= _version_key(normalized_version):
+            raise ValueError("adoption result starting_version must be lower than normalized_version")
+    elif starting_version:
+        raise ValueError("adoption result starting_version is only valid for upgrade context")
+
+    for field_name in ("provider", "executor"):
+        _validate_safe_identifier(str(result.get(field_name) or ""), field_name)
+
+    if result.get("host_class") not in VALID_HOST_CLASSES:
+        raise ValueError(f"unsupported adoption result host_class {result.get('host_class')!r}")
+    runtime_class = str(result.get("runtime_class") or "")
+    if runtime_class != "unknown" and not RUNTIME_CLASS_PATTERN.match(runtime_class):
+        raise ValueError(
+            "adoption result runtime_class must be 'unknown' or 'python_<major>.<minor>'"
+        )
+
+    execution_state = result.get("execution_state")
+    if execution_state not in VALID_EXECUTION_STATES:
+        raise ValueError(f"unsupported adoption result execution_state {execution_state!r}")
+    outcome = result.get("outcome")
+    if outcome not in VALID_OUTCOMES:
+        raise ValueError(f"unsupported adoption result outcome {outcome!r}")
+
+    _finite_non_negative(result.get("elapsed_seconds"), "elapsed_seconds")
+
+    steps = result.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise ValueError("adoption result steps must be a non-empty list")
+    if len(steps) > MAX_ADOPTION_RESULT_STEPS:
+        raise ValueError(f"adoption result has too many steps; max {MAX_ADOPTION_RESULT_STEPS}")
+
+    parsed_steps: list[StepResult] = []
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            raise ValueError(f"adoption result step {index} must be an object")
+        unknown_step = sorted(set(step) - ADOPTION_RESULT_STEP_FIELDS)
+        if unknown_step:
+            raise ValueError(f"adoption result step {index} has unsupported field(s): {unknown_step}")
+        missing_step = sorted(ADOPTION_RESULT_STEP_FIELDS - set(step))
+        if missing_step:
+            raise ValueError(f"adoption result step {index} missing field(s): {missing_step}")
+
+        step_id = step.get("id")
+        if not isinstance(step_id, str) or not SAFE_IDENTIFIER_PATTERN.match(step_id):
+            raise ValueError(f"adoption result step {index} id must be a safe identifier")
+        status = step.get("status")
+        if status not in VALID_STEP_STATUSES:
+            raise ValueError(f"adoption result step {index} has unsupported status {status!r}")
+        _finite_non_negative(step.get("elapsed_seconds"), f"step {index} elapsed_seconds")
+        for count_field in ("warning_count", "owner_action_count"):
+            value = step.get(count_field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    f"adoption result step {index} {count_field} must be a non-negative integer"
+                )
+        parsed_steps.append(
+            StepResult(
+                id=step_id,
+                status=status,
+                elapsed_seconds=float(step["elapsed_seconds"]),
+                warning_count=int(step["warning_count"]),
+                owner_action_count=int(step["owner_action_count"]),
+            )
+        )
+
+    expected_outcome = _aggregate_outcome(parsed_steps, execution_state=execution_state)
+    if outcome != expected_outcome:
+        raise ValueError(
+            f"adoption result outcome {outcome!r} disagrees with step statuses; "
+            f"expected {expected_outcome!r}"
+        )
 
 
 def _run_doctor_check(config_path: Path, repo_slug: str, config_source: str) -> StepResult:
@@ -430,7 +576,7 @@ def run_release_qualification(
     elapsed = time.time() - start_time
 
     result = AdoptionResult(
-        schema="code_mower.adoptionResult.v1",
+        schema=ADOPTION_RESULT_SCHEMA,
         timestamp_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         release_tag=release_tag,
         package_identity=package_identity,

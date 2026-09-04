@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -28,7 +29,7 @@ if __package__ in {None, ""}:
         _validate_starting_version,
         _validate_tag_format,
         _version_key,
-        run_release_qualification,
+        validate_adoption_result_payload,
     )
 else:
     from . import lane_status
@@ -42,13 +43,15 @@ else:
         _validate_starting_version,
         _validate_tag_format,
         _version_key,
-        run_release_qualification,
+        validate_adoption_result_payload,
     )
 
 CAMPAIGN_SCHEMA = "code_mower.releaseCampaign.v1"
 DISPATCH_SCHEMA = "code_mower.releaseCampaignDispatch.v1"
+RESULT_MARKER_SCHEMA = "code_mower.releaseCampaignResult.v1"
 BOARD_RELEASE_CAMPAIGNS_SCHEMA = "code_mower.boardReleaseCampaigns.v1"
 DEFAULT_CAMPAIGNS_RELATIVE_DIR = Path(".code-mower") / "campaigns"
+DEFAULT_ADAPTER_TIMEOUT_SECONDS = 900
 
 DEFAULT_CAMPAIGN_PROVIDERS = (
     "claude",
@@ -88,15 +91,58 @@ VALID_PROVIDER_STATES = {
     "complete",
 }
 
-DISPATCH_MARKER_RE = re.compile(
-    r"<!--\s*CODE_MOWER_RELEASE_CAMPAIGN:\s*(\{.*?\})\s*-->",
-    re.DOTALL,
+# Bounded, safe error codes. Persisted campaign state may only ever carry one
+# of these values in the `error` field -- never a raw exception message, gh
+# stdout/stderr, or adapter output. `_safe_error` enforces this at the source.
+SAFE_ERROR_CODES = frozenset(
+    {
+        "",
+        "command_not_found",
+        "missing_credentials",
+        "missing_issue_number",
+        "no_campaign_adapter_configured",
+        "adapter_timeout",
+        "adapter_exited_nonzero",
+        "adapter_produced_no_result",
+        "adapter_result_invalid",
+        "adapter_result_mismatch",
+        "github_dispatch_failed",
+        "github_poll_unavailable",
+    }
 )
 
-ADOPTION_RESULT_MARKER_RE = re.compile(
+# Errors that mean the adapter ran but produced something wrong -- these are
+# real signal and require inspection, not just missing prerequisites.
+_ADAPTER_ERROR_STATE = {
+    "no_campaign_adapter_configured": "unavailable",
+    "command_not_found": "unavailable",
+    "adapter_timeout": "unavailable",
+    "adapter_exited_nonzero": "blocked",
+    "adapter_produced_no_result": "blocked",
+    "adapter_result_invalid": "blocked",
+    "adapter_result_mismatch": "blocked",
+}
+
+RESULT_MARKER_RE = re.compile(
     r"<!--\s*CODE_MOWER_ADOPTION_RESULT:\s*(\{.*?\})\s*-->",
     re.DOTALL,
 )
+
+# Argv-only adapter invocation: (argv, timeout_seconds) -> CompletedProcess.
+# Never invoked with shell=True; stdout/stderr are read for diagnosis only
+# and are never persisted into campaign state.
+AdapterRunner = Callable[[Sequence[str], int], "subprocess.CompletedProcess[str]"]
+
+
+def _safe_error(code: str) -> str:
+    if code not in SAFE_ERROR_CODES:
+        raise ValueError(f"unregistered campaign error code: {code!r}")
+    return code
+
+
+def run_local_adapter_command(argv: Sequence[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    """Default argv-only adapter runner. No shell, no shared environment mutation."""
+    return subprocess.run(list(argv), check=False, text=True, capture_output=True, timeout=timeout)
 
 
 @dataclass
@@ -243,6 +289,7 @@ def _provider_next_action(
     has_credentials: bool,
     has_issue: bool,
     dry_run: bool,
+    adapter_configured: bool = True,
     error: str = "",
 ) -> tuple[str, str]:
     if state == "complete":
@@ -254,6 +301,11 @@ def _provider_next_action(
             return f"poll {provider} remote progress marker", ""
         return f"poll {provider} local process", ""
     if state == "unavailable":
+        if lane.driver == "local_cli" and not adapter_configured:
+            return (
+                f"record manual result for {provider}",
+                "no campaign adapter configured",
+            )
         if lane.driver == "local_cli" and not command_available:
             cmd = lane.provider_config.get("command") or provider
             return f"install {cmd} CLI on PATH or record manual result", error or f"command not found: {cmd}"
@@ -397,33 +449,63 @@ def list_campaigns(campaigns_dir: Path) -> list[dict[str, Any]]:
     return campaigns
 
 
-def _extract_adoption_result_from_text(
+def _load_bound_result_file(
+    path: Path,
+    *,
+    provider: str,
+    release_tag: str,
+) -> dict[str, Any] | None:
+    """Load and strictly validate a local adoptionResult file bound to this provider/tag."""
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            candidate = json.load(fh)
+        validate_adoption_result_payload(candidate)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if candidate.get("release_tag") != release_tag or candidate.get("provider") != provider:
+        return None
+    return candidate
+
+
+def _extract_bound_adoption_result(
     text: str,
     *,
-    release_tag: str,
+    campaign_id: str,
     provider: str,
+    release_tag: str,
+    idempotency_key: str,
 ) -> dict[str, Any] | None:
-    candidates: list[str] = []
-    for match in ADOPTION_RESULT_MARKER_RE.finditer(text):
-        candidates.append(match.group(1))
+    """Extract an adoptionResult from a GitHub comment, requiring explicit identity binding.
 
-    code_block_matches = re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    for match in code_block_matches:
-        if "adoptionResult.v1" in match.group(1):
-            candidates.append(match.group(1))
-
-    for raw in candidates:
+    A bare adoptionResult JSON blob is never accepted: the comment must wrap
+    it in a RESULT_MARKER_SCHEMA envelope whose campaign_id, provider,
+    release_tag, and idempotency_key match this exact dispatch -- otherwise a
+    stale or unrelated comment could be replayed to fabricate completion.
+    """
+    for match in RESULT_MARKER_RE.finditer(text):
         try:
-            parsed = json.loads(raw)
-            if (
-                isinstance(parsed, dict)
-                and parsed.get("schema") == "code_mower.adoptionResult.v1"
-                and parsed.get("release_tag") == release_tag
-                and parsed.get("provider") == provider
-            ):
-                return parsed
+            wrapper = json.loads(match.group(1))
         except json.JSONDecodeError:
             continue
+        if not isinstance(wrapper, dict) or wrapper.get("schema") != RESULT_MARKER_SCHEMA:
+            continue
+        if (
+            wrapper.get("campaign_id") != campaign_id
+            or wrapper.get("provider") != provider
+            or wrapper.get("release_tag") != release_tag
+            or wrapper.get("idempotency_key") != idempotency_key
+        ):
+            continue
+        adoption_result = wrapper.get("adoption_result")
+        if not isinstance(adoption_result, dict):
+            continue
+        try:
+            validate_adoption_result_payload(adoption_result)
+        except ValueError:
+            continue
+        if adoption_result.get("provider") != provider or adoption_result.get("release_tag") != release_tag:
+            continue
+        return adoption_result
     return None
 
 
@@ -440,7 +522,7 @@ def _dispatch_github_comment(
     command_runner: lane_status.CommandRunner = lane_status.run_command,
 ) -> tuple[bool, dict[str, Any], str]:
     if not repo_slug or not issue_number:
-        return False, {}, "missing repo_slug or issue_number"
+        return False, {}, _safe_error("missing_issue_number")
 
     dispatch_marker = {
         "schema": DISPATCH_SCHEMA,
@@ -459,6 +541,10 @@ def _dispatch_github_comment(
         f"- **Provider:** `{provider}`\n"
         f"- **Context:** `{qualification_context}`\n"
         f"- **Idempotency Key:** `{idempotency_key}`\n\n"
+        f"Reply with a comment containing a `CODE_MOWER_ADOPTION_RESULT` "
+        f"marker wrapping schema `{RESULT_MARKER_SCHEMA}` with matching "
+        f"campaign_id, provider, release_tag, and idempotency_key, plus an "
+        f"embedded `adoption_result`. See docs/release-qualification.md.\n\n"
         f"<!-- CODE_MOWER_RELEASE_CAMPAIGN: {marker_str} -->\n"
     )
 
@@ -479,8 +565,8 @@ def _dispatch_github_comment(
                 str(body_path),
             ]
         )
-    except (OSError, ValueError) as exc:
-        return False, {}, f"gh issue comment error: {exc}"
+    except (OSError, ValueError):
+        return False, {}, _safe_error("github_dispatch_failed")
     finally:
         try:
             body_path.unlink()
@@ -489,8 +575,7 @@ def _dispatch_github_comment(
 
     returncode = getattr(completed, "returncode", 1)
     if returncode != 0:
-        detail = getattr(completed, "stderr", "") or getattr(completed, "stdout", "") or str(returncode)
-        return False, {}, f"gh issue comment failed: {detail.strip()}"
+        return False, {}, _safe_error("github_dispatch_failed")
 
     return True, {"issue_number": str(issue_number), "comment_posted": True}, ""
 
@@ -502,18 +587,115 @@ def _poll_github_comments(
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
 ) -> tuple[list[dict[str, Any]], str]:
     if not repo_slug or not issue_number:
-        return [], "missing repo_slug or issue_number"
+        return [], _safe_error("github_poll_unavailable")
     data, error = gh_json_runner(
         ["issue", "view", str(issue_number), "--repo", repo_slug, "--json", "comments"]
     )
     if error:
-        return [], error
+        return [], _safe_error("github_poll_unavailable")
     if not isinstance(data, dict):
-        return [], "malformed gh issue response"
+        return [], _safe_error("github_poll_unavailable")
     comments = data.get("comments")
     if not isinstance(comments, list):
-        return [], "comments field not a list"
+        return [], _safe_error("github_poll_unavailable")
     return [c for c in comments if isinstance(c, dict)], ""
+
+
+def _build_adapter_argv(
+    lane: ProviderLane,
+    resolved_command: str,
+    *,
+    release_tag: str,
+    package_spec: str,
+    qualification_context: str,
+    starting_version: str,
+    output_path: Path,
+    repo_path: Path,
+) -> list[str]:
+    template = lane.provider_config.get("campaign_adapter_argv") or ()
+    substitutions = {
+        "command": resolved_command,
+        "release_tag": release_tag,
+        "package_spec": package_spec,
+        "qualification_context": qualification_context,
+        "starting_version": starting_version,
+        "output": str(output_path),
+        "repo_path": str(repo_path),
+    }
+    try:
+        return [str(token).format(**substitutions) for token in template]
+    except (KeyError, IndexError) as exc:
+        raise ValueError(
+            f"invalid campaign_adapter_argv template for lane {lane.lane_id!r}: {exc}"
+        ) from exc
+
+
+def _invoke_local_adapter(
+    lane: ProviderLane,
+    provider: str,
+    *,
+    release_tag: str,
+    package_spec: str,
+    qualification_context: str,
+    starting_version: str,
+    output_path: Path,
+    repo_path: Path,
+    which_fn: Callable[[str], str | None],
+    adapter_runner: AdapterRunner,
+) -> tuple[dict[str, Any] | None, str, str]:
+    """Invoke a provider's explicit, registry-configured campaign adapter.
+
+    Never falls back to running Code Mower's own qualification under the
+    provider's name: a provider can complete only when its own adapter
+    command actually ran (argv only, no shell) and produced a valid,
+    identity-matching result file. Returns (result, error_code, detail).
+    """
+    argv_template = lane.provider_config.get("campaign_adapter_argv")
+    if not argv_template:
+        return None, _safe_error("no_campaign_adapter_configured"), "no campaign adapter configured"
+
+    resolved = _find_command(lane, which_fn=which_fn)
+    if not resolved:
+        cmd = lane.provider_config.get("command") or provider
+        return None, _safe_error("command_not_found"), f"command not found: {cmd}"
+    resolved_path = which_fn(resolved) or resolved
+
+    argv = _build_adapter_argv(
+        lane,
+        resolved_path,
+        release_tag=release_tag,
+        package_spec=package_spec,
+        qualification_context=qualification_context,
+        starting_version=starting_version,
+        output_path=output_path,
+        repo_path=repo_path,
+    )
+    timeout = int(lane.provider_config.get("campaign_adapter_timeout_seconds") or DEFAULT_ADAPTER_TIMEOUT_SECONDS)
+
+    try:
+        completed = adapter_runner(argv, timeout)
+    except subprocess.TimeoutExpired:
+        return None, _safe_error("adapter_timeout"), f"{provider} adapter exceeded {timeout}s"
+    except OSError:
+        return None, _safe_error("command_not_found"), f"command not found: {argv[0]}"
+
+    if completed.returncode != 0:
+        return None, _safe_error("adapter_exited_nonzero"), f"{provider} adapter exited {completed.returncode}"
+
+    if not output_path.is_file():
+        return None, _safe_error("adapter_produced_no_result"), f"{provider} adapter did not write a result file"
+
+    try:
+        with output_path.open("r", encoding="utf-8") as fh:
+            result = json.load(fh)
+        validate_adoption_result_payload(result)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None, _safe_error("adapter_result_invalid"), f"{provider} adapter result failed schema validation"
+
+    if result.get("provider") != provider or result.get("release_tag") != release_tag:
+        return None, _safe_error("adapter_result_mismatch"), f"{provider} adapter result identity mismatch"
+
+    return result, "", ""
 
 
 def initialize_campaign(
@@ -612,7 +794,7 @@ def dispatch_or_advance_campaign(
     which_fn: Callable[[str], str | None] = shutil.which,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
-    run_qualification_fn: Any = run_release_qualification,
+    adapter_runner: AdapterRunner = run_local_adapter_command,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Execute dispatch, polling, or status progression on a campaign."""
@@ -635,39 +817,35 @@ def dispatch_or_advance_campaign(
         _, lane = resolve_provider_lane(provider)
         current_state = str(provider_data.get("state") or "queued")
 
-        # 1. Check local result drop-in first (manual override or completed run)
+        # 1. Check local result drop-in first (manual override or adapter output)
         local_result_file = results_dir / f"{campaign_id}_{provider}.json"
-        if local_result_file.is_file():
-            try:
-                with local_result_file.open("r", encoding="utf-8") as fh:
-                    adoption_res = json.load(fh)
-                if (
-                    isinstance(adoption_res, dict)
-                    and adoption_res.get("schema") == "code_mower.adoptionResult.v1"
-                    and adoption_res.get("release_tag") == release_tag
-                ):
-                    provider_data["adoption_result"] = adoption_res
-                    provider_data["elapsed_seconds"] = float(adoption_res.get("elapsed_seconds") or 0.0)
-                    outcome = adoption_res.get("outcome")
-                    if outcome in {"pass", "pass_with_warnings"}:
-                        provider_data["state"] = "complete"
-                        provider_data["next_action"] = "none"
-                        provider_data["next_detail"] = ""
-                    else:
-                        provider_data["state"] = "blocked"
-                        provider_data["next_action"] = f"inspect {provider} qualification failures"
-                        provider_data["next_detail"] = f"outcome: {outcome}"
-                    provider_data["completed_at"] = now_utc
-                    continue
-            except (OSError, json.JSONDecodeError):
-                pass
+        bound_result = (
+            _load_bound_result_file(local_result_file, provider=provider, release_tag=release_tag)
+            if local_result_file.is_file()
+            else None
+        )
+        if bound_result is not None:
+            provider_data["adoption_result"] = bound_result
+            provider_data["elapsed_seconds"] = float(bound_result.get("elapsed_seconds") or 0.0)
+            provider_data["error"] = ""
+            outcome = bound_result.get("outcome")
+            if outcome in {"pass", "pass_with_warnings"}:
+                provider_data["state"] = "complete"
+                provider_data["next_action"] = "none"
+                provider_data["next_detail"] = ""
+            else:
+                provider_data["state"] = "blocked"
+                provider_data["next_action"] = f"inspect {provider} qualification failures"
+                provider_data["next_detail"] = f"outcome: {outcome}"
+            provider_data["completed_at"] = now_utc
+            continue
 
         # 2. If already complete, preserve state
         if current_state == "complete":
             provider_data["next_action"] = "none"
             continue
 
-        # 3. If running, poll for progress
+        # 3. If running, poll for a bound result marker
         if current_state == "running":
             dispatch_ref = provider_data.get("dispatch_ref", {})
             ref_issue = dispatch_ref.get("issue_number") or issue_number
@@ -678,14 +856,17 @@ def dispatch_or_advance_campaign(
                     gh_json_runner=gh_json_runner,
                 )
                 if error:
-                    provider_data["next_detail"] = f"GitHub poll notice: {error}"
+                    provider_data["error"] = error
                 else:
+                    provider_data["error"] = ""
                     for comment in comments:
                         body = str(comment.get("body") or "")
-                        found_result = _extract_adoption_result_from_text(
+                        found_result = _extract_bound_adoption_result(
                             body,
-                            release_tag=release_tag,
+                            campaign_id=campaign_id,
                             provider=provider,
+                            release_tag=release_tag,
+                            idempotency_key=str(provider_data.get("idempotency_key") or ""),
                         )
                         if found_result:
                             provider_data["adoption_result"] = found_result
@@ -709,11 +890,24 @@ def dispatch_or_advance_campaign(
         cmd_found = _find_command(lane, which_fn=which_fn)
         has_creds, missing_cred = _check_credentials(lane, env=current_env)
         has_issue = bool(issue_number)
+        adapter_configured = bool(lane.provider_config.get("campaign_adapter_argv"))
 
         # 5. Dry-run evaluations
         if not apply:
             provider_data["dispatch_mode"] = "dry_run"
-            if lane.driver == "local_cli" and not cmd_found:
+            if lane.driver == "local_cli" and not adapter_configured:
+                provider_data["state"] = "unavailable"
+                action, detail = _provider_next_action(
+                    provider,
+                    lane,
+                    "unavailable",
+                    command_available=bool(cmd_found),
+                    has_credentials=True,
+                    has_issue=True,
+                    dry_run=True,
+                    adapter_configured=False,
+                )
+            elif lane.driver == "local_cli" and not cmd_found:
                 provider_data["state"] = "unavailable"
                 action, detail = _provider_next_action(
                     provider,
@@ -755,59 +949,55 @@ def dispatch_or_advance_campaign(
         # 6. Applied dispatch (requires explicit apply flag)
         provider_data["dispatch_mode"] = "applied"
         if lane.driver == "local_cli":
-            if not cmd_found:
-                provider_data["state"] = "unavailable"
-                provider_data["error"] = f"command not found: {lane.provider_config.get('command') or provider}"
+            results_dir.mkdir(parents=True, exist_ok=True)
+            result_path = results_dir / f"{campaign_id}_{provider}.json"
+            start_p = time.time()
+            result, error_code, detail = _invoke_local_adapter(
+                lane,
+                provider,
+                release_tag=release_tag,
+                package_spec=package_spec,
+                qualification_context=context,
+                starting_version=starting_version,
+                output_path=result_path,
+                repo_path=repo_path,
+                which_fn=which_fn,
+                adapter_runner=adapter_runner,
+            )
+            if result is None:
+                provider_data["state"] = _ADAPTER_ERROR_STATE.get(error_code, "unavailable")
+                provider_data["error"] = error_code
                 provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
                     provider,
                     lane,
-                    "unavailable",
-                    command_available=False,
+                    provider_data["state"],
+                    command_available=error_code != "command_not_found",
                     has_credentials=True,
                     has_issue=True,
                     dry_run=False,
-                    error=provider_data["error"],
+                    adapter_configured=adapter_configured,
+                    error=detail,
                 )
             else:
-                start_p = time.time()
-                try:
-                    results_dir.mkdir(parents=True, exist_ok=True)
-                    result_path = results_dir / f"{campaign_id}_{provider}.json"
-                    result_dict = run_qualification_fn(
-                        release_tag=release_tag,
-                        package_spec=package_spec,
-                        output_path=result_path,
-                        repo_path=repo_path,
-                        repo_slug=repo_slug,
-                        dry_run=False,
-                        qualification_context=context,
-                        starting_version=starting_version,
-                        provider=provider,
-                        executor=f"{provider}_cli",
-                    )
-                    provider_data["adoption_result"] = result_dict
-                    provider_data["dispatched_at"] = now_utc
-                    provider_data["completed_at"] = now_utc
-                    provider_data["elapsed_seconds"] = round(time.time() - start_p, 2)
-                    outcome = result_dict.get("outcome")
-                    if outcome in {"pass", "pass_with_warnings"}:
-                        provider_data["state"] = "complete"
-                        provider_data["next_action"] = "none"
-                        provider_data["next_detail"] = ""
-                    else:
-                        provider_data["state"] = "blocked"
-                        provider_data["next_action"] = f"inspect {provider} qualification failures"
-                        provider_data["next_detail"] = f"outcome: {outcome}"
-                except Exception as exc:
+                provider_data["adoption_result"] = result
+                provider_data["dispatched_at"] = now_utc
+                provider_data["completed_at"] = now_utc
+                provider_data["elapsed_seconds"] = round(time.time() - start_p, 2)
+                provider_data["error"] = ""
+                outcome = result.get("outcome")
+                if outcome in {"pass", "pass_with_warnings"}:
+                    provider_data["state"] = "complete"
+                    provider_data["next_action"] = "none"
+                    provider_data["next_detail"] = ""
+                else:
                     provider_data["state"] = "blocked"
-                    provider_data["error"] = str(exc)
-                    provider_data["next_action"] = f"inspect {provider} qualification error"
-                    provider_data["next_detail"] = str(exc)
+                    provider_data["next_action"] = f"inspect {provider} qualification failures"
+                    provider_data["next_detail"] = f"outcome: {outcome}"
 
         elif lane.driver in {"saas_event", "hosted_bridge"}:
             if not has_creds:
                 provider_data["state"] = "unavailable"
-                provider_data["error"] = f"missing token: {missing_cred}"
+                provider_data["error"] = _safe_error("missing_credentials")
                 provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
                     provider,
                     lane,
@@ -820,7 +1010,7 @@ def dispatch_or_advance_campaign(
                 )
             elif not issue_number or not repo_slug:
                 provider_data["state"] = "unavailable"
-                provider_data["error"] = "missing issue number or repository slug"
+                provider_data["error"] = _safe_error("missing_issue_number")
                 provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
                     provider,
                     lane,
@@ -845,6 +1035,7 @@ def dispatch_or_advance_campaign(
                 )
                 if ok:
                     provider_data["state"] = "running"
+                    provider_data["error"] = ""
                     provider_data["dispatched_at"] = now_utc
                     provider_data["dispatch_ref"] = ref
                     provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
@@ -860,7 +1051,7 @@ def dispatch_or_advance_campaign(
                     provider_data["state"] = "unavailable"
                     provider_data["error"] = err
                     provider_data["next_action"] = f"retry {provider} dispatch when GitHub is available"
-                    provider_data["next_detail"] = err
+                    provider_data["next_detail"] = ""
         else:
             provider_data["state"] = "unavailable"
             provider_data["next_action"] = f"record manual adoption result for {provider}"
@@ -899,14 +1090,20 @@ def record_manual_result(
     else:
         adoption_res = result_path_or_dict
 
-    if not isinstance(adoption_res, dict) or adoption_res.get("schema") != "code_mower.adoptionResult.v1":
-        raise ValueError("Invalid adoption result schema")
+    validate_adoption_result_payload(adoption_res)
 
     release_tag = campaign.get("release_tag")
     if adoption_res.get("release_tag") != release_tag:
-        raise ValueError(f"Adoption result tag {adoption_res.get('release_tag')} does not match campaign {release_tag}")
+        raise ValueError(
+            f"adoption result tag {adoption_res.get('release_tag')} does not match campaign {release_tag}"
+        )
 
     canonical_provider, _ = resolve_provider_lane(provider)
+    if adoption_res.get("provider") != canonical_provider:
+        raise ValueError(
+            f"adoption result provider {adoption_res.get('provider')!r} does not match {canonical_provider!r}"
+        )
+
     matched = False
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -914,6 +1111,7 @@ def record_manual_result(
         if p.get("provider") == canonical_provider:
             p["adoption_result"] = adoption_res
             p["elapsed_seconds"] = float(adoption_res.get("elapsed_seconds") or 0.0)
+            p["error"] = ""
             outcome = adoption_res.get("outcome")
             if outcome in {"pass", "pass_with_warnings"}:
                 p["state"] = "complete"
@@ -967,7 +1165,6 @@ def release_campaigns_board_payload(
     repo_path: Path | str = ".",
     *,
     campaigns_dir: Path | None = None,
-    show_local_paths: bool = False,
 ) -> dict[str, Any]:
     dir_path = campaigns_dir or default_campaigns_dir(repo_path)
     if not dir_path.is_dir():
@@ -1058,7 +1255,7 @@ def campaign_command(
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     which_fn: Callable[[str], str | None] = shutil.which,
-    run_qualification_fn: Any = run_release_qualification,
+    adapter_runner: AdapterRunner = run_local_adapter_command,
     env: Mapping[str, str] | None = None,
 ) -> int:
     repo_path = repo_path or Path.cwd()
@@ -1117,7 +1314,7 @@ def campaign_command(
             which_fn=which_fn,
             command_runner=command_runner,
             gh_json_runner=gh_json_runner,
-            run_qualification_fn=run_qualification_fn,
+            adapter_runner=adapter_runner,
             env=env,
         )
         if emit_json:
@@ -1154,7 +1351,7 @@ def campaign_command(
         which_fn=which_fn,
         command_runner=command_runner,
         gh_json_runner=gh_json_runner,
-        run_qualification_fn=run_qualification_fn,
+        adapter_runner=adapter_runner,
         env=env,
     )
 

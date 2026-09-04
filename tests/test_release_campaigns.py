@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from code_mower import board, release_campaigns
+from code_mower.provider_registry import LaneLabels, ProviderLane
 
 
 def _mock_adoption_result(
@@ -57,6 +59,31 @@ def _mock_adoption_result(
     }
 
 
+def _fake_local_cli_lane(*, command: str = "fake-provider-cli") -> ProviderLane:
+    """A local_cli lane with a real, registry-configured campaign adapter."""
+    return ProviderLane(
+        lane_id="fake_cli",
+        lane_type="audit",
+        driver="local_cli",
+        provider="codex",
+        labels=LaneLabels(needs="needs-fake", done="fake-done", blocked="fake-blocked"),
+        trigger_policy="manual",
+        provider_config={
+            "command": command,
+            "campaign_adapter_argv": (
+                "{command}",
+                "qualify",
+                "--release-tag",
+                "{release_tag}",
+                "--package-spec",
+                "{package_spec}",
+                "--output",
+                "{output}",
+            ),
+        },
+    )
+
+
 class ReleaseCampaignTests(unittest.TestCase):
     """Focused mocked tests for release qualification campaigns."""
 
@@ -64,7 +91,7 @@ class ReleaseCampaignTests(unittest.TestCase):
         """Campaign creation defaults to dry-run and executes no mutations or calls."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
-            run_qual_mock = mock.MagicMock()
+            adapter_mock = mock.MagicMock()
             cmd_runner_mock = mock.MagicMock()
 
             result = release_campaigns.campaign_command(
@@ -72,11 +99,11 @@ class ReleaseCampaignTests(unittest.TestCase):
                 package_spec="code-mower==1.0.0",
                 campaigns_dir=campaigns_dir,
                 apply=False,
-                run_qualification_fn=run_qual_mock,
+                adapter_runner=adapter_mock,
                 command_runner=cmd_runner_mock,
             )
             self.assertEqual(result, 0)
-            run_qual_mock.assert_not_called()
+            adapter_mock.assert_not_called()
             cmd_runner_mock.assert_not_called()
 
             saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
@@ -93,12 +120,11 @@ class ReleaseCampaignTests(unittest.TestCase):
                 self.assertIsNone(p["dispatched_at"])
                 self.assertIsNone(p["completed_at"])
 
-    def test_apply_executes_available_local_provider(self) -> None:
-        """Running with --apply executes qualification for available local CLI provider."""
+    def test_local_cli_without_adapter_cannot_complete(self) -> None:
+        """A local_cli provider with no configured campaign adapter never fabricates a result."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
-            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="codex", outcome="pass")
-            run_qual_mock = mock.MagicMock(return_value=adoption_res)
+            adapter_mock = mock.MagicMock()
 
             result = release_campaigns.campaign_command(
                 release_tag="v1.0.0",
@@ -107,13 +133,53 @@ class ReleaseCampaignTests(unittest.TestCase):
                 campaigns_dir=campaigns_dir,
                 apply=True,
                 which_fn=lambda _cmd: "/bin/codex",
-                run_qualification_fn=run_qual_mock,
+                adapter_runner=adapter_mock,
             )
             self.assertEqual(result, 0)
-            self.assertEqual(run_qual_mock.call_count, 1)
+            adapter_mock.assert_not_called()
 
             saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
-            self.assertIsNotNone(saved)
+            assert saved is not None
+            provider_entry = saved["providers"][0]
+            self.assertEqual(provider_entry["state"], "unavailable")
+            self.assertEqual(provider_entry["error"], "no_campaign_adapter_configured")
+            self.assertIsNone(provider_entry["adoption_result"])
+            self.assertIn("record manual result", provider_entry["next_action"])
+
+    def test_apply_invokes_configured_adapter_before_completion(self) -> None:
+        """A configured local_cli adapter must actually run (argv only) before a provider completes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+            invocations: list[list[str]] = []
+
+            def fake_adapter_runner(argv, timeout):
+                invocations.append(list(argv))
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="codex", outcome="pass")
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                result = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=fake_adapter_runner,
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(invocations), 1)
+            self.assertEqual(invocations[0][0], "/bin/fake-provider-cli")
+            self.assertIn("v1.0.0", invocations[0])
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertFalse(saved["dry_run"])
             self.assertEqual(saved["status"], "complete")
@@ -126,39 +192,147 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertIsNotNone(provider_entry["completed_at"])
             self.assertEqual(provider_entry["adoption_result"]["outcome"], "pass")
 
-    def test_idempotent_resume(self) -> None:
-        """Resume does not re-dispatch already completed or running providers."""
+    def test_adapter_invocation_without_result_file_cannot_complete(self) -> None:
+        """If the adapter runs but writes no result file, the provider is blocked, not complete."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
-            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="codex", outcome="pass")
-            run_qual_mock = mock.MagicMock(return_value=adoption_res)
+            fake_lane = _fake_local_cli_lane()
 
-            # 1. Initial applied run
-            release_campaigns.campaign_command(
-                release_tag="v1.0.0",
-                package_spec="code-mower==1.0.0",
-                providers=["codex"],
-                campaigns_dir=campaigns_dir,
-                apply=True,
-                which_fn=lambda _cmd: "/bin/codex",
-                run_qualification_fn=run_qual_mock,
-            )
-            self.assertEqual(run_qual_mock.call_count, 1)
+            def no_output_adapter_runner(argv, timeout):
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-            saved_before = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
-            assert saved_before is not None
-            idemp_key = saved_before["providers"][0]["idempotency_key"]
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=no_output_adapter_runner,
+                )
 
-            # 2. Resume run - must NOT re-call qualification runner
-            release_campaigns.campaign_command(
-                release_tag="v1.0.0",
-                campaigns_dir=campaigns_dir,
-                resume=True,
-                apply=True,
-                which_fn=lambda _cmd: "/bin/codex",
-                run_qualification_fn=run_qual_mock,
-            )
-            self.assertEqual(run_qual_mock.call_count, 1)  # Still 1, not duplicated!
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            provider_entry = saved["providers"][0]
+            self.assertEqual(provider_entry["state"], "blocked")
+            self.assertEqual(provider_entry["error"], "adapter_produced_no_result")
+            self.assertIsNone(provider_entry["adoption_result"])
+
+    def test_adapter_result_identity_mismatch_is_rejected(self) -> None:
+        """An adapter result for the wrong provider/tag is rejected, not accepted as evidence."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+
+            def mismatched_adapter_runner(argv, timeout):
+                output_path = Path(argv[argv.index("--output") + 1])
+                # Wrong provider label -- must not be silently relabeled/accepted.
+                adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="claude", outcome="pass")
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=mismatched_adapter_runner,
+                )
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            provider_entry = saved["providers"][0]
+            self.assertEqual(provider_entry["state"], "blocked")
+            self.assertEqual(provider_entry["error"], "adapter_result_mismatch")
+
+    def test_adapter_result_with_extra_fields_is_rejected(self) -> None:
+        """Undeclared fields (e.g. raw output or paths) in an adapter result are rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+
+            def dirty_adapter_runner(argv, timeout):
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="codex", outcome="pass")
+                adoption_res["stdout"] = "some raw provider output"
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=dirty_adapter_runner,
+                )
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            provider_entry = saved["providers"][0]
+            self.assertEqual(provider_entry["state"], "blocked")
+            self.assertEqual(provider_entry["error"], "adapter_result_invalid")
+            serialized = json.dumps(saved)
+            self.assertNotIn("stdout", serialized.lower())
+
+    def test_idempotent_resume_does_not_reinvoke_adapter(self) -> None:
+        """Resume does not re-dispatch already completed providers."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+            invocations: list[list[str]] = []
+
+            def fake_adapter_runner(argv, timeout):
+                invocations.append(list(argv))
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="codex", outcome="pass")
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                # 1. Initial applied run
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=fake_adapter_runner,
+                )
+                self.assertEqual(len(invocations), 1)
+
+                saved_before = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                assert saved_before is not None
+                idemp_key = saved_before["providers"][0]["idempotency_key"]
+
+                # 2. Resume run - must NOT re-invoke the adapter
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=fake_adapter_runner,
+                )
+                self.assertEqual(len(invocations), 1)  # Still 1, not duplicated!
 
             saved_after = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
             assert saved_after is not None
@@ -166,11 +340,11 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(saved_after["providers"][0]["state"], "complete")
 
     def test_provider_unavailable(self) -> None:
-        """Missing CLI tools or tokens degrade gracefully to unavailable with actionable next steps."""
+        """Missing prerequisites degrade gracefully to unavailable with actionable next steps."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
 
-            # Neither binary nor tokens available
+            # Neither a configured adapter, CLI binary, nor tokens are available
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
@@ -186,14 +360,18 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(saved["status"], "unavailable")
 
             providers_by_name = {p["provider"]: p for p in saved["providers"]}
+            # antigravity is local_cli but has no campaign adapter configured, so it
+            # must fail closed on that basis rather than suggesting a CLI install
+            # that would never actually be invoked.
             self.assertEqual(providers_by_name["antigravity"]["state"], "unavailable")
-            self.assertIn("install agy CLI", providers_by_name["antigravity"]["next_action"])
+            self.assertEqual(providers_by_name["antigravity"]["error"], "no_campaign_adapter_configured")
+            self.assertIn("record manual result", providers_by_name["antigravity"]["next_action"])
 
             self.assertEqual(providers_by_name["devin"]["state"], "unavailable")
             self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", providers_by_name["devin"]["next_action"])
 
-    def test_github_unavailable(self) -> None:
-        """GitHub network failure leaves useful local status without corrupting campaign."""
+    def test_github_dispatch_failure_persists_only_a_safe_error_code(self) -> None:
+        """GitHub dispatch failure leaves useful local status without persisting raw gh output."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
 
@@ -225,7 +403,10 @@ class ReleaseCampaignTests(unittest.TestCase):
             cursor_p = saved["providers"][0]
             self.assertEqual(cursor_p["state"], "unavailable")
             self.assertIn("retry cursor_bugbot dispatch when GitHub is available", cursor_p["next_action"])
-            self.assertIn("github.com", cursor_p["error"])
+            self.assertEqual(cursor_p["error"], "github_dispatch_failed")
+            serialized = json.dumps(saved)
+            self.assertNotIn("github.com", serialized)
+            self.assertNotIn("resolve host", serialized)
 
     def test_local_only_status(self) -> None:
         """Campaign status inspects local state without requiring GitHub access."""
@@ -255,24 +436,33 @@ class ReleaseCampaignTests(unittest.TestCase):
         """Campaign payload contains no private paths, raw output, diffs, or secrets."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
-            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="codex", outcome="pass")
+            fake_lane = _fake_local_cli_lane()
 
-            release_campaigns.campaign_command(
-                release_tag="v1.0.0",
-                package_spec="code-mower==1.0.0",
-                providers=["codex"],
-                campaigns_dir=campaigns_dir,
-                apply=True,
-                which_fn=lambda _cmd: "/bin/codex",
-                run_qualification_fn=lambda **kw: adoption_res,
-            )
+            def fake_adapter_runner(argv, timeout):
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="codex", outcome="pass")
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=fake_adapter_runner,
+                )
 
             saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             serialized = json.dumps(saved)
 
-            self.assertNotIn("/Users/", serialized)
-            self.assertNotIn("/private/tmp", serialized)
+            self.assertNotIn(str(Path(tmp)), serialized)
             self.assertNotIn("token", serialized.lower())
             self.assertNotIn("secret", serialized.lower())
             self.assertNotIn("diff", serialized.lower())
@@ -370,22 +560,48 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(saved["providers"][0]["state"], "complete")
             self.assertEqual(saved["providers"][0]["next_action"], "none")
 
-    def test_poll_discovers_structured_github_comment(self) -> None:
-        """Polling detects structured adoptionResult markers from GitHub issue comments."""
+    def test_manual_adoption_result_provider_mismatch_rejected(self) -> None:
+        """A manual result labeled for a different provider is rejected, not relabeled."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            result_file = Path(tmp) / "result.json"
+
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="claude", outcome="pass")
+            with result_file.open("w", encoding="utf-8") as fh:
+                json.dump(adoption_res, fh)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                campaigns_dir=campaigns_dir,
+                apply=False,
+            )
+
+            ret = release_campaigns.campaign_command(
+                campaigns_dir=campaigns_dir,
+                record_result=result_file,
+                record_provider="devin",
+                release_tag="v1.0.0",
+            )
+            self.assertEqual(ret, 1)
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            # Rejected recording must leave the provider's prior (dry-run) state untouched.
+            self.assertEqual(saved["providers"][0]["state"], "unavailable")
+            self.assertIsNone(saved["providers"][0]["adoption_result"])
+
+    def test_poll_requires_bound_comment_marker(self) -> None:
+        """A bare adoptionResult JSON with no identity-bound wrapper is not accepted."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
-            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(adoption_res)} -->"
+            unbound_marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(adoption_res)} -->"
 
             def mock_gh_json(args, **kwargs):
-                return {
-                    "comments": [
-                        {"body": "Starting review..."},
-                        {"body": f"Review complete!\n\n{marker}"},
-                    ]
-                }, ""
+                return {"comments": [{"body": f"Review complete!\n\n{unbound_marker}"}]}, ""
 
-            # Create campaign
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
@@ -397,7 +613,54 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
             release_campaigns.save_campaign(campaign, campaigns_dir)
 
-            # Resume/poll
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "running")
+
+    def test_poll_discovers_identity_bound_github_comment(self) -> None:
+        """Polling detects a result marker only when campaign/provider/tag/idempotency all bind."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {
+                    "comments": [
+                        {"body": "Starting review..."},
+                        {"body": f"Review complete!\n\n{marker}"},
+                    ]
+                }, ""
+
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 campaigns_dir=campaigns_dir,
@@ -410,6 +673,48 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
             self.assertEqual(saved["status"], "complete")
+
+    def test_poll_rejects_wrong_idempotency_key(self) -> None:
+        """A result marker with a mismatched idempotency_key is rejected (replay/stale protection)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": "wrong-key",
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "running")
 
 
 if __name__ == "__main__":

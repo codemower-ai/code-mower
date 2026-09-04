@@ -63,12 +63,33 @@ code-mower release campaign \
 ```
 
 - **Dry-run by default:** Omit `--apply` for a safe preview. Add `--apply` for live local execution, GitHub comment dispatch, or paid runs.
-- **Provider diversity:** Tracks Claude, Codex, Antigravity, Muse, Cursor/Grok Bot, and Devin. Missing tools or tokens degrade gracefully to `unavailable` or `manual` without failing the campaign.
-- **Idempotent resume:** Pass `--resume` to re-poll running providers or advance queued participants without duplicating dispatch.
+- **Provider diversity:** Tracks Claude, Codex, Antigravity, Muse, Cursor/Grok Bot, and Devin. Missing tools, tokens, or adapters degrade gracefully to `unavailable` without failing the campaign.
+- **Idempotent resume:** Pass `--resume` to re-poll running providers or advance queued participants without duplicating dispatch or re-invoking an adapter that already completed.
 - **Local resilience:** Campaign state is stored in `.code-mower/campaigns/`. Local status remains fully readable during GitHub or provider network outages.
 - **Board visibility:** Active campaigns surface directly on Code Mower Board with release, provider, environment, elapsed time, state, and actionable next steps.
+- **Never fabricated:** A provider can only reach `complete` when its own adapter command actually ran (argv only, never a shell) and produced a result file that passes closed-schema validation and matches the campaign's provider, release tag, and (for GitHub comment results) idempotency key. Code Mower never runs its own local qualification and relabels the result as another provider's.
 
-### Provider Adapter Setup
+### Provider Adapter Setup (one-time, per provider)
 
-- **Local CLI (Claude, Codex, Antigravity, Muse, Grok):** Install the provider CLI binary (`claude`, `codex`, `agy`, `muse`, or `grok`) on PATH and verify local authentication.
-- **Hosted / SaaS (Devin, Cursor BugBot):** Configure authentication tokens (`DEVIN_AUDIT_LABEL_TOKEN`, `CURSOR_BUGBOT_AUDIT_LABEL_TOKEN`, `GITHUB_TOKEN`) and supply `--issue <number>` for comment dispatch.
+Local CLI providers (`local_cli` driver: Claude, Codex, Antigravity, Muse) only run automatically if a `campaign_adapter_argv` is configured for that provider's lane in `src/code_mower/provider_registry.py`. None of the shipped providers ship with one configured by default -- a provider without a configured adapter is intentionally `unavailable`/manual rather than faking a result. To wire one up:
+
+1. Add `campaign_adapter_argv` (a tuple of argv tokens, executed directly with no shell) and optionally `campaign_adapter_timeout_seconds` to the provider's `provider_config` in `provider_registry.py`. Supported placeholders: `{command}` (resolved binary), `{release_tag}`, `{package_spec}`, `{qualification_context}`, `{starting_version}`, `{output}`, `{repo_path}`.
+2. The adapter command must write a `code_mower.adoptionResult.v1` JSON document to the `{output}` path whose `provider` and `release_tag` fields match the campaign's. Anything else (extra fields, mismatched identity, no file, non-zero exit, or a timeout) leaves the provider `unavailable`/`blocked` with a bounded error code -- never a fabricated pass.
+3. Install the provider's CLI binary on PATH and verify local authentication.
+
+Hosted / SaaS providers (`hosted_bridge`/`saas_event` driver: Devin, Cursor BugBot) dispatch via a GitHub issue comment instead of a local adapter:
+
+- Configure authentication tokens (`DEVIN_AUDIT_LABEL_TOKEN`, `CURSOR_BUGBOT_AUDIT_LABEL_TOKEN`, `GITHUB_TOKEN`) and supply `--issue <number>`.
+- The provider's reply comment must embed a `CODE_MOWER_ADOPTION_RESULT` marker wrapping schema `code_mower.releaseCampaignResult.v1` with `campaign_id`, `provider`, `release_tag`, and `idempotency_key` matching the original dispatch, plus a validated `adoption_result`. A bare or unbound result is ignored so a stale or unrelated comment can never be replayed as evidence.
+
+### Per-Release Operation
+
+Any provider without a working adapter, credentials, or a bound remote result stays `unavailable`/manual. Record its result explicitly once qualification has actually happened elsewhere:
+
+```bash
+code-mower release campaign --release-tag v1.0.0 \
+  --record-result path/to/adoption-result.json \
+  --record-provider codex
+```
+
+The recorded file is validated against the same closed schema as automated results.
