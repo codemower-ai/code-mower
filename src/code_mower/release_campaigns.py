@@ -1756,16 +1756,16 @@ def dispatch_or_advance_campaign(
                     "provider": provider,
                     "idempotency_key": trigger_key,
                 }
-                if not dispatch_posted:
+                if poll_error:
+                    provider_data["next_action"] = f"retry {provider} trigger reconciliation"
+                    provider_data["next_detail"] = "GitHub comments are temporarily unavailable"
+                elif not dispatch_posted:
                     provider_data["next_action"] = (
                         f"run with --apply --retry-provider {provider} to retry the dispatch"
                     )
                     provider_data["next_detail"] = (
                         "trigger withheld because the campaign dispatch is not confirmed"
                     )
-                elif poll_error:
-                    provider_data["next_action"] = f"retry {provider} trigger reconciliation"
-                    provider_data["next_detail"] = "GitHub comments are temporarily unavailable"
                 elif _has_matching_release_marker(
                     comments,
                     "CODE_MOWER_RELEASE_TRIGGER",

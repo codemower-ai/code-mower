@@ -2946,6 +2946,42 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertFalse(resumed["providers"][0]["trigger_posted"])
             self.assertIn("retry the dispatch", resumed["providers"][0]["next_action"])
 
+    def test_poll_failure_never_recommends_uncertain_redispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["trigger_idempotency_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": False}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: (None, "GitHub unavailable"),
+                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            action = resumed["providers"][0]["next_action"]
+            self.assertIn("reconciliation", action)
+            self.assertNotIn("retry the dispatch", action)
+
     def test_resume_reconciles_posted_trigger_marker_without_reposting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
