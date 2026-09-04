@@ -2743,13 +2743,13 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(len(bodies), 2)
             dispatch_body = bodies[0]
             trigger_body = bodies[1]
-            
+
             # Dispatch body should document the trigger commands
             self.assertIn("@devin run", dispatch_body)
             self.assertIn("devin run", dispatch_body)
             self.assertIn("**Trigger comments:**", dispatch_body)
             self.assertIn("`@devin run`, `devin run`", dispatch_body)
-            
+
             # Trigger body should be just the trigger command itself
             self.assertEqual(trigger_body.strip(), "@devin run")
 
@@ -2774,11 +2774,11 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(len(bodies), 2)
             dispatch_body = bodies[0]
             trigger_body = bodies[1]
-            
+
             # Dispatch body should document the trigger commands
             self.assertIn("bugbot run", dispatch_body)
             self.assertIn("@cursor review", dispatch_body)
-            
+
             # Trigger body should be just the first trigger command
             self.assertEqual(trigger_body.strip(), "bugbot run")
 
