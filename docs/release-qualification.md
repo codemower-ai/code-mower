@@ -1,59 +1,40 @@
 # Release Qualification
 
-The `code-mower release qualify` command provides local release qualification with a stable adoption-result schema.
+The `code-mower release qualify` command runs local release qualification with a stable adoption-result schema.
 
 ## Usage
 
-### Dry Run (Default)
-
 ```bash
 code-mower release qualify \
   --release-tag v1.0.0 \
   --package-spec code-mower==1.0.0 \
-  --output adoption-result.json
-```
-
-### Execute Qualification
-
-```bash
-code-mower release qualify \
-  --release-tag v1.0.0 \
-  --package-spec code-mower==1.0.0 \
-  --output adoption-result.json \
-  --execute
+  --output result.json \
+  --qualification-context cold_install
 ```
 
 ## Schema
 
-The `code_mower.adoptionResult.v1` schema includes:
+`code_mower.adoptionResult.v1` includes:
 
-- `schema`: Schema version identifier
-- `timestamp_utc`: Qualification timestamp
-- `release_tag`: Exact release tag
-- `package_identity`: Sanitized package name
-- `normalized_version`: Version from tag
-- `qualification_context`: `cold_install`, `upgrade`, or `unknown`
-- `starting_version`: Version before qualification (operator context)
-- `ending_version`: Version after qualification (isolated rehearsal)
-- `provider`: Provider identity (safe identifier)
-- `executor`: Executor identity (safe identifier)
-- `host_class`: Host classification (`local`, `ci`, `github_actions`)
-- `runtime_class`: Python runtime
+- `schema`: Schema version
+- `timestamp_utc`: UTC timestamp
+- `release_tag`: Exact tag
+- `package_identity`: Package name
+- `normalized_version`: Normalized version
+- `qualification_context`: Context (cold_install/upgrade/unknown)
+- `starting_version`: Version before (explicit for upgrade)
+- `ending_version`: Version after rehearsal
+- `provider`, `executor`: Safe identifiers
+- `host_class`, `runtime_class`: Environment classification
 - `elapsed_seconds`: Total time
-- `outcome`: `pass`, `pass_with_warnings`, or `fail`
-- `step_count`: Number of steps executed
-- `warning_count`: Warning count
-- `owner_action_count`: Owner action count
+- `outcome`: pass/pass_with_warnings/fail
+- `steps`: List with id, status, elapsed_seconds, warning_count, owner_action_count
 
-Privacy-safe: no local paths, secrets, or raw command output.
+No local paths, secrets, commands, or raw output.
 
 ## Validation
 
-Tag validation is strict and anchored:
-- `v1.0.0` ✓
-- `v1.0.0-alpha.1` → `1.0.0a1` ✓
-- `v1.0.0-beta.2` → `1.0.0b2` ✓
-- `v1.0.0-rc.1` → `1.0.0rc1` ✓
-- `1.0.0` ✗ (missing v prefix)
-
-Provider and executor must be safe identifiers: `^[a-z][a-z0-9_]{0,31}$`
+- Tag must match `v<major>.<minor>.<patch>[-<stage>.<num>]`
+- Package must be exact index spec: `code-mower==1.0.0`
+- Tag and spec versions must match
+- Provider/executor must be safe identifiers: `^[a-z][a-z0-9_]{0,31}$`

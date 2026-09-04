@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -17,25 +18,33 @@ from typing import Any, Sequence
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from code_mower import board as code_mower_board
-    from code_mower import doctor_checks as code_mower_doctor_checks
-    from code_mower import lane_status as code_mower_lane_status
-    from code_mower import versioning as code_mower_versioning
+    from code_mower import doctor_checks
+    from code_mower import lane_status
     from code_mower.migration_rehearsal import (
         _package_spec_uses_package_index,
         run_package_install_rehearsal,
     )
 else:
     from . import board as code_mower_board
-    from . import doctor_checks as code_mower_doctor_checks
-    from . import lane_status as code_mower_lane_status
-    from . import versioning as code_mower_versioning
+    from . import doctor_checks
+    from . import lane_status
     from .migration_rehearsal import (
         _package_spec_uses_package_index,
         run_package_install_rehearsal,
     )
 
-SAFE_PROVIDER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
-SAFE_EXECUTOR_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+@dataclass
+class StepResult:
+    """Step execution result."""
+
+    id: str
+    status: str
+    elapsed_seconds: float
+    warning_count: int
+    owner_action_count: int
 
 
 @dataclass
@@ -56,9 +65,7 @@ class AdoptionResult:
     runtime_class: str
     elapsed_seconds: float
     outcome: str
-    step_count: int
-    warning_count: int
-    owner_action_count: int
+    steps: list[dict[str, Any]]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict."""
@@ -71,27 +78,8 @@ def _normalize_version(version_str: str) -> str:
     return match.group(1) if match else ""
 
 
-def _detect_qualification_context() -> str:
-    """Detect qualification context from environment."""
-    try:
-        result = subprocess.run(
-            ["code-mower", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if result.returncode == 0:
-            version = _normalize_version(result.stdout)
-            return "upgrade" if version else "unknown"
-        return "unknown"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return "cold_install"
-
-
 def _detect_host_class() -> str:
     """Detect coarse host class."""
-    import os
     if os.environ.get("GITHUB_ACTIONS") == "true":
         return "github_actions"
     if os.environ.get("CI") == "true":
@@ -104,18 +92,18 @@ def _detect_runtime_class() -> str:
     return f"python_{sys.version_info.major}.{sys.version_info.minor}"
 
 
-def _validate_safe_identifier(value: str, name: str, pattern: re.Pattern[str]) -> None:
+def _validate_safe_identifier(value: str, name: str) -> None:
     """Validate identifier is safe for metadata."""
-    if not pattern.match(value):
+    if not SAFE_IDENTIFIER_PATTERN.match(value):
         raise ValueError(
-            f"{name} must match {pattern.pattern}: got {value!r}"
+            f"{name} must match {SAFE_IDENTIFIER_PATTERN.pattern}: got {value!r}"
         )
 
 
 def _extract_package_identity(package_spec: str) -> str:
     """Extract sanitized package identity from spec."""
     if _package_spec_uses_package_index(package_spec):
-        match = re.match(r"^([\w-]+)==([\d.abc]+)$", package_spec)
+        match = re.match(r"^([\w-]+)==", package_spec)
         if match:
             return match.group(1)
     return "code-mower"
@@ -140,82 +128,98 @@ def _validate_tag_format(release_tag: str) -> tuple[bool, str, str]:
     return True, normalized, ""
 
 
-def _validate_tag_package_match(
-    release_tag: str,
-    package_spec: str,
-) -> tuple[bool, str, str]:
-    """Validate that release tag and package spec versions agree."""
-    valid, normalized, error = _validate_tag_format(release_tag)
-    if not valid:
-        return False, "", error
-
-    if _package_spec_uses_package_index(package_spec):
-        spec_match = re.match(r"^[\w-]+==([\d.abc]+)$", package_spec)
-        if not spec_match:
-            return False, "", f"package-index spec missing exact version: {package_spec}"
-        spec_version = spec_match.group(1)
-        if normalized != spec_version:
-            return False, "", f"version mismatch: tag {normalized} vs spec {spec_version}"
-        return True, normalized, ""
-
-    return False, normalized, "pending_verification"
-
-
-def _run_doctor_check(timeout: int) -> tuple[str, int, int]:
-    """Run doctor check and return status, warnings, owner actions."""
+def _run_doctor_check(config_path: Path, timeout: int) -> StepResult:
+    """Run doctor check and return step result."""
+    start = time.time()
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "code-mower.yml"
-            config_path.write_text("repositories: []\n", encoding="utf-8")
-            provider_templates = code_mower_doctor_checks.resolve_doctor_provider_templates_path(None)
-            report = code_mower_doctor_checks.run_doctor(
-                config_path=config_path,
-                provider_templates_path=provider_templates,
-                profile="recommended",
-                easy=True,
-                probe_runtime=True,
-                probe_github=False,
-                probe_cloud=False,
-                repo_slug=None,
-                adoption=False,
-            )
-            status = report.status
-            warnings = sum(1 for c in report.checks if c.status == "warn")
-            owner_actions = 0
-            return status, warnings, owner_actions
+        provider_templates = doctor_checks.resolve_doctor_provider_templates_path(None)
+        report = doctor_checks.run_doctor(
+            config_path=config_path,
+            provider_templates_path=provider_templates,
+            profile="recommended",
+            adoption=True,
+            github=False,
+            cloud=False,
+        )
+        warnings = sum(1 for c in report.checks if c.status == "warn")
+        actions = sum(
+            len(c.next_actions) for c in report.checks if hasattr(c, "next_actions") and c.next_actions
+        )
+        status = report.status
     except Exception:
-        return "unavailable", 0, 0
+        status = "unavailable"
+        warnings = 0
+        actions = 0
+
+    return StepResult(
+        id="doctor",
+        status=status,
+        elapsed_seconds=round(time.time() - start, 2),
+        warning_count=warnings,
+        owner_action_count=actions,
+    )
 
 
-def _run_lanes_status_check(repo_path: Path, timeout: int) -> tuple[str, int, int]:
+def _run_lanes_check(repo_slug: str, timeout: int) -> StepResult:
     """Run lanes status check."""
+    start = time.time()
+    try:
+        result = lane_status.collect_status(repo=repo_slug)
+        status = "pass" if result.get("status") == "ok" else "fail"
+    except Exception:
+        status = "unavailable"
+
+    return StepResult(
+        id="lanes_status",
+        status=status,
+        elapsed_seconds=round(time.time() - start, 2),
+        warning_count=0,
+        owner_action_count=0,
+    )
+
+
+def _run_board_check(repo_slug: str, repo_path: Path, timeout: int) -> StepResult:
+    """Run board diagnostics."""
+    start = time.time()
+    try:
+        config = code_mower_board.BoardConfig(
+            repo=repo_slug,
+            repo_path=str(repo_path),
+        )
+        result = code_mower_board.doctor_payload(config)
+        status = "pass"
+    except Exception:
+        status = "unavailable"
+
+    return StepResult(
+        id="board",
+        status=status,
+        elapsed_seconds=round(time.time() - start, 2),
+        warning_count=0,
+        owner_action_count=0,
+    )
+
+
+def _infer_repo_slug(repo_path: Path | None) -> str:
+    """Infer safe repo slug from git remote."""
+    if not repo_path:
+        return ""
     try:
         result = subprocess.run(
-            ["code-mower", "lanes", "status", "--repo", str(repo_path), "--json"],
+            ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=5,
             check=False,
         )
         if result.returncode == 0:
-            data = json.loads(result.stdout)
-            return "pass", 0, 0
-        return "fail", 0, 0
+            url = result.stdout.strip()
+            match = re.search(r"github\.com[:/]([^/]+/[^/]+?)(\.git)?$", url)
+            if match:
+                return match.group(1)
     except Exception:
-        return "unavailable", 0, 0
-
-
-def _run_board_check(repo_path: Path, timeout: int) -> tuple[str, int, int]:
-    """Run board diagnostics."""
-    try:
-        report = code_mower_board.render_board_report(
-            repo_slug=None,
-            repo_path=repo_path,
-            record_events=False,
-        )
-        return "pass", 0, 0
-    except Exception:
-        return "unavailable", 0, 0
+        pass
+    return ""
 
 
 def run_release_qualification(
@@ -224,86 +228,101 @@ def run_release_qualification(
     package_spec: str,
     output_path: Path,
     repo_path: Path | None = None,
+    repo_slug: str = "",
     dry_run: bool = True,
+    qualification_context: str = "",
+    starting_version: str = "",
     provider: str = "local_cli",
     executor: str = "unknown",
     timeout: int = 180,
 ) -> dict[str, Any]:
     """Run release qualification and emit adoption result."""
     start_time = time.time()
-    step_count = 0
-    warning_count = 0
-    owner_action_count = 0
+    steps: list[StepResult] = []
 
-    _validate_safe_identifier(provider, "provider", SAFE_PROVIDER_PATTERN)
-    _validate_safe_identifier(executor, "executor", SAFE_EXECUTOR_PATTERN)
+    _validate_safe_identifier(provider, "provider")
+    _validate_safe_identifier(executor, "executor")
 
-    valid, normalized_version, error = _validate_tag_package_match(
-        release_tag,
-        package_spec,
-    )
-    if not valid and error != "pending_verification":
-        raise ValueError(f"Tag/package validation failed: {error}")
+    valid, normalized_version, error = _validate_tag_format(release_tag)
+    if not valid:
+        raise ValueError(error)
 
-    verification_pending = error == "pending_verification"
+    if not _package_spec_uses_package_index(package_spec):
+        raise ValueError("Only exact package-index specs are supported (e.g., code-mower==1.0.0)")
+
+    spec_match = re.match(r"^[\w-]+==([\d.abc]+)$", package_spec)
+    if not spec_match:
+        raise ValueError(f"Package spec must be exact: {package_spec}")
+    if spec_match.group(1) != normalized_version:
+        raise ValueError(f"Version mismatch: tag {normalized_version} vs spec {spec_match.group(1)}")
+
     package_identity = _extract_package_identity(package_spec)
-    qualification_context = _detect_qualification_context()
-    starting_version = _normalize_version(subprocess.run(
-        ["code-mower", "--version"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    ).stdout) if qualification_context == "upgrade" else ""
+
+    if not qualification_context:
+        qualification_context = "unknown"
+    if not SAFE_IDENTIFIER_PATTERN.match(qualification_context):
+        raise ValueError(f"qualification_context must be safe identifier: {qualification_context}")
 
     ending_version = ""
     outcome = "pass"
 
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "code-mower.yml"
+        config_path.write_text("repositories: []\n", encoding="utf-8")
+
+        doctor_step = _run_doctor_check(config_path, timeout)
+        steps.append(doctor_step)
+        if doctor_step.status == "fail":
+            outcome = "fail"
+
+        if repo_path and not repo_slug:
+            repo_slug = _infer_repo_slug(repo_path)
+
+        if repo_slug:
+            lanes_step = _run_lanes_check(repo_slug, timeout)
+            steps.append(lanes_step)
+            if lanes_step.status == "fail":
+                outcome = "fail"
+
+            if repo_path:
+                board_step = _run_board_check(repo_slug, repo_path, timeout)
+                steps.append(board_step)
+                if board_step.status == "fail":
+                    outcome = "fail"
+
     if not dry_run:
-        step_count += 1
+        rehearsal_start = time.time()
         try:
             rehearsal_result = run_package_install_rehearsal(
                 package_spec=package_spec,
                 repo_path=repo_path,
                 timeout=timeout,
-                allow_package_index=_package_spec_uses_package_index(package_spec),
+                allow_package_index=True,
             )
             ending_version = rehearsal_result.get("version", "")
-            if verification_pending and ending_version != normalized_version:
+            if ending_version != normalized_version:
                 outcome = "fail"
-                warning_count += 1
+            rehearsal_status = "pass"
         except Exception:
+            rehearsal_status = "fail"
             outcome = "fail"
-            warning_count += 1
+
+        steps.append(
+            StepResult(
+                id="package_install",
+                status=rehearsal_status,
+                elapsed_seconds=round(time.time() - rehearsal_start, 2),
+                warning_count=0,
+                owner_action_count=0,
+            )
+        )
     else:
-        ending_version = normalized_version if not verification_pending else ""
+        ending_version = normalized_version
 
-    step_count += 1
-    doctor_status, doctor_warnings, doctor_actions = _run_doctor_check(timeout)
-    warning_count += doctor_warnings
-    owner_action_count += doctor_actions
-    if doctor_status == "fail":
-        outcome = "fail"
-    elif doctor_status == "unavailable":
-        warning_count += 1
-
-    if repo_path:
-        step_count += 1
-        lanes_status, lanes_warnings, lanes_actions = _run_lanes_status_check(repo_path, timeout)
-        warning_count += lanes_warnings
-        owner_action_count += lanes_actions
-        if lanes_status == "unavailable":
-            warning_count += 1
-
-        step_count += 1
-        board_status, board_warnings, board_actions = _run_board_check(repo_path, timeout)
-        warning_count += board_warnings
-        owner_action_count += board_actions
-        if board_status == "unavailable":
-            warning_count += 1
-
-    if outcome != "fail" and (warning_count > 0 or owner_action_count > 0):
-        outcome = "pass_with_warnings"
+    if outcome != "fail":
+        unavailable_count = sum(1 for s in steps if s.status == "unavailable")
+        if unavailable_count > 0:
+            outcome = "pass_with_warnings"
 
     elapsed = time.time() - start_time
 
@@ -322,9 +341,16 @@ def run_release_qualification(
         runtime_class=_detect_runtime_class(),
         elapsed_seconds=round(elapsed, 2),
         outcome=outcome,
-        step_count=step_count,
-        warning_count=warning_count,
-        owner_action_count=owner_action_count,
+        steps=[
+            {
+                "id": s.id,
+                "status": s.status,
+                "elapsed_seconds": s.elapsed_seconds,
+                "warning_count": s.warning_count,
+                "owner_action_count": s.owner_action_count,
+            }
+            for s in steps
+        ],
     )
 
     result_dict = result.to_dict()
@@ -352,7 +378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     qualify.add_argument(
         "--package-spec",
         required=True,
-        help="Package specification (e.g., code-mower==1.0.0)",
+        help="Exact package-index spec (e.g., code-mower==1.0.0)",
     )
     qualify.add_argument(
         "--output",
@@ -364,12 +390,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--repo-path",
         type=Path,
         default=None,
-        help="Optional repository path for lanes status checks",
+        help="Optional repository path",
+    )
+    qualify.add_argument(
+        "--repo-slug",
+        default="",
+        help="Optional repository slug (OWNER/REPO)",
     )
     qualify.add_argument(
         "--execute",
         action="store_true",
         help="Execute qualification (default is dry-run)",
+    )
+    qualify.add_argument(
+        "--qualification-context",
+        default="",
+        help="Qualification context (safe identifier)",
+    )
+    qualify.add_argument(
+        "--starting-version",
+        default="",
+        help="Starting version for upgrade context",
     )
     qualify.add_argument(
         "--provider",
@@ -385,7 +426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--timeout",
         type=int,
         default=180,
-        help="Timeout in seconds for individual steps",
+        help="Timeout in seconds",
     )
     qualify.add_argument("--json", action="store_true")
 
@@ -398,7 +439,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 package_spec=args.package_spec,
                 output_path=args.output,
                 repo_path=args.repo_path,
+                repo_slug=args.repo_slug,
                 dry_run=not args.execute,
+                qualification_context=args.qualification_context,
+                starting_version=args.starting_version,
                 provider=args.provider,
                 executor=args.executor,
                 timeout=args.timeout,
@@ -408,14 +452,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print(f"Qualification: {result['outcome']}")
                 print(f"Schema: {result['schema']}")
-                print(f"Release: {result['release_tag']}")
-                print(f"Package: {result['package_identity']}")
-                print(f"Version: {result['normalized_version']}")
+                print(f"Package: {result['package_identity']} {result['normalized_version']}")
                 print(f"Context: {result['qualification_context']}")
-                if result['warning_count']:
-                    print(f"Warnings: {result['warning_count']}")
-                if result['owner_action_count']:
-                    print(f"Owner actions: {result['owner_action_count']}")
+                print(f"Steps: {len(result['steps'])}")
             return 0 if result["outcome"] in ("pass", "pass_with_warnings") else 1
         except ValueError as e:
             print(f"error: {e}", file=sys.stderr)
