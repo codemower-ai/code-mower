@@ -400,6 +400,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "prompts",
                 "productivity",
                 "providers",
+                "release",
                 "reviewer-metrics",
                 "saas-reviewer-labeler",
                 "telemetry",

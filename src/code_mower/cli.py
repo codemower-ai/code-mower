@@ -76,6 +76,7 @@ from . import next_steps as code_mower_next_steps
 from . import package as code_mower_package
 from . import productivity_report as code_mower_productivity_report
 from . import prompts as code_mower_prompts
+from . import release_qualify as code_mower_release_qualify
 from . import reviewer_metrics
 from . import saas_reviewer_labeler
 from . import trailer_comment_labeler
@@ -466,6 +467,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "prompts": "Inspect prompt/lens customization artifacts.",
     "productivity": "Report local throughput, reviewer quality, spend, and merge outcomes.",
     "providers": "List or inspect provider template definitions.",
+    "release": "Run release qualification with adoption-result output.",
     "reviewer-metrics": "Compute reviewer metrics and value reports.",
     "saas-reviewer-labeler": "Apply labels from hosted reviewer comments.",
     "telemetry": "Inspect benchmark telemetry/event helpers.",
@@ -612,6 +614,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "prompts": code_mower_prompts.main,
     "productivity": code_mower_productivity_report.main,
     "providers": _providers_main,
+    "release": code_mower_release_qualify.main,
     "reviewer-metrics": reviewer_metrics.main,
     "saas-reviewer-labeler": saas_reviewer_labeler.main,
     "telemetry": code_mower_telemetry.main,
