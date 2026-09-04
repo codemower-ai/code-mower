@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 import subprocess
-import uuid
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -596,17 +596,7 @@ def check_adoption_campaign_readiness(
     runner = lane_status._run_command if command_runner is None else command_runner
     checks: list[DoctorCheck] = []
 
-    candidate_providers = list(providers)
-    if isinstance(config, Mapping) and isinstance(config.get("lanes"), Mapping):
-        for lane_key in config["lanes"]:
-            try:
-                canonical, _ = resolve_provider_lane(str(lane_key))
-                if canonical not in candidate_providers:
-                    candidate_providers.append(canonical)
-            except ValueError:
-                pass
-
-    for prov in candidate_providers:
+    for prov in providers:
         try:
             canonical, lane = resolve_provider_lane(prov)
         except ValueError:
@@ -822,14 +812,15 @@ def check_adoption_campaign_readiness(
     target_dir = root / ".code-mower" / "campaigns"
     writable = False
     try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-        probe_path = target_dir / f".tmp.doctor_probe_{uuid.uuid4().hex}"
-        try:
-            probe_path.write_text("probe", encoding="utf-8")
-            probe_path.unlink(missing_ok=True)
-            writable = True
-        except OSError:
-            writable = False
+        probe_dir = target_dir
+        while not probe_dir.exists() and probe_dir.parent != probe_dir:
+            probe_dir = probe_dir.parent
+        if probe_dir.is_dir():
+            with tempfile.NamedTemporaryFile(
+                prefix=".code-mower-doctor-",
+                dir=probe_dir,
+            ):
+                writable = True
     except OSError:
         writable = False
 
@@ -862,18 +853,43 @@ def check_adoption_campaign_readiness(
     cloud_token_env = DEFAULT_CLOUD_TOKEN_ENV
     has_cloud_token = bool(current_env.get(cloud_token_env))
     cloud_source = "env" if has_cloud_token else ""
+    cloud_status = "ok" if has_cloud_token else "missing"
+    cloud_files: list[str] = []
 
     if not has_cloud_token:
         cloud_dir = (token_dir or DEFAULT_CLOUD_TOKEN_DIR).expanduser()
         if cloud_dir.is_dir():
             try:
-                for token_file in sorted(cloud_dir.glob("*.env")):
-                    if token_file_mentions_cloud_token(token_file, cloud_token_env):
+                current_pointer = cloud_dir / ".current-profile"
+                selected_file: Path | None = None
+                if current_pointer.is_file():
+                    selected_name = current_pointer.read_text(encoding="utf-8").strip()
+                    if (
+                        selected_name
+                        and selected_name == Path(selected_name).name
+                        and selected_name.endswith(".env")
+                    ):
+                        candidate = cloud_dir / selected_name
+                        if token_file_mentions_cloud_token(candidate, cloud_token_env):
+                            selected_file = candidate
+                if selected_file is not None:
+                    has_cloud_token = True
+                    cloud_source = "current_profile"
+                    cloud_status = "ok"
+                else:
+                    cloud_files = [
+                        token_file.name
+                        for token_file in sorted(cloud_dir.glob("*.env"))
+                        if token_file_mentions_cloud_token(token_file, cloud_token_env)
+                    ]
+                    if len(cloud_files) == 1:
                         has_cloud_token = True
-                        cloud_source = "token_file"
-                        break
+                        cloud_source = "single_profile"
+                        cloud_status = "ok"
+                    elif len(cloud_files) > 1:
+                        cloud_status = "ambiguous"
             except OSError:
-                pass
+                cloud_status = "unreadable"
 
     if has_cloud_token:
         checks.append(
@@ -886,6 +902,26 @@ def check_adoption_campaign_readiness(
                     "configured": True,
                     "source": cloud_source,
                 },
+            )
+        )
+    elif cloud_status == "ambiguous":
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.cloud_upload",
+                status=STATUS_WARN,
+                message="multiple Code Mower Cloud token profiles found; none selected",
+                detail={
+                    "token_env": cloud_token_env,
+                    "configured": False,
+                    "status": cloud_status,
+                    "candidate_files": cloud_files,
+                    "optional": True,
+                    "actionable": False,
+                },
+                remediation=(
+                    "Select a current profile with `code-mower cloud setup --token-stdin`, "
+                    "or pass --token-file when uploading."
+                ),
             )
         )
     else:
@@ -957,11 +993,83 @@ def check_adoption_campaign_readiness(
                     "actionable": False,
                 },
                 remediation=(
-                    "Start Code Mower Board with `code-mower board` to monitor campaign progress."
+                    "Start Code Mower Board with `code-mower board serve --repo OWNER/REPO` "
+                    "to monitor campaign progress."
                     if available
                     else "Verify local listener tools (lsof or ss) are available to inspect running Boards."
                 ),
             )
         )
+
+    provider_checks = [
+        check
+        for check in checks
+        if check.name in {"doctor.campaign.adapter", "doctor.campaign.credentials"}
+    ]
+    ready_providers = sorted(
+        {check.lane for check in provider_checks if check.status == STATUS_PASS and check.lane}
+    )
+    actionable_providers = sorted(
+        {
+            check.lane
+            for check in provider_checks
+            if check.status == STATUS_WARN
+            and isinstance(check.detail, Mapping)
+            and check.detail.get("actionable")
+            and check.lane
+        }
+    )
+    optional_providers = sorted(
+        {
+            check.lane
+            for check in provider_checks
+            if check.status == STATUS_WARN
+            and isinstance(check.detail, Mapping)
+            and check.detail.get("optional")
+            and check.lane
+        }
+    )
+    preview_command = (
+        "code-mower release campaign --release-tag RELEASE_TAG "
+        "--package-spec PACKAGE==VERSION --repo-slug OWNER/REPO"
+    )
+    storage_ready = any(
+        check.name == "doctor.campaign.storage" and check.status == STATUS_PASS
+        for check in checks
+    )
+    if actionable_providers or not storage_ready:
+        readiness_status = STATUS_WARN
+        readiness_message = "release campaign needs configuration before dispatch"
+        readiness_remediation = (
+            "Resolve the actionable campaign checks above, then preview with "
+            f"`{preview_command}`."
+        )
+    elif ready_providers:
+        readiness_status = STATUS_PASS
+        readiness_message = (
+            f"release campaign preview is ready for {len(ready_providers)} provider(s)"
+        )
+        readiness_remediation = f"Preview with `{preview_command}`."
+    else:
+        readiness_status = STATUS_WARN
+        readiness_message = "no release campaign provider is ready in this posture"
+        readiness_remediation = (
+            "Configure at least one campaign provider, then preview with "
+            f"`{preview_command}`."
+        )
+    checks.append(
+        DoctorCheck(
+            name="doctor.campaign.readiness",
+            status=readiness_status,
+            message=readiness_message,
+            detail={
+                "ready_providers": ready_providers,
+                "actionable_providers": actionable_providers,
+                "optional_providers": optional_providers,
+                "preview_command": preview_command,
+            },
+            remediation=readiness_remediation,
+        )
+    )
 
     return tuple(checks)

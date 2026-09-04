@@ -48,9 +48,15 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
     def test_campaign_adapter_warns_actionable_when_enabled_missing_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            # Codex is enabled by default, but no campaign_adapter_argv configured
+            # An explicit null disables the maintained adapter while retaining the lane.
             checks = check_adoption_campaign_readiness(
-                config={},
+                config={
+                    "lanes": {
+                        "codex": {
+                            "provider_config": {"campaign_adapter_argv": None},
+                        }
+                    }
+                },
                 repo_root=repo_root,
                 which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
                 providers=["codex"],
@@ -267,6 +273,7 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertEqual(check.status, STATUS_PASS)
             self.assertEqual(check.detail.get("storage_dir"), ".code-mower/campaigns")
             self.assertTrue(check.detail.get("writable"))
+            self.assertFalse((repo_root / ".code-mower").exists())
             # Confirm no absolute path leaked
             self.assertNotIn(tmp, check.message)
             self.assertNotIn(tmp, str(check.detail))
@@ -329,7 +336,7 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             check = cloud_checks[0]
             self.assertEqual(check.status, STATUS_PASS)
             self.assertTrue(check.detail.get("configured"))
-            self.assertEqual(check.detail.get("source"), "token_file")
+            self.assertEqual(check.detail.get("source"), "single_profile")
             self.assertNotIn("file-token", str(check.detail))
 
     def test_campaign_cloud_upload_warns_optional_when_missing(self) -> None:
@@ -351,11 +358,36 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertTrue(check.detail.get("optional"))
             self.assertFalse(check.detail.get("actionable"))
 
+    def test_campaign_cloud_upload_warns_safely_when_profiles_are_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token_dir = repo_root / "tokens"
+            token_dir.mkdir()
+            for name in ("alpha.env", "beta.env"):
+                (token_dir / name).write_text(
+                    "export CODE_MOWER_CLOUD_TOKEN=not-serialized\n",
+                    encoding="utf-8",
+                )
+
+            checks = check_adoption_campaign_readiness(
+                config={},
+                repo_root=repo_root,
+                env={},
+                token_dir=token_dir,
+                providers=[],
+            )
+
+            check = next(c for c in checks if c.name == "doctor.campaign.cloud_upload")
+            self.assertEqual(check.status, STATUS_WARN)
+            self.assertEqual(check.detail.get("status"), "ambiguous")
+            self.assertEqual(check.detail.get("candidate_files"), ["alpha.env", "beta.env"])
+            self.assertNotIn("not-serialized", str(check.as_dict()))
+
     def test_campaign_board_visibility_passes_and_redacts_cwd(self) -> None:
         def fake_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             # Simulate lsof output finding a listener on port 8000
             if cmd[0] == "lsof" and "-a" in cmd:
-                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="p1234\nn/private/tmp/secret-path/repo\n", stderr="")
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="p1234\nn/example/secret-path/repo\n", stderr="")
             if cmd[0] == "lsof":
                 return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="p1234\nn*:8000\n", stderr="")
             if cmd[0] == "ps":
@@ -435,6 +467,21 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
         self.assertEqual(doctor_check_group_id("doctor.campaign.storage", lane=None), "setup")
         self.assertEqual(doctor_check_group_id("doctor.campaign.cloud_upload", lane=None), "setup")
         self.assertEqual(doctor_check_group_id("doctor.campaign.board_visibility", lane=None), "setup")
+
+    def test_campaign_readiness_points_to_preview_and_ignores_other_lanes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = check_adoption_campaign_readiness(
+                config={"lanes": {"gitar": {"enabled": True}}},
+                repo_root=Path(tmp),
+                which_fn=lambda command: f"/bin/{command}",
+                providers=["codex"],
+            )
+
+            self.assertFalse(any(check.lane == "gitar" for check in checks))
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness.status, STATUS_PASS)
+            self.assertIn("release campaign", readiness.message)
+            self.assertIn("code-mower release campaign", readiness.remediation)
 
     def test_run_doctor_integration_with_adoption_flag(self) -> None:
         root = Path(__file__).resolve().parents[1]
