@@ -1,7 +1,7 @@
 # Code Mower Current State And Roadmap
 
 This is the short source-of-truth snapshot for the public OSS package, the
-hosted CodeMower.com surface, and the near-term path from the current v1.0.4
+hosted CodeMower.com surface, and the near-term path from the current v1.0.5
 line toward broader supervised adoption.
 
 ## Positioning
@@ -27,13 +27,13 @@ The public OSS repository is:
 https://github.com/codemower-ai/code-mower
 ```
 
-The current package-index release baseline is `v1.0.4`, with pinned package
-install spec `code-mower==1.0.4`. Release evidence is recorded on the GitHub
+The current package-index release baseline is `v1.0.5`, with pinned package
+install spec `code-mower==1.0.5`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. It is intended to be installed
 from the package index for supervised pilots, with GitHub tag/source installs
 kept as a fallback and development path.
 
-The v1.0.4 supervised-pilot release keeps the Python 3.12+ runtime contract,
+The v1.0.5 supervised-pilot release keeps the Python 3.12+ runtime contract,
 pipx/uv install matrix, non-expiring dispatch-token diagnostics, native redacted
 lane status, the local Board, Board history and admin commands, spend/verdict
 timelines, owner queue, optional metadata-only agent cards, explicit cloud Board
@@ -44,7 +44,11 @@ multi-instance handling, local productivity reports, Board productivity
 summaries, provider scorecards, CodeMower.com productivity views, setup drift
 reporting, quieter hosted-builder and orchestrator-only doctor postures,
 truth-preserving unavailable/warn states, current Codex CLI smoke flags, clearer
-install/upgrade docs, and explicit package-index rehearsal opt-ins. See the
+install/upgrade docs, explicit package-index rehearsal opt-ins, local release
+qualification, resumable multi-provider campaigns on Board, and opt-in
+metadata-only `adoption_run` aggregation on CodeMower.com. Operational release
+qualification is deliberately separate from builder experiments and reviewer
+promotion evidence. See the
 [v1.0.1 Effectiveness Assessment](v101-effectiveness-assessment.md) for the
 latest published dogfood assessment and lane-readiness interpretation; the
 [Post-v0.8 Effectiveness Assessment](post-v08-effectiveness-assessment.md)
@@ -130,8 +134,8 @@ The beta-to-v1.0 line has proved:
 - a friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- the current public PyPI package-install rehearsal from `v1.0.4` /
-  `code-mower==1.0.4` with a
+- the current public PyPI package-install rehearsal from `v1.0.5` /
+  `code-mower==1.0.5` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout. The earlier beta.52 package rehearsal remains
@@ -310,7 +314,7 @@ these questions in the first few minutes:
 - Where is the code intentionally structured, and where is it still being
   refactored from extraction-era shape?
 
-The v1.0.4 line now gives adopters that trust test plus first productivity
+The v1.0.5 line now gives adopters that trust test plus first productivity
 visibility. More provider adapters are useful only when install, doctor, first
 report, privacy, measurement, and code structure remain boring and credible.
 

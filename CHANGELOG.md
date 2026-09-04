@@ -6,6 +6,35 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
+## v1.0.5
+
+This patch makes release qualification a repeatable, visible, metadata-only
+operation across Code Mower's supported provider environments. It preserves
+gate semantics and keeps operational qualification separate from builder and
+reviewer quality evidence.
+
+### Added
+
+- `code-mower release qualify` installs an exact package in an isolated
+  environment and records a closed, path-free `code_mower.adoptionResult.v1`
+  result for install, doctor, lane-status, and Board checks (#669, #672).
+- `code-mower release campaign` coordinates local and hosted providers with
+  fail-closed adapters, trusted result polling, idempotent resume/retry,
+  cross-platform locking, atomic state, and live Board campaign cards (#670,
+  #675).
+- The additive `adoption_run` cloud event carries categorical outcomes,
+  provenance coverage, counts, and timings without source, diffs, transcripts,
+  issue text, raw output, auth output, local paths, or secrets (#671, #674).
+- CodeMower.com aggregates adoption runs by release and provider while remaining
+  backward-compatible with uploads that omit the new event type (dashboard
+  PR #178).
+
+### Changed
+
+- Public release-qualification and contributor documentation now explains the
+  operational evidence boundary and uses a working clean-clone command (#677,
+  #678).
+
 ## v1.0.4
 
 This patch tightens the supervised-pilot install, diagnostics, and generated
