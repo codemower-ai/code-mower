@@ -9705,6 +9705,31 @@ class CampaignWatchTests(unittest.TestCase):
         self.assertEqual(summary["stop_reason"], "timeout")
         self.assertNotIn("private lock detail", json.dumps(summary))
 
+    def test_watch_storage_failure_returns_stable_invalid_summary(self) -> None:
+        self._seed_campaign()
+
+        @contextlib.contextmanager
+        def broken_storage(_campaigns_dir: Path, **_kwargs: Any) -> Any:
+            raise OSError("private /tmp/campaign path")
+            yield
+
+        with mock.patch.object(
+            release_campaigns,
+            "locked_campaigns_dir",
+            broken_storage,
+        ):
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                emit_json=True,
+                time_fn=self.clock.time,
+                sleep_fn=self.clock.sleep,
+            )
+
+        self.assertEqual(summary["stop_reason"], "invalid_campaign")
+        self.assertEqual(summary["error"], "campaign storage is unavailable")
+        self.assertNotIn("/tmp/campaign", json.dumps(summary))
+
     def test_watch_interrupt_during_initial_lock_or_poll(self) -> None:
         """KeyboardInterrupt during initial lock or poll produces the same interrupt summary and exit 130."""
         self._seed_campaign(
@@ -10000,13 +10025,14 @@ class CampaignWatchTests(unittest.TestCase):
                 ]
             }, ""
 
+        out = io.StringIO()
         summary = release_campaigns.campaign_watch(
             campaign_id="campaign-v1.0.0",
             campaigns_dir=self.campaigns_dir,
             repo_slug="owner/repo",
             interval=1.0,
             timeout=1.0,
-            stdout=io.StringIO(),
+            stdout=out,
             time_fn=self.clock.time,
             sleep_fn=self.clock.sleep,
             gh_json_runner=gh_json,
@@ -10014,6 +10040,15 @@ class CampaignWatchTests(unittest.TestCase):
         )
 
         self.assertEqual(summary["stop_reason"], "complete")
+        self.assertTrue(
+            any(
+                transition.get("provider") == "cursor_bugbot"
+                and transition.get("from_state") == "running"
+                and transition.get("to_state") == "complete"
+                for transition in summary["transitions"]
+            )
+        )
+        self.assertIn("Transition: cursor_bugbot running -> complete", out.getvalue())
         self.assertEqual(seen_repos, ["owner/repo"])
         persisted = release_campaigns.load_campaign_by_id(
             "campaign-v1.0.0", self.campaigns_dir

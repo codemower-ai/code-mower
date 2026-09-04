@@ -3361,6 +3361,8 @@ def campaign_watch(
     all_transitions: list[dict[str, Any]] = []
     current_campaign: dict[str, Any] = dict(target_campaign)
     stop_reason: str | None = None
+    watch_error = ""
+    initial_transitions: list[dict[str, Any]] = []
 
     try:
         with locked_campaigns_dir(
@@ -3391,6 +3393,7 @@ def campaign_watch(
                     print(f"error: {msg}", file=err)
                 return summary
             watch_repo_slug, _ = _watch_repo_slug(reloaded, repo_slug)
+            initial_snapshot = copy.deepcopy(reloaded)
             current_campaign = dispatch_or_advance_campaign(
                 reloaded,
                 apply=False,
@@ -3405,9 +3408,34 @@ def campaign_watch(
                 repo_slug_override=watch_repo_slug,
                 poll_only=True,
             )
+            initial_transitions = _describe_transitions(
+                initial_snapshot,
+                current_campaign,
+                time_fn() - start_time,
+            )
+            all_transitions.extend(initial_transitions)
 
         if not emit_json:
             print(render_campaign_text(current_campaign), file=out)
+            for transition in initial_transitions:
+                if transition.get("campaign_status"):
+                    print(
+                        "Transition: campaign status "
+                        f"{transition['from_status']} -> {transition['to_status']}",
+                        file=out,
+                    )
+                else:
+                    transition_error = (
+                        f" (error: {transition['to_error']})"
+                        if transition.get("to_error")
+                        else ""
+                    )
+                    print(
+                        f"Transition: {transition['provider']} "
+                        f"{transition['from_state']} -> {transition['to_state']}"
+                        f"{transition_error}",
+                        file=out,
+                    )
 
         # Check terminal/owner-action conditions on initial state
         outage_providers = [
@@ -3555,6 +3583,11 @@ def campaign_watch(
         stop_reason = "interrupt"
     except FileLockError:
         stop_reason = "timeout"
+    except OSError:
+        stop_reason = "invalid_campaign"
+        watch_error = "campaign storage is unavailable"
+        current_campaign["next_action"] = "check campaign storage access"
+        current_campaign["next_detail"] = watch_error
 
     elapsed_final = time_fn() - start_time
     stop_reason = stop_reason or "timeout"
@@ -3582,6 +3615,7 @@ def campaign_watch(
         retry_guidance=retry_guidance,
         transitions=all_transitions,
         providers=current_campaign.get("providers", []),
+        error=watch_error,
     )
 
 
