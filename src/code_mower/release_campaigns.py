@@ -1631,6 +1631,7 @@ def dispatch_or_advance_campaign(
     adapter_runner: AdapterRunner = run_local_adapter_command,
     env: Mapping[str, str] | None = None,
     retry_provider: str = "",
+    repo_slug_override: str = "",
 ) -> dict[str, Any]:
     """Execute dispatch, polling, or status progression on a campaign.
 
@@ -1664,7 +1665,11 @@ def dispatch_or_advance_campaign(
     package_identity = campaign_package_identity(package_spec)
     context = str(campaign.get("qualification_context") or "cold_install")
     starting_version = str(campaign.get("starting_version") or "")
-    repo_slug = str(campaign.get("repo_slug") or "")
+    # A watch may need a repository solely to poll an older campaign that did
+    # not persist one. Use that value for this invocation without assigning it
+    # to the campaign, so observed provider transitions can be saved while the
+    # campaign's repository identity remains unchanged.
+    repo_slug = str(campaign.get("repo_slug") or repo_slug_override or "")
 
     retry_canonical = ""
     if retry_provider:
@@ -3028,17 +3033,14 @@ def _watch_campaign_validation_error(campaign: Any) -> str:
     return ""
 
 
-def _watch_repo_slug_override(
+def _watch_repo_slug(
     campaign: Mapping[str, Any], requested_repo_slug: str
-) -> tuple[dict[str, Any], str]:
-    """Apply a read-only repository override, or reject an identity conflict."""
-    projected = dict(campaign)
+) -> tuple[str, str]:
+    """Resolve a poll-only repository override, or reject an identity conflict."""
     stored_repo_slug = str(campaign.get("repo_slug") or "")
     if requested_repo_slug and stored_repo_slug and requested_repo_slug != stored_repo_slug:
-        return projected, "requested repo slug does not match stored campaign"
-    if requested_repo_slug and not stored_repo_slug:
-        projected["repo_slug"] = requested_repo_slug
-    return projected, ""
+        return "", "requested repo slug does not match stored campaign"
+    return stored_repo_slug or requested_repo_slug, ""
 
 
 def campaign_watch(
@@ -3223,7 +3225,7 @@ def campaign_watch(
             print(f"error: {msg}", file=err)
         return summary
 
-    target_campaign, repo_slug_error = _watch_repo_slug_override(
+    watch_repo_slug, repo_slug_error = _watch_repo_slug(
         target_campaign, repo_slug
     )
     if repo_slug_error:
@@ -3288,20 +3290,20 @@ def campaign_watch(
                 if not emit_json:
                     print(f"error: {msg}", file=err)
                 return summary
-            reloaded, _ = _watch_repo_slug_override(reloaded, repo_slug)
-            with tempfile.TemporaryDirectory(prefix="code-mower-watch-") as scratch:
-                current_campaign = dispatch_or_advance_campaign(
-                    reloaded,
-                    apply=False,
-                    issue_number=issue,
-                    repo_path=repo_path,
-                    campaigns_dir=Path(scratch),
-                    which_fn=which_fn,
-                    command_runner=command_runner,
-                    gh_json_runner=gh_json_runner,
-                    adapter_runner=adapter_runner,
-                    env=env,
-                )
+            watch_repo_slug, _ = _watch_repo_slug(reloaded, repo_slug)
+            current_campaign = dispatch_or_advance_campaign(
+                reloaded,
+                apply=False,
+                issue_number=issue,
+                repo_path=repo_path,
+                campaigns_dir=campaigns_dir,
+                which_fn=which_fn,
+                command_runner=command_runner,
+                gh_json_runner=gh_json_runner,
+                adapter_runner=adapter_runner,
+                env=env,
+                repo_slug_override=watch_repo_slug,
+            )
 
         if not emit_json:
             print(render_campaign_text(current_campaign), file=out)
@@ -3349,17 +3351,13 @@ def campaign_watch(
 
                 sleep_fn(sleep_time)
 
-                if time_fn() - start_time >= validated_timeout:
-                    stop_reason = "timeout"
-                    break
-
                 polls += 1
                 with locked_campaigns_dir(campaigns_dir):
                     reloaded = load_campaign_by_id(cid, campaigns_dir)
                     if reloaded is None:
                         stop_reason = "invalid_campaign"
                         break
-                    reloaded, repo_slug_error = _watch_repo_slug_override(
+                    watch_repo_slug, repo_slug_error = _watch_repo_slug(
                         reloaded, repo_slug
                     )
                     if repo_slug_error:
@@ -3369,19 +3367,19 @@ def campaign_watch(
                         current_campaign["next_detail"] = repo_slug_error
                         stop_reason = "invalid_campaign"
                         break
-                    with tempfile.TemporaryDirectory(prefix="code-mower-watch-") as scratch:
-                        updated = dispatch_or_advance_campaign(
-                            reloaded,
-                            apply=False,
-                            issue_number=issue,
-                            repo_path=repo_path,
-                            campaigns_dir=Path(scratch),
-                            which_fn=which_fn,
-                            command_runner=command_runner,
-                            gh_json_runner=gh_json_runner,
-                            adapter_runner=adapter_runner,
-                            env=env,
-                        )
+                    updated = dispatch_or_advance_campaign(
+                        reloaded,
+                        apply=False,
+                        issue_number=issue,
+                        repo_path=repo_path,
+                        campaigns_dir=campaigns_dir,
+                        which_fn=which_fn,
+                        command_runner=command_runner,
+                        gh_json_runner=gh_json_runner,
+                        adapter_runner=adapter_runner,
+                        env=env,
+                        repo_slug_override=watch_repo_slug,
+                    )
 
                 now_after_poll = time_fn()
                 elapsed_after_poll = now_after_poll - start_time

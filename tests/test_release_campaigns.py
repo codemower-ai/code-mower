@@ -9546,7 +9546,7 @@ class CampaignWatchTests(unittest.TestCase):
         self.assertEqual(summary["elapsed_seconds"], 25.0)
 
     def test_watch_deadline_after_sleep(self) -> None:
-        """Sleeping until the deadline stops the watch without starting another poll after the deadline."""
+        """Sleeping to the deadline still performs the final bounded poll."""
         self._seed_campaign(
             providers=[
                 {
@@ -9585,9 +9585,9 @@ class CampaignWatchTests(unittest.TestCase):
         rendered = out.getvalue()
         self.assertIn("Final result: timeout", rendered)
         self.assertEqual(self.clock.sleep_calls, [10.0, 10.0])
-        # Exactly 2 polls: initial poll at t=0 and poll 1 after first sleep.
-        # After second sleep to t=20.0 (the deadline), no poll is started.
-        self.assertEqual(poll_call_count, 2)
+        # Initial poll at t=0 plus one after each bounded sleep, including the
+        # deadline, so completion in the final interval is observable.
+        self.assertEqual(poll_call_count, 3)
 
     def test_watch_interrupt_during_initial_lock_or_poll(self) -> None:
         """KeyboardInterrupt during initial lock or poll produces the same interrupt summary and exit 130."""
@@ -9826,14 +9826,32 @@ class CampaignWatchTests(unittest.TestCase):
         )
         campaign["repo_slug"] = ""
         release_campaigns.save_campaign(campaign, self.campaigns_dir)
-        initial_content = (
-            self.campaigns_dir / "campaign-v1.0.0.json"
-        ).read_text(encoding="utf-8")
         seen_repos: list[str] = []
+
+        wrapper = {
+            "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+            "campaign_id": campaign["campaign_id"],
+            "provider": "cursor_bugbot",
+            "release_tag": campaign["release_tag"],
+            "idempotency_key": "cursor-key",
+            "adoption_result": _mock_adoption_result(
+                release_tag="v1.0.0",
+                provider="cursor_bugbot",
+                outcome="pass",
+            ),
+        }
+        result_marker = (
+            "<!-- CODE_MOWER_ADOPTION_RESULT: "
+            f"{json.dumps(wrapper, sort_keys=True)} -->"
+        )
 
         def gh_json(args: list[str], **kwargs: Any) -> tuple[dict[str, Any], str]:
             seen_repos.append("owner/repo" if "owner/repo" in args else "")
-            return {"comments": []}, ""
+            return {
+                "comments": [
+                    {"author": {"login": "cursor[bot]"}, "body": result_marker}
+                ]
+            }, ""
 
         summary = release_campaigns.campaign_watch(
             campaign_id="campaign-v1.0.0",
@@ -9848,17 +9866,14 @@ class CampaignWatchTests(unittest.TestCase):
             env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
         )
 
-        self.assertEqual(summary["stop_reason"], "timeout")
+        self.assertEqual(summary["stop_reason"], "complete")
         self.assertEqual(seen_repos, ["owner/repo"])
         persisted = release_campaigns.load_campaign_by_id(
             "campaign-v1.0.0", self.campaigns_dir
         )
         assert persisted is not None
         self.assertEqual(persisted["repo_slug"], "")
-        self.assertEqual(
-            (self.campaigns_dir / "campaign-v1.0.0.json").read_text(encoding="utf-8"),
-            initial_content,
-        )
+        self.assertEqual(persisted["providers"][0]["state"], "complete")
 
         campaign["repo_slug"] = "owner/original"
         release_campaigns.save_campaign(campaign, self.campaigns_dir)
@@ -9872,6 +9887,33 @@ class CampaignWatchTests(unittest.TestCase):
         self.assertEqual(
             conflict["error"], "requested repo slug does not match stored campaign"
         )
+
+    def test_watch_polls_once_at_timeout_boundary(self) -> None:
+        self._seed_campaign()
+
+        def finish_during_sleep(seconds: float) -> None:
+            self.clock.sleep(seconds)
+            campaign = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", self.campaigns_dir
+            )
+            assert campaign is not None
+            campaign["status"] = "complete"
+            campaign["providers"][0]["state"] = "complete"
+            campaign["providers"][0]["next_action"] = "none"
+            release_campaigns.save_campaign(campaign, self.campaigns_dir)
+
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=10.0,
+            timeout=10.0,
+            stdout=io.StringIO(),
+            time_fn=self.clock.time,
+            sleep_fn=finish_during_sleep,
+        )
+
+        self.assertEqual(summary["polls"], 1)
+        self.assertEqual(summary["stop_reason"], "complete")
 
     def test_watch_positive_interval_and_timeout_validation(self) -> None:
         """Non-positive, non-numeric, or non-finite interval/timeout are rejected."""
