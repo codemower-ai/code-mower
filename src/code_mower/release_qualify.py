@@ -36,6 +36,7 @@ else:
 
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[ab]\d+|rc\d+)?$")
+VALID_CONTEXTS = {"cold_install", "upgrade", "unknown"}
 
 
 @dataclass
@@ -106,13 +107,22 @@ def _validate_starting_version(value: str) -> None:
         raise ValueError("starting_version must be empty or normalized version")
 
 
+def _validate_qualification_context(value: str) -> None:
+    """Validate qualification context is in closed set."""
+    if value not in VALID_CONTEXTS:
+        raise ValueError(f"qualification_context must be one of: {', '.join(sorted(VALID_CONTEXTS))}")
+
+
 def _extract_package_identity(package_spec: str) -> str:
     """Extract sanitized package identity from spec."""
     if _package_spec_uses_package_index(package_spec):
         match = re.match(r"^([\w-]+)==", package_spec)
         if match:
-            return match.group(1)
-    return "code-mower"
+            name = match.group(1)
+            if name != "code-mower":
+                raise ValueError("Only code-mower package is supported")
+            return name
+    raise ValueError("Only code-mower package is supported")
 
 
 def _validate_tag_format(release_tag: str) -> tuple[bool, str, str]:
@@ -296,20 +306,22 @@ def run_release_qualification(
 
     spec_match = re.match(r"^[\w-]+==([\d.abc]+)$", package_spec)
     if not spec_match:
-        raise ValueError(f"Package spec must be exact: {package_spec}")
+        raise ValueError("Package spec must be exact index spec")
     if spec_match.group(1) != normalized_version:
-        raise ValueError(f"Version mismatch: tag {normalized_version} vs spec {spec_match.group(1)}")
+        raise ValueError(f"Version mismatch: tag {normalized_version} vs spec version")
 
     package_identity = _extract_package_identity(package_spec)
 
     if not qualification_context:
         qualification_context = "unknown"
-    if not SAFE_IDENTIFIER_PATTERN.match(qualification_context):
-        raise ValueError("qualification_context must be safe identifier")
+    _validate_qualification_context(qualification_context)
 
     ending_version = ""
     config_path = _resolve_config_path(repo_path)
     config_source = f"file:{config_path}" if config_path.is_file() else "default"
+
+    if repo_path is None:
+        repo_path = Path.cwd()
 
     if not repo_slug and repo_path:
         repo_slug = _infer_repo_slug(repo_path)
@@ -344,8 +356,10 @@ def run_release_qualification(
                 timeout=timeout,
                 allow_package_index=True,
             )
-            ending_version = rehearsal_result.get("version", "")
-            if ending_version != normalized_version:
+            rehearsal_version_raw = rehearsal_result.get("version", "")
+            rehearsal_version = _normalize_version(rehearsal_version_raw)
+            ending_version = rehearsal_version
+            if rehearsal_version != normalized_version:
                 rehearsal_status = "fail"
             else:
                 rehearsal_status = "pass"
@@ -429,7 +443,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--repo-path",
         type=Path,
         default=None,
-        help="Optional repository path",
+        help="Repository path (defaults to current directory)",
     )
     qualify.add_argument(
         "--repo-slug",

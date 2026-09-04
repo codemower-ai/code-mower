@@ -12,6 +12,8 @@ code-mower release qualify \
   --qualification-context cold_install
 ```
 
+Runs from current directory by default. Specify `--repo-path` to qualify a different checkout.
+
 ## Schema
 
 `code_mower.adoptionResult.v1` includes:
@@ -19,10 +21,10 @@ code-mower release qualify \
 - `schema`: Schema version
 - `timestamp_utc`: UTC timestamp
 - `release_tag`: Exact tag
-- `package_identity`: Package name
+- `package_identity`: Package name (code-mower)
 - `normalized_version`: Normalized version
 - `qualification_context`: Context (cold_install/upgrade/unknown)
-- `starting_version`: Version before (explicit for upgrade)
+- `starting_version`: Version before (for upgrade)
 - `ending_version`: Version after rehearsal
 - `provider`, `executor`: Safe identifiers
 - `host_class`, `runtime_class`: Environment classification
@@ -38,3 +40,4 @@ No local paths, secrets, commands, or raw output.
 - Package must be exact index spec: `code-mower==1.0.0`
 - Tag and spec versions must match
 - Provider/executor must be safe identifiers: `^[a-z][a-z0-9_]{0,31}$`
+- Context must be: cold_install, upgrade, or unknown

@@ -185,11 +185,62 @@ class ReleaseQualifyTests(unittest.TestCase):
                     package_spec="code-mower==1.0.0",
                     output_path=output_path,
                     dry_run=True,
+                    repo_path=Path(tmpdir),
                 )
 
             install_step = [s for s in result["steps"] if s["id"] == "package_install"][0]
             self.assertEqual(install_step["status"], "planned")
             self.assertEqual(result["ending_version"], "")
+
+    def test_execute_normalizes_rehearsal_version(self) -> None:
+        """Execute normalizes rehearsal version from CLI format."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "result.json"
+
+            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
+                with mock.patch("code_mower.release_qualify.run_package_install_rehearsal") as mock_rehearsal:
+                    mock_doctor.return_value = release_qualify.StepResult(
+                        id="doctor", status="pass", elapsed_seconds=1.0,
+                        warning_count=0, owner_action_count=0
+                    )
+                    mock_rehearsal.return_value = {"version": "code-mower 1.0.0"}
+
+                    result = release_qualify.run_release_qualification(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        output_path=output_path,
+                        dry_run=False,
+                        repo_path=Path(tmpdir),
+                    )
+
+            install_step = [s for s in result["steps"] if s["id"] == "package_install"][0]
+            self.assertEqual(install_step["status"], "pass")
+            self.assertEqual(result["ending_version"], "1.0.0")
+
+    def test_execute_fails_on_version_mismatch(self) -> None:
+        """Execute fails when rehearsal version doesn't match tag."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "result.json"
+
+            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
+                with mock.patch("code_mower.release_qualify.run_package_install_rehearsal") as mock_rehearsal:
+                    mock_doctor.return_value = release_qualify.StepResult(
+                        id="doctor", status="pass", elapsed_seconds=1.0,
+                        warning_count=0, owner_action_count=0
+                    )
+                    mock_rehearsal.return_value = {"version": "code-mower 1.0.1"}
+
+                    result = release_qualify.run_release_qualification(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        output_path=output_path,
+                        dry_run=False,
+                        repo_path=Path(tmpdir),
+                    )
+
+            install_step = [s for s in result["steps"] if s["id"] == "package_install"][0]
+            self.assertEqual(install_step["status"], "fail")
+            self.assertEqual(result["outcome"], "fail")
 
     def test_no_local_paths_in_result(self) -> None:
         """Result contains no local paths."""
