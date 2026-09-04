@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -1577,6 +1578,42 @@ def render_campaign_text(campaign: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _board_text(source: Mapping[str, Any], key: str, default: str) -> str:
+    """Project a persisted string field for the Board, dropping malformed values.
+
+    A value that is not already a string -- a null, a number, or a nested
+    object left by an older or hand-edited campaign file -- falls back to the
+    field's default instead of being rendered with ``str()``, so the Board
+    stays metadata-only and never splices a raw persisted structure into
+    /api/status.
+    """
+    value = source.get(key, default)
+    return value if isinstance(value, str) else default
+
+
+def _board_elapsed_seconds(value: Any) -> float:
+    """Project a persisted elapsed_seconds field as a finite, nonnegative float.
+
+    A missing, null, nonnumeric, NaN, or infinite value degrades to 0.0. One
+    malformed or older campaign file must never raise out of this projection
+    and take Board /api/status -- and every healthy campaign with it -- down.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return 0.0
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number) or number < 0.0:
+        return 0.0
+    return number
+
+
+def _board_dry_run(value: Any) -> bool:
+    """Project a persisted dry_run flag, reading anything malformed as dry run."""
+    return value if isinstance(value, bool) else True
+
+
 def release_campaigns_board_payload(
     repo_path: Path | str = ".",
     *,
@@ -1597,33 +1634,41 @@ def release_campaigns_board_payload(
     projected_campaigns: list[dict[str, Any]] = []
     total_cards = 0
 
+    # Every field below is projected defensively: persisted campaign files are
+    # read-only here, may predate the current schema, and one malformed value
+    # must degrade that single field (or skip that single provider) rather
+    # than raise out of the Board payload.
     for c in campaigns:
         cards: list[dict[str, Any]] = []
-        for p in c.get("providers", []):
+        raw_providers = c.get("providers")
+        for p in raw_providers if isinstance(raw_providers, list) else []:
+            if not isinstance(p, Mapping):
+                continue
+            provider = _board_text(p, "provider", "")
             cards.append(
                 {
-                    "release": c.get("release_tag", ""),
-                    "provider": p.get("provider", ""),
-                    "lane_id": p.get("lane_id", p.get("provider", "")),
-                    "environment": p.get("environment", "local"),
-                    "state": p.get("state", "queued"),
-                    "elapsed_seconds": float(p.get("elapsed_seconds") or 0.0),
-                    "next_action": str(p.get("next_action") or ""),
-                    "next_detail": str(p.get("next_detail") or ""),
+                    "release": _board_text(c, "release_tag", ""),
+                    "provider": provider,
+                    "lane_id": _board_text(p, "lane_id", provider),
+                    "environment": _board_text(p, "environment", "local"),
+                    "state": _board_text(p, "state", "queued"),
+                    "elapsed_seconds": _board_elapsed_seconds(p.get("elapsed_seconds")),
+                    "next_action": _board_text(p, "next_action", ""),
+                    "next_detail": _board_text(p, "next_detail", ""),
                 }
             )
         total_cards += len(cards)
         projected_campaigns.append(
             {
-                "campaign_id": c.get("campaign_id", ""),
-                "release_tag": c.get("release_tag", ""),
-                "package_spec": c.get("package_spec", ""),
-                "qualification_context": c.get("qualification_context", ""),
-                "status": c.get("status", "queued"),
-                "dry_run": bool(c.get("dry_run", True)),
-                "elapsed_seconds": float(c.get("elapsed_seconds") or 0.0),
-                "next_action": str(c.get("next_action") or ""),
-                "next_detail": str(c.get("next_detail") or ""),
+                "campaign_id": _board_text(c, "campaign_id", ""),
+                "release_tag": _board_text(c, "release_tag", ""),
+                "package_spec": _board_text(c, "package_spec", ""),
+                "qualification_context": _board_text(c, "qualification_context", ""),
+                "status": _board_text(c, "status", "queued"),
+                "dry_run": _board_dry_run(c.get("dry_run", True)),
+                "elapsed_seconds": _board_elapsed_seconds(c.get("elapsed_seconds")),
+                "next_action": _board_text(c, "next_action", ""),
+                "next_detail": _board_text(c, "next_detail", ""),
                 "cards": cards,
             }
         )

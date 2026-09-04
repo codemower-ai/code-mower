@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import math
 import re
 import subprocess
 import sys
@@ -1504,6 +1505,114 @@ class ReleaseCampaignTests(unittest.TestCase):
                 self.assertIn("elapsed_seconds", card)
                 self.assertIn("next_action", card)
                 self.assertIn(card["state"], {"queued", "running", "blocked", "unavailable", "complete"})
+
+    def test_board_projection_survives_malformed_persisted_campaigns(self) -> None:
+        """One malformed campaign file never crashes or hides the Board payload."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            campaigns_dir.mkdir(parents=True)
+
+            healthy = {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-v9.0.0",
+                "release_tag": "v9.0.0",
+                "package_spec": "code-mower==9.0.0",
+                "qualification_context": "cold_install",
+                "status": "running",
+                "dry_run": False,
+                "elapsed_seconds": 12.5,
+                "next_action": "await provider result",
+                "next_detail": "codex is running",
+                "updated_at": "2026-09-04T09:00:00Z",
+                "providers": [
+                    {
+                        "provider": "codex",
+                        "lane_id": "codex_cli",
+                        "environment": "local",
+                        "state": "running",
+                        "elapsed_seconds": 12.5,
+                        "next_action": "await provider result",
+                        "next_detail": "codex is running",
+                    }
+                ],
+            }
+            # Every scalar here is malformed in a different way: a missing
+            # elapsed_seconds, a null, a nonnumeric string, NaN, infinity, and
+            # a nested object where a string belongs. An older-schema file that
+            # simply omits the newer fields is covered by the last provider.
+            malformed = {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-v8.0.0",
+                "release_tag": "v8.0.0",
+                "package_spec": "code-mower==8.0.0",
+                "qualification_context": "upgrade",
+                "status": "queued",
+                "dry_run": "yes",
+                "elapsed_seconds": "not-a-number",
+                "next_action": {"raw": "nested object"},
+                "next_detail": ["nested", "list"],
+                "updated_at": "2026-09-04T08:00:00Z",
+                "providers": [
+                    {"provider": "claude", "state": "queued"},
+                    {"provider": "muse", "state": "queued", "elapsed_seconds": None},
+                    {"provider": "cursor", "state": "queued", "elapsed_seconds": "abc"},
+                    {"provider": "devin", "state": "queued", "elapsed_seconds": float("nan")},
+                    {"provider": "antigravity", "state": "queued", "elapsed_seconds": float("inf")},
+                    {"provider": "gemini", "state": "queued", "elapsed_seconds": -5.0},
+                    {"provider": "codex", "state": "queued", "elapsed_seconds": {"seconds": 3}},
+                    "not-a-provider-object",
+                ],
+            }
+            for campaign in (healthy, malformed):
+                path = campaigns_dir / f"{campaign['campaign_id']}.json"
+                with path.open("w", encoding="utf-8") as fh:
+                    # allow_nan keeps NaN/Infinity literals, matching what a
+                    # previously written file can already contain on disk.
+                    json.dump(campaign, fh)
+
+            before = sorted(f.read_text(encoding="utf-8") for f in campaigns_dir.glob("*.json"))
+            cfg = board.BoardConfig(repo="owner/repo", repo_path=str(repo_path))
+            payload = board.release_campaigns_payload(cfg)
+
+            self.assertTrue(payload["available"])
+            self.assertEqual(len(payload["campaigns"]), 2)
+            projected = {c["campaign_id"]: c for c in payload["campaigns"]}
+
+            healthy_projection = projected["campaign-v9.0.0"]
+            self.assertEqual(healthy_projection["release_tag"], "v9.0.0")
+            self.assertEqual(healthy_projection["status"], "running")
+            self.assertFalse(healthy_projection["dry_run"])
+            self.assertEqual(healthy_projection["elapsed_seconds"], 12.5)
+            self.assertEqual(len(healthy_projection["cards"]), 1)
+            self.assertEqual(healthy_projection["cards"][0]["elapsed_seconds"], 12.5)
+
+            bad_projection = projected["campaign-v8.0.0"]
+            self.assertEqual(bad_projection["elapsed_seconds"], 0.0)
+            self.assertEqual(bad_projection["next_action"], "")
+            self.assertEqual(bad_projection["next_detail"], "")
+            self.assertTrue(bad_projection["dry_run"])
+            # The one non-object provider entry is skipped; the rest survive.
+            self.assertEqual(len(bad_projection["cards"]), 7)
+            for card in bad_projection["cards"]:
+                elapsed = card["elapsed_seconds"]
+                self.assertIsInstance(elapsed, float)
+                self.assertTrue(math.isfinite(elapsed))
+                self.assertGreaterEqual(elapsed, 0.0)
+                self.assertEqual(elapsed, 0.0)
+                self.assertEqual(card["environment"], "local")
+                self.assertEqual(card["lane_id"], card["provider"])
+            self.assertEqual(payload["card_count"], 8)
+
+            # Deterministic across repeated reads, and read-only on disk.
+            self.assertEqual(payload, board.release_campaigns_payload(cfg))
+            after = sorted(f.read_text(encoding="utf-8") for f in campaigns_dir.glob("*.json"))
+            self.assertEqual(before, after)
+
+            # Metadata-only: no traceback, raw source, or transcript content.
+            serialized = json.dumps(payload)
+            for leaked in ("Traceback", "not-a-number", "nested object", "not-a-provider-object", "NaN", "Infinity"):
+                self.assertNotIn(leaked, serialized)
 
     def test_selectable_providers_diversity(self) -> None:
         """Claude, Codex, Antigravity, Muse, Cursor/Grok Bot, and Devin are all included."""
