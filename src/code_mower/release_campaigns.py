@@ -646,6 +646,26 @@ def list_campaigns(campaigns_dir: Path) -> list[dict[str, Any]]:
     return campaigns
 
 
+def campaign_package_identity(package_spec: str) -> str:
+    """The normalized package name every result for this campaign must report.
+
+    Derived from the campaign's own exact ``package_spec`` rather than assumed
+    to be Code Mower: the campaign command deliberately accepts exact package
+    specs, so binding a result to a hard-coded package would both accept a
+    result for the wrong distribution and refuse every legitimate campaign for
+    another one.
+
+    Returns ``""`` when the stored spec is not an exact package-index spec --
+    which `initialize_campaign` never produces, so it means a hand-edited or
+    corrupted campaign file. Callers treat that as "nothing can be bound" and
+    fail closed rather than falling back to an unbound comparison.
+    """
+    try:
+        return _extract_package_identity(package_spec)
+    except ValueError:
+        return ""
+
+
 def _load_bound_result_file(
     path: Path,
     *,
@@ -653,19 +673,25 @@ def _load_bound_result_file(
     release_tag: str,
     qualification_context: str,
     starting_version: str,
+    package_identity: str,
 ) -> dict[str, Any] | None:
     """Load and strictly validate a local adoptionResult file bound to this campaign.
 
-    Identity binding covers provider and release_tag as well as
-    qualification_context and starting_version -- a cold-install result must
-    not be accepted for an upgrade campaign (or vice versa), and an upgrade
-    result must match this campaign's exact starting_version, not just any
-    upgrade.
+    Identity binding covers provider, release_tag, and package_identity as well
+    as qualification_context and starting_version -- a cold-install result must
+    not be accepted for an upgrade campaign (or vice versa), an upgrade result
+    must match this campaign's exact starting_version, not just any upgrade, and
+    a result for another distribution must never qualify this campaign's
+    package.
     """
+    if not package_identity:
+        return None
     try:
         with path.open("r", encoding="utf-8") as fh:
             candidate = json.load(fh)
-        validate_adoption_result_payload(candidate)
+        validate_adoption_result_payload(
+            candidate, expected_package_identity=package_identity
+        )
     except (OSError, json.JSONDecodeError, ValueError):
         return None
     if (
@@ -687,6 +713,7 @@ def _extract_bound_adoption_result(
     idempotency_key: str,
     qualification_context: str,
     starting_version: str,
+    package_identity: str,
 ) -> dict[str, Any] | None:
     """Extract an adoptionResult from a GitHub comment, requiring explicit identity binding.
 
@@ -701,8 +728,12 @@ def _extract_bound_adoption_result(
     the campaign's expected values -- a cold-install result can never
     complete an upgrade campaign, and an upgrade result must match this
     campaign's exact starting_version, even if a wrapper key were copied or
-    generated incorrectly.
+    generated incorrectly. The embedded result's ``package_identity`` is bound
+    the same way, against the identity derived from the campaign's own exact
+    package spec, so a result for another distribution can never complete it.
     """
+    if not package_identity:
+        return None
     for match in RESULT_MARKER_RE.finditer(text):
         try:
             wrapper = json.loads(match.group(1))
@@ -721,7 +752,9 @@ def _extract_bound_adoption_result(
         if not isinstance(adoption_result, dict):
             continue
         try:
-            validate_adoption_result_payload(adoption_result)
+            validate_adoption_result_payload(
+                adoption_result, expected_package_identity=package_identity
+            )
         except ValueError:
             continue
         if (
@@ -990,18 +1023,24 @@ def _build_adapter_argv(
         raise ValueError(f"invalid campaign_adapter_argv template for lane {lane.lane_id!r}") from exc
 
 
-def _campaign_adapter_override_lane_keys(lane: ProviderLane) -> set[str]:
+def _campaign_adapter_override_lane_keys(lane: ProviderLane) -> tuple[str, ...]:
     """Repo config keys that may declare an override for this lane: its canonical
-    lane_id, plus any alias that resolves to the same lane."""
+    lane_id, plus any alias that resolves to the same lane.
+
+    Sorted, not a set: these keys are matched against adopter config and named
+    back in error messages, and set iteration order is an implementation detail
+    that can differ between runs. Every consumer must behave identically no
+    matter which spelling an adopter happened to write first.
+    """
     keys = {lane.lane_id}
     keys.update(alias for alias, target in PROVIDER_ALIAS_MAP.items() if target == lane.lane_id)
-    return keys
+    return tuple(sorted(keys))
 
 
 def _load_campaign_adapter_overrides(
     lane: ProviderLane,
     repo_path: Path,
-) -> tuple[Mapping[str, Any], str]:
+) -> tuple[Mapping[str, Any], str, str]:
     """Load narrowly-scoped campaign adapter overrides from repo_path/code-mower.yml.
 
     Only `campaign_adapter_argv` and `campaign_adapter_timeout_seconds` are
@@ -1013,66 +1052,91 @@ def _load_campaign_adapter_overrides(
     non-mapping `lanes`, lane, or provider_config entry), returns
     `adapter_configuration_invalid` instead of silently treating the config
     as absent -- the specific override values are validated by the caller.
+
+    A lane can be spelled several ways (`muse` and `muse_cli`; `claude` and
+    `claude_code`), and all of those spellings name one lane with one adapter
+    command. A config that declares more than one of them is therefore
+    *ambiguous*, not merely redundant: the entries may carry two different
+    `campaign_adapter_argv` values, and picking one of them would mean running
+    whichever alias happened to be looked up first. That is refused with the
+    same bounded `adapter_configuration_invalid` code as any other malformed
+    override, and a detail naming the conflicting spellings. Only keys drawn
+    from the built-in alias table are ever named, so the message stays bounded
+    and cannot echo adopter config text.
+
+    Returns (overrides, error_code, error_detail).
     """
     config_path = repo_path / "code-mower.yml"
     if not config_path.is_file():
-        return {}, ""
+        return {}, "", ""
 
     try:
         loaded = code_mower_config.load_config(config_path)
     except (OSError, code_mower_config.ConfigError):
-        return {}, _safe_error("adapter_configuration_invalid")
+        return {}, _safe_error("adapter_configuration_invalid"), ""
 
     lanes_cfg = loaded.get("lanes")
     if lanes_cfg is None:
-        return {}, ""
+        return {}, "", ""
     if not isinstance(lanes_cfg, Mapping):
-        return {}, _safe_error("adapter_configuration_invalid")
+        return {}, _safe_error("adapter_configuration_invalid"), ""
 
-    lane_cfg = None
-    for key in _campaign_adapter_override_lane_keys(lane):
-        candidate = lanes_cfg.get(key)
-        if candidate is not None:
-            lane_cfg = candidate
-            break
-    if lane_cfg is None:
-        return {}, ""
+    configured_keys = [
+        key
+        for key in _campaign_adapter_override_lane_keys(lane)
+        if lanes_cfg.get(key) is not None
+    ]
+    if len(configured_keys) > 1:
+        return (
+            {},
+            _safe_error("adapter_configuration_invalid"),
+            (
+                f"code-mower.yml configures the same provider lane under "
+                f"{len(configured_keys)} names ({', '.join(configured_keys)}); "
+                "keep exactly one"
+            ),
+        )
+    if not configured_keys:
+        return {}, "", ""
+
+    lane_cfg = lanes_cfg.get(configured_keys[0])
     if not isinstance(lane_cfg, Mapping):
-        return {}, _safe_error("adapter_configuration_invalid")
+        return {}, _safe_error("adapter_configuration_invalid"), ""
 
     provider_cfg = lane_cfg.get("provider_config")
     if provider_cfg is None:
-        return {}, ""
+        return {}, "", ""
     if not isinstance(provider_cfg, Mapping):
-        return {}, _safe_error("adapter_configuration_invalid")
+        return {}, _safe_error("adapter_configuration_invalid"), ""
 
     overrides = {
         key: provider_cfg[key]
         for key in ("campaign_adapter_argv", "campaign_adapter_timeout_seconds")
         if key in provider_cfg
     }
-    return overrides, ""
+    return overrides, "", ""
 
 
 def _resolve_campaign_adapter_config(
     lane: ProviderLane,
     repo_path: Path,
-) -> tuple[Any, Any, str]:
+) -> tuple[Any, Any, str, str]:
     """Resolve the effective campaign_adapter_argv/timeout for a lane.
 
     Overlays only the two allowed override keys from repo_path/code-mower.yml
     onto the immutable reference lane's provider_config; the reference lane
-    itself is never mutated. Returns (argv_template, timeout_value, error_code).
+    itself is never mutated. Returns
+    (argv_template, timeout_value, error_code, error_detail).
     """
-    overrides, error = _load_campaign_adapter_overrides(lane, repo_path)
+    overrides, error, detail = _load_campaign_adapter_overrides(lane, repo_path)
     if error:
-        return None, None, error
+        return None, None, error, detail
     argv_template = overrides.get("campaign_adapter_argv", lane.provider_config.get("campaign_adapter_argv"))
     timeout_value = overrides.get(
         "campaign_adapter_timeout_seconds",
         lane.provider_config.get("campaign_adapter_timeout_seconds"),
     )
-    return argv_template, timeout_value, ""
+    return argv_template, timeout_value, "", ""
 
 
 def _invoke_local_adapter(
@@ -1095,9 +1159,26 @@ def _invoke_local_adapter(
     command actually ran (argv only, no shell) and produced a valid,
     identity-matching result file. Returns (result, error_code, detail).
     """
-    argv_template, timeout_value, config_error = _resolve_campaign_adapter_config(lane, repo_path)
+    package_identity = campaign_package_identity(package_spec)
+    if not package_identity:
+        # The campaign's stored spec yields no package identity to bind the
+        # adapter's result to, so no result could be accepted. Refuse before
+        # invoking anything rather than run an adapter whose output is
+        # guaranteed to be rejected.
+        return (
+            None,
+            _safe_error("campaign_identity_incomplete"),
+            f"{provider} campaign package spec is not an exact package-index spec",
+        )
+    argv_template, timeout_value, config_error, config_detail = _resolve_campaign_adapter_config(
+        lane, repo_path
+    )
     if config_error:
-        return None, config_error, f"{provider} campaign adapter configuration is invalid"
+        return (
+            None,
+            config_error,
+            config_detail or f"{provider} campaign adapter configuration is invalid",
+        )
     if not argv_template:
         return None, _safe_error("no_campaign_adapter_configured"), "no campaign adapter configured"
 
@@ -1147,7 +1228,9 @@ def _invoke_local_adapter(
     try:
         with output_path.open("r", encoding="utf-8") as fh:
             result = json.load(fh)
-        validate_adoption_result_payload(result)
+        validate_adoption_result_payload(
+            result, expected_package_identity=package_identity
+        )
     except (OSError, json.JSONDecodeError, ValueError):
         return None, _safe_error("adapter_result_invalid"), f"{provider} adapter result failed schema validation"
 
@@ -1272,6 +1355,19 @@ def initialize_campaign(
     )
 
 
+def _record_dry_run_dispatch_mode(provider_data: dict[str, Any]) -> None:
+    """Record a dry-run evaluation without erasing an applied dispatch mode.
+
+    Per-provider ``dispatch_mode`` is monotonic for the same reason the
+    campaign-level flag is: a provider that was dispatched under ``--apply``
+    was dispatched, and a later poll that omits the flag is not evidence to the
+    contrary. Only a provider that has never been dispatched under ``--apply``
+    is (re)labelled a dry-run preview.
+    """
+    if provider_data.get("dispatch_mode") != "applied":
+        provider_data["dispatch_mode"] = "dry_run"
+
+
 def dispatch_or_advance_campaign(
     campaign: dict[str, Any],
     *,
@@ -1298,10 +1394,17 @@ def dispatch_or_advance_campaign(
     results_dir = campaigns_dir / "results"
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-    campaign["dry_run"] = not apply
+    # Applied is monotonic (see `campaign_has_been_applied`): this run may turn
+    # a dry-run campaign into an applied one, but a poll that omits `--apply`
+    # never turns an applied campaign back into a preview.
+    campaign["dry_run"] = not (apply or campaign_has_been_applied(campaign))
     campaign_id = str(campaign.get("campaign_id") or "")
     release_tag = str(campaign.get("release_tag") or "")
     package_spec = str(campaign.get("package_spec") or "")
+    # Every result this run accepts -- a local drop-in file, an adapter's own
+    # output, or a trusted GitHub comment -- is bound to the package named by
+    # this campaign's exact spec, not to a hard-coded distribution.
+    package_identity = campaign_package_identity(package_spec)
     context = str(campaign.get("qualification_context") or "cold_install")
     starting_version = str(campaign.get("starting_version") or "")
     repo_slug = str(campaign.get("repo_slug") or "")
@@ -1338,6 +1441,7 @@ def dispatch_or_advance_campaign(
                 release_tag=release_tag,
                 qualification_context=context,
                 starting_version=starting_version,
+                package_identity=package_identity,
             )
             if local_result_file.is_file() and not is_explicit_retry
             else None
@@ -1395,6 +1499,7 @@ def dispatch_or_advance_campaign(
                             idempotency_key=str(provider_data.get("idempotency_key") or ""),
                             qualification_context=context,
                             starting_version=starting_version,
+                            package_identity=package_identity,
                         )
                         if found_result:
                             provider_data["adoption_result"] = found_result
@@ -1445,7 +1550,7 @@ def dispatch_or_advance_campaign(
             and bool(provider_data.get("attempted_at"))
             and current_state in {"blocked", "unavailable"}
         ):
-            provider_data["dispatch_mode"] = "dry_run"
+            _record_dry_run_dispatch_mode(provider_data)
             provider_data["next_action"] = (
                 f"run with --apply --retry-provider {provider} to retry {provider}"
             )
@@ -1455,12 +1560,14 @@ def dispatch_or_advance_campaign(
         cmd_found = _find_command(lane, which_fn=which_fn)
         has_creds, missing_cred = _check_credentials(lane, env=current_env)
         has_issue = bool(issue_number)
-        effective_argv_template, _, adapter_config_error = _resolve_campaign_adapter_config(lane, repo_path)
+        effective_argv_template, _, adapter_config_error, _ = _resolve_campaign_adapter_config(
+            lane, repo_path
+        )
         adapter_configured = bool(effective_argv_template) and not adapter_config_error
 
         # 5. Dry-run evaluations
         if not apply:
-            provider_data["dispatch_mode"] = "dry_run"
+            _record_dry_run_dispatch_mode(provider_data)
             if lane.driver == "local_cli" and not adapter_configured:
                 provider_data["state"] = "unavailable"
                 action, detail = _provider_next_action(
@@ -1713,7 +1820,15 @@ def record_manual_result(
     else:
         adoption_res = result_path_or_dict
 
-    validate_adoption_result_payload(adoption_res)
+    package_identity = campaign_package_identity(str(campaign.get("package_spec") or ""))
+    if not package_identity:
+        raise ValueError(
+            "campaign package spec is not an exact package-index spec, so no "
+            "adoption result can be bound to it"
+        )
+    validate_adoption_result_payload(
+        adoption_res, expected_package_identity=package_identity
+    )
 
     release_tag = campaign.get("release_tag")
     if adoption_res.get("release_tag") != release_tag:
@@ -1829,6 +1944,37 @@ def _board_elapsed_seconds(value: Any) -> float:
 def _board_dry_run(value: Any) -> bool:
     """Project a persisted dry_run flag, reading anything malformed as dry run."""
     return value if isinstance(value, bool) else True
+
+
+def campaign_has_been_applied(campaign: Mapping[str, Any]) -> bool:
+    """Whether this campaign has ever run under ``--apply``.
+
+    Applied is a *monotonic* transition: a dry-run campaign becomes applied the
+    first time it is dispatched with ``--apply``, and nothing moves it back.
+    A later ``resume`` or status poll that simply omits ``--apply`` is not a
+    statement that the dispatches, paid runs, and attempts already made never
+    happened, so it must not rewrite the campaign's identity back to a dry-run
+    preview -- which would relabel real evidence as a preview in stored state,
+    in `render_campaign_text`, and on the Board, and would make the aggregate
+    status advise "run with --apply to dispatch providers" for providers that
+    have already been dispatched.
+
+    Two independent records answer this, and either is enough: the campaign's
+    own ``dry_run`` flag (read strictly -- only an explicit ``False`` counts as
+    applied, so a malformed value degrades to dry run exactly as
+    :func:`_board_dry_run` does), and any provider whose ``dispatch_mode`` was
+    stamped ``applied``. The second covers a campaign whose top-level flag was
+    lost or corrupted while its per-provider attempt records survived.
+    """
+    if campaign.get("dry_run") is False:
+        return True
+    providers = campaign.get("providers")
+    if not isinstance(providers, list):
+        return False
+    return any(
+        isinstance(p, Mapping) and p.get("dispatch_mode") == "applied"
+        for p in providers
+    )
 
 
 def release_campaigns_board_payload(

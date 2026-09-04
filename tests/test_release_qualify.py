@@ -664,5 +664,78 @@ class TimestampUtcValidationTests(unittest.TestCase):
             release_qualify.validate_adoption_result_payload(_valid_adoption_result(timestamp_utc=""))
 
 
+class PackageIdentityDerivationTests(unittest.TestCase):
+    """Package identity comes from the exact spec, not from a hard-coded package."""
+
+    def test_exact_index_spec_yields_its_own_package_name(self) -> None:
+        self.assertEqual(
+            release_qualify._extract_package_identity("code-mower==1.0.0"), "code-mower"
+        )
+        self.assertEqual(
+            release_qualify._extract_package_identity("other-widget==1.0.0"), "other-widget"
+        )
+
+    def test_identity_is_pep503_normalized(self) -> None:
+        """Spellings a package index treats as one package are one identity here."""
+        for spelling in ("Code_Mower==1.0.0", "code.mower==1.0.0", "CODE--MOWER==1.0.0"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(
+                    release_qualify._extract_package_identity(spelling), "code-mower"
+                )
+
+    def test_inexact_and_non_index_specs_are_rejected(self) -> None:
+        for spec in ("", ".", "code-mower", "code-mower>=1.0.0", "/tmp/code-mower",
+                     "git+https://example.invalid/x.git", "https://example.invalid/x.whl"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError):
+                    release_qualify._extract_package_identity(spec)
+
+    def test_builtin_runner_still_only_qualifies_code_mower(self) -> None:
+        """The built-in runner installs and drives `code-mower`, so it says so.
+
+        Campaigns are not narrowed this way -- they bind whatever exact spec
+        they were created with.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError) as ctx:
+                release_qualify.run_release_qualification(
+                    release_tag="v1.0.0",
+                    package_spec="other-widget==1.0.0",
+                    output_path=Path(tmp) / "result.json",
+                    repo_path=Path(tmp),
+                )
+            self.assertIn("only supports the code-mower package", str(ctx.exception))
+            self.assertFalse((Path(tmp) / "result.json").exists())
+
+
+class AdoptionResultPackageIdentityTests(unittest.TestCase):
+    """A result's package_identity is validated structurally and bound on request."""
+
+    def test_unbound_validation_accepts_any_normalized_package_name(self) -> None:
+        release_qualify.validate_adoption_result_payload(
+            _valid_adoption_result(package_identity="other-widget")
+        )
+
+    def test_free_form_package_identity_is_always_rejected(self) -> None:
+        for value in ("Code-Mower", "code mower", "/tmp/code-mower", "code_mower", "", 7, None):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    release_qualify.validate_adoption_result_payload(
+                        _valid_adoption_result(package_identity=value)
+                    )
+
+    def test_expected_identity_binds_the_result_to_one_package(self) -> None:
+        release_qualify.validate_adoption_result_payload(
+            _valid_adoption_result(package_identity="other-widget"),
+            expected_package_identity="other-widget",
+        )
+        with self.assertRaises(ValueError) as ctx:
+            release_qualify.validate_adoption_result_payload(
+                _valid_adoption_result(package_identity="code-mower"),
+                expected_package_identity="other-widget",
+            )
+        self.assertIn("does not match the campaign package", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

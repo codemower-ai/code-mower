@@ -45,6 +45,19 @@ VALID_EXECUTION_STATES = {"planned", "executed"}
 VALID_HOST_CLASSES = {"local", "ci", "github_actions", "unknown"}
 VALID_OUTCOMES = {"pass", "pass_with_warnings", "fail", "incomplete"}
 
+# A normalized (PEP 503) distribution name: lowercase ASCII letters and digits
+# with single `-` separators. Package identities are stored in campaign state
+# and compared for exact equality, so they are held to this bounded alphabet
+# rather than accepted as free-form text.
+NORMALIZED_PACKAGE_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+# The one package Code Mower's *own* built-in qualification runner can qualify:
+# its install rehearsal installs the distribution into a clean virtualenv and
+# then drives the `code-mower` console script to read the installed version
+# back. Campaigns are not limited to this package -- each campaign binds the
+# exact spec it was created with (see `validate_adoption_result_payload`) and
+# lets each provider's own adapter do the qualifying.
+BUILTIN_QUALIFICATION_PACKAGE = "code-mower"
+
 ADOPTION_RESULT_SCHEMA = "code_mower.adoptionResult.v1"
 ADOPTION_RESULT_FIELDS = frozenset(
     {
@@ -171,16 +184,35 @@ def _validate_qualification_context(value: str) -> None:
         raise ValueError(f"qualification_context must be one of: {', '.join(sorted(VALID_CONTEXTS))}")
 
 
+def _normalize_package_name(name: str) -> str:
+    """Normalize a distribution name the way PEP 503 does.
+
+    `Code_Mower`, `code.mower`, and `code-mower` are one package to a package
+    index, so they are one identity here too -- otherwise a result could be
+    refused for a campaign whose spec named the same package with different
+    punctuation, or accepted for one that named a different package.
+    """
+    return re.sub(r"[-_.]+", "-", name.strip()).lower()
+
+
 def _extract_package_identity(package_spec: str) -> str:
-    """Extract sanitized package identity from spec."""
+    """Extract the normalized package identity from an exact package-index spec.
+
+    The spec must be an exact `name==version` package-index spec: paths, URLs,
+    VCS specs, and inexact requirements have no single package identity that a
+    qualification result could be bound to. The identity is *derived from the
+    spec* rather than assumed to be Code Mower, so a campaign created for an
+    exact spec binds its results to that package. Code Mower's own built-in
+    runner is separately limited to the package it can actually install and
+    verify (see `BUILTIN_QUALIFICATION_PACKAGE`).
+    """
     if _package_spec_uses_package_index(package_spec):
-        match = re.match(r"^([\w-]+)==", package_spec)
+        match = re.match(r"^([\w.-]+)==", package_spec.strip())
         if match:
-            name = match.group(1)
-            if name != "code-mower":
-                raise ValueError("Only code-mower package is supported")
-            return name
-    raise ValueError("Only code-mower package is supported")
+            identity = _normalize_package_name(match.group(1))
+            if NORMALIZED_PACKAGE_NAME_PATTERN.match(identity):
+                return identity
+    raise ValueError("package spec must be an exact package-index spec (name==version)")
 
 
 def _validate_tag_format(release_tag: str) -> tuple[bool, str, str]:
@@ -247,12 +279,24 @@ def _validate_timestamp_utc(value: object) -> None:
         raise ValueError("adoption result timestamp_utc must include a UTC/offset designator")
 
 
-def validate_adoption_result_payload(result: object) -> None:
+def validate_adoption_result_payload(
+    result: object,
+    *,
+    expected_package_identity: str = "",
+) -> None:
     """Strictly validate one closed-schema local adoptionResult payload.
 
     Rejects any undeclared top-level or step field so raw output, local
     paths, prompts, or secrets accidentally attached by an adapter, a
     manual upload, or a GitHub comment can never enter campaign state.
+
+    ``expected_package_identity`` binds the result to one package. Callers that
+    hold a campaign's exact package spec pass the identity derived from *that
+    spec* (see :func:`_extract_package_identity`), so a result for some other
+    distribution can never satisfy the campaign -- and a campaign for a package
+    other than Code Mower is not refused just for being one. Left empty, only
+    the structural check applies: the field must still be a normalized package
+    name, so an unbound caller can never store free-form text as an identity.
     """
     if not isinstance(result, dict):
         raise ValueError("adoption result must be a JSON object")
@@ -274,8 +318,16 @@ def validate_adoption_result_payload(result: object) -> None:
         raise ValueError(tag_error)
     if result.get("normalized_version") != normalized_version:
         raise ValueError("adoption result release_tag and normalized_version disagree")
-    if result.get("package_identity") != "code-mower":
-        raise ValueError("adoption result package_identity must be 'code-mower'")
+    package_identity = result.get("package_identity")
+    if not isinstance(package_identity, str) or not NORMALIZED_PACKAGE_NAME_PATTERN.match(
+        package_identity
+    ):
+        raise ValueError("adoption result package_identity must be a normalized package name")
+    if expected_package_identity and package_identity != expected_package_identity:
+        raise ValueError(
+            f"adoption result package_identity {package_identity!r} does not match the "
+            f"campaign package {expected_package_identity!r}"
+        )
 
     context = result.get("qualification_context")
     _validate_qualification_context(str(context or ""))
@@ -519,6 +571,17 @@ def run_release_qualification(
         raise ValueError(f"Version mismatch: tag {normalized_version} vs spec version")
 
     package_identity = _extract_package_identity(package_spec)
+    if package_identity != BUILTIN_QUALIFICATION_PACKAGE:
+        # Not a general narrowing of package identity -- campaigns bind whatever
+        # exact spec they were created with. This runner specifically installs
+        # the distribution into a clean virtualenv and reads the installed
+        # version back through the `code-mower` console script, so it can only
+        # honestly qualify that one package. Refuse rather than emit a result
+        # whose package_install step is guaranteed to fail for the wrong reason.
+        raise ValueError(
+            f"built-in release qualification only supports the "
+            f"{BUILTIN_QUALIFICATION_PACKAGE} package"
+        )
 
     if not qualification_context:
         qualification_context = "unknown"

@@ -5751,5 +5751,633 @@ class CampaignCliExceptionGuardTests(unittest.TestCase):
             self.assertEqual(created["schema"], release_campaigns.CAMPAIGN_SCHEMA)
 
 
+class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
+    """Applied is a one-way transition: a poll without --apply never undoes it.
+
+    A dry-run campaign becomes applied the first time it is dispatched with
+    `--apply`. A later `resume` or `--status` poll that simply omits the flag
+    is not a claim that the dispatches and attempts already made never
+    happened, so it must not rewrite the campaign back into a preview -- which
+    relabelled real evidence as a dry run in stored state, in the rendered
+    text, and on the Board, and made the aggregate status regress to "run with
+    --apply to dispatch providers" for providers that had already been
+    dispatched.
+    """
+
+    @staticmethod
+    def _muse_kwargs(repo_path: Path, campaigns_dir: Path, **extra: Any) -> dict[str, Any]:
+        return dict(
+            release_tag="v1.0.0",
+            campaigns_dir=campaigns_dir,
+            repo_path=repo_path,
+            which_fn=lambda _cmd: "/bin/muse",
+            **extra,
+        )
+
+    def _create_and_apply(self, repo_path: Path, campaigns_dir: Path) -> dict[str, Any]:
+        """Create a dry-run campaign, then advance the same campaign with --apply."""
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            release_campaigns.campaign_command(
+                **self._muse_kwargs(
+                    repo_path,
+                    campaigns_dir,
+                    action="create",
+                    package_spec="code-mower==1.0.0",
+                    providers=["muse"],
+                )
+            )
+        created = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+        assert created is not None
+        # Create-dry-run: nothing has been applied yet.
+        self.assertTrue(created["dry_run"])
+        self.assertEqual(created["providers"][0]["dispatch_mode"], "dry_run")
+        self.assertIn("run with --apply", created["next_action"])
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            release_campaigns.campaign_command(
+                **self._muse_kwargs(repo_path, campaigns_dir, resume=True, apply=True)
+            )
+        applied = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+        assert applied is not None
+        # Dry-run-to-applied: the one transition that is allowed.
+        self.assertFalse(applied["dry_run"])
+        self.assertEqual(applied["providers"][0]["dispatch_mode"], "applied")
+        return applied
+
+    def test_applied_resume_without_apply_keeps_applied_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            applied = self._create_and_apply(repo_path, campaigns_dir)
+            applied_status = applied["status"]
+            self.assertEqual(applied_status, "unavailable")
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                code = release_campaigns.campaign_command(
+                    **self._muse_kwargs(repo_path, campaigns_dir, resume=True)
+                )
+
+            self.assertEqual(code, 0)
+            polled = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert polled is not None
+            self.assertFalse(polled["dry_run"])
+            self.assertEqual(polled["providers"][0]["dispatch_mode"], "applied")
+            # Persisted status must not regress from the applied campaign's real
+            # state back to a dry-run preview's "queued / run with --apply".
+            self.assertEqual(polled["status"], applied_status)
+            self.assertNotIn("run with --apply to dispatch providers", polled["next_action"])
+            self.assertIn("(applied)", release_campaigns.render_campaign_text(polled))
+
+    def test_board_projection_keeps_an_applied_campaign_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            self._create_and_apply(repo_path, campaigns_dir)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                release_campaigns.campaign_command(
+                    **self._muse_kwargs(repo_path, campaigns_dir, resume=True)
+                )
+
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir
+            )
+            card_campaign = payload["campaigns"][0]
+            self.assertFalse(card_campaign["dry_run"])
+            self.assertEqual(card_campaign["status"], "unavailable")
+
+    def test_polling_a_dispatched_hosted_provider_keeps_applied_identity(self) -> None:
+        """The literal reported case: a hosted dispatch, then a poll without --apply."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["cursor_bugbot"],
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                    issue="42",
+                    apply=True,
+                    command_runner=_capturing_dispatch_command_runner(bodies),
+                    gh_json_runner=mock_gh_json,
+                    env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                )
+            self.assertEqual(len(bodies), 1)
+            dispatched = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert dispatched is not None
+            self.assertFalse(dispatched["dry_run"])
+            self.assertEqual(dispatched["providers"][0]["state"], "running")
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    gh_json_runner=mock_gh_json,
+                    env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                )
+
+            polled = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert polled is not None
+            self.assertEqual(len(bodies), 1)
+            self.assertFalse(polled["dry_run"])
+            self.assertEqual(polled["providers"][0]["dispatch_mode"], "applied")
+            self.assertEqual(polled["providers"][0]["state"], "running")
+            self.assertIn("(applied)", release_campaigns.render_campaign_text(polled))
+
+    def test_a_lost_top_level_flag_is_recovered_from_provider_dispatch_mode(self) -> None:
+        """Two independent records answer "has this been applied"; either suffices."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            applied = self._create_and_apply(repo_path, campaigns_dir)
+
+            # A hand-edited or older campaign file whose flag no longer records
+            # the applied dispatches its providers still carry.
+            applied["dry_run"] = True
+            release_campaigns.save_campaign(applied, campaigns_dir)
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                release_campaigns.campaign_command(
+                    **self._muse_kwargs(repo_path, campaigns_dir, resume=True)
+                )
+
+            polled = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert polled is not None
+            self.assertFalse(polled["dry_run"])
+
+    def test_a_never_applied_campaign_stays_a_dry_run_preview(self) -> None:
+        """The invariant only preserves applied state; it never invents it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            for _ in range(2):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        **self._muse_kwargs(
+                            repo_path,
+                            campaigns_dir,
+                            package_spec="code-mower==1.0.0",
+                            providers=["muse"],
+                        )
+                    )
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertTrue(saved["dry_run"])
+            self.assertEqual(saved["providers"][0]["dispatch_mode"], "dry_run")
+            self.assertIn("run with --apply", saved["next_action"])
+            self.assertIn("(dry-run)", release_campaigns.render_campaign_text(saved))
+
+    def test_campaign_has_been_applied_reads_malformed_state_as_dry_run(self) -> None:
+        self.assertFalse(release_campaigns.campaign_has_been_applied({}))
+        self.assertFalse(release_campaigns.campaign_has_been_applied({"dry_run": True}))
+        for malformed in ("false", 0, None, [], {}):
+            with self.subTest(malformed=malformed):
+                self.assertFalse(
+                    release_campaigns.campaign_has_been_applied({"dry_run": malformed})
+                )
+        self.assertTrue(release_campaigns.campaign_has_been_applied({"dry_run": False}))
+        self.assertTrue(
+            release_campaigns.campaign_has_been_applied(
+                {"dry_run": True, "providers": [{"dispatch_mode": "applied"}]}
+            )
+        )
+        self.assertFalse(
+            release_campaigns.campaign_has_been_applied(
+                {"dry_run": True, "providers": "not-a-list"}
+            )
+        )
+
+
+class CampaignPackageIdentityBindingTests(unittest.TestCase):
+    """Results are bound to the package the campaign's exact spec names.
+
+    The campaign command deliberately accepts exact package specs, so the
+    expected package identity is derived from that spec. Binding every result
+    to a hard-coded `code-mower` both accepted results for the wrong
+    distribution and refused every legitimate campaign for another one.
+    """
+
+    ADAPTER_CONFIG = (
+        "version: 1\n"
+        "lanes:\n"
+        "  muse_cli:\n"
+        "    provider_config:\n"
+        "      campaign_adapter_argv:\n"
+        "        - \"{command}\"\n"
+        "        - qualify\n"
+        "        - --output\n"
+        "        - \"{output}\"\n"
+    )
+
+    def _run_adapter_campaign(
+        self, *, package_spec: str, result_package_identity: str
+    ) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            (repo_path / "code-mower.yml").write_text(self.ADAPTER_CONFIG, encoding="utf-8")
+
+            def fake_adapter_runner(argv, timeout):
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result(
+                    release_tag="v1.0.0", provider="muse", outcome="pass"
+                )
+                adoption_res["package_identity"] = result_package_identity
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec=package_spec,
+                    providers=["muse"],
+                    repo_path=repo_path,
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/muse",
+                    adapter_runner=fake_adapter_runner,
+                )
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            return saved
+
+    def test_exact_non_code_mower_package_spec_completes_on_a_matching_result(self) -> None:
+        saved = self._run_adapter_campaign(
+            package_spec="other-widget==1.0.0", result_package_identity="other-widget"
+        )
+        self.assertEqual(saved["package_spec"], "other-widget==1.0.0")
+        self.assertEqual(saved["package_identity"], "other-widget")
+        self.assertEqual(saved["providers"][0]["state"], "complete")
+        self.assertEqual(saved["providers"][0]["error"], "")
+
+    def test_a_result_for_another_package_is_rejected(self) -> None:
+        saved = self._run_adapter_campaign(
+            package_spec="other-widget==1.0.0", result_package_identity="code-mower"
+        )
+        self.assertEqual(saved["providers"][0]["state"], "blocked")
+        self.assertEqual(saved["providers"][0]["error"], "adapter_result_invalid")
+        self.assertIsNone(saved["providers"][0]["adoption_result"])
+
+    def test_a_code_mower_campaign_still_rejects_another_package_result(self) -> None:
+        saved = self._run_adapter_campaign(
+            package_spec="code-mower==1.0.0", result_package_identity="other-widget"
+        )
+        self.assertEqual(saved["providers"][0]["state"], "blocked")
+        self.assertEqual(saved["providers"][0]["error"], "adapter_result_invalid")
+
+    def test_drop_in_result_file_is_bound_to_the_campaign_package(self) -> None:
+        for identity, expected_state in (
+            ("other-widget", "complete"),
+            ("code-mower", "unavailable"),
+        ):
+            with self.subTest(identity=identity):
+                with tempfile.TemporaryDirectory() as tmp:
+                    campaigns_dir = Path(tmp) / "campaigns"
+                    campaign = release_campaigns.initialize_campaign(
+                        release_tag="v1.0.0",
+                        package_spec="other-widget==1.0.0",
+                        providers=["muse"],
+                    )
+                    release_campaigns.save_campaign(campaign, campaigns_dir)
+                    results_dir = campaigns_dir / "results"
+                    results_dir.mkdir(parents=True, exist_ok=True)
+                    adoption_res = _mock_adoption_result(
+                        release_tag="v1.0.0", provider="muse", outcome="pass"
+                    )
+                    adoption_res["package_identity"] = identity
+                    (results_dir / "campaign-v1.0.0_muse.json").write_text(
+                        json.dumps(adoption_res), encoding="utf-8"
+                    )
+
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                        io.StringIO()
+                    ):
+                        release_campaigns.campaign_command(
+                            release_tag="v1.0.0",
+                            campaigns_dir=campaigns_dir,
+                            resume=True,
+                            which_fn=lambda _cmd: None,
+                        )
+                    saved = release_campaigns.load_campaign_by_id(
+                        "campaign-v1.0.0", campaigns_dir
+                    )
+                    assert saved is not None
+                    self.assertEqual(saved["providers"][0]["state"], expected_state)
+
+    def test_github_comment_result_is_bound_to_the_campaign_package(self) -> None:
+        for identity, expected_state in (("other-widget", "complete"), ("code-mower", "running")):
+            with self.subTest(identity=identity):
+                with tempfile.TemporaryDirectory() as tmp:
+                    campaigns_dir = Path(tmp) / "campaigns"
+                    campaign = release_campaigns.initialize_campaign(
+                        release_tag="v1.0.0",
+                        package_spec="other-widget==1.0.0",
+                        providers=["cursor_bugbot"],
+                        repo_slug="owner/repo",
+                    )
+                    campaign.status = "running"
+                    campaign.providers[0]["state"] = "running"
+                    campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+                    release_campaigns.save_campaign(campaign, campaigns_dir)
+
+                    adoption_res = _mock_adoption_result(
+                        release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass"
+                    )
+                    adoption_res["package_identity"] = identity
+                    wrapper = {
+                        "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                        "campaign_id": campaign.campaign_id,
+                        "provider": "cursor_bugbot",
+                        "release_tag": "v1.0.0",
+                        "idempotency_key": campaign.providers[0]["idempotency_key"],
+                        "adoption_result": adoption_res,
+                    }
+                    marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+                    def mock_gh_json(args, _body=f"done\n\n{marker}", **kwargs):
+                        return {
+                            "comments": [{"author": {"login": "cursor[bot]"}, "body": _body}]
+                        }, ""
+
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                        io.StringIO()
+                    ):
+                        release_campaigns.campaign_command(
+                            release_tag="v1.0.0",
+                            campaigns_dir=campaigns_dir,
+                            resume=True,
+                            repo_slug="owner/repo",
+                            gh_json_runner=mock_gh_json,
+                        )
+                    saved = release_campaigns.load_campaign_by_id(
+                        "campaign-v1.0.0", campaigns_dir
+                    )
+                    assert saved is not None
+                    self.assertEqual(saved["providers"][0]["state"], expected_state)
+
+    def test_recorded_result_for_another_package_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="other-widget==1.0.0",
+                providers=["codex"],
+            )
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            adoption_res = _mock_adoption_result(
+                release_tag="v1.0.0", provider="codex", outcome="pass"
+            )
+            adoption_res["package_identity"] = "code-mower"
+            result_path = Path(tmp) / "result.json"
+            result_path.write_text(json.dumps(adoption_res), encoding="utf-8")
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                code = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    record_result=result_path,
+                    record_provider="codex",
+                )
+
+            self.assertEqual(code, 1)
+            message = stderr.getvalue()
+            self.assertIn("does not match the campaign package", message)
+            self.assertNotIn("Traceback", message)
+            self.assertNotIn(tmp, message)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "queued")
+
+    def test_a_campaign_whose_stored_spec_is_unusable_binds_nothing(self) -> None:
+        """A hand-edited spec with no package identity fails closed, not open."""
+        self.assertEqual(release_campaigns.campaign_package_identity("code-mower==1.0.0"), "code-mower")
+        self.assertEqual(release_campaigns.campaign_package_identity(""), "")
+        self.assertEqual(release_campaigns.campaign_package_identity("/tmp/checkout"), "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["muse"],
+            )
+            stored = campaign.to_dict()
+            stored["package_spec"] = "not-an-exact-spec"
+            release_campaigns.save_campaign(stored, campaigns_dir)
+            results_dir = campaigns_dir / "results"
+            results_dir.mkdir(parents=True, exist_ok=True)
+            (results_dir / "campaign-v1.0.0_muse.json").write_text(
+                json.dumps(
+                    _mock_adoption_result(release_tag="v1.0.0", provider="muse", outcome="pass")
+                ),
+                encoding="utf-8",
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    which_fn=lambda _cmd: None,
+                )
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertNotEqual(saved["providers"][0]["state"], "complete")
+
+
+class AmbiguousProviderLaneOverrideTests(unittest.TestCase):
+    """One lane spelled twice in code-mower.yml is ambiguous, so it is refused.
+
+    `muse` and `muse_cli` (or `claude` and `claude_code`) name one lane with one
+    adapter command. Reading whichever spelling was looked up first meant two
+    different `campaign_adapter_argv` values could each win depending on set
+    iteration order. There is no correct choice between two adapter commands,
+    so the configuration is rejected instead.
+    """
+
+    ARGV_BLOCK = (
+        "    provider_config:\n"
+        "      campaign_adapter_argv:\n"
+        "        - \"{command}\"\n"
+        "        - qualify\n"
+        "        - --output\n"
+        "        - \"{output}\"\n"
+    )
+
+    @classmethod
+    def _config(cls, *lane_keys: str) -> str:
+        return "version: 1\nlanes:\n" + "".join(
+            f"  {key}:\n{cls.ARGV_BLOCK}" for key in lane_keys
+        )
+
+    def _apply_with_config(self, config_text: str, provider: str) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            (repo_path / "code-mower.yml").write_text(config_text, encoding="utf-8")
+            adapter_mock = mock.MagicMock()
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=[provider],
+                    repo_path=repo_path,
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/provider",
+                    adapter_runner=adapter_mock,
+                )
+
+            adapter_mock.assert_not_called()
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            serialized = json.dumps(saved)
+            self.assertNotIn(tmp, serialized)
+            return saved["providers"][0]
+
+    def test_canonical_lane_id_plus_alias_is_rejected_in_either_order(self) -> None:
+        entries = []
+        for keys in (("muse_cli", "muse"), ("muse", "muse_cli")):
+            with self.subTest(order=keys):
+                entry = self._apply_with_config(self._config(*keys), "muse")
+                self.assertEqual(entry["state"], "unavailable")
+                self.assertEqual(entry["error"], "adapter_configuration_invalid")
+                self.assertIn("muse, muse_cli", entry["next_detail"])
+                self.assertIn("keep exactly one", entry["next_detail"])
+                entries.append(entry)
+        # Invariant across insertion order: the same refusal, worded the same.
+        self.assertEqual(entries[0]["error"], entries[1]["error"])
+        self.assertEqual(entries[0]["next_detail"], entries[1]["next_detail"])
+        self.assertEqual(entries[0]["next_action"], entries[1]["next_action"])
+
+    def test_two_aliases_of_one_lane_are_rejected_in_either_order(self) -> None:
+        entries = []
+        for keys in (("claude", "claude_code"), ("claude_code", "claude")):
+            with self.subTest(order=keys):
+                entry = self._apply_with_config(self._config(*keys), "claude")
+                self.assertEqual(entry["state"], "unavailable")
+                self.assertEqual(entry["error"], "adapter_configuration_invalid")
+                self.assertIn("claude, claude_code", entry["next_detail"])
+                entries.append(entry)
+        self.assertEqual(entries[0]["next_detail"], entries[1]["next_detail"])
+
+    def test_a_single_spelling_is_still_honored(self) -> None:
+        """Rejection is scoped to genuine ambiguity, not to aliases as such."""
+        for key in ("muse", "muse_cli"):
+            with self.subTest(key=key):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_path = Path(tmp)
+                    campaigns_dir = repo_path / ".code-mower" / "campaigns"
+                    (repo_path / "code-mower.yml").write_text(
+                        self._config(key), encoding="utf-8"
+                    )
+
+                    def fake_adapter_runner(argv, timeout):
+                        output_path = Path(argv[argv.index("--output") + 1])
+                        with output_path.open("w", encoding="utf-8") as fh:
+                            json.dump(
+                                _mock_adoption_result(
+                                    release_tag="v1.0.0", provider="muse", outcome="pass"
+                                ),
+                                fh,
+                            )
+                        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                        io.StringIO()
+                    ):
+                        release_campaigns.campaign_command(
+                            release_tag="v1.0.0",
+                            package_spec="code-mower==1.0.0",
+                            providers=["muse"],
+                            repo_path=repo_path,
+                            campaigns_dir=campaigns_dir,
+                            apply=True,
+                            which_fn=lambda _cmd: "/bin/muse",
+                            adapter_runner=fake_adapter_runner,
+                        )
+                    saved = release_campaigns.load_campaign_by_id(
+                        "campaign-v1.0.0", campaigns_dir
+                    )
+                    assert saved is not None
+                    self.assertEqual(saved["providers"][0]["state"], "complete")
+
+    def test_an_unrelated_lane_entry_does_not_collide(self) -> None:
+        """Only spellings of the *same* lane collide; `claude_review` is its own lane."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            (repo_path / "code-mower.yml").write_text(
+                self._config("muse_cli", "claude_review"), encoding="utf-8"
+            )
+
+            def fake_adapter_runner(argv, timeout):
+                output_path = Path(argv[argv.index("--output") + 1])
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(
+                        _mock_adoption_result(
+                            release_tag="v1.0.0", provider="muse", outcome="pass"
+                        ),
+                        fh,
+                    )
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["muse"],
+                    repo_path=repo_path,
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/muse",
+                    adapter_runner=fake_adapter_runner,
+                )
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "complete")
+
+    def test_override_lane_keys_are_returned_in_a_stable_sorted_order(self) -> None:
+        """No consumer may depend on set iteration order for these keys."""
+        _, muse_lane = release_campaigns.resolve_provider_lane("muse")
+        _, claude_lane = release_campaigns.resolve_provider_lane("claude")
+        muse_keys = release_campaigns._campaign_adapter_override_lane_keys(muse_lane)
+        claude_keys = release_campaigns._campaign_adapter_override_lane_keys(claude_lane)
+        self.assertEqual(muse_keys, ("muse", "muse_cli"))
+        self.assertEqual(claude_keys, ("claude", "claude_audit", "claude_code"))
+        self.assertEqual(muse_keys, tuple(sorted(muse_keys)))
+        self.assertEqual(claude_keys, tuple(sorted(claude_keys)))
+
+    def test_override_loader_reports_the_same_conflict_for_either_key_order(self) -> None:
+        """Order invariance at the source, independent of any campaign wiring."""
+        _, lane = release_campaigns.resolve_provider_lane("muse")
+        results = []
+        for keys in (("muse", "muse_cli"), ("muse_cli", "muse")):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_path = Path(tmp)
+                (repo_path / "code-mower.yml").write_text(
+                    self._config(*keys), encoding="utf-8"
+                )
+                results.append(
+                    release_campaigns._load_campaign_adapter_overrides(lane, repo_path)
+                )
+        self.assertEqual(results[0], results[1])
+        overrides, error, detail = results[0]
+        self.assertEqual(overrides, {})
+        self.assertEqual(error, "adapter_configuration_invalid")
+        self.assertIn("muse, muse_cli", detail)
+
+
 if __name__ == "__main__":
     unittest.main()
