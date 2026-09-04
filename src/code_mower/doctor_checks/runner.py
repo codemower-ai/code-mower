@@ -277,7 +277,7 @@ def run_doctor(
             check_adoption_campaign_readiness(
                 config=config,
                 repo_root=repo_root,
-                repo_slug=repo_slug,
+                repo_slug=trusted_author_repo_slug,
                 adoption_posture=adoption_posture,
             )
         )

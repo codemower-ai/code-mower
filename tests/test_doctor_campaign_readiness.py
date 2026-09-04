@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from code_mower.doctor_checks import (
     STATUS_PASS,
@@ -556,6 +557,24 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
         self.assertIn("doctor.campaign.storage", check_names)
         self.assertIn("doctor.campaign.cloud_upload", check_names)
         self.assertIn("doctor.campaign.board_visibility", check_names)
+
+    def test_run_doctor_passes_configured_repo_to_campaign_readiness(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with mock.patch(
+            "code_mower.doctor_checks.runner.check_adoption_campaign_readiness",
+            return_value=(),
+        ) as readiness:
+            run_doctor(
+                config_path=root / "code-mower.yml",
+                provider_templates_path=root / "src/code_mower/templates/providers.yml",
+                profile="recommended",
+                adoption=True,
+            )
+
+        self.assertEqual(
+            readiness.call_args.kwargs["repo_slug"],
+            "codemower-ai/code-mower",
+        )
 
 
 if __name__ == "__main__":
