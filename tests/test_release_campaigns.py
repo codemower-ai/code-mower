@@ -9803,34 +9803,62 @@ class CampaignWatchTests(unittest.TestCase):
         self.assertEqual(direct_summary["error"], "invalid campaign identity")
 
     def test_watch_repo_slug_is_effective_and_cannot_change_identity(self) -> None:
-        campaign = self._seed_campaign(status="complete")
+        campaign = self._seed_campaign(
+            status="running",
+            providers=[
+                {
+                    "provider": "cursor_bugbot",
+                    "lane_id": "cursor_bugbot",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 0.0,
+                    "idempotency_key": "cursor-key",
+                    "dispatch_mode": "applied",
+                    "trigger_posted": False,
+                    "dispatch_reconciliation_key": "dispatch-key",
+                    "trigger_reconciliation_key": "trigger-key",
+                    "dispatch_ref": {"issue_number": "42", "comment_posted": True},
+                    "next_action": "poll cursor_bugbot remote progress marker",
+                    "next_detail": "",
+                }
+            ],
+        )
         campaign["repo_slug"] = ""
         release_campaigns.save_campaign(campaign, self.campaigns_dir)
-        seen_repo_slugs: list[str] = []
+        initial_content = (
+            self.campaigns_dir / "campaign-v1.0.0.json"
+        ).read_text(encoding="utf-8")
+        seen_repos: list[str] = []
 
-        def capture_campaign(value: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-            seen_repo_slugs.append(str(value.get("repo_slug") or ""))
-            return dict(value)
+        def gh_json(args: list[str], **kwargs: Any) -> tuple[dict[str, Any], str]:
+            seen_repos.append("owner/repo" if "owner/repo" in args else "")
+            return {"comments": []}, ""
 
-        with mock.patch.object(
-            release_campaigns,
-            "dispatch_or_advance_campaign",
-            side_effect=capture_campaign,
-        ):
-            summary = release_campaigns.campaign_watch(
-                campaign_id="campaign-v1.0.0",
-                campaigns_dir=self.campaigns_dir,
-                repo_slug="owner/repo",
-                stdout=io.StringIO(),
-            )
+        summary = release_campaigns.campaign_watch(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            repo_slug="owner/repo",
+            interval=1.0,
+            timeout=1.0,
+            stdout=io.StringIO(),
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+            gh_json_runner=gh_json,
+            env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+        )
 
-        self.assertEqual(summary["stop_reason"], "complete")
-        self.assertEqual(seen_repo_slugs, ["owner/repo"])
+        self.assertEqual(summary["stop_reason"], "timeout")
+        self.assertEqual(seen_repos, ["owner/repo"])
         persisted = release_campaigns.load_campaign_by_id(
             "campaign-v1.0.0", self.campaigns_dir
         )
         assert persisted is not None
         self.assertEqual(persisted["repo_slug"], "")
+        self.assertEqual(
+            (self.campaigns_dir / "campaign-v1.0.0.json").read_text(encoding="utf-8"),
+            initial_content,
+        )
 
         campaign["repo_slug"] = "owner/original"
         release_campaigns.save_campaign(campaign, self.campaigns_dir)

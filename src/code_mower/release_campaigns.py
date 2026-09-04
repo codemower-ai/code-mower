@@ -3289,18 +3289,19 @@ def campaign_watch(
                     print(f"error: {msg}", file=err)
                 return summary
             reloaded, _ = _watch_repo_slug_override(reloaded, repo_slug)
-            current_campaign = dispatch_or_advance_campaign(
-                reloaded,
-                apply=False,
-                issue_number=issue,
-                repo_path=repo_path,
-                campaigns_dir=campaigns_dir,
-                which_fn=which_fn,
-                command_runner=command_runner,
-                gh_json_runner=gh_json_runner,
-                adapter_runner=adapter_runner,
-                env=env,
-            )
+            with tempfile.TemporaryDirectory(prefix="code-mower-watch-") as scratch:
+                current_campaign = dispatch_or_advance_campaign(
+                    reloaded,
+                    apply=False,
+                    issue_number=issue,
+                    repo_path=repo_path,
+                    campaigns_dir=Path(scratch),
+                    which_fn=which_fn,
+                    command_runner=command_runner,
+                    gh_json_runner=gh_json_runner,
+                    adapter_runner=adapter_runner,
+                    env=env,
+                )
 
         if not emit_json:
             print(render_campaign_text(current_campaign), file=out)
@@ -3368,18 +3369,19 @@ def campaign_watch(
                         current_campaign["next_detail"] = repo_slug_error
                         stop_reason = "invalid_campaign"
                         break
-                    updated = dispatch_or_advance_campaign(
-                        reloaded,
-                        apply=False,
-                        issue_number=issue,
-                        repo_path=repo_path,
-                        campaigns_dir=campaigns_dir,
-                        which_fn=which_fn,
-                        command_runner=command_runner,
-                        gh_json_runner=gh_json_runner,
-                        adapter_runner=adapter_runner,
-                        env=env,
-                    )
+                    with tempfile.TemporaryDirectory(prefix="code-mower-watch-") as scratch:
+                        updated = dispatch_or_advance_campaign(
+                            reloaded,
+                            apply=False,
+                            issue_number=issue,
+                            repo_path=repo_path,
+                            campaigns_dir=Path(scratch),
+                            which_fn=which_fn,
+                            command_runner=command_runner,
+                            gh_json_runner=gh_json_runner,
+                            adapter_runner=adapter_runner,
+                            env=env,
+                        )
 
                 now_after_poll = time_fn()
                 elapsed_after_poll = now_after_poll - start_time
