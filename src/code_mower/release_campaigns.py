@@ -109,6 +109,7 @@ SAFE_ERROR_CODES = frozenset(
         "adapter_produced_no_result",
         "adapter_result_invalid",
         "adapter_result_mismatch",
+        "campaign_identity_incomplete",
         "github_dispatch_failed",
         "github_poll_unavailable",
         "unknown_provider",
@@ -551,10 +552,22 @@ def _dispatch_github_comment(
     qualification_context: str,
     idempotency_key: str,
     *,
+    starting_version: str = "",
     command_runner: lane_status.CommandRunner = lane_status.run_command,
 ) -> tuple[bool, dict[str, Any], str]:
+    """Post the dispatch comment that tells a remote provider exactly what to qualify.
+
+    An upgrade dispatch advertises its exact ``starting_version`` in both the
+    machine-readable marker and the human-facing instructions: the accepted
+    result must carry that same starting version, so a remote runner that is
+    never told it would be guessing. A dispatch that cannot state the starting
+    version of an upgrade campaign is refused rather than posted. Cold-install
+    (and ``unknown``) campaigns have no starting version and omit the field.
+    """
     if not repo_slug or not issue_number:
         return False, {}, _safe_error("missing_issue_number")
+    if qualification_context == "upgrade" and not starting_version:
+        return False, {}, _safe_error("campaign_identity_incomplete")
 
     dispatch_marker = {
         "schema": DISPATCH_SCHEMA,
@@ -565,18 +578,33 @@ def _dispatch_github_comment(
         "qualification_context": qualification_context,
         "idempotency_key": idempotency_key,
     }
+    if starting_version:
+        dispatch_marker["starting_version"] = starting_version
     marker_str = json.dumps(dispatch_marker, sort_keys=True)
+    starting_version_line = (
+        f"- **Starting Version:** `{starting_version}`\n" if starting_version else ""
+    )
+    starting_version_requirement = (
+        f" The embedded `adoption_result` must report `qualification_context` "
+        f"`{qualification_context}` and `starting_version` `{starting_version}`; "
+        f"a result from any other starting version is rejected."
+        if starting_version
+        else f" The embedded `adoption_result` must report `qualification_context` "
+        f"`{qualification_context}` with an empty `starting_version`."
+    )
     body = (
         f"### Code Mower Release Qualification Dispatch\n\n"
         f"- **Release Tag:** `{release_tag}`\n"
         f"- **Package Spec:** `{package_spec}`\n"
         f"- **Provider:** `{provider}`\n"
         f"- **Context:** `{qualification_context}`\n"
+        f"{starting_version_line}"
         f"- **Idempotency Key:** `{idempotency_key}`\n\n"
         f"Reply with a comment containing a `CODE_MOWER_ADOPTION_RESULT` "
         f"marker wrapping schema `{RESULT_MARKER_SCHEMA}` with matching "
         f"campaign_id, provider, release_tag, and idempotency_key, plus an "
-        f"embedded `adoption_result`. See docs/release-qualification.md.\n\n"
+        f"embedded `adoption_result`.{starting_version_requirement} "
+        f"See docs/release-qualification.md.\n\n"
         f"<!-- CODE_MOWER_RELEASE_CAMPAIGN: {marker_str} -->\n"
     )
 
@@ -1350,6 +1378,16 @@ def dispatch_or_advance_campaign(
                     dry_run=False,
                     error="missing issue number",
                 )
+            elif context == "upgrade" and not starting_version:
+                # Fail closed before any attempt is recorded: an upgrade
+                # dispatch that cannot advertise its exact starting_version
+                # could be answered by a result from any starting version.
+                provider_data["state"] = "unavailable"
+                provider_data["error"] = _safe_error("campaign_identity_incomplete")
+                provider_data["next_action"] = (
+                    f"recreate the campaign with --starting-version before dispatching {provider}"
+                )
+                provider_data["next_detail"] = "upgrade campaign is missing starting_version"
             else:
                 provider_data["attempted_at"] = now_utc
                 save_campaign(campaign, campaigns_dir)
@@ -1362,6 +1400,7 @@ def dispatch_or_advance_campaign(
                     provider,
                     context,
                     provider_data["idempotency_key"],
+                    starting_version=starting_version,
                     command_runner=command_runner,
                 )
                 if ok:
@@ -1381,8 +1420,19 @@ def dispatch_or_advance_campaign(
                 else:
                     provider_data["state"] = "unavailable"
                     provider_data["error"] = err
-                    provider_data["next_action"] = f"retry {provider} dispatch when GitHub is available"
-                    provider_data["next_detail"] = ""
+                    if err == "campaign_identity_incomplete":
+                        provider_data["next_action"] = (
+                            f"recreate the campaign with --starting-version before "
+                            f"dispatching {provider}"
+                        )
+                        provider_data["next_detail"] = (
+                            "upgrade campaign is missing starting_version"
+                        )
+                    else:
+                        provider_data["next_action"] = (
+                            f"retry {provider} dispatch when GitHub is available"
+                        )
+                        provider_data["next_detail"] = ""
         else:
             provider_data["state"] = "unavailable"
             provider_data["next_action"] = f"record manual adoption result for {provider}"
@@ -1600,6 +1650,94 @@ def _validate_retry_provider(
     return canonical, ""
 
 
+def _load_requested_campaign(
+    *,
+    campaign_id: str,
+    release_tag: str,
+    campaigns_dir: Path,
+) -> tuple[dict[str, Any] | None, str, str]:
+    """Resolve the campaign an explicit identifier refers to.
+
+    Returns ``(campaign, identifier, error)``. ``identifier`` is empty only for
+    an unqualified request (neither ``--campaign-id`` nor ``--release-tag``) --
+    that is the one case allowed to fall back to the newest campaign. When
+    ``--campaign-id`` resolves to a campaign for a different release tag than
+    the one the caller also named, the request is rejected rather than answered
+    with the unrelated campaign's data.
+    """
+    identifier = campaign_id or release_tag
+    if not identifier:
+        return None, "", ""
+    if campaign_id:
+        found = load_campaign(campaign_id, campaigns_dir)
+        if found is None:
+            return None, identifier, ""
+        if release_tag and str(found.get("release_tag") or "") != release_tag:
+            return (
+                None,
+                identifier,
+                f"campaign {campaign_id!r} does not match --release-tag {release_tag!r}",
+            )
+        return found, identifier, ""
+    return load_campaign(release_tag, campaigns_dir), identifier, ""
+
+
+def _existing_campaign_conflict(
+    campaign: Mapping[str, Any],
+    *,
+    package_spec: str,
+    qualification_context: str,
+    starting_version: str,
+    providers: Sequence[str],
+) -> str:
+    """Report a bounded conflict between an existing campaign and creation arguments.
+
+    An existing campaign is never replaced by a fresh one, so creation-time
+    arguments that describe a *different* campaign cannot be honored. They are
+    rejected explicitly instead of being silently ignored while the stored
+    campaign advances under different terms. Only unambiguously supplied values
+    are compared: the ``cold_install`` default for ``--qualification-context``
+    is indistinguishable from an unsupplied flag, so it is not treated as a
+    conflicting request on its own (the rendered output always states the
+    stored campaign's actual context).
+    """
+    if (
+        qualification_context
+        and qualification_context != "cold_install"
+        and qualification_context != str(campaign.get("qualification_context") or "")
+    ):
+        return (
+            f"--qualification-context {qualification_context!r} does not match existing "
+            f"campaign context {str(campaign.get('qualification_context') or '')!r}"
+        )
+    if starting_version and starting_version != str(campaign.get("starting_version") or ""):
+        return (
+            f"--starting-version {starting_version!r} does not match existing campaign "
+            f"starting version {str(campaign.get('starting_version') or '')!r}"
+        )
+    if package_spec and package_spec != str(campaign.get("package_spec") or ""):
+        return (
+            f"--package-spec {package_spec!r} does not match existing campaign spec "
+            f"{str(campaign.get('package_spec') or '')!r}"
+        )
+    if providers:
+        requested: set[str] = set()
+        for name in providers:
+            try:
+                canonical, _ = resolve_provider_lane(name)
+            except ValueError as exc:
+                return str(exc)
+            requested.add(canonical)
+        stored = {str(p.get("provider") or "") for p in campaign.get("providers", [])}
+        if requested != stored:
+            return (
+                "--providers does not match the existing campaign's providers "
+                f"({', '.join(sorted(stored))}); an existing campaign's provider set "
+                "is fixed at creation"
+            )
+    return ""
+
+
 def campaign_command(
     *,
     action: str | None = None,
@@ -1631,9 +1769,17 @@ def campaign_command(
 
     is_status = status or action == "status"
     is_resume = resume or action == "resume"
+    is_dispatch = action == "dispatch"
+    is_create = action == "create"
 
-    identifier = campaign_id or release_tag or (f"campaign-{release_tag}" if release_tag else "")
-    existing = load_campaign(identifier, campaigns_dir) if identifier else None
+    existing, identifier, identifier_error = _load_requested_campaign(
+        campaign_id=campaign_id,
+        release_tag=release_tag,
+        campaigns_dir=campaigns_dir,
+    )
+    if identifier_error:
+        print(f"error: {identifier_error}", file=sys.stderr)
+        return 1
 
     if record_result:
         if not existing:
@@ -1660,7 +1806,14 @@ def campaign_command(
             return 1
 
     if is_status:
-        if not existing:
+        if identifier:
+            # An explicitly named campaign is answered with that campaign or
+            # nothing: falling back to the newest unrelated campaign would
+            # report another release's state under the requested identifier.
+            if existing is None:
+                print(f"error: no campaign found for {identifier!r}", file=sys.stderr)
+                return 1
+        else:
             all_c = list_campaigns(campaigns_dir)
             if not all_c:
                 print("error: no campaigns found", file=sys.stderr)
@@ -1672,7 +1825,37 @@ def campaign_command(
             print(render_campaign_text(existing))
         return 0
 
-    if existing and (is_resume or not release_tag):
+    if existing:
+        # An existing campaign is never replaced by a fresh queued one: the
+        # recorded provider states, evidence, and attempt markers are the only
+        # thing standing between a repeated invocation and a rerun local
+        # adapter or a reposted paid dispatch. Every non-status invocation that
+        # names an existing campaign is routed through resume/advance
+        # semantics, which honor `attempted_at` idempotency.
+        if is_create:
+            print(
+                f"error: campaign {str(existing.get('campaign_id') or '')!r} already exists "
+                f"for release tag {str(existing.get('release_tag') or '')!r}; use "
+                f"`status`, `resume`, or `dispatch` instead of `create`",
+                file=sys.stderr,
+            )
+            return 1
+        conflict = _existing_campaign_conflict(
+            existing,
+            package_spec=package_spec,
+            qualification_context=qualification_context,
+            starting_version=starting_version,
+            providers=providers,
+        )
+        if conflict:
+            print(f"error: {conflict}", file=sys.stderr)
+            return 1
+        if not (is_resume or is_dispatch):
+            print(
+                f"note: campaign {str(existing.get('campaign_id') or '')!r} already exists; "
+                f"advancing it (resume semantics) instead of creating a new one",
+                file=sys.stderr,
+            )
         retry_canonical, retry_error = _validate_retry_provider(retry_provider, existing)
         if retry_error:
             print(f"error: {retry_error}", file=sys.stderr)
@@ -1695,6 +1878,19 @@ def campaign_command(
         else:
             print(render_campaign_text(updated))
         return 0 if updated.get("status") != "blocked" else 1
+
+    if is_resume or is_dispatch:
+        # `resume` and `dispatch` act on an existing campaign only; neither
+        # silently falls through to creating (and immediately dispatching) a
+        # brand-new campaign.
+        target = f" for {identifier!r}" if identifier else ""
+        print(
+            f"error: no existing campaign{target} to "
+            f"{'dispatch' if is_dispatch else 'resume'}; create one first with "
+            f"--release-tag <tag>",
+            file=sys.stderr,
+        )
+        return 1
 
     if not release_tag:
         print("error: --release-tag is required to create a campaign", file=sys.stderr)

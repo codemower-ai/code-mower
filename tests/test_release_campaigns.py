@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -2349,6 +2350,661 @@ class ReleaseCampaignTests(unittest.TestCase):
             saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
+
+
+def _dispatch_marker_from_body(body: str) -> dict[str, Any]:
+    """Parse the machine-readable dispatch marker out of a posted comment body."""
+    match = re.search(r"<!--\s*CODE_MOWER_RELEASE_CAMPAIGN:\s*(\{.*?\})\s*-->", body, re.DOTALL)
+    assert match is not None, "dispatch comment is missing its campaign marker"
+    parsed = json.loads(match.group(1))
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def _capturing_dispatch_command_runner(bodies: list[str], *, returncode: int = 0):
+    """A gh command runner that records the exact comment body it was asked to post."""
+
+    def _run(args, **kwargs):
+        argv = list(args)
+        bodies.append(Path(argv[argv.index("--body-file") + 1]).read_text(encoding="utf-8"))
+
+        class MockCompleted:
+            pass
+
+        completed = MockCompleted()
+        completed.returncode = returncode
+        completed.stdout = ""
+        completed.stderr = ""
+        return completed
+
+    return _run
+
+
+class RepeatedCampaignInvocationTests(unittest.TestCase):
+    """A repeated invocation must never reinitialize and redispatch a live campaign."""
+
+    def test_repeated_apply_without_resume_does_not_rerun_local_adapter(self) -> None:
+        """Re-running the exact same --apply command must not re-invoke the adapter
+
+        or discard the recorded provider state and evidence.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+            invocations: list[list[str]] = []
+
+            def fake_adapter_runner(argv, timeout):
+                invocations.append(list(argv))
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result(
+                    release_tag="v1.0.0", provider="codex", outcome="pass"
+                )
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            common_kwargs = dict(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+                campaigns_dir=campaigns_dir,
+                apply=True,
+                which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                adapter_runner=fake_adapter_runner,
+            )
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                release_campaigns.campaign_command(**common_kwargs)
+                self.assertEqual(len(invocations), 1)
+                first = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                assert first is not None
+
+                # Exactly the same command again, with no --resume.
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    ret = release_campaigns.campaign_command(**common_kwargs)
+
+            self.assertEqual(ret, 0)
+            self.assertEqual(len(invocations), 1)
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+            self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
+            second = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert second is not None
+            self.assertEqual(second["created_at"], first["created_at"])
+            self.assertEqual(second["providers"][0]["state"], "complete")
+            self.assertEqual(
+                second["providers"][0]["adoption_result"],
+                first["providers"][0]["adoption_result"],
+            )
+            self.assertEqual(
+                second["providers"][0]["attempted_at"], first["providers"][0]["attempted_at"]
+            )
+            self.assertEqual(
+                second["providers"][0]["idempotency_key"],
+                first["providers"][0]["idempotency_key"],
+            )
+
+    def test_repeated_apply_without_resume_does_not_repost_hosted_dispatch(self) -> None:
+        """Re-running the exact same hosted --apply command must not repost the dispatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            common_kwargs = dict(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="42",
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=mock_gh_json,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            release_campaigns.campaign_command(**common_kwargs)
+            self.assertEqual(len(bodies), 1)
+            first = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert first is not None
+            self.assertEqual(first["providers"][0]["state"], "running")
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(**common_kwargs)
+
+            self.assertEqual(ret, 0)
+            self.assertEqual(len(bodies), 1)
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+            self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
+            second = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert second is not None
+            self.assertEqual(second["providers"][0]["state"], "running")
+            self.assertEqual(
+                second["providers"][0]["attempted_at"], first["providers"][0]["attempted_at"]
+            )
+            self.assertEqual(
+                second["providers"][0]["dispatch_ref"], first["providers"][0]["dispatch_ref"]
+            )
+            self.assertEqual(second["created_at"], first["created_at"])
+
+    def test_create_action_on_existing_campaign_is_rejected(self) -> None:
+        """`create` cannot be honored for an existing campaign, so it fails explicitly."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+            invocations: list[list[str]] = []
+
+            def fake_adapter_runner(argv, timeout):
+                invocations.append(list(argv))
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result(
+                    release_tag="v1.0.0", provider="codex", outcome="pass"
+                )
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=fake_adapter_runner,
+                )
+                before = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    ret = release_campaigns.campaign_command(
+                        action="create",
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=["codex"],
+                        campaigns_dir=campaigns_dir,
+                        apply=True,
+                        which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                        adapter_runner=fake_adapter_runner,
+                    )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(len(invocations), 1)
+            self.assertIn("already exists", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            after = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            self.assertEqual(after, before)
+
+    def test_dispatch_action_advances_existing_campaign_idempotently(self) -> None:
+        """`dispatch` is implemented as advance semantics, not re-creation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="42",
+                apply=False,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+            self.assertEqual(bodies, [])
+
+            dispatch_kwargs = dict(
+                action="dispatch",
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="42",
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=mock_gh_json,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+            release_campaigns.campaign_command(**dispatch_kwargs)
+            self.assertEqual(len(bodies), 1)
+
+            release_campaigns.campaign_command(**dispatch_kwargs)
+            self.assertEqual(len(bodies), 1)
+
+            self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "running")
+
+    def test_dispatch_action_without_existing_campaign_is_rejected(self) -> None:
+        """`dispatch` never silently falls through to creating and dispatching a campaign."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            command_runner = mock.MagicMock()
+            adapter_runner = mock.MagicMock()
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="dispatch",
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                    issue="42",
+                    apply=True,
+                    command_runner=command_runner,
+                    adapter_runner=adapter_runner,
+                )
+
+            self.assertEqual(ret, 1)
+            command_runner.assert_not_called()
+            adapter_runner.assert_not_called()
+            self.assertIn("no existing campaign", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertEqual(release_campaigns.list_campaigns(campaigns_dir), [])
+
+    def test_resume_without_existing_campaign_is_rejected(self) -> None:
+        """`--resume` for a campaign that does not exist fails instead of creating one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            command_runner = mock.MagicMock()
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    apply=True,
+                    command_runner=command_runner,
+                )
+
+            self.assertEqual(ret, 1)
+            command_runner.assert_not_called()
+            self.assertIn("no existing campaign", stderr.getvalue())
+            self.assertEqual(release_campaigns.list_campaigns(campaigns_dir), [])
+
+    def test_conflicting_context_for_existing_campaign_is_rejected(self) -> None:
+        """Creation arguments describing a different campaign are rejected, not ignored."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            command_runner = mock.MagicMock()
+
+            release_campaigns.campaign_command(
+                release_tag="v2.0.0",
+                package_spec="code-mower==2.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                apply=False,
+            )
+            before = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v2.0.0",
+                    package_spec="code-mower==2.0.0",
+                    qualification_context="upgrade",
+                    starting_version="1.0.0",
+                    providers=["cursor_bugbot"],
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                    issue="42",
+                    apply=True,
+                    command_runner=command_runner,
+                    env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                )
+
+            self.assertEqual(ret, 1)
+            command_runner.assert_not_called()
+            self.assertIn("--qualification-context", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            after = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            self.assertEqual(after, before)
+
+    def test_conflicting_providers_for_existing_campaign_is_rejected(self) -> None:
+        """An existing campaign's provider set is fixed; a different set is rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                apply=False,
+            )
+            before = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["devin"],
+                    campaigns_dir=campaigns_dir,
+                    apply=False,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertIn("--providers", stderr.getvalue())
+            after = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            self.assertEqual(after, before)
+
+
+class RemoteDispatchStartingVersionTests(unittest.TestCase):
+    """Remote dispatches must advertise the exact starting_version they will accept."""
+
+    def _dispatch_upgrade_campaign(
+        self, campaigns_dir: Path, bodies: list[str]
+    ) -> dict[str, Any]:
+        release_campaigns.campaign_command(
+            release_tag="v2.0.0",
+            package_spec="code-mower==2.0.0",
+            qualification_context="upgrade",
+            starting_version="1.0.3",
+            providers=["cursor_bugbot"],
+            campaigns_dir=campaigns_dir,
+            repo_slug="owner/repo",
+            issue="42",
+            apply=True,
+            command_runner=_capturing_dispatch_command_runner(bodies),
+            env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+        )
+        saved = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+        assert saved is not None
+        return saved
+
+    def test_upgrade_dispatch_marker_and_instructions_carry_starting_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+            saved = self._dispatch_upgrade_campaign(campaigns_dir, bodies)
+
+            self.assertEqual(len(bodies), 1)
+            body = bodies[0]
+            marker = _dispatch_marker_from_body(body)
+            self.assertEqual(marker["schema"], release_campaigns.DISPATCH_SCHEMA)
+            self.assertEqual(marker["qualification_context"], "upgrade")
+            self.assertEqual(marker["starting_version"], "1.0.3")
+            self.assertEqual(marker["release_tag"], "v2.0.0")
+            self.assertEqual(
+                marker["idempotency_key"], saved["providers"][0]["idempotency_key"]
+            )
+
+            # Human-facing instructions must state the same starting version.
+            self.assertIn("- **Starting Version:** `1.0.3`", body)
+            self.assertIn("`starting_version` `1.0.3`", body)
+            self.assertEqual(saved["providers"][0]["state"], "running")
+
+    def test_cold_install_dispatch_omits_starting_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="42",
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(len(bodies), 1)
+            marker = _dispatch_marker_from_body(bodies[0])
+            self.assertEqual(marker["qualification_context"], "cold_install")
+            self.assertNotIn("starting_version", marker)
+            self.assertNotIn("Starting Version", bodies[0])
+
+    def test_upgrade_dispatch_then_poll_completes_bound_remote_result(self) -> None:
+        """The result a dispatched upgrade advertises is exactly the one polling accepts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+            saved = self._dispatch_upgrade_campaign(campaigns_dir, bodies)
+            marker = _dispatch_marker_from_body(bodies[0])
+
+            adoption_res = _mock_adoption_result_full(
+                release_tag=marker["release_tag"],
+                normalized_version="2.0.0",
+                provider=marker["provider"],
+                qualification_context=marker["qualification_context"],
+                starting_version=marker["starting_version"],
+                ending_version="2.0.0",
+                outcome="pass",
+            )
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": marker["campaign_id"],
+                "provider": marker["provider"],
+                "release_tag": marker["release_tag"],
+                "idempotency_key": marker["idempotency_key"],
+                "adoption_result": adoption_res,
+            }
+            reply = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "cursor[bot]"}, "body": reply}]}, ""
+
+            dispatch_calls: list[Any] = []
+            ret = release_campaigns.campaign_command(
+                release_tag="v2.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                issue="42",
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(dispatch_calls),
+                gh_json_runner=mock_gh_json,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(ret, 0)
+            self.assertEqual(dispatch_calls, [])
+            polled = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            assert polled is not None
+            self.assertEqual(polled["providers"][0]["state"], "complete")
+            self.assertEqual(polled["status"], "complete")
+            self.assertEqual(
+                polled["providers"][0]["adoption_result"]["starting_version"], "1.0.3"
+            )
+            self.assertEqual(
+                polled["providers"][0]["idempotency_key"],
+                saved["providers"][0]["idempotency_key"],
+            )
+
+    def test_upgrade_dispatch_without_starting_version_fails_closed(self) -> None:
+        """An upgrade campaign missing its starting_version is never dispatched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            command_runner = mock.MagicMock()
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v2.0.0",
+                package_spec="code-mower==2.0.0",
+                qualification_context="upgrade",
+                starting_version="1.0.3",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            tampered = campaign.to_dict()
+            tampered["starting_version"] = ""
+            release_campaigns.save_campaign(tampered, campaigns_dir)
+
+            release_campaigns.campaign_command(
+                release_tag="v2.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                issue="42",
+                apply=True,
+                command_runner=command_runner,
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            command_runner.assert_not_called()
+            saved = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "unavailable")
+            self.assertEqual(
+                saved["providers"][0]["error"], "campaign_identity_incomplete"
+            )
+            self.assertIsNone(saved["providers"][0]["attempted_at"])
+            self.assertIn("--starting-version", saved["providers"][0]["next_action"])
+
+    def test_dispatch_helper_refuses_upgrade_without_starting_version(self) -> None:
+        """The dispatch helper itself fails closed for direct callers too."""
+        command_runner = mock.MagicMock()
+        ok, ref, err = release_campaigns._dispatch_github_comment(
+            "owner/repo",
+            "42",
+            "campaign-v2.0.0",
+            "v2.0.0",
+            "code-mower==2.0.0",
+            "cursor_bugbot",
+            "upgrade",
+            "key",
+            starting_version="",
+            command_runner=command_runner,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(ref, {})
+        self.assertEqual(err, "campaign_identity_incomplete")
+        command_runner.assert_not_called()
+
+
+class CampaignStatusIdentifierTests(unittest.TestCase):
+    """Only an unqualified status request may fall back to the newest campaign."""
+
+    @staticmethod
+    def _seed_two_campaigns(campaigns_dir: Path) -> None:
+        older = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_bugbot"],
+        ).to_dict()
+        older["updated_at"] = "2026-09-03T12:00:00Z"
+        newer = release_campaigns.initialize_campaign(
+            release_tag="v1.1.0",
+            package_spec="code-mower==1.1.0",
+            providers=["cursor_bugbot"],
+        ).to_dict()
+        newer["updated_at"] = "2026-09-04T12:00:00Z"
+        release_campaigns.save_campaign(older, campaigns_dir)
+        release_campaigns.save_campaign(newer, campaigns_dir)
+
+    def test_status_with_unknown_campaign_id_is_bounded_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed_two_campaigns(campaigns_dir)
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    status=True,
+                    campaign_id="campaign-v9.9.9",
+                    campaigns_dir=campaigns_dir,
+                    emit_json=True,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("no campaign found", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertNotIn("v1.1.0", stdout.getvalue())
+
+    def test_status_with_unknown_release_tag_is_bounded_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed_two_campaigns(campaigns_dir)
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="status",
+                    release_tag="v9.9.9",
+                    campaigns_dir=campaigns_dir,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("no campaign found", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_status_rejects_campaign_id_and_release_tag_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed_two_campaigns(campaigns_dir)
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    status=True,
+                    campaign_id="campaign-v1.0.0",
+                    release_tag="v1.1.0",
+                    campaigns_dir=campaigns_dir,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("does not match", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_unqualified_status_reports_latest_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed_two_campaigns(campaigns_dir)
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                ret = release_campaigns.campaign_command(
+                    status=True,
+                    campaigns_dir=campaigns_dir,
+                    emit_json=True,
+                )
+
+            self.assertEqual(ret, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["campaign_id"], "campaign-v1.1.0")
+            self.assertEqual(payload["release_tag"], "v1.1.0")
+
+    def test_status_with_known_identifier_reports_that_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed_two_campaigns(campaigns_dir)
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                ret = release_campaigns.campaign_command(
+                    status=True,
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    emit_json=True,
+                )
+
+            self.assertEqual(ret, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["release_tag"], "v1.0.0")
 
 
 if __name__ == "__main__":

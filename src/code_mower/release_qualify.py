@@ -725,7 +725,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         nargs="?",
         default=None,
         choices=["create", "status", "resume", "dispatch"],
-        help="Optional campaign action (create, status, resume, dispatch)",
+        help=(
+            "Optional campaign action. create: start a new campaign (fails if one "
+            "already exists for the identifier). status: inspect only. "
+            "resume/dispatch: advance an existing campaign (fails if none exists). "
+            "Omitting the action creates a new campaign, or advances the existing "
+            "one when the identifier already names a campaign."
+        ),
     )
     campaign.add_argument(
         "--release-tag",
@@ -781,7 +787,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     campaign.add_argument(
         "--status",
         action="store_true",
-        help="Inspect status of an existing campaign without dispatching",
+        help=(
+            "Inspect status of an existing campaign without dispatching. With an "
+            "explicit --campaign-id/--release-tag this reports that campaign or "
+            "fails; without one it reports the most recently updated campaign"
+        ),
     )
     campaign.add_argument(
         "--campaign-id",
