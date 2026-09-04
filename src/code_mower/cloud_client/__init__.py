@@ -152,6 +152,12 @@ from .upload import (
     build_upload_payload,
     post_upload_payload,
 )
+from .work_types import (
+    WORK_TYPE_SCHEMA,
+    WORK_TYPE_VALUES,
+    resolve_work_type_classification,
+    validate_work_type_metadata,
+)
 
 __all__ = [
     "ADOPTION_CONTEXTS",
@@ -191,6 +197,8 @@ __all__ = [
     "PR_OUTCOME_EVENT_TYPE",
     "PR_OUTCOME_SCHEMA",
     "PR_OUTCOME_VALUES",
+    "WORK_TYPE_SCHEMA",
+    "WORK_TYPE_VALUES",
     "SAFE_EVENT_TYPES",
     "SAFE_REPORT_KINDS",
     "UPLOAD_SCHEMA",
@@ -255,6 +263,7 @@ __all__ = [
     "resolve_cloud_token",
     "resolve_setup_token",
     "reviewer_runs_upload",
+    "resolve_work_type_classification",
     "run_cloud_doctor",
     "run_cloud_setup",
     "run_gh_run_list",
@@ -274,6 +283,7 @@ __all__ = [
     "validate_metadata_payload",
     "validate_productivity_summary_payload",
     "validate_upload_endpoint",
+    "validate_work_type_metadata",
     "write_setup_env_file",
     "write_current_token_profile",
 ]
