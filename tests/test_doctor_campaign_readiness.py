@@ -318,6 +318,21 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertEqual(check.detail.get("storage_dir"), ".code-mower/campaigns")
             self.assertNotIn(tmp, str(check.detail))
 
+    def test_campaign_storage_warns_for_broken_path_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / ".code-mower").symlink_to(repo_root / "missing-target")
+
+            checks = check_adoption_campaign_readiness(
+                config={},
+                repo_root=repo_root,
+                providers=[],
+            )
+
+            check = next(c for c in checks if c.name == "doctor.campaign.storage")
+            self.assertEqual(check.status, STATUS_WARN)
+            self.assertFalse(check.detail.get("writable"))
+
     def test_campaign_cloud_upload_passes_with_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

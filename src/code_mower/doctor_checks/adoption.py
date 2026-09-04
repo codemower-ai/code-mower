@@ -824,6 +824,9 @@ def check_adoption_campaign_readiness(
     target_dir = root / ".code-mower" / "campaigns"
     writable = False
     try:
+        for required_path in (target_dir.parent, target_dir):
+            if required_path.is_symlink() and not required_path.exists():
+                raise OSError("broken campaign storage symlink")
         probe_dir = target_dir
         while not probe_dir.exists() and probe_dir.parent != probe_dir:
             probe_dir = probe_dir.parent
