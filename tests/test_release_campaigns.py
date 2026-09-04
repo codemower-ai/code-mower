@@ -208,8 +208,14 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertIsNotNone(saved)
             assert saved is not None
             self.assertTrue(saved["dry_run"])
-            self.assertEqual(saved["status"], "queued")
-            self.assertIn("run with --apply", saved["next_action"])
+            # The aggregate headline follows the providers: "run with --apply"
+            # is only honest while applying would actually dispatch something.
+            if any(p["state"] == "queued" for p in saved["providers"]):
+                self.assertEqual(saved["status"], "queued")
+                self.assertIn("run with --apply", saved["next_action"])
+            else:
+                self.assertEqual(saved["status"], "unavailable")
+                self.assertIn("configure prerequisites", saved["next_action"])
 
             # Providers are queued or unavailable
             for p in saved["providers"]:
@@ -1494,8 +1500,14 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             proj_c = payload["campaigns"][0]
             self.assertEqual(proj_c["release_tag"], "v1.0.4")
-            self.assertEqual(proj_c["status"], "queued")
             self.assertTrue(proj_c["dry_run"])
+
+            # The Board shows the stored aggregate verbatim, so it inherits the
+            # honest verdict rather than a second, softer one of its own.
+            stored = release_campaigns.load_campaign_by_id("campaign-v1.0.4", campaigns_dir)
+            assert stored is not None
+            self.assertEqual(proj_c["status"], stored["status"])
+            self.assertEqual(proj_c["next_action"], stored["next_action"])
 
             cards = proj_c["cards"]
             self.assertEqual(len(cards), 6)
@@ -3085,11 +3097,15 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
                 self.assertNotIn("--apply", entry["next_action"])
                 self.assertNotIn("--apply", entry["next_detail"])
                 self.assertTrue(saved["dry_run"])
-                self.assertEqual(saved["status"], "queued")
+                # The single provider cannot be dispatched, so neither can the
+                # campaign: the aggregate says so instead of "run with --apply".
+                self.assertEqual(saved["status"], "unavailable")
                 self.assertEqual(
-                    saved["next_detail"],
-                    "dry-run preview with 0 queued and 1 unavailable provider(s)",
+                    saved["next_action"],
+                    f"configure prerequisites for unavailable providers: {provider}",
                 )
+                self.assertEqual(saved["next_detail"], "1 provider(s) unavailable")
+                self.assertNotIn("--apply", saved["next_action"])
                 self._assert_no_dispatch(entry, command_runner, gh_json_runner, adapter_runner)
 
     def test_hosted_dry_run_with_issue_is_queued(self) -> None:
@@ -3218,6 +3234,213 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
             self.assertEqual(requeued_entry["state"], "queued")
             self.assertEqual(requeued_entry["error"], "")
             self._assert_no_dispatch(requeued_entry, command_runner, gh_json_runner, adapter_runner)
+
+
+class CampaignAggregateStatusHonestyTests(unittest.TestCase):
+    """The aggregate headline only promises a dispatch that --apply could make.
+
+    "queued / run with --apply to dispatch providers" is a claim that applying
+    would dispatch something. A dry run used to print it even when every
+    provider had failed a prerequisite check, so the operator was sent to a
+    command that could dispatch nothing. The aggregate now reports
+    ``unavailable`` and the prerequisite work whenever no provider is
+    dispatchable -- for a missing issue number, a missing repo slug, missing
+    credentials or an unconfigured adapter alike, because each of those already
+    lands its provider in ``unavailable``.
+    """
+
+    @staticmethod
+    def _providers(*states: str) -> list[dict[str, Any]]:
+        return [
+            {"provider": f"p{index}", "state": state} for index, state in enumerate(states, start=1)
+        ]
+
+    def test_all_unavailable_is_unavailable_in_a_dry_run(self) -> None:
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                status, action, detail = release_campaigns._aggregate_campaign_status(
+                    self._providers("unavailable", "unavailable"), dry_run=dry_run
+                )
+                self.assertEqual(status, "unavailable")
+                self.assertEqual(
+                    action, "configure prerequisites for unavailable providers: p1, p2"
+                )
+                self.assertEqual(detail, "2 provider(s) unavailable")
+                self.assertNotIn("--apply", action)
+
+    def test_a_dry_run_with_one_queued_provider_stays_queued(self) -> None:
+        """Mixed previews are still dispatchable, so they keep the --apply headline."""
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            self._providers("queued", "unavailable"), dry_run=True
+        )
+        self.assertEqual(status, "queued")
+        self.assertEqual(action, "run with --apply to dispatch providers")
+        self.assertEqual(detail, "dry-run preview with 1 queued and 1 unavailable provider(s)")
+
+    def test_an_applied_mixed_campaign_names_the_queued_providers(self) -> None:
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            self._providers("queued", "unavailable"), dry_run=False
+        )
+        self.assertEqual(status, "queued")
+        self.assertEqual(action, "dispatch queued providers: p1")
+        self.assertEqual(detail, "1 provider(s) waiting for dispatch")
+
+    def test_completed_providers_do_not_mask_an_undispatchable_remainder(self) -> None:
+        status, action, _ = release_campaigns._aggregate_campaign_status(
+            self._providers("complete", "unavailable"), dry_run=True
+        )
+        self.assertEqual(status, "unavailable")
+        self.assertEqual(action, "configure prerequisites for unavailable providers: p2")
+
+    def test_all_complete_is_complete_even_in_a_dry_run(self) -> None:
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                status, action, detail = release_campaigns._aggregate_campaign_status(
+                    self._providers("complete", "complete"), dry_run=dry_run
+                )
+                self.assertEqual(status, "complete")
+                self.assertEqual(action, "campaign complete; all providers passed")
+                self.assertEqual(detail, "all 2 provider(s) qualified successfully")
+
+    def test_blocked_and_running_keep_precedence_in_a_dry_run(self) -> None:
+        blocked_status, blocked_action, _ = release_campaigns._aggregate_campaign_status(
+            self._providers("blocked", "unavailable"), dry_run=True
+        )
+        self.assertEqual(blocked_status, "blocked")
+        self.assertIn("p1", blocked_action)
+
+        running_status, running_action, _ = release_campaigns._aggregate_campaign_status(
+            self._providers("running", "unavailable"), dry_run=True
+        )
+        self.assertEqual(running_status, "running")
+        self.assertIn("p1", running_action)
+
+    def test_an_empty_campaign_asks_for_providers(self) -> None:
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run):
+                self.assertEqual(
+                    release_campaigns._aggregate_campaign_status([], dry_run=dry_run),
+                    ("queued", "add providers to campaign", ""),
+                )
+
+    def _preview_status(self, campaigns_dir: Path, **kwargs: Any) -> dict[str, Any]:
+        """Run one no-apply campaign command with mocked runners and return its state."""
+        no_dispatch = mock.MagicMock()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            ret = release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                campaigns_dir=campaigns_dir,
+                apply=False,
+                command_runner=no_dispatch,
+                gh_json_runner=no_dispatch,
+                adapter_runner=no_dispatch,
+                **kwargs,
+            )
+        self.assertEqual(ret, 0)
+        no_dispatch.assert_not_called()
+        saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+        assert saved is not None
+        return saved
+
+    def test_every_dry_run_prerequisite_failure_reaches_the_aggregate(self) -> None:
+        """One rule, no special cases: missing issue, slug, credentials or adapter."""
+        scenarios = (
+            (
+                "missing_issue",
+                "devin",
+                dict(
+                    providers=["devin"],
+                    repo_slug="owner/repo",
+                    env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+                ),
+            ),
+            (
+                "missing_repo_slug",
+                "devin",
+                dict(
+                    providers=["devin"],
+                    repo_slug="",
+                    issue="42",
+                    env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+                ),
+            ),
+            (
+                "missing_credentials",
+                "devin",
+                dict(providers=["devin"], repo_slug="owner/repo", issue="42", env={}),
+            ),
+            (
+                "no_adapter_configured",
+                "muse",
+                dict(providers=["muse"], which_fn=lambda _cmd: "/bin/muse", env={}),
+            ),
+        )
+        for label, provider, kwargs in scenarios:
+            with self.subTest(scenario=label), tempfile.TemporaryDirectory() as tmp:
+                campaigns_dir = Path(tmp) / "campaigns"
+                saved = self._preview_status(
+                    campaigns_dir, repo_path=Path(tmp), **kwargs
+                )
+                self.assertTrue(saved["dry_run"])
+                self.assertEqual(saved["providers"][0]["state"], "unavailable")
+                self.assertEqual(saved["status"], "unavailable")
+                self.assertEqual(
+                    saved["next_action"],
+                    f"configure prerequisites for unavailable providers: {provider}",
+                )
+                self.assertEqual(saved["next_detail"], "1 provider(s) unavailable")
+                rendered = release_campaigns.render_campaign_text(saved)
+                self.assertIn("Status: unavailable (dry-run)", rendered)
+                self.assertNotIn("run with --apply to dispatch providers", rendered)
+
+    def test_a_mixed_preview_still_advertises_apply(self) -> None:
+        """One dispatchable provider is enough to make --apply the right advice."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            saved = self._preview_status(
+                campaigns_dir,
+                repo_path=Path(tmp),
+                providers=["devin", "muse"],
+                repo_slug="owner/repo",
+                issue="42",
+                which_fn=lambda _cmd: "/bin/muse",
+                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+            )
+            states = {p["provider"]: p["state"] for p in saved["providers"]}
+            self.assertEqual(states, {"devin": "queued", "muse": "unavailable"})
+            self.assertEqual(saved["status"], "queued")
+            self.assertEqual(saved["next_action"], "run with --apply to dispatch providers")
+            self.assertEqual(
+                saved["next_detail"],
+                "dry-run preview with 1 queued and 1 unavailable provider(s)",
+            )
+
+    def test_the_board_shows_the_corrected_aggregate(self) -> None:
+        """The Board reprints the stored verdict, so it cannot soften it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            saved = self._preview_status(
+                campaigns_dir,
+                repo_path=repo_path,
+                providers=["muse"],
+                which_fn=lambda _cmd: "/bin/muse",
+                env={},
+            )
+            self.assertEqual(saved["status"], "unavailable")
+
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir
+            )
+            projected = payload["campaigns"][0]
+            self.assertTrue(projected["dry_run"])
+            self.assertEqual(projected["status"], "unavailable")
+            self.assertEqual(
+                projected["next_action"],
+                "configure prerequisites for unavailable providers: muse",
+            )
+            self.assertEqual(payload["next_action"], projected["next_action"])
 
 
 class CampaignStatusIdentifierTests(unittest.TestCase):
@@ -6004,10 +6227,12 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
             )
         created = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
         assert created is not None
-        # Create-dry-run: nothing has been applied yet.
+        # Create-dry-run: nothing has been applied yet. muse has no configured
+        # campaign adapter here, so the preview says so instead of promising a
+        # dispatch that --apply could not make.
         self.assertTrue(created["dry_run"])
         self.assertEqual(created["providers"][0]["dispatch_mode"], "dry_run")
-        self.assertIn("run with --apply", created["next_action"])
+        self.assertIn("(dry-run)", release_campaigns.render_campaign_text(created))
 
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             release_campaigns.campaign_command(
@@ -6148,7 +6373,11 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
             assert saved is not None
             self.assertTrue(saved["dry_run"])
             self.assertEqual(saved["providers"][0]["dispatch_mode"], "dry_run")
-            self.assertIn("run with --apply", saved["next_action"])
+            self.assertEqual(saved["status"], "unavailable")
+            self.assertEqual(
+                saved["next_action"],
+                "configure prerequisites for unavailable providers: muse",
+            )
             self.assertIn("(dry-run)", release_campaigns.render_campaign_text(saved))
 
     def test_campaign_has_been_applied_reads_malformed_state_as_dry_run(self) -> None:

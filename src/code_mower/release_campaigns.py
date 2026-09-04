@@ -441,19 +441,26 @@ def _aggregate_campaign_status(
             "campaign complete; all providers passed",
             f"all {len(complete)} provider(s) qualified successfully",
         )
-    if dry_run:
-        return (
-            "queued",
-            "run with --apply to dispatch providers",
-            f"dry-run preview with {len(queued)} queued and {len(unavailable)} unavailable provider(s)",
-        )
+    # "queued" is a claim that applying would dispatch something, so it is only
+    # honest while at least one provider is actually dispatchable. A dry run is
+    # not an exception: previewing every provider as unavailable and still
+    # advising "run with --apply" points at a command that cannot dispatch
+    # anything. Report the prerequisite work instead -- which covers a missing
+    # issue number, repo slug, credentials and adapter configuration alike,
+    # because each of those already lands its provider in "unavailable".
     if queued:
+        if dry_run:
+            return (
+                "queued",
+                "run with --apply to dispatch providers",
+                f"dry-run preview with {len(queued)} queued and {len(unavailable)} unavailable provider(s)",
+            )
         return (
             "queued",
             f"dispatch queued providers: {', '.join(queued)}",
             f"{len(queued)} provider(s) waiting for dispatch",
         )
-    if len(unavailable) == len(providers) - len(complete):
+    if unavailable and len(unavailable) == len(providers) - len(complete):
         return (
             "unavailable",
             f"configure prerequisites for unavailable providers: {', '.join(unavailable)}",
