@@ -635,25 +635,54 @@ jobs:
             exit 0
           fi
 
-          owner="${GITHUB_REPOSITORY%%/*}"
-          repo="${GITHUB_REPOSITORY#*/}"
-          pr_node_id="$(
-            gh api graphql \
-              -f owner="${owner}" \
-              -f name="${repo}" \
-              -F number="${PR_NUMBER}" \
-              -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id}}}' \
-              --jq '.data.repository.pullRequest.id // ""' 2>/dev/null || true
-          )"
-
-          if [ -z "${pr_node_id}" ]; then
-            echo "::notice::Could not resolve PR node id for auto-merge."
-            exit 0
-          fi
-
+          # One head-pinned merge path for both merge states: `gh pr merge
+          # --auto` queues auto-merge while required checks are still pending
+          # and merges promptly once the PR is mergeable, so queue-later and
+          # merge-now share a single call. --match-head-commit refuses a moved
+          # head instead of merging unaudited commits.
+          # CODE_MOWER_GATE_AUTOMERGE_BEGIN
           automerge_token="${CODE_MOWER_GATE_AUTOMERGE_TOKEN:-${GH_TOKEN:-}}"
-          if ! GH_TOKEN="${automerge_token}" gh api graphql \
-            -f pullRequestId="${pr_node_id}" \
-            -f query='mutation($pullRequestId:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:SQUASH}){pullRequest{id}}}' >/dev/null; then
-              echo "::notice::Code Mower gate is green, but GitHub could not enable auto-merge. Confirm allow_auto_merge and token permissions."
-          fi
+          automerge_attempt=1
+          automerge_max_attempts="${CODE_MOWER_GATE_AUTOMERGE_MAX_ATTEMPTS:-5}"
+          automerge_delay="${CODE_MOWER_GATE_AUTOMERGE_RETRY_DELAY:-5}"
+          case "${automerge_max_attempts}" in
+            ''|*[!0-9]*) automerge_max_attempts=5 ;;
+          esac
+          case "${automerge_delay}" in
+            ''|*[!0-9]*) automerge_delay=5 ;;
+          esac
+          while true; do
+            automerge_stdout_file="$(mktemp)"
+            automerge_stderr_file="$(mktemp)"
+            if GH_TOKEN="${automerge_token}" gh pr merge "${PR_NUMBER}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --auto --squash --match-head-commit "${HEAD_SHA}" \
+              >"${automerge_stdout_file}" 2>"${automerge_stderr_file}"; then
+              automerge_result="$(head -n 1 "${automerge_stdout_file}")"
+              rm -f "${automerge_stdout_file}" "${automerge_stderr_file}"
+              echo "::notice::Code Mower gate merge request accepted for head ${HEAD_SHA}: ${automerge_result:-merged or queued}."
+              break
+            fi
+            automerge_error="$(head -n 1 "${automerge_stderr_file}")"
+            rm -f "${automerge_stdout_file}" "${automerge_stderr_file}"
+            case "${automerge_error}" in
+              *[Uu]nstable*|*[Rr]ate\ limit*|*try\ again*|*timed\ out*|*[Tt]imeout*|*deadline\ exceeded*|*HTTP\ 502*|*HTTP\ 503*|*HTTP\ 504*|*Bad\ gateway*|*Service\ unavailable*)
+                automerge_retry=true
+                ;;
+              *)
+                automerge_retry=false
+                ;;
+            esac
+            if [ "${automerge_retry}" != "true" ]; then
+              echo "::notice::Code Mower gate is green, but auto-merge was refused: $(printf '%.200s' "${automerge_error:-unknown error}"). Confirm token permissions, branch policy, and PR head."
+              break
+            fi
+            if [ "${automerge_attempt}" -ge "${automerge_max_attempts}" ]; then
+              echo "::notice::Code Mower gate is green, but auto-merge stayed transiently unavailable after ${automerge_attempt} attempts: $(printf '%.200s' "${automerge_error:-unknown error}"). A later gate run or manual merge can complete it."
+              break
+            fi
+            automerge_attempt="$((automerge_attempt + 1))"
+            sleep "${automerge_delay}"
+            automerge_delay="$((automerge_delay * 2))"
+          done
+          # CODE_MOWER_GATE_AUTOMERGE_END
