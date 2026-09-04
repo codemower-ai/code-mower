@@ -9408,6 +9408,8 @@ class CampaignWatchTests(unittest.TestCase):
         self.assertEqual(summary["stop_reason"], "blocked")
         self.assertEqual(summary["status"], "blocked")
         self.assertIn("--retry-provider claude", summary["retry_guidance"])
+        self.assertIn("--campaign-id campaign-v1.0.0", summary["retry_guidance"])
+        self.assertNotIn("--release-tag", summary["retry_guidance"])
         rendered = out.getvalue()
         self.assertIn("Final result: blocked", rendered)
         self.assertIn("Retry guidance: inspect failures and retry with", rendered)
@@ -9464,6 +9466,8 @@ class CampaignWatchTests(unittest.TestCase):
         rendered = out.getvalue()
         self.assertIn("Final result: timeout", rendered)
         self.assertIn("Retry guidance: re-run 'code-mower release campaign watch", rendered)
+        self.assertIn("--campaign-id campaign-v1.0.0", rendered)
+        self.assertNotIn("--release-tag", rendered)
         self.assertEqual(len(self.clock.sleep_calls), 4)
 
     def test_github_poll_accepts_production_json_shape_and_safe_failure(self) -> None:

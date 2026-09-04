@@ -2862,7 +2862,7 @@ def render_campaign_text(campaign: Mapping[str, Any]) -> str:
 def _watch_retry_guidance(stop_reason: str, campaign: Mapping[str, Any]) -> str:
     rtag = str(campaign.get("release_tag") or "")
     cid = str(campaign.get("campaign_id") or "")
-    id_flag = f"--campaign-id {cid}" if cid and not rtag else f"--release-tag {rtag}"
+    id_flag = f"--campaign-id {cid}" if cid else f"--release-tag {rtag}"
     if stop_reason == "complete":
         return ""
     if stop_reason == "blocked":
