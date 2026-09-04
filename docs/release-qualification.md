@@ -169,6 +169,7 @@ Set `CURSOR_BUGBOT_BOT_AUTHORS` to a comma-separated list of additional trusted 
 - `@cursor review`
 
 After the dispatch comment is posted, one of these trigger commands is posted as a separate comment to actually start the BugBot qualification run.
+Code Mower adds a hidden campaign marker to that comment so an interrupted resume can reconcile it without starting the provider twice. Reconciliation is read-only; retrying a missing trigger requires `--resume --apply`.
 
 **Example dispatch:**
 ```bash

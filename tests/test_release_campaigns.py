@@ -2752,7 +2752,8 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertIn("`@devin run`, `devin run`", dispatch_body)
 
             # Trigger body should be just the trigger command itself
-            self.assertEqual(trigger_body.strip(), "@devin run")
+            self.assertEqual(trigger_body.splitlines()[0], "@devin run")
+            self.assertIn("CODE_MOWER_RELEASE_TRIGGER", trigger_body)
 
     def test_cursor_bugbot_dispatch_posts_trigger_comment(self) -> None:
         """Cursor BugBot dispatch posts the trigger command as a separate actionable comment."""
@@ -2780,8 +2781,10 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertIn("bugbot run", dispatch_body)
             self.assertIn("@cursor review", dispatch_body)
 
-            # Trigger body should be just the first trigger command
-            self.assertEqual(trigger_body.strip(), "bugbot run")
+            # The actionable command stays first; the hidden marker makes a
+            # crash-after-post retry externally idempotent.
+            self.assertEqual(trigger_body.splitlines()[0], "bugbot run")
+            self.assertIn("CODE_MOWER_RELEASE_TRIGGER", trigger_body)
 
     def test_failed_trigger_post_retries_on_resume(self) -> None:
         """Failed trigger posts are persisted and retried on resume without redispatching."""
@@ -2910,49 +2913,124 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert resumed is not None
             self.assertEqual(resumed["providers"][0]["trigger_posted"], True)
 
-    def test_trigger_retry_respects_dry_run_resume(self) -> None:
-        """Resume without --apply must not post trigger comments (dry-run contract)."""
+    def test_resume_withholds_trigger_until_dispatch_is_confirmed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
-
-            # Create campaign with failed trigger
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
                 providers=["cursor_bugbot"],
                 repo_slug="owner/repo",
             )
+            provider = campaign.providers[0]
             campaign.status = "running"
-            campaign.providers[0]["state"] = "running"
-            campaign.providers[0]["attempted_at"] = "2024-01-01T00:00:00Z"
-            campaign.providers[0]["dispatched_at"] = "2024-01-01T00:00:00Z"
-            campaign.providers[0]["trigger_posted"] = False  # Trigger needs to be posted
-            campaign.providers[0]["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["trigger_idempotency_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": False}
             release_campaigns.save_campaign(campaign, campaigns_dir)
-
             bodies: list[str] = []
-
-            def mock_gh_json(args, **kwargs):
-                return {"comments": []}, ""
-
-            # Resume WITHOUT apply should not post the trigger
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 campaigns_dir=campaigns_dir,
                 resume=True,
-                apply=False,
                 command_runner=_capturing_dispatch_command_runner(bodies),
-                gh_json_runner=mock_gh_json,
+                gh_json_runner=lambda args, **kwargs: ({"comments": []}, ""),
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
-            # Should have posted NOTHING (dry-run)
-            self.assertEqual(len(bodies), 0)
-
-            # Trigger should still be marked as not posted
+            self.assertEqual(bodies, [])
             resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert resumed is not None
-            self.assertEqual(resumed["providers"][0]["trigger_posted"], False)
+            self.assertFalse(resumed["providers"][0]["trigger_posted"])
+            self.assertIn("retry the dispatch", resumed["providers"][0]["next_action"])
+
+    def test_resume_reconciles_posted_trigger_marker_without_reposting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["trigger_idempotency_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            trigger_marker = json.dumps(
+                {
+                    "schema": release_campaigns.TRIGGER_MARKER_SCHEMA,
+                    "campaign_id": "campaign-v1.0.0",
+                    "provider": "cursor_bugbot",
+                    "idempotency_key": "trigger-key",
+                },
+                sort_keys=True,
+            )
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: (
+                    {
+                        "comments": [
+                            {
+                                "body": "bugbot run\n\n"
+                                f"<!-- CODE_MOWER_RELEASE_TRIGGER: {trigger_marker} -->"
+                            }
+                        ]
+                    },
+                    "",
+                ),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            self.assertTrue(resumed["providers"][0]["trigger_posted"])
+
+    def test_resume_without_apply_never_posts_missing_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["trigger_idempotency_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: ({"comments": []}, ""),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            self.assertFalse(resumed["providers"][0]["trigger_posted"])
+            self.assertIn("--resume --apply", resumed["providers"][0]["next_action"])
 
     def test_explicit_retry_does_not_duplicate_trigger(self) -> None:
         """Explicit --retry-provider should not post trigger twice in one run."""
