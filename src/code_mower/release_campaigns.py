@@ -1610,8 +1610,37 @@ def dispatch_or_advance_campaign(
                     dry_run=True,
                     error=missing_cred,
                 )
+            elif lane.driver in {"hosted_bridge", "saas_event"} and (
+                not issue_number or not repo_slug
+            ):
+                # Same prerequisite the applied path enforces below: a hosted
+                # dispatch is a comment on a specific GitHub issue, so without
+                # an issue number (and the repo slug that addresses it) there
+                # is nothing --apply could dispatch. The preview must say so
+                # rather than report the provider queued and ready, which sent
+                # the operator to an --apply run that only ever came back
+                # unavailable. Evaluating this needs no network call: both
+                # values are already in hand.
+                provider_data["state"] = "unavailable"
+                provider_data["error"] = _safe_error("missing_issue_number")
+                action, detail = _provider_next_action(
+                    provider,
+                    lane,
+                    "unavailable",
+                    command_available=True,
+                    has_credentials=True,
+                    has_issue=False,
+                    dry_run=True,
+                    error="missing issue number",
+                )
             else:
                 provider_data["state"] = "queued"
+                # A prerequisite recorded by an earlier preview (a missing
+                # issue number, say) is stale once this evaluation finds the
+                # provider dispatchable again; a queued provider must not keep
+                # advertising an error it no longer has. Previously-attempted
+                # failures never reach here -- they are preserved above.
+                provider_data["error"] = ""
                 action, detail = _provider_next_action(
                     provider,
                     lane,

@@ -3004,6 +3004,222 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
         command_runner.assert_not_called()
 
 
+class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
+    """A hosted dry-run preview must judge the --issue prerequisite exactly as --apply does.
+
+    Hosted dispatch is a comment on a specific GitHub issue, so a hosted
+    provider with valid credentials but no issue number can never be
+    dispatched. The preview used to call that provider queued and tell the
+    operator to rerun with --apply; the applied run then immediately marked it
+    unavailable. Both spellings now report the same unavailable state, the same
+    bounded ``missing_issue_number`` error, and the same actionable next step.
+    """
+
+    def _preview(
+        self,
+        campaigns_dir: Path,
+        *,
+        provider: str,
+        token_env: str,
+        issue: str = "",
+        repo_slug: str = "owner/repo",
+        resume: bool = False,
+    ) -> tuple[dict[str, Any], mock.MagicMock, mock.MagicMock, mock.MagicMock]:
+        """Run one no-apply campaign command and return its saved state plus the runners."""
+        command_runner = mock.MagicMock()
+        gh_json_runner = mock.MagicMock()
+        adapter_runner = mock.MagicMock()
+        ret = release_campaigns.campaign_command(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=() if resume else (provider,),
+            campaigns_dir=campaigns_dir,
+            repo_slug=repo_slug,
+            issue=issue,
+            apply=False,
+            resume=resume,
+            command_runner=command_runner,
+            gh_json_runner=gh_json_runner,
+            adapter_runner=adapter_runner,
+            env={token_env: "token"},
+        )
+        self.assertEqual(ret, 0)
+        saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+        assert saved is not None
+        return saved, command_runner, gh_json_runner, adapter_runner
+
+    def _assert_no_dispatch(self, provider_data: dict[str, Any], *runners: mock.MagicMock) -> None:
+        """No network call, no adapter invocation, and no dispatch bookkeeping."""
+        for runner in runners:
+            runner.assert_not_called()
+        self.assertEqual(provider_data["dispatch_mode"], "dry_run")
+        self.assertIsNone(provider_data["attempted_at"])
+        self.assertIsNone(provider_data["dispatched_at"])
+        self.assertIsNone(provider_data["completed_at"])
+        self.assertEqual(provider_data["dispatch_ref"], {})
+        self.assertIsNone(provider_data["adoption_result"])
+
+    def test_hosted_dry_run_without_issue_is_unavailable(self) -> None:
+        """Credentials alone are not readiness: the preview names the missing --issue."""
+        for provider, token_env in (
+            ("devin", "DEVIN_AUDIT_LABEL_TOKEN"),
+            ("cursor_bugbot", "CURSOR_BUGBOT_AUDIT_LABEL_TOKEN"),
+        ):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                campaigns_dir = Path(tmp) / "campaigns"
+                saved, command_runner, gh_json_runner, adapter_runner = self._preview(
+                    campaigns_dir, provider=provider, token_env=token_env
+                )
+
+                entry = saved["providers"][0]
+                self.assertEqual(entry["provider"], provider)
+                self.assertEqual(entry["state"], "unavailable")
+                self.assertEqual(entry["error"], "missing_issue_number")
+                self.assertIn(entry["error"], release_campaigns.SAFE_ERROR_CODES)
+                self.assertEqual(
+                    entry["next_action"],
+                    f"provide GitHub issue number via --issue for {provider} dispatch",
+                )
+                self.assertEqual(entry["next_detail"], "missing issue number")
+                # Nothing about the preview claims the provider is dispatchable.
+                self.assertNotIn("--apply", entry["next_action"])
+                self.assertNotIn("--apply", entry["next_detail"])
+                self.assertTrue(saved["dry_run"])
+                self.assertEqual(saved["status"], "queued")
+                self.assertEqual(
+                    saved["next_detail"],
+                    "dry-run preview with 0 queued and 1 unavailable provider(s)",
+                )
+                self._assert_no_dispatch(entry, command_runner, gh_json_runner, adapter_runner)
+
+    def test_hosted_dry_run_with_issue_is_queued(self) -> None:
+        """With credentials and an issue the preview is still a preview -- queued, not dispatched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            saved, command_runner, gh_json_runner, adapter_runner = self._preview(
+                campaigns_dir, provider="devin", token_env="DEVIN_AUDIT_LABEL_TOKEN", issue="42"
+            )
+
+            entry = saved["providers"][0]
+            self.assertEqual(entry["state"], "queued")
+            self.assertEqual(entry["error"], "")
+            self.assertIn("--apply", entry["next_action"])
+            self.assertTrue(saved["dry_run"])
+            self.assertEqual(saved["status"], "queued")
+            self.assertEqual(saved["next_action"], "run with --apply to dispatch providers")
+            self.assertEqual(
+                saved["next_detail"],
+                "dry-run preview with 1 queued and 0 unavailable provider(s)",
+            )
+            self._assert_no_dispatch(entry, command_runner, gh_json_runner, adapter_runner)
+
+    def test_hosted_dry_run_without_repo_slug_is_unavailable(self) -> None:
+        """An issue number with no repo slug addresses nothing, exactly as under --apply."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            saved, command_runner, gh_json_runner, adapter_runner = self._preview(
+                campaigns_dir,
+                provider="devin",
+                token_env="DEVIN_AUDIT_LABEL_TOKEN",
+                issue="42",
+                repo_slug="",
+            )
+
+            entry = saved["providers"][0]
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertEqual(entry["error"], "missing_issue_number")
+            self.assertIn("--issue", entry["next_action"])
+            self._assert_no_dispatch(entry, command_runner, gh_json_runner, adapter_runner)
+
+    def test_missing_credentials_still_reported_before_the_issue_check(self) -> None:
+        """The credential check keeps precedence: no token is still missing_credentials."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            command_runner = mock.MagicMock()
+            gh_json_runner = mock.MagicMock()
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                apply=False,
+                command_runner=command_runner,
+                gh_json_runner=gh_json_runner,
+                env={},
+            )
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = saved["providers"][0]
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", entry["next_action"])
+            self._assert_no_dispatch(entry, command_runner, gh_json_runner)
+
+    def test_dry_run_preview_matches_the_applied_outcome(self) -> None:
+        """The preview's verdict is the verdict --apply reaches, minus the mutation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            preview, command_runner, gh_json_runner, _ = self._preview(
+                campaigns_dir, provider="devin", token_env="DEVIN_AUDIT_LABEL_TOKEN"
+            )
+            preview_entry = preview["providers"][0]
+
+            applied_runner = mock.MagicMock()
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                apply=True,
+                command_runner=applied_runner,
+                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+            )
+            applied_runner.assert_not_called()
+            applied = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert applied is not None
+            applied_entry = applied["providers"][0]
+
+            for field_name in ("state", "error", "next_action", "next_detail"):
+                self.assertEqual(preview_entry[field_name], applied_entry[field_name])
+            # The applied run refused before claiming an attempt, so a later
+            # run with --issue is still free to dispatch.
+            self.assertIsNone(applied_entry["attempted_at"])
+            self.assertEqual(command_runner.call_count, 0)
+            self.assertEqual(gh_json_runner.call_count, 0)
+
+    def test_dry_run_resume_reevaluates_the_issue_prerequisite(self) -> None:
+        """Resume without --apply shares the branch: unavailable without --issue, queued with it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._preview(
+                campaigns_dir, provider="devin", token_env="DEVIN_AUDIT_LABEL_TOKEN", issue="42"
+            )
+
+            resumed, command_runner, gh_json_runner, adapter_runner = self._preview(
+                campaigns_dir,
+                provider="devin",
+                token_env="DEVIN_AUDIT_LABEL_TOKEN",
+                resume=True,
+            )
+            entry = resumed["providers"][0]
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertEqual(entry["error"], "missing_issue_number")
+            self.assertIn("--issue", entry["next_action"])
+            self._assert_no_dispatch(entry, command_runner, gh_json_runner, adapter_runner)
+
+            requeued, command_runner, gh_json_runner, adapter_runner = self._preview(
+                campaigns_dir,
+                provider="devin",
+                token_env="DEVIN_AUDIT_LABEL_TOKEN",
+                issue="42",
+                resume=True,
+            )
+            requeued_entry = requeued["providers"][0]
+            self.assertEqual(requeued_entry["state"], "queued")
+            self.assertEqual(requeued_entry["error"], "")
+            self._assert_no_dispatch(requeued_entry, command_runner, gh_json_runner, adapter_runner)
+
+
 class CampaignStatusIdentifierTests(unittest.TestCase):
     """Only an unqualified status request may fall back to the newest campaign."""
 
