@@ -40,7 +40,7 @@ def _mock_adoption_result(
         "starting_version": "",
         "ending_version": "1.0.0",
         "provider": provider,
-        "executor": f"{provider}_cli",
+        "executor": provider,
         "host_class": "local",
         "runtime_class": "python_3.12",
         "execution_state": "executed",
@@ -86,7 +86,7 @@ def _mock_adoption_result_full(
         "starting_version": starting_version,
         "ending_version": ending_version,
         "provider": provider,
-        "executor": f"{provider}_cli",
+        "executor": provider,
         "host_class": "local",
         "runtime_class": "python_3.12",
         "execution_state": "executed",
@@ -236,7 +236,11 @@ class ReleaseCampaignTests(unittest.TestCase):
                 self.assertIsNone(p["completed_at"])
 
     def test_local_cli_without_adapter_cannot_complete(self) -> None:
-        """A local_cli provider with no configured campaign adapter never fabricates a result."""
+        """A local_cli lane with no maintained adapter never fabricates a result.
+
+        Uses aider, which ships no campaign adapter: codex/claude/antigravity/
+        muse now carry maintained adapters and would invoke them here.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             adapter_mock = mock.MagicMock()
@@ -244,10 +248,10 @@ class ReleaseCampaignTests(unittest.TestCase):
             result = release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["codex"],
+                providers=["aider"],
                 campaigns_dir=campaigns_dir,
                 apply=True,
-                which_fn=lambda _cmd: "/bin/codex",
+                which_fn=lambda _cmd: "/bin/aider",
                 adapter_runner=adapter_mock,
             )
             self.assertEqual(result, 0)
@@ -629,8 +633,47 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
+    def test_repo_config_can_enable_or_disable_maintained_adapter(self) -> None:
+        """Bare YAML booleans control the maintained adapter without becoming strings."""
+        _, lane = release_campaigns.resolve_provider_lane("muse")
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as tmp:
+                repo_path = Path(tmp)
+                (repo_path / "code-mower.yml").write_text(
+                    "version: 1\n"
+                    "lanes:\n"
+                    "  muse_cli:\n"
+                    "    provider_config:\n"
+                    f"      campaign_adapter_enabled: {str(enabled).lower()}\n",
+                    encoding="utf-8",
+                )
+
+                overrides, error, detail = release_campaigns._load_campaign_adapter_overrides(
+                    lane,
+                    repo_path,
+                )
+                self.assertEqual(error, "")
+                self.assertEqual(detail, "")
+                self.assertIs(overrides["campaign_adapter_enabled"], enabled)
+
+                argv_template, timeout_value, error, detail = (
+                    release_campaigns._resolve_campaign_adapter_config(lane, repo_path)
+                )
+                self.assertEqual(error, "")
+                self.assertEqual(detail, "")
+                if enabled:
+                    self.assertTrue(argv_template)
+                    self.assertEqual(timeout_value, 900)
+                else:
+                    self.assertIsNone(argv_template)
+                    self.assertIsNone(timeout_value)
+
     def test_repo_config_missing_is_no_override(self) -> None:
-        """No code-mower.yml at repo_path means no override, not an error."""
+        """No code-mower.yml at repo_path means no override, not an error.
+
+        Uses aider (no maintained adapter); muse would run its maintained
+        default adapter here.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             repo_path = Path(tmp)
             campaigns_dir = repo_path / ".code-mower" / "campaigns"
@@ -639,11 +682,11 @@ class ReleaseCampaignTests(unittest.TestCase):
             result = release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["muse"],
+                providers=["aider"],
                 repo_path=repo_path,
                 campaigns_dir=campaigns_dir,
                 apply=True,
-                which_fn=lambda _cmd: "/bin/muse",
+                which_fn=lambda _cmd: "/bin/aider",
                 adapter_runner=adapter_mock,
             )
 
@@ -926,6 +969,69 @@ class ReleaseCampaignTests(unittest.TestCase):
                 assert saved is not None
                 self.assertEqual(saved["providers"][0]["state"], "complete")
                 self.assertEqual(saved["providers"][0]["adoption_result"]["outcome"], "pass")
+
+    def test_failed_retry_removes_stale_result_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            output_path = repo_path / "result.json"
+            output_path.write_text(
+                json.dumps(
+                    _mock_adoption_result(
+                        release_tag="v1.0.0", provider="codex", outcome="pass"
+                    )
+                ),
+                encoding="utf-8",
+            )
+            lane = _fake_local_cli_lane()
+
+            result, error, _detail = release_campaigns._invoke_local_adapter(
+                lane,
+                "codex",
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                qualification_context="cold_install",
+                starting_version="",
+                output_path=output_path,
+                repo_path=repo_path,
+                which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                adapter_runner=lambda argv, _timeout: subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr=""
+                ),
+            )
+
+            self.assertIsNone(result)
+            self.assertEqual(error, "adapter_exited_nonzero")
+            self.assertFalse(output_path.exists())
+
+    def test_campaign_boundary_rejects_mismatched_executor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            output_path = repo_path / "result.json"
+            lane = _fake_local_cli_lane()
+
+            def mismatched_executor(argv, _timeout):
+                result = _mock_adoption_result(
+                    release_tag="v1.0.0", provider="codex", outcome="pass"
+                )
+                result["executor"] = "claude"
+                output_path.write_text(json.dumps(result), encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            result, error, _detail = release_campaigns._invoke_local_adapter(
+                lane,
+                "codex",
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                qualification_context="cold_install",
+                starting_version="",
+                output_path=output_path,
+                repo_path=repo_path,
+                which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                adapter_runner=mismatched_executor,
+            )
+
+            self.assertIsNone(result)
+            self.assertEqual(error, "adapter_result_mismatch")
 
     def test_drop_in_result_context_and_starting_version_binding(self) -> None:
         """A local drop-in result file must match this campaign's
@@ -1377,12 +1483,12 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(saved["status"], "unavailable")
 
             providers_by_name = {p["provider"]: p for p in saved["providers"]}
-            # antigravity is local_cli but has no campaign adapter configured, so it
-            # must fail closed on that basis rather than suggesting a CLI install
-            # that would never actually be invoked.
+            # antigravity now ships a maintained adapter but its CLI is missing
+            # here, so it must fail closed pointing at the install, not claim
+            # a result it never produced.
             self.assertEqual(providers_by_name["antigravity"]["state"], "unavailable")
-            self.assertEqual(providers_by_name["antigravity"]["error"], "no_campaign_adapter_configured")
-            self.assertIn("record manual result", providers_by_name["antigravity"]["next_action"])
+            self.assertEqual(providers_by_name["antigravity"]["error"], "command_not_found")
+            self.assertIn("install agy CLI", providers_by_name["antigravity"]["next_action"])
 
             self.assertEqual(providers_by_name["devin"]["state"], "unavailable")
             self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", providers_by_name["devin"]["next_action"])
@@ -3382,9 +3488,16 @@ class CampaignAggregateStatusHonestyTests(unittest.TestCase):
                 dict(providers=["devin"], repo_slug="owner/repo", issue="42", env={}),
             ),
             (
+                # aider ships no maintained campaign adapter, so a present CLI
+                # still previews as unavailable; muse/codex/claude/antigravity
+                # now carry maintained adapters and would preview as queued.
                 "no_adapter_configured",
-                "muse",
-                dict(providers=["muse"], which_fn=lambda _cmd: "/bin/muse", env={}),
+                "aider",
+                dict(
+                    providers=["aider"],
+                    which_fn=lambda cmd: "/bin/aider" if cmd == "aider" else None,
+                    env={},
+                ),
             ),
         )
         for label, provider, kwargs in scenarios:
@@ -3406,20 +3519,24 @@ class CampaignAggregateStatusHonestyTests(unittest.TestCase):
                 self.assertNotIn("run with --apply to dispatch providers", rendered)
 
     def test_a_mixed_preview_still_advertises_apply(self) -> None:
-        """One dispatchable provider is enough to make --apply the right advice."""
+        """One dispatchable provider is enough to make --apply the right advice.
+
+        Uses aider for the unavailable leg: it ships no maintained adapter,
+        while muse now does and would preview as queued here.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             saved = self._preview_status(
                 campaigns_dir,
                 repo_path=Path(tmp),
-                providers=["devin", "muse"],
+                providers=["devin", "aider"],
                 repo_slug="owner/repo",
                 issue="42",
-                which_fn=lambda _cmd: "/bin/muse",
+                which_fn=lambda cmd: "/bin/aider" if cmd == "aider" else None,
                 env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
             )
             states = {p["provider"]: p["state"] for p in saved["providers"]}
-            self.assertEqual(states, {"devin": "queued", "muse": "unavailable"})
+            self.assertEqual(states, {"devin": "queued", "aider": "unavailable"})
             self.assertEqual(saved["status"], "queued")
             self.assertEqual(saved["next_action"], "run with --apply to dispatch providers")
             self.assertEqual(
@@ -3428,15 +3545,19 @@ class CampaignAggregateStatusHonestyTests(unittest.TestCase):
             )
 
     def test_the_board_shows_the_corrected_aggregate(self) -> None:
-        """The Board reprints the stored verdict, so it cannot soften it."""
+        """The Board reprints the stored verdict, so it cannot soften it.
+
+        Uses aider (no maintained adapter) so the stored verdict is
+        unavailable; muse would preview as queued with its maintained adapter.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             repo_path = Path(tmp)
             campaigns_dir = repo_path / ".code-mower" / "campaigns"
             saved = self._preview_status(
                 campaigns_dir,
                 repo_path=repo_path,
-                providers=["muse"],
-                which_fn=lambda _cmd: "/bin/muse",
+                providers=["aider"],
+                which_fn=lambda cmd: "/bin/aider" if cmd == "aider" else None,
                 env={},
             )
             self.assertEqual(saved["status"], "unavailable")
@@ -3449,7 +3570,7 @@ class CampaignAggregateStatusHonestyTests(unittest.TestCase):
             self.assertEqual(projected["status"], "unavailable")
             self.assertEqual(
                 projected["next_action"],
-                "configure prerequisites for unavailable providers: muse",
+                "configure prerequisites for unavailable providers: aider",
             )
             self.assertEqual(payload["next_action"], projected["next_action"])
 
@@ -6534,13 +6655,21 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
 
     @staticmethod
     def _muse_kwargs(repo_path: Path, campaigns_dir: Path, **extra: Any) -> dict[str, Any]:
+        # Deterministic discovery: only the muse CLI resolves, everything else
+        # is missing. muse ships a maintained campaign adapter, so a present
+        # CLI previews as dispatchable (queued), not unavailable.
         return dict(
             release_tag="v1.0.0",
             campaigns_dir=campaigns_dir,
             repo_path=repo_path,
-            which_fn=lambda _cmd: "/bin/muse",
+            which_fn=lambda cmd: "/bin/muse" if cmd == "muse" else None,
             **extra,
         )
+
+    @staticmethod
+    def _failing_adapter_runner(argv: Any, timeout: int) -> Any:
+        """Deterministic stand-in for the real provider invocation: no network, no spend."""
+        return subprocess.CompletedProcess(list(argv), 1, stdout="", stderr="")
 
     def _create_and_apply(self, repo_path: Path, campaigns_dir: Path) -> dict[str, Any]:
         """Create a dry-run campaign, then advance the same campaign with --apply."""
@@ -6556,22 +6685,32 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
             )
         created = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
         assert created is not None
-        # Create-dry-run: nothing has been applied yet. muse has no configured
-        # campaign adapter here, so the preview says so instead of promising a
-        # dispatch that --apply could not make.
+        # Create-dry-run: nothing has been applied yet. muse ships a maintained
+        # campaign adapter and its CLI is present here, so the preview honestly
+        # reports a dispatchable queued provider instead of unavailable.
         self.assertTrue(created["dry_run"])
         self.assertEqual(created["providers"][0]["dispatch_mode"], "dry_run")
+        self.assertEqual(created["providers"][0]["state"], "queued")
         self.assertIn("(dry-run)", release_campaigns.render_campaign_text(created))
 
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             release_campaigns.campaign_command(
-                **self._muse_kwargs(repo_path, campaigns_dir, resume=True, apply=True)
+                **self._muse_kwargs(
+                    repo_path,
+                    campaigns_dir,
+                    resume=True,
+                    apply=True,
+                    adapter_runner=self._failing_adapter_runner,
+                )
             )
         applied = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
         assert applied is not None
-        # Dry-run-to-applied: the one transition that is allowed.
+        # Dry-run-to-applied: the one transition that is allowed. The mocked
+        # adapter exits non-zero, so the applied provider records blocked --
+        # the point here is the applied identity, preserved below.
         self.assertFalse(applied["dry_run"])
         self.assertEqual(applied["providers"][0]["dispatch_mode"], "applied")
+        self.assertEqual(applied["providers"][0]["state"], "blocked")
         return applied
 
     def test_applied_resume_without_apply_keeps_applied_identity(self) -> None:
@@ -6580,14 +6719,17 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
             campaigns_dir = repo_path / ".code-mower" / "campaigns"
             applied = self._create_and_apply(repo_path, campaigns_dir)
             applied_status = applied["status"]
-            self.assertEqual(applied_status, "unavailable")
+            self.assertEqual(applied_status, "blocked")
 
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 code = release_campaigns.campaign_command(
                     **self._muse_kwargs(repo_path, campaigns_dir, resume=True)
                 )
 
-            self.assertEqual(code, 0)
+            # The mocked adapter failed qualification, so the applied campaign
+            # reports blocked with a non-zero exit -- the preserved identity
+            # below is what this test guards.
+            self.assertEqual(code, 1)
             polled = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert polled is not None
             self.assertFalse(polled["dry_run"])
@@ -6613,7 +6755,7 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
             )
             card_campaign = payload["campaigns"][0]
             self.assertFalse(card_campaign["dry_run"])
-            self.assertEqual(card_campaign["status"], "unavailable")
+            self.assertEqual(card_campaign["status"], "blocked")
 
     def test_polling_a_dispatched_hosted_provider_keeps_applied_identity(self) -> None:
         """The literal reported case: a hosted dispatch, then a poll without --apply."""
@@ -6682,7 +6824,11 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
             self.assertFalse(polled["dry_run"])
 
     def test_a_never_applied_campaign_stays_a_dry_run_preview(self) -> None:
-        """The invariant only preserves applied state; it never invents it."""
+        """The invariant only preserves applied state; it never invents it.
+
+        muse ships a maintained adapter and its CLI is present here, so the
+        never-applied preview is an honest dispatchable queued preview.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             repo_path = Path(tmp)
             campaigns_dir = repo_path / ".code-mower" / "campaigns"
@@ -6702,10 +6848,11 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
             assert saved is not None
             self.assertTrue(saved["dry_run"])
             self.assertEqual(saved["providers"][0]["dispatch_mode"], "dry_run")
-            self.assertEqual(saved["status"], "unavailable")
+            self.assertEqual(saved["providers"][0]["state"], "queued")
+            self.assertEqual(saved["status"], "queued")
             self.assertEqual(
                 saved["next_action"],
-                "configure prerequisites for unavailable providers: muse",
+                "run with --apply to dispatch providers",
             )
             self.assertIn("(dry-run)", release_campaigns.render_campaign_text(saved))
 
