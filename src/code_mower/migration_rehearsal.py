@@ -271,6 +271,7 @@ def _pip_install_policy(
 def run_package_install_rehearsal(
     *,
     package_spec: str,
+    preinstall_package_spec: str = "",
     repo_path: Path | None = None,
     local_command: Sequence[str] | None = None,
     python: Path | None = None,
@@ -287,13 +288,22 @@ def run_package_install_rehearsal(
     pip_retry_delay_seconds: float = 15.0,
 ) -> dict[str, Any]:
     requested_package_spec = package_spec
+    requested_preinstall_package_spec = preinstall_package_spec
     uses_package_index = _package_spec_uses_package_index(requested_package_spec)
+    preinstall_uses_package_index = bool(
+        requested_preinstall_package_spec
+        and _package_spec_uses_package_index(requested_preinstall_package_spec)
+    )
     if uses_package_index and not allow_package_index:
         raise ValueError(
             "package-index package specs require --allow-package-index. "
             "Use --package-spec . for a local source rehearsal, or pass "
             "--allow-package-index for release/integration rehearsals against "
             "PyPI or TestPyPI."
+        )
+    if preinstall_uses_package_index and not allow_package_index:
+        raise ValueError(
+            "package-index preinstall specs require --allow-package-index"
         )
     pip_cache_disabled, pip_install_max_attempts = _pip_install_policy(
         uses_package_index=uses_package_index,
@@ -304,6 +314,8 @@ def run_package_install_rehearsal(
     if pip_retry_delay_seconds < 0:
         raise ValueError("--pip-retry-delay must be zero or greater")
     package_spec = _resolve_install_package_spec(package_spec)
+    if preinstall_package_spec:
+        preinstall_package_spec = _resolve_install_package_spec(preinstall_package_spec)
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="code-mower-package-install-"))
     else:
@@ -336,6 +348,41 @@ def run_package_install_rehearsal(
             steps=steps,
             timeout=timeout,
         )
+    preinstall_version = ""
+    preinstall_attempt_count = 0
+    if preinstall_package_spec:
+        preinstall_start = len(steps)
+        _run_pip_install_with_retries(
+            _pip_install_command(
+                venv_python,
+                preinstall_package_spec,
+                pip_index_url=pip_index_url,
+                pip_extra_index_urls=pip_extra_index_urls,
+                pip_no_cache=pip_cache_disabled,
+            ),
+            cwd=work_dir,
+            env=None,
+            steps=steps,
+            timeout=timeout,
+            attempts=pip_install_max_attempts,
+            retry_delay_seconds=pip_retry_delay_seconds,
+            package_index=preinstall_uses_package_index and allow_package_index,
+        )
+        preinstall_attempt_count = len(steps) - preinstall_start
+        _run_rehearsal_step(
+            [str(venv_python), "-m", "pip", "check"],
+            cwd=work_dir,
+            env=None,
+            steps=steps,
+            timeout=timeout,
+        )
+        preinstall_version = _run_rehearsal_step(
+            [str(code_mower_bin), "--version"],
+            cwd=work_dir,
+            env=None,
+            steps=steps,
+            timeout=timeout,
+        ).stdout.strip()
     pip_install_start = len(steps)
     _run_pip_install_with_retries(
         _pip_install_command(
@@ -699,6 +746,8 @@ def run_package_install_rehearsal(
         "pip_upgraded": upgrade_pip,
         "pip_cache_disabled": pip_cache_disabled,
         "pip_install_attempts": pip_install_attempt_count,
+        "preinstall_attempts": preinstall_attempt_count,
+        "preinstall_version": preinstall_version,
         "pip_install_max_attempts": pip_install_max_attempts,
         "pip_retry_delay_seconds": pip_retry_delay_seconds,
         "pip_index_url": pip_index_url,
