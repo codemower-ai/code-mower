@@ -445,15 +445,19 @@ def _aggregate_campaign_status(
 def locked_campaigns_dir(campaigns_dir: Path) -> Iterator[IO[str]]:
     """Hold an exclusive advisory lock over one campaign directory.
 
-    Every campaign command serializes on this lock across its whole
+    Every *mutating* campaign command serializes on this lock across its whole
     read-decide-invoke-persist sequence, so two concurrent invocations can never
     both observe a provider as un-attempted and both run its local adapter or
-    post its paid/hosted dispatch. The lock is an ordinary ``fcntl.flock`` on a
-    dedicated file, matching ``board_store._locked_store``: the kernel releases
-    it when the holding file descriptor closes, including on an uncaught
-    exception or an abrupt process exit, so there is no stale-lock protocol,
-    no owner/pid bookkeeping, and no timeout to tune. A crashed holder blocks
-    nobody.
+    post its paid/hosted dispatch. Read-only status requests and the Board
+    projection do not take it: they only read campaign files, which are
+    published by atomic rename, so they stay answerable while a long applied run
+    holds the lock and against a read-only campaign directory.
+
+    The lock is an ordinary ``fcntl.flock`` on a dedicated file, matching
+    ``board_store._locked_store``: the kernel releases it when the holding file
+    descriptor closes, including on an uncaught exception or an abrupt process
+    exit, so there is no stale-lock protocol, no owner/pid bookkeeping, and no
+    timeout to tune. A crashed holder blocks nobody.
 
     The lock file's name starts with a dot, so it is neither matched by the
     ``*.json`` campaign scan nor addressable as a campaign id.
@@ -1945,28 +1949,32 @@ def campaign_command(
 ) -> int:
     """Create, inspect, or advance a release qualification campaign.
 
-    Every invocation runs under an exclusive advisory lock on the campaign
-    directory (see :func:`locked_campaigns_dir`), held across the *whole*
-    sequence: loading stored state, deciding what to do, claiming an attempt by
-    stamping ``attempted_at``, invoking a local adapter or posting a hosted
-    dispatch, and persisting the result. Without that bracket, two commands
-    started at the same time could both load a campaign before either had
-    persisted its attempt claim, and both would run the provider's adapter or
-    post its paid dispatch. Because the lock is taken *before* the first read,
-    the second command necessarily reloads after the first has finished and
-    observes the ``attempted_at`` it wrote, so it declines the repeat exactly
-    as an ordinary sequential resume would.
+    Every *potentially mutating* invocation runs under an exclusive advisory
+    lock on the campaign directory (see :func:`locked_campaigns_dir`), held
+    across the *whole* sequence: loading stored state, deciding what to do,
+    claiming an attempt by stamping ``attempted_at``, invoking a local adapter
+    or posting a hosted dispatch, and persisting the result. Without that
+    bracket, two commands started at the same time could both load a campaign
+    before either had persisted its attempt claim, and both would run the
+    provider's adapter or post its paid dispatch. Because the lock is taken
+    *before* the first read, the second command necessarily reloads after the
+    first has finished and observes the ``attempted_at`` it wrote, so it
+    declines the repeat exactly as an ordinary sequential resume would. That
+    covers create, implicit create/advance, resume, dispatch, ``--record-result``,
+    ``--retry-provider``, and the repository-slug fill.
 
-    An explicit ``campaign_id`` is validated before the lock is taken, so a
+    A *read-only* status invocation -- ``status=True`` or ``action="status"``
+    with no ``record_result`` and no ``retry_provider`` -- takes no lock at all.
+    It only reads campaign files, and those are published with a single atomic
+    rename, so it can never observe a half-written or blended campaign. Locking
+    it would make ``--status`` block behind a long applied run holding the lock
+    and would demand a writable campaign directory to answer a question that
+    writes nothing; the same is true of the Board projection built on
+    ``list_campaigns``/``load_campaign``, which is likewise lock-free.
+
+    An explicit ``campaign_id`` is validated first, before either route, so a
     malformed identifier produces a bounded error and never creates a campaign
     directory, a lock file, or any other on-disk state.
-
-    Because the lock brackets the read too, every path through this command --
-    including read-only ``--status`` -- needs a writable campaign directory, and
-    says so with a bounded error when it does not have one. Reads that do not go
-    through a campaign command (``list_campaigns``, ``load_campaign``, and the
-    Board projection built on them) take no lock at all and stay available
-    regardless, because publication is a single atomic rename.
     """
     repo_path = repo_path or Path.cwd()
     campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
@@ -1978,19 +1986,27 @@ def campaign_command(
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+    # `--record-result` and `--retry-provider` both mutate stored state even when
+    # spelled alongside `status`, so only a status request carrying neither is
+    # treated as read-only; anything else keeps the serialized route.
+    is_read_only_status = (
+        (status or action == "status") and record_result is None and not retry_provider
+    )
+
     with ExitStack() as stack:
-        try:
-            stack.enter_context(locked_campaigns_dir(campaigns_dir))
-        except OSError:
-            # Bounded and path-free, like every other campaign error surface:
-            # the errno text and the local directory path are never echoed.
-            print(
-                "error: could not acquire the release campaign directory lock; "
-                "check that the campaigns directory exists and is writable",
-                file=sys.stderr,
-            )
-            return 1
-        return _campaign_command_locked(
+        if not is_read_only_status:
+            try:
+                stack.enter_context(locked_campaigns_dir(campaigns_dir))
+            except OSError:
+                # Bounded and path-free, like every other campaign error surface:
+                # the errno text and the local directory path are never echoed.
+                print(
+                    "error: could not acquire the release campaign directory lock; "
+                    "check that the campaigns directory exists and is writable",
+                    file=sys.stderr,
+                )
+                return 1
+        return _campaign_command_impl(
             repo_path=repo_path,
             campaigns_dir=campaigns_dir,
             action=action,
@@ -2017,7 +2033,7 @@ def campaign_command(
         )
 
 
-def _campaign_command_locked(
+def _campaign_command_impl(
     *,
     repo_path: Path,
     campaigns_dir: Path,
@@ -2043,10 +2059,19 @@ def _campaign_command_locked(
     adapter_runner: AdapterRunner = run_local_adapter_command,
     env: Mapping[str, str] | None = None,
 ) -> int:
-    """Body of :func:`campaign_command`, run with the campaign directory lock held.
+    """Body of :func:`campaign_command`.
 
-    Split out only so the lock brackets the whole read-decide-invoke-persist
-    sequence -- see :func:`campaign_command` for the concurrency contract.
+    Split out only so its caller can decide whether to bracket the whole
+    read-decide-invoke-persist sequence in the campaign directory lock. Every
+    mutating route holds that lock for the duration of this call; a read-only
+    status request runs here with no lock held. This function itself makes no
+    locking decision and must not be called directly by mutating callers -- see
+    :func:`campaign_command` for the concurrency contract.
+
+    The early ``record_result``/``is_status`` branches below are ordered to
+    match that split: the record path (which mutates) is reached only on the
+    locked route, and the status path returns before the first write of any
+    other branch, so the lock-free route reads and prints and nothing more.
 
     ``qualification_context`` carries an "unspecified" sentinel: the empty
     string means the caller did not ask for a context at all. That distinction

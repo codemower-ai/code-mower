@@ -721,17 +721,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Run or manage multi-provider release qualification campaign",
         description=(
             "Run or manage a multi-provider release qualification campaign. "
-            "Each invocation takes an exclusive advisory lock on the campaign "
-            "directory and holds it while it loads state, claims a provider "
-            "attempt, invokes an adapter or posts a hosted dispatch, and writes "
-            "the result back. Two campaign commands started at the same time "
-            "therefore run one after the other, and the second one sees the "
-            "first one's recorded attempts -- so concurrency can never duplicate "
-            "a local adapter run or a paid/hosted dispatch. The lock is released "
-            "by the operating system if a command crashes or is killed, so a "
-            "dead run never blocks the next one. Campaign files are published "
-            "with an atomic rename, so `--status` and Board reads stay available "
-            "and never observe a half-written campaign."
+            "Mutating invocations (create, resume, dispatch, --record-result, "
+            "--retry-provider) are serialized: each takes an exclusive advisory "
+            "lock on the campaign directory and holds it while it loads state, "
+            "claims a provider attempt, invokes an adapter or posts a hosted "
+            "dispatch, and writes the result back. Two such commands started at "
+            "the same time therefore run one after the other, and the second one "
+            "sees the first one's recorded attempts -- so concurrency can never "
+            "duplicate a local adapter run or a paid/hosted dispatch. The lock is "
+            "released by the operating system if a command crashes or is killed, "
+            "so a dead run never blocks the next one. Reads are lock-free: "
+            "`--status` and Board reads take no lock, need no writable campaign "
+            "directory, and stay available during a long applied run. Campaign "
+            "files are published with an atomic rename, so a read never observes "
+            "a half-written campaign."
         ),
     )
     campaign.add_argument(

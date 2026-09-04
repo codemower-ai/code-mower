@@ -3811,6 +3811,13 @@ class CampaignIdContractTests(unittest.TestCase):
         )
         self.assertIn("used verbatim as the stored file's name", help_text)
         self.assertIn("exclusive advisory lock on the campaign directory", help_text)
+        # The serialization contract is scoped to mutations, and says so: help
+        # that promised a lock on every invocation would contradict a `--status`
+        # that deliberately takes none.
+        self.assertIn("Mutating invocations", help_text)
+        self.assertIn("are serialized", help_text)
+        self.assertIn("Reads are lock-free", help_text)
+        self.assertIn("need no writable campaign directory", help_text)
 
     def test_save_campaign_refuses_an_out_of_alphabet_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4100,7 +4107,7 @@ class CampaignConcurrencyTests(unittest.TestCase):
             self.assertTrue(self._lock_acquirable(campaigns_dir))
 
     def test_unlockable_campaign_directory_reports_a_bounded_error(self) -> None:
-        """A directory that cannot be locked fails closed, without a traceback or a path."""
+        """A mutating command that cannot lock fails closed, without a traceback or a path."""
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp) / "readonly"
             parent.mkdir()
@@ -4112,9 +4119,11 @@ class CampaignConcurrencyTests(unittest.TestCase):
                     io.StringIO()
                 ):
                     code = release_campaigns.campaign_command(
+                        action="create",
                         release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=["codex"],
                         campaigns_dir=campaigns_dir,
-                        status=True,
                     )
             finally:
                 parent.chmod(0o700)
@@ -4137,6 +4146,254 @@ class CampaignConcurrencyTests(unittest.TestCase):
             )
             listed = release_campaigns.list_campaigns(campaigns_dir)
             self.assertEqual([c["campaign_id"] for c in listed], ["campaign-v1.0.0"])
+
+
+class CampaignLockFreeStatusTests(unittest.TestCase):
+    """Read-only status answers without the directory lock, so it never blocks or writes.
+
+    The serialization contract only needs to cover commands that can claim a
+    provider attempt, run an adapter, post a dispatch, or otherwise write. A
+    status request does none of those, and locking it would make `--status`
+    queue behind a long applied run and demand a writable campaign directory to
+    answer a question that writes nothing. Campaign files are published by a
+    single atomic rename, so a lock-free reader still never sees partial JSON.
+    """
+
+    @staticmethod
+    def _seed(campaigns_dir: Path) -> dict[str, Any]:
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_bugbot"],
+        ).to_dict()
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+        return campaign
+
+    @staticmethod
+    def _snapshot(campaigns_dir: Path) -> dict[str, bytes]:
+        return {p.name: p.read_bytes() for p in sorted(campaigns_dir.iterdir())}
+
+    @contextlib.contextmanager
+    def _counting_lock(self) -> Any:
+        """Count how many times a command enters the campaign directory lock."""
+        real_lock = release_campaigns.locked_campaigns_dir
+        entries: list[Path] = []
+
+        @contextlib.contextmanager
+        def counting(campaigns_dir: Path) -> Any:
+            entries.append(campaigns_dir)
+            with real_lock(campaigns_dir) as handle:
+                yield handle
+
+        with mock.patch.object(release_campaigns, "locked_campaigns_dir", counting):
+            yield entries
+
+    def test_status_reads_a_read_only_campaign_directory(self) -> None:
+        """A read-only directory cannot hold a lock file, and status must not need one."""
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses directory write permissions")
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+            before = self._snapshot(campaigns_dir)
+            campaigns_dir.chmod(0o500)
+            try:
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    ret = release_campaigns.campaign_command(
+                        status=True,
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        emit_json=True,
+                    )
+                after = self._snapshot(campaigns_dir)
+            finally:
+                campaigns_dir.chmod(0o700)
+
+            self.assertEqual(ret, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["campaign_id"], "campaign-v1.0.0")
+            self.assertEqual(payload["schema"], release_campaigns.CAMPAIGN_SCHEMA)
+            # Nothing was written: no lock file, no staging file, no rewritten campaign.
+            self.assertEqual(after, before)
+            self.assertNotIn(release_campaigns.CAMPAIGNS_LOCK_FILENAME, after)
+
+    def test_status_never_creates_the_campaign_directory_or_a_lock_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="status",
+                    campaigns_dir=campaigns_dir,
+                )
+            self.assertEqual(ret, 1)
+            self.assertIn("no campaigns found", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertFalse(campaigns_dir.exists())
+
+    def test_status_completes_while_another_process_holds_the_lock(self) -> None:
+        """`--status` during a long applied run answers instead of queueing behind it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+            before = self._snapshot(campaigns_dir)
+            lock_path = campaigns_dir / release_campaigns.CAMPAIGNS_LOCK_FILENAME
+            script = (
+                "import fcntl, sys\n"
+                "handle = open(sys.argv[1], 'a+')\n"
+                "fcntl.flock(handle.fileno(), fcntl.LOCK_EX)\n"
+                "sys.stdout.write('locked\\n')\n"
+                "sys.stdout.flush()\n"
+                "sys.stdin.readline()\n"
+            )
+            holder = subprocess.Popen(
+                [sys.executable, "-c", script, str(lock_path)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                assert holder.stdout is not None
+                self.assertEqual(holder.stdout.readline(), "locked\n")
+
+                stdout = io.StringIO()
+                result: list[int] = []
+
+                def read_status() -> None:
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                        io.StringIO()
+                    ):
+                        result.append(
+                            release_campaigns.campaign_command(
+                                status=True,
+                                release_tag="v1.0.0",
+                                campaigns_dir=campaigns_dir,
+                                emit_json=True,
+                            )
+                        )
+
+                reader = threading.Thread(target=read_status, daemon=True)
+                reader.start()
+                reader.join(timeout=60)
+                # A lock-taking status would still be blocked on the held lock here.
+                self.assertFalse(reader.is_alive())
+            finally:
+                assert holder.stdin is not None
+                holder.stdin.close()
+                holder.wait(timeout=60)
+                if holder.stdout is not None:
+                    holder.stdout.close()
+
+            self.assertEqual(result, [0])
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["campaign_id"], "campaign-v1.0.0")
+            after = self._snapshot(campaigns_dir)
+            # The holder's lock file is the only new entry; the campaign is untouched.
+            self.assertEqual(
+                {k: v for k, v in after.items() if k != release_campaigns.CAMPAIGNS_LOCK_FILENAME},
+                before,
+            )
+            self.assertEqual(
+                [name for name in after if name.startswith(release_campaigns.CAMPAIGN_TEMP_PREFIX)],
+                [],
+            )
+
+    def test_status_completes_while_another_thread_holds_the_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+            held = threading.Event()
+            release = threading.Event()
+
+            def hold() -> None:
+                with release_campaigns.locked_campaigns_dir(campaigns_dir):
+                    held.set()
+                    release.wait(timeout=120)
+
+            holder = threading.Thread(target=hold, daemon=True)
+            holder.start()
+            try:
+                self.assertTrue(held.wait(timeout=60))
+                stdout, stderr = io.StringIO(), io.StringIO()
+                result: list[int] = []
+
+                def read_status() -> None:
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        result.append(
+                            release_campaigns.campaign_command(
+                                action="status",
+                                campaigns_dir=campaigns_dir,
+                            )
+                        )
+
+                reader = threading.Thread(target=read_status, daemon=True)
+                reader.start()
+                reader.join(timeout=60)
+                self.assertFalse(reader.is_alive())
+            finally:
+                release.set()
+                holder.join(timeout=60)
+
+            self.assertEqual(result, [0])
+            self.assertIn("Release Campaign: v1.0.0", stdout.getvalue())
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_status_takes_no_lock_while_mutating_spellings_still_do(self) -> None:
+        """The routing split, asserted directly: only read-only status skips the lock."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+
+            def run(**kwargs: Any) -> tuple[int, int]:
+                with self._counting_lock() as entries:
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                        io.StringIO()
+                    ):
+                        ret = release_campaigns.campaign_command(
+                            campaigns_dir=campaigns_dir, **kwargs
+                        )
+                return ret, len(entries)
+
+            # Read-only status, both spellings: no lock.
+            for kwargs in (
+                {"status": True, "release_tag": "v1.0.0"},
+                {"action": "status"},
+            ):
+                with self.subTest(kwargs=kwargs):
+                    _, locks = run(**kwargs)
+                    self.assertEqual(locks, 0)
+
+            # Every mutating spelling keeps the lock, including a status flag
+            # carried alongside record/retry semantics. All but the first are
+            # rejected after the lock is taken, so nothing here writes either.
+            mutating: tuple[tuple[dict[str, Any], int], ...] = (
+                (
+                    {
+                        "status": True,
+                        "retry_provider": "cursor_bugbot",
+                        "release_tag": "v1.0.0",
+                    },
+                    0,
+                ),
+                ({"status": True, "record_result": Path(tmp) / "result.json"}, 1),
+                ({"action": "create", "release_tag": "v1.0.0"}, 1),
+                ({"action": "resume", "release_tag": "v1.0.0", "package_spec": "other==2"}, 1),
+                ({"action": "dispatch", "release_tag": "v1.0.0", "package_spec": "other==2"}, 1),
+                ({"release_tag": "v1.0.0", "package_spec": "other==2"}, 1),
+                ({"action": "resume", "release_tag": "v9.9.9"}, 1),
+            )
+            for kwargs, expected in mutating:
+                with self.subTest(kwargs=kwargs):
+                    ret, locks = run(**kwargs)
+                    self.assertEqual(locks, 1)
+                    self.assertEqual(ret, expected)
+
+            # None of the above wrote to the campaign.
+            stored = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert stored is not None
+            self.assertEqual(stored["providers"][0]["state"], "queued")
 
 
 class CampaignAtomicWriteTests(unittest.TestCase):
