@@ -1241,7 +1241,8 @@ class ReleaseCampaignTests(unittest.TestCase):
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
-            self.assertEqual(len(dispatch_calls), 1)
+            # Cursor BugBot has trigger_comments, so 2 calls: dispatch + trigger
+            self.assertEqual(len(dispatch_calls), 2)
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
@@ -2901,7 +2902,8 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             )
 
             release_campaigns.campaign_command(**common_kwargs)
-            self.assertEqual(len(bodies), 1)
+            # Cursor BugBot has trigger_comments, so 2 bodies: dispatch + trigger
+            self.assertEqual(len(bodies), 2)
             first = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert first is not None
             self.assertEqual(first["providers"][0]["state"], "running")
@@ -2911,7 +2913,8 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
                 ret = release_campaigns.campaign_command(**common_kwargs)
 
             self.assertEqual(ret, 0)
-            self.assertEqual(len(bodies), 1)
+            # No new bodies during idempotent redispatch, still 2 total
+            self.assertEqual(len(bodies), 2)
             self.assertNotIn("Traceback", stderr.getvalue())
 
             self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
@@ -3011,10 +3014,12 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
             release_campaigns.campaign_command(**dispatch_kwargs)
-            self.assertEqual(len(bodies), 1)
+            # Cursor BugBot has trigger_comments, so 2 bodies: dispatch + trigger
+            self.assertEqual(len(bodies), 2)
 
             release_campaigns.campaign_command(**dispatch_kwargs)
-            self.assertEqual(len(bodies), 1)
+            # No new bodies during idempotent redispatch, still 2 total
+            self.assertEqual(len(bodies), 2)
 
             self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -3168,7 +3173,8 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
             bodies: list[str] = []
             saved = self._dispatch_upgrade_campaign(campaigns_dir, bodies)
 
-            self.assertEqual(len(bodies), 1)
+            # Cursor BugBot has trigger_comments, so 2 bodies: dispatch + trigger
+            self.assertEqual(len(bodies), 2)
             body = bodies[0]
             marker = _dispatch_marker_from_body(body)
             self.assertEqual(marker["schema"], release_campaigns.DISPATCH_SCHEMA)
@@ -3201,7 +3207,8 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
-            self.assertEqual(len(bodies), 1)
+            # Cursor BugBot has trigger_comments, so 2 bodies: dispatch + trigger
+            self.assertEqual(len(bodies), 2)
             marker = _dispatch_marker_from_body(bodies[0])
             self.assertEqual(marker["qualification_context"], "cold_install")
             self.assertNotIn("starting_version", marker)
@@ -4039,7 +4046,8 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
 
             self.assertEqual(release_campaigns.campaign_command(**dispatch_kwargs), 0)
 
-            self.assertEqual(len(calls), 1)
+            # Cursor BugBot has trigger_comments, so 2 calls: dispatch + trigger
+            self.assertEqual(len(calls), 2)
             self.assertIn("--repo", calls[0])
             self.assertEqual(calls[0][calls[0].index("--repo") + 1], "owner/repo")
 
@@ -4054,7 +4062,8 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
                 ret = release_campaigns.campaign_command(**dispatch_kwargs)
 
             self.assertEqual(ret, 0)
-            self.assertEqual(len(calls), 1)
+            # No new calls during idempotent redispatch, still 2 total
+            self.assertEqual(len(calls), 2)
             self.assertNotIn("Traceback", stderr.getvalue())
             self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
 
@@ -4227,7 +4236,8 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
 
             self.assertEqual(ret, 0)
             self.assertNotIn("Traceback", stderr.getvalue())
-            self.assertEqual(len(calls), 1)
+            # Cursor BugBot has trigger_comments, so 2 calls: dispatch + trigger
+            self.assertEqual(len(calls), 2)
             advanced = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert advanced is not None
             self.assertEqual(advanced["qualification_context"], "upgrade")
@@ -4260,7 +4270,8 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
 
             self.assertEqual(ret, 0)
             self.assertNotIn("Traceback", stderr.getvalue())
-            self.assertEqual(len(calls), 1)
+            # Cursor BugBot has trigger_comments, so 2 calls: dispatch + trigger
+            self.assertEqual(len(calls), 2)
             advanced = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert advanced is not None
             self.assertEqual(advanced["providers"][0]["state"], "running")
@@ -6970,7 +6981,8 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
                     gh_json_runner=mock_gh_json,
                     env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
                 )
-            self.assertEqual(len(bodies), 1)
+            # Cursor BugBot has trigger_comments, so 2 comments posted: dispatch + trigger
+            self.assertEqual(len(bodies), 2)
             dispatched = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert dispatched is not None
             self.assertFalse(dispatched["dry_run"])
@@ -6987,7 +6999,8 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
 
             polled = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert polled is not None
-            self.assertEqual(len(bodies), 1)
+            # No new comments during poll, still 2 total
+            self.assertEqual(len(bodies), 2)
             self.assertFalse(polled["dry_run"])
             self.assertEqual(polled["providers"][0]["dispatch_mode"], "applied")
             self.assertEqual(polled["providers"][0]["state"], "running")
