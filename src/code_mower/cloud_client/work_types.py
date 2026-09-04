@@ -31,17 +31,6 @@ WORK_TYPE_ATTRIBUTION_VALUES = (
     "reviewer_credit",
     "excluded_self_review",
 )
-WORK_TYPE_DIMENSIONS = (
-    "work_type_schema",
-    "work_type",
-    "work_type_source",
-    "work_type_role",
-    "work_type_provider",
-    "work_type_model",
-    "work_type_lane_id",
-    "work_type_builder_lane_id",
-    "work_type_attribution",
-)
 # Only these event shapes may carry work-type metadata. Events that omit
 # work_type_schema entirely (all uploads before this contract, and any other
 # event type) remain valid.
