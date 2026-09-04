@@ -310,6 +310,13 @@ def validate_adoption_result_payload(result: object) -> None:
     if outcome not in VALID_OUTCOMES:
         raise ValueError(f"unsupported adoption result outcome {outcome!r}")
 
+    if execution_state == "executed" and outcome in {"pass", "pass_with_warnings"}:
+        if ending_version != normalized_version:
+            raise ValueError(
+                "adoption result ending_version must equal normalized_version for an "
+                "executed pass/pass_with_warnings result"
+            )
+
     _finite_non_negative(result.get("elapsed_seconds"), "elapsed_seconds")
 
     steps = result.get("steps")

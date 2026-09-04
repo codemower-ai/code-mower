@@ -504,6 +504,106 @@ def _valid_adoption_result(**overrides: object) -> dict:
     return result
 
 
+class EndingVersionValidationTests(unittest.TestCase):
+    """An executed pass/pass_with_warnings result must report the target version
+    it actually ended on; planned/incomplete results may retain an empty one.
+    """
+
+    def test_executed_pass_with_matching_ending_version_accepted(self) -> None:
+        release_qualify.validate_adoption_result_payload(
+            _valid_adoption_result(execution_state="executed", outcome="pass", ending_version="1.0.0")
+        )
+
+    def test_executed_pass_with_warnings_with_matching_ending_version_accepted(self) -> None:
+        release_qualify.validate_adoption_result_payload(
+            _valid_adoption_result(
+                execution_state="executed",
+                outcome="pass_with_warnings",
+                ending_version="1.0.0",
+                steps=[
+                    {
+                        "id": "doctor",
+                        "status": "warn",
+                        "elapsed_seconds": 0.5,
+                        "warning_count": 1,
+                        "owner_action_count": 0,
+                    }
+                ],
+            )
+        )
+
+    def test_executed_pass_with_empty_ending_version_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            release_qualify.validate_adoption_result_payload(
+                _valid_adoption_result(execution_state="executed", outcome="pass", ending_version="")
+            )
+        self.assertIn("ending_version", str(ctx.exception))
+
+    def test_executed_pass_with_stale_ending_version_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            release_qualify.validate_adoption_result_payload(
+                _valid_adoption_result(execution_state="executed", outcome="pass", ending_version="0.9.0")
+            )
+        self.assertIn("ending_version", str(ctx.exception))
+
+    def test_executed_pass_with_warnings_with_empty_ending_version_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            release_qualify.validate_adoption_result_payload(
+                _valid_adoption_result(
+                    execution_state="executed",
+                    outcome="pass_with_warnings",
+                    ending_version="",
+                    steps=[
+                        {
+                            "id": "doctor",
+                            "status": "warn",
+                            "elapsed_seconds": 0.5,
+                            "warning_count": 1,
+                            "owner_action_count": 0,
+                        }
+                    ],
+                )
+            )
+
+    def test_executed_fail_does_not_require_ending_version_match(self) -> None:
+        """A failed rehearsal may legitimately report the version it actually
+        landed on, which is exactly why it failed -- no equality is required."""
+        release_qualify.validate_adoption_result_payload(
+            _valid_adoption_result(
+                execution_state="executed",
+                outcome="fail",
+                ending_version="0.9.0",
+                steps=[
+                    {
+                        "id": "package_install",
+                        "status": "fail",
+                        "elapsed_seconds": 0.5,
+                        "warning_count": 0,
+                        "owner_action_count": 0,
+                    }
+                ],
+            )
+        )
+
+    def test_planned_incomplete_allows_empty_ending_version(self) -> None:
+        release_qualify.validate_adoption_result_payload(
+            _valid_adoption_result(
+                execution_state="planned",
+                outcome="incomplete",
+                ending_version="",
+                steps=[
+                    {
+                        "id": "package_install",
+                        "status": "planned",
+                        "elapsed_seconds": 0.0,
+                        "warning_count": 0,
+                        "owner_action_count": 0,
+                    }
+                ],
+            )
+        )
+
+
 class TimestampUtcValidationTests(unittest.TestCase):
     """timestamp_utc must be a real ISO 8601 timestamp with a UTC/offset designator."""
 

@@ -454,15 +454,29 @@ def _load_bound_result_file(
     *,
     provider: str,
     release_tag: str,
+    qualification_context: str,
+    starting_version: str,
 ) -> dict[str, Any] | None:
-    """Load and strictly validate a local adoptionResult file bound to this provider/tag."""
+    """Load and strictly validate a local adoptionResult file bound to this campaign.
+
+    Identity binding covers provider and release_tag as well as
+    qualification_context and starting_version -- a cold-install result must
+    not be accepted for an upgrade campaign (or vice versa), and an upgrade
+    result must match this campaign's exact starting_version, not just any
+    upgrade.
+    """
     try:
         with path.open("r", encoding="utf-8") as fh:
             candidate = json.load(fh)
         validate_adoption_result_payload(candidate)
     except (OSError, json.JSONDecodeError, ValueError):
         return None
-    if candidate.get("release_tag") != release_tag or candidate.get("provider") != provider:
+    if (
+        candidate.get("release_tag") != release_tag
+        or candidate.get("provider") != provider
+        or candidate.get("qualification_context") != qualification_context
+        or candidate.get("starting_version") != starting_version
+    ):
         return None
     return candidate
 
@@ -876,7 +890,12 @@ def _invoke_local_adapter(
     except (OSError, json.JSONDecodeError, ValueError):
         return None, _safe_error("adapter_result_invalid"), f"{provider} adapter result failed schema validation"
 
-    if result.get("provider") != provider or result.get("release_tag") != release_tag:
+    if (
+        result.get("provider") != provider
+        or result.get("release_tag") != release_tag
+        or result.get("qualification_context") != qualification_context
+        or result.get("starting_version") != starting_version
+    ):
         return None, _safe_error("adapter_result_mismatch"), f"{provider} adapter result identity mismatch"
 
     return result, "", ""
@@ -1022,11 +1041,20 @@ def dispatch_or_advance_campaign(
         current_state = str(provider_data.get("state") or "queued")
         is_explicit_retry = bool(retry_canonical) and provider == retry_canonical
 
-        # 1. Check local result drop-in first (manual override or adapter output)
+        # 1. Check local result drop-in first (manual override or adapter output).
+        # An explicit retry of this provider must not accept a pre-existing
+        # result file -- that would be stale evidence from the attempt being
+        # retried (or older), not evidence of the new attempt.
         local_result_file = results_dir / f"{campaign_id}_{provider}.json"
         bound_result = (
-            _load_bound_result_file(local_result_file, provider=provider, release_tag=release_tag)
-            if local_result_file.is_file()
+            _load_bound_result_file(
+                local_result_file,
+                provider=provider,
+                release_tag=release_tag,
+                qualification_context=context,
+                starting_version=starting_version,
+            )
+            if local_result_file.is_file() and not is_explicit_retry
             else None
         )
         if bound_result is not None:
@@ -1118,6 +1146,24 @@ def dispatch_or_advance_campaign(
             )
             continue
 
+        # 3.6 Ordinary (non-retry) dry-run resume of an already-attempted
+        # terminal-failure provider must preserve its state, evidence, error,
+        # and attempted_at -- merely observing it in a dry-run must not turn a
+        # recorded failure back into queued/unavailable capability guesswork.
+        # Only an explicit --retry-provider (handled above and below) may
+        # move it forward.
+        if (
+            not apply
+            and not is_explicit_retry
+            and bool(provider_data.get("attempted_at"))
+            and current_state in {"blocked", "unavailable"}
+        ):
+            provider_data["dispatch_mode"] = "dry_run"
+            provider_data["next_action"] = (
+                f"run with --apply --retry-provider {provider} to retry {provider}"
+            )
+            continue
+
         # 4. Check capabilities and readiness
         cmd_found = _find_command(lane, which_fn=which_fn)
         has_creds, missing_cred = _check_credentials(lane, env=current_env)
@@ -1195,6 +1241,14 @@ def dispatch_or_advance_campaign(
         if lane.driver == "local_cli":
             results_dir.mkdir(parents=True, exist_ok=True)
             result_path = results_dir / f"{campaign_id}_{provider}.json"
+            # Remove any pre-existing result file (e.g. from an attempt being
+            # retried) before invoking, so a new attempt that fails to write
+            # its own output can never be satisfied by stale evidence left
+            # behind on disk.
+            try:
+                result_path.unlink()
+            except FileNotFoundError:
+                pass
             provider_data["attempted_at"] = now_utc
             save_campaign(campaign, campaigns_dir)
             start_p = time.time()
@@ -1340,8 +1394,13 @@ def record_manual_result(
     repo_path: Path | None = None,
 ) -> dict[str, Any]:
     if isinstance(result_path_or_dict, Path):
-        with result_path_or_dict.open("r", encoding="utf-8") as fh:
-            adoption_res = json.load(fh)
+        try:
+            with result_path_or_dict.open("r", encoding="utf-8") as fh:
+                adoption_res = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "adoption result file is missing, unreadable, or not valid JSON"
+            ) from exc
     else:
         adoption_res = result_path_or_dict
 
@@ -1357,6 +1416,17 @@ def record_manual_result(
     if adoption_res.get("provider") != canonical_provider:
         raise ValueError(
             f"adoption result provider {adoption_res.get('provider')!r} does not match {canonical_provider!r}"
+        )
+
+    qualification_context = campaign.get("qualification_context")
+    if adoption_res.get("qualification_context") != qualification_context:
+        raise ValueError(
+            "adoption result qualification_context does not match campaign qualification_context"
+        )
+    campaign_starting_version = str(campaign.get("starting_version") or "")
+    if str(adoption_res.get("starting_version") or "") != campaign_starting_version:
+        raise ValueError(
+            "adoption result starting_version does not match campaign starting_version"
         )
 
     matched = False

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -33,6 +35,52 @@ def _mock_adoption_result(
         "qualification_context": "cold_install",
         "starting_version": "",
         "ending_version": "1.0.0",
+        "provider": provider,
+        "executor": f"{provider}_cli",
+        "host_class": "local",
+        "runtime_class": "python_3.12",
+        "execution_state": "executed",
+        "elapsed_seconds": 12.34,
+        "outcome": outcome,
+        "steps": [
+            {
+                "id": "doctor",
+                "status": "pass",
+                "elapsed_seconds": 1.2,
+                "warning_count": 0,
+                "owner_action_count": 0,
+            },
+            {
+                "id": "package_install",
+                "status": outcome if outcome in {"pass", "fail"} else "pass",
+                "elapsed_seconds": 11.14,
+                "warning_count": 0,
+                "owner_action_count": 0,
+            },
+        ],
+    }
+
+
+def _mock_adoption_result_full(
+    *,
+    release_tag: str = "v1.0.0",
+    normalized_version: str = "1.0.0",
+    provider: str = "claude",
+    qualification_context: str = "cold_install",
+    starting_version: str = "",
+    ending_version: str = "1.0.0",
+    outcome: str = "pass",
+) -> dict[str, Any]:
+    """Like _mock_adoption_result but with full control over context/version fields."""
+    return {
+        "schema": "code_mower.adoptionResult.v1",
+        "timestamp_utc": "2026-09-04T08:00:00Z",
+        "release_tag": release_tag,
+        "package_identity": "code-mower",
+        "normalized_version": normalized_version,
+        "qualification_context": qualification_context,
+        "starting_version": starting_version,
+        "ending_version": ending_version,
         "provider": provider,
         "executor": f"{provider}_cli",
         "host_class": "local",
@@ -299,6 +347,93 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider_entry = saved["providers"][0]
             self.assertEqual(provider_entry["state"], "blocked")
             self.assertEqual(provider_entry["error"], "adapter_result_mismatch")
+
+    def test_adapter_result_context_mismatch_is_rejected(self) -> None:
+        """An adapter result for the right provider/tag but wrong qualification_context
+
+        (cold-install vs. upgrade) is rejected, not accepted as evidence.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+
+            def cold_install_adapter_runner(argv, timeout):
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result_full(
+                    release_tag="v1.1.0",
+                    normalized_version="1.1.0",
+                    provider="codex",
+                    qualification_context="cold_install",
+                    starting_version="",
+                    ending_version="1.1.0",
+                )
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.1.0",
+                    package_spec="code-mower==1.1.0",
+                    providers=["codex"],
+                    qualification_context="upgrade",
+                    starting_version="1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=cold_install_adapter_runner,
+                )
+
+            saved = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            assert saved is not None
+            provider_entry = saved["providers"][0]
+            self.assertEqual(provider_entry["state"], "blocked")
+            self.assertEqual(provider_entry["error"], "adapter_result_mismatch")
+            self.assertIsNone(provider_entry["adoption_result"])
+
+    def test_adapter_result_starting_version_mismatch_is_rejected(self) -> None:
+        """An upgrade adapter result from a different starting_version is rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+
+            def wrong_start_adapter_runner(argv, timeout):
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result_full(
+                    release_tag="v1.1.0",
+                    normalized_version="1.1.0",
+                    provider="codex",
+                    qualification_context="upgrade",
+                    starting_version="0.9.0",
+                    ending_version="1.1.0",
+                )
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.1.0",
+                    package_spec="code-mower==1.1.0",
+                    providers=["codex"],
+                    qualification_context="upgrade",
+                    starting_version="1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=wrong_start_adapter_runner,
+                )
+
+            saved = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            assert saved is not None
+            provider_entry = saved["providers"][0]
+            self.assertEqual(provider_entry["state"], "blocked")
+            self.assertEqual(provider_entry["error"], "adapter_result_mismatch")
+            self.assertIsNone(provider_entry["adoption_result"])
 
     def test_adapter_result_with_extra_fields_is_rejected(self) -> None:
         """Undeclared fields (e.g. raw output or paths) in an adapter result are rejected."""
@@ -704,6 +839,134 @@ class ReleaseCampaignTests(unittest.TestCase):
                 )
                 self.assertEqual(len(invocations), 2)
 
+    def test_retry_does_not_accept_stale_result_before_invoking(self) -> None:
+        """An explicit retry must not be satisfied by a still-valid result file
+
+        left on disk by the attempt being retried -- it must invoke exactly
+        once more and reflect only the new adapter's result.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+            invocations: list[list[str]] = []
+
+            def failing_adapter_runner(argv, timeout):
+                invocations.append(list(argv))
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="codex", outcome="fail")
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            def passing_adapter_runner(argv, timeout):
+                invocations.append(list(argv))
+                output_path = Path(argv[argv.index("--output") + 1])
+                adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="codex", outcome="pass")
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(adoption_res, fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                # 1. Initial applied run produces a valid, but failing, result
+                # file -- the adapter itself ran successfully and wrote a
+                # schema-valid adoptionResult with outcome "fail".
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=failing_adapter_runner,
+                )
+                self.assertEqual(len(invocations), 1)
+                saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                assert saved is not None
+                self.assertEqual(saved["providers"][0]["state"], "blocked")
+                assert saved["providers"][0]["adoption_result"] is not None
+                self.assertEqual(saved["providers"][0]["adoption_result"]["outcome"], "fail")
+
+                # 2. Explicit retry with a new adapter that now passes must
+                # invoke exactly once more, and the campaign must reflect the
+                # *new* result -- not the stale failing evidence still on disk.
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    apply=True,
+                    retry_provider="codex",
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=passing_adapter_runner,
+                )
+                self.assertEqual(len(invocations), 2)
+                saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                assert saved is not None
+                self.assertEqual(saved["providers"][0]["state"], "complete")
+                self.assertEqual(saved["providers"][0]["adoption_result"]["outcome"], "pass")
+
+    def test_drop_in_result_context_and_starting_version_binding(self) -> None:
+        """A local drop-in result file must match this campaign's
+
+        qualification_context and starting_version, not just provider/release_tag
+        -- a cold-install result must not complete an upgrade campaign (or vice
+        versa), and an upgrade result from a different starting version must
+        not complete this one.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            results_dir = campaigns_dir / "results"
+            results_dir.mkdir(parents=True)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.1.0",
+                package_spec="code-mower==1.1.0",
+                providers=["devin"],
+                qualification_context="upgrade",
+                starting_version="1.0.0",
+                campaigns_dir=campaigns_dir,
+                apply=False,
+            )
+
+            drop_in_path = results_dir / "campaign-v1.1.0_devin.json"
+            mismatches = {
+                "context": _mock_adoption_result_full(
+                    release_tag="v1.1.0",
+                    normalized_version="1.1.0",
+                    provider="devin",
+                    qualification_context="cold_install",
+                    starting_version="",
+                    ending_version="1.1.0",
+                ),
+                "starting_version": _mock_adoption_result_full(
+                    release_tag="v1.1.0",
+                    normalized_version="1.1.0",
+                    provider="devin",
+                    qualification_context="upgrade",
+                    starting_version="0.9.0",
+                    ending_version="1.1.0",
+                ),
+            }
+
+            for label, mismatched_result in mismatches.items():
+                with self.subTest(mismatch=label):
+                    with drop_in_path.open("w", encoding="utf-8") as fh:
+                        json.dump(mismatched_result, fh)
+
+                    release_campaigns.campaign_command(
+                        release_tag="v1.1.0",
+                        campaigns_dir=campaigns_dir,
+                        resume=True,
+                        apply=False,
+                    )
+
+                    saved = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+                    assert saved is not None
+                    provider = saved["providers"][0]
+                    self.assertNotEqual(provider["state"], "complete")
+                    self.assertIsNone(provider["adoption_result"])
+
     def test_failed_github_dispatch_runs_once_then_only_on_explicit_retry(self) -> None:
         """A failed hosted/GitHub dispatch attempt is not silently repeated by ordinary resume."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -892,7 +1155,9 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(provider["dispatched_at"], "2026-09-04T00:00:00Z")
             self.assertIn("--apply --retry-provider cursor_bugbot", provider["next_action"])
 
-    def _blocked_codex_campaign(self, campaigns_dir: Path) -> None:
+    def _blocked_codex_campaign(
+        self, campaigns_dir: Path, *, error: str = "adapter_exited_nonzero"
+    ) -> None:
         campaign = release_campaigns.initialize_campaign(
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
@@ -901,7 +1166,7 @@ class ReleaseCampaignTests(unittest.TestCase):
         )
         campaign.providers[0]["state"] = "blocked"
         campaign.providers[0]["attempted_at"] = "2026-09-04T00:00:00Z"
-        campaign.providers[0]["error"] = "adapter_exited_nonzero"
+        campaign.providers[0]["error"] = error
         campaign.providers[0]["next_action"] = "inspect codex qualification failures"
         release_campaigns.save_campaign(campaign, campaigns_dir)
 
@@ -933,6 +1198,67 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider = saved["providers"][0]
             self.assertEqual(provider["state"], "blocked")
             self.assertEqual(provider["error"], "adapter_exited_nonzero")
+            self.assertIn("--apply --retry-provider codex", provider["next_action"])
+
+    def test_ordinary_dry_run_resume_preserves_nonzero_adapter_failure(self) -> None:
+        """Ordinary (non-retry) dry-run resume of an already-attempted provider
+
+        blocked by a nonzero adapter exit must preserve its state, error, and
+        attempted_at -- it must not merely observe it back into
+        queued/unavailable capability guesswork.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._blocked_codex_campaign(campaigns_dir, error="adapter_exited_nonzero")
+
+            def forbidden_adapter_runner(argv, timeout):
+                raise AssertionError("dry-run resume must not invoke the adapter")
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=False,
+                which_fn=lambda _cmd: None,
+                adapter_runner=forbidden_adapter_runner,
+            )
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            provider = saved["providers"][0]
+            self.assertEqual(provider["state"], "blocked")
+            self.assertEqual(provider["error"], "adapter_exited_nonzero")
+            self.assertEqual(provider["attempted_at"], "2026-09-04T00:00:00Z")
+            self.assertIn("--apply --retry-provider codex", provider["next_action"])
+
+    def test_ordinary_dry_run_resume_preserves_missing_output_failure(self) -> None:
+        """Ordinary (non-retry) dry-run resume of an already-attempted provider
+
+        blocked because the adapter produced no output file must preserve its
+        state, error, and attempted_at.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._blocked_codex_campaign(campaigns_dir, error="adapter_produced_no_result")
+
+            def forbidden_adapter_runner(argv, timeout):
+                raise AssertionError("dry-run resume must not invoke the adapter")
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=False,
+                which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                adapter_runner=forbidden_adapter_runner,
+            )
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            provider = saved["providers"][0]
+            self.assertEqual(provider["state"], "blocked")
+            self.assertEqual(provider["error"], "adapter_produced_no_result")
+            self.assertEqual(provider["attempted_at"], "2026-09-04T00:00:00Z")
             self.assertIn("--apply --retry-provider codex", provider["next_action"])
 
     def test_ordinary_resume_of_running_provider_never_redispatches(self) -> None:
@@ -1261,6 +1587,145 @@ class ReleaseCampaignTests(unittest.TestCase):
             # Rejected recording must leave the provider's prior (dry-run) state untouched.
             self.assertEqual(saved["providers"][0]["state"], "unavailable")
             self.assertIsNone(saved["providers"][0]["adoption_result"])
+
+    def test_manual_result_context_mismatch_rejected(self) -> None:
+        """A cold-install result must not be accepted for an upgrade campaign, or vice versa."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            result_file = Path(tmp) / "result.json"
+
+            # Campaign expects an upgrade from 1.0.0, but the recorded result
+            # is a cold-install result for the same provider/release_tag.
+            adoption_res = _mock_adoption_result_full(
+                release_tag="v1.1.0",
+                normalized_version="1.1.0",
+                provider="devin",
+                qualification_context="cold_install",
+                starting_version="",
+                ending_version="1.1.0",
+            )
+            with result_file.open("w", encoding="utf-8") as fh:
+                json.dump(adoption_res, fh)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.1.0",
+                package_spec="code-mower==1.1.0",
+                providers=["devin"],
+                qualification_context="upgrade",
+                starting_version="1.0.0",
+                campaigns_dir=campaigns_dir,
+                apply=False,
+            )
+
+            ret = release_campaigns.campaign_command(
+                campaigns_dir=campaigns_dir,
+                record_result=result_file,
+                record_provider="devin",
+                release_tag="v1.1.0",
+            )
+            self.assertEqual(ret, 1)
+
+            saved = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            assert saved is not None
+            self.assertIsNone(saved["providers"][0]["adoption_result"])
+
+    def test_manual_result_starting_version_mismatch_rejected(self) -> None:
+        """An upgrade result for a different starting_version must not be accepted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            result_file = Path(tmp) / "result.json"
+
+            # Campaign expects an upgrade from 1.0.0; the recorded result is a
+            # valid upgrade result, but from a different starting version.
+            adoption_res = _mock_adoption_result_full(
+                release_tag="v1.1.0",
+                normalized_version="1.1.0",
+                provider="devin",
+                qualification_context="upgrade",
+                starting_version="0.9.0",
+                ending_version="1.1.0",
+            )
+            with result_file.open("w", encoding="utf-8") as fh:
+                json.dump(adoption_res, fh)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.1.0",
+                package_spec="code-mower==1.1.0",
+                providers=["devin"],
+                qualification_context="upgrade",
+                starting_version="1.0.0",
+                campaigns_dir=campaigns_dir,
+                apply=False,
+            )
+
+            ret = release_campaigns.campaign_command(
+                campaigns_dir=campaigns_dir,
+                record_result=result_file,
+                record_provider="devin",
+                release_tag="v1.1.0",
+            )
+            self.assertEqual(ret, 1)
+
+            saved = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            assert saved is not None
+            self.assertIsNone(saved["providers"][0]["adoption_result"])
+
+    def test_record_result_missing_file_returns_bounded_cli_error(self) -> None:
+        """A missing --record-result file must exit 1 with a bounded message, never a traceback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            missing_path = Path(tmp) / "does-not-exist.json"
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                campaigns_dir=campaigns_dir,
+                apply=False,
+            )
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    campaigns_dir=campaigns_dir,
+                    record_result=missing_path,
+                    record_provider="devin",
+                    release_tag="v1.0.0",
+                )
+            self.assertEqual(ret, 1)
+            output = stderr.getvalue()
+            self.assertNotIn("Traceback", output)
+            self.assertNotIn(str(missing_path), output)
+            self.assertNotIn(tmp, output)
+
+    def test_record_result_invalid_json_returns_bounded_cli_error(self) -> None:
+        """An unreadable/invalid-JSON --record-result file exits 1, never a traceback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bad_json_path = Path(tmp) / "bad.json"
+            bad_json_path.write_text("{not valid json", encoding="utf-8")
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                campaigns_dir=campaigns_dir,
+                apply=False,
+            )
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    campaigns_dir=campaigns_dir,
+                    record_result=bad_json_path,
+                    record_provider="devin",
+                    release_tag="v1.0.0",
+                )
+            self.assertEqual(ret, 1)
+            output = stderr.getvalue()
+            self.assertNotIn("Traceback", output)
+            self.assertNotIn(str(bad_json_path), output)
+            self.assertNotIn(tmp, output)
 
     def test_manual_result_with_unsafe_timestamp_never_enters_campaign_state(self) -> None:
         """A malicious timestamp_utc (path traversal / multiline) is rejected before it can be persisted."""
