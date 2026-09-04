@@ -836,7 +836,7 @@ def _dispatch_github_comment(
     never told it would be guessing. A dispatch that cannot state the starting
     version of an upgrade campaign is refused rather than posted. Cold-install
     (and ``unknown``) campaigns have no starting version and omit the field.
-    
+
     When ``trigger_comments`` is supplied, the dispatch body includes them so
     a remote provider knows exactly which comment to watch for.
     """
