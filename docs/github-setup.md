@@ -480,7 +480,9 @@ to dispatch local audit lanes; those mentions are not a dependable Actions
 trigger.
 Generated clear-stale workflows include the lane id in their workflow name and
 concurrency group so Codex and Claude stale-label cleanup cannot cancel each
-other on the same PR push.
+other on the same PR push. The generated clear-stale and gate jobs skip fork
+`pull_request_target` events while manual dispatches (and gate `workflow_run`
+events) still run.
 
 If `CODE_MOWER_CLOUD_TOKEN` is configured, the generated workflow also uploads
 metadata-only reviewer evidence after every audit attempt. It sends saved
