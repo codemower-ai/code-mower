@@ -10,6 +10,7 @@ import os
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from .errors import CloudBundleError
 from .setup import (
@@ -232,15 +233,17 @@ def resolve_cloud_token(
     token_file: Path | None = None,
     token_dir: Path | None = None,
     install_id: str = "",
+    env: Mapping[str, str] | None = None,
 ) -> CloudTokenResolution:
-    env_token = os.environ.get(token_env, "").strip()
+    current_env = os.environ if env is None else env
+    env_token = current_env.get(token_env, "").strip()
     if env_token:
         return _resolution_from_profile(
             profile=CloudTokenProfile(
                 token=env_token,
-                endpoint=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", "").strip(),
-                team_id=os.environ.get(DEFAULT_TEAM_ID_ENV, "").strip(),
-                install_id=os.environ.get(DEFAULT_INSTALL_ID_ENV, "").strip(),
+                endpoint=current_env.get("CODE_MOWER_CLOUD_ENDPOINT", "").strip(),
+                team_id=current_env.get(DEFAULT_TEAM_ID_ENV, "").strip(),
+                install_id=current_env.get(DEFAULT_INSTALL_ID_ENV, "").strip(),
             ),
             token_env=token_env,
             source="env",

@@ -11,11 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 
-from .cloud import (
-    DEFAULT_CLOUD_TOKEN_DIR,
-    DEFAULT_CLOUD_TOKEN_ENV,
-    token_file_mentions_cloud_token,
-)
+from .cloud import DEFAULT_CLOUD_TOKEN_DIR, DEFAULT_CLOUD_TOKEN_ENV
 from .models import STATUS_PASS, STATUS_SKIP, STATUS_WARN, DoctorCheck
 
 
@@ -594,6 +590,7 @@ def check_adoption_campaign_readiness(
 ) -> tuple[DoctorCheck, ...]:
     """Validate release campaign readiness across configured providers and storage."""
     from code_mower import lane_status
+    from code_mower.cloud import resolve_cloud_token
     from code_mower.release_campaigns import (
         _check_credentials,
         _find_command,
@@ -866,47 +863,12 @@ def check_adoption_campaign_readiness(
 
     # 4. Cloud Upload Readiness Check
     cloud_token_env = DEFAULT_CLOUD_TOKEN_ENV
-    has_cloud_token = bool(current_env.get(cloud_token_env))
-    cloud_source = "env" if has_cloud_token else ""
-    cloud_status = "ok" if has_cloud_token else "missing"
-    cloud_files: list[str] = []
-
-    if not has_cloud_token:
-        cloud_dir = (token_dir or DEFAULT_CLOUD_TOKEN_DIR).expanduser()
-        if cloud_dir.is_dir():
-            try:
-                current_pointer = cloud_dir / ".current-profile"
-                selected_file: Path | None = None
-                if current_pointer.is_file():
-                    selected_name = current_pointer.read_text(encoding="utf-8").strip()
-                    if (
-                        selected_name
-                        and selected_name == Path(selected_name).name
-                        and selected_name.endswith(".env")
-                    ):
-                        candidate = cloud_dir / selected_name
-                        if token_file_mentions_cloud_token(candidate, cloud_token_env):
-                            selected_file = candidate
-                if selected_file is not None:
-                    has_cloud_token = True
-                    cloud_source = "current_profile"
-                    cloud_status = "ok"
-                else:
-                    cloud_files = [
-                        token_file.name
-                        for token_file in sorted(cloud_dir.glob("*.env"))
-                        if token_file_mentions_cloud_token(token_file, cloud_token_env)
-                    ]
-                    if len(cloud_files) == 1:
-                        has_cloud_token = True
-                        cloud_source = "single_profile"
-                        cloud_status = "ok"
-                    elif len(cloud_files) > 1:
-                        cloud_status = "ambiguous"
-            except OSError:
-                cloud_status = "unreadable"
-
-    if has_cloud_token:
+    cloud_resolution = resolve_cloud_token(
+        token_env=cloud_token_env,
+        token_dir=(token_dir or DEFAULT_CLOUD_TOKEN_DIR).expanduser(),
+        env=current_env,
+    )
+    if cloud_resolution.has_token:
         checks.append(
             DoctorCheck(
                 name="doctor.campaign.cloud_upload",
@@ -915,11 +877,11 @@ def check_adoption_campaign_readiness(
                 detail={
                     "token_env": cloud_token_env,
                     "configured": True,
-                    "source": cloud_source,
+                    "source": cloud_resolution.source,
                 },
             )
         )
-    elif cloud_status == "ambiguous":
+    elif cloud_resolution.status == "ambiguous":
         checks.append(
             DoctorCheck(
                 name="doctor.campaign.cloud_upload",
@@ -928,14 +890,37 @@ def check_adoption_campaign_readiness(
                 detail={
                     "token_env": cloud_token_env,
                     "configured": False,
-                    "status": cloud_status,
-                    "candidate_files": cloud_files,
+                    "status": cloud_resolution.status,
+                    "candidate_files": list(cloud_resolution.token_files),
                     "optional": True,
                     "actionable": False,
                 },
                 remediation=(
                     "Select a current profile with `code-mower cloud setup --token-stdin`, "
                     "or pass --token-file when uploading."
+                ),
+            )
+        )
+    elif cloud_resolution.status == "malformed":
+        candidate_files = list(cloud_resolution.token_files)
+        if cloud_resolution.token_file is not None:
+            candidate_files.append(cloud_resolution.token_file.name)
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.cloud_upload",
+                status=STATUS_WARN,
+                message="stored Code Mower Cloud token profile is malformed",
+                detail={
+                    "token_env": cloud_token_env,
+                    "configured": False,
+                    "status": cloud_resolution.status,
+                    "candidate_files": sorted(set(candidate_files)),
+                    "optional": True,
+                    "actionable": False,
+                },
+                remediation=(
+                    "Run `code-mower cloud setup --token-stdin` again, or pass "
+                    "--token-file with a sourceable token env file when uploading."
                 ),
             )
         )

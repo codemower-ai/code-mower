@@ -418,6 +418,29 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertEqual(check.detail.get("candidate_files"), ["alpha.env", "beta.env"])
             self.assertNotIn("not-serialized", str(check.as_dict()))
 
+    def test_campaign_cloud_upload_rejects_empty_token_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            token_dir = repo_root / "tokens"
+            token_dir.mkdir()
+            (token_dir / "empty.env").write_text(
+                "export CODE_MOWER_CLOUD_TOKEN=\n",
+                encoding="utf-8",
+            )
+
+            checks = check_adoption_campaign_readiness(
+                config={},
+                repo_root=repo_root,
+                env={},
+                token_dir=token_dir,
+                providers=[],
+            )
+
+            check = next(c for c in checks if c.name == "doctor.campaign.cloud_upload")
+            self.assertEqual(check.status, STATUS_WARN)
+            self.assertFalse(check.detail.get("configured"))
+            self.assertEqual(check.detail.get("status"), "malformed")
+
     def test_campaign_board_visibility_passes_and_redacts_cwd(self) -> None:
         def fake_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             # Simulate lsof output finding a listener on port 8000
