@@ -3041,8 +3041,9 @@ class ReleaseCampaignTests(unittest.TestCase):
                     {
                         "comments": [
                             {
+                                "author": {"login": "cursor[bot]"},
                                 "body": "bugbot run\n\n"
-                                f"<!-- CODE_MOWER_RELEASE_TRIGGER: {trigger_marker} -->"
+                                f"<!-- CODE_MOWER_RELEASE_TRIGGER: {trigger_marker} -->",
                             }
                         ]
                     },
@@ -3052,6 +3053,66 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             self.assertEqual(bodies, [])
+            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert resumed is not None
+            self.assertTrue(resumed["providers"][0]["trigger_posted"])
+
+    def test_trigger_marker_from_untrusted_author_is_rejected(self) -> None:
+        """Trigger marker reconciliation must validate comment authorship to prevent forgery."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = False
+            provider["comment_reconciliation_key"] = "trigger-key"
+            provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            # Forged trigger marker from untrusted author
+            trigger_marker = json.dumps(
+                {
+                    "schema": release_campaigns.TRIGGER_MARKER_SCHEMA,
+                    "campaign_id": "campaign-v1.0.0",
+                    "provider": "cursor_bugbot",
+                    "reconciliation_key": "trigger-key",
+                },
+                sort_keys=True,
+            )
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                gh_json_runner=lambda args, **kwargs: (
+                    {
+                        "comments": [
+                            {
+                                "author": {"login": "random-attacker"},
+                                "body": "bugbot run\n\n"
+                                f"<!-- CODE_MOWER_RELEASE_TRIGGER: {trigger_marker} -->",
+                            }
+                        ]
+                    },
+                    "",
+                ),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            # Should have posted 1 trigger (not reconciled the forged one)
+            self.assertEqual(len(bodies), 1)
+            self.assertIn("bugbot run", bodies[0])
+
             resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert resumed is not None
             self.assertTrue(resumed["providers"][0]["trigger_posted"])

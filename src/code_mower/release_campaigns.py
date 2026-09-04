@@ -1817,54 +1817,67 @@ def dispatch_or_advance_campaign(
                     provider_data["next_detail"] = (
                         "trigger withheld because the campaign dispatch is not confirmed"
                     )
-                elif _has_matching_release_marker(
-                    comments,
-                    "CODE_MOWER_RELEASE_TRIGGER",
-                    trigger_expected,
-                ):
-                    provider_data["trigger_posted"] = True
-                    provider_data["next_action"], provider_data["next_detail"] = (
-                        _provider_next_action(
-                            provider,
-                            lane,
-                            "running",
-                            command_available=True,
-                            has_credentials=True,
-                            has_issue=True,
-                            dry_run=False,
+                else:
+                    # Reconcile trigger marker, but only from trusted authors
+                    # to prevent forged markers from stopping the retry loop.
+                    trigger_marker_found = False
+                    trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
+                    for comment in comments:
+                        if not _is_trusted_github_author(
+                            _comment_author_login(comment), trusted_authors
+                        ):
+                            continue
+                        if _has_matching_release_marker(
+                            [comment],
+                            "CODE_MOWER_RELEASE_TRIGGER",
+                            trigger_expected,
+                        ):
+                            trigger_marker_found = True
+                            break
+                    if trigger_marker_found:
+                        provider_data["trigger_posted"] = True
+                        provider_data["next_action"], provider_data["next_detail"] = (
+                            _provider_next_action(
+                                provider,
+                                lane,
+                                "running",
+                                command_available=True,
+                                has_credentials=True,
+                                has_issue=True,
+                                dry_run=False,
+                            )
                         )
-                    )
-                elif not apply:
-                    provider_data["next_action"] = (
-                        f"run with --resume --apply to retry the {provider} trigger"
-                    )
-                    provider_data["next_detail"] = (
-                        "trigger reconciliation is read-only without --apply"
-                    )
-                elif ref_issue and repo_slug:
-                    trigger_ok, _trigger_ref, _trigger_err = _post_trigger_comment(
-                        repo_slug,
-                        ref_issue,
-                        trigger_comments[0],
-                        campaign_id=campaign_id,
-                        provider=provider,
-                        reconciliation_key=reconciliation_key,
-                        command_runner=command_runner,
-                    )
-                    provider_data["trigger_posted"] = trigger_ok
-                    if trigger_ok:
-                        provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
-                            provider,
-                            lane,
-                            "running",
-                            command_available=True,
-                            has_credentials=True,
-                            has_issue=True,
-                            dry_run=False,
+                    elif not apply:
+                        provider_data["next_action"] = (
+                            f"run with --resume --apply to retry the {provider} trigger"
                         )
-                    else:
-                        provider_data["next_action"] = f"retry {provider} trigger comment post"
-                        provider_data["next_detail"] = "trigger comment post failed on retry"
+                        provider_data["next_detail"] = (
+                            "trigger reconciliation is read-only without --apply"
+                        )
+                    elif ref_issue and repo_slug:
+                        trigger_ok, _trigger_ref, _trigger_err = _post_trigger_comment(
+                            repo_slug,
+                            ref_issue,
+                            trigger_comments[0],
+                            campaign_id=campaign_id,
+                            provider=provider,
+                            reconciliation_key=reconciliation_key,
+                            command_runner=command_runner,
+                        )
+                        provider_data["trigger_posted"] = trigger_ok
+                        if trigger_ok:
+                            provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
+                                provider,
+                                lane,
+                                "running",
+                                command_available=True,
+                                has_credentials=True,
+                                has_issue=True,
+                                dry_run=False,
+                            )
+                        else:
+                            provider_data["next_action"] = f"retry {provider} trigger comment post"
+                            provider_data["next_detail"] = "trigger comment post failed on retry"
                 _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
                 # After trigger reconciliation, continue to result polling below.
 
