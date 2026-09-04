@@ -2591,6 +2591,137 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
+    def test_cursor_bugbot_accepts_known_trusted_bot_author(self) -> None:
+        """Cursor BugBot's registry defaults trust cursor[bot]'s bound reply."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "cursor[bot]"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "complete")
+
+    def test_cursor_bugbot_rejects_spoofed_author(self) -> None:
+        """A perfectly identity-bound marker from an untrusted commenter is ignored for Cursor BugBot too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "random-attacker"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "running")
+            self.assertIsNone(saved["providers"][0]["adoption_result"])
+
+    def test_cursor_bugbot_bot_authors_env_override_adds_trusted_login(self) -> None:
+        """CURSOR_BUGBOT_BOT_AUTHORS extends (not replaces) Cursor BugBot's default trusted authors."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "self-hosted-cursor-runner"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+                env={"CURSOR_BUGBOT_BOT_AUTHORS": "self-hosted-cursor-runner"},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "complete")
+
 
 def _dispatch_marker_from_body(body: str) -> dict[str, Any]:
     """Parse the machine-readable dispatch marker out of a posted comment body."""

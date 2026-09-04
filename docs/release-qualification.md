@@ -148,6 +148,68 @@ Hosted / SaaS providers (`hosted_bridge`/`saas_event` driver: Devin, Cursor BugB
 - The provider's reply comment must embed a `CODE_MOWER_ADOPTION_RESULT` marker as a single-line HTML comment on a line of its own (`<!-- CODE_MOWER_ADOPTION_RESULT: {...} -->`), wrapping schema `code_mower.releaseCampaignResult.v1` with `campaign_id`, `provider`, `release_tag`, and `idempotency_key` matching the original dispatch, plus a validated `adoption_result`. A bare or unbound result is ignored so a stale or unrelated comment can never be replayed as evidence. The embedded `adoption_result`'s own `qualification_context` and `starting_version` must also match the campaign's exactly, independent of the wrapper's idempotency key -- a cold-install result cannot complete an upgrade campaign, and an upgrade result from one starting version cannot complete a same-tag upgrade campaign from a different starting version. The marker line is matched end to end and its JSON is captured through the object's own final brace, so a literal `-->` inside a permitted string value cannot truncate an otherwise valid trusted result; a marker whose JSON is genuinely malformed is still ignored (fail-closed), never guessed at.
 - These identity fields are visible in the public dispatch comment, so binding alone does not prove authorship -- anyone could reply with a matching marker. A result marker is only ever accepted from a GitHub comment author present in the lane's `provider_config.bot_authors` list (and, if configured, the comma-separated login list in the environment variable named by `provider_config.bot_authors_env`). A lane with no trusted authors configured trusts nobody; an untrusted or spoofed author's comment is ignored and the provider keeps running.
 
+#### Cursor BugBot Setup
+
+Cursor BugBot (also known as Cursor/Grok Bot, or Cursor Cloud Agents) is a hosted SaaS provider using the `saas_event` driver.
+
+**Prerequisites:**
+- GitHub App authorization for Cursor in your repository
+- `CURSOR_BUGBOT_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN` as fallback) for applying audit labels
+- `GITHUB_TOKEN` for posting dispatch comments
+
+**Trusted authors (default):**
+- `cursor[bot]`
+- `cursor`
+
+**Environment override:**
+Set `CURSOR_BUGBOT_BOT_AUTHORS` to a comma-separated list of additional trusted GitHub logins. This extends (does not replace) the default trusted authors, allowing self-hosted or alternative Cursor integrations to be trusted.
+
+**Example dispatch:**
+```bash
+code-mower release campaign \
+  --release-tag v1.0.0 \
+  --package-spec code-mower==1.0.0 \
+  --providers cursor_bugbot \
+  --issue 123 \
+  --repo-slug owner/repo \
+  --apply
+```
+
+**Aliases:** `cursor`, `cursor_bugbot`, `cursor_grok_bot`, `cursor_cloud_agent`, `grok_bot` all resolve to the canonical `cursor_bugbot` provider.
+
+#### Devin Setup
+
+Devin is a hosted paid provider using the `hosted_bridge` driver.
+
+**Prerequisites:**
+- Devin GitHub App authorization in your repository
+- `DEVIN_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN` as fallback) for applying audit labels
+- `GITHUB_TOKEN` for posting dispatch comments
+
+**Trusted authors (default):**
+- `devin-ai-integration[bot]`
+- `devin-ai-integration`
+
+**Environment override:**
+Set `DEVIN_BOT_AUTHORS` to a comma-separated list of additional trusted GitHub logins. This extends (does not replace) the default trusted authors, allowing self-hosted or alternative Devin integrations to be trusted.
+
+**Trigger comments:**
+- `@devin run`
+- `devin run`
+
+**Example dispatch:**
+```bash
+code-mower release campaign \
+  --release-tag v1.0.0 \
+  --package-spec code-mower==1.0.0 \
+  --providers devin \
+  --issue 123 \
+  --repo-slug owner/repo \
+  --apply
+```
+
+**Note:** Devin is an opt-in paid provider (`enabled_by_default: false`, `trigger_policy: manual`, `spend_policy: paid`). It must be explicitly requested via `--providers devin` and is not included in the default provider set.
+
 ### Per-Release Operation
 
 Any provider without a working adapter, credentials, or a bound remote result stays `unavailable`/manual. Record its result explicitly once qualification has actually happened elsewhere:

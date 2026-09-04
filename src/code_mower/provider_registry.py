@@ -205,6 +205,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         provider_config={
             "bot_authors": ("devin-ai-integration", "devin-ai-integration[bot]"),
             "bot_authors_env": "DEVIN_BOT_AUTHORS",
+            "trigger_comments": ("@devin run", "devin run"),
         },
     ),
     "greptile": ProviderLane(
