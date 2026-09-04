@@ -9975,7 +9975,7 @@ class CampaignWatchTests(unittest.TestCase):
             mock.patch.object(release_campaigns, "locked_campaigns_dir", tracking_lock),
             mock.patch.object(release_campaigns, "save_campaign", tracking_save),
         ):
-            summary = release_campaigns.watch_release_campaign(
+            summary = release_campaigns.campaign_watch(
                 campaign=campaign_data,
                 campaigns_dir=self.campaigns_dir,
                 stdout=io.StringIO(),

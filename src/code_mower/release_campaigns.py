@@ -3382,10 +3382,6 @@ def campaign_watch(
     )
 
 
-# Public alias matching watch_release_campaign naming convention
-watch_release_campaign = campaign_watch
-
-
 def _board_text(source: Mapping[str, Any], key: str, default: str) -> str:
     """Project a persisted string field for the Board, dropping malformed values.
 
