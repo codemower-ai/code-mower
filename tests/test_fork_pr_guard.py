@@ -86,6 +86,22 @@ def _generated_workflows() -> dict[str, str]:
 
 
 class ForkPrGuardTests(unittest.TestCase):
+    def test_checked_in_workflows_carry_guard(self) -> None:
+        for name, job_name in (
+            ("codex-clear-stale.yml", "clear-stale"),
+            ("claude-clear-stale.yml", "clear-stale"),
+            ("code-mower-gate.yml", "gate"),
+        ):
+            with self.subTest(workflow=name):
+                workflow = yaml.safe_load(
+                    ROOT.joinpath(".github/workflows", name).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(
+                    workflow["jobs"][job_name]["if"], EXPECTED_GUARD
+                )
+
     def test_canonical_and_mirror_clear_stale_templates_match(self) -> None:
         canonical = ROOT.joinpath(
             "templates/workflows/review-clear-stale.yml.j2").read_text(

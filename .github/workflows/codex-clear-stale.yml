@@ -32,6 +32,7 @@ concurrency:
 
 jobs:
   clear-stale:
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
       CLEAR_STALE_LANE: ${{ github.event.inputs.lane || 'codex' }}
