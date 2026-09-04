@@ -169,7 +169,7 @@ Set `CURSOR_BUGBOT_BOT_AUTHORS` to a comma-separated list of additional trusted 
 - `@cursor review`
 
 After the dispatch comment is posted, one of these trigger commands is posted as a separate comment to actually start the BugBot qualification run.
-Code Mower adds a hidden marker bound to a locally persisted random nonce so an interrupted resume can reconcile its own dispatch and trigger comments without trusting forgeable public fields or starting the provider twice. Reconciliation is read-only; retrying a missing trigger requires `--resume --apply`.
+Code Mower binds the hidden dispatch and trigger markers to separate locally persisted random nonces. The trigger nonce is never exposed by the earlier dispatch, so an interrupted resume can reconcile its own comments without trusting forgeable public fields or starting the provider twice. Reconciliation is read-only; retrying a missing trigger requires `--resume --apply`.
 
 **Example dispatch:**
 ```bash

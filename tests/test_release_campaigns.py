@@ -2927,7 +2927,8 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["comment_reconciliation_key"] = "trigger-key"
+            provider["dispatch_reconciliation_key"] = "dispatch-key"
+            provider["trigger_reconciliation_key"] = "trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": False}
             release_campaigns.save_campaign(campaign, campaigns_dir)
             bodies: list[str] = []
@@ -2982,7 +2983,8 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["comment_reconciliation_key"] = "trigger-key"
+            provider["dispatch_reconciliation_key"] = "dispatch-key"
+            provider["trigger_reconciliation_key"] = "trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": False}
             release_campaigns.save_campaign(campaign, campaigns_dir)
             bodies: list[str] = []
@@ -3018,7 +3020,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["comment_reconciliation_key"] = "trigger-key"
+            provider["trigger_reconciliation_key"] = "trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
             release_campaigns.save_campaign(campaign, campaigns_dir)
             trigger_marker = json.dumps(
@@ -3057,8 +3059,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert resumed is not None
             self.assertTrue(resumed["providers"][0]["trigger_posted"])
 
-    def test_trigger_marker_from_untrusted_author_is_rejected(self) -> None:
-        """Trigger marker reconciliation must validate comment authorship to prevent forgery."""
+    def test_dispatch_nonce_cannot_forge_trigger_reconciliation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             campaign = release_campaigns.initialize_campaign(
@@ -3072,17 +3073,16 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["comment_reconciliation_key"] = "trigger-key"
+            provider["dispatch_reconciliation_key"] = "public-dispatch-key"
+            provider["trigger_reconciliation_key"] = "private-trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
             release_campaigns.save_campaign(campaign, campaigns_dir)
-
-            # Forged trigger marker from untrusted author
-            trigger_marker = json.dumps(
+            forged_marker = json.dumps(
                 {
                     "schema": release_campaigns.TRIGGER_MARKER_SCHEMA,
-                    "campaign_id": "campaign-v1.0.0",
+                    "campaign_id": campaign.campaign_id,
                     "provider": "cursor_bugbot",
-                    "reconciliation_key": "trigger-key",
+                    "reconciliation_key": "public-dispatch-key",
                 },
                 sort_keys=True,
             )
@@ -3098,9 +3098,8 @@ class ReleaseCampaignTests(unittest.TestCase):
                     {
                         "comments": [
                             {
-                                "author": {"login": "random-attacker"},
                                 "body": "bugbot run\n\n"
-                                f"<!-- CODE_MOWER_RELEASE_TRIGGER: {trigger_marker} -->",
+                                f"<!-- CODE_MOWER_RELEASE_TRIGGER: {forged_marker} -->"
                             }
                         ]
                     },
@@ -3109,11 +3108,13 @@ class ReleaseCampaignTests(unittest.TestCase):
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
-            # Should have posted 1 trigger (not reconciled the forged one)
             self.assertEqual(len(bodies), 1)
             self.assertIn("bugbot run", bodies[0])
-
-            resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            self.assertIn("private-trigger-key", bodies[0])
+            self.assertNotIn("public-dispatch-key", bodies[0])
+            resumed = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
             assert resumed is not None
             self.assertTrue(resumed["providers"][0]["trigger_posted"])
 
@@ -3131,7 +3132,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["comment_reconciliation_key"] = "trigger-key"
+            provider["trigger_reconciliation_key"] = "trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
             release_campaigns.save_campaign(campaign, campaigns_dir)
             wrapper = {
@@ -3185,7 +3186,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             provider["state"] = "running"
             provider["attempted_at"] = "2024-01-01T00:00:00Z"
             provider["trigger_posted"] = False
-            provider["comment_reconciliation_key"] = "trigger-key"
+            provider["trigger_reconciliation_key"] = "trigger-key"
             provider["dispatch_ref"] = {"issue_number": "42", "comment_posted": True}
             release_campaigns.save_campaign(campaign, campaigns_dir)
             bodies: list[str] = []

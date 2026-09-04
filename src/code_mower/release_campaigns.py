@@ -1775,12 +1775,16 @@ def dispatch_or_advance_campaign(
             trigger_posted = provider_data.get("trigger_posted", True)
 
             if trigger_comments and not trigger_posted and not is_explicit_retry:
-                reconciliation_key = str(provider_data.get("comment_reconciliation_key") or "")
-                if not reconciliation_key:
-                    reconciliation_key = uuid.uuid4().hex
-                    provider_data["comment_reconciliation_key"] = reconciliation_key
-                    # Persist the nonce before any external side effect so a
-                    # crash-after-post can reconcile the same marker on resume.
+                dispatch_key = str(provider_data.get("dispatch_reconciliation_key") or "")
+                trigger_key = str(provider_data.get("trigger_reconciliation_key") or "")
+                if not dispatch_key or not trigger_key:
+                    dispatch_key = dispatch_key or uuid.uuid4().hex
+                    trigger_key = trigger_key or uuid.uuid4().hex
+                    provider_data["dispatch_reconciliation_key"] = dispatch_key
+                    provider_data["trigger_reconciliation_key"] = trigger_key
+                    # Persist both nonces before any external side effect. The
+                    # trigger nonce is deliberately absent from the dispatch
+                    # comment, so it cannot be copied to forge trigger success.
                     _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
 
                 dispatch_posted = bool(dispatch_ref.get("comment_posted"))
@@ -1789,7 +1793,7 @@ def dispatch_or_advance_campaign(
                     "campaign_id": campaign_id,
                     "provider": provider,
                     "idempotency_key": str(provider_data.get("idempotency_key") or ""),
-                    "reconciliation_key": reconciliation_key,
+                    "reconciliation_key": dispatch_key,
                 }
                 if not dispatch_posted and not poll_error:
                     dispatch_posted = _has_matching_release_marker(
@@ -1805,7 +1809,7 @@ def dispatch_or_advance_campaign(
                     "schema": TRIGGER_MARKER_SCHEMA,
                     "campaign_id": campaign_id,
                     "provider": provider,
-                    "reconciliation_key": reconciliation_key,
+                    "reconciliation_key": trigger_key,
                 }
                 if poll_error:
                     provider_data["next_action"] = f"retry {provider} trigger reconciliation"
@@ -1817,25 +1821,46 @@ def dispatch_or_advance_campaign(
                     provider_data["next_detail"] = (
                         "trigger withheld because the campaign dispatch is not confirmed"
                     )
-                else:
-                    # Reconcile trigger marker, but only from trusted authors
-                    # to prevent forged markers from stopping the retry loop.
-                    trigger_marker_found = False
-                    trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
-                    for comment in comments:
-                        if not _is_trusted_github_author(
-                            _comment_author_login(comment), trusted_authors
-                        ):
-                            continue
-                        if _has_matching_release_marker(
-                            [comment],
-                            "CODE_MOWER_RELEASE_TRIGGER",
-                            trigger_expected,
-                        ):
-                            trigger_marker_found = True
-                            break
-                    if trigger_marker_found:
-                        provider_data["trigger_posted"] = True
+                elif _has_matching_release_marker(
+                    comments,
+                    "CODE_MOWER_RELEASE_TRIGGER",
+                    trigger_expected,
+                ):
+                    # The trigger nonce is never published in the earlier
+                    # dispatch marker. Possession therefore authenticates this
+                    # exact side effect without assuming which human-owned
+                    # token posted the trigger comment.
+                    provider_data["trigger_posted"] = True
+                    provider_data["next_action"], provider_data["next_detail"] = (
+                        _provider_next_action(
+                            provider,
+                            lane,
+                            "running",
+                            command_available=True,
+                            has_credentials=True,
+                            has_issue=True,
+                            dry_run=False,
+                        )
+                    )
+                elif not apply:
+                    provider_data["next_action"] = (
+                        f"run with --resume --apply to retry the {provider} trigger"
+                    )
+                    provider_data["next_detail"] = (
+                        "trigger reconciliation is read-only without --apply"
+                    )
+                elif ref_issue and repo_slug:
+                    trigger_ok, _trigger_ref, _trigger_err = _post_trigger_comment(
+                        repo_slug,
+                        ref_issue,
+                        trigger_comments[0],
+                        campaign_id=campaign_id,
+                        provider=provider,
+                        reconciliation_key=trigger_key,
+                        command_runner=command_runner,
+                    )
+                    provider_data["trigger_posted"] = trigger_ok
+                    if trigger_ok:
                         provider_data["next_action"], provider_data["next_detail"] = (
                             _provider_next_action(
                                 provider,
@@ -1847,37 +1872,9 @@ def dispatch_or_advance_campaign(
                                 dry_run=False,
                             )
                         )
-                    elif not apply:
-                        provider_data["next_action"] = (
-                            f"run with --resume --apply to retry the {provider} trigger"
-                        )
-                        provider_data["next_detail"] = (
-                            "trigger reconciliation is read-only without --apply"
-                        )
-                    elif ref_issue and repo_slug:
-                        trigger_ok, _trigger_ref, _trigger_err = _post_trigger_comment(
-                            repo_slug,
-                            ref_issue,
-                            trigger_comments[0],
-                            campaign_id=campaign_id,
-                            provider=provider,
-                            reconciliation_key=reconciliation_key,
-                            command_runner=command_runner,
-                        )
-                        provider_data["trigger_posted"] = trigger_ok
-                        if trigger_ok:
-                            provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
-                                provider,
-                                lane,
-                                "running",
-                                command_available=True,
-                                has_credentials=True,
-                                has_issue=True,
-                                dry_run=False,
-                            )
-                        else:
-                            provider_data["next_action"] = f"retry {provider} trigger comment post"
-                            provider_data["next_detail"] = "trigger comment post failed on retry"
+                    else:
+                        provider_data["next_action"] = f"retry {provider} trigger comment post"
+                        provider_data["next_detail"] = "trigger comment post failed on retry"
                 _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
                 # After trigger reconciliation, continue to result polling below.
 
@@ -2176,7 +2173,8 @@ def dispatch_or_advance_campaign(
                 trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
                 provider_data["trigger_posted"] = not bool(trigger_comments)
                 if trigger_comments:
-                    provider_data["comment_reconciliation_key"] = uuid.uuid4().hex
+                    provider_data["dispatch_reconciliation_key"] = uuid.uuid4().hex
+                    provider_data["trigger_reconciliation_key"] = uuid.uuid4().hex
                 (
                     provider_data["next_action"],
                     provider_data["next_detail"],
@@ -2203,7 +2201,7 @@ def dispatch_or_advance_campaign(
                     starting_version=starting_version,
                     trigger_comments=trigger_comments,
                     reconciliation_key=str(
-                        provider_data.get("comment_reconciliation_key") or ""
+                        provider_data.get("dispatch_reconciliation_key") or ""
                     ),
                     command_runner=command_runner,
                 )
@@ -2237,7 +2235,7 @@ def dispatch_or_advance_campaign(
                             campaign_id=campaign_id,
                             provider=provider,
                             reconciliation_key=str(
-                                provider_data["comment_reconciliation_key"]
+                                provider_data["trigger_reconciliation_key"]
                             ),
                             command_runner=command_runner,
                         )
