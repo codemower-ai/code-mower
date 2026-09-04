@@ -177,6 +177,8 @@ def _run_doctor_check(config_path: Path, repo_slug: str, config_source: str) -> 
             cloud=True,
         )
         status = report.status
+        if status not in {"pass", "fail", "warn", "unavailable"}:
+            status = "fail"
         warnings = report.warnings
         actions = report.owner_actions
     except (OSError, ValueError):

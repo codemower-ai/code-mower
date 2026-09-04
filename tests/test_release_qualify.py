@@ -130,6 +130,33 @@ class ReleaseQualifyTests(unittest.TestCase):
                 self.assertTrue(kwargs["github"])
                 self.assertTrue(kwargs["cloud"])
 
+    def test_doctor_unrecognized_status_mapped_to_fail(self) -> None:
+        """Doctor unrecognized status values are mapped to fail."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            config_path = repo_path / "code-mower.yml"
+            config_path.write_text("repositories: []\n")
+            output_path = Path(tmpdir) / "result.json"
+
+            with mock.patch("code_mower.release_qualify.doctor_checks.run_doctor") as mock_doctor:
+                mock_report = mock.Mock()
+                mock_report.status = "critical"
+                mock_report.warnings = 5
+                mock_report.owner_actions = 2
+                mock_doctor.return_value = mock_report
+
+                result = release_qualify.run_release_qualification(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    output_path=output_path,
+                    repo_path=repo_path,
+                    dry_run=True,
+                )
+
+                doctor_step = [s for s in result["steps"] if s["id"] == "doctor"][0]
+                self.assertEqual(doctor_step["status"], "fail")
+                self.assertEqual(result["outcome"], "fail")
+
     def test_config_path_scoped_to_repo_when_missing(self) -> None:
         """Config path stays in selected repo even when file doesn't exist."""
         with tempfile.TemporaryDirectory() as tmpdir:
