@@ -179,7 +179,7 @@ class ResolveProviderLaneTests(unittest.TestCase):
                 apply=False,
             )
             self.assertEqual(result, 1)
-            self.assertIsNone(release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir))
+            self.assertIsNone(release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir))
 
 
 class ReleaseCampaignTests(unittest.TestCase):
@@ -204,7 +204,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             adapter_mock.assert_not_called()
             cmd_runner_mock.assert_not_called()
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             self.assertIsNotNone(saved)
             assert saved is not None
             self.assertTrue(saved["dry_run"])
@@ -236,7 +236,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(result, 0)
             adapter_mock.assert_not_called()
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider_entry = saved["providers"][0]
             self.assertEqual(provider_entry["state"], "unavailable")
@@ -277,7 +277,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(invocations[0][0], "/bin/fake-provider-cli")
             self.assertIn("v1.0.0", invocations[0])
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertFalse(saved["dry_run"])
             self.assertEqual(saved["status"], "complete")
@@ -312,7 +312,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     adapter_runner=no_output_adapter_runner,
                 )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider_entry = saved["providers"][0]
             self.assertEqual(provider_entry["state"], "blocked")
@@ -346,7 +346,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     adapter_runner=mismatched_adapter_runner,
                 )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider_entry = saved["providers"][0]
             self.assertEqual(provider_entry["state"], "blocked")
@@ -390,7 +390,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     adapter_runner=cold_install_adapter_runner,
                 )
 
-            saved = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert saved is not None
             provider_entry = saved["providers"][0]
             self.assertEqual(provider_entry["state"], "blocked")
@@ -432,7 +432,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     adapter_runner=wrong_start_adapter_runner,
                 )
 
-            saved = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert saved is not None
             provider_entry = saved["providers"][0]
             self.assertEqual(provider_entry["state"], "blocked")
@@ -466,7 +466,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     adapter_runner=dirty_adapter_runner,
                 )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider_entry = saved["providers"][0]
             self.assertEqual(provider_entry["state"], "blocked")
@@ -508,7 +508,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(result, 0)
             adapter_mock.assert_not_called()
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider_entry = saved["providers"][0]
             self.assertEqual(provider_entry["state"], "unavailable")
@@ -568,7 +568,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             self.assertEqual(len(invocations), 1)
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
@@ -608,7 +608,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 adapter_runner=fake_adapter_runner,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
@@ -632,7 +632,7 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             adapter_mock.assert_not_called()
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["error"], "no_campaign_adapter_configured")
 
@@ -663,7 +663,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             adapter_mock.assert_not_called()
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["error"], "adapter_configuration_invalid")
 
@@ -690,7 +690,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             adapter_mock.assert_not_called()
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["error"], "adapter_configuration_invalid")
             serialized = json.dumps(saved)
@@ -719,7 +719,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             adapter_mock.assert_not_called()
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["error"], "adapter_configuration_invalid")
             serialized = json.dumps(saved)
@@ -755,7 +755,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 )
                 self.assertEqual(len(invocations), 1)
 
-                saved_before = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                saved_before = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
                 assert saved_before is not None
                 idemp_key = saved_before["providers"][0]["idempotency_key"]
 
@@ -770,7 +770,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 )
                 self.assertEqual(len(invocations), 1)  # Still 1, not duplicated!
 
-            saved_after = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved_after = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved_after is not None
             self.assertEqual(saved_after["providers"][0]["idempotency_key"], idemp_key)
             self.assertEqual(saved_after["providers"][0]["state"], "complete")
@@ -800,7 +800,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 )
                 self.assertEqual(len(invocations), 1)
 
-                saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
                 assert saved is not None
                 self.assertEqual(saved["providers"][0]["state"], "blocked")
                 self.assertEqual(saved["providers"][0]["error"], "adapter_exited_nonzero")
@@ -816,7 +816,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     adapter_runner=failing_adapter_runner,
                 )
                 self.assertEqual(len(invocations), 1)
-                saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
                 assert saved is not None
                 self.assertIn("--retry-provider codex", saved["providers"][0]["next_action"])
 
@@ -886,7 +886,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     adapter_runner=failing_adapter_runner,
                 )
                 self.assertEqual(len(invocations), 1)
-                saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
                 assert saved is not None
                 self.assertEqual(saved["providers"][0]["state"], "blocked")
                 assert saved["providers"][0]["adoption_result"] is not None
@@ -905,7 +905,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     adapter_runner=passing_adapter_runner,
                 )
                 self.assertEqual(len(invocations), 2)
-                saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
                 assert saved is not None
                 self.assertEqual(saved["providers"][0]["state"], "complete")
                 self.assertEqual(saved["providers"][0]["adoption_result"]["outcome"], "pass")
@@ -965,7 +965,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                         apply=False,
                     )
 
-                    saved = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+                    saved = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
                     assert saved is not None
                     provider = saved["providers"][0]
                     self.assertNotEqual(provider["state"], "complete")
@@ -1001,7 +1001,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             release_campaigns.campaign_command(release_tag="v1.0.0", **common_kwargs)
             self.assertEqual(len(dispatch_calls), 1)
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["error"], "github_dispatch_failed")
             self.assertIsNotNone(saved["providers"][0]["attempted_at"])
@@ -1086,7 +1086,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             self.assertEqual(dispatch_calls, [])
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
@@ -1119,7 +1119,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             self.assertEqual(len(dispatch_calls), 1)
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
 
@@ -1152,7 +1152,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             self.assertEqual(dispatch_calls, [])
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider = saved["providers"][0]
             self.assertEqual(provider["state"], "running")
@@ -1197,7 +1197,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 adapter_runner=forbidden_adapter_runner,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider = saved["providers"][0]
             self.assertEqual(provider["state"], "blocked")
@@ -1227,7 +1227,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 adapter_runner=forbidden_adapter_runner,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider = saved["providers"][0]
             self.assertEqual(provider["state"], "blocked")
@@ -1257,7 +1257,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 adapter_runner=forbidden_adapter_runner,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider = saved["providers"][0]
             self.assertEqual(provider["state"], "blocked")
@@ -1293,7 +1293,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             self.assertEqual(dispatch_calls, [])
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
 
@@ -1355,7 +1355,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 env={},
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["status"], "unavailable")
 
@@ -1398,7 +1398,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             cursor_p = saved["providers"][0]
             self.assertEqual(cursor_p["state"], "unavailable")
@@ -1458,7 +1458,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     adapter_runner=fake_adapter_runner,
                 )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             serialized = json.dumps(saved)
 
@@ -1628,7 +1628,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 apply=False,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider_names = {p["provider"] for p in saved["providers"]}
             expected = {"claude", "codex", "antigravity", "muse", "cursor_bugbot", "devin"}
@@ -1662,7 +1662,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
             self.assertEqual(ret, 0)
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["status"], "complete")
             self.assertEqual(saved["providers"][0]["state"], "complete")
@@ -1694,7 +1694,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
             self.assertEqual(ret, 1)
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             # Rejected recording must leave the provider's prior (dry-run) state untouched.
             self.assertEqual(saved["providers"][0]["state"], "unavailable")
@@ -1737,7 +1737,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
             self.assertEqual(ret, 1)
 
-            saved = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert saved is not None
             self.assertIsNone(saved["providers"][0]["adoption_result"])
 
@@ -1778,7 +1778,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
             self.assertEqual(ret, 1)
 
-            saved = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert saved is not None
             self.assertIsNone(saved["providers"][0]["adoption_result"])
 
@@ -1875,7 +1875,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     )
                     self.assertEqual(ret, 1)
 
-                    saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                    saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
                     assert saved is not None
                     self.assertIsNone(saved["providers"][0]["adoption_result"])
                     serialized = json.dumps(saved)
@@ -1909,7 +1909,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     adapter_runner=unsafe_timestamp_adapter_runner,
                 )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider_entry = saved["providers"][0]
             self.assertEqual(provider_entry["state"], "blocked")
@@ -1954,7 +1954,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 gh_json_runner=mock_gh_json,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
 
@@ -2002,7 +2002,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 gh_json_runner=mock_gh_json,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
             self.assertEqual(saved["status"], "complete")
@@ -2078,7 +2078,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 gh_json_runner=mock_gh_json,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v2.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
             self.assertIsNone(saved["providers"][0]["adoption_result"])
@@ -2132,7 +2132,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 gh_json_runner=mock_gh_json,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v2.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
             self.assertIsNone(saved["providers"][0]["adoption_result"])
@@ -2186,7 +2186,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 gh_json_runner=mock_gh_json,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v2.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
@@ -2228,7 +2228,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 gh_json_runner=mock_gh_json,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
 
@@ -2281,7 +2281,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 gh_json_runner=mock_gh_json,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
             self.assertIsNone(saved["providers"][0]["adoption_result"])
@@ -2327,7 +2327,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     gh_json_runner=mock_gh_json,
                 )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
 
@@ -2370,7 +2370,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 gh_json_runner=mock_gh_json,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
@@ -2413,7 +2413,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 gh_json_runner=mock_gh_json,
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
             self.assertIsNone(saved["providers"][0]["adoption_result"])
@@ -2458,7 +2458,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 env={"DEVIN_BOT_AUTHORS": "self-hosted-devin-runner"},
             )
 
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
@@ -2529,7 +2529,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             ):
                 release_campaigns.campaign_command(**common_kwargs)
                 self.assertEqual(len(invocations), 1)
-                first = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                first = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
                 assert first is not None
 
                 # Exactly the same command again, with no --resume.
@@ -2542,7 +2542,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             self.assertNotIn("Traceback", stderr.getvalue())
 
             self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
-            second = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            second = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert second is not None
             self.assertEqual(second["created_at"], first["created_at"])
             self.assertEqual(second["providers"][0]["state"], "complete")
@@ -2582,7 +2582,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
 
             release_campaigns.campaign_command(**common_kwargs)
             self.assertEqual(len(bodies), 1)
-            first = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            first = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert first is not None
             self.assertEqual(first["providers"][0]["state"], "running")
 
@@ -2595,7 +2595,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             self.assertNotIn("Traceback", stderr.getvalue())
 
             self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
-            second = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            second = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert second is not None
             self.assertEqual(second["providers"][0]["state"], "running")
             self.assertEqual(
@@ -2635,7 +2635,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
                     which_fn=lambda _cmd: "/bin/fake-provider-cli",
                     adapter_runner=fake_adapter_runner,
                 )
-                before = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+                before = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
 
                 stderr = io.StringIO()
                 with contextlib.redirect_stderr(stderr):
@@ -2654,7 +2654,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             self.assertEqual(len(invocations), 1)
             self.assertIn("already exists", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
-            after = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            after = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             self.assertEqual(after, before)
 
     def test_dispatch_action_advances_existing_campaign_idempotently(self) -> None:
@@ -2697,7 +2697,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             self.assertEqual(len(bodies), 1)
 
             self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
 
@@ -2764,7 +2764,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
                 campaigns_dir=campaigns_dir,
                 apply=False,
             )
-            before = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            before = release_campaigns.load_campaign_by_id("campaign-v2.0.0", campaigns_dir)
 
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
@@ -2786,7 +2786,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             command_runner.assert_not_called()
             self.assertIn("--qualification-context", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
-            after = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            after = release_campaigns.load_campaign_by_id("campaign-v2.0.0", campaigns_dir)
             self.assertEqual(after, before)
 
     def test_conflicting_providers_for_existing_campaign_is_rejected(self) -> None:
@@ -2801,7 +2801,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
                 campaigns_dir=campaigns_dir,
                 apply=False,
             )
-            before = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            before = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
 
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
@@ -2815,7 +2815,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
 
             self.assertEqual(ret, 1)
             self.assertIn("--providers", stderr.getvalue())
-            after = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            after = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             self.assertEqual(after, before)
 
 
@@ -2838,7 +2838,7 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
             command_runner=_capturing_dispatch_command_runner(bodies),
             env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
         )
-        saved = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+        saved = release_campaigns.load_campaign_by_id("campaign-v2.0.0", campaigns_dir)
         assert saved is not None
         return saved
 
@@ -2932,7 +2932,7 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
 
             self.assertEqual(ret, 0)
             self.assertEqual(dispatch_calls, [])
-            polled = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            polled = release_campaigns.load_campaign_by_id("campaign-v2.0.0", campaigns_dir)
             assert polled is not None
             self.assertEqual(polled["providers"][0]["state"], "complete")
             self.assertEqual(polled["status"], "complete")
@@ -2974,7 +2974,7 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
             )
 
             command_runner.assert_not_called()
-            saved = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v2.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "unavailable")
             self.assertEqual(
@@ -3248,7 +3248,7 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
             env=self._ENV,
         )
         self.assertEqual(ret, 0)
-        created = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+        created = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
         assert created is not None
         self.assertEqual(created["repo_slug"], "")
         return created
@@ -3281,7 +3281,7 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
             self.assertIn("--repo", calls[0])
             self.assertEqual(calls[0][calls[0].index("--repo") + 1], "owner/repo")
 
-            first = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            first = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert first is not None
             self.assertEqual(first["repo_slug"], "owner/repo")
             self.assertEqual(first["providers"][0]["state"], "running")
@@ -3296,7 +3296,7 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
             self.assertNotIn("Traceback", stderr.getvalue())
             self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
 
-            second = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            second = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert second is not None
             self.assertEqual(second["repo_slug"], "owner/repo")
             self.assertEqual(second["providers"][0]["state"], "running")
@@ -3332,7 +3332,7 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
 
             self.assertEqual(ret, 0)
             command_runner.assert_not_called()
-            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             self.assertEqual(saved["repo_slug"], "owner/repo")
 
@@ -3356,7 +3356,7 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
                 ),
                 0,
             )
-            before = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            before = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert before is not None
             self.assertEqual(before["repo_slug"], "owner/repo")
 
@@ -3377,7 +3377,7 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
             self.assertEqual(calls, [])
             self.assertIn("does not match existing campaign repo slug", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
-            after = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            after = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             self.assertEqual(after, before)
 
     def test_repeating_the_same_slug_is_not_a_conflict(self) -> None:
@@ -3435,7 +3435,7 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
             env=self._ENV,
         )
         self.assertEqual(ret, 0)
-        created = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+        created = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
         assert created is not None
         self.assertEqual(created["qualification_context"], "upgrade")
         self.assertEqual(created["starting_version"], "1.0.0")
@@ -3466,7 +3466,7 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
             self.assertEqual(ret, 0)
             self.assertNotIn("Traceback", stderr.getvalue())
             self.assertEqual(len(calls), 1)
-            advanced = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            advanced = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert advanced is not None
             self.assertEqual(advanced["qualification_context"], "upgrade")
             self.assertEqual(advanced["starting_version"], "1.0.0")
@@ -3499,7 +3499,7 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
             self.assertEqual(ret, 0)
             self.assertNotIn("Traceback", stderr.getvalue())
             self.assertEqual(len(calls), 1)
-            advanced = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            advanced = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert advanced is not None
             self.assertEqual(advanced["providers"][0]["state"], "running")
 
@@ -3531,7 +3531,7 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
             self.assertIn("--qualification-context 'cold_install'", stderr.getvalue())
             self.assertIn("'upgrade'", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
-            after = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            after = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             self.assertEqual(after, before)
 
     def test_omitted_context_creates_cold_install_campaign(self) -> None:
@@ -3549,7 +3549,7 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
             )
 
             self.assertEqual(ret, 0)
-            created = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            created = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert created is not None
             self.assertEqual(created["qualification_context"], "cold_install")
             self.assertEqual(created["starting_version"], "")
@@ -3570,7 +3570,7 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
             )
 
             self.assertEqual(ret, 0)
-            created = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            created = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert created is not None
             self.assertEqual(created["qualification_context"], "cold_install")
 
@@ -3595,7 +3595,7 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
 
             self.assertEqual(omitted, 0)
             self.assertNotIn("Traceback", stderr.getvalue())
-            before = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            before = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             assert before is not None
             self.assertEqual(before["qualification_context"], "upgrade")
 
@@ -3617,7 +3617,7 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
             self.assertEqual(conflicting, 1)
             self.assertIn("--qualification-context 'cold_install'", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
-            after = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            after = release_campaigns.load_campaign_by_id("campaign-v1.1.0", campaigns_dir)
             self.assertEqual(after, before)
 
 
@@ -3657,7 +3657,7 @@ class CampaignIdContractTests(unittest.TestCase):
             )
             self.assertEqual(code, 0, stderr)
             self.assertTrue((campaigns_dir / "rc.1_check-2.json").is_file())
-            loaded = release_campaigns.load_campaign("rc.1_check-2", campaigns_dir)
+            loaded = release_campaigns.load_campaign_by_id("rc.1_check-2", campaigns_dir)
             assert loaded is not None
             self.assertEqual(loaded["campaign_id"], "rc.1_check-2")
 
@@ -3852,12 +3852,12 @@ class CampaignIdContractTests(unittest.TestCase):
                 campaign_id="campaign_a",
             )
             release_campaigns.save_campaign(campaign, campaigns_dir)
-            self.assertIsNotNone(release_campaigns.load_campaign("campaign_a", campaigns_dir))
-            self.assertIsNone(release_campaigns.load_campaign("campaign/a", campaigns_dir))
-            self.assertIsNone(release_campaigns.load_campaign("Campaign_A", campaigns_dir))
+            self.assertIsNotNone(release_campaigns.load_campaign_by_id("campaign_a", campaigns_dir))
+            self.assertIsNone(release_campaigns.load_campaign_by_id("campaign/a", campaigns_dir))
+            self.assertIsNone(release_campaigns.load_campaign_by_id("Campaign_A", campaigns_dir))
 
-    def test_load_campaign_still_resolves_a_release_tag(self) -> None:
-        """A release tag is not a campaign id; tag lookups keep working via the scan."""
+    def test_release_tags_resolve_by_tag_lookup_and_never_by_id_lookup(self) -> None:
+        """A release tag is not a campaign id; each selector has its own exact lookup."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             campaign = release_campaigns.initialize_campaign(
@@ -3866,9 +3866,18 @@ class CampaignIdContractTests(unittest.TestCase):
                 providers=["codex"],
             )
             release_campaigns.save_campaign(campaign, campaigns_dir)
-            found = release_campaigns.load_campaign("v1.0.0", campaigns_dir)
+
+            found, ambiguity = release_campaigns.load_campaign_by_release_tag(
+                "v1.0.0", campaigns_dir
+            )
+            self.assertEqual(ambiguity, "")
             assert found is not None
             self.assertEqual(found["campaign_id"], "campaign-v1.0.0")
+
+            # `v1.0.0` is a well-formed campaign id, but no campaign is stored
+            # under it, so the id lookup reports nothing rather than falling
+            # back to the campaign that merely carries it as a release tag.
+            self.assertIsNone(release_campaigns.load_campaign_by_id("v1.0.0", campaigns_dir))
 
 
 class CampaignConcurrencyTests(unittest.TestCase):
@@ -3962,7 +3971,7 @@ class CampaignConcurrencyTests(unittest.TestCase):
             self.assertEqual(len(adapter_calls), 1, adapter_calls)
 
             # And the campaign is left in valid, fully-persisted state.
-            stored = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert stored is not None
             self.assertEqual(stored["schema"], release_campaigns.CAMPAIGN_SCHEMA)
             self.assertEqual(stored["status"], "complete")
@@ -4041,7 +4050,7 @@ class CampaignConcurrencyTests(unittest.TestCase):
             self.assertFalse(second.is_alive())
             self.assertEqual(len(posted), 1, posted)
 
-            stored = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert stored is not None
             self.assertEqual(stored["schema"], release_campaigns.CAMPAIGN_SCHEMA)
             self.assertEqual(stored["providers"][0]["state"], "running")
@@ -4393,7 +4402,7 @@ class CampaignLockFreeStatusTests(unittest.TestCase):
                     self.assertEqual(ret, expected)
 
             # None of the above wrote to the campaign.
-            stored = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert stored is not None
             self.assertEqual(stored["providers"][0]["state"], "queued")
 
@@ -4486,7 +4495,7 @@ class CampaignAtomicWriteTests(unittest.TestCase):
             )
             listed = release_campaigns.list_campaigns(campaigns_dir)
             self.assertEqual([c["campaign_id"] for c in listed], ["campaign-v1.0.0"])
-            self.assertIsNone(release_campaigns.load_campaign("other", campaigns_dir))
+            self.assertIsNone(release_campaigns.load_campaign_by_id("other", campaigns_dir))
 
 
 class CampaignReleaseTagLookupTests(unittest.TestCase):
@@ -4554,7 +4563,7 @@ class CampaignReleaseTagLookupTests(unittest.TestCase):
 
             # The id-shaped lookup is exactly what must not be used here: it
             # answers the same request with the unrelated v2.0.0 campaign.
-            by_id = release_campaigns.load_campaign("v1.0.0", campaigns_dir)
+            by_id = release_campaigns.load_campaign_by_id("v1.0.0", campaigns_dir)
             assert by_id is not None
             self.assertEqual(by_id["release_tag"], "v2.0.0")
 
@@ -4810,6 +4819,221 @@ class CampaignReleaseTagLookupTests(unittest.TestCase):
             self.assertEqual(stored["campaign_id"], "campaign-one-oh")
 
 
+class CampaignIdExactLookupTests(unittest.TestCase):
+    """An explicit `--campaign-id` resolves to that id's file, or to nothing.
+
+    The id lookup used to be dual-purpose: when `<id>.json` was absent it
+    scanned the directory and matched the stored `campaign_id` *or* the stored
+    `release_tag`. So naming an id that no campaign was stored under could be
+    answered with an unrelated campaign that merely carried that text as its
+    release tag -- and status would report it, while resume or dispatch would
+    advance and pay for it.
+    """
+
+    @staticmethod
+    def _seed(
+        campaigns_dir: Path,
+        *,
+        campaign_id: str,
+        release_tag: str,
+        normalized: str,
+    ) -> dict[str, Any]:
+        campaign = release_campaigns.initialize_campaign(
+            release_tag=release_tag,
+            package_spec=f"code-mower=={normalized}",
+            providers=["cursor_bugbot"],
+            campaign_id=campaign_id,
+        ).to_dict()
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+        return campaign
+
+    def test_an_id_lookup_never_falls_back_to_a_release_tag_match(self) -> None:
+        """The audit's collision: `--campaign-id v1.0.0` with only a v1.0.0-tagged campaign."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(
+                campaigns_dir,
+                campaign_id="campaign-one",
+                release_tag="v1.0.0",
+                normalized="1.0.0",
+            )
+            self.assertTrue(release_campaigns.is_valid_campaign_id("v1.0.0"))
+            self.assertFalse((campaigns_dir / "v1.0.0.json").exists())
+
+            self.assertIsNone(release_campaigns.load_campaign_by_id("v1.0.0", campaigns_dir))
+            # The campaign is still reachable by the identifier it actually has.
+            found = release_campaigns.load_campaign_by_id("campaign-one", campaigns_dir)
+            assert found is not None
+            self.assertEqual(found["release_tag"], "v1.0.0")
+
+    def test_status_by_colliding_id_reports_not_found_rather_than_another_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(
+                campaigns_dir,
+                campaign_id="campaign-one",
+                release_tag="v1.0.0",
+                normalized="1.0.0",
+            )
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    status=True,
+                    campaign_id="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    emit_json=True,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("no campaign found", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertNotIn("campaign-one", stderr.getvalue())
+
+    def test_an_id_lookup_rejects_a_file_whose_stored_id_disagrees(self) -> None:
+        """The file is authoritative about its own identity; a mismatch is not this campaign."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._seed(
+                campaigns_dir,
+                campaign_id="campaign-one",
+                release_tag="v1.0.0",
+                normalized="1.0.0",
+            )
+            # A hand-edited or copied file: stem says `campaign-two`, stored id
+            # still says `campaign-one`.
+            (campaigns_dir / "campaign-two.json").write_text(
+                json.dumps(campaign, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(release_campaigns.load_campaign_by_id("campaign-two", campaigns_dir))
+            self.assertIsNotNone(
+                release_campaigns.load_campaign_by_id("campaign-one", campaigns_dir)
+            )
+
+    def test_release_tag_selection_is_unchanged_by_the_exact_id_lookup(self) -> None:
+        """`--release-tag` still resolves through the stored release_tag field."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(
+                campaigns_dir,
+                campaign_id="v1.0.0",
+                release_tag="v2.0.0",
+                normalized="2.0.0",
+            )
+            self._seed(
+                campaigns_dir,
+                campaign_id="campaign-one",
+                release_tag="v1.0.0",
+                normalized="1.0.0",
+            )
+
+            found, error = release_campaigns.load_campaign_by_release_tag(
+                "v1.0.0", campaigns_dir
+            )
+            self.assertEqual(error, "")
+            assert found is not None
+            self.assertEqual(found["campaign_id"], "campaign-one")
+
+            # And the id `v1.0.0` still names the campaign stored under it.
+            by_id = release_campaigns.load_campaign_by_id("v1.0.0", campaigns_dir)
+            assert by_id is not None
+            self.assertEqual(by_id["release_tag"], "v2.0.0")
+
+
+class AdapterTimeoutValidationTests(unittest.TestCase):
+    """`campaign_adapter_timeout_seconds` is a positive integer, enforced as written.
+
+    `int(value)` truncates, so `1.9` silently became a 1-second adapter budget
+    and `0.5` became a zero-second one -- a value this function is meant to
+    reject turning into an immediately-failing timeout. Non-finite floats fared
+    worse: `int(float("nan"))` raises `ValueError` and `int(float("inf"))` raises
+    `OverflowError`, which is not the bounded error every other malformed value
+    gets.
+    """
+
+    def _rejects(self, value: Any) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            release_campaigns._validate_adapter_timeout(value)
+        self.assertEqual(
+            str(ctx.exception),
+            "campaign_adapter_timeout_seconds must be a positive integer",
+        )
+
+    def test_fractional_floats_are_rejected_not_truncated(self) -> None:
+        for value in (1.9, 0.5, 900.0001, -0.5):
+            with self.subTest(value=value):
+                self._rejects(value)
+
+    def test_non_finite_floats_are_rejected_with_the_bounded_error(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                self._rejects(value)
+
+    def test_bools_are_rejected_even_though_they_are_ints(self) -> None:
+        for value in (True, False):
+            with self.subTest(value=value):
+                self._rejects(value)
+
+    def test_zero_and_negative_values_are_rejected(self) -> None:
+        for value in (0, -1, 0.0, -30, "0", "-30"):
+            with self.subTest(value=value):
+                self._rejects(value)
+
+    def test_non_numeric_values_are_rejected(self) -> None:
+        for value in (None, "", "   ", "60s", "1.9", [60], {"seconds": 60}):
+            with self.subTest(value=value):
+                self._rejects(value)
+
+    def test_integral_numeric_values_are_accepted(self) -> None:
+        self.assertEqual(release_campaigns._validate_adapter_timeout(60), 60)
+        self.assertEqual(release_campaigns._validate_adapter_timeout(60.0), 60)
+
+    def test_base_ten_integer_strings_are_accepted(self) -> None:
+        """The repo-config YAML subset leaves bare numbers as strings."""
+        self.assertEqual(release_campaigns._validate_adapter_timeout("60"), 60)
+        self.assertEqual(release_campaigns._validate_adapter_timeout("  60  "), 60)
+
+    def test_a_fractional_repo_config_override_is_adapter_configuration_invalid(self) -> None:
+        """End to end: the adapter never runs on a truncated timeout budget."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            (repo_path / "code-mower.yml").write_text(
+                "version: 1\n"
+                "lanes:\n"
+                "  muse_cli:\n"
+                "    provider_config:\n"
+                "      campaign_adapter_argv:\n"
+                '        - "{command}"\n'
+                "        - qualify\n"
+                "        - --output\n"
+                '        - "{output}"\n'
+                "      campaign_adapter_timeout_seconds: 1.9\n",
+                encoding="utf-8",
+            )
+            adapter_mock = mock.MagicMock()
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["muse"],
+                repo_path=repo_path,
+                campaigns_dir=campaigns_dir,
+                apply=True,
+                which_fn=lambda _cmd: "/bin/muse",
+                adapter_runner=adapter_mock,
+            )
+
+            adapter_mock.assert_not_called()
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["error"], "adapter_configuration_invalid")
+            self.assertNotIn("1.9", json.dumps(saved))
+
+
 class CampaignStatusIsReadOnlyTests(unittest.TestCase):
     """`status` is a read-only spelling; a mutating intent alongside it is refused.
 
@@ -4984,7 +5208,7 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
                     record_provider="cursor_bugbot",
                 )
             self.assertEqual(ret, 1)
-            stored = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert stored is not None
             self.assertEqual(stored["providers"][0]["state"], "queued")
 
@@ -4998,7 +5222,7 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
                     record_provider="cursor_bugbot",
                 )
             self.assertEqual(ret, 0)
-            stored = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert stored is not None
             self.assertEqual(stored["providers"][0]["state"], "complete")
 
@@ -5092,7 +5316,7 @@ class ResultMarkerParsingTests(unittest.TestCase):
                 repo_slug="owner/repo",
                 gh_json_runner=mock_gh_json,
             )
-        saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+        saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
         assert saved is not None
         return saved
 

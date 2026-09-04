@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import math
@@ -24,6 +23,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from code_mower import config as code_mower_config
     from code_mower import lane_status
+    from code_mower.file_locks import exclusive_file_lock
     from code_mower.provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from code_mower.release_qualify import (
         _detect_host_class,
@@ -38,6 +38,7 @@ if __package__ in {None, ""}:
 else:
     from . import config as code_mower_config
     from . import lane_status
+    from .file_locks import exclusive_file_lock
     from .provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from .release_qualify import (
         _detect_host_class,
@@ -63,7 +64,7 @@ DEFAULT_ADAPTER_TIMEOUT_SECONDS = 900
 # alphabet is deliberately narrow:
 #   * lowercase ASCII only, because a campaign directory may live on a
 #     case-insensitive volume -- APFS on macOS is case-insensitive by default --
-#     where `Campaign-A` and `campaign-a` are the same file while `load_campaign`
+#     where `Campaign-A` and `campaign-a` are the same file while the id lookup
 #     would still treat them as two campaigns. Rejecting uppercase keeps ids
 #     case-stable everywhere instead of colliding on some filesystems.
 #   * letters, digits, `.`, `_`, `-` only, and a leading letter or digit. That
@@ -471,23 +472,21 @@ def locked_campaigns_dir(campaigns_dir: Path) -> Iterator[IO[str]]:
     published by atomic rename, so they stay answerable while a long applied run
     holds the lock and against a read-only campaign directory.
 
-    The lock is an ordinary ``fcntl.flock`` on a dedicated file, matching
-    ``board_store._locked_store``: the kernel releases it when the holding file
-    descriptor closes, including on an uncaught exception or an abrupt process
-    exit, so there is no stale-lock protocol, no owner/pid bookkeeping, and no
-    timeout to tune. A crashed holder blocks nobody.
+    The lock is an exclusive OS lock on a dedicated file, taken through
+    :func:`code_mower.file_locks.exclusive_file_lock` and shared with
+    ``board_store._locked_store``. Whichever backend that picks -- POSIX
+    ``flock`` or a Windows byte-range lock -- the OS releases it when the
+    holding file descriptor closes, including on an uncaught exception or an
+    abrupt process exit, so there is no stale-lock protocol, no owner/pid
+    bookkeeping, and no lease to renew. A crashed holder blocks nobody.
 
     The lock file's name starts with a dot, so it is neither matched by the
     ``*.json`` campaign scan nor addressable as a campaign id.
     """
     campaigns_dir.mkdir(parents=True, exist_ok=True)
     lock_path = campaigns_dir / CAMPAIGNS_LOCK_FILENAME
-    with lock_path.open("a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield lock_file
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    with exclusive_file_lock(lock_path) as lock_file:
+        yield lock_file
 
 
 def save_campaign(
@@ -516,43 +515,49 @@ def save_campaign(
     return target_path
 
 
-def load_campaign(
-    campaign_id_or_tag: str,
+def load_campaign_by_id(
+    campaign_id: str,
     campaigns_dir: Path,
 ) -> dict[str, Any] | None:
-    if not campaigns_dir.is_dir():
+    """Resolve the campaign stored under exactly ``campaign_id``.
+
+    A campaign id is a storage key that maps one-to-one onto
+    ``<campaign_id>.json``, so this reads that one canonical filename and
+    nothing else -- no directory scan, no fallback.
+
+    Two exactness rules make the answer unambiguous:
+
+    * **Only the canonical file is consulted.** An earlier dual-purpose lookup
+      accepted an id *or* a release tag and, when the named file was missing,
+      scanned the directory matching either the stored ``campaign_id`` or the
+      stored ``release_tag``. So ``--campaign-id v1.0.0``, with no
+      ``v1.0.0.json`` on disk, would silently resolve to whatever campaign
+      carried ``release_tag: v1.0.0`` -- an id the caller named explicitly
+      answered with a campaign filed under a different id. An explicit id that
+      names no stored campaign must report exactly that.
+    * **The stored field must agree.** The file is authoritative about its own
+      identity, so ``campaign_id`` inside it must equal the request. A file
+      whose stem and stored id disagree (hand-edited, restored from elsewhere,
+      or copied) is not this campaign, and returning it would let a caller
+      advance, dispatch, or report one campaign while naming another.
+
+    An invalid id can address no file at all, so it resolves to nothing.
+    """
+    if not campaigns_dir.is_dir() or not is_valid_campaign_id(campaign_id):
         return None
-
-    # The direct-filename shortcut applies only to a well-formed campaign id.
-    # A release tag (the other thing callers may pass here) that is not also a
-    # valid id simply falls through to the scan below, which matches on the
-    # stored `campaign_id`/`release_tag` fields rather than on a filename.
-    if is_valid_campaign_id(campaign_id_or_tag):
-        direct_path = campaigns_dir / campaign_filename(campaign_id_or_tag)
-        if direct_path.is_file():
-            try:
-                with direct_path.open("r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                    if isinstance(data, dict) and data.get("schema") == CAMPAIGN_SCHEMA:
-                        return data
-            except (OSError, json.JSONDecodeError):
-                pass
-
-    for entry in campaigns_dir.glob("*.json"):
-        if entry.name.startswith(CAMPAIGN_TEMP_PREFIX):
-            continue
-        try:
-            with entry.open("r", encoding="utf-8") as fh:
-                data = json.load(fh)
-                if isinstance(data, dict) and data.get("schema") == CAMPAIGN_SCHEMA:
-                    if (
-                        data.get("campaign_id") == campaign_id_or_tag
-                        or data.get("release_tag") == campaign_id_or_tag
-                    ):
-                        return data
-        except (OSError, json.JSONDecodeError):
-            continue
-    return None
+    path = campaigns_dir / campaign_filename(campaign_id)
+    if not path.is_file():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != CAMPAIGN_SCHEMA:
+        return None
+    if data.get("campaign_id") != campaign_id:
+        return None
+    return data
 
 
 def load_campaign_by_release_tag(
@@ -564,14 +569,13 @@ def load_campaign_by_release_tag(
     Returns ``(campaign, error)``. ``error`` is empty both when one campaign
     matches and when none does; it is non-empty only when the tag is ambiguous.
 
-    This is deliberately *not* :func:`load_campaign`. That function accepts an
-    id or a tag, and it starts with a direct-filename shortcut for anything
-    shaped like a campaign id -- so a release tag that happens to also be a
-    valid id (``v1.0.0`` is one) would load ``v1.0.0.json`` and answer with
-    whatever campaign a custom ``--campaign-id`` had stored there, even when
-    that campaign is for an entirely different release. A tag-only request must
-    never be answered with another release's state, so this lookup ignores
-    filenames entirely and matches only on the stored ``release_tag`` field.
+    This is deliberately *not* :func:`load_campaign_by_id`. A tag that happens
+    to also be a well-formed campaign id (``v1.0.0`` is one) would resolve
+    through that function to ``v1.0.0.json`` -- whatever campaign a custom
+    ``--campaign-id`` had stored there, even when it is for an entirely
+    different release. A tag-only request must never be answered with another
+    release's state, so this lookup ignores filenames entirely and matches only
+    on the stored ``release_tag`` field.
 
     Nothing here selects between several matches. Campaign ids map one-to-one
     onto files, but a custom ``--campaign-id`` lets two campaigns carry the same
@@ -917,13 +921,25 @@ def _validate_adapter_argv_template(template: Any) -> tuple[str, ...]:
 def _validate_adapter_timeout(value: Any) -> int:
     """Validate campaign_adapter_timeout_seconds.
 
-    Accepts a real int/float (the registry form) or a numeric string (the
-    repo_path/code-mower.yml override form, since its minimal YAML-subset
+    Accepts a real int/float (the registry form) or a base-10 integer string
+    (the repo_path/code-mower.yml override form, since its minimal YAML-subset
     parser leaves bare numbers as strings). Anything else is invalid.
+
+    The documented contract is a *positive integer*, so a numeric value must be
+    integral as written. Rounding one that is not -- `int(1.9)` is `1` -- would
+    silently enforce a shorter adapter timeout than the adopter configured, and
+    `int(0.5)` would turn a value this function is supposed to reject into a
+    hard-failing zero-second timeout. Non-finite floats are rejected for the
+    same reason: `int(float("nan"))` raises and `int(float("inf"))` raises, so
+    they would otherwise escape as an unbounded traceback rather than the
+    bounded error every other malformed value gets. Bools are excluded before
+    the numeric branch because `True` is an `int` and would parse as one second.
     """
     if isinstance(value, bool):
         raise ValueError("campaign_adapter_timeout_seconds must be a positive integer")
     if isinstance(value, (int, float)):
+        if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+            raise ValueError("campaign_adapter_timeout_seconds must be a positive integer")
         parsed = int(value)
     elif isinstance(value, str) and value.strip():
         try:
@@ -1968,22 +1984,25 @@ def _load_requested_campaign(
     the one the caller also named, the request is rejected rather than answered
     with the unrelated campaign's data.
 
-    The two identifiers are resolved by two different lookups, on purpose. An
-    id addresses exactly one file, so ``--campaign-id`` uses :func:`load_campaign`
-    (and, when a tag was named too, both fields must still agree). A tag is not
-    a storage key, so a tag-only request uses
-    :func:`load_campaign_by_release_tag`, which matches the stored
-    ``release_tag`` field and nothing else: routing it through
-    :func:`load_campaign` would let a tag that is *also* a well-formed campaign
-    id (``v1.0.0``) hit that function's direct-filename shortcut and return a
-    custom-id campaign belonging to another release. A tag shared by several
-    campaigns is reported as ambiguous rather than resolved arbitrarily.
+    The two identifiers are resolved by two different *exact* lookups, on
+    purpose, and neither can answer with the other's match. An id addresses
+    exactly one file, so ``--campaign-id`` uses :func:`load_campaign_by_id`,
+    which reads only ``<campaign-id>.json`` and requires its stored
+    ``campaign_id`` to match -- an explicitly named id is never answered with a
+    campaign that merely carries that text as its *release tag* (and, when a tag
+    was named too, both fields must still agree). A tag is not a storage key, so
+    a tag-only request uses :func:`load_campaign_by_release_tag`, which matches
+    the stored ``release_tag`` field and nothing else: routing it through the
+    id lookup would let a tag that is *also* a well-formed campaign id
+    (``v1.0.0``) resolve to a custom-id campaign belonging to another release. A
+    tag shared by several campaigns is reported as ambiguous rather than
+    resolved arbitrarily.
     """
     identifier = campaign_id or release_tag
     if not identifier:
         return None, "", ""
     if campaign_id:
-        found = load_campaign(campaign_id, campaigns_dir)
+        found = load_campaign_by_id(campaign_id, campaigns_dir)
         if found is None:
             return None, identifier, ""
         if release_tag and str(found.get("release_tag") or "") != release_tag:
@@ -2123,7 +2142,7 @@ def campaign_command(
     it would make ``--status`` block behind a long applied run holding the lock
     and would demand a writable campaign directory to answer a question that
     writes nothing; the same is true of the Board projection built on
-    ``list_campaigns``/``load_campaign``, which is likewise lock-free.
+    ``list_campaigns``, which is likewise lock-free.
 
     An explicit ``campaign_id`` is validated first, before either route, so a
     malformed identifier produces a bounded error and never creates a campaign

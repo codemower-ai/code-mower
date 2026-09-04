@@ -15,6 +15,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_bootstrap.py", "src/code_mower/bootstrap.py", "core"),
     ("src/code_mower/board.py", "src/code_mower/board.py", "core"),
     ("src/code_mower/board_store.py", "src/code_mower/board_store.py", "core"),
+    ("src/code_mower/file_locks.py", "src/code_mower/file_locks.py", "core"),
     ("src/code_mower/builder_runs.py", "src/code_mower/builder_runs.py", "core"),
     ("tools/code_mower_builder_experiment.py", "src/code_mower/builder_experiment.py", "core"),
     ("src/code_mower/work_orders.py", "src/code_mower/work_orders.py", "core"),
