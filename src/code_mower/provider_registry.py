@@ -66,6 +66,39 @@ def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
     return MappingProxyType({key: _freeze_value(item) for key, item in value.items()})
 
 
+def _maintained_campaign_adapter_argv(provider: str) -> tuple[str, ...]:
+    """Argv template for the maintained campaign adapter of one provider-CLI lane.
+
+    The campaign substitutes ``{python}`` (the running interpreter),
+    ``{command}`` (the installed provider CLI), the campaign identity fields,
+    ``{adapter_timeout}`` (the outer adapter timeout minus a margin), and
+    ``{output}``. Adopters replace this per repo with ``campaign_adapter_argv``
+    in ``code-mower.yml``, or disable it with ``campaign_adapter_enabled:
+    false``; see docs/release-qualification.md.
+    """
+    return (
+        "{python}",
+        "-m",
+        "code_mower.campaign_adapters",
+        "--provider",
+        provider,
+        "--provider-bin",
+        "{command}",
+        "--release-tag",
+        "{release_tag}",
+        "--package-spec",
+        "{package_spec}",
+        "--qualification-context",
+        "{qualification_context}",
+        "--starting-version",
+        "{starting_version}",
+        "--timeout-seconds",
+        "{adapter_timeout}",
+        "--output",
+        "{output}",
+    )
+
+
 REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
     "codex": ProviderLane(
         lane_id="codex",
@@ -88,6 +121,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
                 "OPENAI_MODEL",
             ),
             "doctor_probe_args": ("--version",),
+            "campaign_adapter_argv": _maintained_campaign_adapter_argv("codex"),
+            "campaign_adapter_timeout_seconds": 900,
         },
     ),
     "claude_review": ProviderLane(
@@ -147,6 +182,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "doctor_probe_expect_json_value": "ok",
             "doctor_probe_error_fields": ("is_error", "api_error_status"),
             "doctor_probe_auth_status_fields": ("api_error_status",),
+            "campaign_adapter_argv": _maintained_campaign_adapter_argv("claude"),
+            "campaign_adapter_timeout_seconds": 900,
         },
     ),
     "devin": ProviderLane(
@@ -385,6 +422,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
                 "forward Google CLI research lane; not merge authority until "
                 "calibrated against Gemini compatibility records"
             ),
+            "campaign_adapter_argv": _maintained_campaign_adapter_argv("antigravity"),
+            "campaign_adapter_timeout_seconds": 900,
         },
     ),
     "hermes_cli": ProviderLane(
@@ -460,6 +499,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
                 "calibrated for blocker catch rate, false positives, cost, "
                 "and latency"
             ),
+            "campaign_adapter_argv": _maintained_campaign_adapter_argv("muse"),
+            "campaign_adapter_timeout_seconds": 900,
         },
     ),
     "coderabbit_cli": ProviderLane(

@@ -96,7 +96,20 @@ code-mower release campaign \
 
 ### Provider Adapter Setup (one-time, per provider)
 
-Local CLI providers (`local_cli` driver: Claude, Codex, Antigravity, Muse) only run automatically if a `campaign_adapter_argv` is configured for that provider's lane. None of the shipped providers ship with one configured by default -- a provider without a configured adapter is intentionally `unavailable`/manual rather than faking a result.
+Local CLI providers (`local_cli` driver) only run automatically if a `campaign_adapter_argv` is configured for that provider's lane. Four lanes ship a maintained adapter (`src/code_mower/campaign_adapters.py`, invoked as `{python} -m code_mower.campaign_adapters ...` with `shell=False`); every other local CLI lane (e.g. aider) ships none and stays `unavailable`/manual rather than faking a result.
+
+| Lane | Adapter provider | Verified CLI surface |
+|---|---|---|
+| `codex` | `codex` | `codex exec` with stdin (`-`), `--json`, `--output-schema`, `--output-last-message`, `-C` (codex-cli 0.147.0) |
+| `claude_audit` | `claude` | `claude --print` with stdin, `--output-format json`, explicit tool/permission controls, `--json-schema` (Claude Code 2.1.258) |
+| `antigravity_cli` | `antigravity` | `agy --print` with a prompt file, `--sandbox`, `--add-dir`, `--print-timeout` (agy 1.1.26) |
+| `muse_cli` | `muse` | `muse exec` with `--json`, `--prompt-file`, `--workspace` (Muse Code 1.0.3) |
+
+Newer CLIs keep working while the flags exist; a removed flag fails closed. Prompts travel on stdin or a prompt file, never through a shell. Provider stdout/stderr are parsed transiently and never persisted: only a closed, validated `code_mower.adoptionResult.v1` document is written to `{output}`. Antigravity/Muse refuse without their ambient-home opt-in (`ANTIGRAVITY_CLI_USE_AMBIENT_HOME` / `MUSE_CLI_USE_AMBIENT_HOME`) or a provider key, mirroring the audit wrappers.
+
+Timeout model: each maintained lane sets `campaign_adapter_timeout_seconds: 900`. The campaign passes the outer timeout minus `ADAPTER_INNER_TIMEOUT_MARGIN_SECONDS` (30s) as the adapter's `{adapter_timeout}`, so the adapter's own provider budget always fires first. `{python}` resolves to the running interpreter; `{command}` to the installed provider CLI (the campaign refuses to run when it is missing).
+
+**Adopters: override or disable per-repo in `code-mower.yml`.** `campaign_adapter_argv` replaces the maintained template wholesale (same placeholders plus `{python}` and `{adapter_timeout}`); `campaign_adapter_enabled: false` disables the lane's adapter so the provider degrades to `unavailable`/manual. Only `campaign_adapter_argv`, `campaign_adapter_timeout_seconds`, and `campaign_adapter_enabled` are read here.
 
 **Adopters: configure this per-repo in `code-mower.yml` at the repository root.** This is the recommended setup and does not require editing installed Python:
 

@@ -59,6 +59,10 @@ RESULT_MARKER_SCHEMA = "code_mower.releaseCampaignResult.v1"
 BOARD_RELEASE_CAMPAIGNS_SCHEMA = "code_mower.boardReleaseCampaigns.v1"
 DEFAULT_CAMPAIGNS_RELATIVE_DIR = Path(".code-mower") / "campaigns"
 DEFAULT_ADAPTER_TIMEOUT_SECONDS = 900
+# Margin between the outer campaign adapter timeout and the inner provider
+# budget the maintained adapters enforce on their own subprocess. Keep in sync
+# with campaign_adapters.INNER_TIMEOUT_MARGIN_SECONDS.
+ADAPTER_INNER_TIMEOUT_MARGIN_SECONDS = 30
 
 # Campaign identifiers are storage keys: each one maps to exactly one file named
 # `<campaign_id>.json`. The mapping is one-to-one and lossless -- no character is
@@ -1039,6 +1043,7 @@ def _build_adapter_argv(
     output_path: Path,
     repo_path: Path,
     argv_template: Any,
+    adapter_timeout: int | None = None,
 ) -> list[str]:
     validated_template = _validate_adapter_argv_template(argv_template)
     substitutions = {
@@ -1049,7 +1054,13 @@ def _build_adapter_argv(
         "starting_version": starting_version,
         "output": str(output_path),
         "repo_path": str(repo_path),
+        # The running interpreter, for maintained adapters that re-enter Code
+        # Mower (`{python} -m code_mower.campaign_adapters ...`). Templates
+        # that do not name it are unaffected: unused substitutions are ignored.
+        "python": sys.executable,
     }
+    if adapter_timeout is not None:
+        substitutions["adapter_timeout"] = str(adapter_timeout)
     try:
         return [token.format(**substitutions) for token in validated_template]
     except (AttributeError, IndexError, KeyError, TypeError) as exc:
@@ -1085,15 +1096,16 @@ def _load_campaign_adapter_overrides(
 ) -> tuple[Mapping[str, Any], str, str]:
     """Load narrowly-scoped campaign adapter overrides from repo_path/code-mower.yml.
 
-    Only `campaign_adapter_argv` and `campaign_adapter_timeout_seconds` are
-    read from the matching lane's `provider_config`; every other key in the
-    repo config is ignored here so this does not widen the general config
-    contract. A missing repo config, a missing `lanes` key, or a lane with no
-    matching entry is not an override (empty mapping, no error). An existing
-    repo config that fails to load, or is structurally malformed (a present
-    non-mapping `lanes`, lane, or provider_config entry), returns
-    `adapter_configuration_invalid` instead of silently treating the config
-    as absent -- the specific override values are validated by the caller.
+    Only `campaign_adapter_argv`, `campaign_adapter_timeout_seconds`, and
+    `campaign_adapter_enabled` are read from the matching lane's
+    `provider_config`; every other key in the repo config is ignored here so
+    this does not widen the general config contract. A missing repo config, a
+    missing `lanes` key, or a lane with no matching entry is not an override
+    (empty mapping, no error). An existing repo config that fails to load, or
+    is structurally malformed (a present non-mapping `lanes`, lane, or
+    provider_config entry), returns `adapter_configuration_invalid` instead of
+    silently treating the config as absent -- the specific override values are
+    validated by the caller.
 
     A lane can be spelled several ways (`muse` and `muse_cli`; `claude` and
     `claude_code`), and all of those spellings name one lane with one adapter
@@ -1153,7 +1165,11 @@ def _load_campaign_adapter_overrides(
 
     overrides = {
         key: provider_cfg[key]
-        for key in ("campaign_adapter_argv", "campaign_adapter_timeout_seconds")
+        for key in (
+            "campaign_adapter_argv",
+            "campaign_adapter_timeout_seconds",
+            "campaign_adapter_enabled",
+        )
         if key in provider_cfg
     }
     return overrides, "", ""
@@ -1165,7 +1181,7 @@ def _resolve_campaign_adapter_config(
 ) -> tuple[Any, Any, str, str]:
     """Resolve the effective campaign_adapter_argv/timeout for a lane.
 
-    Overlays only the two allowed override keys from repo_path/code-mower.yml
+    Overlays only the allowed override keys from repo_path/code-mower.yml
     onto the immutable reference lane's provider_config; the reference lane
     itself is never mutated. Returns
     (argv_template, timeout_value, error_code, error_detail).
@@ -1173,6 +1189,16 @@ def _resolve_campaign_adapter_config(
     overrides, error, detail = _load_campaign_adapter_overrides(lane, repo_path)
     if error:
         return None, None, error, detail
+    enabled = overrides.get(
+        "campaign_adapter_enabled",
+        lane.provider_config.get("campaign_adapter_enabled", True),
+    )
+    if not isinstance(enabled, bool):
+        return None, None, _safe_error("adapter_configuration_invalid"), ""
+    if enabled is False:
+        # Explicitly disabled: behave as if no adapter were configured, so
+        # the provider degrades to unavailable/manual rather than running.
+        return None, None, "", ""
     argv_template = overrides.get("campaign_adapter_argv", lane.provider_config.get("campaign_adapter_argv"))
     timeout_value = overrides.get(
         "campaign_adapter_timeout_seconds",
@@ -1231,6 +1257,18 @@ def _invoke_local_adapter(
     resolved_path = which_fn(resolved) or resolved
 
     try:
+        timeout = (
+            _validate_adapter_timeout(timeout_value)
+            if timeout_value is not None
+            else DEFAULT_ADAPTER_TIMEOUT_SECONDS
+        )
+    except ValueError:
+        return (
+            None,
+            _safe_error("adapter_configuration_invalid"),
+            f"{provider} campaign adapter configuration is invalid",
+        )
+    try:
         argv = _build_adapter_argv(
             lane,
             resolved_path,
@@ -1241,11 +1279,7 @@ def _invoke_local_adapter(
             output_path=output_path,
             repo_path=repo_path,
             argv_template=argv_template,
-        )
-        timeout = (
-            _validate_adapter_timeout(timeout_value)
-            if timeout_value is not None
-            else DEFAULT_ADAPTER_TIMEOUT_SECONDS
+            adapter_timeout=max(1, timeout - ADAPTER_INNER_TIMEOUT_MARGIN_SECONDS),
         )
     except ValueError:
         return (
