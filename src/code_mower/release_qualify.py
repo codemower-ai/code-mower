@@ -304,8 +304,8 @@ def run_release_qualification(
     if not _package_spec_uses_package_index(package_spec):
         raise ValueError("Only exact package-index specs supported")
 
-    spec_match = re.match(r"^[\w-]+==([\d.abc]+)$", package_spec)
-    if not spec_match:
+    spec_match = re.match(r"^[\w-]+==(.+)$", package_spec)
+    if not spec_match or not VERSION_PATTERN.match(spec_match.group(1)):
         raise ValueError("Package spec must be exact index spec")
     if spec_match.group(1) != normalized_version:
         raise ValueError(f"Version mismatch: tag {normalized_version} vs spec version")

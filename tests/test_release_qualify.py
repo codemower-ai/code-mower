@@ -65,6 +65,24 @@ class ReleaseQualifyTests(unittest.TestCase):
                 )
             self.assertIn("mismatch", str(ctx.exception))
 
+    def test_rc_release_tags_supported(self) -> None:
+        """RC release tags normalize correctly and match package specs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "result.json"
+
+            release_qualify.run_release_qualification(
+                release_tag="v1.0.0-rc.1",
+                package_spec="code-mower==1.0.0rc1",
+                output_path=output_path,
+                dry_run=True,
+            )
+
+            self.assertTrue(output_path.exists())
+            with open(output_path, encoding="utf-8") as f:
+                result = json.load(f)
+            self.assertEqual(result["outcome"], "pass_with_warnings")
+            self.assertEqual(result["package_identity"], "code-mower")
+
     def test_doctor_uses_real_config(self) -> None:
         """Doctor check uses real repo config."""
         with tempfile.TemporaryDirectory() as tmpdir:
