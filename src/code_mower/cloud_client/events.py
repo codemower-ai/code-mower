@@ -25,6 +25,11 @@ from .bundle import (
     UNSAFE_METADATA_VALUE_PATTERNS,
     validate_metadata_payload,
 )
+from .adoption_runs import (
+    ADOPTION_RUN_EVENT_TYPE,
+    adoption_event_from_result_dict,
+    validate_adoption_run_payload,
+)
 from .dogfood import DogfoodPlan
 from .errors import CloudBundleError
 from .git_metadata import run_git
@@ -313,6 +318,8 @@ def validate_cloud_event(value: Any) -> dict[str, Any]:
         validate_productivity_summary_payload(value)
     if value["event_type"] == PR_OUTCOME_EVENT_TYPE:
         validate_pr_outcome_payload(value)
+    if value["event_type"] == ADOPTION_RUN_EVENT_TYPE:
+        validate_adoption_run_payload(value)
     return value
 
 
@@ -790,6 +797,7 @@ def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
         raise CloudBundleError("structured event dimensions must be an object")
     if normalized.get("tool") is None and normalized["event_type"] in {
         "lane_policy_snapshot",
+        ADOPTION_RUN_EVENT_TYPE,
         PR_OUTCOME_EVENT_TYPE,
         PRODUCTIVITY_EVENT_TYPE,
         "value_report_snapshot",
@@ -849,6 +857,7 @@ def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
             )
         events.append(
             _builder_event_from_authoring_run(item, event_type)
+            or adoption_event_from_result_dict(item, event_type)
             or normalize_event(item, event_type)
         )
     return events
