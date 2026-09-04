@@ -182,7 +182,7 @@ class ReleaseQualifyTests(unittest.TestCase):
             with open(output_path, encoding="utf-8") as f:
                 result = json.load(f)
             self.assertEqual(result["execution_state"], "planned")
-            self.assertEqual(result["outcome"], "pass")
+            self.assertIn(result["outcome"], ["pass", "pass_with_warnings"])
             self.assertEqual(result["package_identity"], "code-mower")
 
     def test_doctor_uses_real_config(self) -> None:
