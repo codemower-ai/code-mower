@@ -56,6 +56,7 @@ PACKAGE_FILES = (
     ("src/code_mower/calibration/value_report.py", "src/code_mower/calibration/value_report.py", "core"),
     ("tools/code_mower_cloud.py", "src/code_mower/cloud.py", "core"),
     ("src/code_mower/cloud_client/__init__.py", "src/code_mower/cloud_client/__init__.py", "core"),
+    ("src/code_mower/cloud_client/adoption_runs.py", "src/code_mower/cloud_client/adoption_runs.py", "core"),
     ("src/code_mower/cloud_client/bundle.py", "src/code_mower/cloud_client/bundle.py", "core"),
     ("src/code_mower/cloud_client/dogfood.py", "src/code_mower/cloud_client/dogfood.py", "core"),
     ("src/code_mower/cloud_client/doctor.py", "src/code_mower/cloud_client/doctor.py", "core"),
