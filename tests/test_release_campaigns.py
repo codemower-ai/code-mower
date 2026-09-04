@@ -8104,6 +8104,71 @@ class CampaignUploadTests(unittest.TestCase):
                 self.assertEqual(reasons, {"provider_list_invalid"})
                 self.assertTrue(reasons <= release_campaigns.CAMPAIGN_UPLOAD_REJECT_CODES)
 
+    def test_unhashable_provider_state_is_skipped_and_never_leaks(self) -> None:
+        """A list or mapping `state` reads as unavailable, in preview and in apply.
+
+        A stored state is untrusted: a hand-edited but valid JSON campaign can
+        carry an unhashable value there, which a bare `state in
+        VALID_PROVIDER_STATES` test raises `TypeError` on instead of answering
+        `False`. Such a state is unrecognized like any other, so its provider is
+        skipped -- while a genuinely complete sibling still uploads -- and the
+        raw stored value reaches neither the summary nor the payload.
+        """
+        marker = "hand-edited-state-marker"
+        path = self.campaigns_dir / "campaign-v1.0.0.json"
+        for label, state in (
+            ("list", ["complete", marker]),
+            ("mapping", {"state": "complete", "note": marker}),
+        ):
+            with self.subTest(state=label):
+                self._seed(complete=("claude",))
+                stored = json.loads(path.read_text(encoding="utf-8"))
+                for provider in stored["providers"]:
+                    if provider["provider"] == "codex":
+                        provider["state"] = state
+                path.write_text(json.dumps(stored), encoding="utf-8")
+
+                preview_post = self._capturing_post()
+                with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+                    release_campaigns._load_cloud_client(), "post_upload_payload", preview_post
+                ):
+                    preview_code, preview, preview_out, preview_err = self._upload()
+
+                # Preview computes the same event set and posts nothing.
+                self.assertEqual(preview_code, 0, preview_err)
+                assert preview is not None
+                self.assertEqual(preview["status"], "dry_run")
+                self.assertEqual(preview_post.posted, [])
+
+                post = self._capturing_post()
+                with self._cloud_env(self.FAKE_CREDENTIAL), mock.patch.object(
+                    release_campaigns._load_cloud_client(), "post_upload_payload", post
+                ):
+                    code, result, stdout, stderr = self._upload(yes=True)
+
+                self.assertEqual(code, 0, stderr)
+                assert result is not None
+                self.assertEqual(result["status"], "uploaded")
+                # The unusable state is not an error: the campaign's real
+                # evidence still uploads, and only the malformed provider is
+                # dropped.
+                self.assertEqual(result["accepted_providers"], ["claude"])
+                self.assertEqual(result["rejected_providers"], [])
+                self.assertEqual(result["counts"]["events"], 1)
+                self.assertEqual(preview["event_ids"], result["event_ids"])
+                self.assertEqual(len(post.posted), 1)
+                self.assertEqual(len(post.posted[0]["events"]), 1)
+
+                skipped = {row["provider"]: row for row in result["skipped_providers"]}
+                self.assertEqual(skipped["codex"]["state"], "unavailable")
+                self.assertTrue(
+                    skipped["codex"]["reason"] in release_campaigns.SAFE_ERROR_CODES
+                    or skipped["codex"]["reason"] == ""
+                )
+                # Nothing derived from the hand-edited value is printed or posted.
+                for text in (preview_out, preview_err, stdout, stderr, json.dumps(post.posted)):
+                    self.assertNotIn(marker, text)
+
     def test_missing_token_refuses_the_network_upload(self) -> None:
         """--yes without a resolvable token fails closed with local remediation."""
         self._seed(complete=("claude",))

@@ -2159,6 +2159,14 @@ def build_campaign_upload_events(
     result, never a ``TypeError`` and never an element-by-element walk of an
     unbounded value.
 
+    Each entry's stored ``state`` is untrusted in the same way. It is compared
+    against :data:`VALID_PROVIDER_STATES` only after it is known to be a string,
+    because an unhashable hand-edited value such as a list or a mapping makes
+    that membership test raise ``TypeError`` rather than answer ``False``. A
+    state of any unrecognized type reads as ``unavailable`` -- exactly as a
+    stray string state already does -- so the provider is skipped, has no
+    evidence published, and its raw stored value never reaches the summary.
+
     The event list is ordered by provider name, so the same campaign always
     produces the same event set in the same order -- what a preview shows is
     exactly what ``--yes`` uploads.
@@ -2198,8 +2206,14 @@ def build_campaign_upload_events(
             )
             continue
         provider = _safe_provider_name(entry.get("provider"))
+        # Membership is tested only once the stored state is known to be a
+        # string: an unhashable hand-edited value (a list, a mapping) makes
+        # `value in VALID_PROVIDER_STATES` raise TypeError instead of answering
+        # False. Anything unrecognized reads as `unavailable`, as a stray string
+        # state already does.
         state = entry.get("state")
-        state = state if state in VALID_PROVIDER_STATES else "unavailable"
+        if not isinstance(state, str) or state not in VALID_PROVIDER_STATES:
+            state = "unavailable"
         if state != "complete":
             skipped.append(_skipped_provider_row(entry, provider, str(state)))
             continue
