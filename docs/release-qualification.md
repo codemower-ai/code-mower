@@ -64,7 +64,7 @@ code-mower release campaign \
 
 - **Dry-run by default:** Omit `--apply` for a safe preview. Add `--apply` for live local execution, GitHub comment dispatch, or paid runs.
 - **Provider diversity:** Tracks Claude, Codex, Antigravity, Muse, Cursor/Grok Bot, and Devin. Missing tools, tokens, or adapters degrade gracefully to `unavailable` without failing the campaign.
-- **Idempotent resume:** Pass `--resume` to re-poll running providers or advance queued participants without duplicating dispatch or re-invoking an adapter that already completed.
+- **Idempotent resume:** Pass `--resume` to re-poll running providers or advance queued participants without duplicating dispatch or re-invoking an adapter that already completed. Once a provider's applied dispatch/adapter has been attempted (even if it failed or its outcome was uncertain), ordinary resume never repeats it automatically -- pass `--retry-provider <provider>` to explicitly retry that one provider. `--retry-provider` is rejected unless the named provider is already part of the campaign.
 - **Local resilience:** Campaign state is stored in `.code-mower/campaigns/`. Local status remains fully readable during GitHub or provider network outages.
 - **Board visibility:** Active campaigns surface directly on Code Mower Board with release, provider, environment, elapsed time, state, and actionable next steps.
 - **Never fabricated:** A provider can only reach `complete` when its own adapter command actually ran (argv only, never a shell) and produced a result file that passes closed-schema validation and matches the campaign's provider, release tag, and (for GitHub comment results) idempotency key. Code Mower never runs its own local qualification and relabels the result as another provider's.
@@ -77,10 +77,31 @@ Local CLI providers (`local_cli` driver: Claude, Codex, Antigravity, Muse) only 
 2. The adapter command must write a `code_mower.adoptionResult.v1` JSON document to the `{output}` path whose `provider` and `release_tag` fields match the campaign's. Anything else (extra fields, mismatched identity, no file, non-zero exit, or a timeout) leaves the provider `unavailable`/`blocked` with a bounded error code -- never a fabricated pass.
 3. Install the provider's CLI binary on PATH and verify local authentication.
 
+An adopter who cannot (or does not want to) edit installed Python can configure the same two keys per-repo instead, in `code-mower.yml` at the repository root:
+
+```yaml
+lanes:
+  muse_cli:                      # canonical lane_id, or a provider alias (e.g. "muse")
+    provider_config:
+      campaign_adapter_argv:
+        - "{command}"
+        - qualify
+        - --release-tag
+        - "{release_tag}"
+        - --package-spec
+        - "{package_spec}"
+        - --output
+        - "{output}"
+      campaign_adapter_timeout_seconds: 60
+```
+
+This overlays only `campaign_adapter_argv` and `campaign_adapter_timeout_seconds` onto the matching lane's built-in `provider_config`; every other key in `code-mower.yml` is ignored for this purpose, so it cannot widen the general config contract. A missing `code-mower.yml`, or a lane with no matching entry, is treated as no override. `campaign_adapter_argv` must be a YAML list of non-empty scalar tokens (no shell strings; the adapter still runs with `shell=False`) -- a malformed override degrades to the safe `adapter_configuration_invalid` error code and an actionable status message, never a crash or a leaked template/traceback.
+
 Hosted / SaaS providers (`hosted_bridge`/`saas_event` driver: Devin, Cursor BugBot) dispatch via a GitHub issue comment instead of a local adapter:
 
 - Configure authentication tokens (`DEVIN_AUDIT_LABEL_TOKEN`, `CURSOR_BUGBOT_AUDIT_LABEL_TOKEN`, `GITHUB_TOKEN`) and supply `--issue <number>`.
 - The provider's reply comment must embed a `CODE_MOWER_ADOPTION_RESULT` marker wrapping schema `code_mower.releaseCampaignResult.v1` with `campaign_id`, `provider`, `release_tag`, and `idempotency_key` matching the original dispatch, plus a validated `adoption_result`. A bare or unbound result is ignored so a stale or unrelated comment can never be replayed as evidence.
+- These identity fields are visible in the public dispatch comment, so binding alone does not prove authorship -- anyone could reply with a matching marker. A result marker is only ever accepted from a GitHub comment author present in the lane's `provider_config.bot_authors` list (and, if configured, the comma-separated login list in the environment variable named by `provider_config.bot_authors_env`). A lane with no trusted authors configured trusts nobody; an untrusted or spoofed author's comment is ignored and the provider keeps running.
 
 ### Per-Release Operation
 

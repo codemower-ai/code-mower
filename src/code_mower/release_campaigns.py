@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from code_mower import config as code_mower_config
     from code_mower import lane_status
     from code_mower.provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from code_mower.release_qualify import (
@@ -32,6 +33,7 @@ if __package__ in {None, ""}:
         validate_adoption_result_payload,
     )
 else:
+    from . import config as code_mower_config
     from . import lane_status
     from .provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from .release_qualify import (
@@ -101,6 +103,7 @@ SAFE_ERROR_CODES = frozenset(
         "missing_credentials",
         "missing_issue_number",
         "no_campaign_adapter_configured",
+        "adapter_configuration_invalid",
         "adapter_timeout",
         "adapter_exited_nonzero",
         "adapter_produced_no_result",
@@ -108,6 +111,7 @@ SAFE_ERROR_CODES = frozenset(
         "adapter_result_mismatch",
         "github_dispatch_failed",
         "github_poll_unavailable",
+        "unknown_provider",
     }
 )
 
@@ -115,6 +119,7 @@ SAFE_ERROR_CODES = frozenset(
 # real signal and require inspection, not just missing prerequisites.
 _ADAPTER_ERROR_STATE = {
     "no_campaign_adapter_configured": "unavailable",
+    "adapter_configuration_invalid": "unavailable",
     "command_not_found": "unavailable",
     "adapter_timeout": "unavailable",
     "adapter_exited_nonzero": "blocked",
@@ -159,6 +164,10 @@ class CampaignProvider:
     dispatch_mode: str = "dry_run"
     dispatched_at: str | None = None
     completed_at: str | None = None
+    # Set before invoking a paid/hosted dispatch or local adapter (even if it
+    # fails or the outcome is uncertain). Once set, resume never repeats the
+    # attempt automatically -- only an explicit --retry-provider does.
+    attempted_at: str | None = None
     next_action: str = ""
     next_detail: str = ""
     error: str = ""
@@ -209,28 +218,19 @@ def _safe_campaign_filename(campaign_id: str) -> str:
 
 
 def resolve_provider_lane(name: str) -> tuple[str, ProviderLane]:
-    """Resolve a provider alias to its canonical key and declarative lane configuration."""
+    """Resolve a provider alias to its canonical key and declarative lane configuration.
+
+    Fails closed: a name that is not present in ``PROVIDER_ALIAS_MAP`` or the
+    ``REFERENCE_PROVIDERS`` registry raises ``ValueError`` rather than
+    fabricating a manual fallback lane for an unrecognized provider.
+    """
     normalized = name.strip().lower()
     target_lane_id = PROVIDER_ALIAS_MAP.get(normalized, normalized)
-    if target_lane_id in REFERENCE_PROVIDERS:
-        lane = REFERENCE_PROVIDERS[target_lane_id]
-        return lane.provider, lane
-
-    from .provider_registry import LaneLabels
-
-    fallback_lane = ProviderLane(
-        lane_id=normalized,
-        lane_type="audit",
-        driver="manual",
-        provider=normalized,
-        labels=LaneLabels(
-            needs=f"needs-{normalized}-audit",
-            done=f"{normalized}-audit-done",
-            blocked=f"{normalized}-audit-blocked",
-        ),
-        trigger_policy="manual",
-    )
-    return normalized, fallback_lane
+    lane = REFERENCE_PROVIDERS.get(target_lane_id)
+    if lane is None:
+        known = ", ".join(sorted(set(PROVIDER_ALIAS_MAP) | set(REFERENCE_PROVIDERS)))
+        raise ValueError(f"unknown release campaign provider {name!r}; known providers: {known}")
+    return lane.provider, lane
 
 
 def _compute_idempotency_key(
@@ -601,6 +601,92 @@ def _poll_github_comments(
     return [c for c in comments if isinstance(c, dict)], ""
 
 
+def _normalize_github_login(login: str) -> str:
+    return login.strip().lower()
+
+
+def _comment_author_login(comment: Mapping[str, Any]) -> str:
+    """Extract the commenter's login from the `gh issue view --json comments` shape."""
+    author = comment.get("author")
+    if isinstance(author, Mapping):
+        login = author.get("login")
+        if isinstance(login, str):
+            return login
+    return ""
+
+
+def _resolve_trusted_bot_authors(
+    lane: ProviderLane,
+    *,
+    env: Mapping[str, str],
+) -> tuple[str, ...]:
+    """Resolve the closed set of GitHub logins trusted to post adoption-result markers.
+
+    Only the lane's declarative `provider_config.bot_authors` and an optional
+    `provider_config.bot_authors_env` environment override are honored. The
+    idempotency key alone is not sufficient identity binding -- it is visible
+    in the public dispatch comment, so anyone could reply with a matching
+    marker. A lane with no trusted authors configured trusts nobody.
+    """
+    authors: list[str] = [str(a) for a in lane.provider_config.get("bot_authors") or ()]
+    bot_authors_env = lane.provider_config.get("bot_authors_env")
+    if bot_authors_env:
+        raw = env.get(str(bot_authors_env), "")
+        authors.extend(part.strip() for part in raw.split(",") if part.strip())
+    return tuple(_normalize_github_login(a) for a in authors if a)
+
+
+def _is_trusted_github_author(author_login: str, trusted_authors: Sequence[str]) -> bool:
+    if not author_login or not trusted_authors:
+        return False
+    return _normalize_github_login(author_login) in trusted_authors
+
+
+def _validate_adapter_argv_template(template: Any) -> tuple[str, ...]:
+    """Validate campaign_adapter_argv is a list of non-empty scalar tokens.
+
+    Applies to both the registry-declared template and any repo_path/
+    code-mower.yml override -- neither is trusted to already be well-formed,
+    since the override comes from adopter-controlled YAML.
+    """
+    if not isinstance(template, (list, tuple)):
+        raise ValueError("campaign_adapter_argv must be a list")
+    tokens: list[str] = []
+    for token in template:
+        if isinstance(token, bool) or not isinstance(token, (str, int, float)):
+            raise ValueError("campaign_adapter_argv tokens must be non-empty scalar values")
+        text = str(token)
+        if not text:
+            raise ValueError("campaign_adapter_argv tokens must be non-empty scalar values")
+        tokens.append(text)
+    if not tokens:
+        raise ValueError("campaign_adapter_argv must not be empty")
+    return tuple(tokens)
+
+
+def _validate_adapter_timeout(value: Any) -> int:
+    """Validate campaign_adapter_timeout_seconds.
+
+    Accepts a real int/float (the registry form) or a numeric string (the
+    repo_path/code-mower.yml override form, since its minimal YAML-subset
+    parser leaves bare numbers as strings). Anything else is invalid.
+    """
+    if isinstance(value, bool):
+        raise ValueError("campaign_adapter_timeout_seconds must be a positive integer")
+    if isinstance(value, (int, float)):
+        parsed = int(value)
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = int(value.strip(), 10)
+        except ValueError as exc:
+            raise ValueError("campaign_adapter_timeout_seconds must be a positive integer") from exc
+    else:
+        raise ValueError("campaign_adapter_timeout_seconds must be a positive integer")
+    if parsed <= 0:
+        raise ValueError("campaign_adapter_timeout_seconds must be a positive integer")
+    return parsed
+
+
 def _build_adapter_argv(
     lane: ProviderLane,
     resolved_command: str,
@@ -611,8 +697,9 @@ def _build_adapter_argv(
     starting_version: str,
     output_path: Path,
     repo_path: Path,
+    argv_template: Any,
 ) -> list[str]:
-    template = lane.provider_config.get("campaign_adapter_argv") or ()
+    validated_template = _validate_adapter_argv_template(argv_template)
     substitutions = {
         "command": resolved_command,
         "release_tag": release_tag,
@@ -623,11 +710,90 @@ def _build_adapter_argv(
         "repo_path": str(repo_path),
     }
     try:
-        return [str(token).format(**substitutions) for token in template]
+        return [token.format(**substitutions) for token in validated_template]
     except (KeyError, IndexError) as exc:
-        raise ValueError(
-            f"invalid campaign_adapter_argv template for lane {lane.lane_id!r}: {exc}"
-        ) from exc
+        raise ValueError(f"invalid campaign_adapter_argv template for lane {lane.lane_id!r}") from exc
+
+
+def _campaign_adapter_override_lane_keys(lane: ProviderLane) -> set[str]:
+    """Repo config keys that may declare an override for this lane: its canonical
+    lane_id, plus any alias that resolves to the same lane."""
+    keys = {lane.lane_id}
+    keys.update(alias for alias, target in PROVIDER_ALIAS_MAP.items() if target == lane.lane_id)
+    return keys
+
+
+def _load_campaign_adapter_overrides(
+    lane: ProviderLane,
+    repo_path: Path,
+) -> tuple[Mapping[str, Any], str]:
+    """Load narrowly-scoped campaign adapter overrides from repo_path/code-mower.yml.
+
+    Only `campaign_adapter_argv` and `campaign_adapter_timeout_seconds` are
+    read from the matching lane's `provider_config`; every other key in the
+    repo config is ignored here so this does not widen the general config
+    contract. A missing repo config, or a lane with no matching entry, is not
+    an override (empty mapping, no error). A structurally malformed lane or
+    provider_config entry returns `adapter_configuration_invalid` instead of
+    raising -- the specific override values are validated by the caller.
+    """
+    config_path = repo_path / "code-mower.yml"
+    if not config_path.is_file():
+        return {}, ""
+
+    try:
+        loaded = code_mower_config.load_config(config_path)
+    except (OSError, code_mower_config.ConfigError):
+        return {}, ""
+
+    lanes_cfg = loaded.get("lanes")
+    if not isinstance(lanes_cfg, Mapping):
+        return {}, ""
+
+    lane_cfg = None
+    for key in _campaign_adapter_override_lane_keys(lane):
+        candidate = lanes_cfg.get(key)
+        if candidate is not None:
+            lane_cfg = candidate
+            break
+    if lane_cfg is None:
+        return {}, ""
+    if not isinstance(lane_cfg, Mapping):
+        return {}, _safe_error("adapter_configuration_invalid")
+
+    provider_cfg = lane_cfg.get("provider_config")
+    if provider_cfg is None:
+        return {}, ""
+    if not isinstance(provider_cfg, Mapping):
+        return {}, _safe_error("adapter_configuration_invalid")
+
+    overrides = {
+        key: provider_cfg[key]
+        for key in ("campaign_adapter_argv", "campaign_adapter_timeout_seconds")
+        if key in provider_cfg
+    }
+    return overrides, ""
+
+
+def _resolve_campaign_adapter_config(
+    lane: ProviderLane,
+    repo_path: Path,
+) -> tuple[Any, Any, str]:
+    """Resolve the effective campaign_adapter_argv/timeout for a lane.
+
+    Overlays only the two allowed override keys from repo_path/code-mower.yml
+    onto the immutable reference lane's provider_config; the reference lane
+    itself is never mutated. Returns (argv_template, timeout_value, error_code).
+    """
+    overrides, error = _load_campaign_adapter_overrides(lane, repo_path)
+    if error:
+        return None, None, error
+    argv_template = overrides.get("campaign_adapter_argv", lane.provider_config.get("campaign_adapter_argv"))
+    timeout_value = overrides.get(
+        "campaign_adapter_timeout_seconds",
+        lane.provider_config.get("campaign_adapter_timeout_seconds"),
+    )
+    return argv_template, timeout_value, ""
 
 
 def _invoke_local_adapter(
@@ -650,7 +816,9 @@ def _invoke_local_adapter(
     command actually ran (argv only, no shell) and produced a valid,
     identity-matching result file. Returns (result, error_code, detail).
     """
-    argv_template = lane.provider_config.get("campaign_adapter_argv")
+    argv_template, timeout_value, config_error = _resolve_campaign_adapter_config(lane, repo_path)
+    if config_error:
+        return None, config_error, f"{provider} campaign adapter configuration is invalid"
     if not argv_template:
         return None, _safe_error("no_campaign_adapter_configured"), "no campaign adapter configured"
 
@@ -660,17 +828,29 @@ def _invoke_local_adapter(
         return None, _safe_error("command_not_found"), f"command not found: {cmd}"
     resolved_path = which_fn(resolved) or resolved
 
-    argv = _build_adapter_argv(
-        lane,
-        resolved_path,
-        release_tag=release_tag,
-        package_spec=package_spec,
-        qualification_context=qualification_context,
-        starting_version=starting_version,
-        output_path=output_path,
-        repo_path=repo_path,
-    )
-    timeout = int(lane.provider_config.get("campaign_adapter_timeout_seconds") or DEFAULT_ADAPTER_TIMEOUT_SECONDS)
+    try:
+        argv = _build_adapter_argv(
+            lane,
+            resolved_path,
+            release_tag=release_tag,
+            package_spec=package_spec,
+            qualification_context=qualification_context,
+            starting_version=starting_version,
+            output_path=output_path,
+            repo_path=repo_path,
+            argv_template=argv_template,
+        )
+        timeout = (
+            _validate_adapter_timeout(timeout_value)
+            if timeout_value is not None
+            else DEFAULT_ADAPTER_TIMEOUT_SECONDS
+        )
+    except ValueError:
+        return (
+            None,
+            _safe_error("adapter_configuration_invalid"),
+            f"{provider} campaign adapter configuration is invalid",
+        )
 
     try:
         completed = adapter_runner(argv, timeout)
@@ -796,8 +976,14 @@ def dispatch_or_advance_campaign(
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     adapter_runner: AdapterRunner = run_local_adapter_command,
     env: Mapping[str, str] | None = None,
+    retry_provider: str = "",
 ) -> dict[str, Any]:
-    """Execute dispatch, polling, or status progression on a campaign."""
+    """Execute dispatch, polling, or status progression on a campaign.
+
+    `retry_provider` is the only way a provider whose applied dispatch/adapter
+    was already attempted (`attempted_at` set) gets invoked again -- ordinary
+    resume never repeats a paid/hosted dispatch or local adapter run.
+    """
     current_env = os.environ if env is None else env
     repo_path = repo_path or Path.cwd()
     campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
@@ -812,9 +998,23 @@ def dispatch_or_advance_campaign(
     starting_version = str(campaign.get("starting_version") or "")
     repo_slug = str(campaign.get("repo_slug") or "")
 
+    retry_canonical = ""
+    if retry_provider:
+        try:
+            retry_canonical, _ = resolve_provider_lane(retry_provider)
+        except ValueError:
+            retry_canonical = ""
+
     for provider_data in campaign.get("providers", []):
         provider = str(provider_data.get("provider") or "")
-        _, lane = resolve_provider_lane(provider)
+        try:
+            _, lane = resolve_provider_lane(provider)
+        except ValueError:
+            provider_data["state"] = "unavailable"
+            provider_data["error"] = _safe_error("unknown_provider")
+            provider_data["next_action"] = "remove unrecognized provider from campaign"
+            provider_data["next_detail"] = ""
+            continue
         current_state = str(provider_data.get("state") or "queued")
 
         # 1. Check local result drop-in first (manual override or adapter output)
@@ -859,7 +1059,14 @@ def dispatch_or_advance_campaign(
                     provider_data["error"] = error
                 else:
                     provider_data["error"] = ""
+                    trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
                     for comment in comments:
+                        if not _is_trusted_github_author(_comment_author_login(comment), trusted_authors):
+                            # Identity binding (campaign/provider/tag/idempotency key)
+                            # alone is not enough -- those fields are visible in the
+                            # public dispatch comment, so only a configured trusted
+                            # author's reply is ever considered.
+                            continue
                         body = str(comment.get("body") or "")
                         found_result = _extract_bound_adoption_result(
                             body,
@@ -890,7 +1097,8 @@ def dispatch_or_advance_campaign(
         cmd_found = _find_command(lane, which_fn=which_fn)
         has_creds, missing_cred = _check_credentials(lane, env=current_env)
         has_issue = bool(issue_number)
-        adapter_configured = bool(lane.provider_config.get("campaign_adapter_argv"))
+        effective_argv_template, _, adapter_config_error = _resolve_campaign_adapter_config(lane, repo_path)
+        adapter_configured = bool(effective_argv_template) and not adapter_config_error
 
         # 5. Dry-run evaluations
         if not apply:
@@ -948,9 +1156,23 @@ def dispatch_or_advance_campaign(
 
         # 6. Applied dispatch (requires explicit apply flag)
         provider_data["dispatch_mode"] = "applied"
+
+        attempt_gated = lane.driver in {"local_cli", "saas_event", "hosted_bridge"}
+        already_attempted = bool(provider_data.get("attempted_at"))
+        is_explicit_retry = bool(retry_canonical) and provider == retry_canonical
+        if attempt_gated and already_attempted and not is_explicit_retry:
+            # A prior applied attempt (success, failure, or uncertain outcome)
+            # was already made and persisted -- resume must not silently repeat
+            # a paid/hosted dispatch or local adapter invocation. Only the
+            # explicit --retry-provider flag may do that.
+            provider_data["next_action"] = f"use --retry-provider {provider} to retry {provider}"
+            continue
+
         if lane.driver == "local_cli":
             results_dir.mkdir(parents=True, exist_ok=True)
             result_path = results_dir / f"{campaign_id}_{provider}.json"
+            provider_data["attempted_at"] = now_utc
+            save_campaign(campaign, campaigns_dir)
             start_p = time.time()
             result, error_code, detail = _invoke_local_adapter(
                 lane,
@@ -967,17 +1189,24 @@ def dispatch_or_advance_campaign(
             if result is None:
                 provider_data["state"] = _ADAPTER_ERROR_STATE.get(error_code, "unavailable")
                 provider_data["error"] = error_code
-                provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
-                    provider,
-                    lane,
-                    provider_data["state"],
-                    command_available=error_code != "command_not_found",
-                    has_credentials=True,
-                    has_issue=True,
-                    dry_run=False,
-                    adapter_configured=adapter_configured,
-                    error=detail,
-                )
+                if error_code == "adapter_configuration_invalid":
+                    provider_data["next_action"] = (
+                        f"fix campaign_adapter_argv/campaign_adapter_timeout_seconds "
+                        f"configuration for {provider} or record manual result"
+                    )
+                    provider_data["next_detail"] = detail
+                else:
+                    provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
+                        provider,
+                        lane,
+                        provider_data["state"],
+                        command_available=error_code != "command_not_found",
+                        has_credentials=True,
+                        has_issue=True,
+                        dry_run=False,
+                        adapter_configured=adapter_configured,
+                        error=detail,
+                    )
             else:
                 provider_data["adoption_result"] = result
                 provider_data["dispatched_at"] = now_utc
@@ -1022,6 +1251,8 @@ def dispatch_or_advance_campaign(
                     error="missing issue number",
                 )
             else:
+                provider_data["attempted_at"] = now_utc
+                save_campaign(campaign, campaigns_dir)
                 ok, ref, err = _dispatch_github_comment(
                     repo_slug,
                     issue_number,
@@ -1233,6 +1464,26 @@ def release_campaigns_board_payload(
     }
 
 
+def _validate_retry_provider(
+    retry_provider: str,
+    campaign: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Resolve and validate --retry-provider against campaign membership.
+
+    Returns (canonical_provider, error_message); error_message is empty on
+    success and canonical_provider is empty when retry_provider was not given.
+    """
+    if not retry_provider:
+        return "", ""
+    try:
+        canonical, _ = resolve_provider_lane(retry_provider)
+    except ValueError as exc:
+        return "", str(exc)
+    if not any(p.get("provider") == canonical for p in campaign.get("providers", [])):
+        return "", f"--retry-provider {retry_provider!r} is not part of this campaign"
+    return canonical, ""
+
+
 def campaign_command(
     *,
     action: str | None = None,
@@ -1251,6 +1502,7 @@ def campaign_command(
     campaigns_dir: Path | None = None,
     record_result: Path | None = None,
     record_provider: str = "",
+    retry_provider: str = "",
     emit_json: bool = False,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
@@ -1305,6 +1557,10 @@ def campaign_command(
         return 0
 
     if existing and (is_resume or not release_tag):
+        retry_canonical, retry_error = _validate_retry_provider(retry_provider, existing)
+        if retry_error:
+            print(f"error: {retry_error}", file=sys.stderr)
+            return 1
         updated = dispatch_or_advance_campaign(
             existing,
             apply=apply,
@@ -1316,6 +1572,7 @@ def campaign_command(
             gh_json_runner=gh_json_runner,
             adapter_runner=adapter_runner,
             env=env,
+            retry_provider=retry_canonical,
         )
         if emit_json:
             print(json.dumps(updated, indent=2, sort_keys=True))
@@ -1342,6 +1599,10 @@ def campaign_command(
         return 1
 
     campaign_dict = campaign_obj.to_dict()
+    retry_canonical, retry_error = _validate_retry_provider(retry_provider, campaign_dict)
+    if retry_error:
+        print(f"error: {retry_error}", file=sys.stderr)
+        return 1
     updated = dispatch_or_advance_campaign(
         campaign_dict,
         apply=apply,
@@ -1353,6 +1614,7 @@ def campaign_command(
         gh_json_runner=gh_json_runner,
         adapter_runner=adapter_runner,
         env=env,
+        retry_provider=retry_canonical,
     )
 
     if emit_json:

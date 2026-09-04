@@ -473,5 +473,96 @@ class ReleaseQualifyTests(unittest.TestCase):
                 self.assertNotIn("message", step)
 
 
+def _valid_adoption_result(**overrides: object) -> dict:
+    result = {
+        "schema": release_qualify.ADOPTION_RESULT_SCHEMA,
+        "timestamp_utc": "2026-09-04T08:00:00Z",
+        "release_tag": "v1.0.0",
+        "package_identity": "code-mower",
+        "normalized_version": "1.0.0",
+        "qualification_context": "cold_install",
+        "starting_version": "",
+        "ending_version": "1.0.0",
+        "provider": "codex",
+        "executor": "codex_cli",
+        "host_class": "local",
+        "runtime_class": "python_3.12",
+        "execution_state": "executed",
+        "elapsed_seconds": 1.0,
+        "outcome": "pass",
+        "steps": [
+            {
+                "id": "doctor",
+                "status": "pass",
+                "elapsed_seconds": 0.5,
+                "warning_count": 0,
+                "owner_action_count": 0,
+            }
+        ],
+    }
+    result.update(overrides)
+    return result
+
+
+class TimestampUtcValidationTests(unittest.TestCase):
+    """timestamp_utc must be a real ISO 8601 timestamp with a UTC/offset designator."""
+
+    def test_accepts_z_suffix(self) -> None:
+        release_qualify.validate_adoption_result_payload(
+            _valid_adoption_result(timestamp_utc="2026-09-04T08:00:00Z")
+        )
+
+    def test_accepts_numeric_offset(self) -> None:
+        release_qualify.validate_adoption_result_payload(
+            _valid_adoption_result(timestamp_utc="2026-09-04T08:00:00+05:30")
+        )
+
+    def test_accepts_fractional_seconds(self) -> None:
+        release_qualify.validate_adoption_result_payload(
+            _valid_adoption_result(timestamp_utc="2026-09-04T08:00:00.123456Z")
+        )
+
+    def test_rejects_missing_timezone(self) -> None:
+        with self.assertRaises(ValueError):
+            release_qualify.validate_adoption_result_payload(
+                _valid_adoption_result(timestamp_utc="2026-09-04T08:00:00")
+            )
+
+    def test_rejects_path_like_value(self) -> None:
+        with self.assertRaises(ValueError):
+            release_qualify.validate_adoption_result_payload(
+                _valid_adoption_result(timestamp_utc="../../etc/passwd")
+            )
+
+    def test_rejects_multiline_value(self) -> None:
+        with self.assertRaises(ValueError):
+            release_qualify.validate_adoption_result_payload(
+                _valid_adoption_result(timestamp_utc="2026-09-04T08:00:00Z\nmalicious payload")
+            )
+
+    def test_rejects_arbitrary_free_text(self) -> None:
+        with self.assertRaises(ValueError):
+            release_qualify.validate_adoption_result_payload(
+                _valid_adoption_result(timestamp_utc="not a timestamp at all")
+            )
+
+    def test_rejects_semantically_invalid_calendar_date(self) -> None:
+        """Plausible-looking but out-of-range values (month 13) are still rejected."""
+        with self.assertRaises(ValueError):
+            release_qualify.validate_adoption_result_payload(
+                _valid_adoption_result(timestamp_utc="2026-13-45T99:99:99Z")
+            )
+
+    def test_rejects_non_string(self) -> None:
+        with self.assertRaises(ValueError):
+            release_qualify.validate_adoption_result_payload(
+                _valid_adoption_result(timestamp_utc=1757000000)
+            )
+
+    def test_rejects_empty_string(self) -> None:
+        with self.assertRaises(ValueError):
+            release_qualify.validate_adoption_result_payload(_valid_adoption_result(timestamp_utc=""))
+
+
 if __name__ == "__main__":
     unittest.main()

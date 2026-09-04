@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -69,6 +70,12 @@ ADOPTION_RESULT_STEP_FIELDS = frozenset(
     {"id", "status", "elapsed_seconds", "warning_count", "owner_action_count"}
 )
 MAX_ADOPTION_RESULT_STEPS = 32
+# ISO 8601 date/time with a mandatory UTC/offset designator ("Z" or
+# +HH:MM/-HH:MM). Deliberately rejects bare local timestamps, paths,
+# multiline values, and any other free-form string.
+TIMESTAMP_UTC_PATTERN = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})"
+)
 
 
 @dataclass
@@ -220,6 +227,26 @@ def _finite_non_negative(value: object, field: str) -> None:
         raise ValueError(f"adoption result {field} must be finite and non-negative")
 
 
+def _validate_timestamp_utc(value: object) -> None:
+    """Validate timestamp_utc is a real ISO 8601 timestamp with a UTC/offset designator.
+
+    A bare regex match is not enough: month/day/hour ranges are checked too,
+    so a plausible-looking-but-invalid string (e.g. month 13) is rejected the
+    same as a path, a multiline value, or free-form text.
+    """
+    if not isinstance(value, str) or not TIMESTAMP_UTC_PATTERN.fullmatch(value):
+        raise ValueError(
+            "adoption result timestamp_utc must be an ISO 8601 timestamp with a UTC/offset designator"
+        )
+    normalized = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError("adoption result timestamp_utc must be a valid ISO 8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("adoption result timestamp_utc must include a UTC/offset designator")
+
+
 def validate_adoption_result_payload(result: object) -> None:
     """Strictly validate one closed-schema local adoptionResult payload.
 
@@ -239,6 +266,8 @@ def validate_adoption_result_payload(result: object) -> None:
 
     if result.get("schema") != ADOPTION_RESULT_SCHEMA:
         raise ValueError(f"unsupported adoption result schema {result.get('schema')!r}")
+
+    _validate_timestamp_utc(result.get("timestamp_utc"))
 
     valid_tag, normalized_version, tag_error = _validate_tag_format(str(result.get("release_tag") or ""))
     if not valid_tag:
@@ -769,6 +798,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="",
         help="Provider identity when manually recording an adoption result",
     )
+    campaign.add_argument(
+        "--retry-provider",
+        default="",
+        help=(
+            "Explicitly retry one provider's applied dispatch/adapter attempt "
+            "(must already be a campaign member). This is the only way to "
+            "repeat a provider whose applied attempt was already made."
+        ),
+    )
     campaign.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
@@ -831,6 +869,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             campaigns_dir=args.campaigns_dir,
             record_result=args.record_result,
             record_provider=args.record_provider,
+            retry_provider=args.retry_provider,
             emit_json=args.json,
         )
 
