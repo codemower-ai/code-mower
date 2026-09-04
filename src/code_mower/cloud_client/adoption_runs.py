@@ -316,6 +316,18 @@ def validate_adoption_run_payload(event: Mapping[str, Any]) -> None:
         raise CloudBundleError(
             "adoption_run step status counts must sum to step_count"
         )
+    expected = _expected_outcome(
+        execution_state=execution_state,
+        fail_count=int(breakdown["step_fail_count"] or 0),
+        warn_count=int(breakdown["step_warn_count"] or 0),
+        unavailable_count=int(breakdown["step_unavailable_count"] or 0),
+        planned_count=int(breakdown["step_planned_count"] or 0),
+    )
+    if outcome != expected:
+        raise CloudBundleError(
+            f"adoption_run outcome {outcome!r} disagrees with step statuses "
+            f"for {execution_state} run; expected {expected!r}"
+        )
     _count(metrics, "warning_count", required=True)
     _count(metrics, "owner_action_count", required=True)
 
@@ -331,6 +343,36 @@ def validate_adoption_run_payload(event: Mapping[str, Any]) -> None:
         raise CloudBundleError(
             "adoption_run metric 'elapsed_seconds' must be finite and non-negative"
         )
+
+
+def _expected_outcome(
+    *,
+    execution_state: str,
+    fail_count: int,
+    warn_count: int,
+    unavailable_count: int,
+    planned_count: int,
+) -> str:
+    """Mirror release_qualify._aggregate_outcome without importing it.
+
+    Kept local on purpose: cloud_client must not import the qualification
+    runner (heavy, cycle-prone). Semantics must stay in lockstep with
+    release_qualify._aggregate_outcome: any fail wins; planned runs never
+    report pass; executed runs with unexecuted steps fail; warn/unavailable
+    degrade to pass_with_warnings; otherwise pass.
+    """
+
+    if execution_state not in ADOPTION_EXECUTION_STATES:
+        return "fail"
+    if fail_count > 0:
+        return "fail"
+    if execution_state == "planned":
+        return "incomplete"
+    if planned_count > 0:
+        return "fail"
+    if warn_count > 0 or unavailable_count > 0:
+        return "pass_with_warnings"
+    return "pass"
 
 
 def _adoption_event_id(result: Mapping[str, Any]) -> str:
@@ -429,6 +471,27 @@ def adoption_result_to_event(
     ):
         raise CloudBundleError(
             "adoption result elapsed_seconds must be finite and non-negative"
+        )
+
+    execution_state = str(result.get("execution_state") or "")
+    outcome = str(result.get("outcome") or "")
+    if execution_state not in ADOPTION_EXECUTION_STATES:
+        raise CloudBundleError(
+            f"unsupported adoption_run execution_state {execution_state!r}"
+        )
+    if outcome not in ADOPTION_OUTCOMES:
+        raise CloudBundleError(f"unsupported adoption_run outcome {outcome!r}")
+    expected_outcome = _expected_outcome(
+        execution_state=execution_state,
+        fail_count=status_counts["step_fail_count"],
+        warn_count=status_counts["step_warn_count"],
+        unavailable_count=status_counts["step_unavailable_count"],
+        planned_count=status_counts["step_planned_count"],
+    )
+    if outcome != expected_outcome:
+        raise CloudBundleError(
+            f"adoption result outcome {outcome!r} disagrees with step statuses "
+            f"for {execution_state} run; expected {expected_outcome!r}"
         )
 
     provider = str(result.get("provider") or "")

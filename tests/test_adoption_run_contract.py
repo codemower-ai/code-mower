@@ -144,8 +144,8 @@ class AdoptionRunContractTests(unittest.TestCase):
                     },
                     {
                         "id": "package_install",
-                        "status": "planned",
-                        "elapsed_seconds": 0.0,
+                        "status": "pass",
+                        "elapsed_seconds": 10.0,
                         "warning_count": 0,
                         "owner_action_count": 0,
                     },
@@ -156,7 +156,8 @@ class AdoptionRunContractTests(unittest.TestCase):
         self.assertEqual(event["metrics"]["step_count"], 3)
         self.assertEqual(event["metrics"]["step_warn_count"], 1)
         self.assertEqual(event["metrics"]["step_unavailable_count"], 1)
-        self.assertEqual(event["metrics"]["step_planned_count"], 1)
+        self.assertEqual(event["metrics"]["step_pass_count"], 1)
+        self.assertEqual(event["metrics"]["step_planned_count"], 0)
         self.assertEqual(event["metrics"]["warning_count"], 3)
         self.assertEqual(event["metrics"]["owner_action_count"], 1)
         validate_cloud_event(event)
@@ -342,6 +343,94 @@ class AdoptionRunContractTests(unittest.TestCase):
         overstated["dimensions"]["provenance_coverage"] = "complete"
         with self.assertRaisesRegex(CloudBundleError, "provenance_coverage"):
             validate_cloud_event(overstated)
+
+    def test_rejects_failed_step_claiming_pass(self) -> None:
+        failed_pass = _result(
+            outcome="pass",
+            steps=[
+                {
+                    "id": "doctor",
+                    "status": "fail",
+                    "elapsed_seconds": 1.0,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                },
+                {
+                    "id": "package_install",
+                    "status": "pass",
+                    "elapsed_seconds": 10.0,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                },
+            ],
+        )
+        with self.assertRaisesRegex(CloudBundleError, "disagrees with step statuses"):
+            adoption_result_to_event(failed_pass)
+
+        base = adoption_result_to_event(_result())
+        tampered = copy.deepcopy(base)
+        tampered["metrics"]["step_fail_count"] = 1
+        tampered["metrics"]["step_pass_count"] = 1
+        with self.assertRaisesRegex(CloudBundleError, "disagrees with step statuses"):
+            validate_cloud_event(tampered)
+
+    def test_rejects_planned_executed_outcome_mismatches(self) -> None:
+        executed_planned_step = _result(
+            execution_state="executed",
+            outcome="pass_with_warnings",
+            steps=[
+                {
+                    "id": "doctor",
+                    "status": "warn",
+                    "elapsed_seconds": 1.0,
+                    "warning_count": 1,
+                    "owner_action_count": 0,
+                },
+                {
+                    "id": "package_install",
+                    "status": "planned",
+                    "elapsed_seconds": 0.0,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                },
+            ],
+        )
+        with self.assertRaisesRegex(CloudBundleError, "disagrees with step statuses"):
+            adoption_result_to_event(executed_planned_step)
+
+        planned_claiming_pass = _result(
+            execution_state="planned",
+            outcome="pass",
+            ending_version="",
+            steps=[
+                {
+                    "id": "package_install",
+                    "status": "planned",
+                    "elapsed_seconds": 0.0,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                }
+            ],
+        )
+        with self.assertRaisesRegex(CloudBundleError, "disagrees with step statuses"):
+            adoption_result_to_event(planned_claiming_pass)
+
+        planned_fail_without_failure = _result(
+            execution_state="planned",
+            outcome="fail",
+            ending_version="",
+            steps=[
+                {
+                    "id": "package_install",
+                    "status": "planned",
+                    "elapsed_seconds": 0.0,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                }
+            ],
+        )
+        with self.assertRaisesRegex(CloudBundleError, "disagrees with step statuses"):
+            adoption_result_to_event(planned_fail_without_failure)
 
     def test_serialized_event_stays_metadata_only(self) -> None:
         serialized = json.dumps(adoption_result_to_event(_result())).lower()
