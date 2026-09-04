@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import copy
-import fcntl
 import json
 import os
 from contextlib import contextmanager
@@ -15,6 +14,7 @@ from typing import IO
 from typing import Any, Mapping
 
 from . import lane_status
+from .file_locks import exclusive_file_lock
 
 
 BOARD_EVENT_SCHEMA = "code_mower.boardEvent.v1"
@@ -163,14 +163,16 @@ def _retained_events(
 
 @contextmanager
 def _locked_store(path: Path) -> IO[str]:
+    """Serialize store writes on a dedicated lock file next to the store.
+
+    The lock itself lives in :mod:`code_mower.file_locks`, which picks a POSIX
+    or Windows backend; both release the lock when the holding descriptor
+    closes, so a crashed writer leaves nothing to clean up.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(f"{path.name}.lock")
-    with lock_path.open("a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield lock_file
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    with exclusive_file_lock(lock_path) as lock_file:
+        yield lock_file
 
 
 def append_snapshot(

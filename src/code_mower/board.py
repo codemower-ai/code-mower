@@ -45,7 +45,9 @@ BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"
 BOARD_IDENTITY_SCHEMA = "code_mower.boardIdentity.v1"
 BOARD_INVENTORY_SCHEMA = "code_mower.boardInventory.v1"
 BOARD_STOP_SCHEMA = "code_mower.boardStop.v1"
+BOARD_RELEASE_CAMPAIGNS_SCHEMA = "code_mower.boardReleaseCampaigns.v1"
 DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH = Path(".code-mower") / "board" / "agents"
+DEFAULT_CAMPAIGNS_RELATIVE_PATH = Path(".code-mower") / "campaigns"
 SECRET_VALUE_RE = re.compile(
     r"(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})"
 )
@@ -66,6 +68,7 @@ class BoardConfig:
     store_path: str | None = None
     spend_path: str | None = None
     agent_adapters_path: str | None = None
+    campaigns_path: str | None = None
     event_limit: int = 20
     record_events: bool = False
     record_interval_seconds: int = 60
@@ -89,6 +92,12 @@ def _agent_adapters_path(config: BoardConfig) -> Path:
     if config.agent_adapters_path:
         return Path(config.agent_adapters_path)
     return Path(config.repo_path) / DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH
+
+
+def _campaigns_path(config: BoardConfig) -> Path:
+    if config.campaigns_path:
+        return Path(config.campaigns_path)
+    return Path(config.repo_path) / DEFAULT_CAMPAIGNS_RELATIVE_PATH
 
 
 def _is_loopback(host: str) -> bool:
@@ -225,6 +234,7 @@ def status_payload(
         },
     }
     payload["agent_adapters"] = agent_adapters_payload(config)
+    payload["release_campaigns"] = release_campaigns_payload(config)
     payload["owner_queue"] = owner_queue_payload(payload)
     payload["supervised_pilot"] = supervised_pilot_payload(
         config,
@@ -1045,6 +1055,18 @@ def prune_stale_agent_adapters(
     return result
 
 
+def release_campaigns_payload(config: BoardConfig) -> dict[str, Any]:
+    try:
+        from . import release_campaigns
+    except ImportError:
+        import release_campaigns  # type: ignore
+
+    return release_campaigns.release_campaigns_board_payload(
+        repo_path=config.repo_path,
+        campaigns_dir=_campaigns_path(config),
+    )
+
+
 def _spend_timeline(config: BoardConfig, *, limit: int) -> dict[str, Any]:
     path = _spend_path(config)
     try:
@@ -1209,6 +1231,7 @@ def render_board_html(config: BoardConfig) -> str:
     <section><h2>Productivity</h2><div class="rows" id="productivity"></div></section>
     <section><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
     <section><h2>Agent Cards</h2><div class="rows" id="agents"></div></section>
+    <section><h2>Release Campaigns</h2><div class="rows" id="campaigns"></div></section>
     <section><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
     <section><h2>Gate Alerts</h2><div class="rows" id="alerts"></div></section>
     <section><h2>Recent Code Mower Workflows</h2><div class="rows" id="runs"></div></section>
@@ -1312,6 +1335,7 @@ def render_board_html(config: BoardConfig) -> str:
         `<div class="metric"><span class="muted">Productivity</span><b class="${{stateClass(productivity.status || "")}}">${{esc(productivity.status || "unknown")}}</b></div>`,
         `<div class="metric"><span class="muted">Owner queue</span><b class="${{ownerQueue.length ? "warn" : "ok"}}">${{ownerQueue.length}}</b></div>`,
         `<div class="metric"><span class="muted">Agent cards</span><b>${{agentCards.length}}</b></div>`,
+        `<div class="metric"><span class="muted">Campaigns</span><b class="${{(data.release_campaigns?.campaigns || []).length ? "ok" : "muted"}}">${{(data.release_campaigns?.campaigns || []).length}}</b></div>`,
         `<div class="metric"><span class="muted">Gate alerts</span><b class="${{alerts.length ? "warn" : "ok"}}">${{alerts.length}}</b></div>`
       ].join(""));
       const reviewerOutcomes = supervisedDecision.reviewer_outcomes || [];
@@ -1336,6 +1360,14 @@ def render_board_html(config: BoardConfig) -> str:
       put("productivity", productivityRows || empty("No local productivity signals yet."));
       put("owner", ownerQueue.length ? ownerQueue.map(item => `<div class="row"><div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.kind)}}</a>${{pill(item.next_action)}}${{pill(item.head_sha_prefix)}}</div><div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}}${{item.updated_at ? ` updated ${{localTime(item.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.owner_queue?.message || "No owner queue items."));
       put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.stale ? pill("stale") : ""}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{localTime(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
+      const campaignsData = data.release_campaigns || {{}};
+      const campaigns = campaignsData.campaigns || [];
+      const campaignRows = campaigns.flatMap(c => {{
+        const header = `<div class="row"><div class="line"><b>Release ${{esc(c.release_tag)}}</b>${{pill(c.status)}}${{c.dry_run ? pill("dry-run") : pill("applied")}}${{pill(c.qualification_context)}}<span>${{seconds(c.elapsed_seconds)}}</span></div><div>next: <b>${{esc(c.next_action)}}</b></div></div>`;
+        const cardRows = (c.cards || []).map(card => `<div class="row" style="margin-left:16px"><div class="line"><b>${{esc(card.provider)}}</b><span class="${{stateClass(card.state)}}">${{esc(card.state)}}</span>${{pill(card.environment)}}<span>${{seconds(card.elapsed_seconds)}}</span></div><div>next: <b>${{esc(card.next_action)}}</b></div>${{card.next_detail ? `<div class="muted">${{esc(card.next_detail)}}</div>` : ""}}</div>`);
+        return [header, ...cardRows];
+      }}).join("");
+      put("campaigns", campaignRows || empty(campaignsData.message || "No release campaigns."));
       put("prs", prs.length ? prs.map(pr => `<div class="row">
         <div class="line"><a href="${{esc(href(pr.url))}}">#${{esc(pr.number)}} ${{esc(pr.title)}}</a>${{pill(pr.merge_state)}}${{pr.is_draft ? pill("draft") : ""}}${{pr.stale ? pill("stale") : ""}}</div>
         <div class="muted">${{esc(pr.branch)}} by ${{esc(pr.author)}}${{pr.updated_at ? ` updated ${{localTime(pr.updated_at)}}` : ""}}</div>

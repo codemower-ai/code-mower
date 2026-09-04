@@ -165,6 +165,10 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         enabled_by_default=False,
         trigger_policy="manual",
         spend_policy="paid",
+        provider_config={
+            "bot_authors": ("devin-ai-integration", "devin-ai-integration[bot]"),
+            "bot_authors_env": "DEVIN_BOT_AUTHORS",
+        },
     ),
     "greptile": ProviderLane(
         lane_id="greptile",
@@ -248,6 +252,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         spend_policy="paid",
         provider_config={
             "bot_authors": ("cursor[bot]", "cursor"),
+            "bot_authors_env": "CURSOR_BUGBOT_BOT_AUTHORS",
             "trigger_comments": ("bugbot run", "@cursor review"),
             "rules_file": ".cursor/BUGBOT.md",
             "status": (
