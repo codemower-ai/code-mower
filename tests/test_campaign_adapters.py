@@ -116,8 +116,16 @@ class ArgvBuilderTests(unittest.TestCase):
             workspace_dir="/tmp/work",
         )
         self.assertEqual(argv[0], "/bin/claude")
-        for flag in ("--print", "--output-format", "json", "--model", "sonnet",
-                     "--max-budget-usd", "5.00", "--json-schema"):
+        for flag in (
+            "--print",
+            "--output-format",
+            "json",
+            "--model",
+            "sonnet",
+            "--max-budget-usd",
+            "5.00",
+            "--json-schema",
+        ):
             self.assertIn(flag, argv)
         self.assertIn("--no-session-persistence", argv)
         # Exactly one tool (Bash), auto-approved only by the OS-level sandbox;
@@ -189,6 +197,8 @@ class ArgvBuilderTests(unittest.TestCase):
         self.assertIn(".venv/bin/python -m pip install", prompt)
         self.assertIn("importlib.metadata.version", prompt)
         self.assertIn(".venv/bin/code-mower doctor --help", prompt)
+        self.assertIn("without a leading v", prompt)
+        self.assertIn("all-pass steps require outcome pass", prompt)
 
     def test_muse_argv_uses_exec_with_prompt_file_and_workspace(self) -> None:
         argv = campaign_adapters.build_muse_argv(
@@ -200,10 +210,22 @@ class ArgvBuilderTests(unittest.TestCase):
             reasoning_effort="high",
         )
         self.assertEqual(argv[0], "/bin/muse")
-        for flag in ("exec", "--json", "--prompt-file", "--workspace",
-                     "--provider", "meta", "--approval-mode", "never",
-                     "--max-model-steps", "12",
-                     "--model", "muse", "--reasoning-effort", "high"):
+        for flag in (
+            "exec",
+            "--json",
+            "--prompt-file",
+            "--workspace",
+            "--provider",
+            "meta",
+            "--approval-mode",
+            "never",
+            "--max-model-steps",
+            "12",
+            "--model",
+            "muse",
+            "--reasoning-effort",
+            "high",
+        ):
             self.assertIn(flag, argv)
         self.assertNotIn("--disable-shell", argv)
         self.assertNotIn("--disable-write", argv)
@@ -214,6 +236,37 @@ class ArgvBuilderTests(unittest.TestCase):
 
 class AdapterTransportTests(unittest.TestCase):
     """End-to-end adapter runs with a mocked provider subprocess."""
+
+    def test_provider_child_environment_drops_unrelated_secrets(self) -> None:
+        secret_names = (
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "CODE_MOWER_CLOUD_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "META_API_KEY",
+        )
+        ambient = {name: f"secret-{name}" for name in secret_names}
+        ambient.update(
+            {
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "HOME": "/tmp/provider-home",
+                "CODEX_HOME": "/tmp/codex-home",
+            }
+        )
+
+        with mock.patch.dict(os.environ, ambient, clear=True):
+            for provider in ("codex", "claude", "antigravity", "muse"):
+                with self.subTest(provider=provider):
+                    child_env = campaign_adapters.build_adapter_child_env(provider)
+                    self.assertEqual(child_env["PATH"], ambient["PATH"])
+                    self.assertEqual(child_env["HOME"], ambient["HOME"])
+                    self.assertEqual(
+                        child_env.get("CODEX_HOME"),
+                        ambient["CODEX_HOME"] if provider == "codex" else None,
+                    )
+                    for secret_name in secret_names:
+                        self.assertNotIn(secret_name, child_env)
 
     def _run(
         self,
@@ -242,20 +295,26 @@ class AdapterTransportTests(unittest.TestCase):
     def test_codex_reads_last_message_file_and_ignores_stdout(self) -> None:
         seen: dict[str, Any] = {}
 
-        def runner(argv: Any, prompt_input: Any, timeout: int, workdir: Path) -> Any:
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
             seen["argv"] = list(argv)
             seen["prompt"] = prompt_input
             seen["timeout"] = timeout
+            seen["env"] = child_env
             # Secret-looking stdout must never reach the output file: the
             # candidate comes only from the provider-written message file.
             last = Path(argv[argv.index("--output-last-message") + 1])
             last.write_text(json.dumps(_adoption_result("codex")), encoding="utf-8")
-            return subprocess.CompletedProcess(list(argv), 0, stdout="sk-antigravity SECRET", stderr="")
+            return subprocess.CompletedProcess(
+                list(argv), 0, stdout="sk-antigravity SECRET", stderr=""
+            )
 
         code, output, _tmp = self._run("codex", runner)
         self.assertEqual(code, 0)
         self.assertIsNotNone(seen["prompt"])
         self.assertIn("exec", seen["argv"])
+        self.assertIn("PATH", seen["env"])
         self.assertTrue(output.is_file())
         stored = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(stored, _adoption_result("codex"))
@@ -264,10 +323,13 @@ class AdapterTransportTests(unittest.TestCase):
     def test_claude_reads_structured_output_envelope(self) -> None:
         seen: dict[str, Any] = {}
 
-        def runner(argv: Any, prompt_input: Any, timeout: int, workdir: Path) -> Any:
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
             seen["argv"] = list(argv)
             seen["prompt"] = prompt_input
             seen["timeout"] = timeout
+            seen["env"] = child_env
             stdout = json.dumps(
                 {
                     "is_error": False,
@@ -288,13 +350,18 @@ class AdapterTransportTests(unittest.TestCase):
     def test_antigravity_uses_prompt_file_not_stdin(self) -> None:
         seen: dict[str, Any] = {}
 
-        def runner(argv: Any, prompt_input: Any, timeout: int, workdir: Path) -> Any:
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
             seen["argv"] = list(argv)
             seen["prompt"] = prompt_input
             seen["timeout"] = timeout
+            seen["env"] = child_env
             prompt_files = list(Path(workdir).glob("*.txt"))
             self.assertEqual(len(prompt_files), 1)
-            self.assertIn("release-qualification", prompt_files[0].read_text(encoding="utf-8").lower())
+            self.assertIn(
+                "release-qualification", prompt_files[0].read_text(encoding="utf-8").lower()
+            )
             return subprocess.CompletedProcess(
                 list(argv), 0, stdout=json.dumps(_adoption_result("antigravity")), stderr=""
             )
@@ -310,9 +377,12 @@ class AdapterTransportTests(unittest.TestCase):
     def test_muse_reads_jsonl_events_with_prompt_file(self) -> None:
         seen: dict[str, Any] = {}
 
-        def runner(argv: Any, prompt_input: Any, timeout: int, workdir: Path) -> Any:
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
             seen["argv"] = list(argv)
             seen["stdin"] = prompt_input
+            seen["env"] = child_env
             prompt_files = list(Path(workdir).glob("*.txt"))
             self.assertEqual(len(prompt_files), 1)
             event = json.dumps(
@@ -340,10 +410,44 @@ class AdapterTransportTests(unittest.TestCase):
         self.assertTrue(output.is_file())
         self.assertEqual(json.loads(output.read_text(encoding="utf-8")), _adoption_result("muse"))
 
+    def test_muse_explicit_api_key_uses_stdin_not_child_environment(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            seen["stdin"] = prompt_input
+            seen["env"] = child_env
+            event = json.dumps(
+                {
+                    "payload_type": "run.output.delta",
+                    "payload": {"text": json.dumps(_adoption_result("muse"))},
+                }
+            )
+            return subprocess.CompletedProcess(list(argv), 0, stdout=event + "\n", stderr="")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "META_API_KEY": "muse-secret-canary",
+                campaign_adapters.MUSE_AMBIENT_HOME_ENV: "0",
+            },
+            clear=False,
+        ):
+            code, output, _tmp = self._run("muse", runner)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["stdin"], "muse-secret-canary")
+        self.assertNotIn("META_API_KEY", seen["env"])
+        self.assertNotIn("muse-secret-canary", json.dumps(seen["env"]))
+        self.assertEqual(json.loads(output.read_text(encoding="utf-8")), _adoption_result("muse"))
+
     def test_inner_timeout_reaches_provider_runner(self) -> None:
         seen: dict[str, Any] = {}
 
-        def runner(argv: Any, prompt_input: Any, timeout: int, workdir: Path) -> Any:
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
             seen["timeout"] = timeout
             last = Path(argv[argv.index("--output-last-message") + 1])
             last.write_text(json.dumps(_adoption_result("codex")), encoding="utf-8")
@@ -385,7 +489,9 @@ class AdapterFailureTests(unittest.TestCase):
         return code, output
 
     def test_provider_timeout_fails_closed(self) -> None:
-        def runner(argv: Any, prompt_input: Any, timeout: int, workdir: Path) -> Any:
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
             raise subprocess.TimeoutExpired(list(argv), timeout)
 
         code, output = self._run_raw("codex", runner)
@@ -398,16 +504,23 @@ class AdapterFailureTests(unittest.TestCase):
         self.assertFalse(output.is_file())
 
     def test_garbage_result_is_rejected(self) -> None:
-        def runner(argv: Any, prompt_input: Any, timeout: int, workdir: Path) -> Any:
-            return subprocess.CompletedProcess(list(argv), 0, stdout="not json at all {{{", stderr="")
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            return subprocess.CompletedProcess(
+                list(argv), 0, stdout="not json at all {{{", stderr=""
+            )
 
-        code, output = self._run_raw("antigravity", runner,
-                                     env={campaign_adapters.ANTIGRAVITY_AMBIENT_HOME_ENV: "1"})
+        code, output = self._run_raw(
+            "antigravity", runner, env={campaign_adapters.ANTIGRAVITY_AMBIENT_HOME_ENV: "1"}
+        )
         self.assertNotEqual(code, 0)
         self.assertFalse(output.is_file())
 
     def test_mismatched_provider_is_rejected(self) -> None:
-        def runner(argv: Any, prompt_input: Any, timeout: int, workdir: Path) -> Any:
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
             last = Path(argv[argv.index("--output-last-message") + 1])
             last.write_text(json.dumps(_adoption_result("claude")), encoding="utf-8")
             return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
@@ -417,7 +530,9 @@ class AdapterFailureTests(unittest.TestCase):
         self.assertFalse(output.is_file())
 
     def test_mismatched_tag_is_rejected(self) -> None:
-        def runner(argv: Any, prompt_input: Any, timeout: int, workdir: Path) -> Any:
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
             last = Path(argv[argv.index("--output-last-message") + 1])
             last.write_text(
                 json.dumps(_adoption_result("codex", release_tag="v9.9.9")), encoding="utf-8"
@@ -475,7 +590,13 @@ class AdapterFailureTests(unittest.TestCase):
             output = tmp / "result.json"
             calls: list[Any] = []
 
-            def runner(argv: Any, prompt_input: Any, timeout: int, workdir: Path) -> Any:
+            def runner(
+                argv: Any,
+                prompt_input: Any,
+                timeout: int,
+                workdir: Path,
+                child_env: Any,
+            ) -> Any:
                 calls.append(argv)
                 return _ok(argv)
 

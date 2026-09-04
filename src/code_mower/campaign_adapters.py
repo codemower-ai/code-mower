@@ -63,6 +63,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from code_mower import gemini_cli_audit_pr as code_mower_gemini_cli
     from code_mower import muse_cli_audit_pr as code_mower_muse_cli
+    from code_mower.provider_runners import build_allowlisted_child_env
     from code_mower.release_qualify import (
         _parse_exact_package_spec,
         _validate_qualification_context,
@@ -74,6 +75,7 @@ if __package__ in {None, ""}:
 else:
     from . import gemini_cli_audit_pr as code_mower_gemini_cli
     from . import muse_cli_audit_pr as code_mower_muse_cli
+    from .provider_runners import build_allowlisted_child_env
     from .release_qualify import (
         _parse_exact_package_spec,
         _validate_qualification_context,
@@ -113,7 +115,7 @@ CLAUDE_SANDBOX_SETTINGS: dict[str, Any] = {
         "allowUnsandboxedCommands": False,
         "filesystem": {"denyRead": ["~"], "denyWrite": ["~"]},
         "network": {"allowedDomains": ["pypi.org", "files.pythonhosted.org"]},
-    }
+    },
 }
 ANTIGRAVITY_MODEL_ENV_NAMES = ("CODE_MOWER_ANTIGRAVITY_MODEL", "ANTIGRAVITY_MODEL")
 ANTIGRAVITY_AMBIENT_HOME_ENV = "ANTIGRAVITY_CLI_USE_AMBIENT_HOME"
@@ -121,6 +123,24 @@ MUSE_MODEL_ENV_NAMES = ("CODE_MOWER_MUSE_MODEL", "MUSE_MODEL", "META_MUSE_MODEL"
 MUSE_REASONING_ENV_NAMES = ("CODE_MOWER_MUSE_REASONING_EFFORT", "MUSE_REASONING_EFFORT")
 MUSE_AMBIENT_HOME_ENV = "MUSE_CLI_USE_AMBIENT_HOME"
 MUSE_DEFAULT_MAX_MODEL_STEPS = 12
+ADAPTER_ENV_ALLOWLIST = (
+    "PATH",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+)
 
 #: Guidance schema handed to providers with structured-output support (Codex
 #: ``--output-schema``, Claude ``--json-schema``). Best effort only: the
@@ -240,7 +260,7 @@ def build_qualification_prompt(
             f"2. Install the starting version with `.venv/bin/python -m pip install "
             f"{package_identity}=={starting_version}` to rehearse "
             f"an upgrade from exactly that version.\n"
-            f"3. Upgrade with `.venv/bin/python -m pip install \"{package_spec}\"`."
+            f'3. Upgrade with `.venv/bin/python -m pip install "{package_spec}"`.'
         )
     else:
         install_plan = (
@@ -248,7 +268,7 @@ def build_qualification_prompt(
             "`python3 -m venv .venv`. Use only `.venv/bin/python` and installed "
             "entry points for the remaining steps.\n"
             f"2. Install the exact release with `.venv/bin/python -m pip install "
-            f"\"{package_spec}\"`. No other version is acceptable."
+            f'"{package_spec}"`. No other version is acceptable.'
         )
     lines = [
         f"You are the {provider} release-qualification agent for Code Mower.",
@@ -290,14 +310,18 @@ def build_qualification_prompt(
         "Rules: schema is code_mower.adoptionResult.v1; timestamp_utc is a UTC",
         "timestamp like 2026-09-04T08:00:00Z; qualification_context is one of",
         "cold_install, upgrade, unknown; execution_state is executed;",
-        "ending_version equals normalized_version on pass/pass_with_warnings;",
+        f"ending_version is exactly {normalized_version}, without a leading v,",
+        "on pass/pass_with_warnings (and is empty on an incomplete run);",
         "host_class is one of local, ci, github_actions, unknown;",
         "runtime_class is unknown or python_<major>.<minor>; provider and",
         "executor are lowercase safe identifiers; steps is a non-empty list of",
         "{id, status, elapsed_seconds, warning_count, owner_action_count} with",
-        "status one of pass, fail, warn, unavailable, planned; outcome is fail",
-        "if any step failed, pass_with_warnings if any step warned or was",
-        "unavailable, otherwise pass. No extra fields, no prose, no fences.",
+        "status one of pass, fail, warn, unavailable, planned. A step with a",
+        "nonzero warning_count must use status warn. Derive outcome only from",
+        "the step status strings: fail if any status is fail;",
+        "pass_with_warnings if any status is warn or unavailable; otherwise",
+        "pass. In particular, all-pass steps require outcome pass. No extra",
+        "fields, no prose, no fences.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -549,9 +573,7 @@ def validate_bound_result(
     """
     if not isinstance(candidate, dict):
         raise ValueError("provider did not emit a JSON result object")
-    validate_adoption_result_payload(
-        candidate, expected_package_identity=package_identity
-    )
+    validate_adoption_result_payload(candidate, expected_package_identity=package_identity)
     if candidate.get("provider") != provider:
         raise ValueError("provider result identity mismatch")
     if candidate.get("release_tag") != release_tag:
@@ -580,10 +602,11 @@ def _write_result_atomically(output_path: Path, result: Mapping[str, Any]) -> No
     os.replace(staging, output_path)
 
 
-#: ``(argv, prompt_input, timeout, workdir) -> CompletedProcess``. Never uses
-#: a shell; stdout/stderr are returned for transient parsing only.
+#: ``(argv, prompt_input, timeout, workdir, child_env) -> CompletedProcess``.
+#: Never uses a shell; stdout/stderr are returned for transient parsing only.
 ProviderRunner = Callable[
-    [Sequence[str], str | None, int, Path], "subprocess.CompletedProcess[str]"
+    [Sequence[str], str | None, int, Path, Mapping[str, str]],
+    "subprocess.CompletedProcess[str]",
 ]
 
 
@@ -592,8 +615,9 @@ def run_provider_command(
     prompt_input: str | None,
     timeout_seconds: int,
     workdir: Path,
+    child_env: Mapping[str, str],
 ) -> subprocess.CompletedProcess[str]:
-    """Default argv-only provider runner. No shell, no environment mutation."""
+    """Default argv-only provider runner with an explicit minimal environment."""
     return subprocess.run(
         list(argv),
         input=prompt_input,
@@ -602,6 +626,24 @@ def run_provider_command(
         check=False,
         timeout=timeout_seconds,
         cwd=str(workdir),
+        env=dict(child_env),
+    )
+
+
+def build_adapter_child_env(provider: str) -> dict[str, str]:
+    """Return the minimal ambient environment required by one provider CLI.
+
+    Provider API keys, GitHub tokens, Code Mower cloud tokens, and unrelated
+    shell state never reach the child. Ambient home paths are retained only so
+    the CLI process can use its existing local login. Codex also supports an
+    explicitly relocated ``CODEX_HOME``. Muse's explicit key uses stdin.
+    """
+    allowlist = list(ADAPTER_ENV_ALLOWLIST)
+    if provider == "codex":
+        allowlist.append("CODEX_HOME")
+    return build_allowlisted_child_env(
+        allowlist,
+        preserve_ambient_home=True,
     )
 
 
@@ -701,6 +743,7 @@ def run_campaign_adapter(
         qualification_context=qualification_context,
         starting_version=starting_version,
     )
+    child_env = build_adapter_child_env(provider)
 
     muse_api_key = ""
     if provider == "antigravity" and not _env_flag_enabled(ANTIGRAVITY_AMBIENT_HOME_ENV):
@@ -726,8 +769,7 @@ def run_campaign_adapter(
             if provider == "codex":
                 schema_path = workdir / "adoption-result.schema.json"
                 schema_path.write_text(
-                    json.dumps(ADOPTION_RESULT_JSON_SCHEMA, indent=2, sort_keys=True)
-                    + "\n",
+                    json.dumps(ADOPTION_RESULT_JSON_SCHEMA, indent=2, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
                 last_message_path = workdir / "last-message.md"
@@ -739,7 +781,7 @@ def run_campaign_adapter(
                     workdir=str(workdir),
                     model=codex_model,
                 )
-                completed = provider_runner(argv, prompt, timeout_seconds, workdir)
+                completed = provider_runner(argv, prompt, timeout_seconds, workdir, child_env)
                 if completed.returncode != 0:
                     return _fail(
                         provider,
@@ -762,12 +804,10 @@ def run_campaign_adapter(
                     claude_bin=resolved_bin,
                     model=claude_model,
                     max_budget_usd=budget,
-                    schema_json=json.dumps(
-                        ADOPTION_RESULT_JSON_SCHEMA, separators=(",", ":")
-                    ),
+                    schema_json=json.dumps(ADOPTION_RESULT_JSON_SCHEMA, separators=(",", ":")),
                     workspace_dir=str(workdir),
                 )
-                completed = provider_runner(argv, prompt, timeout_seconds, workdir)
+                completed = provider_runner(argv, prompt, timeout_seconds, workdir, child_env)
                 if completed.returncode != 0:
                     return _fail(
                         provider,
@@ -785,7 +825,7 @@ def run_campaign_adapter(
                     timeout_seconds=timeout_seconds,
                     model=agy_model,
                 )
-                completed = provider_runner(argv, None, timeout_seconds, workspace_dir)
+                completed = provider_runner(argv, None, timeout_seconds, workspace_dir, child_env)
                 if completed.returncode != 0:
                     return _fail(
                         provider,
@@ -808,7 +848,9 @@ def run_campaign_adapter(
                 # The API key travels only on stdin to the provider CLI; it is
                 # never written to disk, the prompt, or campaign state.
                 stdin_text: str | None = muse_api_key if muse_api_key else None
-                completed = provider_runner(argv, stdin_text, timeout_seconds, workspace_dir)
+                completed = provider_runner(
+                    argv, stdin_text, timeout_seconds, workspace_dir, child_env
+                )
                 if completed.returncode != 0:
                     return _fail(
                         provider,
