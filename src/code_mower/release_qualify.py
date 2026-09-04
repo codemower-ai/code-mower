@@ -36,7 +36,9 @@ else:
 
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[ab]\d+|rc\d+)?$")
-VALID_CONTEXTS = {"cold_install", "unknown"}
+VALID_CONTEXTS = {"cold_install", "upgrade", "unknown"}
+VALID_STEP_STATUSES = {"pass", "fail", "warn", "unavailable", "planned"}
+VALID_EXECUTION_STATES = {"planned", "executed"}
 
 
 @dataclass
@@ -48,6 +50,10 @@ class StepResult:
     elapsed_seconds: float
     warning_count: int
     owner_action_count: int
+
+    def __post_init__(self) -> None:
+        if self.status not in VALID_STEP_STATUSES:
+            self.status = "fail"
 
 
 @dataclass
@@ -66,6 +72,7 @@ class AdoptionResult:
     executor: str
     host_class: str
     runtime_class: str
+    execution_state: str
     elapsed_seconds: float
     outcome: str
     steps: list[dict[str, Any]]
@@ -107,6 +114,20 @@ def _validate_starting_version(value: str) -> None:
         raise ValueError("starting_version must be empty or normalized version")
 
 
+def _version_key(value: str) -> tuple[int, int, int, int, int]:
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?", value)
+    if not match:
+        raise ValueError("version must be normalized")
+    stage_rank = {"a": 0, "b": 1, "rc": 2, None: 3}[match.group(4)]
+    return (
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3)),
+        stage_rank,
+        int(match.group(5) or 0),
+    )
+
+
 def _validate_qualification_context(value: str) -> None:
     """Validate qualification context is in closed set."""
     if value not in VALID_CONTEXTS:
@@ -144,14 +165,20 @@ def _validate_tag_format(release_tag: str) -> tuple[bool, str, str]:
     return True, normalized, ""
 
 
-def _aggregate_outcome(steps: list[StepResult]) -> str:
+def _aggregate_outcome(steps: list[StepResult], *, execution_state: str = "executed") -> str:
     """Aggregate step statuses to overall outcome."""
+    if execution_state not in VALID_EXECUTION_STATES:
+        return "fail"
     has_fail = any(s.status == "fail" for s in steps)
     has_warn = any(s.status == "warn" for s in steps)
     has_unavailable = any(s.status == "unavailable" for s in steps)
     has_planned = any(s.status == "planned" for s in steps)
 
-    if has_fail or has_planned:
+    if has_fail:
+        return "fail"
+    if execution_state == "planned":
+        return "incomplete"
+    if has_planned:
         return "fail"
     if has_warn or has_unavailable:
         return "pass_with_warnings"
@@ -177,8 +204,6 @@ def _run_doctor_check(config_path: Path, repo_slug: str, config_source: str) -> 
             cloud=True,
         )
         status = report.status
-        if status not in {"pass", "fail", "warn", "unavailable"}:
-            status = "fail"
         warnings = report.warnings
         actions = report.owner_actions
     except (OSError, ValueError):
@@ -316,8 +341,18 @@ def run_release_qualification(
     if not qualification_context:
         qualification_context = "unknown"
     _validate_qualification_context(qualification_context)
+    if qualification_context == "upgrade" and not starting_version:
+        raise ValueError("starting_version is required for upgrade qualification")
+    if qualification_context != "upgrade" and starting_version:
+        raise ValueError("starting_version is only valid for upgrade qualification")
+    if (
+        qualification_context == "upgrade"
+        and _version_key(starting_version) >= _version_key(normalized_version)
+    ):
+        raise ValueError("starting_version must be lower than the target version")
 
     ending_version = ""
+    execution_state = "planned" if dry_run else "executed"
     config_path = _resolve_config_path(repo_path)
     config_source = f"file:{config_path}" if config_path.is_file() else "default"
 
@@ -353,14 +388,28 @@ def run_release_qualification(
         try:
             rehearsal_result = run_package_install_rehearsal(
                 package_spec=package_spec,
+                preinstall_package_spec=(
+                    f"code-mower=={starting_version}"
+                    if qualification_context == "upgrade"
+                    else ""
+                ),
                 repo_path=repo_path,
                 timeout=timeout,
                 allow_package_index=True,
             )
             rehearsal_version_raw = rehearsal_result.get("version", "")
             rehearsal_version = _normalize_version(rehearsal_version_raw)
+            preinstall_version = _normalize_version(
+                rehearsal_result.get("preinstall_version", "")
+            )
             ending_version = rehearsal_version
-            if rehearsal_version != normalized_version:
+            if (
+                rehearsal_version != normalized_version
+                or (
+                    qualification_context == "upgrade"
+                    and preinstall_version != starting_version
+                )
+            ):
                 rehearsal_status = "fail"
             else:
                 rehearsal_status = "pass"
@@ -377,7 +426,7 @@ def run_release_qualification(
             )
         )
 
-    outcome = _aggregate_outcome(steps)
+    outcome = _aggregate_outcome(steps, execution_state=execution_state)
     elapsed = time.time() - start_time
 
     result = AdoptionResult(
@@ -393,6 +442,7 @@ def run_release_qualification(
         executor=executor,
         host_class=_detect_host_class(),
         runtime_class=_detect_runtime_class(),
+        execution_state=execution_state,
         elapsed_seconds=round(elapsed, 2),
         outcome=outcome,
         steps=[
@@ -509,7 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Package: {result['package_identity']} {result['normalized_version']}")
                 print(f"Context: {result['qualification_context']}")
                 print(f"Steps: {len(result['steps'])}")
-            return 0 if result["outcome"] in ("pass", "pass_with_warnings") else 1
+            return 0 if result["outcome"] != "fail" else 1
         except ValueError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
