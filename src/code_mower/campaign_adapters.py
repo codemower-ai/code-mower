@@ -576,6 +576,8 @@ def validate_bound_result(
     validate_adoption_result_payload(candidate, expected_package_identity=package_identity)
     if candidate.get("provider") != provider:
         raise ValueError("provider result identity mismatch")
+    if candidate.get("executor") != provider:
+        raise ValueError("provider result identity mismatch")
     if candidate.get("release_tag") != release_tag:
         raise ValueError("provider result identity mismatch")
     if candidate.get("qualification_context") != qualification_context:

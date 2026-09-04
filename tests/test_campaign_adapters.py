@@ -35,7 +35,7 @@ def _adoption_result(provider: str = "codex", **overrides: Any) -> dict[str, Any
         "starting_version": "",
         "ending_version": "1.0.0",
         "provider": provider,
-        "executor": f"{provider}_cli",
+        "executor": provider,
         "host_class": "local",
         "runtime_class": "python_3.12",
         "execution_state": "executed",
@@ -523,6 +523,21 @@ class AdapterFailureTests(unittest.TestCase):
         ) -> Any:
             last = Path(argv[argv.index("--output-last-message") + 1])
             last.write_text(json.dumps(_adoption_result("claude")), encoding="utf-8")
+            return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+        code, output = self._run_raw("codex", runner)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.is_file())
+
+    def test_mismatched_executor_is_rejected(self) -> None:
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            last = Path(argv[argv.index("--output-last-message") + 1])
+            last.write_text(
+                json.dumps(_adoption_result("codex", executor="claude")),
+                encoding="utf-8",
+            )
             return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
 
         code, output = self._run_raw("codex", runner)
