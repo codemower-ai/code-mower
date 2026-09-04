@@ -1036,9 +1036,21 @@ def _poll_github_comments(
 ) -> tuple[list[dict[str, Any]], str]:
     if not repo_slug or not issue_number:
         return [], _safe_error("github_poll_unavailable")
-    data, error = gh_json_runner(
-        ["issue", "view", str(issue_number), "--repo", repo_slug, "--json", "comments"]
-    )
+    try:
+        result = gh_json_runner(
+            ["issue", "view", str(issue_number), "--repo", repo_slug, "--json", "comments"]
+        )
+    except (
+        OSError,
+        ValueError,
+        lane_status.LaneStatusUnavailable,
+        subprocess.TimeoutExpired,
+    ):
+        return [], _safe_error("github_poll_unavailable")
+    if isinstance(result, tuple) and len(result) == 2:
+        data, error = result
+    else:
+        data, error = result, ""
     if error:
         return [], _safe_error("github_poll_unavailable")
     if not isinstance(data, dict):
@@ -3262,6 +3274,17 @@ def campaign_watch(
 
     # Initial check / poll at t=0
     start_time = time_fn()
+    deadline = start_time + validated_timeout
+
+    def watch_gh_json(args: Sequence[str]) -> Any:
+        """Bound production GitHub calls to this watch's remaining wall time."""
+        if gh_json_runner is lane_status.run_gh_json:
+            remaining = deadline - time_fn()
+            if remaining <= 0:
+                return {"comments": []}
+            return lane_status.run_gh_json(args, timeout=remaining)
+        return gh_json_runner(args)
+
     polls = 0
     all_transitions: list[dict[str, Any]] = []
     current_campaign: dict[str, Any] = dict(target_campaign)
@@ -3299,7 +3322,7 @@ def campaign_watch(
                 campaigns_dir=campaigns_dir,
                 which_fn=which_fn,
                 command_runner=command_runner,
-                gh_json_runner=gh_json_runner,
+                gh_json_runner=watch_gh_json,
                 adapter_runner=adapter_runner,
                 env=env,
                 repo_slug_override=watch_repo_slug,
@@ -3375,7 +3398,7 @@ def campaign_watch(
                         campaigns_dir=campaigns_dir,
                         which_fn=which_fn,
                         command_runner=command_runner,
-                        gh_json_runner=gh_json_runner,
+                        gh_json_runner=watch_gh_json,
                         adapter_runner=adapter_runner,
                         env=env,
                         repo_slug_override=watch_repo_slug,

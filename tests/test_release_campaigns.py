@@ -9466,6 +9466,66 @@ class CampaignWatchTests(unittest.TestCase):
         self.assertIn("Retry guidance: re-run 'code-mower release campaign watch", rendered)
         self.assertEqual(len(self.clock.sleep_calls), 4)
 
+    def test_github_poll_accepts_production_json_shape_and_safe_failure(self) -> None:
+        comments, error = release_campaigns._poll_github_comments(
+            "codemower/code-mower",
+            123,
+            gh_json_runner=lambda _args: {
+                "comments": [{"body": "complete", "author": {"login": "trusted-bot"}}]
+            },
+        )
+        self.assertEqual(error, "")
+        self.assertEqual(comments[0]["body"], "complete")
+
+        def unavailable(_args: Any) -> Any:
+            raise release_campaigns.lane_status.LaneStatusUnavailable("private detail")
+
+        comments, error = release_campaigns._poll_github_comments(
+            "codemower/code-mower",
+            123,
+            gh_json_runner=unavailable,
+        )
+        self.assertEqual(comments, [])
+        self.assertEqual(error, "github_poll_unavailable")
+
+    def test_watch_bounds_production_github_calls_by_remaining_time(self) -> None:
+        self._seed_campaign(
+            providers=[
+                {
+                    "provider": "devin",
+                    "lane_id": "fake_hosted",
+                    "driver": "hosted_bridge",
+                    "state": "running",
+                    "environment": "hosted",
+                    "elapsed_seconds": 0.0,
+                    "dispatch_ref": {"issue_number": "123"},
+                    "idempotency_key": "idemp-devin",
+                }
+            ]
+        )
+        with mock.patch.object(
+            release_campaigns.lane_status,
+            "_run_gh_json",
+            return_value={"comments": []},
+        ) as run_gh_json:
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                issue="123",
+                interval=10.0,
+                timeout=20.0,
+                emit_json=True,
+                time_fn=self.clock.time,
+                sleep_fn=self.clock.sleep,
+            )
+
+        self.assertEqual(summary["stop_reason"], "timeout")
+        self.assertEqual(run_gh_json.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["timeout"] for call in run_gh_json.call_args_list],
+            [20.0, 10.0],
+        )
+
     def test_watch_interrupt_stop(self) -> None:
         """Watch handles KeyboardInterrupt gracefully, stops with stop_reason='interrupt' and exit 130."""
         self._seed_campaign()
