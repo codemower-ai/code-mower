@@ -767,7 +767,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     campaign.add_argument(
         "--repo-slug",
         default="",
-        help="Optional repository slug (OWNER/REPO)",
+        help=(
+            "Repository slug (OWNER/REPO) used for hosted dispatch and polling. "
+            "May be supplied later to fill a campaign created without one; it can "
+            "never change a slug the campaign already carries."
+        ),
     )
     campaign.add_argument(
         "--issue",

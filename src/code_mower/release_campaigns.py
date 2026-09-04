@@ -986,12 +986,31 @@ def initialize_campaign(
     _validate_safe_identifier(re.sub(r"[-.]", "_", campaign_id), "campaign_id")
 
     provider_keys = list(providers) if providers else list(DEFAULT_CAMPAIGN_PROVIDERS)
+
+    # Canonicalize before any participant is constructed. Two spellings of one
+    # provider -- an exact repeat, or two aliases of the same lane -- would
+    # otherwise become two participants sharing a single idempotency key and a
+    # single result file path, so one provider's evidence would be counted
+    # twice toward the campaign. Fail closed instead of deduplicating silently:
+    # the caller asked for something the campaign cannot represent.
+    resolved_providers: list[tuple[str, ProviderLane]] = []
+    seen_providers: set[str] = set()
+    for p_name in provider_keys:
+        canonical_name, lane = resolve_provider_lane(p_name)
+        if canonical_name in seen_providers:
+            raise ValueError(
+                f"duplicate release campaign provider {canonical_name!r}: it was named "
+                "more than once, directly or through an alias; list each provider "
+                "exactly once"
+            )
+        seen_providers.add(canonical_name)
+        resolved_providers.append((canonical_name, lane))
+
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     environment = _detect_environment()
 
     campaign_providers: list[dict[str, Any]] = []
-    for p_name in provider_keys:
-        canonical_name, lane = resolve_provider_lane(p_name)
+    for canonical_name, lane in resolved_providers:
         idemp_key = _compute_idempotency_key(
             campaign_id, canonical_name, release_tag, qualification_context, starting_version
         )
@@ -1689,6 +1708,7 @@ def _existing_campaign_conflict(
     qualification_context: str,
     starting_version: str,
     providers: Sequence[str],
+    repo_slug: str = "",
 ) -> str:
     """Report a bounded conflict between an existing campaign and creation arguments.
 
@@ -1700,7 +1720,21 @@ def _existing_campaign_conflict(
     is indistinguishable from an unsupplied flag, so it is not treated as a
     conflicting request on its own (the rendered output always states the
     stored campaign's actual context).
+
+    ``repo_slug`` is the one field an existing campaign may still be *completed*
+    with: a campaign created without a repository has nowhere to dispatch, and
+    supplying the slug later fills the empty stored value (see
+    ``campaign_command``). Overwriting a slug the campaign already carries is a
+    different matter -- it would repoint an in-flight campaign's dispatch and
+    polling at another repository, so a mismatch against a non-empty stored slug
+    is rejected here instead.
     """
+    stored_slug = str(campaign.get("repo_slug") or "")
+    if repo_slug and stored_slug and repo_slug != stored_slug:
+        return (
+            f"--repo-slug {repo_slug!r} does not match existing campaign repo slug "
+            f"{stored_slug!r}; an existing campaign's repository is fixed once set"
+        )
     if (
         qualification_context
         and qualification_context != "cold_install"
@@ -1846,6 +1880,7 @@ def campaign_command(
             qualification_context=qualification_context,
             starting_version=starting_version,
             providers=providers,
+            repo_slug=repo_slug,
         )
         if conflict:
             print(f"error: {conflict}", file=sys.stderr)
@@ -1860,6 +1895,18 @@ def campaign_command(
         if retry_error:
             print(f"error: {retry_error}", file=sys.stderr)
             return 1
+        if repo_slug and not str(existing.get("repo_slug") or ""):
+            # A campaign created without a repository slug has nowhere to post a
+            # hosted dispatch, and its provider set is fixed at creation -- so
+            # the slug is supplied here instead. Every rejection above has
+            # already been made, so this is the first mutation: fill the empty
+            # value and persist it *before* advancing, so the dispatch that uses
+            # it and every later poll that answers it read the same stored
+            # repository. A non-empty stored slug is never rewritten (a mismatch
+            # is rejected as a conflict), so this cannot change an existing
+            # campaign's identity.
+            existing["repo_slug"] = repo_slug
+            save_campaign(existing, campaigns_dir)
         updated = dispatch_or_advance_campaign(
             existing,
             apply=apply,

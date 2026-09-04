@@ -3007,5 +3007,294 @@ class CampaignStatusIdentifierTests(unittest.TestCase):
             self.assertEqual(payload["release_tag"], "v1.0.0")
 
 
+
+def _capturing_dispatch_argv_runner(calls: list[list[str]], *, returncode: int = 0):
+    """A gh command runner that records the full argv of every dispatch call."""
+
+    def _run(args, **kwargs):
+        argv = list(args)
+        calls.append(argv)
+
+        class MockCompleted:
+            pass
+
+        completed = MockCompleted()
+        completed.returncode = returncode
+        completed.stdout = ""
+        completed.stderr = ""
+        return completed
+
+    return _run
+
+
+class DuplicateCampaignProviderTests(unittest.TestCase):
+    """One provider may appear at most once in a campaign, under any spelling.
+
+    Two participants for one canonical provider would share a single
+    idempotency key and a single result file path, so one provider's evidence
+    would satisfy both entries and be counted twice toward the campaign.
+    """
+
+    def test_exact_duplicate_provider_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["claude", "claude"],
+            )
+        message = str(ctx.exception)
+        self.assertIn("duplicate release campaign provider", message)
+        self.assertIn("claude", message)
+
+    def test_alias_collision_is_rejected(self) -> None:
+        """Two different names for one canonical provider are still one provider."""
+        for names, canonical in (
+            (["claude", "claude_code"], "claude"),
+            (["cursor", "grok_bot"], "cursor_bugbot"),
+            (["codex", "cursor_bugbot", "cursor"], "cursor_bugbot"),
+        ):
+            with self.subTest(names=names):
+                with self.assertRaises(ValueError) as ctx:
+                    release_campaigns.initialize_campaign(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=names,
+                    )
+                message = str(ctx.exception)
+                self.assertIn("duplicate release campaign provider", message)
+                self.assertIn(canonical, message)
+
+    def test_distinct_providers_are_accepted_and_canonicalized(self) -> None:
+        """The normal case: distinct providers keep distinct keys and result paths."""
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["claude", "codex", "cursor"],
+        )
+        names = [p["provider"] for p in campaign.providers]
+        self.assertEqual(names, ["claude", "codex", "cursor_bugbot"])
+        keys = {p["idempotency_key"] for p in campaign.providers}
+        self.assertEqual(len(keys), 3)
+        result_files = {
+            f"{campaign.campaign_id}_{p['provider']}.json" for p in campaign.providers
+        }
+        self.assertEqual(len(result_files), 3)
+
+    def test_default_provider_set_has_no_duplicates(self) -> None:
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+        )
+        names = [p["provider"] for p in campaign.providers]
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_cli_rejects_duplicate_providers_without_creating_a_campaign(self) -> None:
+        """CLI-facing: the duplicate is an explicit error, not a silently deduped campaign."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            adapter_mock = mock.MagicMock()
+            cmd_runner_mock = mock.MagicMock()
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["claude", "claude_code"],
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    adapter_runner=adapter_mock,
+                    command_runner=cmd_runner_mock,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertIn("duplicate release campaign provider", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            adapter_mock.assert_not_called()
+            cmd_runner_mock.assert_not_called()
+            self.assertEqual(release_campaigns.list_campaigns(campaigns_dir), [])
+
+
+class CampaignRepoSlugSupplyTests(unittest.TestCase):
+    """A campaign created without a repo slug can be completed with one later.
+
+    Filling an empty slug is the only mutation allowed: it makes an otherwise
+    undispatchable campaign dispatchable without changing anything already
+    recorded. A slug that conflicts with a non-empty stored one is refused.
+    """
+
+    _ENV = {"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"}
+
+    def _create_without_slug(self, campaigns_dir: Path) -> dict[str, Any]:
+        ret = release_campaigns.campaign_command(
+            action="create",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_bugbot"],
+            campaigns_dir=campaigns_dir,
+            apply=False,
+            command_runner=mock.MagicMock(),
+            env=self._ENV,
+        )
+        self.assertEqual(ret, 0)
+        created = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+        assert created is not None
+        self.assertEqual(created["repo_slug"], "")
+        return created
+
+    def test_supplied_slug_fills_empty_value_and_dispatches_exactly_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._create_without_slug(campaigns_dir)
+
+            calls: list[list[str]] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            dispatch_kwargs = dict(
+                action="dispatch",
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="42",
+                apply=True,
+                command_runner=_capturing_dispatch_argv_runner(calls),
+                gh_json_runner=mock_gh_json,
+                env=self._ENV,
+            )
+
+            self.assertEqual(release_campaigns.campaign_command(**dispatch_kwargs), 0)
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("--repo", calls[0])
+            self.assertEqual(calls[0][calls[0].index("--repo") + 1], "owner/repo")
+
+            first = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert first is not None
+            self.assertEqual(first["repo_slug"], "owner/repo")
+            self.assertEqual(first["providers"][0]["state"], "running")
+
+            # The filled slug is durable, and repeating the command is idempotent.
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(**dispatch_kwargs)
+
+            self.assertEqual(ret, 0)
+            self.assertEqual(len(calls), 1)
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertEqual(len(release_campaigns.list_campaigns(campaigns_dir)), 1)
+
+            second = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert second is not None
+            self.assertEqual(second["repo_slug"], "owner/repo")
+            self.assertEqual(second["providers"][0]["state"], "running")
+            self.assertEqual(
+                second["providers"][0]["attempted_at"], first["providers"][0]["attempted_at"]
+            )
+            self.assertEqual(
+                second["providers"][0]["dispatch_ref"], first["providers"][0]["dispatch_ref"]
+            )
+            self.assertEqual(
+                second["providers"][0]["idempotency_key"],
+                first["providers"][0]["idempotency_key"],
+            )
+            self.assertEqual(second["created_at"], first["created_at"])
+
+    def test_supplied_slug_persists_from_a_dry_run_resume(self) -> None:
+        """The fill is persisted even when nothing is dispatched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._create_without_slug(campaigns_dir)
+            command_runner = mock.MagicMock()
+
+            ret = release_campaigns.campaign_command(
+                action="resume",
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="42",
+                apply=False,
+                command_runner=command_runner,
+                env=self._ENV,
+            )
+
+            self.assertEqual(ret, 0)
+            command_runner.assert_not_called()
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["repo_slug"], "owner/repo")
+
+    def test_conflicting_slug_is_rejected_without_mutation_or_dispatch(self) -> None:
+        """A non-empty stored slug is never repointed at another repository."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            calls: list[list[str]] = []
+
+            self.assertEqual(
+                release_campaigns.campaign_command(
+                    action="create",
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["cursor_bugbot"],
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                    apply=False,
+                    command_runner=_capturing_dispatch_argv_runner(calls),
+                    env=self._ENV,
+                ),
+                0,
+            )
+            before = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert before is not None
+            self.assertEqual(before["repo_slug"], "owner/repo")
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="dispatch",
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="attacker/repo",
+                    issue="42",
+                    apply=True,
+                    command_runner=_capturing_dispatch_argv_runner(calls),
+                    env=self._ENV,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(calls, [])
+            self.assertIn("does not match existing campaign repo slug", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            after = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            self.assertEqual(after, before)
+
+    def test_repeating_the_same_slug_is_not_a_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self.assertEqual(
+                release_campaigns._existing_campaign_conflict(
+                    {"repo_slug": "owner/repo"},
+                    package_spec="",
+                    qualification_context="cold_install",
+                    starting_version="",
+                    providers=(),
+                    repo_slug="owner/repo",
+                ),
+                "",
+            )
+            self.assertEqual(
+                release_campaigns._existing_campaign_conflict(
+                    {"repo_slug": ""},
+                    package_spec="",
+                    qualification_context="cold_install",
+                    starting_version="",
+                    providers=(),
+                    repo_slug="owner/repo",
+                ),
+                "",
+            )
+            self.assertEqual(campaigns_dir.exists(), False)
+
 if __name__ == "__main__":
     unittest.main()
