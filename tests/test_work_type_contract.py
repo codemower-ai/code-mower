@@ -8,6 +8,7 @@ from pathlib import Path
 from code_mower.cloud_client import (
     CloudBundleError,
     WORK_TYPE_SCHEMA,
+    WORK_TYPE_SUPPORTED_EVENT_TYPES,
     WORK_TYPE_VALUES,
     resolve_work_type_classification,
     validate_cloud_event,
@@ -41,32 +42,66 @@ class WorkTypeContractTests(unittest.TestCase):
             self.assertEqual(validated["dimensions"]["work_type"], "unknown")
             self.assertEqual(validated["dimensions"]["work_type_source"], "unknown")
 
-        for event in payload["conflicting_events"]:
+    def test_author_lane_cannot_count_as_independent_review(self) -> None:
+        for event in _fixture()["self_review_conflict_events"]:
             with self.assertRaisesRegex(CloudBundleError, "independent review"):
                 validate_cloud_event(event)
 
     def test_author_lane_self_review_allowed_when_excluded(self) -> None:
-        event = copy.deepcopy(_fixture()["conflicting_events"][0])
+        event = copy.deepcopy(_fixture()["self_review_conflict_events"][0])
         event["dimensions"]["work_type_attribution"] = "excluded_self_review"
         validated = validate_cloud_event(event)
         self.assertEqual(validated["dimensions"]["work_type_attribution"], "excluded_self_review")
 
-    def test_rejects_conflicting_role_and_attribution(self) -> None:
-        cases = (
-            ({"work_type_attribution": "reviewer_credit"}, "explicit_events", 0),
-            ({"work_type": "quantum-computing"}, "explicit_events", 0),
-        )
-        for overrides, key, index in cases:
-            with self.subTest(overrides=overrides):
-                event = copy.deepcopy(_fixture()[key][index])
-                event["dimensions"].update(overrides)
-                with self.assertRaises(CloudBundleError):
+    def test_unsupported_event_type_rejected(self) -> None:
+        for event in _fixture()["unsupported_event_type_events"]:
+            with self.subTest(event_type=event["event_type"]):
+                with self.assertRaisesRegex(CloudBundleError, "not supported on event_type"):
                     validate_cloud_event(event)
+        # Sanity: the fixture actually targets event types outside the allowlist.
+        for event in _fixture()["unsupported_event_type_events"]:
+            self.assertNotIn(event["event_type"], WORK_TYPE_SUPPORTED_EVENT_TYPES)
+
+    def test_builder_reviewer_role_swaps_rejected(self) -> None:
+        for event in _fixture()["role_mismatch_events"]:
+            with self.subTest(event_type=event["event_type"]):
+                with self.assertRaisesRegex(CloudBundleError, "requires work_type_role"):
+                    validate_cloud_event(event)
+
+    def test_attribution_without_role_rejected(self) -> None:
+        for event in _fixture()["attribution_without_role_events"]:
+            with self.assertRaisesRegex(CloudBundleError, "requires work_type_role"):
+                validate_cloud_event(event)
+
+    def test_provider_and_model_mismatch_rejected(self) -> None:
+        events = _fixture()["identity_mismatch_events"]
+        with self.assertRaisesRegex(CloudBundleError, "work_type_provider"):
+            validate_cloud_event(events[0])
+        with self.assertRaisesRegex(CloudBundleError, "work_type_model"):
+            validate_cloud_event(events[1])
+
+    def test_matching_identities_accepted(self) -> None:
+        event = _fixture()["inferred_events"][0]
+        validated = validate_cloud_event(event)
+        self.assertEqual(validated["dimensions"]["work_type_provider"], validated["tool"]["provider"])
+        self.assertEqual(validated["dimensions"]["work_type_model"], validated["tool"]["model"])
+
+    def test_role_optional_for_work_order_and_productivity_without_guessing(self) -> None:
+        for event in _fixture()["optional_role_events"]:
+            with self.subTest(event_type=event["event_type"]):
+                validated = validate_cloud_event(event)
+                self.assertNotIn("work_type_role", validated["dimensions"])
 
     def test_missing_required_dimension_when_schema_present(self) -> None:
         event = copy.deepcopy(_fixture()["explicit_events"][0])
-        del event["dimensions"]["work_type_role"]
-        with self.assertRaisesRegex(CloudBundleError, "work_type_role"):
+        del event["dimensions"]["work_type"]
+        with self.assertRaisesRegex(CloudBundleError, "work_type"):
+            validate_cloud_event(event)
+
+    def test_rejects_unsupported_work_type_value(self) -> None:
+        event = copy.deepcopy(_fixture()["explicit_events"][0])
+        event["dimensions"]["work_type"] = "quantum-computing"
+        with self.assertRaisesRegex(CloudBundleError, "unsupported work_type"):
             validate_cloud_event(event)
 
     def test_fixture_stays_metadata_only(self) -> None:

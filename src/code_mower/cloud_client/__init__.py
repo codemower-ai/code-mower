@@ -154,6 +154,7 @@ from .upload import (
 )
 from .work_types import (
     WORK_TYPE_SCHEMA,
+    WORK_TYPE_SUPPORTED_EVENT_TYPES,
     WORK_TYPE_VALUES,
     resolve_work_type_classification,
     validate_work_type_metadata,
@@ -198,6 +199,7 @@ __all__ = [
     "PR_OUTCOME_SCHEMA",
     "PR_OUTCOME_VALUES",
     "WORK_TYPE_SCHEMA",
+    "WORK_TYPE_SUPPORTED_EVENT_TYPES",
     "WORK_TYPE_VALUES",
     "SAFE_EVENT_TYPES",
     "SAFE_REPORT_KINDS",
