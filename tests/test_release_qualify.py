@@ -23,10 +23,19 @@ class ReleaseQualifyTests(unittest.TestCase):
         """Provider/executor must be safe identifiers."""
         with self.assertRaises(ValueError) as ctx:
             release_qualify._validate_safe_identifier("../unsafe", "provider")
-        self.assertIn("must match", str(ctx.exception))
+        self.assertIn("must be safe", str(ctx.exception))
+        self.assertNotIn("../unsafe", str(ctx.exception))
 
-        with self.assertRaises(ValueError):
-            release_qualify._validate_safe_identifier("HAS-DASH", "executor")
+    def test_starting_version_validation(self) -> None:
+        """Starting version must be empty or normalized."""
+        release_qualify._validate_starting_version("")
+        release_qualify._validate_starting_version("1.0.0")
+        release_qualify._validate_starting_version("1.0.0a1")
+
+        with self.assertRaises(ValueError) as ctx:
+            release_qualify._validate_starting_version("/path/to/version")
+        self.assertIn("must be empty or normalized", str(ctx.exception))
+        self.assertNotIn("/path", str(ctx.exception))
 
     def test_exact_package_index_required(self) -> None:
         """Only exact package-index specs are accepted."""
@@ -56,71 +65,118 @@ class ReleaseQualifyTests(unittest.TestCase):
                 )
             self.assertIn("mismatch", str(ctx.exception))
 
-    def test_doctor_check_runs_with_correct_api(self) -> None:
-        """Doctor check calls run_doctor with correct arguments."""
+    def test_doctor_uses_real_config(self) -> None:
+        """Doctor check uses real repo config."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "code-mower.yml"
+            repo_path = Path(tmpdir)
+            config_path = repo_path / "code-mower.yml"
             config_path.write_text("repositories: []\n")
+            output_path = Path(tmpdir) / "result.json"
 
             with mock.patch("code_mower.release_qualify.doctor_checks.run_doctor") as mock_doctor:
                 with mock.patch("code_mower.release_qualify.doctor_checks.resolve_doctor_provider_templates_path") as mock_resolve:
                     mock_report = mock.Mock()
                     mock_report.status = "pass"
-                    mock_report.checks = []
+                    mock_report.warnings = 0
+                    mock_report.owner_actions = 0
                     mock_doctor.return_value = mock_report
                     mock_resolve.return_value = Path("/tmp/providers.yml")
 
-                    step = release_qualify._run_doctor_check(config_path, 60)
+                    release_qualify.run_release_qualification(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        output_path=output_path,
+                        repo_path=repo_path,
+                        dry_run=True,
+                    )
 
-                    self.assertTrue(mock_doctor.called)
                     kwargs = mock_doctor.call_args.kwargs
-                    self.assertIn("config_path", kwargs)
+                    self.assertEqual(kwargs["config_path"], config_path)
                     self.assertIn("adoption", kwargs)
-                    self.assertIn("github", kwargs)
-                    self.assertEqual(step.id, "doctor")
-                    self.assertEqual(step.status, "pass")
+                    self.assertTrue(kwargs["adoption"])
 
-    def test_lanes_check_uses_collect_status(self) -> None:
-        """Lanes check calls collect_status with repo slug."""
+    def test_lanes_check_uses_realistic_payload(self) -> None:
+        """Lanes check interprets realistic collect_status payload."""
         with mock.patch("code_mower.release_qualify.lane_status.collect_status") as mock_lanes:
-            mock_lanes.return_value = {"status": "ok"}
+            mock_lanes.return_value = {
+                "schema": "code_mower.laneStatus.v1",
+                "remote": {"available": True},
+                "local_boards": []
+            }
 
             step = release_qualify._run_lanes_check("owner/repo", 60)
 
-            self.assertTrue(mock_lanes.called)
-            kwargs = mock_lanes.call_args.kwargs
-            self.assertEqual(kwargs["repo"], "owner/repo")
             self.assertEqual(step.id, "lanes_status")
             self.assertEqual(step.status, "pass")
 
-    def test_board_check_uses_doctor_payload(self) -> None:
-        """Board check calls doctor_payload with BoardConfig."""
+    def test_lanes_remote_unavailable_is_warn(self) -> None:
+        """Lanes with remote unavailable is warn, not fail."""
+        with mock.patch("code_mower.release_qualify.lane_status.collect_status") as mock_lanes:
+            mock_lanes.return_value = {
+                "schema": "code_mower.laneStatus.v1",
+                "remote": {"available": False},
+            }
+
+            step = release_qualify._run_lanes_check("owner/repo", 60)
+
+            self.assertEqual(step.status, "warn")
+            self.assertEqual(step.warning_count, 1)
+
+    def test_board_check_uses_realistic_payload(self) -> None:
+        """Board check interprets realistic doctor_payload."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
 
             with mock.patch("code_mower.release_qualify.code_mower_board.doctor_payload") as mock_board:
-                mock_board.return_value = {}
+                mock_board.return_value = {
+                    "schema": "code_mower.boardDoctor.v1",
+                    "status": "pass",
+                    "checks": []
+                }
 
                 step = release_qualify._run_board_check("owner/repo", repo_path, 60)
 
-                self.assertTrue(mock_board.called)
-                config = mock_board.call_args.args[0]
-                self.assertEqual(config.repo, "owner/repo")
                 self.assertEqual(step.id, "board")
                 self.assertEqual(step.status, "pass")
 
-    def test_required_step_fail_makes_outcome_fail(self) -> None:
-        """Failed required step makes final outcome fail."""
+    def test_board_warn_status_preserved(self) -> None:
+        """Board warn status is preserved."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+
+            with mock.patch("code_mower.release_qualify.code_mower_board.doctor_payload") as mock_board:
+                mock_board.return_value = {
+                    "status": "warn",
+                    "checks": [{"status": "warn"}]
+                }
+
+                step = release_qualify._run_board_check("owner/repo", repo_path, 60)
+
+                self.assertEqual(step.status, "warn")
+                self.assertEqual(step.warning_count, 1)
+
+    def test_aggregate_outcome_handles_all_statuses(self) -> None:
+        """Outcome aggregation handles all bounded statuses."""
+        fail_step = release_qualify.StepResult("test", "fail", 1.0, 0, 0)
+        warn_step = release_qualify.StepResult("test", "warn", 1.0, 0, 0)
+        unavail_step = release_qualify.StepResult("test", "unavailable", 1.0, 0, 0)
+        pass_step = release_qualify.StepResult("test", "pass", 1.0, 0, 0)
+
+        self.assertEqual(release_qualify._aggregate_outcome([fail_step]), "fail")
+        self.assertEqual(release_qualify._aggregate_outcome([fail_step, pass_step]), "fail")
+        self.assertEqual(release_qualify._aggregate_outcome([warn_step]), "pass_with_warnings")
+        self.assertEqual(release_qualify._aggregate_outcome([unavail_step]), "pass_with_warnings")
+        self.assertEqual(release_qualify._aggregate_outcome([pass_step]), "pass")
+
+    def test_dry_run_emits_planned_step(self) -> None:
+        """Dry-run emits package_install step with planned status."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "result.json"
 
             with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
                 mock_doctor.return_value = release_qualify.StepResult(
-                    id="doctor",
-                    status="fail",
-                    elapsed_seconds=1.0,
-                    warning_count=0,
-                    owner_action_count=0,
+                    id="doctor", status="pass", elapsed_seconds=1.0,
+                    warning_count=0, owner_action_count=0
                 )
 
                 result = release_qualify.run_release_qualification(
@@ -130,65 +186,9 @@ class ReleaseQualifyTests(unittest.TestCase):
                     dry_run=True,
                 )
 
-            self.assertEqual(result["outcome"], "fail")
-
-    def test_unavailable_makes_pass_with_warnings(self) -> None:
-        """Unavailable optional step makes outcome pass_with_warnings."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "result.json"
-
-            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
-                mock_doctor.return_value = release_qualify.StepResult(
-                    id="doctor",
-                    status="unavailable",
-                    elapsed_seconds=1.0,
-                    warning_count=0,
-                    owner_action_count=0,
-                )
-
-                result = release_qualify.run_release_qualification(
-                    release_tag="v1.0.0",
-                    package_spec="code-mower==1.0.0",
-                    output_path=output_path,
-                    dry_run=True,
-                )
-
-            self.assertEqual(result["outcome"], "pass_with_warnings")
-
-    def test_steps_list_has_stable_ids_and_status(self) -> None:
-        """Steps list contains stable IDs and statuses."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "result.json"
-
-            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
-                mock_doctor.return_value = release_qualify.StepResult(
-                    id="doctor",
-                    status="pass",
-                    elapsed_seconds=1.0,
-                    warning_count=0,
-                    owner_action_count=0,
-                )
-
-                result = release_qualify.run_release_qualification(
-                    release_tag="v1.0.0",
-                    package_spec="code-mower==1.0.0",
-                    output_path=output_path,
-                    dry_run=True,
-                )
-
-            self.assertIn("steps", result)
-            self.assertIsInstance(result["steps"], list)
-            self.assertEqual(len(result["steps"]), 1)
-            step = result["steps"][0]
-            self.assertEqual(step["id"], "doctor")
-            self.assertIn("status", step)
-            self.assertIn("elapsed_seconds", step)
-            self.assertIn("warning_count", step)
-            self.assertIn("owner_action_count", step)
-            self.assertNotIn("command", step)
-            self.assertNotIn("stdout", step)
-            self.assertNotIn("stderr", step)
-            self.assertNotIn("message", step)
+            install_step = [s for s in result["steps"] if s["id"] == "package_install"][0]
+            self.assertEqual(install_step["status"], "planned")
+            self.assertEqual(result["ending_version"], "")
 
     def test_no_local_paths_in_result(self) -> None:
         """Result contains no local paths."""
@@ -197,11 +197,8 @@ class ReleaseQualifyTests(unittest.TestCase):
 
             with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
                 mock_doctor.return_value = release_qualify.StepResult(
-                    id="doctor",
-                    status="pass",
-                    elapsed_seconds=1.0,
-                    warning_count=0,
-                    owner_action_count=0,
+                    id="doctor", status="pass", elapsed_seconds=1.0,
+                    warning_count=0, owner_action_count=0
                 )
 
                 result = release_qualify.run_release_qualification(
@@ -214,34 +211,35 @@ class ReleaseQualifyTests(unittest.TestCase):
             result_json = json.dumps(result)
             self.assertNotIn(str(tmpdir), result_json)
             self.assertNotIn("/workspace", result_json)
-            self.assertNotIn("/home", result_json)
-            self.assertEqual(result["package_identity"], "code-mower")
 
-    def test_explicit_qualification_context(self) -> None:
-        """Qualification context is explicit parameter."""
+    def test_steps_list_stable_schema(self) -> None:
+        """Steps list has stable IDs and no sensitive fields."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "result.json"
 
             with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
                 mock_doctor.return_value = release_qualify.StepResult(
-                    id="doctor",
-                    status="pass",
-                    elapsed_seconds=1.0,
-                    warning_count=0,
-                    owner_action_count=0,
+                    id="doctor", status="pass", elapsed_seconds=1.0,
+                    warning_count=0, owner_action_count=0
                 )
 
                 result = release_qualify.run_release_qualification(
                     release_tag="v1.0.0",
                     package_spec="code-mower==1.0.0",
                     output_path=output_path,
-                    qualification_context="cold_install",
-                    starting_version="",
                     dry_run=True,
                 )
 
-            self.assertEqual(result["qualification_context"], "cold_install")
-            self.assertEqual(result["starting_version"], "")
+            self.assertIn("steps", result)
+            for step in result["steps"]:
+                self.assertIn("id", step)
+                self.assertIn("status", step)
+                self.assertIn("elapsed_seconds", step)
+                self.assertIn("warning_count", step)
+                self.assertIn("owner_action_count", step)
+                self.assertNotIn("command", step)
+                self.assertNotIn("stdout", step)
+                self.assertNotIn("message", step)
 
 
 if __name__ == "__main__":

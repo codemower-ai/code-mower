@@ -9,7 +9,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -34,6 +33,7 @@ else:
     )
 
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[ab]\d+|rc\d+)?$")
 
 
 @dataclass
@@ -95,9 +95,13 @@ def _detect_runtime_class() -> str:
 def _validate_safe_identifier(value: str, name: str) -> None:
     """Validate identifier is safe for metadata."""
     if not SAFE_IDENTIFIER_PATTERN.match(value):
-        raise ValueError(
-            f"{name} must match {SAFE_IDENTIFIER_PATTERN.pattern}: got {value!r}"
-        )
+        raise ValueError(f"{name} must be safe identifier")
+
+
+def _validate_starting_version(value: str) -> None:
+    """Validate starting version is empty or normalized version."""
+    if value and not VERSION_PATTERN.match(value):
+        raise ValueError("starting_version must be empty or normalized version")
 
 
 def _extract_package_identity(package_spec: str) -> str:
@@ -116,7 +120,7 @@ def _validate_tag_format(release_tag: str) -> tuple[bool, str, str]:
         release_tag,
     )
     if not match:
-        return False, "", f"release tag must match v<major>.<minor>.<patch>[-<stage>.<num>]: {release_tag}"
+        return False, "", f"release tag must match v<major>.<minor>.<patch>[-<stage>.<num>]"
     base = match.group(1)
     stage = match.group(2)
     num = match.group(3)
@@ -128,25 +132,38 @@ def _validate_tag_format(release_tag: str) -> tuple[bool, str, str]:
     return True, normalized, ""
 
 
-def _run_doctor_check(config_path: Path, timeout: int) -> StepResult:
+def _aggregate_outcome(steps: list[StepResult]) -> str:
+    """Aggregate step statuses to overall outcome."""
+    has_fail = any(s.status == "fail" for s in steps)
+    has_warn = any(s.status == "warn" for s in steps)
+    has_unavailable = any(s.status == "unavailable" for s in steps)
+
+    if has_fail:
+        return "fail"
+    if has_warn or has_unavailable:
+        return "pass_with_warnings"
+    return "pass"
+
+
+def _run_doctor_check(config_path: Path, repo_slug: str, timeout: int) -> StepResult:
     """Run doctor check and return step result."""
     start = time.time()
     try:
-        provider_templates = doctor_checks.resolve_doctor_provider_templates_path(None)
+        provider_templates = doctor_checks.resolve_doctor_provider_templates_path(Path.cwd())
         report = doctor_checks.run_doctor(
             config_path=config_path,
             provider_templates_path=provider_templates,
             profile="recommended",
+            repo_slug=repo_slug,
             adoption=True,
+            adoption_posture="reviewer-gate",
             github=False,
             cloud=False,
         )
-        warnings = sum(1 for c in report.checks if c.status == "warn")
-        actions = sum(
-            len(c.next_actions) for c in report.checks if hasattr(c, "next_actions") and c.next_actions
-        )
         status = report.status
-    except Exception:
+        warnings = report.warnings
+        actions = report.owner_actions
+    except (OSError, ValueError):
         status = "unavailable"
         warnings = 0
         actions = 0
@@ -165,15 +182,22 @@ def _run_lanes_check(repo_slug: str, timeout: int) -> StepResult:
     start = time.time()
     try:
         result = lane_status.collect_status(repo=repo_slug)
-        status = "pass" if result.get("status") == "ok" else "fail"
-    except Exception:
+        remote = result.get("remote", {}) if isinstance(result.get("remote"), dict) else {}
+        if not remote.get("available"):
+            status = "warn"
+            warnings = 1
+        else:
+            status = "pass"
+            warnings = 0
+    except (OSError, ValueError, lane_status.LaneStatusUnavailable):
         status = "unavailable"
+        warnings = 0
 
     return StepResult(
         id="lanes_status",
         status=status,
         elapsed_seconds=round(time.time() - start, 2),
-        warning_count=0,
+        warning_count=warnings,
         owner_action_count=0,
     )
 
@@ -186,17 +210,22 @@ def _run_board_check(repo_slug: str, repo_path: Path, timeout: int) -> StepResul
             repo=repo_slug,
             repo_path=str(repo_path),
         )
-        result = code_mower_board.doctor_payload(config)
-        status = "pass"
-    except Exception:
+        payload = code_mower_board.doctor_payload(config)
+        status = payload.get("status", "fail")
+        checks = payload.get("checks", []) if isinstance(payload.get("checks"), list) else []
+        warnings = sum(1 for c in checks if isinstance(c, dict) and c.get("status") == "warn")
+        actions = sum(1 for c in checks if isinstance(c, dict) and c.get("owner_action"))
+    except (OSError, ValueError):
         status = "unavailable"
+        warnings = 0
+        actions = 0
 
     return StepResult(
         id="board",
         status=status,
         elapsed_seconds=round(time.time() - start, 2),
-        warning_count=0,
-        owner_action_count=0,
+        warning_count=warnings,
+        owner_action_count=actions,
     )
 
 
@@ -222,6 +251,15 @@ def _infer_repo_slug(repo_path: Path | None) -> str:
     return ""
 
 
+def _resolve_config_path(repo_path: Path | None) -> Path:
+    """Resolve repository config path."""
+    if repo_path:
+        config = repo_path / "code-mower.yml"
+        if config.is_file():
+            return config
+    return Path("code-mower.yml")
+
+
 def run_release_qualification(
     *,
     release_tag: str,
@@ -242,13 +280,14 @@ def run_release_qualification(
 
     _validate_safe_identifier(provider, "provider")
     _validate_safe_identifier(executor, "executor")
+    _validate_starting_version(starting_version)
 
     valid, normalized_version, error = _validate_tag_format(release_tag)
     if not valid:
         raise ValueError(error)
 
     if not _package_spec_uses_package_index(package_spec):
-        raise ValueError("Only exact package-index specs are supported (e.g., code-mower==1.0.0)")
+        raise ValueError("Only exact package-index specs supported")
 
     spec_match = re.match(r"^[\w-]+==([\d.abc]+)$", package_spec)
     if not spec_match:
@@ -261,36 +300,36 @@ def run_release_qualification(
     if not qualification_context:
         qualification_context = "unknown"
     if not SAFE_IDENTIFIER_PATTERN.match(qualification_context):
-        raise ValueError(f"qualification_context must be safe identifier: {qualification_context}")
+        raise ValueError("qualification_context must be safe identifier")
 
     ending_version = ""
-    outcome = "pass"
+    config_path = _resolve_config_path(repo_path)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        config_path = Path(tmpdir) / "code-mower.yml"
-        config_path.write_text("repositories: []\n", encoding="utf-8")
+    if not repo_slug and repo_path:
+        repo_slug = _infer_repo_slug(repo_path)
 
-        doctor_step = _run_doctor_check(config_path, timeout)
-        steps.append(doctor_step)
-        if doctor_step.status == "fail":
-            outcome = "fail"
+    doctor_step = _run_doctor_check(config_path, repo_slug, timeout)
+    steps.append(doctor_step)
 
-        if repo_path and not repo_slug:
-            repo_slug = _infer_repo_slug(repo_path)
+    if repo_slug:
+        lanes_step = _run_lanes_check(repo_slug, timeout)
+        steps.append(lanes_step)
 
-        if repo_slug:
-            lanes_step = _run_lanes_check(repo_slug, timeout)
-            steps.append(lanes_step)
-            if lanes_step.status == "fail":
-                outcome = "fail"
+        if repo_path:
+            board_step = _run_board_check(repo_slug, repo_path, timeout)
+            steps.append(board_step)
 
-            if repo_path:
-                board_step = _run_board_check(repo_slug, repo_path, timeout)
-                steps.append(board_step)
-                if board_step.status == "fail":
-                    outcome = "fail"
-
-    if not dry_run:
+    if dry_run:
+        steps.append(
+            StepResult(
+                id="package_install",
+                status="planned",
+                elapsed_seconds=0.0,
+                warning_count=0,
+                owner_action_count=0,
+            )
+        )
+    else:
         rehearsal_start = time.time()
         try:
             rehearsal_result = run_package_install_rehearsal(
@@ -301,11 +340,11 @@ def run_release_qualification(
             )
             ending_version = rehearsal_result.get("version", "")
             if ending_version != normalized_version:
-                outcome = "fail"
-            rehearsal_status = "pass"
+                rehearsal_status = "fail"
+            else:
+                rehearsal_status = "pass"
         except Exception:
             rehearsal_status = "fail"
-            outcome = "fail"
 
         steps.append(
             StepResult(
@@ -316,14 +355,8 @@ def run_release_qualification(
                 owner_action_count=0,
             )
         )
-    else:
-        ending_version = normalized_version
 
-    if outcome != "fail":
-        unavailable_count = sum(1 for s in steps if s.status == "unavailable")
-        if unavailable_count > 0:
-            outcome = "pass_with_warnings"
-
+    outcome = _aggregate_outcome(steps)
     elapsed = time.time() - start_time
 
     result = AdoptionResult(
@@ -410,7 +443,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     qualify.add_argument(
         "--starting-version",
         default="",
-        help="Starting version for upgrade context",
+        help="Starting version (empty or normalized)",
     )
     qualify.add_argument(
         "--provider",
