@@ -1250,6 +1250,15 @@ def _invoke_local_adapter(
     if not argv_template:
         return None, _safe_error("no_campaign_adapter_configured"), "no campaign adapter configured"
 
+    try:
+        output_path.unlink(missing_ok=True)
+    except OSError:
+        return (
+            None,
+            _safe_error("adapter_result_invalid"),
+            f"{provider} adapter prior result could not be cleared",
+        )
+
     resolved = _find_command(lane, which_fn=which_fn)
     if not resolved:
         cmd = lane.provider_config.get("command") or provider
@@ -1312,6 +1321,7 @@ def _invoke_local_adapter(
 
     if (
         result.get("provider") != provider
+        or result.get("executor") != provider
         or result.get("release_tag") != release_tag
         or result.get("qualification_context") != qualification_context
         or result.get("starting_version") != starting_version

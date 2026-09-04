@@ -98,7 +98,7 @@ class ArgvBuilderTests(unittest.TestCase):
         self.assertIn("sandbox_workspace_write.network_access=true", argv)
         self.assertIn("-C", argv)
         self.assertIn("--skip-git-repo-check", argv)
-        self.assertIn("--ignore-user-config", argv)
+        self.assertNotIn("--ignore-user-config", argv)
         no_model = campaign_adapters.build_codex_argv(
             codex_bin="/bin/codex",
             schema_path="/tmp/schema.json",
@@ -252,21 +252,56 @@ class AdapterTransportTests(unittest.TestCase):
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
                 "HOME": "/tmp/provider-home",
                 "CODEX_HOME": "/tmp/codex-home",
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+                "XDG_RUNTIME_DIR": "/run/user/1000",
             }
         )
 
         with mock.patch.dict(os.environ, ambient, clear=True):
             for provider in ("codex", "claude", "antigravity", "muse"):
                 with self.subTest(provider=provider):
-                    child_env = campaign_adapters.build_adapter_child_env(provider)
-                    self.assertEqual(child_env["PATH"], ambient["PATH"])
-                    self.assertEqual(child_env["HOME"], ambient["HOME"])
-                    self.assertEqual(
-                        child_env.get("CODEX_HOME"),
-                        ambient["CODEX_HOME"] if provider == "codex" else None,
+                    codex_home = Path("/tmp/code-mower-codex-campaign-home")
+                    child_env = campaign_adapters.build_adapter_child_env(
+                        provider, codex_home=codex_home
                     )
+                    self.assertEqual(child_env["PATH"], ambient["PATH"])
+                    self.assertEqual(
+                        child_env["DBUS_SESSION_BUS_ADDRESS"],
+                        ambient["DBUS_SESSION_BUS_ADDRESS"],
+                    )
+                    self.assertEqual(child_env["XDG_RUNTIME_DIR"], ambient["XDG_RUNTIME_DIR"])
+                    if provider == "codex":
+                        self.assertEqual(child_env["HOME"], str(codex_home.resolve()))
+                        self.assertEqual(child_env["CODEX_HOME"], str(codex_home.resolve()))
+                        self.assertNotEqual(child_env["HOME"], ambient["HOME"])
+                    else:
+                        self.assertEqual(child_env["HOME"], ambient["HOME"])
+                        self.assertNotIn("CODEX_HOME", child_env)
                     for secret_name in secret_names:
                         self.assertNotIn(secret_name, child_env)
+
+    def test_codex_campaign_home_is_restricted_and_contains_no_file_auth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "codex"
+            prepared = campaign_adapters.prepare_codex_campaign_home(home)
+
+            self.assertEqual(prepared, home.resolve())
+            config = (home / "config.toml").read_text(encoding="utf-8")
+            self.assertIn('cli_auth_credentials_store = "keyring"', config)
+            self.assertIn('default_permissions = "campaign"', config)
+            self.assertIn('\":root\" = \"deny\"', config)
+            self.assertIn('\":workspace_roots\" = \"write\"', config)
+            self.assertNotIn("token", config.lower())
+            self.assertFalse((home / "auth.json").exists())
+
+    def test_codex_campaign_home_refuses_readable_file_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "codex"
+            home.mkdir()
+            (home / "auth.json").write_text('{"secret":"canary"}', encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "readable file credentials"):
+                campaign_adapters.prepare_codex_campaign_home(home)
 
     def _run(
         self,
@@ -288,6 +323,7 @@ class AdapterTransportTests(unittest.TestCase):
                 starting_version="",
                 output_path=output,
                 timeout_seconds=timeout_seconds,
+                codex_home=tmp / "codex-home",
                 provider_runner=runner,
             )
         return code, output, tmp
@@ -484,6 +520,7 @@ class AdapterFailureTests(unittest.TestCase):
                 starting_version="",
                 output_path=output,
                 timeout_seconds=870,
+                codex_home=tmp / "codex-home",
                 provider_runner=runner,
             )
         return code, output
@@ -502,6 +539,26 @@ class AdapterFailureTests(unittest.TestCase):
         code, output = self._run_raw("claude", lambda *a: _ok(a[0], returncode=1))
         self.assertNotEqual(code, 0)
         self.assertFalse(output.is_file())
+
+    def test_failed_attempt_removes_a_stale_result(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        output = tmp / "result.json"
+        output.write_text(json.dumps(_adoption_result("claude")), encoding="utf-8")
+
+        code = campaign_adapters.run_campaign_adapter(
+            provider="claude",
+            provider_bin=_fake_bin(tmp),
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            output_path=output,
+            timeout_seconds=870,
+            provider_runner=lambda *a: _ok(a[0], returncode=1),
+        )
+
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.exists())
 
     def test_garbage_result_is_rejected(self) -> None:
         def runner(

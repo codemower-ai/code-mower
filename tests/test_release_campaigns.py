@@ -40,7 +40,7 @@ def _mock_adoption_result(
         "starting_version": "",
         "ending_version": "1.0.0",
         "provider": provider,
-        "executor": f"{provider}_cli",
+        "executor": provider,
         "host_class": "local",
         "runtime_class": "python_3.12",
         "execution_state": "executed",
@@ -86,7 +86,7 @@ def _mock_adoption_result_full(
         "starting_version": starting_version,
         "ending_version": ending_version,
         "provider": provider,
-        "executor": f"{provider}_cli",
+        "executor": provider,
         "host_class": "local",
         "runtime_class": "python_3.12",
         "execution_state": "executed",
@@ -969,6 +969,69 @@ class ReleaseCampaignTests(unittest.TestCase):
                 assert saved is not None
                 self.assertEqual(saved["providers"][0]["state"], "complete")
                 self.assertEqual(saved["providers"][0]["adoption_result"]["outcome"], "pass")
+
+    def test_failed_retry_removes_stale_result_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            output_path = repo_path / "result.json"
+            output_path.write_text(
+                json.dumps(
+                    _mock_adoption_result(
+                        release_tag="v1.0.0", provider="codex", outcome="pass"
+                    )
+                ),
+                encoding="utf-8",
+            )
+            lane = _fake_local_cli_lane()
+
+            result, error, _detail = release_campaigns._invoke_local_adapter(
+                lane,
+                "codex",
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                qualification_context="cold_install",
+                starting_version="",
+                output_path=output_path,
+                repo_path=repo_path,
+                which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                adapter_runner=lambda argv, _timeout: subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr=""
+                ),
+            )
+
+            self.assertIsNone(result)
+            self.assertEqual(error, "adapter_exited_nonzero")
+            self.assertFalse(output_path.exists())
+
+    def test_campaign_boundary_rejects_mismatched_executor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            output_path = repo_path / "result.json"
+            lane = _fake_local_cli_lane()
+
+            def mismatched_executor(argv, _timeout):
+                result = _mock_adoption_result(
+                    release_tag="v1.0.0", provider="codex", outcome="pass"
+                )
+                result["executor"] = "claude"
+                output_path.write_text(json.dumps(result), encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            result, error, _detail = release_campaigns._invoke_local_adapter(
+                lane,
+                "codex",
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                qualification_context="cold_install",
+                starting_version="",
+                output_path=output_path,
+                repo_path=repo_path,
+                which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                adapter_runner=mismatched_executor,
+            )
+
+            self.assertIsNone(result)
+            self.assertEqual(error, "adapter_result_mismatch")
 
     def test_drop_in_result_context_and_starting_version_binding(self) -> None:
         """A local drop-in result file must match this campaign's

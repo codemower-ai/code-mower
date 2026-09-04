@@ -100,7 +100,7 @@ Local CLI providers (`local_cli` driver) only run automatically if a `campaign_a
 
 | Lane | Adapter provider | Verified CLI surface |
 |---|---|---|
-| `codex` | `codex` | `codex exec` with stdin (`-`), `--ephemeral`, `--approve-for-me`, workspace-write network config, `--skip-git-repo-check`, `--ignore-user-config`, `--json`, `--output-schema`, `--output-last-message`, `-C` (codex-cli 0.147.0) |
+| `codex` | `codex` | `codex exec` with stdin (`-`), `--ephemeral`, `--approve-for-me`, a Code Mower-owned root-deny/workspace-write profile, keyring-only auth, `--skip-git-repo-check`, `--json`, `--output-schema`, `--output-last-message`, `-C` (codex-cli 0.147.0) |
 | `claude_audit` | `claude` | `claude --print` with stdin, `--output-format json`, strict OS sandbox and PyPI allowlist, `--json-schema` (Claude Code 2.1.258) |
 | `antigravity_cli` | `antigravity` | `agy --print` with a prompt file, `--sandbox`, noninteractive permission approval, `--add-dir`, `--print-timeout` (agy 1.1.26) |
 | `muse_cli` | `muse` | `muse exec` with `--json`, `--prompt-file`, `--workspace` (Muse Code 1.0.3) |
@@ -132,6 +132,8 @@ lanes:
 `campaign_adapter_timeout_seconds` must be a positive integer number of seconds, written as one: a fractional value such as `1.9` is rejected with the bounded `adapter_configuration_invalid` error rather than truncated to a shorter budget than was configured, as are `0`, negatives, non-finite numbers, and booleans. Omitting it uses the built-in default.
 
 Supported placeholders: `{command}` (resolved binary), `{release_tag}`, `{package_spec}`, `{qualification_context}`, `{starting_version}`, `{output}`, `{repo_path}`. The adapter command must write a `code_mower.adoptionResult.v1` JSON document to the `{output}` path whose `provider` and `executor` both match the invoked provider, and whose `release_tag`, `qualification_context`, and `starting_version` fields all match the campaign's -- a cold-install result cannot complete an upgrade campaign, and an upgrade result must match the campaign's exact starting version. Anything else (extra fields, mismatched identity, no file, non-zero exit, or a timeout) leaves the provider `unavailable`/`blocked` with a bounded error code -- never a fabricated pass. A local drop-in result file and `--record-result` are bound the same way. Install the provider's CLI binary on PATH and verify local authentication.
+
+Codex campaign runs use an isolated home at `~/.config/code-mower/provider-homes/codex` (override with `CODE_MOWER_CODEX_CAMPAIGN_HOME`). Code Mower creates its non-secret restricted config automatically and refuses a readable `auth.json`. Authenticate that home once with `CODEX_HOME="$HOME/.config/code-mower/provider-homes/codex" codex login --device-auth -c 'cli_auth_credentials_store="keyring"' --enable secret_auth_storage`; the explicit login flags make Codex store that home-specific credential in the OS keyring even before Code Mower has created the config file. The agent can write only its disposable workspace, while network remains available for package installation. A previous result file is removed before every adapter attempt, and a failed run never leaves stale evidence for a caller to accept.
 
 An explicit `--retry-provider` never accepts a pre-existing result file for that provider -- the stale file is removed before the new attempt runs, so a retry can only be satisfied by fresh evidence.
 

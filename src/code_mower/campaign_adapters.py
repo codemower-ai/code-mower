@@ -102,6 +102,21 @@ INNER_TIMEOUT_MARGIN_SECONDS = 30
 DEFAULT_PROVIDER_TIMEOUT_SECONDS = 870
 
 CODEX_MODEL_ENV_NAMES = ("CODE_MOWER_CODEX_MODEL", "CODEX_MODEL", "OPENAI_MODEL")
+CODEX_CAMPAIGN_HOME_ENV = "CODE_MOWER_CODEX_CAMPAIGN_HOME"
+CODEX_CAMPAIGN_CONFIG = """cli_auth_credentials_store = \"keyring\"
+default_permissions = \"campaign\"
+
+[features]
+secret_auth_storage = true
+
+[permissions.campaign.filesystem]
+\":root\" = \"deny\"
+\":minimal\" = \"read\"
+\":workspace_roots\" = \"write\"
+
+[permissions.campaign.network]
+enabled = true
+"""
 CLAUDE_MODEL_ENV_NAME = "CLAUDE_AUDIT_MODEL"
 CLAUDE_DEFAULT_MODEL = "sonnet"
 CLAUDE_BUDGET_ENV_NAME = "CLAUDE_AUDIT_MAX_BUDGET_USD"
@@ -140,6 +155,11 @@ ADAPTER_ENV_ALLOWLIST = (
     "USER",
     "LOGNAME",
     "SHELL",
+    # Linux Secret Service/keyring coordinates. These identify the local
+    # session bus; they are not credentials and are required for Codex's
+    # keyring-only campaign home to retrieve its stored login.
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
 )
 
 #: Guidance schema handed to providers with structured-output support (Codex
@@ -355,7 +375,6 @@ def build_codex_argv(
         "-c",
         "sandbox_workspace_write.network_access=true",
         "--skip-git-repo-check",
-        "--ignore-user-config",
         "--json",
         "--output-schema",
         schema_path,
@@ -632,21 +651,58 @@ def run_provider_command(
     )
 
 
-def build_adapter_child_env(provider: str) -> dict[str, str]:
+def _default_codex_campaign_home() -> Path:
+    configured = os.environ.get(CODEX_CAMPAIGN_HOME_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".config" / "code-mower" / "provider-homes" / "codex"
+
+
+def prepare_codex_campaign_home(codex_home: Path | None = None) -> Path:
+    """Create the non-secret, keyring-backed home used by campaign Codex runs."""
+    home = (codex_home or _default_codex_campaign_home()).expanduser().resolve()
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        home.chmod(0o700)
+    except OSError:
+        pass
+    if (home / "auth.json").exists():
+        raise ValueError("isolated Codex home contains readable file credentials")
+    config_path = home / "config.toml"
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(home),
+        prefix=".config.",
+        suffix=".toml",
+        delete=False,
+    ) as handle:
+        handle.write(CODEX_CAMPAIGN_CONFIG)
+        staging = Path(handle.name)
+    staging.chmod(0o600)
+    os.replace(staging, config_path)
+    return home
+
+
+def build_adapter_child_env(provider: str, *, codex_home: Path | None = None) -> dict[str, str]:
     """Return the minimal ambient environment required by one provider CLI.
 
     Provider API keys, GitHub tokens, Code Mower cloud tokens, and unrelated
-    shell state never reach the child. Ambient home paths are retained only so
-    the CLI process can use its existing local login. Codex also supports an
-    explicitly relocated ``CODEX_HOME``. Muse's explicit key uses stdin.
+    shell state never reach the child. Claude, Antigravity, and Muse retain the
+    ambient home only for their existing login stores. Codex instead receives
+    a Code Mower-owned home whose credential is held by the OS keyring. Muse's
+    explicit key uses stdin.
     """
     allowlist = list(ADAPTER_ENV_ALLOWLIST)
-    if provider == "codex":
-        allowlist.append("CODEX_HOME")
-    return build_allowlisted_child_env(
+    child_env = build_allowlisted_child_env(
         allowlist,
-        preserve_ambient_home=True,
+        preserve_ambient_home=provider != "codex",
     )
+    if provider == "codex":
+        home = (codex_home or _default_codex_campaign_home()).expanduser().resolve()
+        child_env["HOME"] = str(home)
+        child_env["CODEX_HOME"] = str(home)
+    return child_env
 
 
 def _fail(provider: str, reason: str) -> int:
@@ -708,6 +764,7 @@ def run_campaign_adapter(
     claude_max_budget_usd: str = "",
     muse_max_model_steps: int = MUSE_DEFAULT_MAX_MODEL_STEPS,
     muse_reasoning_effort: str = "",
+    codex_home: Path | None = None,
     provider_runner: ProviderRunner = run_provider_command,
 ) -> int:
     """Run one maintained provider adapter. Returns a process exit code.
@@ -721,6 +778,11 @@ def run_campaign_adapter(
         return _fail(provider, "unsupported campaign adapter provider")
     if timeout_seconds <= 0:
         return _fail(provider, "timeout must be a positive number of seconds")
+
+    try:
+        output_path.unlink(missing_ok=True)
+    except OSError:
+        return _fail(provider, "could not clear the prior result file")
 
     resolved_bin = _resolve_provider_bin(provider, provider_bin)
     if resolved_bin is None:
@@ -745,7 +807,13 @@ def run_campaign_adapter(
         qualification_context=qualification_context,
         starting_version=starting_version,
     )
-    child_env = build_adapter_child_env(provider)
+    prepared_codex_home: Path | None = None
+    if provider == "codex":
+        try:
+            prepared_codex_home = prepare_codex_campaign_home(codex_home)
+        except (OSError, ValueError):
+            return _fail(provider, "isolated keyring-backed auth home is not usable")
+    child_env = build_adapter_child_env(provider, codex_home=prepared_codex_home)
 
     muse_api_key = ""
     if provider == "antigravity" and not _env_flag_enabled(ANTIGRAVITY_AMBIENT_HOME_ENV):
