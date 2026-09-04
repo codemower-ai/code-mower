@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
-from .models import STATUS_PASS, STATUS_WARN, DoctorCheck
+
+from .cloud import DEFAULT_CLOUD_TOKEN_DIR, DEFAULT_CLOUD_TOKEN_ENV
+from .models import STATUS_PASS, STATUS_SKIP, STATUS_WARN, DoctorCheck
 
 
 OWNER_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -458,4 +463,613 @@ def check_adoption_setup(
             ),
         )
     )
+    return tuple(checks)
+
+DEFAULT_CAMPAIGN_PROVIDERS = (
+    "claude",
+    "codex",
+    "antigravity",
+    "muse",
+    "cursor_bugbot",
+    "devin",
+)
+
+
+def _is_provider_enabled(
+    lane: Any,
+    config: Mapping[str, Any] | None,
+    repo_root: Path,
+) -> bool:
+    """Determine if a provider lane is actively enabled or optional."""
+    from code_mower.release_campaigns import (
+        _campaign_adapter_override_lane_keys,
+        _load_campaign_adapter_overrides,
+    )
+
+    if isinstance(config, Mapping) and isinstance(config.get("lanes"), Mapping):
+        lanes_cfg = config["lanes"]
+        for key in _campaign_adapter_override_lane_keys(lane):
+            lane_entry = lanes_cfg.get(key)
+            if isinstance(lane_entry, Mapping):
+                if "enabled" in lane_entry:
+                    return bool(lane_entry["enabled"])
+                if "enabled_by_default" in lane_entry:
+                    return bool(lane_entry["enabled_by_default"])
+                provider_cfg = lane_entry.get("provider_config")
+                if isinstance(provider_cfg, Mapping) and "campaign_adapter_argv" in provider_cfg:
+                    return True
+
+    overrides, _, _ = _load_campaign_adapter_overrides(lane, repo_root)
+    if overrides.get("campaign_adapter_argv"):
+        return True
+
+    return bool(getattr(lane, "enabled_by_default", False))
+
+
+def _resolve_adapter_config_for_lane(
+    lane: Any,
+    repo_root: Path,
+    config: Mapping[str, Any] | None = None,
+) -> tuple[Any, Any, str, str]:
+    """Resolve effective campaign adapter argv and timeout for a lane."""
+    from code_mower.release_campaigns import (
+        _campaign_adapter_override_lane_keys,
+        _resolve_campaign_adapter_config,
+        _safe_error,
+    )
+
+    if isinstance(config, Mapping) and "lanes" in config:
+        lanes_cfg = config["lanes"]
+        if lanes_cfg is not None and not isinstance(lanes_cfg, Mapping):
+            return None, None, _safe_error("adapter_configuration_invalid"), "lanes must be a mapping"
+        if isinstance(lanes_cfg, Mapping):
+            configured_keys = [
+                key
+                for key in _campaign_adapter_override_lane_keys(lane)
+                if lanes_cfg.get(key) is not None
+            ]
+            if len(configured_keys) > 1:
+                return (
+                    None,
+                    None,
+                    _safe_error("adapter_configuration_invalid"),
+                    (
+                        f"code-mower.yml configures the same provider lane under "
+                        f"{len(configured_keys)} names ({', '.join(configured_keys)}); "
+                        "keep exactly one"
+                    ),
+                )
+            if configured_keys:
+                lane_cfg = lanes_cfg[configured_keys[0]]
+                if not isinstance(lane_cfg, Mapping):
+                    return None, None, _safe_error("adapter_configuration_invalid"), ""
+                provider_cfg = lane_cfg.get("provider_config")
+                if provider_cfg is not None and not isinstance(provider_cfg, Mapping):
+                    return None, None, _safe_error("adapter_configuration_invalid"), ""
+                overrides: dict[str, Any] = {}
+                if isinstance(provider_cfg, Mapping):
+                    for key in (
+                        "campaign_adapter_argv",
+                        "campaign_adapter_timeout_seconds",
+                        "campaign_adapter_enabled",
+                    ):
+                        if key in provider_cfg:
+                            overrides[key] = provider_cfg[key]
+                enabled = overrides.get(
+                    "campaign_adapter_enabled",
+                    lane.provider_config.get("campaign_adapter_enabled", True),
+                )
+                if not isinstance(enabled, bool):
+                    return None, None, _safe_error("adapter_configuration_invalid"), ""
+                if enabled is False:
+                    return None, None, "", ""
+                argv_template = overrides.get(
+                    "campaign_adapter_argv",
+                    lane.provider_config.get("campaign_adapter_argv"),
+                )
+                timeout_value = overrides.get(
+                    "campaign_adapter_timeout_seconds",
+                    lane.provider_config.get("campaign_adapter_timeout_seconds"),
+                )
+                return argv_template, timeout_value, "", ""
+
+    return _resolve_campaign_adapter_config(lane, repo_root)
+
+
+def check_adoption_campaign_readiness(
+    *,
+    config: Mapping[str, Any] | None,
+    repo_root: Path | None = None,
+    repo_slug: str = "",
+    adoption_posture: str = "reviewer-gate",
+    env: Mapping[str, str] | None = None,
+    which_fn: Callable[[str], str | None] = shutil.which,
+    command_runner: Any = None,
+    token_dir: Path | None = None,
+    providers: Sequence[str] = DEFAULT_CAMPAIGN_PROVIDERS,
+) -> tuple[DoctorCheck, ...]:
+    """Validate release campaign readiness across configured providers and storage."""
+    from code_mower import lane_status
+    from code_mower.cloud import resolve_cloud_token
+    from code_mower.release_campaigns import (
+        _check_credentials,
+        _find_command,
+        _safe_error,
+        _validate_adapter_argv_template,
+        _validate_adapter_timeout,
+        resolve_provider_lane,
+    )
+
+    root = repo_root or Path.cwd()
+    current_env = os.environ if env is None else env
+    runner = lane_status._run_command if command_runner is None else command_runner
+    checks: list[DoctorCheck] = []
+
+    for prov in providers:
+        try:
+            canonical, lane = resolve_provider_lane(prov)
+        except ValueError:
+            continue
+
+        is_enabled = _is_provider_enabled(lane, config=config, repo_root=root)
+
+        if lane.driver == "local_cli":
+            if adoption_posture in {"hosted-builders", "orchestrator-only"}:
+                checks.append(
+                    DoctorCheck(
+                        name="doctor.campaign.adapter",
+                        status=STATUS_SKIP,
+                        lane=canonical,
+                        message=f"skipped {canonical} campaign adapter check in {adoption_posture} posture",
+                        detail={
+                            "provider": canonical,
+                            "lane": lane.lane_id,
+                            "driver": lane.driver,
+                            "adoption_posture": adoption_posture,
+                            "skipped": True,
+                        },
+                    )
+                )
+                continue
+
+            argv_template, timeout_value, config_error, config_detail = _resolve_adapter_config_for_lane(
+                lane,
+                repo_root=root,
+                config=config,
+            )
+            if not config_error and argv_template is not None:
+                try:
+                    _validate_adapter_argv_template(argv_template)
+                    if timeout_value is not None:
+                        _validate_adapter_timeout(timeout_value)
+                except ValueError as exc:
+                    config_error = _safe_error("adapter_configuration_invalid")
+                    config_detail = str(exc)
+
+            cmd = _find_command(lane, which_fn=which_fn)
+            command_name = lane.provider_config.get("command") or lane.provider
+
+            if config_error:
+                detail = {
+                    "provider": canonical,
+                    "lane": lane.lane_id,
+                    "driver": lane.driver,
+                    "error": config_error,
+                    "adapter_configured": False,
+                    "command": cmd or command_name,
+                    "command_found": bool(cmd),
+                    "enabled": is_enabled,
+                    "actionable": is_enabled,
+                    "optional": not is_enabled,
+                }
+                if is_enabled:
+                    detail["owner_action"] = True
+                checks.append(
+                    DoctorCheck(
+                        name="doctor.campaign.adapter",
+                        status=STATUS_WARN,
+                        lane=canonical,
+                        message=f"{canonical} campaign adapter configuration is invalid",
+                        detail=detail,
+                        remediation=(
+                            config_detail
+                            or f"Fix invalid {canonical} campaign adapter configuration in code-mower.yml."
+                        ),
+                    )
+                )
+            elif not cmd:
+                detail = {
+                    "provider": canonical,
+                    "lane": lane.lane_id,
+                    "driver": lane.driver,
+                    "command": command_name,
+                    "command_found": False,
+                    "adapter_configured": bool(argv_template),
+                    "enabled": is_enabled,
+                    "actionable": is_enabled,
+                    "optional": not is_enabled,
+                }
+                if is_enabled:
+                    detail["owner_action"] = True
+                checks.append(
+                    DoctorCheck(
+                        name="doctor.campaign.adapter",
+                        status=STATUS_WARN,
+                        lane=canonical,
+                        message=f"{canonical} command {command_name!r} not found on PATH",
+                        detail=detail,
+                        remediation=f"Install {command_name} CLI on PATH or specify the executable in code-mower.yml.",
+                    )
+                )
+            elif not argv_template:
+                detail = {
+                    "provider": canonical,
+                    "lane": lane.lane_id,
+                    "driver": lane.driver,
+                    "command": cmd,
+                    "command_found": True,
+                    "adapter_configured": False,
+                    "enabled": is_enabled,
+                    "actionable": is_enabled,
+                    "optional": not is_enabled,
+                }
+                if is_enabled:
+                    detail["owner_action"] = True
+                checks.append(
+                    DoctorCheck(
+                        name="doctor.campaign.adapter",
+                        status=STATUS_WARN,
+                        lane=canonical,
+                        message=f"{canonical} campaign adapter not configured",
+                        detail=detail,
+                        remediation=(
+                            f"Configure campaign_adapter_argv for {canonical} in code-mower.yml."
+                            if is_enabled
+                            else f"Configure campaign_adapter_argv for {canonical} in code-mower.yml to include this optional provider in campaigns."
+                        ),
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheck(
+                        name="doctor.campaign.adapter",
+                        status=STATUS_PASS,
+                        lane=canonical,
+                        message=f"{canonical} campaign adapter and command ready",
+                        detail={
+                            "provider": canonical,
+                            "lane": lane.lane_id,
+                            "driver": lane.driver,
+                            "command": cmd,
+                            "command_found": True,
+                            "adapter_configured": True,
+                            "enabled": is_enabled,
+                        },
+                    )
+                )
+
+        elif lane.driver in {"hosted_bridge", "saas_event"}:
+            has_credentials, missing_var = _check_credentials(lane, env=current_env)
+            has_repo = bool(repo_slug)
+
+            if not has_credentials:
+                detail = {
+                    "provider": canonical,
+                    "lane": lane.lane_id,
+                    "driver": lane.driver,
+                    "missing_variable": missing_var,
+                    "repo_slug": repo_slug,
+                    "enabled": is_enabled,
+                    "actionable": is_enabled,
+                    "optional": not is_enabled,
+                }
+                if is_enabled:
+                    detail["owner_action"] = True
+                checks.append(
+                    DoctorCheck(
+                        name="doctor.campaign.credentials",
+                        status=STATUS_WARN,
+                        lane=canonical,
+                        message=f"{canonical} hosted credentials missing ({missing_var})",
+                        detail=detail,
+                        remediation=f"Set {missing_var} in environment for {canonical} campaign dispatch.",
+                    )
+                )
+            elif not has_repo:
+                detail = {
+                    "provider": canonical,
+                    "lane": lane.lane_id,
+                    "driver": lane.driver,
+                    "has_credentials": True,
+                    "repo_slug": "",
+                    "enabled": is_enabled,
+                    "actionable": is_enabled,
+                    "optional": not is_enabled,
+                }
+                if is_enabled:
+                    detail["owner_action"] = True
+                checks.append(
+                    DoctorCheck(
+                        name="doctor.campaign.credentials",
+                        status=STATUS_WARN,
+                        lane=canonical,
+                        message=f"{canonical} hosted dispatch requires a repository slug",
+                        detail=detail,
+                        remediation="Run from a GitHub checkout or pass `code-mower doctor --adoption --repo OWNER/REPO`.",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheck(
+                        name="doctor.campaign.credentials",
+                        status=STATUS_PASS,
+                        lane=canonical,
+                        message=f"{canonical} hosted credentials and repository target ready",
+                        detail={
+                            "provider": canonical,
+                            "lane": lane.lane_id,
+                            "driver": lane.driver,
+                            "repo_slug": repo_slug,
+                            "has_credentials": True,
+                            "enabled": is_enabled,
+                        },
+                    )
+                )
+
+    # 3. Campaign Storage Writable Check
+    storage_rel = ".code-mower/campaigns"
+    target_dir = root / ".code-mower" / "campaigns"
+    writable = False
+    try:
+        for required_path in (target_dir.parent, target_dir):
+            if required_path.is_symlink() and not required_path.exists():
+                raise OSError("broken campaign storage symlink")
+        probe_dir = target_dir
+        while not probe_dir.exists() and probe_dir.parent != probe_dir:
+            probe_dir = probe_dir.parent
+        if probe_dir.is_dir():
+            with tempfile.NamedTemporaryFile(
+                prefix=".code-mower-doctor-",
+                dir=probe_dir,
+            ):
+                writable = True
+    except OSError:
+        writable = False
+
+    if writable:
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.storage",
+                status=STATUS_PASS,
+                message=f"campaign storage directory is writable ({storage_rel})",
+                detail={"storage_dir": storage_rel, "writable": True},
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.storage",
+                status=STATUS_WARN,
+                message=f"campaign storage directory is not writable ({storage_rel})",
+                detail={
+                    "storage_dir": storage_rel,
+                    "writable": False,
+                    "actionable": True,
+                    "owner_action": True,
+                },
+                remediation=f"Ensure write permissions for {storage_rel}.",
+            )
+        )
+
+    # 4. Cloud Upload Readiness Check
+    cloud_token_env = DEFAULT_CLOUD_TOKEN_ENV
+    cloud_resolution = resolve_cloud_token(
+        token_env=cloud_token_env,
+        token_dir=(token_dir or DEFAULT_CLOUD_TOKEN_DIR).expanduser(),
+        env=current_env,
+    )
+    if cloud_resolution.has_token:
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.cloud_upload",
+                status=STATUS_PASS,
+                message="Code Mower Cloud upload token configured",
+                detail={
+                    "token_env": cloud_token_env,
+                    "configured": True,
+                    "source": cloud_resolution.source,
+                },
+            )
+        )
+    elif cloud_resolution.status == "ambiguous":
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.cloud_upload",
+                status=STATUS_WARN,
+                message="multiple Code Mower Cloud token profiles found; none selected",
+                detail={
+                    "token_env": cloud_token_env,
+                    "configured": False,
+                    "status": cloud_resolution.status,
+                    "candidate_files": list(cloud_resolution.token_files),
+                    "optional": True,
+                    "actionable": False,
+                },
+                remediation=(
+                    "Select a current profile with `code-mower cloud setup --token-stdin`, "
+                    "or pass --token-file when uploading."
+                ),
+            )
+        )
+    elif cloud_resolution.status == "malformed":
+        candidate_files = list(cloud_resolution.token_files)
+        if cloud_resolution.token_file is not None:
+            candidate_files.append(cloud_resolution.token_file.name)
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.cloud_upload",
+                status=STATUS_WARN,
+                message="stored Code Mower Cloud token profile is malformed",
+                detail={
+                    "token_env": cloud_token_env,
+                    "configured": False,
+                    "status": cloud_resolution.status,
+                    "candidate_files": sorted(set(candidate_files)),
+                    "optional": True,
+                    "actionable": False,
+                },
+                remediation=(
+                    "Run `code-mower cloud setup --token-stdin` again, or pass "
+                    "--token-file with a sourceable token env file when uploading."
+                ),
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.cloud_upload",
+                status=STATUS_WARN,
+                message="optional Code Mower Cloud upload token is not configured",
+                detail={
+                    "token_env": cloud_token_env,
+                    "configured": False,
+                    "optional": True,
+                    "actionable": False,
+                },
+                remediation=(
+                    "Cloud upload is optional. Set CODE_MOWER_CLOUD_TOKEN or run "
+                    "`code-mower cloud setup --token-stdin` to enable qualification uploads."
+                ),
+            )
+        )
+
+    # 5. Board Visibility Check
+    board_info = lane_status.collect_local_boards(runner)
+    raw_boards = board_info.get("boards") or []
+    redacted_boards = [
+        {
+            "port": b.get("port"),
+            "process": b.get("process"),
+            "confidence": b.get("confidence"),
+        }
+        for b in raw_boards
+        if isinstance(b, Mapping)
+    ]
+
+    if redacted_boards:
+        ports_str = ", ".join(str(b["port"]) for b in redacted_boards if b.get("port"))
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.board_visibility",
+                status=STATUS_PASS,
+                message=(
+                    f"Code Mower Board visible on port {ports_str}"
+                    if ports_str
+                    else f"Code Mower Board visible ({len(redacted_boards)} running)"
+                ),
+                detail={
+                    "available": True,
+                    "board_count": len(redacted_boards),
+                    "boards": redacted_boards,
+                },
+            )
+        )
+    else:
+        available = bool(board_info.get("available", False))
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.board_visibility",
+                status=STATUS_WARN,
+                message=(
+                    "Code Mower Board is not running locally"
+                    if available
+                    else "local Board listener inventory unavailable"
+                ),
+                detail={
+                    "available": available,
+                    "board_count": 0,
+                    "boards": [],
+                    "optional": True,
+                    "actionable": False,
+                },
+                remediation=(
+                    "Start Code Mower Board with `code-mower board serve --repo OWNER/REPO` "
+                    "to monitor campaign progress."
+                    if available
+                    else "Verify local listener tools (lsof or ss) are available to inspect running Boards."
+                ),
+            )
+        )
+
+    provider_checks = [
+        check
+        for check in checks
+        if check.name in {"doctor.campaign.adapter", "doctor.campaign.credentials"}
+    ]
+    ready_providers = sorted(
+        {check.lane for check in provider_checks if check.status == STATUS_PASS and check.lane}
+    )
+    actionable_providers = sorted(
+        {
+            check.lane
+            for check in provider_checks
+            if check.status == STATUS_WARN
+            and isinstance(check.detail, Mapping)
+            and check.detail.get("actionable")
+            and check.lane
+        }
+    )
+    optional_providers = sorted(
+        {
+            check.lane
+            for check in provider_checks
+            if check.status == STATUS_WARN
+            and isinstance(check.detail, Mapping)
+            and check.detail.get("optional")
+            and check.lane
+        }
+    )
+    preview_command = (
+        "code-mower release campaign --release-tag RELEASE_TAG "
+        "--package-spec PACKAGE==VERSION --repo-slug OWNER/REPO"
+    )
+    storage_ready = any(
+        check.name == "doctor.campaign.storage" and check.status == STATUS_PASS
+        for check in checks
+    )
+    if actionable_providers or not storage_ready:
+        readiness_status = STATUS_WARN
+        readiness_message = "release campaign needs configuration before dispatch"
+        readiness_remediation = (
+            "Resolve the actionable campaign checks above, then preview with "
+            f"`{preview_command}`."
+        )
+    elif ready_providers:
+        readiness_status = STATUS_PASS
+        readiness_message = (
+            f"release campaign preview is ready for {len(ready_providers)} provider(s)"
+        )
+        readiness_remediation = f"Preview with `{preview_command}`."
+    else:
+        readiness_status = STATUS_WARN
+        readiness_message = "no release campaign provider is ready in this posture"
+        readiness_remediation = (
+            "Configure at least one campaign provider, then preview with "
+            f"`{preview_command}`."
+        )
+    checks.append(
+        DoctorCheck(
+            name="doctor.campaign.readiness",
+            status=readiness_status,
+            message=readiness_message,
+            detail={
+                "ready_providers": ready_providers,
+                "actionable_providers": actionable_providers,
+                "optional_providers": optional_providers,
+                "preview_command": preview_command,
+            },
+            remediation=readiness_remediation,
+        )
+    )
+
     return tuple(checks)

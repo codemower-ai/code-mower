@@ -11,6 +11,7 @@ from code_mower import config as code_mower_config
 from .adoption import (
     PUBLIC_IDENTITY_VARIABLES,
     TRUSTED_AUDIT_AUTHOR_VARIABLES,
+    check_adoption_campaign_readiness,
     check_adoption_posture_guidance,
     check_adoption_setup,
     config_with_repository_target,
@@ -270,6 +271,16 @@ def run_doctor(
             adoption_posture=adoption_posture,
         )
     )
+
+    if adoption:
+        checks.extend(
+            check_adoption_campaign_readiness(
+                config=config,
+                repo_root=repo_root,
+                repo_slug=trusted_author_repo_slug,
+                adoption_posture=adoption_posture,
+            )
+        )
 
     if "github" in enabled_stages:
         checks.extend(

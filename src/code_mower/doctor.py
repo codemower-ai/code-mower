@@ -49,6 +49,7 @@ _token_file_mentions_cloud_token = _doctor_checks.token_file_mentions_cloud_toke
 _apply_first_run_defaults = _doctor_checks.apply_first_run_defaults
 detect_repo_slug = _doctor_checks.detect_repo_slug
 normalize_repo_slug = _doctor_checks.normalize_repo_slug
+check_adoption_campaign_readiness = _doctor_checks.check_adoption_campaign_readiness
 
 
 def _source_repo_uses_starter_config(cwd: Path, config_path: Path) -> bool:
