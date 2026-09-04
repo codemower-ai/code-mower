@@ -1107,6 +1107,17 @@ def dispatch_or_advance_campaign(
             # trusted result yet: fall through to the capability checks and
             # applied-dispatch section below for exactly one redispatch.
 
+        # 3.5 Retry preview safety: --retry-provider without --apply must be
+        # read-only. This covers a still-running provider with no new result
+        # from the safe poll above, and a previously blocked/unavailable
+        # attempted provider -- neither may be rewritten by the dry-run
+        # evaluation below, and neither may be dispatched.
+        if is_explicit_retry and not apply and bool(provider_data.get("attempted_at")):
+            provider_data["next_action"] = (
+                f"run with --apply --retry-provider {provider} to retry {provider}"
+            )
+            continue
+
         # 4. Check capabilities and readiness
         cmd_found = _find_command(lane, which_fn=which_fn)
         has_creds, missing_cred = _check_credentials(lane, env=current_env)

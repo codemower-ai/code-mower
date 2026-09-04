@@ -856,6 +856,85 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "running")
 
+    def test_retry_preview_of_running_provider_is_read_only(self) -> None:
+        """--retry-provider without --apply must not dispatch or rewrite a still-
+
+        running provider when the safe poll finds no new result -- it must
+        preserve state/evidence and only point the operator at --apply.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._running_cursor_bugbot_campaign(campaigns_dir)
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            dispatch_calls: list[Any] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="99",
+                resume=True,
+                apply=False,
+                retry_provider="cursor_bugbot",
+                gh_json_runner=mock_gh_json,
+                command_runner=self._no_op_dispatch_command_runner(dispatch_calls),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(dispatch_calls, [])
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            provider = saved["providers"][0]
+            self.assertEqual(provider["state"], "running")
+            self.assertEqual(provider["dispatched_at"], "2026-09-04T00:00:00Z")
+            self.assertIn("--apply --retry-provider cursor_bugbot", provider["next_action"])
+
+    def _blocked_codex_campaign(self, campaigns_dir: Path) -> None:
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["codex"],
+            repo_slug="owner/repo",
+        )
+        campaign.providers[0]["state"] = "blocked"
+        campaign.providers[0]["attempted_at"] = "2026-09-04T00:00:00Z"
+        campaign.providers[0]["error"] = "adapter_exited_nonzero"
+        campaign.providers[0]["next_action"] = "inspect codex qualification failures"
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+
+    def test_retry_preview_of_blocked_provider_is_read_only(self) -> None:
+        """--retry-provider without --apply must not rewrite a previously
+
+        blocked/unavailable attempted provider back to queued/unavailable,
+        and must not invoke the adapter.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._blocked_codex_campaign(campaigns_dir)
+
+            def forbidden_adapter_runner(argv, timeout):
+                raise AssertionError("retry preview must not invoke the adapter")
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=False,
+                retry_provider="codex",
+                which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                adapter_runner=forbidden_adapter_runner,
+            )
+
+            saved = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            provider = saved["providers"][0]
+            self.assertEqual(provider["state"], "blocked")
+            self.assertEqual(provider["error"], "adapter_exited_nonzero")
+            self.assertIn("--apply --retry-provider codex", provider["next_action"])
+
     def test_ordinary_resume_of_running_provider_never_redispatches(self) -> None:
         """Ordinary resume (no --retry-provider) of a running provider stays poll-only,
 
