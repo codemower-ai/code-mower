@@ -552,9 +552,21 @@ def _resolve_adapter_config_for_lane(
                     return None, None, _safe_error("adapter_configuration_invalid"), ""
                 overrides: dict[str, Any] = {}
                 if isinstance(provider_cfg, Mapping):
-                    for key in ("campaign_adapter_argv", "campaign_adapter_timeout_seconds"):
+                    for key in (
+                        "campaign_adapter_argv",
+                        "campaign_adapter_timeout_seconds",
+                        "campaign_adapter_enabled",
+                    ):
                         if key in provider_cfg:
                             overrides[key] = provider_cfg[key]
+                enabled = overrides.get(
+                    "campaign_adapter_enabled",
+                    lane.provider_config.get("campaign_adapter_enabled", True),
+                )
+                if not isinstance(enabled, bool):
+                    return None, None, _safe_error("adapter_configuration_invalid"), ""
+                if enabled is False:
+                    return None, None, "", ""
                 argv_template = overrides.get(
                     "campaign_adapter_argv",
                     lane.provider_config.get("campaign_adapter_argv"),

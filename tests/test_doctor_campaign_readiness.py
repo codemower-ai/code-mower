@@ -161,6 +161,26 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertFalse(check.detail.get("actionable"))
             self.assertTrue(check.detail.get("optional"))
 
+    def test_campaign_adapter_honors_explicit_adapter_disable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = check_adoption_campaign_readiness(
+                config={
+                    "lanes": {
+                        "codex": {
+                            "provider_config": {"campaign_adapter_enabled": False},
+                        }
+                    }
+                },
+                repo_root=Path(tmp),
+                which_fn=lambda command: f"/bin/{command}",
+                providers=["codex"],
+            )
+
+            check = next(c for c in checks if c.name == "doctor.campaign.adapter")
+            self.assertEqual(check.status, STATUS_WARN)
+            self.assertFalse(check.detail.get("adapter_configured"))
+            self.assertTrue(check.detail.get("actionable"))
+
     def test_campaign_adapter_invalid_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
