@@ -74,26 +74,27 @@ class ReleaseQualifyTests(unittest.TestCase):
             output_path = Path(tmpdir) / "result.json"
 
             with mock.patch("code_mower.release_qualify.doctor_checks.run_doctor") as mock_doctor:
-                with mock.patch("code_mower.release_qualify.doctor_checks.resolve_doctor_provider_templates_path") as mock_resolve:
-                    mock_report = mock.Mock()
-                    mock_report.status = "pass"
-                    mock_report.warnings = 0
-                    mock_report.owner_actions = 0
-                    mock_doctor.return_value = mock_report
-                    mock_resolve.return_value = Path("/tmp/providers.yml")
+                mock_report = mock.Mock()
+                mock_report.status = "pass"
+                mock_report.warnings = 0
+                mock_report.owner_actions = 0
+                mock_doctor.return_value = mock_report
 
-                    release_qualify.run_release_qualification(
-                        release_tag="v1.0.0",
-                        package_spec="code-mower==1.0.0",
-                        output_path=output_path,
-                        repo_path=repo_path,
-                        dry_run=True,
-                    )
+                release_qualify.run_release_qualification(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    output_path=output_path,
+                    repo_path=repo_path,
+                    dry_run=True,
+                )
 
-                    kwargs = mock_doctor.call_args.kwargs
-                    self.assertEqual(kwargs["config_path"], config_path)
-                    self.assertIn("adoption", kwargs)
-                    self.assertTrue(kwargs["adoption"])
+                kwargs = mock_doctor.call_args.kwargs
+                self.assertEqual(kwargs["config_path"], config_path)
+                self.assertIn("adoption", kwargs)
+                self.assertTrue(kwargs["adoption"])
+                self.assertTrue(kwargs["probe_runtime"])
+                self.assertTrue(kwargs["github"])
+                self.assertTrue(kwargs["cloud"])
 
     def test_lanes_check_uses_realistic_payload(self) -> None:
         """Lanes check interprets realistic collect_status payload."""
@@ -104,7 +105,7 @@ class ReleaseQualifyTests(unittest.TestCase):
                 "local_boards": []
             }
 
-            step = release_qualify._run_lanes_check("owner/repo", 60)
+            step = release_qualify._run_lanes_check("owner/repo")
 
             self.assertEqual(step.id, "lanes_status")
             self.assertEqual(step.status, "pass")
@@ -117,7 +118,7 @@ class ReleaseQualifyTests(unittest.TestCase):
                 "remote": {"available": False},
             }
 
-            step = release_qualify._run_lanes_check("owner/repo", 60)
+            step = release_qualify._run_lanes_check("owner/repo")
 
             self.assertEqual(step.status, "warn")
             self.assertEqual(step.warning_count, 1)
@@ -134,7 +135,7 @@ class ReleaseQualifyTests(unittest.TestCase):
                     "checks": []
                 }
 
-                step = release_qualify._run_board_check("owner/repo", repo_path, 60)
+                step = release_qualify._run_board_check("owner/repo", repo_path)
 
                 self.assertEqual(step.id, "board")
                 self.assertEqual(step.status, "pass")
@@ -150,7 +151,7 @@ class ReleaseQualifyTests(unittest.TestCase):
                     "checks": [{"status": "warn"}]
                 }
 
-                step = release_qualify._run_board_check("owner/repo", repo_path, 60)
+                step = release_qualify._run_board_check("owner/repo", repo_path)
 
                 self.assertEqual(step.status, "warn")
                 self.assertEqual(step.warning_count, 1)

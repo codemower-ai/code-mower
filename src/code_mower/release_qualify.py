@@ -23,6 +23,7 @@ if __package__ in {None, ""}:
         _package_spec_uses_package_index,
         run_package_install_rehearsal,
     )
+    from code_mower.package import DEFAULT_PROVIDER_TEMPLATES
 else:
     from . import board as code_mower_board
     from . import doctor_checks
@@ -31,6 +32,7 @@ else:
         _package_spec_uses_package_index,
         run_package_install_rehearsal,
     )
+    from .package import DEFAULT_PROVIDER_TEMPLATES
 
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[ab]\d+|rc\d+)?$")
@@ -145,20 +147,23 @@ def _aggregate_outcome(steps: list[StepResult]) -> str:
     return "pass"
 
 
-def _run_doctor_check(config_path: Path, repo_slug: str, timeout: int) -> StepResult:
+def _run_doctor_check(config_path: Path, repo_slug: str, config_source: str) -> StepResult:
     """Run doctor check and return step result."""
     start = time.time()
     try:
-        provider_templates = doctor_checks.resolve_doctor_provider_templates_path(Path.cwd())
+        from code_mower.package import resolve_provider_templates_path
+        provider_templates_path = resolve_provider_templates_path(DEFAULT_PROVIDER_TEMPLATES)
         report = doctor_checks.run_doctor(
             config_path=config_path,
-            provider_templates_path=provider_templates,
+            provider_templates_path=provider_templates_path,
             profile="recommended",
             repo_slug=repo_slug,
+            config_source=config_source,
             adoption=True,
             adoption_posture="reviewer-gate",
-            github=False,
-            cloud=False,
+            probe_runtime=True,
+            github=True,
+            cloud=True,
         )
         status = report.status
         warnings = report.warnings
@@ -177,7 +182,7 @@ def _run_doctor_check(config_path: Path, repo_slug: str, timeout: int) -> StepRe
     )
 
 
-def _run_lanes_check(repo_slug: str, timeout: int) -> StepResult:
+def _run_lanes_check(repo_slug: str) -> StepResult:
     """Run lanes status check."""
     start = time.time()
     try:
@@ -202,7 +207,7 @@ def _run_lanes_check(repo_slug: str, timeout: int) -> StepResult:
     )
 
 
-def _run_board_check(repo_slug: str, repo_path: Path, timeout: int) -> StepResult:
+def _run_board_check(repo_slug: str, repo_path: Path) -> StepResult:
     """Run board diagnostics."""
     start = time.time()
     try:
@@ -304,19 +309,20 @@ def run_release_qualification(
 
     ending_version = ""
     config_path = _resolve_config_path(repo_path)
+    config_source = f"file:{config_path}" if config_path.is_file() else "default"
 
     if not repo_slug and repo_path:
         repo_slug = _infer_repo_slug(repo_path)
 
-    doctor_step = _run_doctor_check(config_path, repo_slug, timeout)
+    doctor_step = _run_doctor_check(config_path, repo_slug, config_source)
     steps.append(doctor_step)
 
     if repo_slug:
-        lanes_step = _run_lanes_check(repo_slug, timeout)
+        lanes_step = _run_lanes_check(repo_slug)
         steps.append(lanes_step)
 
         if repo_path:
-            board_step = _run_board_check(repo_slug, repo_path, timeout)
+            board_step = _run_board_check(repo_slug, repo_path)
             steps.append(board_step)
 
     if dry_run:
