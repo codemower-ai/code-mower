@@ -238,8 +238,11 @@ def _compute_idempotency_key(
     provider: str,
     release_tag: str,
     qualification_context: str,
+    starting_version: str = "",
 ) -> str:
-    seed = f"{campaign_id}:{provider}:{release_tag}:{qualification_context}".encode("utf-8")
+    seed = (
+        f"{campaign_id}:{provider}:{release_tag}:{qualification_context}:{starting_version}"
+    ).encode("utf-8")
     return hashlib.sha256(seed).hexdigest()[:16]
 
 
@@ -488,13 +491,23 @@ def _extract_bound_adoption_result(
     provider: str,
     release_tag: str,
     idempotency_key: str,
+    qualification_context: str,
+    starting_version: str,
 ) -> dict[str, Any] | None:
     """Extract an adoptionResult from a GitHub comment, requiring explicit identity binding.
 
     A bare adoptionResult JSON blob is never accepted: the comment must wrap
     it in a RESULT_MARKER_SCHEMA envelope whose campaign_id, provider,
     release_tag, and idempotency_key match this exact dispatch -- otherwise a
-    stale or unrelated comment could be replayed to fabricate completion.
+    stale or unrelated comment could be replayed to fabricate completion. The
+    idempotency_key alone is not sufficient binding for qualification_context
+    and starting_version: it is generated once at campaign creation and never
+    reproduced independently here, so the embedded adoption_result's own
+    qualification_context and starting_version are checked directly against
+    the campaign's expected values -- a cold-install result can never
+    complete an upgrade campaign, and an upgrade result must match this
+    campaign's exact starting_version, even if a wrapper key were copied or
+    generated incorrectly.
     """
     for match in RESULT_MARKER_RE.finditer(text):
         try:
@@ -517,7 +530,12 @@ def _extract_bound_adoption_result(
             validate_adoption_result_payload(adoption_result)
         except ValueError:
             continue
-        if adoption_result.get("provider") != provider or adoption_result.get("release_tag") != release_tag:
+        if (
+            adoption_result.get("provider") != provider
+            or adoption_result.get("release_tag") != release_tag
+            or adoption_result.get("qualification_context") != qualification_context
+            or str(adoption_result.get("starting_version") or "") != starting_version
+        ):
             continue
         return adoption_result
     return None
@@ -946,7 +964,9 @@ def initialize_campaign(
     campaign_providers: list[dict[str, Any]] = []
     for p_name in provider_keys:
         canonical_name, lane = resolve_provider_lane(p_name)
-        idemp_key = _compute_idempotency_key(campaign_id, canonical_name, release_tag, qualification_context)
+        idemp_key = _compute_idempotency_key(
+            campaign_id, canonical_name, release_tag, qualification_context, starting_version
+        )
         cp = CampaignProvider(
             provider=canonical_name,
             lane_id=lane.lane_id,
@@ -1108,6 +1128,8 @@ def dispatch_or_advance_campaign(
                             provider=provider,
                             release_tag=release_tag,
                             idempotency_key=str(provider_data.get("idempotency_key") or ""),
+                            qualification_context=context,
+                            starting_version=starting_version,
                         )
                         if found_result:
                             provider_data["adoption_result"] = found_result

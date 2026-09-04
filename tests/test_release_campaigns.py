@@ -1895,6 +1895,189 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(saved["providers"][0]["state"], "complete")
             self.assertEqual(saved["status"], "complete")
 
+    def test_idempotency_key_binds_starting_version(self) -> None:
+        """Two upgrade dispatches that differ only by starting_version must get different keys.
+
+        Otherwise a hosted comment result for one starting version could be
+        replayed against a same-tag upgrade campaign from a different
+        starting version, since the key would be identical.
+        """
+        key_a = release_campaigns._compute_idempotency_key(
+            "campaign-v2.0.0", "claude", "v2.0.0", "upgrade", "1.0.0"
+        )
+        key_b = release_campaigns._compute_idempotency_key(
+            "campaign-v2.0.0", "claude", "v2.0.0", "upgrade", "0.9.0"
+        )
+        self.assertNotEqual(key_a, key_b)
+
+    def test_poll_rejects_upgrade_result_from_wrong_starting_version_despite_matching_key(
+        self,
+    ) -> None:
+        """A same-tag upgrade result from starting version A cannot complete a campaign from B.
+
+        This holds even when the wrapper's idempotency_key matches the real
+        dispatch exactly -- the embedded adoption_result's own
+        starting_version must independently match the campaign's.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v2.0.0",
+                package_spec="code-mower==2.0.0",
+                qualification_context="upgrade",
+                starting_version="1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result_full(
+                release_tag="v2.0.0",
+                normalized_version="2.0.0",
+                provider="cursor_bugbot",
+                qualification_context="upgrade",
+                starting_version="0.9.0",
+                ending_version="2.0.0",
+                outcome="pass",
+            )
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v2.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "cursor[bot]"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v2.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+
+            saved = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "running")
+            self.assertIsNone(saved["providers"][0]["adoption_result"])
+
+    def test_poll_rejects_cold_install_result_for_upgrade_campaign(self) -> None:
+        """A cold-install adoption result cannot complete an upgrade campaign, even with a matching key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v2.0.0",
+                package_spec="code-mower==2.0.0",
+                qualification_context="upgrade",
+                starting_version="1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result_full(
+                release_tag="v2.0.0",
+                normalized_version="2.0.0",
+                provider="cursor_bugbot",
+                qualification_context="cold_install",
+                starting_version="",
+                ending_version="2.0.0",
+                outcome="pass",
+            )
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v2.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "cursor[bot]"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v2.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+
+            saved = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "running")
+            self.assertIsNone(saved["providers"][0]["adoption_result"])
+
+    def test_poll_accepts_upgrade_result_matching_starting_version(self) -> None:
+        """Sanity check: a correctly bound upgrade result still completes the campaign."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v2.0.0",
+                package_spec="code-mower==2.0.0",
+                qualification_context="upgrade",
+                starting_version="1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            campaign.providers[0]["state"] = "running"
+            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            idempotency_key = campaign.providers[0]["idempotency_key"]
+            adoption_res = _mock_adoption_result_full(
+                release_tag="v2.0.0",
+                normalized_version="2.0.0",
+                provider="cursor_bugbot",
+                qualification_context="upgrade",
+                starting_version="1.0.0",
+                ending_version="2.0.0",
+                outcome="pass",
+            )
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": campaign.campaign_id,
+                "provider": "cursor_bugbot",
+                "release_tag": "v2.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": [{"author": {"login": "cursor[bot]"}, "body": marker}]}, ""
+
+            release_campaigns.campaign_command(
+                release_tag="v2.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+
+            saved = release_campaigns.load_campaign("campaign-v2.0.0", campaigns_dir)
+            assert saved is not None
+            self.assertEqual(saved["providers"][0]["state"], "complete")
+
     def test_poll_rejects_wrong_idempotency_key(self) -> None:
         """A result marker with a mismatched idempotency_key is rejected (replay/stale protection)."""
         with tempfile.TemporaryDirectory() as tmp:
