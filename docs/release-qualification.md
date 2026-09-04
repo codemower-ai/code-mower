@@ -256,7 +256,7 @@ code-mower release campaign watch --release-tag v1.0.0 --interval 5 --timeout 30
 code-mower release campaign watch --release-tag v1.0.0 --json
 ```
 
-- **Bounded polling:** Polls the stored campaign at a configurable positive interval (`--interval`, default `10.0`s) and bounded duration (`--timeout`, default `600.0`s). Both must be positive numbers.
+- **Bounded polling:** Polls the stored campaign at a configurable positive interval (`--interval`, default `10.0`s) and bounded duration (`--timeout`, default `600.0`s). Both must be positive numbers. `--interval` is valid only for `watch`. `--timeout` is valid only for `watch` (bounded duration) and `upload` (request timeout); supplying either option to an action where it would be silently ignored is rejected with a bounded error without mutating campaign state.
 - **Distinct stopping states:** Stops distinctly with appropriate exit codes for:
   - `complete` (exit 0): All providers have reached passing qualification states.
   - `owner_action` (exit 1): Running work has finished but campaign requires owner intervention (e.g. missing credentials, unconfigured adapter, or pending manual recording).
@@ -305,7 +305,7 @@ code-mower release campaign upload --release-tag v1.0.0 --yes --json
 
 Token, endpoint, and identity resolution are the shared cloud ones:
 `--token-env`, `--token-file`, `--token-dir`, `--install-id`, `--team-id`,
-`--endpoint`, and `--timeout` behave as they do for `code-mower cloud upload`,
+`--endpoint`, and `--timeout` (bounded request timeout, default 20.0s; valid only for `upload` and `watch`) behave as they do for `code-mower cloud upload`,
 including `code-mower cloud setup` profiles. Uploading one result file at a time
 with `code-mower cloud dogfood --event adoption_run=path/to/result.json`
 still works and produces the same event ids.

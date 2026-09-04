@@ -3173,8 +3173,7 @@ def campaign_watch(
     qcontext = str(target_campaign.get("qualification_context") or "cold_install")
 
     target_path = campaigns_dir / campaign_filename(cid)
-    if not target_path.is_file():
-        save_campaign(target_campaign, campaigns_dir)
+    target_absent = not target_path.is_file()
 
     # Initial check / poll at t=0
     start_time = time_fn()
@@ -3185,6 +3184,8 @@ def campaign_watch(
 
     try:
         with locked_campaigns_dir(campaigns_dir):
+            if target_absent and not target_path.is_file():
+                save_campaign(target_campaign, campaigns_dir)
             reloaded = load_campaign_by_id(cid, campaigns_dir)
             if reloaded is None:
                 msg = f"campaign {cid!r} could not be loaded from storage"
@@ -3379,6 +3380,10 @@ def campaign_watch(
         transitions=all_transitions,
         providers=current_campaign.get("providers", []),
     )
+
+
+# Public alias matching watch_release_campaign naming convention
+watch_release_campaign = campaign_watch
 
 
 def _board_text(source: Mapping[str, Any], key: str, default: str) -> str:
@@ -3716,6 +3721,7 @@ def _watch_intent_conflict(
     apply: bool,
     yes: bool,
     interval: float | None = None,
+    timeout: float | None = None,
 ) -> str:
     if action == "watch":
         intents: list[str] = []
@@ -3735,6 +3741,11 @@ def _watch_intent_conflict(
         )
     if interval is not None and action != "watch":
         return "--interval applies only to the 'watch' action; re-run as `campaign watch`"
+    if timeout is not None and action not in {"watch", "upload"}:
+        return (
+            "--timeout applies only to the 'watch' and 'upload' actions; re-run as "
+            "`campaign watch` or `campaign upload`"
+        )
     return ""
 
 
@@ -3748,6 +3759,7 @@ def _command_intent_conflict(
     status: bool,
     yes: bool = False,
     interval: float | None = None,
+    timeout: float | None = None,
 ) -> str:
     """Report the one bounded reason this invocation states conflicting intents.
 
@@ -3789,6 +3801,7 @@ def _command_intent_conflict(
         apply=apply,
         yes=yes,
         interval=interval,
+        timeout=timeout,
     )
     if conflict:
         return conflict
@@ -3998,6 +4011,13 @@ def campaign_command(
     reading, and is refused with a bounded error rather than silently resolved
     to whichever of the two the command body happens to test first.
 
+    Option scope is enforced before any locks or lookups: ``--interval`` is
+    valid only for the ``watch`` action, and ``--timeout`` is valid only for
+    ``watch`` and ``upload`` (which use it for watch duration and request timeout
+    respectively). Supplying either option to an action where it would be
+    silently ignored is rejected with a bounded error before touching campaign
+    state.
+
     An explicit ``campaign_id`` is validated first, before either route, so a
     malformed identifier produces a bounded error and never creates a campaign
     directory, a lock file, or any other on-disk state.
@@ -4031,6 +4051,7 @@ def campaign_command(
         status=status,
         yes=yes,
         interval=interval,
+        timeout=timeout,
     )
     if conflict:
         print(f"error: {conflict}", file=err)

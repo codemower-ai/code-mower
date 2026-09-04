@@ -9927,6 +9927,392 @@ class CampaignWatchTests(unittest.TestCase):
         self.assertEqual(parsed["schema"], release_campaigns.CAMPAIGN_WATCH_SCHEMA)
         self.assertEqual(parsed["stop_reason"], "complete")
 
+    def test_watch_in_memory_publication_under_lock_and_concurrency(self) -> None:
+        """watch_release_campaign publishes in-memory campaign under directory lock and re-checks existence."""
+        campaign_data = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-in-memory",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "status": "complete",
+            "providers": [
+                {
+                    "provider": "claude",
+                    "lane_id": "lane-claude",
+                    "state": "complete",
+                    "environment": "local",
+                    "elapsed_seconds": 5.0,
+                }
+            ],
+        }
+
+        # 1. Lock assertion: verify directory lock is held when save_campaign is invoked
+        lock_held_during_save = False
+        is_locked = False
+        real_lock = release_campaigns.locked_campaigns_dir
+        real_save = release_campaigns.save_campaign
+
+        @contextlib.contextmanager
+        def tracking_lock(dir_path: Path) -> Any:
+            nonlocal is_locked
+            with real_lock(dir_path) as lock_file:
+                is_locked = True
+                try:
+                    yield lock_file
+                finally:
+                    is_locked = False
+
+        def tracking_save(campaign: Any, dir_path: Path) -> Path:
+            nonlocal lock_held_during_save
+            lock_held_during_save = is_locked
+            return real_save(campaign, dir_path)
+
+        target_file = self.campaigns_dir / release_campaigns.campaign_filename("campaign-in-memory")
+        self.assertFalse(target_file.is_file())
+
+        with (
+            mock.patch.object(release_campaigns, "locked_campaigns_dir", tracking_lock),
+            mock.patch.object(release_campaigns, "save_campaign", tracking_save),
+        ):
+            summary = release_campaigns.watch_release_campaign(
+                campaign=campaign_data,
+                campaigns_dir=self.campaigns_dir,
+                stdout=io.StringIO(),
+            )
+
+        self.assertTrue(lock_held_during_save)
+        self.assertTrue(target_file.is_file())
+        self.assertEqual(summary["status"], "complete")
+        self.assertEqual(summary["stop_reason"], "complete")
+
+        # 2. Concurrency re-check assertion:
+        # If another watcher/writer already created the target file before this watcher enters the lock,
+        # re-checking inside the lock ensures save_campaign is NOT called again.
+        save_calls = 0
+
+        def counting_save(campaign: Any, dir_path: Path) -> Path:
+            nonlocal save_calls
+            save_calls += 1
+            return real_save(campaign, dir_path)
+
+        with (
+            mock.patch.object(release_campaigns, "save_campaign", counting_save),
+            mock.patch.object(
+                release_campaigns,
+                "dispatch_or_advance_campaign",
+                side_effect=lambda c, **kwargs: dict(c),
+            ),
+        ):
+            self.assertTrue(target_file.is_file())
+            summary2 = release_campaigns.campaign_watch(
+                campaign=campaign_data,
+                campaigns_dir=self.campaigns_dir,
+                stdout=io.StringIO(),
+            )
+            self.assertEqual(save_calls, 0)
+            self.assertEqual(summary2["stop_reason"], "complete")
+
+        # 3. Concurrent watcher threads racing with in-memory campaign:
+        concurrent_cid = "campaign-concurrent-race"
+        concurrent_file = self.campaigns_dir / release_campaigns.campaign_filename(concurrent_cid)
+        concurrent_data = dict(campaign_data)
+        concurrent_data["campaign_id"] = concurrent_cid
+        self.assertFalse(concurrent_file.is_file())
+
+        concurrent_saves = 0
+        save_lock = threading.Lock()
+
+        def thread_safe_counting_save(campaign: Any, dir_path: Path) -> Path:
+            nonlocal concurrent_saves
+            with save_lock:
+                concurrent_saves += 1
+            return real_save(campaign, dir_path)
+
+        errors: list[Exception] = []
+        results: list[dict[str, Any]] = []
+
+        def run_watcher() -> None:
+            try:
+                res = release_campaigns.campaign_watch(
+                    campaign=dict(concurrent_data),
+                    campaigns_dir=self.campaigns_dir,
+                    stdout=io.StringIO(),
+                )
+                results.append(res)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=run_watcher) for _ in range(5)]
+        with (
+            mock.patch.object(release_campaigns, "save_campaign", thread_safe_counting_save),
+            mock.patch.object(
+                release_campaigns,
+                "dispatch_or_advance_campaign",
+                side_effect=lambda c, **kwargs: dict(c),
+            ),
+        ):
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 5)
+        self.assertTrue(concurrent_file.is_file())
+        # Exactly one watcher published the campaign; all other concurrent watchers observed existence inside the lock
+        self.assertEqual(concurrent_saves, 1)
+        for r in results:
+            self.assertEqual(r["stop_reason"], "complete")
+
+    def test_option_scope_enforcement_and_no_mutation(self) -> None:
+        """--interval is valid only for watch; --timeout is valid only for watch and upload.
+
+        Actions where options are out of scope reject them with a bounded non-zero error
+        and perform no campaign mutation.
+        """
+        # Seed an existing campaign
+        self._seed_campaign(campaign_id="campaign-v1.0.0", release_tag="v1.0.0", status="running")
+        campaign_path = self.campaigns_dir / release_campaigns.campaign_filename("campaign-v1.0.0")
+        initial_stat = campaign_path.stat()
+        initial_content = campaign_path.read_text(encoding="utf-8")
+
+        # 1. Non-watch actions reject --interval
+        for act in ["status", "create", "resume", "dispatch", "upload"]:
+            err = io.StringIO()
+            res = release_campaigns.campaign_command(
+                action=act,
+                campaign_id="campaign-v1.0.0",
+                release_tag="v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                interval=5.0,
+                stderr=err,
+            )
+            self.assertEqual(res, 1)
+            self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+        # Action omitted with --interval
+        err = io.StringIO()
+        res = release_campaigns.campaign_command(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=5.0,
+            stderr=err,
+        )
+        self.assertEqual(res, 1)
+        self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+        # Legacy flags with --interval
+        for legacy_kwarg in [{"status": True}, {"resume": True}]:
+            err = io.StringIO()
+            res = release_campaigns.campaign_command(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                interval=5.0,
+                stderr=err,
+                **legacy_kwarg,
+            )
+            self.assertEqual(res, 1)
+            self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+        # 2. Actions other than watch and upload reject --timeout
+        for act in ["status", "create", "resume", "dispatch"]:
+            err = io.StringIO()
+            res = release_campaigns.campaign_command(
+                action=act,
+                campaign_id="campaign-v1.0.0",
+                release_tag="v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                timeout=30.0,
+                stderr=err,
+            )
+            self.assertEqual(res, 1)
+            self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # Action omitted with --timeout
+        err = io.StringIO()
+        res = release_campaigns.campaign_command(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            timeout=30.0,
+            stderr=err,
+        )
+        self.assertEqual(res, 1)
+        self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # Legacy flags with --timeout
+        for legacy_kwarg in [{"status": True}, {"resume": True}]:
+            err = io.StringIO()
+            res = release_campaigns.campaign_command(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                timeout=30.0,
+                stderr=err,
+                **legacy_kwarg,
+            )
+            self.assertEqual(res, 1)
+            self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # 3. Assert NO campaign mutation occurred on disk
+        self.assertEqual(campaign_path.read_text(encoding="utf-8"), initial_content)
+        current_stat = campaign_path.stat()
+        self.assertEqual(current_stat.st_mtime_ns, initial_stat.st_mtime_ns)
+
+        # 4. Valid actions accept options
+        # watch accepts both --interval and --timeout
+        out = io.StringIO()
+        res = release_campaigns.campaign_command(
+            action="watch",
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            interval=5.0,
+            timeout=10.0,
+            stdout=out,
+            time_fn=self.clock.time,
+            sleep_fn=self.clock.sleep,
+        )
+        self.assertEqual(res, 1)  # stops with timeout because still running
+        self.assertIn("Final result: timeout", out.getvalue())
+
+        # upload accepts --timeout (preview mode by default, without --yes)
+        self._seed_campaign(
+            campaign_id="campaign-upload-test",
+            release_tag="v1.0.0",
+            status="running",
+            providers=[
+                {
+                    "provider": "claude",
+                    "lane_id": "lane-claude",
+                    "state": "running",
+                    "environment": "local",
+                    "elapsed_seconds": 1.0,
+                }
+            ],
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            res = release_campaigns.campaign_command(
+                action="upload",
+                campaign_id="campaign-upload-test",
+                campaigns_dir=self.campaigns_dir,
+                timeout=45.0,
+            )
+        self.assertEqual(res, 0)
+        self.assertIn("Release Campaign Upload", out.getvalue())
+
+    def test_cli_option_scope_enforcement(self) -> None:
+        """CLI enforces option scope for --interval and --timeout with bounded errors."""
+        self._seed_campaign(campaign_id="campaign-v1.0.0", release_tag="v1.0.0")
+
+        # --interval on status
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "status",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--interval",
+                    "5.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+        # --timeout on status
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "status",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--timeout",
+                    "30.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # --timeout on create
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "create",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--package-spec",
+                    "code-mower==2.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--timeout",
+                    "30.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # --interval on upload
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "upload",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--interval",
+                    "5.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--interval applies only to the 'watch' action", err.getvalue())
+
+        # --timeout on omitted action (implicit create/advance)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--timeout",
+                    "30.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # --timeout on legacy --status flag
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "--status",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--timeout",
+                    "30.0",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
