@@ -29,8 +29,9 @@ Verified noninteractive surfaces:
 ================= ==================== ====================================================
 provider          verified CLI         invocation surface
 ================= ==================== ====================================================
-``codex``         codex-cli 0.147.0    ``exec`` with stdin (``-``), ``--json``,
-                                      ``--output-schema``, ``--output-last-message``, ``-C``
+``codex``         codex-cli 0.147.0    ``exec`` with stdin (``-``), ephemeral
+                                      workspace-write approval, network config,
+                                      ``--json``, schema/last-message output, ``-C``
 ``claude``        Claude Code 2.1.258  ``--print`` with stdin, ``--output-format json``,
                                       explicit tool/permission controls, ``--json-schema``
 ``antigravity``   agy 1.1.26          ``--print`` with a prompt file, ``--sandbox``,
@@ -103,6 +104,17 @@ CLAUDE_MODEL_ENV_NAME = "CLAUDE_AUDIT_MODEL"
 CLAUDE_DEFAULT_MODEL = "sonnet"
 CLAUDE_BUDGET_ENV_NAME = "CLAUDE_AUDIT_MAX_BUDGET_USD"
 CLAUDE_DEFAULT_MAX_BUDGET_USD = "5.00"
+CLAUDE_SANDBOX_SETTINGS: dict[str, Any] = {
+    "permissions": {"allow": ["Bash"]},
+    "sandbox": {
+        "enabled": True,
+        "failIfUnavailable": True,
+        "autoAllowBashIfSandboxed": True,
+        "allowUnsandboxedCommands": False,
+        "filesystem": {"denyRead": ["~"], "denyWrite": ["~"]},
+        "network": {"allowedDomains": ["pypi.org", "files.pythonhosted.org"]},
+    }
+}
 ANTIGRAVITY_MODEL_ENV_NAMES = ("CODE_MOWER_ANTIGRAVITY_MODEL", "ANTIGRAVITY_MODEL")
 ANTIGRAVITY_AMBIENT_HOME_ENV = "ANTIGRAVITY_CLI_USE_AMBIENT_HOME"
 MUSE_MODEL_ENV_NAMES = ("CODE_MOWER_MUSE_MODEL", "MUSE_MODEL", "META_MUSE_MODEL")
@@ -248,6 +260,7 @@ def build_qualification_prompt(
         "",
         "Binding (echo these values back exactly in your result):",
         f"- provider: {provider}",
+        f"- executor: {provider}",
         f"- release_tag: {release_tag}",
         f"- package_identity: {package_identity}",
         f"- normalized_version: {normalized_version}",
@@ -302,8 +315,9 @@ def build_codex_argv(
     The agent works in the disposable ``workdir`` (``-C``). The
     ``--approve-for-me`` route supplies Codex's workspace-write sandbox so it
     can create a virtualenv, install the release, and run smoke checks there.
-    Network access is narrowly enabled only for that sandbox (package
-    downloads); the run stays ephemeral and isolated -- never
+    Outbound network access is enabled inside that sandbox so it can download
+    packages; it is not domain-restricted. The run stays ephemeral and
+    workspace-isolated -- never
     ``danger-full-access``. The final
     agent message is additionally written by Codex itself to
     ``last_message_path`` (``--output-last-message``); that file is parsed
@@ -344,9 +358,11 @@ def build_claude_argv(
 
     Mirrors the audit wrapper's isolation flags: no session persistence,
     local settings only, an empty MCP config, and no slash commands. The
-    agent gets exactly one tool -- ``Bash`` -- pre-allowed so the
-    noninteractive run never prompts, scoped to the disposable workspace via
-    ``--add-dir``; no other tool is granted.
+    agent gets exactly one tool -- ``Bash`` -- inside Claude's OS-level
+    sandbox. Sandboxed commands are auto-approved, the sandbox must be
+    available, its unsandboxed escape hatch is disabled, home reads/writes are
+    denied, and network access is limited to the package index. The disabled
+    escape hatch makes anything outside that boundary fail closed.
     """
     argv = [
         claude_bin,
@@ -360,10 +376,11 @@ def build_claude_argv(
         "--mcp-config",
         '{"mcpServers":{}}',
         "--disable-slash-commands",
+        "--restricted",
         "--tools",
         "Bash",
-        "--allowedTools",
-        "Bash",
+        "--settings",
+        json.dumps(CLAUDE_SANDBOX_SETTINGS, separators=(",", ":"), sort_keys=True),
     ]
     if workspace_dir:
         argv.extend(["--add-dir", workspace_dir])

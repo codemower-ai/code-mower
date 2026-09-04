@@ -107,7 +107,7 @@ class ArgvBuilderTests(unittest.TestCase):
         )
         self.assertNotIn("--model", no_model)
 
-    def test_claude_argv_grants_only_scoped_bash(self) -> None:
+    def test_claude_argv_grants_bash_only_inside_strict_sandbox(self) -> None:
         argv = campaign_adapters.build_claude_argv(
             claude_bin="/bin/claude",
             model="sonnet",
@@ -120,16 +120,31 @@ class ArgvBuilderTests(unittest.TestCase):
                      "--max-budget-usd", "5.00", "--json-schema"):
             self.assertIn(flag, argv)
         self.assertIn("--no-session-persistence", argv)
-        # Exactly one tool (Bash), pre-allowed so the noninteractive run
-        # never prompts; nothing else is granted.
+        # Exactly one tool (Bash), auto-approved only by the OS-level sandbox;
+        # nothing receives a broad permission allow-rule.
         tools_idx = argv.index("--tools")
         self.assertEqual(argv[tools_idx + 1], "Bash")
         self.assertNotIn("", argv)
-        allowed_idx = argv.index("--allowedTools")
-        self.assertEqual(argv[allowed_idx + 1], "Bash")
+        self.assertNotIn("--allowedTools", argv)
         self.assertNotIn("--dangerously-skip-permissions", argv)
         self.assertNotIn("bypassPermissions", argv)
-        # Bash is scoped to the disposable workspace.
+        self.assertIn("--restricted", argv)
+        self.assertNotIn("--permission-mode", argv)
+        settings_idx = argv.index("--settings")
+        settings = json.loads(argv[settings_idx + 1])
+        self.assertEqual(settings["permissions"]["allow"], ["Bash"])
+        sandbox = settings["sandbox"]
+        self.assertIs(sandbox["enabled"], True)
+        self.assertIs(sandbox["failIfUnavailable"], True)
+        self.assertIs(sandbox["autoAllowBashIfSandboxed"], True)
+        self.assertIs(sandbox["allowUnsandboxedCommands"], False)
+        self.assertEqual(sandbox["filesystem"]["denyRead"], ["~"])
+        self.assertEqual(sandbox["filesystem"]["denyWrite"], ["~"])
+        self.assertEqual(
+            sandbox["network"]["allowedDomains"],
+            ["pypi.org", "files.pythonhosted.org"],
+        )
+        # Claude's workspace is explicit even though no extra path is granted.
         add_dir_idx = argv.index("--add-dir")
         self.assertEqual(argv[add_dir_idx + 1], "/tmp/work")
         self.assertIn("--disable-slash-commands", argv)
@@ -170,6 +185,7 @@ class ArgvBuilderTests(unittest.TestCase):
             starting_version="",
         )
         self.assertIn("python3 -m venv .venv", prompt)
+        self.assertIn("- executor: codex", prompt)
         self.assertIn(".venv/bin/python -m pip install", prompt)
         self.assertIn("importlib.metadata.version", prompt)
         self.assertIn(".venv/bin/code-mower doctor --help", prompt)
