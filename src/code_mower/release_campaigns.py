@@ -1760,11 +1760,14 @@ def _existing_campaign_conflict(
     An existing campaign is never replaced by a fresh one, so creation-time
     arguments that describe a *different* campaign cannot be honored. They are
     rejected explicitly instead of being silently ignored while the stored
-    campaign advances under different terms. Only unambiguously supplied values
-    are compared: the ``cold_install`` default for ``--qualification-context``
-    is indistinguishable from an unsupplied flag, so it is not treated as a
-    conflicting request on its own (the rendered output always states the
-    stored campaign's actual context).
+    campaign advances under different terms. Only supplied values are compared:
+    an unsupplied ``--qualification-context`` arrives here as an empty string
+    (the "unspecified" sentinel) and asserts nothing about the stored campaign,
+    while *every* explicitly supplied context -- including ``cold_install`` --
+    is compared against the stored one, so an explicit cold-install request can
+    never silently advance a stored upgrade campaign. A stored campaign that
+    carries no context at all is compared as ``cold_install``, which is the
+    context its own dispatch and evidence checks already use.
 
     ``repo_slug`` is the one field an existing campaign may still be *completed*
     with: a campaign created without a repository has nowhere to dispatch, and
@@ -1780,14 +1783,11 @@ def _existing_campaign_conflict(
             f"--repo-slug {repo_slug!r} does not match existing campaign repo slug "
             f"{stored_slug!r}; an existing campaign's repository is fixed once set"
         )
-    if (
-        qualification_context
-        and qualification_context != "cold_install"
-        and qualification_context != str(campaign.get("qualification_context") or "")
-    ):
+    stored_context = str(campaign.get("qualification_context") or "cold_install")
+    if qualification_context and qualification_context != stored_context:
         return (
             f"--qualification-context {qualification_context!r} does not match existing "
-            f"campaign context {str(campaign.get('qualification_context') or '')!r}"
+            f"campaign context {stored_context!r}"
         )
     if starting_version and starting_version != str(campaign.get("starting_version") or ""):
         return (
@@ -1823,7 +1823,7 @@ def campaign_command(
     release_tag: str = "",
     package_spec: str = "",
     providers: Sequence[str] = (),
-    qualification_context: str = "cold_install",
+    qualification_context: str = "",
     starting_version: str = "",
     repo_path: Path | None = None,
     repo_slug: str = "",
@@ -1843,6 +1843,20 @@ def campaign_command(
     adapter_runner: AdapterRunner = run_local_adapter_command,
     env: Mapping[str, str] | None = None,
 ) -> int:
+    """Create, inspect, or advance a release qualification campaign.
+
+    ``qualification_context`` carries an "unspecified" sentinel: the empty
+    string means the caller did not ask for a context at all. That distinction
+    matters because ``cold_install`` is both the creation default *and* a
+    context a caller can explicitly request. Collapsing the two would make an
+    explicit ``--qualification-context cold_install`` against a stored upgrade
+    campaign indistinguishable from an omitted flag, so it would be silently
+    ignored while the upgrade campaign advanced -- exactly what the
+    identity-conflict invariant exists to prevent. Omitted, the context defaults
+    to ``cold_install`` when creating and asserts nothing when advancing;
+    supplied, it is checked against the stored context before any mutation,
+    polling, or dispatch.
+    """
     repo_path = repo_path or Path.cwd()
     campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
 
@@ -1992,7 +2006,10 @@ def campaign_command(
         campaign_obj = initialize_campaign(
             release_tag=release_tag,
             package_spec=package_spec,
-            qualification_context=qualification_context,
+            # An omitted context creates a cold-install campaign, the documented
+            # default; only the comparison against an existing campaign needs to
+            # tell an omitted flag from an explicit `cold_install`.
+            qualification_context=qualification_context or "cold_install",
             starting_version=starting_version,
             providers=providers,
             repo_slug=repo_slug,

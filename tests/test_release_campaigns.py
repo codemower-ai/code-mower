@@ -19,7 +19,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from code_mower import board, release_campaigns
+from code_mower import board, release_campaigns, release_qualify
 from code_mower.provider_registry import LaneLabels, ProviderLane
 
 
@@ -3404,6 +3404,220 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
                 "",
             )
             self.assertEqual(campaigns_dir.exists(), False)
+
+
+class CampaignQualificationContextSupplyTests(unittest.TestCase):
+    """`--qualification-context` is compared whenever it is supplied.
+
+    `cold_install` is both the creation default and a context a caller can
+    explicitly request, so the two are kept distinguishable: an omitted flag
+    asserts nothing about a stored campaign, while an explicit `cold_install`
+    against a stored upgrade campaign is an identity conflict and is rejected
+    before any mutation, polling, or dispatch.
+    """
+
+    _ENV = {"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"}
+
+    def _create_upgrade(self, campaigns_dir: Path) -> dict[str, Any]:
+        ret = release_campaigns.campaign_command(
+            action="create",
+            release_tag="v1.1.0",
+            package_spec="code-mower==1.1.0",
+            providers=["cursor_bugbot"],
+            qualification_context="upgrade",
+            starting_version="1.0.0",
+            campaigns_dir=campaigns_dir,
+            repo_slug="owner/repo",
+            apply=False,
+            command_runner=mock.MagicMock(),
+            env=self._ENV,
+        )
+        self.assertEqual(ret, 0)
+        created = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+        assert created is not None
+        self.assertEqual(created["qualification_context"], "upgrade")
+        self.assertEqual(created["starting_version"], "1.0.0")
+        return created
+
+    def test_omitted_context_advances_existing_upgrade_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._create_upgrade(campaigns_dir)
+            calls: list[list[str]] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="dispatch",
+                    release_tag="v1.1.0",
+                    campaigns_dir=campaigns_dir,
+                    issue="42",
+                    apply=True,
+                    command_runner=_capturing_dispatch_argv_runner(calls),
+                    gh_json_runner=mock_gh_json,
+                    env=self._ENV,
+                )
+
+            self.assertEqual(ret, 0)
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertEqual(len(calls), 1)
+            advanced = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            assert advanced is not None
+            self.assertEqual(advanced["qualification_context"], "upgrade")
+            self.assertEqual(advanced["starting_version"], "1.0.0")
+            self.assertEqual(advanced["providers"][0]["state"], "running")
+
+    def test_explicit_matching_upgrade_context_advances(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._create_upgrade(campaigns_dir)
+            calls: list[list[str]] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="dispatch",
+                    release_tag="v1.1.0",
+                    qualification_context="upgrade",
+                    starting_version="1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    issue="42",
+                    apply=True,
+                    command_runner=_capturing_dispatch_argv_runner(calls),
+                    gh_json_runner=mock_gh_json,
+                    env=self._ENV,
+                )
+
+            self.assertEqual(ret, 0)
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertEqual(len(calls), 1)
+            advanced = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            assert advanced is not None
+            self.assertEqual(advanced["providers"][0]["state"], "running")
+
+    def test_explicit_cold_install_against_upgrade_campaign_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            before = self._create_upgrade(campaigns_dir)
+            calls: list[list[str]] = []
+
+            def unexpected_gh_json(args, **kwargs):
+                raise AssertionError("polled GitHub despite a conflicting context")
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="dispatch",
+                    release_tag="v1.1.0",
+                    qualification_context="cold_install",
+                    campaigns_dir=campaigns_dir,
+                    issue="42",
+                    apply=True,
+                    command_runner=_capturing_dispatch_argv_runner(calls),
+                    gh_json_runner=unexpected_gh_json,
+                    env=self._ENV,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(calls, [])
+            self.assertIn("--qualification-context 'cold_install'", stderr.getvalue())
+            self.assertIn("'upgrade'", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            after = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            self.assertEqual(after, before)
+
+    def test_omitted_context_creates_cold_install_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            ret = release_campaigns.campaign_command(
+                action="create",
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                apply=False,
+                command_runner=mock.MagicMock(),
+                env=self._ENV,
+            )
+
+            self.assertEqual(ret, 0)
+            created = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert created is not None
+            self.assertEqual(created["qualification_context"], "cold_install")
+            self.assertEqual(created["starting_version"], "")
+
+    def test_explicit_cold_install_creates_cold_install_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            ret = release_campaigns.campaign_command(
+                action="create",
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                qualification_context="cold_install",
+                campaigns_dir=campaigns_dir,
+                apply=False,
+                command_runner=mock.MagicMock(),
+                env=self._ENV,
+            )
+
+            self.assertEqual(ret, 0)
+            created = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert created is not None
+            self.assertEqual(created["qualification_context"], "cold_install")
+
+    def test_cli_preserves_the_unspecified_context_through_to_dispatch(self) -> None:
+        """The CLI parser has no default of its own, so omission stays visible."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._create_upgrade(campaigns_dir)
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                omitted = release_qualify.main(
+                    [
+                        "campaign",
+                        "resume",
+                        "--release-tag",
+                        "v1.1.0",
+                        "--campaigns-dir",
+                        str(campaigns_dir),
+                    ]
+                )
+
+            self.assertEqual(omitted, 0)
+            self.assertNotIn("Traceback", stderr.getvalue())
+            before = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            assert before is not None
+            self.assertEqual(before["qualification_context"], "upgrade")
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                conflicting = release_qualify.main(
+                    [
+                        "campaign",
+                        "resume",
+                        "--release-tag",
+                        "v1.1.0",
+                        "--campaigns-dir",
+                        str(campaigns_dir),
+                        "--qualification-context",
+                        "cold_install",
+                    ]
+                )
+
+            self.assertEqual(conflicting, 1)
+            self.assertIn("--qualification-context 'cold_install'", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            after = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
+            self.assertEqual(after, before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -750,8 +750,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     campaign.add_argument(
         "--qualification-context",
-        default="cold_install",
-        help="Qualification context (cold_install/upgrade/unknown)",
+        default="",
+        help=(
+            "Qualification context (cold_install/upgrade/unknown). Defaults to "
+            "cold_install when creating a campaign. When it is supplied against "
+            "an existing campaign it must match that campaign's stored context, "
+            "including an explicit cold_install; omit it to advance a campaign "
+            "under whatever context it was created with."
+        ),
     )
     campaign.add_argument(
         "--starting-version",
