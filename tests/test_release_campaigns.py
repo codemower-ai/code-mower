@@ -2740,12 +2740,47 @@ class ReleaseCampaignTests(unittest.TestCase):
                 env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
             )
 
-            self.assertEqual(len(bodies), 1)
-            body = bodies[0]
-            self.assertIn("@devin run", body)
-            self.assertIn("devin run", body)
-            self.assertIn("**Trigger comments:**", body)
-            self.assertIn("`@devin run`, `devin run`", body)
+            self.assertEqual(len(bodies), 2)
+            dispatch_body = bodies[0]
+            trigger_body = bodies[1]
+            
+            # Dispatch body should document the trigger commands
+            self.assertIn("@devin run", dispatch_body)
+            self.assertIn("devin run", dispatch_body)
+            self.assertIn("**Trigger comments:**", dispatch_body)
+            self.assertIn("`@devin run`, `devin run`", dispatch_body)
+            
+            # Trigger body should be just the trigger command itself
+            self.assertEqual(trigger_body.strip(), "@devin run")
+
+    def test_cursor_bugbot_dispatch_posts_trigger_comment(self) -> None:
+        """Cursor BugBot dispatch posts the trigger command as a separate actionable comment."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            bodies: list[str] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="99",
+                apply=True,
+                command_runner=_capturing_dispatch_command_runner(bodies),
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(len(bodies), 2)
+            dispatch_body = bodies[0]
+            trigger_body = bodies[1]
+            
+            # Dispatch body should document the trigger commands
+            self.assertIn("bugbot run", dispatch_body)
+            self.assertIn("@cursor review", dispatch_body)
+            
+            # Trigger body should be just the first trigger command
+            self.assertEqual(trigger_body.strip(), "bugbot run")
 
 
 def _dispatch_marker_from_body(body: str) -> dict[str, Any]:

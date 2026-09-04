@@ -922,6 +922,55 @@ def _dispatch_github_comment(
     return True, {"issue_number": str(issue_number), "comment_posted": True}, ""
 
 
+def _post_trigger_comment(
+    repo_slug: str,
+    issue_number: int | str,
+    trigger_command: str,
+    *,
+    command_runner: lane_status.CommandRunner = lane_status.run_command,
+) -> tuple[bool, dict[str, Any], str]:
+    """Post the trigger command as a separate comment to actually start the provider.
+
+    For manually triggered hosted providers (Devin, Cursor BugBot), the dispatch
+    comment documents what to qualify, but the provider starts only when it sees
+    its configured trigger comment. Post that trigger as a plain comment body so
+    the provider will actually begin the qualification run.
+    """
+    if not repo_slug or not issue_number or not trigger_command:
+        return False, {}, "missing trigger prerequisites"
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as fh:
+        trigger_path = Path(fh.name)
+        fh.write(trigger_command)
+
+    try:
+        completed = command_runner(
+            [
+                "gh",
+                "issue",
+                "comment",
+                str(issue_number),
+                "--repo",
+                repo_slug,
+                "--body-file",
+                str(trigger_path),
+            ]
+        )
+    except (OSError, ValueError):
+        return False, {}, "trigger comment post failed"
+    finally:
+        try:
+            trigger_path.unlink()
+        except OSError:
+            pass
+
+    returncode = getattr(completed, "returncode", 1)
+    if returncode != 0:
+        return False, {}, "trigger comment post failed"
+
+    return True, {"trigger_posted": True}, ""
+
+
 def _poll_github_comments(
     repo_slug: str,
     issue_number: int | str,
@@ -1989,6 +2038,22 @@ def dispatch_or_advance_campaign(
                         has_issue=True,
                         dry_run=False,
                     )
+                    # For manually triggered providers, post the trigger command
+                    # as a separate comment so the provider will actually start.
+                    if trigger_comments:
+                        trigger_ok, _trigger_ref, _trigger_err = _post_trigger_comment(
+                            repo_slug,
+                            issue_number,
+                            trigger_comments[0],
+                            command_runner=command_runner,
+                        )
+                        # The trigger post is best-effort: the dispatch already
+                        # succeeded and the provider is pollable, so a trigger
+                        # failure is logged but does not demote the provider.
+                        if not trigger_ok:
+                            provider_data["next_detail"] = (
+                                f"{provider_data['next_detail']}; trigger comment may not have posted"
+                            )
                 else:
                     # The dispatch failed *in process*, so this run knows the
                     # outcome and records it: the checkpoint's provisional
