@@ -719,6 +719,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     campaign = subparsers.add_parser(
         "campaign",
         help="Run or manage multi-provider release qualification campaign",
+        description=(
+            "Run or manage a multi-provider release qualification campaign. "
+            "Each invocation takes an exclusive advisory lock on the campaign "
+            "directory and holds it while it loads state, claims a provider "
+            "attempt, invokes an adapter or posts a hosted dispatch, and writes "
+            "the result back. Two campaign commands started at the same time "
+            "therefore run one after the other, and the second one sees the "
+            "first one's recorded attempts -- so concurrency can never duplicate "
+            "a local adapter run or a paid/hosted dispatch. The lock is released "
+            "by the operating system if a command crashes or is killed, so a "
+            "dead run never blocks the next one. Campaign files are published "
+            "with an atomic rename, so `--status` and Board reads stay available "
+            "and never observe a half-written campaign."
+        ),
     )
     campaign.add_argument(
         "action",
@@ -806,7 +820,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     campaign.add_argument(
         "--campaign-id",
         default="",
-        help="Optional campaign identifier",
+        help=(
+            "Optional campaign identifier (default: campaign-<release-tag>). "
+            "Must use only lowercase ASCII letters, digits, '.', '_', and '-', "
+            "start with a letter or digit, and be at most 64 characters. The id "
+            "is used verbatim as the stored file's name, so ids map one-to-one "
+            "onto campaigns; an id outside this alphabet is rejected with a "
+            "bounded error rather than rewritten to fit."
+        ),
     )
     campaign.add_argument(
         "--campaigns-dir",

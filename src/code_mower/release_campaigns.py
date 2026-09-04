@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import math
@@ -13,9 +14,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import IO, Any, Callable, Iterator, Mapping, Sequence
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -27,7 +30,6 @@ if __package__ in {None, ""}:
         _detect_runtime_class,
         _extract_package_identity,
         _validate_qualification_context,
-        _validate_safe_identifier,
         _validate_starting_version,
         _validate_tag_format,
         _version_key,
@@ -42,7 +44,6 @@ else:
         _detect_runtime_class,
         _extract_package_identity,
         _validate_qualification_context,
-        _validate_safe_identifier,
         _validate_starting_version,
         _validate_tag_format,
         _version_key,
@@ -55,6 +56,27 @@ RESULT_MARKER_SCHEMA = "code_mower.releaseCampaignResult.v1"
 BOARD_RELEASE_CAMPAIGNS_SCHEMA = "code_mower.boardReleaseCampaigns.v1"
 DEFAULT_CAMPAIGNS_RELATIVE_DIR = Path(".code-mower") / "campaigns"
 DEFAULT_ADAPTER_TIMEOUT_SECONDS = 900
+
+# Campaign identifiers are storage keys: each one maps to exactly one file named
+# `<campaign_id>.json`. The mapping is one-to-one and lossless -- no character is
+# ever substituted -- so two different campaign ids can never name one file. The
+# alphabet is deliberately narrow:
+#   * lowercase ASCII only, because a campaign directory may live on a
+#     case-insensitive volume -- APFS on macOS is case-insensitive by default --
+#     where `Campaign-A` and `campaign-a` are the same file while `load_campaign`
+#     would still treat them as two campaigns. Rejecting uppercase keeps ids
+#     case-stable everywhere instead of colliding on some filesystems.
+#   * letters, digits, `.`, `_`, `-` only, and a leading letter or digit. That
+#     excludes `/`, `\`, and NUL (path traversal and separator injection), `.`
+#     and `..` (directory self/parent references), and every dotfile spelling --
+#     including the `.tmp.` write-staging prefix and the campaign directory lock
+#     file, which therefore can never be addressed as a campaign.
+#   * a bounded length, so an id can never exceed a filesystem's name limit and
+#     be silently truncated into another campaign's filename.
+CAMPAIGN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+MAX_CAMPAIGN_ID_LENGTH = 64
+CAMPAIGNS_LOCK_FILENAME = ".campaigns.lock"
+CAMPAIGN_TEMP_PREFIX = ".tmp."
 
 DEFAULT_CAMPAIGN_PROVIDERS = (
     "claude",
@@ -214,9 +236,42 @@ def default_campaigns_dir(repo_path: Path | str = ".") -> Path:
     return Path(repo_path) / DEFAULT_CAMPAIGNS_RELATIVE_DIR
 
 
-def _safe_campaign_filename(campaign_id: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", campaign_id)
-    return f"{cleaned}.json"
+def is_valid_campaign_id(campaign_id: Any) -> bool:
+    """Report whether ``campaign_id`` is inside the documented storage-safe alphabet."""
+    return (
+        isinstance(campaign_id, str)
+        and 0 < len(campaign_id) <= MAX_CAMPAIGN_ID_LENGTH
+        and CAMPAIGN_ID_PATTERN.fullmatch(campaign_id) is not None
+    )
+
+
+def validate_campaign_id(campaign_id: Any) -> str:
+    """Return ``campaign_id`` unchanged, or raise ``ValueError`` with a bounded message.
+
+    Rejecting out-of-alphabet ids here -- before any lookup, save, or mutation --
+    is what makes the id-to-filename mapping one-to-one. The previous behavior
+    substituted unsupported characters, so ``campaign/a`` and ``campaign_a``
+    both addressed ``campaign_a.json``: naming one could silently load, advance,
+    and overwrite the other's campaign. Nothing is sanitized now; an id is
+    either usable verbatim as a filename stem or refused.
+    """
+    if not isinstance(campaign_id, str) or not campaign_id:
+        raise ValueError("campaign_id must be a non-empty string")
+    if len(campaign_id) > MAX_CAMPAIGN_ID_LENGTH:
+        raise ValueError(
+            f"campaign_id must be at most {MAX_CAMPAIGN_ID_LENGTH} characters"
+        )
+    if CAMPAIGN_ID_PATTERN.fullmatch(campaign_id) is None:
+        raise ValueError(
+            "campaign_id must use only lowercase ASCII letters, digits, '.', '_', "
+            "and '-', and must start with a letter or digit"
+        )
+    return campaign_id
+
+
+def campaign_filename(campaign_id: str) -> str:
+    """Map a validated campaign id to its one and only storage filename."""
+    return f"{validate_campaign_id(campaign_id)}.json"
 
 
 def resolve_provider_lane(name: str) -> tuple[str, ProviderLane]:
@@ -386,18 +441,56 @@ def _aggregate_campaign_status(
     return "queued", "inspect campaign providers", ""
 
 
+@contextmanager
+def locked_campaigns_dir(campaigns_dir: Path) -> Iterator[IO[str]]:
+    """Hold an exclusive advisory lock over one campaign directory.
+
+    Every campaign command serializes on this lock across its whole
+    read-decide-invoke-persist sequence, so two concurrent invocations can never
+    both observe a provider as un-attempted and both run its local adapter or
+    post its paid/hosted dispatch. The lock is an ordinary ``fcntl.flock`` on a
+    dedicated file, matching ``board_store._locked_store``: the kernel releases
+    it when the holding file descriptor closes, including on an uncaught
+    exception or an abrupt process exit, so there is no stale-lock protocol,
+    no owner/pid bookkeeping, and no timeout to tune. A crashed holder blocks
+    nobody.
+
+    The lock file's name starts with a dot, so it is neither matched by the
+    ``*.json`` campaign scan nor addressable as a campaign id.
+    """
+    campaigns_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = campaigns_dir / CAMPAIGNS_LOCK_FILENAME
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield lock_file
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def save_campaign(
     campaign: ReleaseCampaign | dict[str, Any],
     campaigns_dir: Path,
 ) -> Path:
     campaigns_dir.mkdir(parents=True, exist_ok=True)
     payload = campaign.to_dict() if isinstance(campaign, ReleaseCampaign) else campaign
-    filename = _safe_campaign_filename(payload["campaign_id"])
+    filename = campaign_filename(payload["campaign_id"])
     target_path = campaigns_dir / filename
-    temp_target = campaigns_dir / f".tmp.{filename}"
-    with temp_target.open("w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2, sort_keys=True)
-    temp_target.replace(target_path)
+    # Stage into a name unique to this write. A single shared `.tmp.<name>`
+    # staging path is itself a collision point: two writers -- a locked campaign
+    # command and an unrelated direct `save_campaign` call, or two direct calls
+    # -- would interleave their partial writes into one file and then both
+    # rename it, so the survivor could be a torn blend of two payloads. Readers
+    # stay safe either way because the publish step is a single atomic
+    # `os.replace`, so a campaign file is never observed half-written.
+    temp_target = campaigns_dir / f"{CAMPAIGN_TEMP_PREFIX}{uuid.uuid4().hex}.{filename}"
+    try:
+        with temp_target.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+        os.replace(temp_target, target_path)
+    except BaseException:
+        temp_target.unlink(missing_ok=True)
+        raise
     return target_path
 
 
@@ -408,19 +501,23 @@ def load_campaign(
     if not campaigns_dir.is_dir():
         return None
 
-    safe_name = _safe_campaign_filename(campaign_id_or_tag)
-    direct_path = campaigns_dir / safe_name
-    if direct_path.is_file():
-        try:
-            with direct_path.open("r", encoding="utf-8") as fh:
-                data = json.load(fh)
-                if isinstance(data, dict) and data.get("schema") == CAMPAIGN_SCHEMA:
-                    return data
-        except (OSError, json.JSONDecodeError):
-            pass
+    # The direct-filename shortcut applies only to a well-formed campaign id.
+    # A release tag (the other thing callers may pass here) that is not also a
+    # valid id simply falls through to the scan below, which matches on the
+    # stored `campaign_id`/`release_tag` fields rather than on a filename.
+    if is_valid_campaign_id(campaign_id_or_tag):
+        direct_path = campaigns_dir / campaign_filename(campaign_id_or_tag)
+        if direct_path.is_file():
+            try:
+                with direct_path.open("r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                    if isinstance(data, dict) and data.get("schema") == CAMPAIGN_SCHEMA:
+                        return data
+            except (OSError, json.JSONDecodeError):
+                pass
 
     for entry in campaigns_dir.glob("*.json"):
-        if entry.name.startswith(".tmp."):
+        if entry.name.startswith(CAMPAIGN_TEMP_PREFIX):
             continue
         try:
             with entry.open("r", encoding="utf-8") as fh:
@@ -441,7 +538,7 @@ def list_campaigns(campaigns_dir: Path) -> list[dict[str, Any]]:
         return []
     campaigns: list[dict[str, Any]] = []
     for entry in campaigns_dir.glob("*.json"):
-        if entry.name.startswith(".tmp."):
+        if entry.name.startswith(CAMPAIGN_TEMP_PREFIX):
             continue
         try:
             with entry.open("r", encoding="utf-8") as fh:
@@ -984,7 +1081,10 @@ def initialize_campaign(
 
     if not campaign_id:
         campaign_id = f"campaign-{release_tag}"
-    _validate_safe_identifier(re.sub(r"[-.]", "_", campaign_id), "campaign_id")
+    # The generated default and any explicit id are held to the same storage
+    # contract, so the id a campaign is created under is always exactly the stem
+    # of the file it lives in.
+    validate_campaign_id(campaign_id)
 
     provider_keys = list(providers) if providers else list(DEFAULT_CAMPAIGN_PROVIDERS)
 
@@ -1845,6 +1945,109 @@ def campaign_command(
 ) -> int:
     """Create, inspect, or advance a release qualification campaign.
 
+    Every invocation runs under an exclusive advisory lock on the campaign
+    directory (see :func:`locked_campaigns_dir`), held across the *whole*
+    sequence: loading stored state, deciding what to do, claiming an attempt by
+    stamping ``attempted_at``, invoking a local adapter or posting a hosted
+    dispatch, and persisting the result. Without that bracket, two commands
+    started at the same time could both load a campaign before either had
+    persisted its attempt claim, and both would run the provider's adapter or
+    post its paid dispatch. Because the lock is taken *before* the first read,
+    the second command necessarily reloads after the first has finished and
+    observes the ``attempted_at`` it wrote, so it declines the repeat exactly
+    as an ordinary sequential resume would.
+
+    An explicit ``campaign_id`` is validated before the lock is taken, so a
+    malformed identifier produces a bounded error and never creates a campaign
+    directory, a lock file, or any other on-disk state.
+
+    Because the lock brackets the read too, every path through this command --
+    including read-only ``--status`` -- needs a writable campaign directory, and
+    says so with a bounded error when it does not have one. Reads that do not go
+    through a campaign command (``list_campaigns``, ``load_campaign``, and the
+    Board projection built on them) take no lock at all and stay available
+    regardless, because publication is a single atomic rename.
+    """
+    repo_path = repo_path or Path.cwd()
+    campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
+
+    if campaign_id:
+        try:
+            validate_campaign_id(campaign_id)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(locked_campaigns_dir(campaigns_dir))
+        except OSError:
+            # Bounded and path-free, like every other campaign error surface:
+            # the errno text and the local directory path are never echoed.
+            print(
+                "error: could not acquire the release campaign directory lock; "
+                "check that the campaigns directory exists and is writable",
+                file=sys.stderr,
+            )
+            return 1
+        return _campaign_command_locked(
+            repo_path=repo_path,
+            campaigns_dir=campaigns_dir,
+            action=action,
+            release_tag=release_tag,
+            package_spec=package_spec,
+            providers=providers,
+            qualification_context=qualification_context,
+            starting_version=starting_version,
+            repo_slug=repo_slug,
+            issue=issue,
+            apply=apply,
+            resume=resume,
+            status=status,
+            campaign_id=campaign_id,
+            record_result=record_result,
+            record_provider=record_provider,
+            retry_provider=retry_provider,
+            emit_json=emit_json,
+            command_runner=command_runner,
+            gh_json_runner=gh_json_runner,
+            which_fn=which_fn,
+            adapter_runner=adapter_runner,
+            env=env,
+        )
+
+
+def _campaign_command_locked(
+    *,
+    repo_path: Path,
+    campaigns_dir: Path,
+    action: str | None = None,
+    release_tag: str = "",
+    package_spec: str = "",
+    providers: Sequence[str] = (),
+    qualification_context: str = "",
+    starting_version: str = "",
+    repo_slug: str = "",
+    issue: str | int = "",
+    apply: bool = False,
+    resume: bool = False,
+    status: bool = False,
+    campaign_id: str = "",
+    record_result: Path | None = None,
+    record_provider: str = "",
+    retry_provider: str = "",
+    emit_json: bool = False,
+    command_runner: lane_status.CommandRunner = lane_status.run_command,
+    gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
+    which_fn: Callable[[str], str | None] = shutil.which,
+    adapter_runner: AdapterRunner = run_local_adapter_command,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    """Body of :func:`campaign_command`, run with the campaign directory lock held.
+
+    Split out only so the lock brackets the whole read-decide-invoke-persist
+    sequence -- see :func:`campaign_command` for the concurrency contract.
+
     ``qualification_context`` carries an "unspecified" sentinel: the empty
     string means the caller did not ask for a context at all. That distinction
     matters because ``cold_install`` is both the creation default *and* a
@@ -1857,9 +2060,6 @@ def campaign_command(
     supplied, it is checked against the stored context before any mutation,
     polling, or dispatch.
     """
-    repo_path = repo_path or Path.cwd()
-    campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
-
     is_status = status or action == "status"
     is_resume = resume or action == "resume"
     is_dispatch = action == "dispatch"

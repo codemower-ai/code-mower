@@ -7,10 +7,12 @@ import contextlib
 import io
 import json
 import math
+import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -3617,6 +3619,615 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
             self.assertNotIn("Traceback", stderr.getvalue())
             after = release_campaigns.load_campaign("campaign-v1.1.0", campaigns_dir)
             self.assertEqual(after, before)
+
+
+class CampaignIdContractTests(unittest.TestCase):
+    """Campaign ids are storage keys: the id-to-filename mapping is one-to-one.
+
+    Ids are never sanitized to fit a filename. Two ids that differ can never
+    address one stored campaign, and an id can never address anything outside
+    the campaign directory or any of its internal (dot-prefixed) files.
+    """
+
+    def _campaign_command(self, campaigns_dir: Path, **kwargs: Any) -> tuple[int, str]:
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+            code = release_campaigns.campaign_command(
+                campaigns_dir=campaigns_dir,
+                **kwargs,
+            )
+        return code, stderr.getvalue()
+
+    def test_valid_generated_default_id_is_accepted_and_names_its_own_file(self) -> None:
+        """campaign-<release-tag> satisfies the contract and is used verbatim."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            code, stderr = self._campaign_command(campaigns_dir, release_tag="v1.0.0")
+            self.assertEqual(code, 0, stderr)
+            self.assertTrue((campaigns_dir / "campaign-v1.0.0.json").is_file())
+            stored = json.loads((campaigns_dir / "campaign-v1.0.0.json").read_text())
+            self.assertEqual(stored["campaign_id"], "campaign-v1.0.0")
+
+    def test_valid_explicit_id_round_trips_through_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            code, stderr = self._campaign_command(
+                campaigns_dir, release_tag="v1.0.0", campaign_id="rc.1_check-2"
+            )
+            self.assertEqual(code, 0, stderr)
+            self.assertTrue((campaigns_dir / "rc.1_check-2.json").is_file())
+            loaded = release_campaigns.load_campaign("rc.1_check-2", campaigns_dir)
+            assert loaded is not None
+            self.assertEqual(loaded["campaign_id"], "rc.1_check-2")
+
+    def test_prerelease_tag_default_id_is_accepted(self) -> None:
+        """The longest generated default id shape still satisfies the contract."""
+        release_campaigns.validate_campaign_id("campaign-v999.999.999-alpha.999")
+
+    def test_slash_id_no_longer_collides_with_underscore_id(self) -> None:
+        """`campaign/a` must not resolve to, advance, or overwrite `campaign_a`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            code, stderr = self._campaign_command(
+                campaigns_dir, release_tag="v1.0.0", campaign_id="campaign_a"
+            )
+            self.assertEqual(code, 0, stderr)
+            before = json.loads((campaigns_dir / "campaign_a.json").read_text())
+
+            code, stderr = self._campaign_command(
+                campaigns_dir,
+                release_tag="v1.0.0",
+                campaign_id="campaign/a",
+                apply=True,
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("campaign_id", stderr)
+            self.assertNotIn("Traceback", stderr)
+
+            after = json.loads((campaigns_dir / "campaign_a.json").read_text())
+            self.assertEqual(after, before)
+            self.assertEqual(
+                sorted(p.name for p in campaigns_dir.glob("*.json")), ["campaign_a.json"]
+            )
+
+    def test_uppercase_id_is_rejected_for_case_insensitive_filesystem_safety(self) -> None:
+        """`Campaign-A` and `campaign-a` are one file on macOS/Windows; reject both spellings."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            code, stderr = self._campaign_command(
+                campaigns_dir, release_tag="v1.0.0", campaign_id="campaign-a"
+            )
+            self.assertEqual(code, 0, stderr)
+            before = json.loads((campaigns_dir / "campaign-a.json").read_text())
+
+            for spelling in ("Campaign-A", "CAMPAIGN-A", "campaign-A"):
+                code, stderr = self._campaign_command(
+                    campaigns_dir,
+                    release_tag="v1.0.0",
+                    campaign_id=spelling,
+                    apply=True,
+                )
+                self.assertEqual(code, 1, spelling)
+                self.assertIn("lowercase", stderr)
+                self.assertNotIn("Traceback", stderr)
+
+            after = json.loads((campaigns_dir / "campaign-a.json").read_text())
+            self.assertEqual(after, before)
+            self.assertEqual(
+                sorted(p.name for p in campaigns_dir.glob("*.json")), ["campaign-a.json"]
+            )
+
+    def test_traversal_ids_are_rejected_and_write_nothing_anywhere(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            campaigns_dir = root / "nested" / "campaigns"
+            traversals = (
+                "..",
+                ".",
+                "../evil",
+                "../../etc/passwd",
+                "campaign/../../evil",
+                "/absolute/evil",
+                "nested/child",
+                "back\\slash",
+                "null\x00byte",
+            )
+            for candidate in traversals:
+                code, stderr = self._campaign_command(
+                    campaigns_dir,
+                    release_tag="v1.0.0",
+                    campaign_id=candidate,
+                    apply=True,
+                )
+                self.assertEqual(code, 1, candidate)
+                self.assertNotIn("Traceback", stderr)
+
+            # No mutation at all: rejection happens before the campaign
+            # directory (or its lock file) is ever created.
+            self.assertFalse(campaigns_dir.exists())
+            self.assertEqual(sorted(p.name for p in root.iterdir()), [])
+
+    def test_internal_storage_names_are_not_addressable_as_campaign_ids(self) -> None:
+        """Dot-prefixed names -- the lock file and write-staging prefix -- are rejected."""
+        for candidate in (
+            release_campaigns.CAMPAIGNS_LOCK_FILENAME,
+            ".tmp.campaign-v1.0.0",
+            ".hidden",
+        ):
+            with self.assertRaises(ValueError):
+                release_campaigns.validate_campaign_id(candidate)
+
+    def test_overlong_id_is_rejected_with_a_bounded_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            overlong = "c" * (release_campaigns.MAX_CAMPAIGN_ID_LENGTH + 1)
+            code, stderr = self._campaign_command(
+                campaigns_dir, release_tag="v1.0.0", campaign_id=overlong, apply=True
+            )
+            self.assertEqual(code, 1)
+            self.assertIn(str(release_campaigns.MAX_CAMPAIGN_ID_LENGTH), stderr)
+            self.assertNotIn("Traceback", stderr)
+            self.assertNotIn(overlong, stderr)
+            self.assertFalse(campaigns_dir.exists())
+
+            at_limit = "c" * release_campaigns.MAX_CAMPAIGN_ID_LENGTH
+            self.assertEqual(release_campaigns.validate_campaign_id(at_limit), at_limit)
+
+    def test_cli_rejects_an_invalid_campaign_id_without_a_traceback(self) -> None:
+        """End-to-end through argparse: bounded error, non-zero exit, no state."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            stderr = io.StringIO()
+            stdout = io.StringIO()
+            with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+                code = release_qualify.main(
+                    [
+                        "campaign",
+                        "--release-tag",
+                        "v1.0.0",
+                        "--campaign-id",
+                        "campaign/a",
+                        "--campaigns-dir",
+                        str(campaigns_dir),
+                        "--apply",
+                    ]
+                )
+            self.assertEqual(code, 1)
+            self.assertIn("error: campaign_id", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertFalse(campaigns_dir.exists())
+
+    def test_cli_help_documents_the_campaign_id_contract(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            with self.assertRaises(SystemExit):
+                release_qualify.main(["campaign", "--help"])
+        # argparse rewraps help text, so compare on a whitespace-collapsed copy.
+        help_text = " ".join(stdout.getvalue().split())
+        self.assertIn("lowercase ASCII letters", help_text)
+        self.assertIn(
+            f"at most {release_campaigns.MAX_CAMPAIGN_ID_LENGTH} characters", help_text
+        )
+        self.assertIn("used verbatim as the stored file's name", help_text)
+        self.assertIn("exclusive advisory lock on the campaign directory", help_text)
+
+    def test_save_campaign_refuses_an_out_of_alphabet_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            campaign["campaign_id"] = "campaign/a"
+            with self.assertRaises(ValueError):
+                release_campaigns.save_campaign(campaign, campaigns_dir)
+            self.assertEqual(list(campaigns_dir.glob("*")), [])
+
+    def test_initialize_campaign_refuses_an_out_of_alphabet_id(self) -> None:
+        for candidate in ("campaign/a", "Campaign-A", "..", "c" * 200):
+            with self.assertRaises(ValueError):
+                release_campaigns.initialize_campaign(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaign_id=candidate,
+                )
+
+    def test_load_campaign_never_resolves_an_invalid_id_to_a_sanitized_neighbour(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+                campaign_id="campaign_a",
+            )
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            self.assertIsNotNone(release_campaigns.load_campaign("campaign_a", campaigns_dir))
+            self.assertIsNone(release_campaigns.load_campaign("campaign/a", campaigns_dir))
+            self.assertIsNone(release_campaigns.load_campaign("Campaign_A", campaigns_dir))
+
+    def test_load_campaign_still_resolves_a_release_tag(self) -> None:
+        """A release tag is not a campaign id; tag lookups keep working via the scan."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            )
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            found = release_campaigns.load_campaign("v1.0.0", campaigns_dir)
+            assert found is not None
+            self.assertEqual(found["campaign_id"], "campaign-v1.0.0")
+
+
+class CampaignConcurrencyTests(unittest.TestCase):
+    """Concurrent campaign commands are serialized across the whole attempt cycle."""
+
+    def _lock_acquirable(self, campaigns_dir: Path, *, timeout: float = 30.0) -> bool:
+        """Acquire the directory lock from an independent descriptor, bounded."""
+        acquired = threading.Event()
+
+        def acquire() -> None:
+            with release_campaigns.locked_campaigns_dir(campaigns_dir):
+                acquired.set()
+
+        worker = threading.Thread(target=acquire, daemon=True)
+        worker.start()
+        worker.join(timeout=timeout)
+        return acquired.is_set()
+
+    def test_two_concurrent_applied_invocations_invoke_the_adapter_once(self) -> None:
+        """The classic double-dispatch race, forced deterministically.
+
+        The first invocation is frozen at its capability probe -- after it has
+        read stored state, before it has claimed the attempt by persisting
+        `attempted_at`. That is exactly the window in which an unserialized
+        second invocation would read stale state and run the adapter a second
+        time. With the directory lock held across the whole cycle, the second
+        invocation cannot even begin reading until the first has persisted, so
+        it observes `attempted_at` and declines the repeat.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+
+            adapter_calls: list[list[str]] = []
+            calls_guard = threading.Lock()
+
+            def counting_adapter_runner(argv, timeout):
+                with calls_guard:
+                    adapter_calls.append(list(argv))
+                output_path = Path(argv[argv.index("--output") + 1])
+                with output_path.open("w", encoding="utf-8") as fh:
+                    json.dump(_mock_adoption_result(provider="codex"), fh)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            state_loaded = threading.Event()
+            may_proceed = threading.Event()
+            gate_spent = threading.Event()
+
+            def gating_which_fn(_cmd: str) -> str:
+                if not gate_spent.is_set():
+                    gate_spent.set()
+                    state_loaded.set()
+                    may_proceed.wait(timeout=60)
+                return "/bin/fake-provider-cli"
+
+            def invoke(which_fn) -> None:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=["codex"],
+                        campaigns_dir=campaigns_dir,
+                        apply=True,
+                        which_fn=which_fn,
+                        adapter_runner=counting_adapter_runner,
+                    )
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                first = threading.Thread(target=invoke, args=(gating_which_fn,), daemon=True)
+                first.start()
+                self.assertTrue(state_loaded.wait(timeout=60))
+
+                second = threading.Thread(
+                    target=invoke,
+                    args=(lambda _cmd: "/bin/fake-provider-cli",),
+                    daemon=True,
+                )
+                second.start()
+                may_proceed.set()
+                first.join(timeout=120)
+                second.join(timeout=120)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+
+            # Exactly one adapter side effect for one campaign/provider pair.
+            self.assertEqual(len(adapter_calls), 1, adapter_calls)
+
+            # And the campaign is left in valid, fully-persisted state.
+            stored = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert stored is not None
+            self.assertEqual(stored["schema"], release_campaigns.CAMPAIGN_SCHEMA)
+            self.assertEqual(stored["status"], "complete")
+            self.assertFalse(stored["dry_run"])
+            self.assertEqual(len(stored["providers"]), 1)
+            provider_entry = stored["providers"][0]
+            self.assertEqual(provider_entry["state"], "complete")
+            self.assertTrue(provider_entry["attempted_at"])
+            self.assertEqual(provider_entry["error"], "")
+            self.assertEqual(
+                sorted(p.name for p in campaigns_dir.glob("*.json")),
+                ["campaign-v1.0.0.json"],
+            )
+            self.assertEqual(
+                [p.name for p in campaigns_dir.iterdir() if p.name.startswith(".tmp.")], []
+            )
+
+    def test_concurrent_hosted_dispatch_posts_one_comment(self) -> None:
+        """The same race for a paid/hosted dispatch: exactly one GitHub comment."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_hosted_bridge_lane()
+
+            posted: list[list[str]] = []
+            posts_guard = threading.Lock()
+
+            def counting_command_runner(argv, **_kwargs):
+                with posts_guard:
+                    posted.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            state_loaded = threading.Event()
+            may_proceed = threading.Event()
+            gate_spent = threading.Event()
+
+            def gating_which_fn(_cmd: str) -> str:
+                if not gate_spent.is_set():
+                    gate_spent.set()
+                    state_loaded.set()
+                    may_proceed.wait(timeout=60)
+                return "/bin/gh"
+
+            def invoke(which_fn) -> None:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=["devin"],
+                        repo_slug="owner/repo",
+                        issue="42",
+                        campaigns_dir=campaigns_dir,
+                        apply=True,
+                        which_fn=which_fn,
+                        command_runner=counting_command_runner,
+                        gh_json_runner=lambda *a, **k: (True, []),
+                        env={"DEVIN_API_KEY": "token"},
+                    )
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("devin", fake_lane)
+            ):
+                first = threading.Thread(target=invoke, args=(gating_which_fn,), daemon=True)
+                first.start()
+                self.assertTrue(state_loaded.wait(timeout=60))
+                second = threading.Thread(
+                    target=invoke, args=(lambda _cmd: "/bin/gh",), daemon=True
+                )
+                second.start()
+                may_proceed.set()
+                first.join(timeout=120)
+                second.join(timeout=120)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(len(posted), 1, posted)
+
+            stored = release_campaigns.load_campaign("campaign-v1.0.0", campaigns_dir)
+            assert stored is not None
+            self.assertEqual(stored["schema"], release_campaigns.CAMPAIGN_SCHEMA)
+            self.assertEqual(stored["providers"][0]["state"], "running")
+            self.assertTrue(stored["providers"][0]["attempted_at"])
+
+    def test_lock_is_released_after_an_exception_in_the_critical_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with self.assertRaises(RuntimeError):
+                with release_campaigns.locked_campaigns_dir(campaigns_dir):
+                    raise RuntimeError("boom")
+            self.assertTrue(self._lock_acquirable(campaigns_dir))
+
+    def test_lock_is_released_when_a_campaign_command_raises(self) -> None:
+        """An unexpected failure mid-command must not wedge the campaign directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+
+            def exploding_which_fn(_cmd: str) -> str:
+                raise RuntimeError("boom")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(RuntimeError):
+                        release_campaigns.campaign_command(
+                            release_tag="v1.0.0",
+                            package_spec="code-mower==1.0.0",
+                            providers=["codex"],
+                            campaigns_dir=campaigns_dir,
+                            apply=True,
+                            which_fn=exploding_which_fn,
+                        )
+
+            self.assertTrue(self._lock_acquirable(campaigns_dir))
+
+    def test_lock_is_released_when_the_holding_process_dies(self) -> None:
+        """No stale-lock protocol: the OS drops a dead holder's advisory lock."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaigns_dir.mkdir(parents=True)
+            lock_path = campaigns_dir / release_campaigns.CAMPAIGNS_LOCK_FILENAME
+            script = (
+                "import fcntl, os, sys\n"
+                "handle = open(sys.argv[1], 'a+')\n"
+                "fcntl.flock(handle.fileno(), fcntl.LOCK_EX)\n"
+                "sys.stdout.write('locked')\n"
+                "sys.stdout.flush()\n"
+                "os._exit(9)\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", script, str(lock_path)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            self.assertEqual(proc.stdout, "locked")
+            self.assertEqual(proc.returncode, 9)
+            self.assertTrue(lock_path.is_file())
+            self.assertTrue(self._lock_acquirable(campaigns_dir))
+
+    def test_unlockable_campaign_directory_reports_a_bounded_error(self) -> None:
+        """A directory that cannot be locked fails closed, without a traceback or a path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "readonly"
+            parent.mkdir()
+            campaigns_dir = parent / "campaigns"
+            parent.chmod(0o500)
+            try:
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(
+                    io.StringIO()
+                ):
+                    code = release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        status=True,
+                    )
+            finally:
+                parent.chmod(0o700)
+            self.assertEqual(code, 1)
+            self.assertIn("could not acquire", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertNotIn(str(campaigns_dir), stderr.getvalue())
+
+    def test_lock_file_is_never_projected_as_a_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0", campaigns_dir=campaigns_dir
+                )
+            self.assertTrue(
+                (campaigns_dir / release_campaigns.CAMPAIGNS_LOCK_FILENAME).is_file()
+            )
+            listed = release_campaigns.list_campaigns(campaigns_dir)
+            self.assertEqual([c["campaign_id"] for c in listed], ["campaign-v1.0.0"])
+
+
+class CampaignAtomicWriteTests(unittest.TestCase):
+    """save_campaign stages through a per-write temp file and publishes atomically."""
+
+    def _campaign(self, campaign_id: str = "") -> dict[str, Any]:
+        return release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["codex"],
+            campaign_id=campaign_id,
+        ).to_dict()
+
+    def test_each_save_stages_through_a_distinct_temp_file(self) -> None:
+        """A shared temp filename would let two writers blend one another's payloads."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._campaign()
+            staged: list[str] = []
+            real_replace = os.replace
+
+            def recording_replace(src, dst):
+                staged.append(str(src))
+                real_replace(src, dst)
+
+            with mock.patch.object(release_campaigns.os, "replace", recording_replace):
+                release_campaigns.save_campaign(campaign, campaigns_dir)
+                release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            self.assertEqual(len(staged), 2)
+            self.assertNotEqual(staged[0], staged[1])
+            for path in staged:
+                self.assertTrue(
+                    Path(path).name.startswith(release_campaigns.CAMPAIGN_TEMP_PREFIX)
+                )
+                self.assertEqual(Path(path).parent, campaigns_dir)
+
+    def test_concurrent_saves_of_one_campaign_leave_a_readable_file(self) -> None:
+        """Interleaved direct saves never publish a torn or blended campaign."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaigns_dir.mkdir(parents=True)
+            first = self._campaign()
+            second = self._campaign()
+            second["next_detail"] = "x" * 4096
+
+            barrier = threading.Barrier(2)
+
+            def save(payload: dict[str, Any]) -> None:
+                barrier.wait(timeout=60)
+                for _ in range(25):
+                    release_campaigns.save_campaign(payload, campaigns_dir)
+
+            workers = [
+                threading.Thread(target=save, args=(first,), daemon=True),
+                threading.Thread(target=save, args=(second,), daemon=True),
+            ]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=120)
+                self.assertFalse(worker.is_alive())
+
+            stored = json.loads((campaigns_dir / "campaign-v1.0.0.json").read_text())
+            self.assertEqual(stored["schema"], release_campaigns.CAMPAIGN_SCHEMA)
+            self.assertIn(stored, (first, second))
+            self.assertEqual(
+                [p.name for p in campaigns_dir.iterdir() if p.name.startswith(".tmp.")], []
+            )
+
+    def test_a_failed_write_leaves_no_temp_file_behind(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._campaign()
+            campaign["providers"] = [object()]  # not JSON-serializable
+            with self.assertRaises(TypeError):
+                release_campaigns.save_campaign(campaign, campaigns_dir)
+            self.assertEqual(sorted(p.name for p in campaigns_dir.iterdir()), [])
+
+    def test_a_stray_temp_file_is_never_read_as_a_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaigns_dir.mkdir(parents=True)
+            release_campaigns.save_campaign(self._campaign(), campaigns_dir)
+            stray = campaigns_dir / f"{release_campaigns.CAMPAIGN_TEMP_PREFIX}abc.other.json"
+            stray.write_text(
+                json.dumps({**self._campaign(), "campaign_id": "other"}), encoding="utf-8"
+            )
+            listed = release_campaigns.list_campaigns(campaigns_dir)
+            self.assertEqual([c["campaign_id"] for c in listed], ["campaign-v1.0.0"])
+            self.assertIsNone(release_campaigns.load_campaign("other", campaigns_dir))
 
 
 if __name__ == "__main__":
