@@ -577,8 +577,9 @@ pending; treats configured current-head `*-blocked` labels as failure; applies
 `merge_authority_excludes_author` from `code-mower.yml`; publishes the
 `code-mower/gate` commit status; keeps the workflow job name distinct from that
 status so GitHub does not bind branch protection to the Actions check-run; and
-calls GitHub's
-`enablePullRequestAutoMerge` when the status is green. A `*-done` or
+runs one head-pinned `gh pr merge --auto --squash --match-head-commit` call
+with bounded retry for transient merge-state races when the status is green.
+A `*-done` or
 `*-blocked` label counts only when the matching terminal audit comment carries
 the same head SHA and comes from the lane's configured bot authors, so stale
 labels and forged comments cannot win races against cleanup. When several
@@ -595,16 +596,21 @@ The generated product-support files include `tools/audit_labeler_lib.py` and
 attestation and decision-covered blocker handling without uploading source,
 diffs, or transcripts.
 Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
-call in the repository gate workflow. If GitHub rejects that optional
-auto-merge call after a green gate, the workflow logs a notice and leaves the
-published gate status green.
+call in the repository gate workflow. After a green gate, the workflow runs one
+head-pinned `gh pr merge --auto --squash --match-head-commit HEAD_SHA` call:
+it queues auto-merge while required checks are still pending and merges
+promptly once the PR is mergeable, and it refuses a moved head instead of
+merging unaudited commits. Transient merge-state races such as `Pull request
+is in unstable status` get bounded exponential backoff (5 attempts by default);
+authorization, policy, head-mismatch, and other permanent refusals are logged
+once as a notice without retry. Either way the published gate status stays
+green and the step never blocks on merge mechanics.
 For unattended merges, configure a dedicated machine-user or GitHub App token in
 the `CODE_MOWER_GATE_AUTOMERGE_TOKEN` secret; `DISPATCH_TOKEN` is accepted as a
 fallback when it already belongs to the same trusted automation identity. The
 gate still uses the default `github.token` for repository reads and status
-publication, and uses the merge-capable token only for the final
-`enablePullRequestAutoMerge` GraphQL call. Do not use hosted builder tokens as
-merge tokens.
+publication, and uses the merge-capable token only for the final merge call.
+Do not use hosted builder tokens as merge tokens.
 
 The recommended three-builder pattern is:
 

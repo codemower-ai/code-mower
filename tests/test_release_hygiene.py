@@ -1466,7 +1466,8 @@ exit 1
             "CODE_MOWER_GATE_AUTOMERGE_TOKEN: ${{ secrets.CODE_MOWER_GATE_AUTOMERGE_TOKEN || secrets.DISPATCH_TOKEN || '' }}",
             gate,
         )
-        self.assertIn('GH_TOKEN="${automerge_token}" gh api graphql', gate)
+        self.assertIn('GH_TOKEN="${automerge_token}" gh pr merge', gate)
+        self.assertNotIn("enablePullRequestAutoMerge", gate)
         self.assertNotIn("TODO_OWNER_LOGIN", gate)
 
         workflow_commands = {
@@ -3833,13 +3834,13 @@ jobs:
             self.assertIn("claude-audit-done", gate)
             self.assertIn("builder:codex", gate)
             self.assertIn("builder:claude", gate)
-            self.assertIn("enablePullRequestAutoMerge", gate)
+            self.assertNotIn("enablePullRequestAutoMerge", gate)
             self.assertIn("CODE_MOWER_GATE_AUTOMERGE_TOKEN", gate)
             self.assertIn("secrets.CODE_MOWER_GATE_AUTOMERGE_TOKEN", gate)
             self.assertIn("secrets.DISPATCH_TOKEN", gate)
             self.assertIn('automerge_token="${CODE_MOWER_GATE_AUTOMERGE_TOKEN:-${GH_TOKEN:-}}"', gate)
-            self.assertIn('GH_TOKEN="${automerge_token}" gh api graphql', gate)
-            self.assertNotIn("enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:SQUASH}){pullRequest{id}}}' >/dev/null || {", gate)
+            self.assertIn('GH_TOKEN="${automerge_token}" gh pr merge', gate)
+            self.assertIn("--auto --squash --match-head-commit", gate)
             self.assertIn("gh api -X POST", gate)
             self.assertIn("CODE_MOWER_AUDIT_RUN", gate)
             self.assertIn("comment_id", gate)
