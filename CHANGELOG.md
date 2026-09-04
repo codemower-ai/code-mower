@@ -6,6 +6,27 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
+## v1.0.4
+
+This patch tightens the supervised-pilot install, diagnostics, and generated
+workflow surface without changing gate semantics or the metadata-only privacy
+boundary.
+
+### Changed
+
+- The standalone-wrapper reinstall test now uses a deterministic local,
+  standard-library-only build backend and proves that its offline fixture does
+  not invoke pip or a package index (#656).
+- Setup-drift output identifies packaged versus explicitly selected
+  configuration, and hosted-agent posture guidance appears once before
+  provider-specific warning detail (#656).
+- Generated workflows that receive `DISPATCH_TOKEN` use trusted default-branch
+  definitions through `pull_request_target`, retain the same-repository guard,
+  and never check out pull-request code (#654).
+- The tagged installation, upgrade, hosted-agent, CLI, link, and privacy flows
+  were audited at the release baseline, with 172 local Markdown targets and
+  anchors checked successfully (#657).
+
 ## v1.0.3
 
 This patch is the confidence-polish release for experienced senior engineers

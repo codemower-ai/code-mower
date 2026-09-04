@@ -29,9 +29,9 @@ observability/evaluation backend.
 
 ## Release Stages
 
-### Current v1.0.3: Metadata-Only Upload, Board Mirror, And Productivity
+### Current v1.0.4: Metadata-Only Upload, Board Mirror, And Productivity
 
-The current v1.0.3 line keeps cloud sharing opt-in for adopters who explicitly
+The current v1.0.4 line keeps cloud sharing opt-in for adopters who explicitly
 want to share sanitized benchmark metadata, summarized Board mirrors, or
 aggregate productivity metrics with Code Mower Cloud. The OSS tool is still
 local-first:
