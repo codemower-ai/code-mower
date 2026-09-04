@@ -23,7 +23,7 @@ is the first-class isolated path:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 code-mower==1.0.5
+uv tool install --python 3.12 code-mower==1.0.6
 code-mower --version
 ```
 
@@ -32,11 +32,11 @@ For a laptop or workstation that already uses pipx:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.5
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.6
 code-mower --version
 ```
 
-`1.0.5` is the supervised-pilot release. If you want a future prerelease instead
+`1.0.6` is the supervised-pilot release. If you want a future prerelease instead
 of this exact verified release, use:
 
 ```bash
@@ -433,7 +433,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.5 \
+  --package-spec code-mower==1.0.6 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --json

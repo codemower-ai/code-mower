@@ -194,7 +194,7 @@ agent report its actual host posture, exact installed version, doctor result,
 Board URL, and any owner-only click-list before it mutates the repo.
 
 The current package-index announcement entry point is the tagged
-[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v1.0.5/docs/try-in-10-minutes.md)
+[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v1.0.6/docs/try-in-10-minutes.md)
 guide. The v1.0 supervised-pilot release includes the native Board, the
 controller dry-run and policy contract, adoption and upgrade hardening from
 recent install rehearsals, package-index release checks, provider-diversity
@@ -214,6 +214,10 @@ environments, resumable campaigns on Board, and an opt-in metadata-only
 `adoption_run` view on CodeMower.com. Qualification proves install and
 operational compatibility; it is not builder-quality or reviewer-promotion
 evidence.
+The v1.0.6 patch turns that campaign contract into an operator loop: maintained
+Codex, Claude, Antigravity, and Muse adapters; bounded Cursor/Grok Bot and Devin
+hosted profiles; a blocking `watch`; dry-run-first campaign upload; and adoption
+doctor checks that identify provider, storage, cloud, and Board readiness.
 Package-only users can start from the public package rather than a source
 checkout.
 
@@ -246,7 +250,7 @@ Provider-contract baseline for the next release train:
 
 For release verification,
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the package-index procedure for `v1.0.5` / `code-mower==1.0.5`. The
+the package-index procedure for `v1.0.6` / `code-mower==1.0.6`. The
 GitHub release records the workflow and rehearsal evidence for the exact tag.
 After publication, [Release Qualification](docs/release-qualification.md)
 coordinates provider-specific install and operational checks without treating
@@ -435,8 +439,8 @@ measurement work.
 
 ## Installation Status
 
-The current package-index release baseline is `v1.0.5`, with pinned package
-install spec `code-mower==1.0.5`. Release evidence is recorded on the GitHub
+The current package-index release baseline is `v1.0.6`, with pinned package
+install spec `code-mower==1.0.6`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. The public repository is
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), and
 GitHub releases remain the auditable source for tags, build artifacts, and
@@ -508,6 +512,7 @@ first so local work exercises the same package entrypoint users install.
 - [v1.0.3 Release Notes](docs/v103-release-notes.md)
 - [v1.0.4 Release Notes](docs/v104-release-notes.md)
 - [v1.0.5 Release Notes](docs/v105-release-notes.md)
+- [v1.0.6 Release Notes](docs/v106-release-notes.md)
 - [Post-v0.8 Effectiveness Assessment](docs/post-v08-effectiveness-assessment.md)
 - [v1.0.1 Effectiveness Assessment](docs/v101-effectiveness-assessment.md)
 - [Demo Calibration Example](examples/demo-calibration/README.md)

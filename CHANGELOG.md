@@ -6,6 +6,37 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
+## v1.0.6
+
+This patch completes the multi-provider release-qualification operator loop.
+It preserves the supervised-pilot gate semantics and metadata-only privacy
+boundary while replacing manual prompt relays with maintained local adapters,
+bounded hosted dispatch, watch, upload, and readiness diagnostics.
+
+### Added
+
+- Maintained release-campaign adapters for Codex, Claude, Antigravity, and Muse,
+  with isolated provider homes, bounded execution, closed result validation,
+  and no persisted raw provider output (#683, #691).
+- Safe hosted qualification profiles for Cursor/Grok Bot and Devin, including
+  idempotent dispatch markers, trusted result polling, explicit retries, and
+  fail-closed outage behavior (#684, #688).
+- `code-mower release campaign watch` polls local and hosted providers until
+  completion, timeout, or a genuine owner action while preserving read-only,
+  bounded watch behavior (#686, #692).
+- `code-mower release campaign upload` previews a closed metadata-only bundle by
+  default and requires explicit confirmation before CodeMower.com upload (#685,
+  #689).
+- `code-mower doctor --adoption` now reports campaign adapter, hosted credential,
+  storage, cloud-profile, Board, and aggregate preview readiness across the six
+  supported qualification providers (#687, #690).
+
+### Changed
+
+- Campaign state handling now shares bounded cross-platform locks, atomic
+  persistence, exact campaign identity, and the same cloud-token resolver used
+  by upload commands.
+
 ## v1.0.5
 
 This patch makes release qualification a repeatable, visible, metadata-only
