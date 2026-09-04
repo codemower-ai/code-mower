@@ -36,7 +36,7 @@ else:
 
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[ab]\d+|rc\d+)?$")
-VALID_CONTEXTS = {"cold_install", "upgrade", "unknown"}
+VALID_CONTEXTS = {"cold_install", "unknown"}
 
 
 @dataclass
@@ -149,8 +149,9 @@ def _aggregate_outcome(steps: list[StepResult]) -> str:
     has_fail = any(s.status == "fail" for s in steps)
     has_warn = any(s.status == "warn" for s in steps)
     has_unavailable = any(s.status == "unavailable" for s in steps)
+    has_planned = any(s.status == "planned" for s in steps)
 
-    if has_fail:
+    if has_fail or has_planned:
         return "fail"
     if has_warn or has_unavailable:
         return "pass_with_warnings"

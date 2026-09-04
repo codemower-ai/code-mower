@@ -23,8 +23,8 @@ Runs from current directory by default. Specify `--repo-path` to qualify a diffe
 - `release_tag`: Exact tag
 - `package_identity`: Package name (code-mower)
 - `normalized_version`: Normalized version
-- `qualification_context`: Context (cold_install/upgrade/unknown)
-- `starting_version`: Version before (for upgrade)
+- `qualification_context`: Context (cold_install/unknown)
+- `starting_version`: Reserved (empty in this version)
 - `ending_version`: Version after rehearsal
 - `provider`, `executor`: Safe identifiers
 - `host_class`, `runtime_class`: Environment classification
@@ -40,4 +40,4 @@ No local paths, secrets, commands, or raw output.
 - Package must be exact index spec: `code-mower==1.0.0`
 - Tag and spec versions must match
 - Provider/executor must be safe identifiers: `^[a-z][a-z0-9_]{0,31}$`
-- Context must be: cold_install, upgrade, or unknown
+- Context must be: cold_install or unknown

@@ -37,6 +37,22 @@ class ReleaseQualifyTests(unittest.TestCase):
         self.assertIn("must be empty or normalized", str(ctx.exception))
         self.assertNotIn("/path", str(ctx.exception))
 
+    def test_upgrade_context_rejected(self) -> None:
+        """Upgrade context is rejected as unsupported."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "result.json"
+
+            with self.assertRaises(ValueError) as ctx:
+                release_qualify.run_release_qualification(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    output_path=output_path,
+                    qualification_context="upgrade",
+                    dry_run=True,
+                )
+            self.assertIn("must be one of", str(ctx.exception))
+            self.assertIn("cold_install", str(ctx.exception))
+
     def test_exact_package_index_required(self) -> None:
         """Only exact package-index specs are accepted."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -80,7 +96,7 @@ class ReleaseQualifyTests(unittest.TestCase):
             self.assertTrue(output_path.exists())
             with open(output_path, encoding="utf-8") as f:
                 result = json.load(f)
-            self.assertEqual(result["outcome"], "pass_with_warnings")
+            self.assertEqual(result["outcome"], "fail")
             self.assertEqual(result["package_identity"], "code-mower")
 
     def test_doctor_uses_real_config(self) -> None:
@@ -207,12 +223,15 @@ class ReleaseQualifyTests(unittest.TestCase):
         warn_step = release_qualify.StepResult("test", "warn", 1.0, 0, 0)
         unavail_step = release_qualify.StepResult("test", "unavailable", 1.0, 0, 0)
         pass_step = release_qualify.StepResult("test", "pass", 1.0, 0, 0)
+        planned_step = release_qualify.StepResult("test", "planned", 1.0, 0, 0)
 
         self.assertEqual(release_qualify._aggregate_outcome([fail_step]), "fail")
         self.assertEqual(release_qualify._aggregate_outcome([fail_step, pass_step]), "fail")
         self.assertEqual(release_qualify._aggregate_outcome([warn_step]), "pass_with_warnings")
         self.assertEqual(release_qualify._aggregate_outcome([unavail_step]), "pass_with_warnings")
         self.assertEqual(release_qualify._aggregate_outcome([pass_step]), "pass")
+        self.assertEqual(release_qualify._aggregate_outcome([planned_step]), "fail")
+        self.assertEqual(release_qualify._aggregate_outcome([planned_step, pass_step]), "fail")
 
     def test_dry_run_emits_planned_step(self) -> None:
         """Dry-run emits package_install step with planned status."""
@@ -236,6 +255,7 @@ class ReleaseQualifyTests(unittest.TestCase):
             install_step = [s for s in result["steps"] if s["id"] == "package_install"][0]
             self.assertEqual(install_step["status"], "planned")
             self.assertEqual(result["ending_version"], "")
+            self.assertEqual(result["outcome"], "fail")
 
     def test_execute_normalizes_rehearsal_version(self) -> None:
         """Execute normalizes rehearsal version from CLI format."""
