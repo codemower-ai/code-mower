@@ -16,8 +16,9 @@ from .bundle import (
     event_type_counts,
     is_bundle_manifest,
 )
+from .adoption_runs import ADOPTION_RUN_EVENT_TYPE
 from .errors import CloudBundleError
-from .events import normalize_event, safe_kind
+from .events import normalize_event, safe_kind, validate_cloud_event
 
 
 INVENTORY_ONLY_PROVENANCE_EVENT_TYPES = {"provider_catalog_snapshot"}
@@ -183,10 +184,21 @@ def build_cloud_bundle(
         for index, (path, kind) in enumerate(reports, start=1)
     ]
     included_reports, stage_dir = stage_reports(planned_reports, output_dir)
-    included_events = [
-        normalize_event(event, str(event.get("event_type") or "dogfood_upload"))
-        for event in events or []
-    ]
+    included_events = []
+    for event in events or []:
+        normalized = normalize_event(event, str(event.get("event_type") or "dogfood_upload"))
+        if not anonymous and normalized["event_type"] == ADOPTION_RUN_EVENT_TYPE:
+            patched = dict(normalized)
+            if not patched.get("repo_slug"):
+                patched["repo_slug"] = repo_slug
+            if not patched.get("team_id"):
+                patched["team_id"] = team_id
+            if not patched.get("install_id"):
+                patched["install_id"] = install_id
+            if patched != normalized:
+                patched = validate_cloud_event(patched)
+            normalized = patched
+        included_events.append(normalized)
     if len(included_events) > MAX_EVENT_COUNT:
         raise CloudBundleError(
             f"too many events: {len(included_events)}; max {MAX_EVENT_COUNT}"

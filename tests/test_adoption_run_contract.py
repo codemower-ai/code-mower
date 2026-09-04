@@ -524,6 +524,47 @@ class AdoptionRunExportTests(unittest.TestCase):
             for phrase in ("report text", "issue body"):
                 self.assertNotIn(phrase, serialized_upload)
 
+    def test_bundle_propagates_cli_identity_into_converted_adoption_event(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result_path = root / "adoption-result.json"
+            result_path.write_text(json.dumps(_result()), encoding="utf-8")
+
+            # Real export path: the file converter leaves envelope identity
+            # empty; the bundle call carries the caller-supplied identity.
+            events = parse_event_args([f"{ADOPTION_RUN_EVENT_TYPE}={result_path}"])
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["repo_slug"], "")
+            self.assertEqual(events[0]["team_id"], "")
+            self.assertEqual(events[0]["install_id"], "")
+
+            exported = build_cloud_bundle(
+                reports=[],
+                events=events,
+                output_dir=root / "bundle",
+                repo_slug="owner/repo",
+                team_id="team",
+                install_id="install",
+            )
+            self.assertEqual(exported["event_types"], {ADOPTION_RUN_EVENT_TYPE: 1})
+
+            manifest_path = root / "bundle" / "code-mower-cloud-bundle.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["events"]), 1)
+            converted = manifest["events"][0]
+            self.assertEqual(converted["repo_slug"], "owner/repo")
+            self.assertEqual(converted["team_id"], "team")
+            self.assertEqual(converted["install_id"], "install")
+            validate_cloud_event(converted)
+
+            upload = build_upload_payload(bundle_dir=root / "bundle")
+            self.assertEqual(len(upload["events"]), 1)
+            self.assertEqual(upload["events"][0]["repo_slug"], "owner/repo")
+            self.assertEqual(upload["events"][0]["team_id"], "team")
+            self.assertEqual(upload["events"][0]["install_id"], "install")
+
     def test_load_event_file_converts_adoption_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result_path = Path(tmp) / "adoption-result.json"
