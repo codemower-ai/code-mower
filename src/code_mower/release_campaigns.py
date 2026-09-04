@@ -205,7 +205,10 @@ class CampaignProvider:
     completed_at: str | None = None
     # Set before invoking a paid/hosted dispatch or local adapter (even if it
     # fails or the outcome is uncertain). Once set, resume never repeats the
-    # attempt automatically -- only an explicit --retry-provider does.
+    # attempt automatically -- only an explicit --retry-provider does. A hosted
+    # dispatch stamps it together with `state="running"` and the issue identity
+    # in `dispatch_ref`, so an attempt interrupted mid-post is left pollable
+    # rather than stalled (see `dispatch_or_advance_campaign`).
     attempted_at: str | None = None
     next_action: str = ""
     next_detail: str = ""
@@ -1381,6 +1384,38 @@ def _record_dry_run_dispatch_mode(provider_data: dict[str, Any]) -> None:
         provider_data["dispatch_mode"] = "dry_run"
 
 
+def _save_campaign_progress(
+    campaign: dict[str, Any],
+    campaigns_dir: Path,
+    *,
+    now_utc: str,
+) -> None:
+    """Persist the campaign with a campaign-level header that matches its providers.
+
+    Every save inside an applied run -- the mid-run checkpoints as much as the
+    final one -- publishes a file the Board and ``--status`` may read next,
+    possibly because this process never reached its final save. Writing provider
+    state without recomputing ``status``/``next_action``/``next_detail`` from it
+    would publish a header describing the campaign as it was *before* the
+    attempt, so an interrupted run would leave the Board advising work that no
+    longer applies -- "run with --apply to dispatch providers" for a provider
+    that is already dispatched and pollable.
+    """
+    status, next_action, next_detail = _aggregate_campaign_status(
+        campaign.get("providers", []),
+        dry_run=campaign.get("dry_run", True),
+    )
+    campaign["status"] = status
+    campaign["next_action"] = next_action
+    campaign["next_detail"] = next_detail
+    campaign["updated_at"] = now_utc
+    campaign["elapsed_seconds"] = round(
+        sum(float(p.get("elapsed_seconds") or 0.0) for p in campaign.get("providers", [])),
+        2,
+    )
+    save_campaign(campaign, campaigns_dir)
+
+
 def dispatch_or_advance_campaign(
     campaign: dict[str, Any],
     *,
@@ -1400,6 +1435,13 @@ def dispatch_or_advance_campaign(
     `retry_provider` is the only way a provider whose applied dispatch/adapter
     was already attempted (`attempted_at` set) gets invoked again -- ordinary
     resume never repeats a paid/hosted dispatch or local adapter run.
+
+    A hosted/SaaS dispatch is therefore checkpointed as a *pollable* state
+    before its external post rather than after: `attempted_at`, `running`, the
+    issue identity in `dispatch_ref`, and `dispatch_mode="applied"` are all
+    persisted first, so an interruption anywhere around the post leaves a
+    campaign an ordinary resume can poll to a conclusion instead of one stuck
+    between "already attempted" and "never dispatched".
     """
     current_env = os.environ if env is None else env
     repo_path = repo_path or Path.cwd()
@@ -1686,7 +1728,7 @@ def dispatch_or_advance_campaign(
             except FileNotFoundError:
                 pass
             provider_data["attempted_at"] = now_utc
-            save_campaign(campaign, campaigns_dir)
+            _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
             start_p = time.time()
             result, error_code, detail = _invoke_local_adapter(
                 lane,
@@ -1738,8 +1780,22 @@ def dispatch_or_advance_campaign(
                     provider_data["next_detail"] = f"outcome: {outcome}"
 
         elif lane.driver in {"saas_event", "hosted_bridge"}:
+            # Only an explicit retry can reach this branch with the provider
+            # already `running` against a known issue -- i.e. a dispatch whose
+            # outcome is still uncertain. A prerequisite refusal below performs
+            # no external call and learns nothing about that dispatch, so it
+            # must not take the provider's pollability away: demoting it to
+            # `unavailable` would stop every later resume from reading the
+            # comment the interrupted attempt may already have posted. Such a
+            # retry keeps polling and reports the prerequisite to supply.
+            unmet_prerequisite_state = (
+                "running"
+                if current_state == "running"
+                and (provider_data.get("dispatch_ref") or {}).get("issue_number")
+                else "unavailable"
+            )
             if not has_creds:
-                provider_data["state"] = "unavailable"
+                provider_data["state"] = unmet_prerequisite_state
                 provider_data["error"] = _safe_error("missing_credentials")
                 provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
                     provider,
@@ -1752,7 +1808,7 @@ def dispatch_or_advance_campaign(
                     error=missing_cred,
                 )
             elif not issue_number or not repo_slug:
-                provider_data["state"] = "unavailable"
+                provider_data["state"] = unmet_prerequisite_state
                 provider_data["error"] = _safe_error("missing_issue_number")
                 provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
                     provider,
@@ -1768,15 +1824,57 @@ def dispatch_or_advance_campaign(
                 # Fail closed before any attempt is recorded: an upgrade
                 # dispatch that cannot advertise its exact starting_version
                 # could be answered by a result from any starting version.
-                provider_data["state"] = "unavailable"
+                provider_data["state"] = unmet_prerequisite_state
                 provider_data["error"] = _safe_error("campaign_identity_incomplete")
                 provider_data["next_action"] = (
                     f"recreate the campaign with --starting-version before dispatching {provider}"
                 )
                 provider_data["next_detail"] = "upgrade campaign is missing starting_version"
             else:
+                # Checkpoint a *pollable* uncertain state before the external
+                # post, not merely an attempt claim. The post is a side effect
+                # this process cannot undo and cannot re-observe: once `gh` has
+                # been invoked, a process exit before the final save leaves
+                # whatever this checkpoint wrote as the whole record of it.
+                #
+                # Recording only `attempted_at` while the provider stayed
+                # `queued` was that record, and it was unpollable: an ordinary
+                # resume skips a queued provider's poll and declines to
+                # redispatch an attempted one, so the campaign stalled until
+                # someone ran an explicit --retry-provider, which then posted a
+                # second comment for a dispatch that may well have succeeded.
+                #
+                # So the checkpoint states everything a later resume needs to
+                # find out what really happened: the attempt, `running` (the
+                # one state whose resume path polls), the issue the comment was
+                # addressed to, and the applied dispatch mode. It deliberately
+                # does *not* state that the post succeeded -- `dispatched_at`
+                # stays unset and `comment_posted` is False until `gh` returns
+                # zero -- because polling an issue that never received a comment
+                # is safe and self-correcting, while inferring a successful post
+                # is neither. If nothing was ever posted, resume keeps polling
+                # and finds nothing, and the existing explicit-retry policy
+                # remains the only way to dispatch again.
                 provider_data["attempted_at"] = now_utc
-                save_campaign(campaign, campaigns_dir)
+                provider_data["state"] = "running"
+                provider_data["error"] = ""
+                provider_data["dispatch_ref"] = {
+                    "issue_number": str(issue_number),
+                    "comment_posted": False,
+                }
+                (
+                    provider_data["next_action"],
+                    provider_data["next_detail"],
+                ) = _provider_next_action(
+                    provider,
+                    lane,
+                    "running",
+                    command_available=True,
+                    has_credentials=True,
+                    has_issue=True,
+                    dry_run=False,
+                )
+                _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
                 ok, ref, err = _dispatch_github_comment(
                     repo_slug,
                     issue_number,
@@ -1790,6 +1888,9 @@ def dispatch_or_advance_campaign(
                     command_runner=command_runner,
                 )
                 if ok:
+                    # The post is confirmed: replace the uncertain checkpoint
+                    # reference with the returned dispatch metadata and stamp
+                    # the dispatch time the checkpoint withheld.
                     provider_data["state"] = "running"
                     provider_data["error"] = ""
                     provider_data["dispatched_at"] = now_utc
@@ -1804,6 +1905,11 @@ def dispatch_or_advance_campaign(
                         dry_run=False,
                     )
                 else:
+                    # The dispatch failed *in process*, so this run knows the
+                    # outcome and records it: the checkpoint's provisional
+                    # `running` is replaced by the unavailable/error result,
+                    # and the reference is left reporting that no comment was
+                    # posted.
                     provider_data["state"] = "unavailable"
                     provider_data["error"] = err
                     if err == "campaign_identity_incomplete":
@@ -1824,22 +1930,7 @@ def dispatch_or_advance_campaign(
             provider_data["next_action"] = f"record manual adoption result for {provider}"
             provider_data["next_detail"] = "manual adapter fallback"
 
-    overall_status, next_action, next_detail = _aggregate_campaign_status(
-        campaign.get("providers", []),
-        dry_run=campaign.get("dry_run", True),
-    )
-    campaign["status"] = overall_status
-    campaign["next_action"] = next_action
-    campaign["next_detail"] = next_detail
-    campaign["updated_at"] = now_utc
-
-    total_elapsed = sum(
-        float(p.get("elapsed_seconds") or 0.0)
-        for p in campaign.get("providers", [])
-    )
-    campaign["elapsed_seconds"] = round(total_elapsed, 2)
-
-    save_campaign(campaign, campaigns_dir)
+    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
     return campaign
 
 

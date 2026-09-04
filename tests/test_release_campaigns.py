@@ -149,6 +149,17 @@ def _fake_hosted_bridge_lane(*, bot_authors: tuple[str, ...] = ()) -> ProviderLa
     )
 
 
+class _ProcessInterrupted(BaseException):
+    """Stands in for an abrupt process exit: SIGINT/SIGTERM, `kill`, or an OOM.
+
+    Deliberately a `BaseException`, like `KeyboardInterrupt` and `SystemExit`:
+    the whole point of a crash-window test is a failure that no ordinary
+    `except Exception` handling converts into a recorded provider error. What
+    the campaign persisted *before* the interruption is the entire record of
+    the attempt.
+    """
+
+
 class ResolveProviderLaneTests(unittest.TestCase):
     """resolve_provider_lane must fail closed on unknown provider names."""
 
@@ -7001,6 +7012,498 @@ class ExactPackageSpecParsingTests(unittest.TestCase):
                     self.assertEqual(saved["package_identity"], "code-mower")
                     self.assertEqual(saved["providers"][0]["state"], expected_state)
                     self.assertEqual(saved["providers"][0]["error"], expected_error)
+
+
+class HostedDispatchCrashWindowTests(unittest.TestCase):
+    """A hosted dispatch interrupted around its external post stays pollable.
+
+    The dangerous window is between the `gh issue comment` call and the save
+    that records its outcome: the comment may already exist on GitHub, and
+    nothing in this process will ever learn whether it does. A checkpoint that
+    recorded only `attempted_at` left the provider `queued`, which an ordinary
+    resume neither polls (it is not `running`) nor redispatches (it is already
+    attempted) -- so the campaign stalled until someone ran an explicit retry,
+    which then posted a second comment for a dispatch that may well have
+    succeeded.
+
+    The checkpoint therefore persists a pollable state *before* the post, and
+    claims a successful post only once `gh` returns zero.
+    """
+
+    CAMPAIGN_ID = "campaign-v1.0.0"
+    ISSUE = "42"
+    TRUSTED_AUTHOR = "devin-ai-integration[bot]"
+
+    @staticmethod
+    def _load(campaigns_dir: Path) -> dict[str, Any]:
+        """Reload the campaign from disk -- never from the in-process object."""
+        stored = release_campaigns.load_campaign_by_id(
+            HostedDispatchCrashWindowTests.CAMPAIGN_ID, campaigns_dir
+        )
+        assert stored is not None
+        return stored
+
+    @staticmethod
+    def _no_comments(*_args: Any, **_kwargs: Any) -> tuple[dict[str, Any], str]:
+        return {"comments": []}, ""
+
+    @staticmethod
+    def _ok_command_runner(argv, **_kwargs) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def _crash_during_dispatch(
+        self,
+        campaigns_dir: Path,
+        *,
+        lane: ProviderLane | None = None,
+    ) -> list[list[str]]:
+        """Apply a hosted dispatch whose external post never returns to its caller."""
+        posted: list[list[str]] = []
+
+        def interrupted_command_runner(argv, **_kwargs):
+            posted.append(list(argv))
+            raise _ProcessInterrupted("interrupted after the dispatch comment was posted")
+
+        with mock.patch.object(
+            release_campaigns,
+            "resolve_provider_lane",
+            return_value=("devin", lane or _fake_hosted_bridge_lane()),
+        ):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                with self.assertRaises(_ProcessInterrupted):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=["devin"],
+                        repo_slug="owner/repo",
+                        issue=self.ISSUE,
+                        campaigns_dir=campaigns_dir,
+                        apply=True,
+                        which_fn=lambda _cmd: "/bin/gh",
+                        command_runner=interrupted_command_runner,
+                        gh_json_runner=self._no_comments,
+                        env={"DEVIN_API_KEY": "token"},
+                    )
+
+        self.assertEqual(len(posted), 1, posted)
+        return posted
+
+    def _dispatch(
+        self,
+        campaigns_dir: Path,
+        *,
+        command_runner,
+        lane: ProviderLane | None = None,
+    ) -> None:
+        """Apply a hosted dispatch that runs to completion."""
+        with mock.patch.object(
+            release_campaigns,
+            "resolve_provider_lane",
+            return_value=("devin", lane or _fake_hosted_bridge_lane()),
+        ):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["devin"],
+                    repo_slug="owner/repo",
+                    issue=self.ISSUE,
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    which_fn=lambda _cmd: "/bin/gh",
+                    command_runner=command_runner,
+                    gh_json_runner=self._no_comments,
+                    env={"DEVIN_API_KEY": "token"},
+                )
+
+    def _resume(
+        self,
+        campaigns_dir: Path,
+        *,
+        lane: ProviderLane | None = None,
+        gh_json_runner=None,
+        command_runner=None,
+        apply: bool = False,
+        retry_provider: str = "",
+        issue: str = "",
+    ):
+        """Resume the stored campaign. `--issue` defaults to absent: an ordinary
+        resume must poll the issue it stored, not one supplied again."""
+        runner = mock.MagicMock() if command_runner is None else command_runner
+        with mock.patch.object(
+            release_campaigns,
+            "resolve_provider_lane",
+            return_value=("devin", lane or _fake_hosted_bridge_lane()),
+        ):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    apply=apply,
+                    retry_provider=retry_provider,
+                    issue=issue,
+                    repo_slug="owner/repo",
+                    which_fn=lambda _cmd: "/bin/gh",
+                    command_runner=runner,
+                    gh_json_runner=gh_json_runner or self._no_comments,
+                    env={"DEVIN_API_KEY": "token"},
+                )
+        return runner
+
+    def _trusted_result_comments(self, campaigns_dir: Path, *, outcome: str = "pass"):
+        """A trusted-author comment carrying a result bound to the stored dispatch."""
+        stored = self._load(campaigns_dir)
+        wrapper = {
+            "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+            "campaign_id": stored["campaign_id"],
+            "provider": "devin",
+            "release_tag": "v1.0.0",
+            "idempotency_key": stored["providers"][0]["idempotency_key"],
+            "adoption_result": _mock_adoption_result(provider="devin", outcome=outcome),
+        }
+        marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+        def gh_json_runner(*_args: Any, **_kwargs: Any):
+            return {
+                "comments": [
+                    {
+                        "author": {"login": self.TRUSTED_AUTHOR},
+                        "body": f"Qualification finished.\n\n{marker}",
+                    }
+                ]
+            }, ""
+
+        return gh_json_runner
+
+    def test_a_crash_around_the_external_post_checkpoints_a_pollable_state(self) -> None:
+        """Reloaded from disk: attempted, running, and addressed to a known issue."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._crash_during_dispatch(campaigns_dir)
+
+            stored = self._load(campaigns_dir)
+            provider_entry = stored["providers"][0]
+            self.assertEqual(provider_entry["state"], "running")
+            self.assertTrue(provider_entry["attempted_at"])
+            self.assertEqual(provider_entry["dispatch_mode"], "applied")
+            # The issue identity a later poll needs, in a bounded field.
+            self.assertEqual(provider_entry["dispatch_ref"]["issue_number"], self.ISSUE)
+            # Nothing claims the post succeeded: this process never saw it return.
+            self.assertFalse(provider_entry["dispatch_ref"]["comment_posted"])
+            self.assertIsNone(provider_entry["dispatched_at"])
+            self.assertIsNone(provider_entry["adoption_result"])
+            self.assertEqual(provider_entry["error"], "")
+            self.assertEqual(
+                provider_entry["next_action"], "poll devin remote progress marker"
+            )
+            self.assertFalse(stored["dry_run"])
+
+    def test_the_checkpointed_campaign_header_is_accurate_for_the_board(self) -> None:
+        """The interrupted run may be the last writer, so its header must be true."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._crash_during_dispatch(campaigns_dir)
+
+            stored = self._load(campaigns_dir)
+            self.assertEqual(stored["status"], "running")
+            self.assertIn("poll running providers: devin", stored["next_action"])
+            # Never the pre-attempt headline for work that is already dispatched.
+            self.assertNotIn("run with --apply", stored["next_action"])
+
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir
+            )
+            entry = payload["campaigns"][0]
+            self.assertEqual(entry["status"], "running")
+            self.assertFalse(entry["dry_run"])
+            self.assertIn("poll running providers: devin", entry["next_action"])
+            card = entry["cards"][0]
+            self.assertEqual(card["state"], "running")
+            self.assertEqual(card["next_action"], "poll devin remote progress marker")
+
+    def test_ordinary_resume_polls_the_original_issue_and_never_reposts(self) -> None:
+        """Resume names no issue: it must poll the one the interrupted run stored."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._crash_during_dispatch(campaigns_dir)
+            checkpoint = self._load(campaigns_dir)["providers"][0]
+
+            polled: list[list[str]] = []
+
+            def recording_gh_json(args, **_kwargs):
+                polled.append(list(args))
+                return {"comments": []}, ""
+
+            runner = self._resume(campaigns_dir, gh_json_runner=recording_gh_json)
+
+            runner.assert_not_called()
+            self.assertEqual(len(polled), 1, polled)
+            self.assertIn(self.ISSUE, polled[0])
+            self.assertIn("owner/repo", polled[0])
+
+            stored = self._load(campaigns_dir)
+            provider_entry = stored["providers"][0]
+            self.assertEqual(provider_entry["state"], "running")
+            self.assertEqual(provider_entry["attempted_at"], checkpoint["attempted_at"])
+            self.assertIsNone(provider_entry["dispatched_at"])
+            self.assertEqual(stored["status"], "running")
+
+    def test_an_applied_resume_in_the_crash_window_also_never_reposts(self) -> None:
+        """`--apply` is not a retry: only --retry-provider may dispatch again."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._crash_during_dispatch(campaigns_dir)
+
+            runner = self._resume(campaigns_dir, apply=True)
+
+            runner.assert_not_called()
+            stored = self._load(campaigns_dir)
+            self.assertEqual(stored["providers"][0]["state"], "running")
+            self.assertEqual(stored["status"], "running")
+
+    def test_repeated_no_result_resumes_stay_running_and_post_nothing(self) -> None:
+        """If nothing was ever posted, resume waits -- it never infers a dispatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._crash_during_dispatch(campaigns_dir)
+
+            for _ in range(3):
+                runner = self._resume(campaigns_dir)
+                runner.assert_not_called()
+                stored = self._load(campaigns_dir)
+                self.assertEqual(stored["providers"][0]["state"], "running")
+                self.assertIsNone(stored["providers"][0]["dispatched_at"])
+                self.assertEqual(stored["status"], "running")
+
+            self.assertEqual(
+                sorted(p.name for p in campaigns_dir.glob("*.json")),
+                [f"{self.CAMPAIGN_ID}.json"],
+            )
+
+    def test_resume_completes_from_a_valid_trusted_bound_result(self) -> None:
+        """The comment the interrupted dispatch may have posted is still honored."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            lane = _fake_hosted_bridge_lane(bot_authors=(self.TRUSTED_AUTHOR,))
+            self._crash_during_dispatch(campaigns_dir, lane=lane)
+
+            runner = self._resume(
+                campaigns_dir,
+                lane=lane,
+                gh_json_runner=self._trusted_result_comments(campaigns_dir),
+            )
+
+            runner.assert_not_called()
+            stored = self._load(campaigns_dir)
+            provider_entry = stored["providers"][0]
+            self.assertEqual(provider_entry["state"], "complete")
+            self.assertEqual(provider_entry["next_action"], "none")
+            self.assertTrue(provider_entry["completed_at"])
+            assert provider_entry["adoption_result"] is not None
+            self.assertEqual(provider_entry["adoption_result"]["provider"], "devin")
+            self.assertEqual(stored["status"], "complete")
+
+    def test_resume_blocks_from_a_valid_trusted_failing_result(self) -> None:
+        """A failing bound result is just as conclusive as a passing one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            lane = _fake_hosted_bridge_lane(bot_authors=(self.TRUSTED_AUTHOR,))
+            self._crash_during_dispatch(campaigns_dir, lane=lane)
+
+            runner = self._resume(
+                campaigns_dir,
+                lane=lane,
+                gh_json_runner=self._trusted_result_comments(campaigns_dir, outcome="fail"),
+            )
+
+            runner.assert_not_called()
+            stored = self._load(campaigns_dir)
+            self.assertEqual(stored["providers"][0]["state"], "blocked")
+            self.assertEqual(stored["status"], "blocked")
+
+    def test_an_untrusted_result_never_completes_the_checkpointed_dispatch(self) -> None:
+        """Trusted-author binding is unchanged by the checkpoint: the poll waits."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            # Lane with no configured trusted authors: nobody's reply counts.
+            self._crash_during_dispatch(campaigns_dir)
+            gh_json_runner = self._trusted_result_comments(campaigns_dir)
+
+            runner = self._resume(campaigns_dir, gh_json_runner=gh_json_runner)
+
+            runner.assert_not_called()
+            stored = self._load(campaigns_dir)
+            self.assertEqual(stored["providers"][0]["state"], "running")
+            self.assertIsNone(stored["providers"][0]["adoption_result"])
+
+    def test_an_explicit_retry_is_read_only_without_apply(self) -> None:
+        """A checkpointed dispatch is not redispatched by a preview."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._crash_during_dispatch(campaigns_dir)
+
+            runner = self._resume(campaigns_dir, retry_provider="devin")
+
+            runner.assert_not_called()
+            stored = self._load(campaigns_dir)
+            provider_entry = stored["providers"][0]
+            self.assertEqual(provider_entry["state"], "running")
+            self.assertEqual(
+                provider_entry["next_action"],
+                "run with --apply --retry-provider devin to retry devin",
+            )
+
+    def test_an_explicit_applied_retry_reposts_exactly_once(self) -> None:
+        """The one documented way out of an uncertain dispatch, on operator demand."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._crash_during_dispatch(campaigns_dir)
+
+            posted: list[list[str]] = []
+
+            def counting_command_runner(argv, **_kwargs):
+                posted.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            self._resume(
+                campaigns_dir,
+                apply=True,
+                retry_provider="devin",
+                issue=self.ISSUE,
+                command_runner=counting_command_runner,
+            )
+
+            self.assertEqual(len(posted), 1, posted)
+            stored = self._load(campaigns_dir)
+            provider_entry = stored["providers"][0]
+            self.assertEqual(provider_entry["state"], "running")
+            # The confirmed post replaces the uncertain checkpoint reference.
+            self.assertTrue(provider_entry["dispatch_ref"]["comment_posted"])
+            self.assertEqual(provider_entry["dispatch_ref"]["issue_number"], self.ISSUE)
+            self.assertTrue(provider_entry["dispatched_at"])
+            self.assertEqual(stored["status"], "running")
+
+    def test_a_retry_that_cannot_dispatch_keeps_the_dispatch_pollable(self) -> None:
+        """A refused retry learns nothing about the outstanding post.
+
+        `--apply --retry-provider devin` without `--issue` cannot dispatch, but
+        that refusal costs nothing externally: demoting the provider to
+        `unavailable` would stop every later resume from reading the comment
+        the interrupted attempt may already have posted.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._crash_during_dispatch(campaigns_dir)
+
+            runner = self._resume(campaigns_dir, apply=True, retry_provider="devin")
+
+            runner.assert_not_called()
+            stored = self._load(campaigns_dir)
+            provider_entry = stored["providers"][0]
+            self.assertEqual(provider_entry["state"], "running")
+            self.assertEqual(provider_entry["dispatch_ref"]["issue_number"], self.ISSUE)
+            self.assertIn("--issue", provider_entry["next_action"])
+            self.assertEqual(stored["status"], "running")
+
+            # And the dispatch is still pollable to a conclusion afterwards.
+            lane = _fake_hosted_bridge_lane(bot_authors=(self.TRUSTED_AUTHOR,))
+            self._resume(
+                campaigns_dir,
+                lane=lane,
+                gh_json_runner=self._trusted_result_comments(campaigns_dir),
+            )
+            self.assertEqual(self._load(campaigns_dir)["providers"][0]["state"], "complete")
+
+    def test_a_failed_external_post_records_the_unavailable_result(self) -> None:
+        """An in-process failure is a known outcome, so it replaces the checkpoint."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            posted: list[list[str]] = []
+
+            def failing_command_runner(argv, **_kwargs):
+                posted.append(list(argv))
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="gh: boom")
+
+            self._dispatch(campaigns_dir, command_runner=failing_command_runner)
+
+            self.assertEqual(len(posted), 1, posted)
+            stored = self._load(campaigns_dir)
+            provider_entry = stored["providers"][0]
+            self.assertEqual(provider_entry["state"], "unavailable")
+            self.assertEqual(provider_entry["error"], "github_dispatch_failed")
+            self.assertTrue(provider_entry["attempted_at"])
+            self.assertIsNone(provider_entry["dispatched_at"])
+            self.assertFalse(provider_entry["dispatch_ref"]["comment_posted"])
+            self.assertEqual(
+                provider_entry["next_action"],
+                "retry devin dispatch when GitHub is available",
+            )
+            self.assertEqual(stored["status"], "unavailable")
+
+    def test_a_failed_external_post_still_requires_an_explicit_retry(self) -> None:
+        """Ordinary resume after a failed post neither reposts nor forgets it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+
+            def failing_command_runner(argv, **_kwargs):
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="gh: boom")
+
+            self._dispatch(campaigns_dir, command_runner=failing_command_runner)
+
+            runner = self._resume(campaigns_dir, apply=True)
+            runner.assert_not_called()
+            stored = self._load(campaigns_dir)
+            self.assertEqual(stored["providers"][0]["state"], "unavailable")
+            self.assertEqual(
+                stored["providers"][0]["next_action"],
+                "use --retry-provider devin to retry devin",
+            )
+
+            posted: list[list[str]] = []
+
+            def counting_command_runner(argv, **_kwargs):
+                posted.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            self._resume(
+                campaigns_dir,
+                apply=True,
+                retry_provider="devin",
+                issue=self.ISSUE,
+                command_runner=counting_command_runner,
+            )
+
+            self.assertEqual(len(posted), 1, posted)
+            stored = self._load(campaigns_dir)
+            provider_entry = stored["providers"][0]
+            self.assertEqual(provider_entry["state"], "running")
+            self.assertEqual(provider_entry["error"], "")
+            self.assertTrue(provider_entry["dispatch_ref"]["comment_posted"])
+            self.assertTrue(provider_entry["dispatched_at"])
+
+    def test_a_successful_dispatch_records_the_returned_metadata(self) -> None:
+        """The happy path is unchanged: confirmed post, confirmed reference."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._dispatch(campaigns_dir, command_runner=self._ok_command_runner)
+
+            stored = self._load(campaigns_dir)
+            provider_entry = stored["providers"][0]
+            self.assertEqual(provider_entry["state"], "running")
+            self.assertEqual(
+                provider_entry["dispatch_ref"],
+                {"issue_number": self.ISSUE, "comment_posted": True},
+            )
+            self.assertTrue(provider_entry["dispatched_at"])
+            self.assertTrue(provider_entry["attempted_at"])
+            self.assertEqual(stored["status"], "running")
 
 
 if __name__ == "__main__":
