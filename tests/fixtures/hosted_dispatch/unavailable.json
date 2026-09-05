@@ -1,0 +1,23 @@
+{
+  "name": "unavailable",
+  "description": "App transport not verified: token and issue are present but the installation acknowledgement is absent. Doctor and campaign dry-run must report unavailable with the exact remediation before any dispatch.",
+  "provider": "devin",
+  "token_env": "DEVIN_AUDIT_LABEL_TOKEN",
+  "transport_env": "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY",
+  "token_present": true,
+  "transport_acknowledged": false,
+  "issue_present": true,
+  "repo_slug": "owner/repo",
+  "expected_profile": {
+    "auth": true,
+    "installation": false,
+    "trigger": true,
+    "trusted_responder": true,
+    "result_return": true
+  },
+  "expected_state": "unavailable",
+  "expected_error": "hosted_transport_unverified",
+  "expected_transport_verified": false,
+  "expected_remediation_contains": "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY=1",
+  "expected_dispatch_calls": 0
+}

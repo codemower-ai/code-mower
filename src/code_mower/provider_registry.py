@@ -314,7 +314,11 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         provider_config={
             "bot_authors": ("cursor[bot]", "cursor"),
             "bot_authors_env": "CURSOR_CLOUD_AGENT_BOT_AUTHORS",
-            "trigger_comments": ("@cursor run", "cursor run"),
+            # Real builder trigger contract: the `@cursor` mention dispatch
+            # comment (see docs/lanes/cursor.md and the dispatch-lanes
+            # workflow). Never BugBot/reviewer trigger text such as
+            # `bugbot run` or `@cursor review`.
+            "trigger_comments": ("@cursor",),
             "campaign_transport_ready_env": "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY",
             "campaign_response_timeout_seconds": 3600,
             "rules_file": ".cursor/AGENT.md",

@@ -172,6 +172,7 @@ SAFE_ERROR_CODES = frozenset(
         "github_dispatch_failed",
         "github_poll_unavailable",
         "hosted_response_timeout",
+        "hosted_transport_unverified",
         "python_runtime_unavailable",
         "unknown_provider",
     }
@@ -429,18 +430,161 @@ def _check_hosted_transport(
     return ready, variable
 
 
-def _hosted_response_timeout(lane: ProviderLane) -> int:
+def _configured_hosted_response_timeout(lane: ProviderLane) -> int | None:
     value = lane.provider_config.get(
         "campaign_response_timeout_seconds",
         DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS,
     )
     if isinstance(value, bool):
-        return DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
+        return None
     try:
         parsed = int(value)
     except (TypeError, ValueError, OverflowError):
-        return DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
-    return parsed if parsed > 0 else DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _hosted_response_timeout(lane: ProviderLane) -> int:
+    return _configured_hosted_response_timeout(lane) or DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
+
+
+# Closed hosted dispatch profile: the five independent readiness checks a
+# hosted (`hosted_bridge`/`saas_event`) release qualification must pass
+# before a paid dispatch. Each check is judged on its own signal so one
+# verified dimension can never mask another:
+#   * auth: a dispatch token is present (comment permission).
+#   * installation: the provider App is installed for the repo and has been
+#     seen answering campaign issue comments, acknowledged explicitly via the
+#     lane's `campaign_transport_ready_env`. Token presence alone proves
+#     nothing about the App.
+#   * trigger: the lane declares the provider's real builder trigger text, so
+#     the dispatch comment tells the remote runner exactly what to watch for.
+#   * trusted_responder: at least one GitHub login is trusted to post the
+#     adoption-result marker, so a reply can be authenticated.
+#   * result_return: the bounded response wait is configured, so provider
+#     silence degrades to `hosted_response_timeout` evidence instead of an
+#     unbounded hang.
+HOSTED_DISPATCH_PROFILE_CHECKS = (
+    "auth",
+    "installation",
+    "trigger",
+    "trusted_responder",
+    "result_return",
+)
+
+
+def hosted_dispatch_profile(
+    lane: ProviderLane,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Evaluate the closed hosted dispatch profile for one lane.
+
+    Returns one ``{"ready": bool, "detail": str, "remediation": str}`` entry
+    per check in :data:`HOSTED_DISPATCH_PROFILE_CHECKS`. Details and
+    remediations are bounded metadata only: provider/lane names and
+    environment variable names, never secret values, paths, or output.
+    """
+    current_env = os.environ if env is None else env
+    profile: dict[str, dict[str, Any]] = {}
+
+    has_creds, missing_cred = _check_credentials(lane, env=current_env)
+    profile["auth"] = {
+        "ready": has_creds,
+        "detail": "dispatch token present" if has_creds else "dispatch token missing",
+        "remediation": (
+            ""
+            if has_creds
+            else f"set {missing_cred} in the environment for {lane.provider} campaign dispatch"
+        ),
+    }
+
+    transport_ready, transport_var = _check_hosted_transport(lane, env=current_env)
+    if not transport_var:
+        profile["installation"] = {
+            "ready": True,
+            "detail": "no separate installation acknowledgement configured",
+            "remediation": "",
+        }
+    else:
+        profile["installation"] = {
+            "ready": transport_ready,
+            "detail": (
+                "provider App installation verified"
+                if transport_ready
+                else "provider App installation not verified"
+            ),
+            "remediation": (
+                ""
+                if transport_ready
+                else (
+                    f"verify the {lane.provider} GitHub App answers campaign "
+                    f"issue comments, then set {transport_var}=1"
+                )
+            ),
+        }
+
+    trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
+    trigger_ready = bool(trigger_comments)
+    profile["trigger"] = {
+        "ready": trigger_ready,
+        "detail": (
+            "builder trigger configured"
+            if trigger_ready
+            else "no builder trigger configured"
+        ),
+        "remediation": (
+            ""
+            if trigger_ready
+            else (
+                f"configure the {lane.provider} builder trigger before dispatching "
+                f"release qualification"
+            )
+        ),
+    }
+
+    trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
+    responder_ready = bool(trusted_authors)
+    profile["trusted_responder"] = {
+        "ready": responder_ready,
+        "detail": (
+            "trusted responder allowlist configured"
+            if responder_ready
+            else "no trusted responder configured"
+        ),
+        "remediation": (
+            ""
+            if responder_ready
+            else (
+                f"configure bot_authors for {lane.provider} so adoption-result "
+                f"replies can be authenticated"
+            )
+        ),
+    }
+
+    timeout_ready = _configured_hosted_response_timeout(lane) is not None
+    profile["result_return"] = {
+        "ready": timeout_ready,
+        "detail": (
+            "bounded result-return wait configured"
+            if timeout_ready
+            else "result-return wait is not a positive integer"
+        ),
+        "remediation": (
+            ""
+            if timeout_ready
+            else (
+                f"configure a positive campaign_response_timeout_seconds for "
+                f"{lane.provider} so silence becomes timeout evidence"
+            )
+        ),
+    }
+    return profile
+
+
+def hosted_dispatch_blockers(profile: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """Name the dispatch-profile checks that are not ready, in closed order."""
+    return [name for name in HOSTED_DISPATCH_PROFILE_CHECKS if not profile.get(name, {}).get("ready")]
 
 
 def _response_deadline(started_at: str, timeout_seconds: int) -> str:
@@ -1075,10 +1219,10 @@ def _post_trigger_comment(
 ) -> tuple[bool, dict[str, Any], str]:
     """Post the trigger command as a separate comment to actually start the provider.
 
-    For manually triggered hosted providers (Devin, Cursor BugBot), the dispatch
-    comment documents what to qualify, but the provider starts only when it sees
-    its configured trigger comment. Post that trigger as a plain comment body so
-    the provider will actually begin the qualification run.
+    For manually triggered hosted providers (Devin, Cursor Cloud Agent), the
+    dispatch comment documents what to qualify, but the provider starts only
+    when it sees its configured trigger comment. Post that trigger as a plain
+    comment body so the provider will actually begin the qualification run.
     """
     if (
         not repo_slug
@@ -2530,8 +2674,25 @@ def dispatch_or_advance_campaign(
         # 4. Check capabilities and readiness
         cmd_found = _find_command(lane, which_fn=which_fn)
         has_creds, missing_cred = _check_credentials(lane, env=current_env)
-        transport_ready, transport_ready_var = _check_hosted_transport(
-            lane, env=current_env
+        transport_ready, _ = _check_hosted_transport(lane, env=current_env)
+        # Closed hosted dispatch profile: auth, installation, trigger,
+        # trusted responder, and result return are judged independently, so
+        # one verified dimension can never mask another.
+        dispatch_profile = (
+            hosted_dispatch_profile(lane, env=current_env)
+            if lane.driver in {"hosted_bridge", "saas_event"}
+            else {}
+        )
+        # Every failed check of the closed dispatch profile blocks the
+        # preview: auth, installation, trigger, trusted responder, and result
+        # return are judged independently, so one verified dimension can
+        # never mask another. Auth and issue prerequisites keep their more
+        # specific errors in the branches above; anything still failing here
+        # surfaces with its exact bounded remediation.
+        dispatch_blockers = (
+            hosted_dispatch_blockers(dispatch_profile)
+            if lane.driver in {"hosted_bridge", "saas_event"}
+            else []
         )
         if lane.driver in {"hosted_bridge", "saas_event"}:
             provider_data["transport_verified"] = transport_ready
@@ -2603,6 +2764,31 @@ def dispatch_or_advance_campaign(
                     dry_run=True,
                     error="missing issue number",
                 )
+            elif lane.driver in {"hosted_bridge", "saas_event"} and dispatch_blockers:
+                # A paid dispatch must never preview as queued while any
+                # closed dispatch-profile check fails: the preview judges
+                # exactly what --apply would need, so it reports unavailable
+                # with the exact bounded remediation before any dispatch. An
+                # explicit --apply may still dispatch (the operator's
+                # choice), under the bounded response deadline.
+                provider_data["state"] = "unavailable"
+                provider_data["error"] = _safe_error("hosted_transport_unverified")
+                blocker_remediations = [
+                    str(dispatch_profile.get(name, {}).get("remediation") or "")
+                    for name in dispatch_blockers
+                ]
+                action = "; ".join(item for item in blocker_remediations if item)
+                if not action:
+                    action = (
+                        f"resolve {', '.join(dispatch_blockers)} for {provider} "
+                        f"before dispatching release qualification"
+                    )
+                detail = (
+                    f"{provider} hosted dispatch blocked: "
+                    f"{', '.join(dispatch_blockers)}"
+                )
+                if action:
+                    detail = f"{detail}; {action}"
             else:
                 provider_data["state"] = "queued"
                 # A prerequisite recorded by an earlier preview (a missing
@@ -2620,14 +2806,6 @@ def dispatch_or_advance_campaign(
                     has_issue=has_issue,
                     dry_run=True,
                 )
-                if (
-                    lane.driver in {"hosted_bridge", "saas_event"}
-                    and not transport_ready
-                ):
-                    detail = (
-                        f"{provider} transport is not independently verified; "
-                        f"set {transport_ready_var}=1 after verification"
-                    )
             provider_data["next_action"] = action
             provider_data["next_detail"] = detail
             continue

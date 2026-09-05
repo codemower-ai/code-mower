@@ -1,0 +1,14 @@
+{
+  "name": "successful_return",
+  "description": "A trusted responder posts an identity-bound result marker whose embedded adoption result matches the campaign provider, release tag, package identity, qualification context, and starting version. The provider completes.",
+  "provider": "cursor_cloud_agent",
+  "token_env": "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
+  "transport_env": "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY",
+  "trusted_author": "cursor[bot]",
+  "comment_author": "cursor[bot]",
+  "comment_has_bound_marker": true,
+  "qualification_context": "cold_install",
+  "starting_version": "",
+  "expected_state": "complete",
+  "expected_outcome": "pass"
+}

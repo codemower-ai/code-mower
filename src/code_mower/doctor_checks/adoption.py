@@ -617,6 +617,8 @@ def check_adoption_campaign_readiness(
         _safe_error,
         _validate_adapter_argv_template,
         _validate_adapter_timeout,
+        hosted_dispatch_blockers,
+        hosted_dispatch_profile,
         resolve_supported_runtime,
         resolve_provider_lane,
     )
@@ -933,9 +935,19 @@ def check_adoption_campaign_readiness(
             transport_ready, transport_var = _check_hosted_transport(
                 lane, env=current_env
             )
+            # Closed dispatch profile: auth, installation, trigger,
+            # trusted responder, and result return are reported
+            # independently, so one verified dimension never masks another.
+            dispatch_profile = hosted_dispatch_profile(lane, env=current_env)
+            dispatch_blockers = hosted_dispatch_blockers(dispatch_profile)
+            dispatch_summary = {
+                name: bool(entry.get("ready")) for name, entry in dispatch_profile.items()
+            }
             has_repo = bool(repo_slug)
             structured_capability = check_structured_result_capability(canonical)
-            cmd_ready = bool(has_credentials and has_repo and transport_ready)
+            cmd_ready = bool(
+                has_credentials and has_repo and transport_ready and not dispatch_blockers
+            )
             if cmd_ready:
                 auth_state = "ready"
             elif not has_credentials:
@@ -1006,6 +1018,8 @@ def check_adoption_campaign_readiness(
                     "has_credentials": True,
                     "transport_verified": False,
                     "verification_variable": transport_var,
+                    "dispatch_profile": dispatch_summary,
+                    "dispatch_blockers": dispatch_blockers,
                     "enabled": is_enabled,
                     "actionable": is_enabled,
                     "optional": not is_enabled,
@@ -1025,6 +1039,55 @@ def check_adoption_campaign_readiness(
                         ),
                     )
                 )
+            elif dispatch_blockers:
+                # Credentials and transport alone are not readiness: any
+                # failed closed dispatch-profile check warns with the bounded
+                # blocker names and their metadata-only remediations, so a
+                # lane missing its trigger, trusted responder allowlist, or
+                # result-return wait can never report PASS.
+                blocker_remediations = {
+                    name: str(dispatch_profile.get(name, {}).get("remediation") or "")
+                    for name in dispatch_blockers
+                }
+                detail = {
+                    "provider": canonical,
+                    "lane": lane.lane_id,
+                    "driver": lane.driver,
+                    "repo_slug": repo_slug,
+                    "has_credentials": True,
+                    "transport_verified": True,
+                    "dispatch_profile": dispatch_summary,
+                    "dispatch_blockers": dispatch_blockers,
+                    "blocker_remediations": blocker_remediations,
+                    "enabled": is_enabled,
+                    "actionable": is_enabled,
+                    "optional": not is_enabled,
+                }
+                if is_enabled:
+                    detail["owner_action"] = True
+                checks.append(
+                    DoctorCheck(
+                        name="doctor.campaign.transport",
+                        status=STATUS_WARN,
+                        lane=canonical,
+                        message=(
+                            f"{canonical} hosted dispatch blocked: "
+                            f"{', '.join(dispatch_blockers)}"
+                        ),
+                        detail=detail,
+                        remediation=(
+                            "; ".join(
+                                blocker_remediations[name]
+                                for name in dispatch_blockers
+                                if blocker_remediations[name]
+                            )
+                            or (
+                                f"Resolve {', '.join(dispatch_blockers)} for "
+                                f"{canonical} before dispatching release qualification."
+                            )
+                        ),
+                    )
+                )
             else:
                 checks.append(
                     DoctorCheck(
@@ -1039,6 +1102,7 @@ def check_adoption_campaign_readiness(
                             "repo_slug": repo_slug,
                             "has_credentials": True,
                             "transport_verified": True,
+                            "dispatch_profile": dispatch_summary,
                             "enabled": is_enabled,
                         },
                     )

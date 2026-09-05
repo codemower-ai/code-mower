@@ -241,9 +241,9 @@ This overlays only `campaign_adapter_argv` and `campaign_adapter_timeout_seconds
 
 Code Mower maintainers shipping a built-in adapter for a provider instead add `campaign_adapter_argv` (and optionally `campaign_adapter_timeout_seconds`) directly to the provider's `provider_config` in `src/code_mower/provider_registry.py`, using the same placeholders and contract described above. Most adopters do not need to touch this file.
 
-Hosted / SaaS providers (`hosted_bridge`/`saas_event` driver: Devin, Cursor BugBot) dispatch via a GitHub issue comment instead of a local adapter:
+Hosted / SaaS providers (`hosted_bridge`/`saas_event` driver: Devin, Cursor Cloud Agent) dispatch via a GitHub issue comment instead of a local adapter. Every hosted dispatch follows a closed five-check profile -- auth (dispatch token), installation (the provider App answers campaign comments, acknowledged via the lane's `campaign_transport_ready_env`), trigger (the provider's real builder trigger text), trusted responder (`bot_authors` allowlist), and result return (bounded response wait). Doctor reports each check independently, and a dry-run with an unverified App transport or result-return path reports the provider `unavailable` (`hosted_transport_unverified`) with the exact remediation instead of previewing it queued. Only an explicit `--apply` dispatches; silence past the deadline becomes `hosted_response_timeout` evidence, and only an explicit `--retry-provider` may dispatch again -- paid work is never retried automatically:
 
-- Configure authentication tokens (`DEVIN_AUDIT_LABEL_TOKEN`, `CURSOR_BUGBOT_AUDIT_LABEL_TOKEN`, `GITHUB_TOKEN`) and supply `--issue <number>` plus `--repo-slug <OWNER/REPO>` (at creation, or on the `resume`/`dispatch` that first needs it). Without both, the hosted provider stays `unavailable` and no comment is posted. The dry-run preview judges this prerequisite exactly as `--apply` does: a hosted provider with valid credentials but no issue number previews as `unavailable` with the bounded `missing_issue_number` error code and a next action naming `--issue`, rather than as queued and ready to dispatch.
+- Configure the provider token (`DEVIN_AUDIT_LABEL_TOKEN` or `CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN`, with `GITHUB_TOKEN` as fallback) and supply `--issue <number>` plus `--repo-slug <OWNER/REPO>` (at creation, or on the `resume`/`dispatch` that first needs it). Without both, the hosted provider stays `unavailable` and no comment is posted. The dry-run preview judges this prerequisite exactly as `--apply` does: a hosted provider with valid credentials but no issue number previews as `unavailable` with the bounded `missing_issue_number` error code and a next action naming `--issue`, rather than as queued and ready to dispatch.
 - The dispatch comment states exactly what will be accepted. For an upgrade campaign it carries the campaign's exact `starting_version` in both the machine-readable `code_mower.releaseCampaignDispatch.v1` marker and the human-facing instructions, so a remote runner never has to guess which starting version to qualify from. Cold-install (and `unknown`) campaigns have no starting version and omit the field. An upgrade campaign whose stored `starting_version` is missing is never dispatched at all: the provider stays `unavailable` with the bounded `campaign_identity_incomplete` error code and no comment is posted.
 - The provider's reply comment must embed a `CODE_MOWER_ADOPTION_RESULT` marker as a single-line HTML comment on a line of its own (`<!-- CODE_MOWER_ADOPTION_RESULT: {...} -->`), wrapping schema `code_mower.releaseCampaignResult.v1` with `campaign_id`, `provider`, `release_tag`, and `idempotency_key` matching the original dispatch, plus a validated `adoption_result`. A bare or unbound result is ignored so a stale or unrelated comment can never be replayed as evidence. The embedded `adoption_result`'s own `qualification_context` and `starting_version` must also match the campaign's exactly, independent of the wrapper's idempotency key -- a cold-install result cannot complete an upgrade campaign, and an upgrade result from one starting version cannot complete a same-tag upgrade campaign from a different starting version. The marker line is matched end to end and its JSON is captured through the object's own final brace, so a literal `-->` inside a permitted string value cannot truncate an otherwise valid trusted result; a marker whose JSON is genuinely malformed is still ignored (fail-closed), never guessed at.
 - These identity fields are visible in the public dispatch comment, so binding alone does not prove authorship -- anyone could reply with a matching marker. A result marker is only ever accepted from a GitHub comment author present in the lane's `provider_config.bot_authors` list (and, if configured, the comma-separated login list in the environment variable named by `provider_config.bot_authors_env`). A lane with no trusted authors configured trusts nobody; an untrusted or spoofed author's comment is ignored and the provider keeps running.
@@ -257,10 +257,11 @@ Cursor Cloud Agent is a hosted async builder using the `hosted_bridge` driver.
 - `CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN` as fallback) for applying audit labels
 - `GITHUB_TOKEN` for posting dispatch comments
 - After verifying that the installed App answers campaign issue comments, set
-  `CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY=1`. Without it, doctor and
-  Board report the transport as unverified, but an explicit `--apply` may still
-  dispatch it under the response deadline below. Token presence alone proves
-  comment permission, not that the App supports this transport.
+  `CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY=1`. Without it, doctor
+  and the campaign dry-run report the transport as unverified (`unavailable`
+  with the exact remediation) before any dispatch; an explicit `--apply` may
+  still dispatch it under the response deadline below. Token presence alone
+  proves comment permission, not that the App supports this transport.
 
 **Trusted authors (default):**
 - `cursor[bot]`
@@ -269,9 +270,12 @@ Cursor Cloud Agent is a hosted async builder using the `hosted_bridge` driver.
 **Environment override:**
 Set `CURSOR_CLOUD_AGENT_BOT_AUTHORS` to a comma-separated list of additional trusted GitHub logins. This extends (does not replace) the default trusted authors, allowing self-hosted or alternative Cursor integrations to be trusted.
 
-**Trigger comments:**
-- `@cursor run`
-- `cursor run`
+**Trigger comments (real builder contract):**
+- `@cursor`
+
+The `@cursor` mention is the dispatch-lanes builder trigger (see
+`docs/lanes/cursor.md`). Never use BugBot/reviewer trigger text (`bugbot run`,
+`@cursor review`) for release qualification.
 
 **Role and capability:**
 - `role: builder`
@@ -350,8 +354,9 @@ Devin is a hosted paid provider using the `hosted_bridge` driver.
 - `DEVIN_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN` as fallback) for applying audit labels
 - `GITHUB_TOKEN` for posting dispatch comments
 - After verifying that the installed App answers campaign issue comments, set
-  `CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY=1`. Without it, doctor and Board
-  report the transport as unverified, but an explicit `--apply` may still
+  `CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY=1`. Without it, doctor and the
+  campaign dry-run report the transport as unverified (`unavailable` with the
+  exact remediation) before any dispatch; an explicit `--apply` may still
   dispatch it under the response deadline below. Token presence alone does not
   prove that the App supports this transport.
 
