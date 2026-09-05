@@ -91,20 +91,24 @@ def parse_api_key_file(text: str) -> str:
     ).value
 
 
-def resolve_muse_api_key() -> str:
+def resolve_muse_api_key(env: Mapping[str, str] | None = None) -> str:
+    current_env = os.environ if env is None else env
     for name in MUSE_KEY_ENV_NAMES:
-        value = os.environ.get(name, "").strip()
+        value = current_env.get(name, "").strip()
         if value:
             return value
     for name in MUSE_KEY_FILE_ENV_NAMES:
-        path_text = os.environ.get(name, "").strip()
+        path_text = current_env.get(name, "").strip()
         if not path_text:
             continue
         try:
+            path = Path(path_text).expanduser()
+            if not path.is_file():
+                continue
             value = parse_api_key_file(
-                Path(path_text).expanduser().read_text(encoding="utf-8")
+                path.read_text(encoding="utf-8")
             )
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         if value:
             return value

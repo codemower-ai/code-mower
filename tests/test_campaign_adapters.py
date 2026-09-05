@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -200,6 +201,47 @@ class ArgvBuilderTests(unittest.TestCase):
         self.assertIn(".venv/bin/code-mower doctor --help", prompt)
         self.assertIn("without a leading v", prompt)
         self.assertIn("all-pass steps require outcome pass", prompt)
+
+    def test_shared_prompt_quotes_target_interpreter_with_spaces_and_metacharacters(self) -> None:
+        """Target interpreter path containing spaces or shell metacharacters must be safely quoted."""
+        space_py = "/opt/Python 3.12/bin/python3"
+        prompt_cold = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            python_bin=space_py,
+        )
+        self.assertIn(f"`{shlex.quote(space_py)} -m venv .venv`", prompt_cold)
+        self.assertIn("'/opt/Python 3.12/bin/python3' -m venv .venv", prompt_cold)
+
+        prompt_upgrade = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="upgrade",
+            starting_version="0.9.0",
+            python_bin=space_py,
+        )
+        self.assertIn(f"`{shlex.quote(space_py)} -m venv .venv`", prompt_upgrade)
+
+        meta_py = '/opt/py$env;`test`/bin/python3'
+        prompt_meta = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            python_bin=meta_py,
+        )
+        self.assertIn(f"`{shlex.quote(meta_py)} -m venv .venv`", prompt_meta)
 
     def test_shared_prompt_teaches_step_id_taxonomy(self) -> None:
         prompt = campaign_adapters.build_qualification_prompt(
@@ -600,6 +642,32 @@ class AdapterTransportTests(unittest.TestCase):
         self.assertEqual(json.loads(output.read_text(encoding="utf-8")), _adoption_result("claude"))
         self.assertNotIn("SECRET-NOISE", output.read_text(encoding="utf-8"))
 
+    def test_claude_rejects_is_error_true_envelope_even_with_valid_fenced_result(self) -> None:
+        """A valid Claude error envelope must fail closed even if result contains fenced JSON."""
+        valid_payload = _adoption_result("claude")
+        fenced_payload = f"Error details:\n```json\n{json.dumps(valid_payload)}\n```"
+        envelope = json.dumps({
+            "is_error": True,
+            "result": fenced_payload,
+        })
+        extracted = campaign_adapters._extract_claude_result(envelope)
+        self.assertIsNone(extracted)
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            return subprocess.CompletedProcess(list(argv), 0, stdout=envelope, stderr="")
+
+        code, output, _tmp = self._run("claude", runner)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.exists())
+
+    def test_claude_fenced_fallback_applies_only_when_not_valid_envelope(self) -> None:
+        valid_payload = _adoption_result("claude")
+        raw_fenced = f"```json\n{json.dumps(valid_payload)}\n```"
+        extracted = campaign_adapters._extract_claude_result(raw_fenced)
+        self.assertEqual(extracted, valid_payload)
+
     def test_antigravity_uses_prompt_file_not_stdin(self) -> None:
         seen: dict[str, Any] = {}
 
@@ -922,7 +990,13 @@ class MaintainedRegistryTests(unittest.TestCase):
                 self.assertIsNotNone(template)
                 assert template is not None
                 joined = " ".join(template)
-                for placeholder in ("{python}", "{command}", "{adapter_timeout}", "{output}"):
+                for placeholder in (
+                    "{python}",
+                    "{target_python}",
+                    "{command}",
+                    "{adapter_timeout}",
+                    "{output}",
+                ):
                     self.assertIn(placeholder, joined)
                 self.assertIn(adapter_provider, template)
                 timeout = lane.provider_config.get("campaign_adapter_timeout_seconds")
@@ -931,6 +1005,63 @@ class MaintainedRegistryTests(unittest.TestCase):
 
     def test_lanes_without_adapters_stay_manual(self) -> None:
         self.assertNotIn("campaign_adapter_argv", REFERENCE_PROVIDERS["aider"].provider_config)
+
+
+class StructuredResultCapabilityTests(unittest.TestCase):
+    """The offline structured-result probe exercises real provider extraction paths."""
+
+    def test_all_maintained_lanes_pass_structured_result_capability(self) -> None:
+        for prov in (
+            "codex",
+            "claude_audit",
+            "claude",
+            "antigravity_cli",
+            "antigravity",
+            "muse_cli",
+            "muse",
+        ):
+            with self.subTest(provider=prov):
+                self.assertTrue(campaign_adapters.check_structured_result_capability(prov))
+
+    def test_claude_audit_routes_through_extract_claude_result(self) -> None:
+        """claude_audit must explicitly route through _extract_claude_result."""
+        with mock.patch(
+            "code_mower.campaign_adapters._extract_claude_result",
+            wraps=campaign_adapters._extract_claude_result,
+        ) as mock_extract:
+            self.assertTrue(campaign_adapters.check_structured_result_capability("claude_audit"))
+            mock_extract.assert_called_once()
+
+    def test_claude_audit_fails_if_generic_extractor_used_on_envelope(self) -> None:
+        """Regression: claude_audit envelope fails schema validation under generic extractor.
+
+        If claude_audit falls through to the generic parse_response_json extractor,
+        the Claude envelope object (with is_error, result) is returned directly
+        instead of unwrapping the inner adoption result, causing validation to fail.
+        """
+        from code_mower import gemini_cli_audit_pr as code_mower_gemini_cli
+
+        sample_payload = _adoption_result("claude_audit")
+        claude_envelope = json.dumps({"is_error": False, "result": json.dumps(sample_payload)})
+
+        # Generic extractor cannot unwrap the envelope
+        generic_extracted = code_mower_gemini_cli.parse_response_json(claude_envelope)
+        self.assertIsNotNone(generic_extracted)
+        with self.assertRaises(ValueError):
+            release_qualify.validate_adoption_result_payload(generic_extracted)
+
+        # But _extract_claude_result correctly extracts and validates it
+        extracted = campaign_adapters._extract_claude_result(claude_envelope)
+        self.assertEqual(extracted, sample_payload)
+        release_qualify.validate_adoption_result_payload(extracted)
+
+    def test_claude_audit_capability_probe_fails_on_error_envelope(self) -> None:
+        """If _extract_claude_result returns None (e.g. is_error=True), check_structured_result_capability fails."""
+        with mock.patch(
+            "code_mower.campaign_adapters._extract_claude_result",
+            return_value=None,
+        ):
+            self.assertFalse(campaign_adapters.check_structured_result_capability("claude_audit"))
 
 
 if __name__ == "__main__":

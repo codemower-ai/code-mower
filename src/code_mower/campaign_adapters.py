@@ -53,6 +53,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -309,6 +310,8 @@ def build_qualification_prompt(
     qualification_context: str,
     starting_version: str,
     package_source: str = DEFAULT_PACKAGE_SOURCE,
+    python_bin: str = "python3",
+    target_runtime: str = "",
 ) -> str:
     """Build the shared release-qualification prompt for one provider run.
 
@@ -324,10 +327,11 @@ def build_qualification_prompt(
         if package_source == "testpypi"
         else ""
     )
+    python_cmd = shlex.quote(python_bin or "python3")
     if qualification_context == "upgrade":
         install_plan = (
             "1. In the current disposable directory, run "
-            "`python3 -m venv .venv`. Use only `.venv/bin/python` and installed "
+            f"`{python_cmd} -m venv .venv`. Use only `.venv/bin/python` and installed "
             "entry points for the remaining steps.\n"
             f"2. Install the starting version with `.venv/bin/python -m pip install"
             f"{pip_index_flags} "
@@ -338,7 +342,7 @@ def build_qualification_prompt(
     else:
         install_plan = (
             "1. In the current disposable directory, run "
-            "`python3 -m venv .venv`. Use only `.venv/bin/python` and installed "
+            f"`{python_cmd} -m venv .venv`. Use only `.venv/bin/python` and installed "
             "entry points for the remaining steps.\n"
             f"2. Install the exact release with `.venv/bin/python -m pip install"
             f'{pip_index_flags} "{package_spec}"`. No other version is acceptable.'
@@ -361,8 +365,13 @@ def build_qualification_prompt(
         f"- qualification_context: {qualification_context}",
         f"- starting_version: {starting_version if starting_version else '(empty)'}",
         f"- package_source: {package_source}",
-        "",
-        "Procedure (measure wall-clock seconds for each step):",
+    ]
+    if target_runtime:
+        lines.append(f"- target_runtime: {target_runtime}")
+    lines.extend(
+        [
+            "",
+            "Procedure (measure wall-clock seconds for each step):",
         install_plan,
         f"4. Assert the installed {package_identity} version is exactly",
         f"   {normalized_version}, using `.venv/bin/python -c` and",
@@ -387,7 +396,11 @@ def build_qualification_prompt(
         f"ending_version is exactly {normalized_version}, without a leading v,",
         "on pass/pass_with_warnings (and is empty on an incomplete run);",
         "host_class is one of local, ci, github_actions, unknown;",
-        "runtime_class is unknown or python_<major>.<minor>; provider and",
+        (
+            f"runtime_class is exactly {target_runtime}; provider and"
+            if target_runtime
+            else "runtime_class is python_<major>.<minor>; provider and"
+        ),
         "executor are lowercase safe identifiers; steps is a non-empty list of",
         "{id, status, elapsed_seconds, warning_count, owner_action_count} with",
         "id one of board, doctor, lanes_status, overhead, package_install or a namespaced",
@@ -399,7 +412,7 @@ def build_qualification_prompt(
         "pass_with_warnings if any status is warn or unavailable; otherwise",
         "pass. In particular, all-pass steps require outcome pass. No extra",
         "fields, no prose, no fences.",
-    ]
+    ])
     return "\n".join(lines) + "\n"
 
 
@@ -594,18 +607,22 @@ def _extract_claude_result(stdout: str) -> dict[str, Any] | None:
     try:
         envelope = json.loads(stdout)
     except json.JSONDecodeError:
+        envelope = None
+    if isinstance(envelope, Mapping):
+        if envelope.get("is_error") is True:
+            return None
+        structured = envelope.get("structured_output")
+        if isinstance(structured, Mapping):
+            return dict(structured)
+        result = envelope.get("result")
+        if isinstance(result, Mapping):
+            return dict(result)
+        if isinstance(result, str) and result.strip():
+            parsed = code_mower_gemini_cli.parse_response_json(result)
+            if parsed is not None:
+                return parsed
         return None
-    if not isinstance(envelope, dict) or envelope.get("is_error") is True:
-        return None
-    structured = envelope.get("structured_output")
-    if isinstance(structured, dict):
-        return structured
-    result = envelope.get("result")
-    if isinstance(result, dict):
-        return result
-    if isinstance(result, str) and result.strip():
-        return code_mower_gemini_cli.parse_response_json(result)
-    return None
+    return code_mower_gemini_cli.parse_response_json(stdout)
 
 
 def _extract_antigravity_result(stdout: str) -> dict[str, Any] | None:
@@ -632,9 +649,68 @@ def _extract_antigravity_result(stdout: str) -> dict[str, Any] | None:
 def _extract_muse_result(stdout: str) -> dict[str, Any] | None:
     """Pull the adoption result out of ``muse exec --json`` JSONL events."""
     response_text, _meta = code_mower_muse_cli.muse_jsonl_response(stdout)
-    if not response_text:
-        return None
-    return code_mower_gemini_cli.parse_response_json(response_text)
+    if response_text:
+        parsed = code_mower_gemini_cli.parse_response_json(response_text)
+        if parsed is not None:
+            return parsed
+    return code_mower_gemini_cli.parse_response_json(stdout)
+
+
+def check_structured_result_capability(provider: str) -> bool:
+    """Validate structured-result extraction and schema compliance using an offline fixture.
+
+    Uses a zero-network, zero-token in-memory fixture to verify that Code Mower
+    can correctly parse and validate adoption results from this provider.
+    """
+    from datetime import datetime, timedelta, timezone
+    from code_mower.release_qualify import validate_adoption_result_payload
+
+    canonical = provider.lower().replace("-", "_")
+    recent = datetime.now(timezone.utc) - timedelta(seconds=60)
+    sample_payload = {
+        "schema": "code_mower.adoptionResult.v1",
+        "timestamp_utc": recent.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "release_tag": "v1.0.8",
+        "package_identity": "code-mower",
+        "normalized_version": "1.0.8",
+        "qualification_context": "cold_install",
+        "starting_version": "",
+        "ending_version": "1.0.8",
+        "provider": canonical,
+        "executor": canonical,
+        "host_class": "local",
+        "runtime_class": "python_3.12",
+        "execution_state": "executed",
+        "elapsed_seconds": 1.0,
+        "outcome": "pass",
+        "steps": [
+            {
+                "id": "doctor",
+                "status": "pass",
+                "elapsed_seconds": 1.0,
+                "warning_count": 0,
+                "owner_action_count": 0,
+            }
+        ],
+    }
+    payload_str = json.dumps(sample_payload)
+    try:
+        if canonical in {"claude_audit", "claude"}:
+            claude_envelope = json.dumps({"is_error": False, "result": payload_str})
+            extracted = _extract_claude_result(claude_envelope)
+        elif canonical in {"antigravity", "antigravity_cli"}:
+            extracted = _extract_antigravity_result(payload_str)
+        elif canonical in {"muse", "muse_cli"}:
+            muse_event = json.dumps({"payload_type": "run.output.delta", "payload": {"text": payload_str}})
+            extracted = _extract_muse_result(muse_event)
+        else:
+            extracted = code_mower_gemini_cli.parse_response_json(payload_str)
+        if not isinstance(extracted, Mapping):
+            return False
+        validate_adoption_result_payload(extracted)
+        return True
+    except Exception:
+        return False
 
 
 def validate_bound_result(
@@ -645,6 +721,7 @@ def validate_bound_result(
     package_identity: str,
     qualification_context: str,
     starting_version: str,
+    target_runtime: str = "",
 ) -> dict[str, Any]:
     """Closed-validate a transient candidate and bind it to this campaign.
 
@@ -664,6 +741,8 @@ def validate_bound_result(
     if candidate.get("qualification_context") != qualification_context:
         raise ValueError("provider result identity mismatch")
     if str(candidate.get("starting_version") or "") != starting_version:
+        raise ValueError("provider result identity mismatch")
+    if target_runtime and candidate.get("runtime_class") != target_runtime:
         raise ValueError("provider result identity mismatch")
     return candidate
 
@@ -831,6 +910,8 @@ def run_campaign_adapter(
     muse_reasoning_effort: str = "",
     codex_home: Path | None = None,
     package_source: str = DEFAULT_PACKAGE_SOURCE,
+    python_bin: str = "",
+    target_runtime: str = "",
     provider_runner: ProviderRunner = run_provider_command,
 ) -> int:
     """Run one maintained provider adapter. Returns a process exit code.
@@ -874,6 +955,8 @@ def run_campaign_adapter(
         qualification_context=qualification_context,
         starting_version=starting_version,
         package_source=package_source,
+        python_bin=python_bin,
+        target_runtime=target_runtime,
     )
     prepared_codex_home: Path | None = None
     if provider == "codex":
@@ -1009,6 +1092,7 @@ def run_campaign_adapter(
             package_identity=package_identity,
             qualification_context=qualification_context,
             starting_version=starting_version,
+            target_runtime=target_runtime,
         )
     except ValueError as exc:
         return _fail(provider, str(exc)[:180])
@@ -1029,6 +1113,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--provider", required=True, choices=SUPPORTED_ADAPTER_PROVIDERS)
     parser.add_argument("--provider-bin", required=True)
+    parser.add_argument("--python-bin", default="")
+    parser.add_argument("--target-runtime", default="")
     parser.add_argument("--release-tag", required=True)
     parser.add_argument("--package-spec", required=True)
     parser.add_argument("--qualification-context", required=True)
@@ -1064,6 +1150,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         claude_max_budget_usd=args.claude_max_budget_usd,
         muse_max_model_steps=args.muse_max_model_steps,
         muse_reasoning_effort=args.muse_reasoning_effort,
+        python_bin=args.python_bin,
+        target_runtime=args.target_runtime,
     )
 
 

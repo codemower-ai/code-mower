@@ -11825,5 +11825,409 @@ class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
                     self.assertIn(expected_detail_snippet, card["next_detail"])
 
 
+class RuntimeReadinessCampaignTests(unittest.TestCase):
+    """Tests for deterministic Python 3.12+ runtime resolution and fail-closed readiness."""
+
+    def test_resolve_supported_runtime_with_env_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            custom_py = Path(tmp) / "custom-python"
+            custom_py.touch()
+
+            def fake_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                if cmd[0] == str(custom_py):
+                    return subprocess.CompletedProcess(cmd, 0, stdout="3.13.1\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+            res = release_campaigns.resolve_supported_runtime(
+                environ={"CODE_MOWER_PYTHON": str(custom_py)},
+                runner=fake_runner,
+            )
+            self.assertIsNotNone(res)
+            bin_path, runtime_class = res
+            self.assertEqual(bin_path, str(custom_py))
+            self.assertEqual(runtime_class, "python_3.13")
+
+    def test_resolve_supported_runtime_rejects_unsupported_python(self) -> None:
+        def fake_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="3.9.6\n", stderr="")
+
+        res = release_campaigns.resolve_supported_runtime(
+            environ={"CODE_MOWER_PYTHON": "/usr/bin/python3.9"},
+            runner=fake_runner,
+            which_fn=lambda _: "/usr/bin/python3.9",
+        )
+        self.assertIsNone(res)
+
+    def test_resolve_supported_runtime_probes_versioned_candidates(self) -> None:
+        def fake_which(cmd: str) -> str | None:
+            if cmd == "python3.12":
+                return "/usr/local/bin/python3.12"
+            return None
+
+        def fake_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            if cmd[0] == "/usr/local/bin/python3.12":
+                return subprocess.CompletedProcess(cmd, 0, stdout="3.12.3\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="3.10.0\n", stderr="")
+
+        res = release_campaigns.resolve_supported_runtime(
+            environ={},
+            runner=fake_runner,
+            which_fn=fake_which,
+        )
+        self.assertIsNotNone(res)
+        bin_path, runtime_class = res
+        self.assertEqual(bin_path, "/usr/local/bin/python3.12")
+        self.assertEqual(runtime_class, "python_3.12")
+
+    def test_resolve_supported_runtime_discovers_newer_versioned_python(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            python315 = bin_dir / "python3.15"
+            python315.touch()
+
+            def fake_which(cmd: str) -> str | None:
+                return str(python315) if cmd == "python3.15" else None
+
+            def fake_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                if cmd[0] == str(python315):
+                    return subprocess.CompletedProcess(cmd, 0, stdout="3.15.0\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+            res = release_campaigns.resolve_supported_runtime(
+                environ={"PATH": str(bin_dir)},
+                runner=fake_runner,
+                which_fn=fake_which,
+            )
+
+        self.assertEqual(res, (str(python315), "python_3.15"))
+
+    def test_invoke_local_adapter_fails_closed_when_runtime_unavailable(self) -> None:
+        invoked: list[str] = []
+
+        def fake_runner(argv: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            invoked.append("adapter_invoked")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        lane = _fake_local_cli_lane()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_path = tmp_path / "output.json"
+            with mock.patch(
+                "code_mower.release_campaigns.resolve_supported_runtime",
+                return_value=None,
+            ):
+                result, error, detail = release_campaigns._invoke_local_adapter(
+                    lane,
+                    "codex",
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    qualification_context="cold_install",
+                    starting_version="",
+                    output_path=output_path,
+                    repo_path=tmp_path,
+                    adapter_runner=fake_runner,
+                    which_fn=lambda _: "/bin/codex",
+                )
+
+        self.assertIsNone(result)
+        self.assertEqual(error, "python_runtime_unavailable")
+        self.assertIn("supported Python 3.12+ runtime is unavailable", detail)
+        # Ensure provider adapter was never invoked
+        self.assertEqual(len(invoked), 0)
+
+    def test_provider_next_action_remediation_on_runtime_unavailable(self) -> None:
+        lane = _fake_local_cli_lane()
+        next_action, next_detail = release_campaigns._provider_next_action(
+            provider="codex",
+            lane=lane,
+            state="unavailable",
+            command_available=True,
+            has_credentials=True,
+            has_issue=True,
+            dry_run=False,
+            error_code="python_runtime_unavailable",
+            error="supported Python 3.12+ runtime is unavailable",
+        )
+        self.assertIn("install Python 3.12+ on PATH or set CODE_MOWER_PYTHON", next_action)
+        self.assertIn("supported Python 3.12+ runtime is unavailable", next_detail)
+
+    def test_provider_next_action_remediation_keyed_on_error_code_not_message(self) -> None:
+        """Remediation must key on stable python_runtime_unavailable error code, not free-text detail."""
+        lane = _fake_local_cli_lane()
+        next_action, next_detail = release_campaigns._provider_next_action(
+            provider="codex",
+            lane=lane,
+            state="unavailable",
+            command_available=True,
+            has_credentials=True,
+            has_issue=True,
+            dry_run=False,
+            error_code="python_runtime_unavailable",
+            error="a different arbitrary human error message",
+        )
+        self.assertEqual("install Python 3.12+ on PATH or set CODE_MOWER_PYTHON", next_action)
+        self.assertEqual("a different arbitrary human error message", next_detail)
+
+    def test_maintained_adapter_argv_includes_python_bin_and_target_runtime(self) -> None:
+        from code_mower.provider_registry import _maintained_campaign_adapter_argv
+
+        argv = _maintained_campaign_adapter_argv("codex")
+        self.assertEqual(argv[0], "{python}")
+        self.assertIn("--python-bin", argv)
+        python_bin_idx = argv.index("--python-bin")
+        self.assertEqual(argv[python_bin_idx + 1], "{target_python}")
+        self.assertIn("--target-runtime", argv)
+        target_runtime_idx = argv.index("--target-runtime")
+        self.assertEqual(argv[target_runtime_idx + 1], "{target_runtime}")
+
+    def test_invoke_local_adapter_with_distinct_launcher_and_target_interpreters(self) -> None:
+        """Launcher must remain sys.executable even when target runtime is a distinct interpreter."""
+        captured_argv: list[str] = []
+
+        def fake_adapter_runner(argv: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            captured_argv.extend(argv)
+            output_idx = argv.index("--output")
+            out_file = Path(argv[output_idx + 1])
+            valid_payload = {
+                "schema": "code_mower.adoptionResult.v1",
+                "timestamp_utc": "2026-09-05T00:00:00Z",
+                "release_tag": "v1.0.0",
+                "package_identity": "code-mower",
+                "normalized_version": "1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "ending_version": "1.0.0",
+                "provider": "codex",
+                "executor": "codex",
+                "host_class": "local",
+                "runtime_class": "python_3.12",
+                "execution_state": "executed",
+                "elapsed_seconds": 1.0,
+                "outcome": "pass",
+                "steps": [
+                    {
+                        "id": "doctor",
+                        "status": "pass",
+                        "elapsed_seconds": 1.0,
+                        "warning_count": 0,
+                        "owner_action_count": 0,
+                    }
+                ],
+            }
+            out_file.write_text(json.dumps(valid_payload), encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        from code_mower.provider_registry import REFERENCE_PROVIDERS
+
+        distinct_target_python = "/opt/custom_python312/bin/python3.12"
+        lane = REFERENCE_PROVIDERS["codex"]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_path = tmp_path / "output.json"
+            with mock.patch(
+                "code_mower.release_campaigns.resolve_supported_runtime",
+                return_value=(distinct_target_python, "python_3.12"),
+            ):
+                result, error, detail = release_campaigns._invoke_local_adapter(
+                    lane,
+                    "codex",
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    qualification_context="cold_install",
+                    starting_version="",
+                    output_path=output_path,
+                    repo_path=tmp_path,
+                    adapter_runner=fake_adapter_runner,
+                    which_fn=lambda _: "/bin/codex",
+                )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(error, "")
+        # Launcher must be the interpreter running Code Mower (sys.executable)
+        self.assertEqual(captured_argv[0], sys.executable)
+        self.assertNotEqual(captured_argv[0], distinct_target_python)
+        self.assertEqual(captured_argv[1:3], ["-m", "code_mower.campaign_adapters"])
+        # Target Python must be passed to --python-bin
+        python_bin_idx = captured_argv.index("--python-bin")
+        self.assertEqual(captured_argv[python_bin_idx + 1], distinct_target_python)
+
+    def test_resolve_supported_runtime_resolves_relative_env_override(self) -> None:
+        """Relative CODE_MOWER_PYTHON candidate must be resolved to an absolute path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            custom_dir = tmp_path / "custom_env"
+            custom_dir.mkdir()
+            custom_py = custom_dir / "python3"
+            custom_py.touch()
+
+            def fake_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                if Path(cmd[0]).resolve() == custom_py.resolve():
+                    return subprocess.CompletedProcess(cmd, 0, stdout="3.12.8\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                for rel_candidate in ("./custom_env/python3", "custom_env/python3"):
+                    with self.subTest(candidate=rel_candidate):
+                        res = release_campaigns.resolve_supported_runtime(
+                            environ={"CODE_MOWER_PYTHON": rel_candidate},
+                            runner=fake_runner,
+                        )
+                        self.assertIsNotNone(res)
+                        bin_path, runtime_class = res
+                        self.assertTrue(Path(bin_path).is_absolute(), f"Expected absolute path, got {bin_path}")
+                        self.assertEqual(Path(bin_path).resolve(), custom_py.resolve())
+                        self.assertEqual(runtime_class, "python_3.12")
+            finally:
+                os.chdir(old_cwd)
+
+    def test_invoke_local_adapter_with_relative_code_mower_python_under_different_launch_cwd(self) -> None:
+        """Relative CODE_MOWER_PYTHON must resolve to absolute path so adapters work under different launch cwd."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "repo"
+            repo_root.mkdir()
+            disposable_cwd = Path(tmp) / "disposable_workdir"
+            disposable_cwd.mkdir()
+
+            custom_bin_dir = repo_root / "tools"
+            custom_bin_dir.mkdir()
+            custom_py = custom_bin_dir / "python3.12"
+            custom_py.touch()
+
+            def fake_python_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                if Path(cmd[0]).resolve() == custom_py.resolve():
+                    return subprocess.CompletedProcess(cmd, 0, stdout="3.12.4\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+            captured_target_python: list[str] = []
+
+            def fake_adapter_runner(argv: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+                python_bin_idx = argv.index("--python-bin")
+                target_py = argv[python_bin_idx + 1]
+                captured_target_python.append(target_py)
+
+                # From disposable_cwd, target_py must be valid and exist
+                old_runner_cwd = os.getcwd()
+                try:
+                    os.chdir(disposable_cwd)
+                    target_path = Path(target_py)
+                    self.assertTrue(target_path.is_absolute(), f"--python-bin must be absolute: {target_py}")
+                    self.assertTrue(target_path.exists(), f"Target python must exist from disposable cwd: {target_py}")
+                finally:
+                    os.chdir(old_runner_cwd)
+
+                output_idx = argv.index("--output")
+                out_file = Path(argv[output_idx + 1])
+                valid_payload = {
+                    "schema": "code_mower.adoptionResult.v1",
+                    "timestamp_utc": "2026-09-05T00:00:00Z",
+                    "release_tag": "v1.0.0",
+                    "package_identity": "code-mower",
+                    "normalized_version": "1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "ending_version": "1.0.0",
+                    "provider": "codex",
+                    "executor": "codex",
+                    "host_class": "local",
+                    "runtime_class": "python_3.12",
+                    "execution_state": "executed",
+                    "elapsed_seconds": 1.0,
+                    "outcome": "pass",
+                    "steps": [
+                        {
+                            "id": "doctor",
+                            "status": "pass",
+                            "elapsed_seconds": 1.0,
+                            "warning_count": 0,
+                            "owner_action_count": 0,
+                        }
+                    ],
+                }
+                out_file.write_text(json.dumps(valid_payload), encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            from code_mower.provider_registry import REFERENCE_PROVIDERS
+            lane = REFERENCE_PROVIDERS["codex"]
+            output_path = repo_root / "output.json"
+
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(repo_root)
+                result, error, detail = release_campaigns._invoke_local_adapter(
+                    lane,
+                    "codex",
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    qualification_context="cold_install",
+                    starting_version="",
+                    output_path=output_path,
+                    repo_path=repo_root,
+                    adapter_runner=fake_adapter_runner,
+                    python_runner=fake_python_runner,
+                    which_fn=lambda _: "/bin/codex",
+                    environ={"CODE_MOWER_PYTHON": "./tools/python3.12"},
+                )
+            finally:
+                os.chdir(old_cwd)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(error, "")
+            self.assertEqual(len(captured_target_python), 1)
+            self.assertEqual(Path(captured_target_python[0]).resolve(), custom_py.resolve())
+
+    def test_build_adapter_argv_default_and_empty_target_runtime_resolves_bounded_runtime(self) -> None:
+        """_build_adapter_argv must evaluate bounded target_runtime deterministically rather than NameError."""
+        lane = _fake_local_cli_lane()
+        for empty_rt in (None, ""):
+            with self.subTest(target_runtime=empty_rt):
+                kwargs: dict[str, Any] = {
+                    "release_tag": "v1.0.0",
+                    "package_spec": "code-mower==1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "output_path": Path("/tmp/out.json"),
+                    "repo_path": Path("/tmp/repo"),
+                    "argv_template": (
+                        "{command}",
+                        "--python",
+                        "{target_python}",
+                        "--runtime",
+                        "{target_runtime}",
+                    ),
+                }
+                if empty_rt is not None:
+                    kwargs["target_runtime"] = empty_rt
+
+                argv = release_campaigns._build_adapter_argv(
+                    lane,
+                    "/bin/fake-provider-cli",
+                    **kwargs,
+                )
+                self.assertEqual(argv[0], "/bin/fake-provider-cli")
+                self.assertEqual(argv[1], "--python")
+                self.assertTrue(argv[2])
+                self.assertEqual(argv[3], "--runtime")
+                self.assertTrue(re.fullmatch(r"python_\d+\.\d+", argv[4]), f"Expected bounded python_X.Y, got {argv[4]}")
+                self.assertEqual(argv[4], release_campaigns._detect_runtime_class())
+
+        # Non-empty target_runtime is preserved
+        argv_explicit = release_campaigns._build_adapter_argv(
+            lane,
+            "/bin/fake-provider-cli",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            output_path=Path("/tmp/out.json"),
+            repo_path=Path("/tmp/repo"),
+            argv_template=("{command}", "--runtime", "{target_runtime}"),
+            target_runtime="python_3.14",
+        )
+        self.assertEqual(argv_explicit, ["/bin/fake-provider-cli", "--runtime", "python_3.14"])
+
+
 if __name__ == "__main__":
     unittest.main()
