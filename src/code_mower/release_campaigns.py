@@ -35,10 +35,14 @@ if __package__ in {None, ""}:
     from code_mower.file_locks import FileLockError, exclusive_file_lock
     from code_mower.provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from code_mower.release_qualify import (
+        DEFAULT_PACKAGE_SOURCE,
+        PRODUCTION_PYPI_INDEX_URL,
+        TESTPYPI_INDEX_URL,
         _detect_host_class,
         _detect_runtime_class,
         _extract_package_identity,
         _parse_exact_package_spec,
+        _validate_package_source,
         _validate_qualification_context,
         _validate_starting_version,
         _validate_tag_format,
@@ -58,10 +62,14 @@ else:
     from .file_locks import FileLockError, exclusive_file_lock
     from .provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from .release_qualify import (
+        DEFAULT_PACKAGE_SOURCE,
+        PRODUCTION_PYPI_INDEX_URL,
+        TESTPYPI_INDEX_URL,
         _detect_host_class,
         _detect_runtime_class,
         _extract_package_identity,
         _parse_exact_package_spec,
+        _validate_package_source,
         _validate_qualification_context,
         _validate_starting_version,
         _validate_tag_format,
@@ -271,6 +279,7 @@ class ReleaseCampaign:
     normalized_version: str
     qualification_context: str
     starting_version: str
+    package_source: str
     repo_slug: str
     status: str
     dry_run: bool
@@ -355,9 +364,11 @@ def _compute_idempotency_key(
     release_tag: str,
     qualification_context: str,
     starting_version: str = "",
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
 ) -> str:
     seed = (
-        f"{campaign_id}:{provider}:{release_tag}:{qualification_context}:{starting_version}"
+        f"{campaign_id}:{provider}:{release_tag}:{qualification_context}:"
+        f"{starting_version}:{package_source}"
     ).encode("utf-8")
     return hashlib.sha256(seed).hexdigest()[:16]
 
@@ -863,6 +874,7 @@ def _extract_bound_adoption_result(
     qualification_context: str,
     starting_version: str,
     package_identity: str,
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
 ) -> dict[str, Any] | None:
     """Extract an adoptionResult from a GitHub comment, requiring explicit identity binding.
 
@@ -880,6 +892,11 @@ def _extract_bound_adoption_result(
     generated incorrectly. The embedded result's ``package_identity`` is bound
     the same way, against the identity derived from the campaign's own exact
     package spec, so a result for another distribution can never complete it.
+    The wrapper's own ``package_source`` (missing treated as ``pypi``, the
+    legacy default) is likewise checked directly against the campaign's
+    expected source: the closed adoptionResult schema carries no source field
+    of its own to cross-check, so this is the one place that binding is
+    enforced.
     """
     if not package_identity:
         return None
@@ -895,6 +912,7 @@ def _extract_bound_adoption_result(
             or wrapper.get("provider") != provider
             or wrapper.get("release_tag") != release_tag
             or wrapper.get("idempotency_key") != idempotency_key
+            or str(wrapper.get("package_source") or DEFAULT_PACKAGE_SOURCE) != package_source
         ):
             continue
         adoption_result = wrapper.get("adoption_result")
@@ -928,6 +946,7 @@ def _dispatch_github_comment(
     idempotency_key: str,
     *,
     starting_version: str = "",
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
     trigger_comments: tuple[str, ...] = (),
     reconciliation_key: str = "",
     command_runner: lane_status.CommandRunner = lane_status.run_command,
@@ -949,6 +968,7 @@ def _dispatch_github_comment(
     if qualification_context == "upgrade" and not starting_version:
         return False, {}, _safe_error("campaign_identity_incomplete")
 
+    _validate_package_source(package_source)
     dispatch_marker = {
         "schema": DISPATCH_SCHEMA,
         "campaign_id": campaign_id,
@@ -956,6 +976,7 @@ def _dispatch_github_comment(
         "package_spec": package_spec,
         "provider": provider,
         "qualification_context": qualification_context,
+        "package_source": package_source,
         "idempotency_key": idempotency_key,
     }
     if starting_version:
@@ -965,6 +986,19 @@ def _dispatch_github_comment(
     marker_str = json.dumps(dispatch_marker, sort_keys=True)
     starting_version_line = (
         f"- **Starting Version:** `{starting_version}`\n" if starting_version else ""
+    )
+    # The source line names only the closed identifier plus the fixed,
+    # canonical index URLs that identifier resolves to -- never an arbitrary
+    # or user-supplied URL -- so a remote runner installs from the right
+    # index without guessing.
+    package_source_line = (
+        f"- **Package Source:** `{package_source}` (candidate index: `{TESTPYPI_INDEX_URL}`, "
+        f"dependency index: `{PRODUCTION_PYPI_INDEX_URL}`). Download the candidate with "
+        f"`--no-deps` from TestPyPI, verify its exact package identity and version, then install "
+        f"the verified local artifact with dependencies from production PyPI. Never combine "
+        f"the indexes with `--extra-index-url`.\n"
+        if package_source == "testpypi"
+        else f"- **Package Source:** `{package_source}`\n"
     )
     trigger_comments_line = ""
     if trigger_comments:
@@ -985,11 +1019,12 @@ def _dispatch_github_comment(
         f"- **Provider:** `{provider}`\n"
         f"- **Context:** `{qualification_context}`\n"
         f"{starting_version_line}"
+        f"{package_source_line}"
         f"{trigger_comments_line}"
         f"- **Idempotency Key:** `{idempotency_key}`\n\n"
         f"Reply with a comment containing a `CODE_MOWER_ADOPTION_RESULT` "
         f"marker wrapping schema `{RESULT_MARKER_SCHEMA}` with matching "
-        f"campaign_id, provider, release_tag, and idempotency_key, plus an "
+        f"campaign_id, provider, release_tag, package_source, and idempotency_key, plus an "
         f"embedded `adoption_result`. The marker must be a single-line HTML "
         f"comment on a line of its own.{starting_version_requirement} "
         f"See docs/release-qualification.md.\n\n"
@@ -1279,6 +1314,7 @@ def _build_adapter_argv(
     package_spec: str,
     qualification_context: str,
     starting_version: str,
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
     output_path: Path,
     repo_path: Path,
     argv_template: Any,
@@ -1293,6 +1329,7 @@ def _build_adapter_argv(
         "package_spec": package_spec,
         "qualification_context": qualification_context,
         "starting_version": starting_version,
+        "package_source": package_source,
         "output": str(output_path),
         "repo_path": str(repo_path),
         # The running interpreter running Code Mower
@@ -1547,6 +1584,7 @@ def _invoke_local_adapter(
     package_spec: str,
     qualification_context: str,
     starting_version: str,
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
     output_path: Path,
     repo_path: Path,
     which_fn: Callable[[str], str | None],
@@ -1628,6 +1666,7 @@ def _invoke_local_adapter(
             package_spec=package_spec,
             qualification_context=qualification_context,
             starting_version=starting_version,
+            package_source=package_source,
             output_path=output_path,
             repo_path=repo_path,
             argv_template=argv_template,
@@ -1682,6 +1721,7 @@ def initialize_campaign(
     package_spec: str = "",
     qualification_context: str = "cold_install",
     starting_version: str = "",
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
     providers: Sequence[str] = (),
     repo_slug: str = "",
     campaign_id: str = "",
@@ -1713,6 +1753,7 @@ def initialize_campaign(
         and _version_key(starting_version) >= _version_key(normalized_version)
     ):
         raise ValueError("starting_version must be lower than the target version")
+    _validate_package_source(package_source)
 
     if not campaign_id:
         campaign_id = f"campaign-{release_tag}"
@@ -1760,7 +1801,12 @@ def initialize_campaign(
     campaign_providers: list[dict[str, Any]] = []
     for canonical_name, lane in resolved_providers:
         idemp_key = _compute_idempotency_key(
-            campaign_id, canonical_name, release_tag, qualification_context, starting_version
+            campaign_id,
+            canonical_name,
+            release_tag,
+            qualification_context,
+            starting_version,
+            package_source,
         )
         cp = CampaignProvider(
             provider=canonical_name,
@@ -1790,6 +1836,7 @@ def initialize_campaign(
         normalized_version=normalized_version,
         qualification_context=qualification_context,
         starting_version=starting_version,
+        package_source=package_source,
         repo_slug=repo_slug,
         status=overall_status,
         dry_run=True,
@@ -2073,6 +2120,7 @@ def dispatch_or_advance_campaign(
     package_identity = campaign_package_identity(package_spec)
     context = str(campaign.get("qualification_context") or "cold_install")
     starting_version = str(campaign.get("starting_version") or "")
+    package_source = str(campaign.get("package_source") or DEFAULT_PACKAGE_SOURCE)
     # A watch may need a repository solely to poll an older campaign that did
     # not persist one. Use that value for this invocation without assigning it
     # to the campaign, so observed provider transitions can be saved while the
@@ -2196,6 +2244,7 @@ def dispatch_or_advance_campaign(
                         qualification_context=context,
                         starting_version=starting_version,
                         package_identity=package_identity,
+                        package_source=package_source,
                     )
                     if found_result:
                         prior_found = provider_data.get("adoption_result")
@@ -2645,6 +2694,7 @@ def dispatch_or_advance_campaign(
                 package_spec=package_spec,
                 qualification_context=context,
                 starting_version=starting_version,
+                package_source=package_source,
                 output_path=result_path,
                 repo_path=repo_path,
                 which_fn=which_fn,
@@ -2827,6 +2877,7 @@ def dispatch_or_advance_campaign(
                     context,
                     provider_data["idempotency_key"],
                     starting_version=starting_version,
+                    package_source=package_source,
                     trigger_comments=trigger_comments,
                     reconciliation_key=str(
                         provider_data.get("dispatch_reconciliation_key") or ""
@@ -3679,6 +3730,9 @@ def _watch_campaign_validation_error(campaign: Any) -> str:
             raise ValueError
         if context != "upgrade" and starting_version:
             raise ValueError
+        # Missing is a legacy campaign predating this field; it reads as the
+        # documented default rather than failing validation.
+        _validate_package_source(str(campaign.get("package_source") or DEFAULT_PACKAGE_SOURCE))
         if not campaign_id:
             raise ValueError
     except (TypeError, ValueError):
@@ -4937,6 +4991,7 @@ def _existing_campaign_conflict(
     package_spec: str,
     qualification_context: str,
     starting_version: str,
+    package_source: str = "",
     providers: Sequence[str],
     repo_slug: str = "",
 ) -> str:
@@ -4974,6 +5029,13 @@ def _existing_campaign_conflict(
             f"--qualification-context {qualification_context!r} does not match existing "
             f"campaign context {stored_context!r}"
         )
+    stored_source = str(campaign.get("package_source") or DEFAULT_PACKAGE_SOURCE)
+    if package_source and package_source != stored_source:
+        return (
+            f"--package-source {package_source!r} does not match existing campaign "
+            f"source {stored_source!r}; an existing campaign's package source is "
+            "fixed once set"
+        )
     if starting_version and starting_version != str(campaign.get("starting_version") or ""):
         return (
             f"--starting-version {starting_version!r} does not match existing campaign "
@@ -5010,6 +5072,7 @@ def campaign_command(
     providers: Sequence[str] = (),
     qualification_context: str = "",
     starting_version: str = "",
+    package_source: str = "",
     repo_path: Path | None = None,
     repo_slug: str = "",
     issue: str | int = "",
@@ -5190,6 +5253,7 @@ def campaign_command(
             providers=providers,
             qualification_context=qualification_context,
             starting_version=starting_version,
+            package_source=package_source,
             repo_slug=repo_slug,
             issue=issue,
             apply=apply,
@@ -5237,6 +5301,7 @@ def _campaign_command_impl(
     providers: Sequence[str] = (),
     qualification_context: str = "",
     starting_version: str = "",
+    package_source: str = "",
     repo_slug: str = "",
     issue: str | int = "",
     apply: bool = False,
@@ -5448,6 +5513,7 @@ def _campaign_command_impl(
             package_spec=package_spec,
             qualification_context=qualification_context,
             starting_version=starting_version,
+            package_source=package_source,
             providers=providers,
             repo_slug=repo_slug,
         )
@@ -5521,6 +5587,9 @@ def _campaign_command_impl(
             # tell an omitted flag from an explicit `cold_install`.
             qualification_context=qualification_context or "cold_install",
             starting_version=starting_version,
+            # An omitted source creates a pypi campaign, the documented default;
+            # same "unspecified vs. explicit default" distinction as context.
+            package_source=package_source or DEFAULT_PACKAGE_SOURCE,
             providers=providers,
             repo_slug=repo_slug,
             campaign_id=campaign_id,

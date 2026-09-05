@@ -5234,6 +5234,537 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
             self.assertEqual(after, before)
 
 
+def _capturing_dispatch_body_runner(bodies: list[str], *, returncode: int = 0):
+    """A gh command runner that records the dispatch comment body text.
+
+    Reads the ``--body-file`` argument's file content before returning, since
+    the caller deletes that temporary file once the (mocked) post completes.
+    """
+
+    def _run(args, **kwargs):
+        argv = list(args)
+        if "--body-file" in argv:
+            body_path = Path(argv[argv.index("--body-file") + 1])
+            bodies.append(body_path.read_text(encoding="utf-8"))
+        else:
+            bodies.append("")
+
+        class MockCompleted:
+            pass
+
+        completed = MockCompleted()
+        completed.returncode = returncode
+        completed.stdout = ""
+        completed.stderr = ""
+        return completed
+
+    return _run
+
+
+class CampaignPackageSourceSupplyTests(unittest.TestCase):
+    """`--package-source` follows the same "supplied vs. unspecified" contract as context.
+
+    `pypi` is both the creation default and a source a caller can explicitly
+    request, so an omitted flag asserts nothing about a stored campaign while
+    an explicit value -- including an explicit `pypi` -- is compared against
+    the stored source and rejected on mismatch, exactly like
+    `--qualification-context`.
+    """
+
+    _ENV = {"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"}
+
+    def _create_testpypi(self, campaigns_dir: Path) -> dict[str, Any]:
+        ret = release_campaigns.campaign_command(
+            action="create",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_bugbot"],
+            package_source="testpypi",
+            campaigns_dir=campaigns_dir,
+            repo_slug="owner/repo",
+            apply=False,
+            command_runner=mock.MagicMock(),
+            env=self._ENV,
+        )
+        self.assertEqual(ret, 0)
+        created = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+        assert created is not None
+        self.assertEqual(created["package_source"], "testpypi")
+        return created
+
+    def test_omitted_source_creates_pypi_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            ret = release_campaigns.campaign_command(
+                action="create",
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                apply=False,
+                command_runner=mock.MagicMock(),
+                env=self._ENV,
+            )
+            self.assertEqual(ret, 0)
+            created = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert created is not None
+            self.assertEqual(created["package_source"], "pypi")
+
+    def test_explicit_testpypi_creates_testpypi_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self._create_testpypi(Path(tmp) / "campaigns")
+
+    def test_omitted_source_advances_existing_testpypi_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._create_testpypi(campaigns_dir)
+            calls: list[list[str]] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="dispatch",
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    issue="42",
+                    apply=True,
+                    command_runner=_capturing_dispatch_argv_runner(calls),
+                    gh_json_runner=mock_gh_json,
+                    env=self._ENV,
+                )
+
+            self.assertEqual(ret, 0)
+            self.assertNotIn("Traceback", stderr.getvalue())
+            advanced = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert advanced is not None
+            self.assertEqual(advanced["package_source"], "testpypi")
+            self.assertEqual(advanced["providers"][0]["state"], "running")
+
+    def test_explicit_matching_source_advances(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._create_testpypi(campaigns_dir)
+            calls: list[list[str]] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="dispatch",
+                    release_tag="v1.0.0",
+                    package_source="testpypi",
+                    campaigns_dir=campaigns_dir,
+                    issue="42",
+                    apply=True,
+                    command_runner=_capturing_dispatch_argv_runner(calls),
+                    gh_json_runner=mock_gh_json,
+                    env=self._ENV,
+                )
+
+            self.assertEqual(ret, 0)
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_explicit_pypi_against_testpypi_campaign_is_rejected(self) -> None:
+        """Resuming a campaign with a different source is an identity mismatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            before = self._create_testpypi(campaigns_dir)
+            calls: list[list[str]] = []
+
+            def unexpected_gh_json(args, **kwargs):
+                raise AssertionError("polled GitHub despite a conflicting source")
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                ret = release_campaigns.campaign_command(
+                    action="dispatch",
+                    release_tag="v1.0.0",
+                    package_source="pypi",
+                    campaigns_dir=campaigns_dir,
+                    issue="42",
+                    apply=True,
+                    command_runner=_capturing_dispatch_argv_runner(calls),
+                    gh_json_runner=unexpected_gh_json,
+                    env=self._ENV,
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertEqual(calls, [])
+            self.assertIn("--package-source 'pypi'", stderr.getvalue())
+            self.assertIn("'testpypi'", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            after = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            self.assertEqual(after, before)
+
+    def test_cli_preserves_the_unspecified_source_through_to_dispatch(self) -> None:
+        """The CLI parser has no default of its own, so omission stays visible."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._create_testpypi(campaigns_dir)
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                omitted = release_qualify.main(
+                    [
+                        "campaign",
+                        "resume",
+                        "--release-tag",
+                        "v1.0.0",
+                        "--campaigns-dir",
+                        str(campaigns_dir),
+                    ]
+                )
+
+            self.assertEqual(omitted, 0)
+            self.assertNotIn("Traceback", stderr.getvalue())
+            before = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert before is not None
+            self.assertEqual(before["package_source"], "testpypi")
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                conflicting = release_qualify.main(
+                    [
+                        "campaign",
+                        "resume",
+                        "--release-tag",
+                        "v1.0.0",
+                        "--campaigns-dir",
+                        str(campaigns_dir),
+                        "--package-source",
+                        "pypi",
+                    ]
+                )
+
+            self.assertEqual(conflicting, 1)
+            self.assertIn("--package-source 'pypi'", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            after = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            self.assertEqual(after, before)
+
+
+class PackageSourceBackwardCompatibilityTests(unittest.TestCase):
+    """A campaign stored before this field existed reads back as `pypi`."""
+
+    def test_legacy_campaign_missing_the_field_is_read_as_pypi(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaigns_dir.mkdir(parents=True)
+            legacy = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                repo_slug="owner/repo",
+            ).to_dict()
+            del legacy["package_source"]
+            release_campaigns.save_campaign(legacy, campaigns_dir)
+
+            loaded = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert loaded is not None
+            self.assertNotIn("package_source", loaded)
+
+            # Watch validation, which runs on stored data before polling,
+            # treats the missing field as the documented default rather than
+            # refusing the whole campaign.
+            self.assertEqual(release_campaigns._watch_campaign_validation_error(loaded), "")
+
+            # A later explicit --package-source pypi is not a conflict against
+            # a legacy campaign that predates the field.
+            conflict = release_campaigns._existing_campaign_conflict(
+                loaded,
+                package_spec="",
+                qualification_context="",
+                starting_version="",
+                package_source="pypi",
+                providers=(),
+            )
+            self.assertEqual(conflict, "")
+
+            # But an explicit testpypi does conflict with the implied pypi default.
+            conflict = release_campaigns._existing_campaign_conflict(
+                loaded,
+                package_spec="",
+                qualification_context="",
+                starting_version="",
+                package_source="testpypi",
+                providers=(),
+            )
+            self.assertIn("does not match existing campaign source 'pypi'", conflict)
+
+    def test_idempotency_key_computation_defaults_source_to_pypi(self) -> None:
+        with_default = release_campaigns._compute_idempotency_key(
+            "campaign-v1.0.0", "claude", "v1.0.0", "cold_install", ""
+        )
+        with_explicit_pypi = release_campaigns._compute_idempotency_key(
+            "campaign-v1.0.0", "claude", "v1.0.0", "cold_install", "", "pypi"
+        )
+        self.assertEqual(with_default, with_explicit_pypi)
+
+
+class PackageSourceIdempotencyTests(unittest.TestCase):
+    """Two otherwise-identical dispatches that differ only by source must get different keys."""
+
+    def test_idempotency_key_binds_package_source(self) -> None:
+        key_pypi = release_campaigns._compute_idempotency_key(
+            "campaign-v1.0.0", "claude", "v1.0.0", "cold_install", "", "pypi"
+        )
+        key_testpypi = release_campaigns._compute_idempotency_key(
+            "campaign-v1.0.0", "claude", "v1.0.0", "cold_install", "", "testpypi"
+        )
+        self.assertNotEqual(key_pypi, key_testpypi)
+
+
+class LocalAdapterPackageSourceCommandConstructionTests(unittest.TestCase):
+    """Local adapter argv construction receives the closed `package_source` contract."""
+
+    def test_build_adapter_argv_substitutes_package_source(self) -> None:
+        lane = ProviderLane(
+            lane_id="claude_audit",
+            lane_type="audit",
+            driver="local_cli",
+            provider="claude",
+            labels=LaneLabels(needs="x", done="y", blocked="z"),
+        )
+        argv = release_campaigns._build_adapter_argv(
+            lane,
+            "/usr/bin/claude",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            package_source="testpypi",
+            output_path=Path("/tmp/out.json"),
+            repo_path=Path("/tmp/repo"),
+            argv_template=(
+                "{command}",
+                "qualify",
+                "--package-spec",
+                "{package_spec}",
+                "--package-source",
+                "{package_source}",
+            ),
+        )
+        self.assertEqual(
+            argv,
+            [
+                "/usr/bin/claude",
+                "qualify",
+                "--package-spec",
+                "code-mower==1.0.0",
+                "--package-source",
+                "testpypi",
+            ],
+        )
+
+    def test_build_adapter_argv_defaults_package_source_to_pypi(self) -> None:
+        lane = ProviderLane(
+            lane_id="claude_audit",
+            lane_type="audit",
+            driver="local_cli",
+            provider="claude",
+            labels=LaneLabels(needs="x", done="y", blocked="z"),
+        )
+        argv = release_campaigns._build_adapter_argv(
+            lane,
+            "/usr/bin/claude",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            output_path=Path("/tmp/out.json"),
+            repo_path=Path("/tmp/repo"),
+            argv_template=("{command}", "--package-source", "{package_source}"),
+        )
+        self.assertEqual(argv, ["/usr/bin/claude", "--package-source", "pypi"])
+
+    def test_maintained_adapter_argv_template_includes_package_source(self) -> None:
+        from code_mower.provider_registry import REFERENCE_PROVIDERS
+
+        template = REFERENCE_PROVIDERS["codex"].provider_config["campaign_adapter_argv"]
+        self.assertIn("--package-source", template)
+        self.assertEqual(
+            template[template.index("--package-source") + 1], "{package_source}"
+        )
+
+
+class HostedDispatchPackageSourceTests(unittest.TestCase):
+    """Hosted dispatch instructions receive the same closed source contract."""
+
+    _ENV = {"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"}
+
+    def test_pypi_dispatch_marker_and_body_name_the_default_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            ret = release_campaigns.campaign_command(
+                action="create",
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                apply=False,
+                command_runner=mock.MagicMock(),
+                env=self._ENV,
+            )
+            self.assertEqual(ret, 0)
+            bodies: list[str] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            ret = release_campaigns.campaign_command(
+                action="dispatch",
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                issue="42",
+                apply=True,
+                command_runner=_capturing_dispatch_body_runner(bodies),
+                gh_json_runner=mock_gh_json,
+                env=self._ENV,
+            )
+            self.assertEqual(ret, 0)
+            dispatch_body = bodies[0]
+            self.assertIn("Package Source:", dispatch_body)
+            self.assertIn("`pypi`", dispatch_body)
+            marker_match = re.search(
+                r"CODE_MOWER_RELEASE_CAMPAIGN: (\{.*\}) -->", dispatch_body
+            )
+            assert marker_match is not None
+            marker = json.loads(marker_match.group(1))
+            self.assertEqual(marker["package_source"], "pypi")
+
+    def test_testpypi_dispatch_marker_and_body_name_the_canonical_index_urls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            ret = release_campaigns.campaign_command(
+                action="create",
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_bugbot"],
+                package_source="testpypi",
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                apply=False,
+                command_runner=mock.MagicMock(),
+                env=self._ENV,
+            )
+            self.assertEqual(ret, 0)
+            bodies: list[str] = []
+
+            def mock_gh_json(args, **kwargs):
+                return {"comments": []}, ""
+
+            ret = release_campaigns.campaign_command(
+                action="dispatch",
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                issue="42",
+                apply=True,
+                command_runner=_capturing_dispatch_body_runner(bodies),
+                gh_json_runner=mock_gh_json,
+                env=self._ENV,
+            )
+            self.assertEqual(ret, 0)
+            dispatch_body = bodies[0]
+            self.assertIn("`testpypi`", dispatch_body)
+            self.assertIn("https://test.pypi.org/simple/", dispatch_body)
+            self.assertIn("https://pypi.org/simple/", dispatch_body)
+            self.assertIn("Download the candidate with `--no-deps`", dispatch_body)
+            self.assertIn("verified local artifact", dispatch_body)
+            self.assertIn("Never combine the indexes", dispatch_body)
+            self.assertIn(
+                "campaign_id, provider, release_tag, package_source, and idempotency_key",
+                dispatch_body,
+            )
+            marker_match = re.search(
+                r"CODE_MOWER_RELEASE_CAMPAIGN: (\{.*\}) -->", dispatch_body
+            )
+            assert marker_match is not None
+            marker = json.loads(marker_match.group(1))
+            self.assertEqual(marker["package_source"], "testpypi")
+            # Never an arbitrary or credential-bearing URL: only the two fixed
+            # canonical index URLs ever appear.
+            urls = re.findall(r"https?://\S+", dispatch_body)
+            self.assertTrue(
+                all(
+                    u.rstrip("`,).") in {
+                        "https://test.pypi.org/simple/",
+                        "https://pypi.org/simple/",
+                    }
+                    for u in urls
+                )
+            )
+
+
+class ExtractBoundAdoptionResultPackageSourceTests(unittest.TestCase):
+    """A hosted-comment result is bound to the campaign's own package source."""
+
+    def _wrapper_text(self, *, package_source: str, include_field: bool = True) -> str:
+        wrapper = {
+            "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "provider": "cursor_bugbot",
+            "release_tag": "v1.0.0",
+            "idempotency_key": "deadbeefcafef00d",
+            "adoption_result": _mock_adoption_result(
+                release_tag="v1.0.0", provider="cursor_bugbot"
+            ),
+        }
+        if include_field:
+            wrapper["package_source"] = package_source
+        return f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+    def test_matching_source_is_accepted(self) -> None:
+        text = self._wrapper_text(package_source="testpypi")
+        result = release_campaigns._extract_bound_adoption_result(
+            text,
+            campaign_id="campaign-v1.0.0",
+            provider="cursor_bugbot",
+            release_tag="v1.0.0",
+            idempotency_key="deadbeefcafef00d",
+            qualification_context="cold_install",
+            starting_version="",
+            package_identity="code-mower",
+            package_source="testpypi",
+        )
+        self.assertIsNotNone(result)
+
+    def test_mismatching_source_is_rejected(self) -> None:
+        text = self._wrapper_text(package_source="pypi")
+        result = release_campaigns._extract_bound_adoption_result(
+            text,
+            campaign_id="campaign-v1.0.0",
+            provider="cursor_bugbot",
+            release_tag="v1.0.0",
+            idempotency_key="deadbeefcafef00d",
+            qualification_context="cold_install",
+            starting_version="",
+            package_identity="code-mower",
+            package_source="testpypi",
+        )
+        self.assertIsNone(result)
+
+    def test_missing_source_field_defaults_to_pypi(self) -> None:
+        text = self._wrapper_text(package_source="pypi", include_field=False)
+        result = release_campaigns._extract_bound_adoption_result(
+            text,
+            campaign_id="campaign-v1.0.0",
+            provider="cursor_bugbot",
+            release_tag="v1.0.0",
+            idempotency_key="deadbeefcafef00d",
+            qualification_context="cold_install",
+            starting_version="",
+            package_identity="code-mower",
+            package_source="pypi",
+        )
+        self.assertIsNotNone(result)
+
+
 class CampaignIdContractTests(unittest.TestCase):
     """Campaign ids are storage keys: the id-to-filename mapping is one-to-one.
 

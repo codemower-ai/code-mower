@@ -198,6 +198,21 @@ For a TestPyPI candidate, add:
   --pip-extra-index-url https://pypi.org/simple/
 ```
 
+`code-mower release qualify` and `code-mower release campaign` accept the
+equivalent closed `--package-source testpypi` flag (default: `pypi`) to
+qualify the same TestPyPI candidate before it is announced or marked current
+on production PyPI -- see
+[Release Qualification](release-qualification.md#testpypi-candidates):
+
+```bash
+code-mower release qualify \
+  --release-tag v1.0.7 \
+  --package-spec code-mower==1.0.7 \
+  --output result.json \
+  --package-source testpypi \
+  --execute
+```
+
 See [First-User Install Rehearsal](first-user-install-rehearsal.md) for the full
 artifact contract. If you need to debug a step manually, the equivalent toy-repo
 flow is:
