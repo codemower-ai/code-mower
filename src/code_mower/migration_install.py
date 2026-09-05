@@ -120,10 +120,10 @@ def classify_package_install_failure(
     runtime, sandbox_permission, or unknown. Never returns raw output, paths,
     or authentication details.
     """
-    # Collect stderr/stdout previews from relevant steps for classification
+    # Collect stderr/stdout previews only from package_install attempt steps
     error_text = str(exception).lower()
     for step in steps:
-        if isinstance(step, dict):
+        if isinstance(step, dict) and "pip_install_attempt" in step:
             error_text += " " + step.get("stderr_preview", "").lower()[:2000]
             error_text += " " + step.get("stdout_preview", "").lower()[:2000]
 
