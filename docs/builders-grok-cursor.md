@@ -1,17 +1,29 @@
-# Grok Bot And Cursor Cloud Agents
+# Cursor Cloud Agent And Grok Bot Separation
 
-Code Mower treats hosted coding agents as **builders**, not reviewer lanes,
-until they produce an actual pull request. Reviewer lanes still run after the
-PR exists.
+Code Mower distinguishes between Cursor's hosted builder and review capabilities:
+
+- `cursor_cloud_agent` is the hosted async builder/executor identity that can take work orders and execute package-install qualification campaigns.
+- `cursor_bugbot` (also known as Grok Bot or BugBot) is Cursor's review service and remains informational/manual; it cannot execute work orders.
+- `grok_build` is the local Grok Build CLI reviewer lane.
 
 This distinction matters:
 
-- `grok_build` is the local Grok Build CLI reviewer lane.
-- `grok_bot` is a hosted/manual builder or orchestrator identity.
-- `cursor_cloud_agent` is a hosted async builder/executor identity.
-- `cursor_bugbot` is Cursor's reviewer service and remains informational/manual.
+- `cursor_cloud_agent` has `role: builder` and `capability: work_order_execution`, qualifying it for release campaigns.
+- `cursor_bugbot` has `role: reviewer` and `capability: code_review`, excluding it from builder tasks.
 
-## Recommended Current-Beta Flow
+## Provider Aliases and Compatibility
+
+The provider alias map routes spellings to canonical identities:
+
+- `cursor` → `cursor_cloud_agent` (builder)
+- `cursor_cloud_agent` → `cursor_cloud_agent` (builder)
+- `cursor_bugbot` → `cursor_bugbot` (reviewer)
+- `cursor_grok_bot` → `cursor_bugbot` (reviewer)
+- `grok_bot` → `cursor_bugbot` (reviewer)
+
+Historical `cursor_bugbot` campaigns created before v1.0.8 remain valid but are not accepted for new release qualification work. The separation preserves existing stored evidence through an explicit compatibility path without silently reinterpreting old data.
+
+## Recommended Current Flow
 
 Use GitHub Issues as the source of truth:
 
@@ -26,12 +38,11 @@ code-mower work-order draft \
   --output .code-mower/work-orders/example.md
 ```
 
-Give the work order to Grok Bot, Cursor Cloud Agents, or another hosted
-builder. After that builder opens a PR, record source-free provenance:
+Give the work order to Cursor Cloud Agent. After it opens a PR, record source-free provenance:
 
 ```bash
 code-mower builder record \
-  --provider grok_bot \
+  --provider cursor_cloud_agent \
   --executor cursor_cloud_agent \
   --work-order .code-mower/work-orders/example.md \
   --pr OWNER/REPO#124 \

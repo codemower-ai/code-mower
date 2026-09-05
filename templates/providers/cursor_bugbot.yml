@@ -19,9 +19,12 @@ cursor_bugbot:
     bot_authors:
       - "cursor[bot]"
       - "cursor"
+    bot_authors_env: "CURSOR_BUGBOT_BOT_AUTHORS"
     trigger_comments:
       - "bugbot run"
       - "@cursor review"
     rules_file: ".cursor/BUGBOT.md"
-    status: "manual informational lane; keep calibration-only until enabled BugBot output shape is captured and adjudicated"
+    role: "reviewer"
+    capability: "code_review"
+    status: "manual informational review lane; Grok Bot and BugBot are review surfaces only and cannot execute package-install campaigns"
   review_hygiene: {}
