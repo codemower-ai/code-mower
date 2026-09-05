@@ -18,6 +18,17 @@ from typing import Any, Sequence
 
 from .git_identity import scratch_git_config_commands
 
+#: Closed taxonomy for package-install failure reasons. Always one of these
+#: stable codes; never raw output, paths, or secrets. Used only when
+#: package_install fails; omitted for pass/warn/unavailable/planned.
+PACKAGE_INSTALL_FAILURE_REASONS = frozenset({
+    "network",             # DNS, connection, timeout, proxy, SSL errors
+    "package_index",       # 404, index propagation, malformed index response
+    "runtime",             # Python version, missing system library, incompatible deps
+    "sandbox_permission",  # Permission denied, disk full, OS-level sandbox denial
+    "unknown",             # Unclassifiable failures
+})
+
 # Grammar for the one exact package-index spec shape a candidate-only download
 # accepts: <name>==<version>. Anything else (ranges, extras, paths, URLs) has
 # no single artifact a downloaded file could be checked against, so it is
@@ -86,9 +97,120 @@ class RunOutput:
 
 
 class RehearsalError(RuntimeError):
-    def __init__(self, message: str, steps: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        message: str,
+        steps: list[dict[str, Any]],
+        *,
+        failure_reason: str | None = None
+    ) -> None:
         super().__init__(message)
         self.steps = steps
+        self.failure_reason = failure_reason
+
+
+def classify_package_install_failure(
+    *,
+    exception: Exception,
+    steps: list[dict[str, Any]]
+) -> str:
+    """Classify a package-install failure into a closed reason taxonomy.
+
+    Returns one of PACKAGE_INSTALL_FAILURE_REASONS: network, package_index,
+    runtime, sandbox_permission, or unknown. Never returns raw output, paths,
+    or authentication details.
+    """
+    # Collect stderr/stdout previews from relevant steps for classification
+    error_text = str(exception).lower()
+    for step in steps:
+        if isinstance(step, dict):
+            error_text += " " + step.get("stderr_preview", "").lower()[:2000]
+            error_text += " " + step.get("stdout_preview", "").lower()[:2000]
+
+    # Network errors: DNS, connection refused, timeouts, SSL, proxy
+    network_indicators = (
+        "connection refused",
+        "connection timed out",
+        "connection reset",
+        "name or service not known",
+        "nodename nor servname provided",
+        "could not resolve host",
+        "temporary failure in name resolution",
+        "network is unreachable",
+        "timeout expired",
+        "timed out",
+        "ssl",
+        "certificate verify failed",
+        "max retries exceeded",
+        "http error 50",  # 500-level server errors
+        "http error 52",
+        "http error 53",
+        "proxy",
+        "errno 111",  # ECONNREFUSED
+        "errno 110",  # ETIMEDOUT
+        "errno 113",  # EHOSTUNREACH
+    )
+
+    # Package index errors: 404, propagation delay, malformed responses
+    package_index_indicators = (
+        "http error 404",
+        "could not find a version",
+        "no matching distribution found",
+        "error 404",
+        "package not found",
+        "index error",
+        "invalid package",
+        "malformed",
+    )
+
+    # Runtime errors: Python version, missing libraries, incompatible deps
+    runtime_indicators = (
+        "python version",
+        "requires python",
+        "unsupported python",
+        "no module named",
+        "importerror",
+        "modulenotfounderror",
+        "cannot import",
+        "syntax error",
+        "invalid syntax",
+        "incompatible",
+        "dependency",
+        "version conflict",
+        "requires a different version",
+        "libc",
+        "glibc",
+        ".so",
+        "shared library",
+    )
+
+    # Sandbox/permission errors: permission denied, disk full, OS restrictions
+    sandbox_permission_indicators = (
+        "permission denied",
+        "errno 13",  # EACCES
+        "errno 1",   # EPERM
+        "disk full",
+        "no space left",
+        "errno 28",  # ENOSPC
+        "read-only file system",
+        "errno 30",  # EROFS
+        "operation not permitted",
+    )
+
+    # Check in priority order: most specific first
+    if any(indicator in error_text for indicator in sandbox_permission_indicators):
+        return "sandbox_permission"
+
+    if any(indicator in error_text for indicator in network_indicators):
+        return "network"
+
+    if any(indicator in error_text for indicator in package_index_indicators):
+        return "package_index"
+
+    if any(indicator in error_text for indicator in runtime_indicators):
+        return "runtime"
+
+    return "unknown"
 
 
 def _default_product_rehearsal_local_command(repo_path: Path) -> tuple[str, ...]:
@@ -456,6 +578,10 @@ def _run_pip_install_with_retries(
             )
             if attempt >= attempts:
                 if package_index:
+                    failure_reason = classify_package_install_failure(
+                        exception=exc,
+                        steps=steps
+                    )
                     raise RehearsalError(
                         (
                             f"{command_label} failed after {attempts} attempts. "
@@ -464,6 +590,7 @@ def _run_pip_install_with_retries(
                             "separate source failures from package-index lag."
                         ),
                         steps,
+                        failure_reason=failure_reason,
                     ) from exc
                 raise
             steps[-1]["retry_scheduled_seconds"] = retry_delay_seconds

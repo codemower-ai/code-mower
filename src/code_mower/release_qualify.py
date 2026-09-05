@@ -101,9 +101,11 @@ ADOPTION_RESULT_FIELDS = frozenset(
         "steps",
     }
 )
-ADOPTION_RESULT_STEP_FIELDS = frozenset(
+ADOPTION_RESULT_STEP_REQUIRED_FIELDS = frozenset(
     {"id", "status", "elapsed_seconds", "warning_count", "owner_action_count"}
 )
+ADOPTION_RESULT_STEP_OPTIONAL_FIELDS = frozenset({"failure_reason"})
+ADOPTION_RESULT_STEP_FIELDS = ADOPTION_RESULT_STEP_REQUIRED_FIELDS | ADOPTION_RESULT_STEP_OPTIONAL_FIELDS
 MAX_ADOPTION_RESULT_STEPS = 32
 # ISO 8601 date/time with a mandatory UTC/offset designator ("Z" or
 # +HH:MM/-HH:MM). Deliberately rejects bare local timestamps, paths,
@@ -145,6 +147,7 @@ class StepResult:
     elapsed_seconds: float
     warning_count: int
     owner_action_count: int
+    failure_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in VALID_STEP_STATUSES:
@@ -541,9 +544,9 @@ def validate_adoption_result_payload(
         unknown_step = sorted(set(step) - ADOPTION_RESULT_STEP_FIELDS)
         if unknown_step:
             raise ValueError(f"adoption result step {index} has unsupported field(s): {unknown_step}")
-        missing_step = sorted(ADOPTION_RESULT_STEP_FIELDS - set(step))
+        missing_step = sorted(ADOPTION_RESULT_STEP_REQUIRED_FIELDS - set(step))
         if missing_step:
-            raise ValueError(f"adoption result step {index} missing field(s): {missing_step}")
+            raise ValueError(f"adoption result step {index} missing required field(s): {missing_step}")
 
         _validate_step_id(step.get("id"), index)
         status = step.get("status")
@@ -561,6 +564,23 @@ def validate_adoption_result_payload(
                 f"adoption result step {index} reports status 'pass' with a "
                 "nonzero owner_action_count"
             )
+
+        # Validate failure_reason if present
+        failure_reason = step.get("failure_reason")
+        if failure_reason is not None:
+            from code_mower.migration_rehearsal import PACKAGE_INSTALL_FAILURE_REASONS
+            if not isinstance(failure_reason, str):
+                raise ValueError(f"adoption result step {index} failure_reason must be a string")
+            if failure_reason not in PACKAGE_INSTALL_FAILURE_REASONS:
+                raise ValueError(
+                    f"adoption result step {index} failure_reason must be one of: "
+                    f"{', '.join(sorted(PACKAGE_INSTALL_FAILURE_REASONS))}"
+                )
+            if status != "fail":
+                raise ValueError(
+                    f"adoption result step {index} failure_reason is only valid when status is fail"
+                )
+
         parsed_steps.append(
             StepResult(
                 id=str(step["id"]),
@@ -568,6 +588,7 @@ def validate_adoption_result_payload(
                 elapsed_seconds=float(step["elapsed_seconds"]),
                 warning_count=int(step["warning_count"]),
                 owner_action_count=int(step["owner_action_count"]),
+                failure_reason=failure_reason,
             )
         )
 
@@ -801,6 +822,7 @@ def run_release_qualification(
                 elapsed_seconds=0.0,
                 warning_count=0,
                 owner_action_count=0,
+                failure_reason=None,
             )
         )
     else:
@@ -809,6 +831,7 @@ def run_release_qualification(
         candidate_index_url, candidate_dependency_index_url = (
             _package_source_candidate_index_args(package_source)
         )
+        failure_reason: str | None = None
         try:
             rehearsal_result = run_package_install_rehearsal(
                 package_spec=package_spec,
@@ -841,8 +864,13 @@ def run_release_qualification(
                 rehearsal_status = "fail"
             else:
                 rehearsal_status = "pass"
-        except Exception:
+        except Exception as exc:
             rehearsal_status = "fail"
+            # Extract failure_reason from RehearsalError if present
+            if hasattr(exc, "failure_reason") and isinstance(
+                getattr(exc, "failure_reason", None), str
+            ):
+                failure_reason = exc.failure_reason
 
         steps.append(
             StepResult(
@@ -851,6 +879,7 @@ def run_release_qualification(
                 elapsed_seconds=round(time.time() - rehearsal_start, 2),
                 warning_count=0,
                 owner_action_count=0,
+                failure_reason=failure_reason,
             )
         )
 
@@ -890,6 +919,7 @@ def run_release_qualification(
                 "elapsed_seconds": s.elapsed_seconds,
                 "warning_count": s.warning_count,
                 "owner_action_count": s.owner_action_count,
+                **({"failure_reason": s.failure_reason} if s.failure_reason else {}),
             }
             for s in steps
         ],

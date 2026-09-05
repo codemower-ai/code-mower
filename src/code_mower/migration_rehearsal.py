@@ -14,9 +14,11 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from code_mower.migration_install import (
         MIRRORED_IMPLEMENTATION_PATTERNS,
+        PACKAGE_INSTALL_FAILURE_REASONS,
         CommandResult,
         RehearsalError,
         RunOutput,
+        classify_package_install_failure,
         _default_product_rehearsal_local_command,
         _glob_relative_files,
         _json_payload,
@@ -48,9 +50,11 @@ if __package__ in {None, ""}:
 else:
     from .migration_install import (
         MIRRORED_IMPLEMENTATION_PATTERNS,
+        PACKAGE_INSTALL_FAILURE_REASONS,
         CommandResult,
         RehearsalError,
         RunOutput,
+        classify_package_install_failure,
         _default_product_rehearsal_local_command,
         _glob_relative_files,
         _json_payload,
@@ -83,10 +87,12 @@ else:
 __all__ = [
     "FIRST_USER_ARTIFACTS",
     "MIRRORED_IMPLEMENTATION_PATTERNS",
+    "PACKAGE_INSTALL_FAILURE_REASONS",
     "PRIVACY_EXCLUDED_CONTENT",
     "CommandResult",
     "RehearsalError",
     "RunOutput",
+    "classify_package_install_failure",
     "_default_product_rehearsal_local_command",
     "_first_user_artifacts",
     "_first_user_readiness_scorecard",

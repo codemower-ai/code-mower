@@ -78,9 +78,45 @@ bounded pip-install retry behavior as any other package-index install (see
 - `elapsed_seconds`: Total time
 - `execution_state`: planned/executed
 - `outcome`: incomplete/pass/pass_with_warnings/fail
-- `steps`: List with id, status, elapsed_seconds, warning_count, owner_action_count
+- `steps`: List with id, status, elapsed_seconds, warning_count, owner_action_count, and
+  optional `failure_reason` (see below)
 
 No local paths, secrets, commands, or raw output.
+
+### Package Install Failure Classification
+
+When `package_install` fails, the step may include an optional `failure_reason`
+field classifying the failure into one of these closed categories:
+
+- **network**: DNS resolution, connection refused/timeout, SSL certificate errors,
+  proxy errors, or HTTP 5xx server errors
+- **package_index**: HTTP 404, package not found, index propagation delay, or
+  malformed index response
+- **runtime**: Python version incompatibility, missing system libraries, import
+  errors, or dependency conflicts
+- **sandbox_permission**: Permission denied, disk full, read-only filesystem, or
+  OS-level sandbox restrictions
+- **unknown**: Unclassifiable failures
+
+The reason is derived from error messages and exception types during the install
+attempt. It is always one stable identifier from this vocabulary and never
+includes raw command output, file paths, authentication details, or secrets.
+
+**Operators can infer:**
+- Whether a failure was likely environmental (network/sandbox) vs. package-related
+  (package_index/runtime)
+- Whether a retry after index propagation or environment repair might succeed
+
+**Operators cannot infer:**
+- The exact command that failed or its full output
+- Specific package versions that conflicted (dependency conflicts return `runtime`,
+  not the conflicting versions)
+- Local file paths or authentication credentials
+- Whether a transient network failure was a timeout, DNS issue, or connection refusal
+  (all map to `network`)
+
+Existing adoption results without `failure_reason` remain valid and are treated
+as unclassified failures.
 
 ## Validation
 

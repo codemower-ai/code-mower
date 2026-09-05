@@ -280,6 +280,15 @@ ADOPTION_RESULT_JSON_SCHEMA: dict[str, Any] = {
                     "elapsed_seconds": {"type": "number", "minimum": 0},
                     "warning_count": {"type": "integer", "minimum": 0},
                     "owner_action_count": {"type": "integer", "minimum": 0},
+                    "failure_reason": {
+                        "type": "string",
+                        "enum": ["network", "package_index", "runtime", "sandbox_permission", "unknown"],
+                        "description": (
+                            "Optional closed failure classification for failed package_install steps. "
+                            "One of: network, package_index, runtime, sandbox_permission, unknown. "
+                            "Omitted for pass/warn/unavailable/planned. Never raw output, paths, or secrets."
+                        ),
+                    },
                 },
             },
         },
