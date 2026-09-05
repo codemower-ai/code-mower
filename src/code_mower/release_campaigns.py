@@ -3819,6 +3819,66 @@ def campaign_has_been_applied(campaign: Mapping[str, Any]) -> bool:
     )
 
 
+def _is_local_cli_provider(p: Mapping[str, Any]) -> bool:
+    """Whether a campaign provider participant is configured for local CLI execution."""
+    driver = p.get("driver")
+    if isinstance(driver, str) and driver:
+        return driver == "local_cli"
+    provider = p.get("provider")
+    if isinstance(provider, str) and provider:
+        try:
+            _, lane = resolve_provider_lane(provider)
+            return lane.driver == "local_cli"
+        except ValueError:
+            return False
+    return False
+
+
+def _board_provider_state(
+    p: Mapping[str, Any],
+    *,
+    campaign_id: str = "",
+    campaigns_dir: Path | None = None,
+) -> str:
+    """Project a provider's state for the Board.
+
+    A local_cli provider checkpointed with attempted_at while still persisted
+    queued and without completion/result evidence renders as running on the
+    Board, reflecting that its local process is actively working. Terminal
+    attempts (blocked, unavailable) and untouched dry-run queued providers
+    remain as they are.
+    """
+    persisted_state = _board_text(p, "state", "queued")
+    if persisted_state != "queued":
+        return persisted_state
+
+    attempted_at = p.get("attempted_at")
+    if not isinstance(attempted_at, str) or not attempted_at.strip():
+        return "queued"
+
+    if not _is_local_cli_provider(p):
+        return "queued"
+
+    if p.get("completed_at") or p.get("adoption_result") or p.get("error"):
+        return "queued"
+
+    provider = p.get("provider")
+    if (
+        campaigns_dir is not None
+        and isinstance(campaign_id, str)
+        and campaign_id
+        and isinstance(provider, str)
+        and provider
+    ):
+        try:
+            if (campaigns_dir / "results" / f"{campaign_id}_{provider}.json").is_file():
+                return "queued"
+        except OSError:
+            pass
+
+    return "running"
+
+
 def release_campaigns_board_payload(
     repo_path: Path | str = ".",
     *,
@@ -3844,6 +3904,7 @@ def release_campaigns_board_payload(
     # must degrade that single field (or skip that single provider) rather
     # than raise out of the Board payload.
     for c in campaigns:
+        campaign_id = _board_text(c, "campaign_id", "")
         cards: list[dict[str, Any]] = []
         raw_providers = c.get("providers")
         for p in raw_providers if isinstance(raw_providers, list) else []:
@@ -3856,7 +3917,11 @@ def release_campaigns_board_payload(
                     "provider": provider,
                     "lane_id": _board_text(p, "lane_id", provider),
                     "environment": _board_text(p, "environment", "local"),
-                    "state": _board_text(p, "state", "queued"),
+                    "state": _board_provider_state(
+                        p,
+                        campaign_id=campaign_id,
+                        campaigns_dir=dir_path,
+                    ),
                     "elapsed_seconds": _board_elapsed_seconds(p.get("elapsed_seconds")),
                     "response_deadline_at": _board_text(
                         p, "response_deadline_at", ""

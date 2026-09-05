@@ -10824,5 +10824,197 @@ class CampaignWatchTests(unittest.TestCase):
         self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
 
 
+class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
+    """Board projects in-flight checkpointed local_cli adapters as running.
+
+    While an applied local adapter process is actively working, its campaign
+    state is checkpointed on disk with attempted_at set, but its persisted state
+    remains queued until the adapter process completes. The read-only Board
+    projection renders such providers as running, while preserving stored
+    campaign state, retry semantics, untouched dry-run previews, and terminal
+    outcomes.
+    """
+
+    def test_checkpointed_local_cli_adapter_renders_running_on_board(self) -> None:
+        """A local_cli provider checkpointed with attempted_at renders as running."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            provider_entry = campaign["providers"][0]
+            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["dispatch_mode"] = "applied"
+            provider_entry["state"] = "queued"
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir
+            )
+            self.assertEqual(payload["card_count"], 1)
+            card = payload["campaigns"][0]["cards"][0]
+            self.assertEqual(card["provider"], "codex")
+            self.assertEqual(card["state"], "running")
+
+            # Persisted state on disk is never mutated by the read-only Board projection
+            stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert stored is not None
+            self.assertEqual(stored["providers"][0]["state"], "queued")
+            self.assertEqual(stored["providers"][0]["attempted_at"], "2026-09-04T19:00:00Z")
+
+    def test_untouched_dry_run_queued_provider_renders_queued_on_board(self) -> None:
+        """A dry-run queued provider without attempted_at stays queued on Board."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir
+            )
+            card = payload["campaigns"][0]["cards"][0]
+            self.assertEqual(card["provider"], "codex")
+            self.assertEqual(card["state"], "queued")
+
+    def test_attempted_terminal_states_are_not_reinterpreted_as_running(self) -> None:
+        """Terminal blocked and unavailable attempts preserve their stored state."""
+        for terminal_state in ("blocked", "unavailable"):
+            with self.subTest(state=terminal_state):
+                with tempfile.TemporaryDirectory() as tmp:
+                    campaigns_dir = Path(tmp) / "campaigns"
+                    campaign = release_campaigns.initialize_campaign(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=["codex"],
+                    ).to_dict()
+                    provider_entry = campaign["providers"][0]
+                    provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+                    provider_entry["dispatch_mode"] = "applied"
+                    provider_entry["state"] = terminal_state
+                    release_campaigns.save_campaign(campaign, campaigns_dir)
+
+                    payload = release_campaigns.release_campaigns_board_payload(
+                        campaigns_dir=campaigns_dir
+                    )
+                    card = payload["campaigns"][0]["cards"][0]
+                    self.assertEqual(card["state"], terminal_state)
+
+    def test_completion_or_result_evidence_prevents_running_projection(self) -> None:
+        """A provider with completion timestamp or result evidence stays queued."""
+        # Case A: completed_at set
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            provider_entry = campaign["providers"][0]
+            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["completed_at"] = "2026-09-04T19:01:00Z"
+            provider_entry["state"] = "queued"
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir
+            )
+            card = payload["campaigns"][0]["cards"][0]
+            self.assertEqual(card["state"], "queued")
+
+        # Case B: adoption_result set
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            provider_entry = campaign["providers"][0]
+            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["adoption_result"] = {"outcome": "pass"}
+            provider_entry["state"] = "queued"
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir
+            )
+            card = payload["campaigns"][0]["cards"][0]
+            self.assertEqual(card["state"], "queued")
+
+        # Case C: result file on disk
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            results_dir = campaigns_dir / "results"
+            results_dir.mkdir(parents=True, exist_ok=True)
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            provider_entry = campaign["providers"][0]
+            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["state"] = "queued"
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            result_file = results_dir / f"{campaign['campaign_id']}_codex.json"
+            result_file.write_text('{"outcome": "pass"}', encoding="utf-8")
+
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir
+            )
+            card = payload["campaigns"][0]["cards"][0]
+            self.assertEqual(card["state"], "queued")
+
+    def test_non_local_cli_provider_with_queued_state_is_not_projected_as_running(self) -> None:
+        """Providers that are not local_cli (e.g. hosted_bridge) are not affected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+            ).to_dict()
+            provider_entry = campaign["providers"][0]
+            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["state"] = "queued"
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir
+            )
+            card = payload["campaigns"][0]["cards"][0]
+            self.assertEqual(card["provider"], "devin")
+            self.assertEqual(card["state"], "queued")
+
+    def test_board_release_campaigns_payload_projects_running_card(self) -> None:
+        """board.release_campaigns_payload surfaces the running card projection."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            provider_entry = campaign["providers"][0]
+            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["dispatch_mode"] = "applied"
+            provider_entry["state"] = "queued"
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            cfg = board.BoardConfig(repo="owner/repo", repo_path=str(repo_path))
+            payload = board.release_campaigns_payload(cfg)
+            card = payload["campaigns"][0]["cards"][0]
+            self.assertEqual(card["provider"], "codex")
+            self.assertEqual(card["state"], "running")
+
+
 if __name__ == "__main__":
     unittest.main()
+
