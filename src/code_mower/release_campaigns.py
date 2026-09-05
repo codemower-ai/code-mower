@@ -992,8 +992,11 @@ def _dispatch_github_comment(
     # or user-supplied URL -- so a remote runner installs from the right
     # index without guessing.
     package_source_line = (
-        f"- **Package Source:** `{package_source}` (index: `{TESTPYPI_INDEX_URL}`, "
-        f"extra index: `{PRODUCTION_PYPI_INDEX_URL}`)\n"
+        f"- **Package Source:** `{package_source}` (candidate index: `{TESTPYPI_INDEX_URL}`, "
+        f"dependency index: `{PRODUCTION_PYPI_INDEX_URL}`). Download the candidate with "
+        f"`--no-deps` from TestPyPI, verify its exact package identity and version, then install "
+        f"the verified local artifact with dependencies from production PyPI. Never combine "
+        f"the indexes with `--extra-index-url`.\n"
         if package_source == "testpypi"
         else f"- **Package Source:** `{package_source}`\n"
     )
@@ -1021,7 +1024,7 @@ def _dispatch_github_comment(
         f"- **Idempotency Key:** `{idempotency_key}`\n\n"
         f"Reply with a comment containing a `CODE_MOWER_ADOPTION_RESULT` "
         f"marker wrapping schema `{RESULT_MARKER_SCHEMA}` with matching "
-        f"campaign_id, provider, release_tag, and idempotency_key, plus an "
+        f"campaign_id, provider, release_tag, package_source, and idempotency_key, plus an "
         f"embedded `adoption_result`. The marker must be a single-line HTML "
         f"comment on a line of its own.{starting_version_requirement} "
         f"See docs/release-qualification.md.\n\n"

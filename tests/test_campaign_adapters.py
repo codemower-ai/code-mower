@@ -416,6 +416,10 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("- package_source: testpypi", prompt)
         self.assertIn("https://test.pypi.org/simple/", prompt)
         self.assertIn("https://pypi.org/simple/", prompt)
+        self.assertIn("download --no-deps --no-cache-dir", prompt)
+        self.assertIn("exactly one wheel or source archive", prompt)
+        self.assertIn("candidate/<verified-artifact>", prompt)
+        self.assertNotIn("--extra-index-url \"https://pypi.org/simple/\"", prompt)
 
     def test_prompt_names_canonical_testpypi_index_for_upgrade_context(self) -> None:
         prompt = campaign_adapters.build_qualification_prompt(
@@ -429,8 +433,12 @@ class PackageSourceTests(unittest.TestCase):
             package_source="testpypi",
         )
         self.assertIn("https://test.pypi.org/simple/", prompt)
-        # Both the starting-version preinstall and the upgrade install use it.
-        self.assertEqual(prompt.count("https://test.pypi.org/simple/"), 2)
+        self.assertEqual(prompt.count("https://test.pypi.org/simple/"), 1)
+        self.assertIn(
+            'install --index-url "https://pypi.org/simple/" code-mower==1.0.0',
+            prompt,
+        )
+        self.assertIn("Do not use `--extra-index-url`", prompt)
 
     def test_check_campaign_identity_rejects_unknown_source(self) -> None:
         with self.assertRaises(ValueError) as ctx:

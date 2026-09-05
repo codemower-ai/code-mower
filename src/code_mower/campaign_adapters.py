@@ -137,8 +137,8 @@ CLAUDE_DEFAULT_MAX_BUDGET_USD = "5.00"
 #: Domains the Claude campaign adapter's sandbox may reach for package
 #: downloads, keyed by the closed ``package_source`` vocabulary. ``testpypi``
 #: adds the canonical TestPyPI file-serving domains on top of the production
-#: ones, since a candidate's dependencies still resolve from production PyPI
-#: via the extra index.
+#: ones, since a verified candidate's dependencies resolve from production
+#: PyPI in a separate install step.
 CLAUDE_SANDBOX_ALLOWED_DOMAINS: dict[str, tuple[str, ...]] = {
     "pypi": ("pypi.org", "files.pythonhosted.org"),
     "testpypi": (
@@ -319,34 +319,65 @@ def build_qualification_prompt(
     versions, source). It never includes credentials, home-directory paths,
     tokens, or local checkout paths: the agent works in a fresh disposable
     directory it creates itself. ``package_source`` is the closed vocabulary
-    (``pypi``/``testpypi``); when it is ``testpypi`` the pip invocations name
-    the two fixed, canonical index URLs directly rather than an arbitrary one.
+    (``pypi``/``testpypi``); when it is ``testpypi`` the prompt keeps candidate
+    retrieval exclusive to TestPyPI and dependency resolution exclusive to
+    production PyPI.
     """
-    pip_index_flags = (
-        f' --index-url "{TESTPYPI_INDEX_URL}" --extra-index-url "{PRODUCTION_PYPI_INDEX_URL}"'
-        if package_source == "testpypi"
-        else ""
-    )
     python_cmd = shlex.quote(python_bin or "python3")
-    if qualification_context == "upgrade":
+    if package_source == "testpypi":
+        pip = (
+            "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null "
+            ".venv/bin/python -m pip --isolated"
+        )
+        steps = [
+            "1. In the current disposable directory, run "
+            f"`{python_cmd} -m venv .venv`. Use only `.venv/bin/python` and installed "
+            "entry points for the remaining steps."
+        ]
+        step_number = 2
+        if qualification_context == "upgrade":
+            steps.append(
+                f'{step_number}. Install the starting version from production PyPI with '
+                f'`{pip} install --index-url "{PRODUCTION_PYPI_INDEX_URL}" '
+                f'{package_identity}=={starting_version}`.'
+            )
+            step_number += 1
+        steps.extend(
+            [
+                f"{step_number}. Create an empty `candidate` directory, then download the "
+                f"candidate only with `{pip} download --no-deps --no-cache-dir "
+                f'--index-url "{TESTPYPI_INDEX_URL}" --dest candidate "{package_spec}"`.',
+                f"{step_number + 1}. Before installing, fail closed unless `candidate` contains "
+                "exactly one wheel or source archive and its normalized distribution name and "
+                f"version are exactly `{package_identity}` and `{normalized_version}`.",
+                f"{step_number + 2}. Install that verified local artifact path with `{pip} install "
+                f'--index-url "{PRODUCTION_PYPI_INDEX_URL}" candidate/<verified-artifact>`. '
+                "Do not use `--extra-index-url` or install the release spec from a combined index.",
+            ]
+        )
+        install_plan = "\n".join(steps)
+        verification_step = step_number + 3
+    elif qualification_context == "upgrade":
         install_plan = (
             "1. In the current disposable directory, run "
             f"`{python_cmd} -m venv .venv`. Use only `.venv/bin/python` and installed "
             "entry points for the remaining steps.\n"
             f"2. Install the starting version with `.venv/bin/python -m pip install"
-            f"{pip_index_flags} "
+            " "
             f"{package_identity}=={starting_version}` to rehearse "
             f"an upgrade from exactly that version.\n"
-            f'3. Upgrade with `.venv/bin/python -m pip install{pip_index_flags} "{package_spec}"`.'
+            f'3. Upgrade with `.venv/bin/python -m pip install "{package_spec}"`.'
         )
+        verification_step = 4
     else:
         install_plan = (
             "1. In the current disposable directory, run "
             f"`{python_cmd} -m venv .venv`. Use only `.venv/bin/python` and installed "
             "entry points for the remaining steps.\n"
             f"2. Install the exact release with `.venv/bin/python -m pip install"
-            f'{pip_index_flags} "{package_spec}"`. No other version is acceptable.'
+            f' "{package_spec}"`. No other version is acceptable.'
         )
+        verification_step = 4
     lines = [
         f"You are the {provider} release-qualification agent for Code Mower.",
         "Qualify exactly one release in a disposable environment you create.",
@@ -373,14 +404,14 @@ def build_qualification_prompt(
             "",
             "Procedure (measure wall-clock seconds for each step):",
         install_plan,
-        f"4. Assert the installed {package_identity} version is exactly",
+        f"{verification_step}. Assert the installed {package_identity} version is exactly",
         f"   {normalized_version}, using `.venv/bin/python -c` and",
         "   `importlib.metadata.version` to read installed metadata.",
-        "5. Smoke-check the installed distribution using its `.venv/bin/`",
+        f"{verification_step + 1}. Smoke-check the installed distribution using its `.venv/bin/`",
         "   entry point (for code-mower run `.venv/bin/code-mower --help` and",
         "   `.venv/bin/code-mower doctor --help`) and confirm the",
         "   operational surfaces respond.",
-        "6. Report failures honestly: a failed step has status fail and the",
+        f"{verification_step + 2}. Report failures honestly: a failed step has status fail and the",
         "   overall outcome follows the rule below. Never invent timings or",
         "   claim work you did not perform.",
         "",

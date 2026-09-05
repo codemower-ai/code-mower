@@ -5452,6 +5452,13 @@ class HostedDispatchPackageSourceTests(unittest.TestCase):
             self.assertIn("`testpypi`", dispatch_body)
             self.assertIn("https://test.pypi.org/simple/", dispatch_body)
             self.assertIn("https://pypi.org/simple/", dispatch_body)
+            self.assertIn("Download the candidate with `--no-deps`", dispatch_body)
+            self.assertIn("verified local artifact", dispatch_body)
+            self.assertIn("Never combine the indexes", dispatch_body)
+            self.assertIn(
+                "campaign_id, provider, release_tag, package_source, and idempotency_key",
+                dispatch_body,
+            )
             marker_match = re.search(
                 r"CODE_MOWER_RELEASE_CAMPAIGN: (\{.*\}) -->", dispatch_body
             )
@@ -5463,7 +5470,7 @@ class HostedDispatchPackageSourceTests(unittest.TestCase):
             urls = re.findall(r"https?://\S+", dispatch_body)
             self.assertTrue(
                 all(
-                    u.rstrip("`,)") in {
+                    u.rstrip("`,).") in {
                         "https://test.pypi.org/simple/",
                         "https://pypi.org/simple/",
                     }
