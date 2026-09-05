@@ -577,6 +577,18 @@ def _resolve_adapter_config_for_lane(
     return _resolve_campaign_adapter_config(lane, repo_root)
 
 
+def _is_maintained_antigravity_adapter(
+    lane: Any,
+    argv_template: Sequence[str] | None,
+) -> bool:
+    if not argv_template:
+        return False
+    maintained = lane.provider_config.get("campaign_adapter_argv")
+    if maintained and tuple(argv_template) == tuple(maintained):
+        return True
+    return any("code_mower.campaign_adapters" in str(token) for token in argv_template)
+
+
 def check_adoption_campaign_readiness(
     *,
     config: Mapping[str, Any] | None,
@@ -587,12 +599,16 @@ def check_adoption_campaign_readiness(
     which_fn: Callable[[str], str | None] = shutil.which,
     command_runner: Any = None,
     auth_probe_runner: Any = None,
+    capability_runner: Any = None,
     token_dir: Path | None = None,
     providers: Sequence[str] = DEFAULT_CAMPAIGN_PROVIDERS,
 ) -> tuple[DoctorCheck, ...]:
     """Validate release campaign readiness across configured providers and storage."""
     from code_mower import lane_status
-    from code_mower.campaign_adapters import check_structured_result_capability
+    from code_mower.campaign_adapters import (
+        check_antigravity_readiness,
+        check_structured_result_capability,
+    )
     from code_mower.cloud import resolve_cloud_token
     from code_mower.release_campaigns import (
         _check_credentials,
@@ -804,6 +820,53 @@ def check_adoption_campaign_readiness(
                     )
                 )
             else:
+                capability_check = None
+                if canonical == "antigravity" and (
+                    capability_runner is not None
+                    or _is_maintained_antigravity_adapter(lane, argv_template)
+                ):
+                    cap_runner = capability_runner if capability_runner is not None else command_runner
+                    cap_result = check_antigravity_readiness(
+                        which_fn(cmd) or cmd,
+                        runner=cap_runner,
+                    )
+                    if not cap_result.get("ready"):
+                        capability_check = cap_result
+
+                if capability_check is not None:
+                    detail = {
+                        "provider": canonical,
+                        "lane": lane.lane_id,
+                        "driver": lane.driver,
+                        "command": command_name,
+                        "command_found": True,
+                        "adapter_configured": True,
+                        "capability": capability_check.get("capability", "new_project"),
+                        "required_flag": capability_check.get("required_flag", "--new-project"),
+                        "error": capability_check.get("error", "missing_new_project_capability"),
+                        "enabled": is_enabled,
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
+                    }
+                    if is_enabled:
+                        detail["owner_action"] = True
+                    provider_readiness[canonical] = {
+                        "command": True,
+                        "auth": "unknown",
+                        "structured_result": structured_capability,
+                    }
+                    checks.append(
+                        DoctorCheck(
+                            name="doctor.campaign.adapter",
+                            status=STATUS_WARN,
+                            lane=canonical,
+                            message=str(capability_check.get("message")),
+                            detail=detail,
+                            remediation=str(capability_check.get("remediation")),
+                        )
+                    )
+                    continue
+
                 checks.append(
                     DoctorCheck(
                         name="doctor.campaign.adapter",
