@@ -1067,7 +1067,8 @@ def release_campaigns_payload(
 
     return release_campaigns.release_campaigns_board_payload(
         repo_path=config.repo_path,
-        campaigns_dir=_campaigns_path(config),
+        campaigns_dir=_campaigns_path(config) if config.campaigns_path else None,
+        repo_slug=config.repo,
         now=now,
     )
 

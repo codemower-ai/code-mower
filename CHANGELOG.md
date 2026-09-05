@@ -6,6 +6,14 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
+### Added
+
+- Release campaign `status`, `watch`, `upload`, and Board discover the same
+  campaign set across worktrees and checkouts of one repository through a
+  metadata-only user-level index. Repo-local `.code-mower/campaigns` files and
+  explicit `--campaigns-dir` stay authoritative; ambiguity fails closed with
+  campaign ids only, never local paths (#712).
+
 ### Fixed
 
 - Codex and Claude audit verdict transport now accepts P3 (non-blocking)

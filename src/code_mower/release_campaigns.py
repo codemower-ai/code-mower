@@ -25,6 +25,13 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from code_mower import config as code_mower_config
     from code_mower import lane_status
+    from code_mower.campaign_discovery import (
+        discover_campaign_directories,
+        list_discovered_campaigns,
+        publish_campaigns_directory,
+        resolve_command_campaigns_dir,
+        resolve_repo_identity,
+    )
     from code_mower.file_locks import FileLockError, exclusive_file_lock
     from code_mower.provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from code_mower.release_qualify import (
@@ -41,6 +48,13 @@ if __package__ in {None, ""}:
 else:
     from . import config as code_mower_config
     from . import lane_status
+    from .campaign_discovery import (
+        discover_campaign_directories,
+        list_discovered_campaigns,
+        publish_campaigns_directory,
+        resolve_command_campaigns_dir,
+        resolve_repo_identity,
+    )
     from .file_locks import FileLockError, exclusive_file_lock
     from .provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from .release_qualify import (
@@ -4028,20 +4042,43 @@ def release_campaigns_board_payload(
     repo_path: Path | str = ".",
     *,
     campaigns_dir: Path | None = None,
+    repo_slug: str = "",
     now: datetime | str | float | None = None,
 ) -> dict[str, Any]:
-    dir_path = campaigns_dir or default_campaigns_dir(repo_path)
-    if not dir_path.is_dir():
-        return {
-            "schema": BOARD_RELEASE_CAMPAIGNS_SCHEMA,
-            "available": True,
-            "campaigns": [],
-            "card_count": 0,
-            "next_action": "no active campaigns",
-            "next_detail": "run code-mower release campaign --release-tag <tag> to start one",
-        }
+    empty = {
+        "schema": BOARD_RELEASE_CAMPAIGNS_SCHEMA,
+        "available": True,
+        "campaigns": [],
+        "card_count": 0,
+        "next_action": "no active campaigns",
+        "next_detail": "run code-mower release campaign --release-tag <tag> to start one",
+    }
+    if campaigns_dir is not None:
+        dir_path = Path(campaigns_dir)
+        campaigns = list_campaigns(dir_path)
+        collisions: tuple[str, ...] = ()
+    else:
+        local_dir = default_campaigns_dir(repo_path)
+        identity = resolve_repo_identity(repo_path, repo_slug)
+        lookup_dirs = discover_campaign_directories(identity, local_dir=local_dir)
+        campaigns, collisions = list_discovered_campaigns(lookup_dirs)
+        dir_path = lookup_dirs[0] if lookup_dirs else local_dir
+    if not campaigns and collisions:
+        named = ", ".join(collisions[:AMBIGUOUS_RELEASE_TAG_ID_LIMIT])
+        empty["next_action"] = "resolve ambiguous campaigns with --campaigns-dir"
+        empty["next_detail"] = (
+            f"campaign id {collisions[0]!r} is stored in more than one campaign "
+            "directory; pass --campaigns-dir to select one"
+            if len(collisions) == 1
+            else (
+                f"campaign ids ({named}) are stored in more than one campaign "
+                "directory; pass --campaigns-dir to select one"
+            )
+        )
+        return empty
+    if not campaigns:
+        return empty
 
-    campaigns = list_campaigns(dir_path)
     projected_campaigns: list[dict[str, Any]] = []
     total_cards = 0
 
@@ -4630,7 +4667,9 @@ def campaign_command(
     directory, a lock file, or any other on-disk state.
     """
     repo_path = repo_path or Path.cwd()
-    campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
+    explicit_campaigns_dir = campaigns_dir is not None
+    write_dir = campaigns_dir if explicit_campaigns_dir else default_campaigns_dir(repo_path)
+    campaigns_dir = write_dir
     err = stderr if stderr is not None else sys.stderr
 
     if campaign_id and action != "watch":
@@ -4664,6 +4703,22 @@ def campaign_command(
         print(f"error: {conflict}", file=err)
         return 1
 
+    if not explicit_campaigns_dir:
+        identity = resolve_repo_identity(repo_path, repo_slug)
+        publish_campaigns_directory(write_dir, identity)
+        campaigns_dir, discovery_error = resolve_command_campaigns_dir(
+            write_dir=write_dir,
+            repo_identity=identity,
+            campaign_id=campaign_id,
+            release_tag=release_tag,
+            select_newest=(is_status_request or action == "watch")
+            and not campaign_id
+            and not release_tag,
+        )
+        if discovery_error:
+            print(f"error: {discovery_error}", file=err)
+            return 1
+
     # What remains is exactly the read-only route; every other spelling is
     # potentially mutating and takes the campaign directory lock.
     is_read_only_status = is_status_request or action in {"upload", "watch"}
@@ -4694,7 +4749,7 @@ def campaign_command(
                     file=err,
                 )
                 return 1
-        return _campaign_command_impl(
+        result = _campaign_command_impl(
             repo_path=repo_path,
             campaigns_dir=campaigns_dir,
             action=action,
@@ -4732,6 +4787,12 @@ def campaign_command(
             stdout=stdout,
             stderr=stderr,
         )
+        if not explicit_campaigns_dir:
+            identity = resolve_repo_identity(repo_path, repo_slug)
+            publish_campaigns_directory(write_dir, identity)
+            if campaigns_dir != write_dir:
+                publish_campaigns_directory(campaigns_dir, identity)
+        return result
 
 
 def _campaign_command_impl(
