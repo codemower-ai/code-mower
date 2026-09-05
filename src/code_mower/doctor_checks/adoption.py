@@ -799,10 +799,11 @@ def check_adoption_campaign_readiness(
                         "driver": lane.driver,
                         "structured_result_capability": False,
                         "enabled": is_enabled,
-                        "actionable": True,
-                        "optional": False,
-                        "owner_action": True,
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
                     }
+                    if is_enabled:
+                        detail["owner_action"] = True
                     checks.append(
                         DoctorCheck(
                             name="doctor.campaign.structured_result",
@@ -938,10 +939,11 @@ def check_adoption_campaign_readiness(
                         "driver": lane.driver,
                         "structured_result_capability": False,
                         "enabled": is_enabled,
-                        "actionable": True,
-                        "optional": False,
-                        "owner_action": True,
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
                     }
+                    if is_enabled:
+                        detail["owner_action"] = True
                     checks.append(
                         DoctorCheck(
                             name="doctor.campaign.structured_result",

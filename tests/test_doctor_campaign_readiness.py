@@ -668,10 +668,215 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertEqual(structured_check.status, STATUS_WARN)
             self.assertEqual(structured_check.lane, "devin")
             self.assertTrue(structured_check.detail.get("actionable"))
+            self.assertFalse(structured_check.detail.get("optional"))
+            self.assertTrue(structured_check.detail.get("owner_action"))
 
             readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
             self.assertIn("devin", readiness.detail.get("actionable_providers", []))
             self.assertNotIn("devin", readiness.detail.get("ready_providers", []))
+            self.assertEqual(readiness.status, STATUS_WARN)
+
+    def test_structured_result_capability_failure_disabled_optional_local_cli_provider(self) -> None:
+        """When disabled/optional local_cli provider fails structured-result probe, do not become actionable or flip aggregate readiness."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "lanes": {
+                    "claude": {
+                        "provider_config": {
+                            "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                            "campaign_adapter_timeout_seconds": 60,
+                        }
+                    },
+                    "codex": {
+                        "enabled": False,
+                        "provider_config": {
+                            "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                            "campaign_adapter_timeout_seconds": 60,
+                        },
+                    },
+                }
+            }
+
+            def fake_capability(provider: str) -> bool:
+                return provider == "claude"
+
+            with mock.patch(
+                "code_mower.campaign_adapters.check_structured_result_capability",
+                side_effect=fake_capability,
+            ):
+                checks = check_adoption_campaign_readiness(
+                    config=config,
+                    repo_root=Path(tmp),
+                    which_fn=lambda cmd: f"/bin/{cmd}" if cmd in {"claude", "codex"} else None,
+                    providers=["claude", "codex"],
+                )
+
+            claude_adapter = next(c for c in checks if c.name == "doctor.campaign.adapter" and c.lane == "claude")
+            self.assertEqual(claude_adapter.status, STATUS_PASS)
+
+            codex_adapter = next(c for c in checks if c.name == "doctor.campaign.adapter" and c.lane == "codex")
+            self.assertEqual(codex_adapter.status, STATUS_PASS)
+
+            structured_check = next(
+                c for c in checks if c.name == "doctor.campaign.structured_result" and c.lane == "codex"
+            )
+            self.assertEqual(structured_check.status, STATUS_WARN)
+            self.assertFalse(structured_check.detail.get("actionable"))
+            self.assertTrue(structured_check.detail.get("optional"))
+            self.assertNotIn("owner_action", structured_check.detail)
+
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness.status, STATUS_PASS)
+            self.assertIn("claude", readiness.detail.get("ready_providers", []))
+            self.assertNotIn("codex", readiness.detail.get("ready_providers", []))
+            self.assertIn("codex", readiness.detail.get("optional_providers", []))
+            self.assertNotIn("codex", readiness.detail.get("actionable_providers", []))
+
+    def test_structured_result_capability_failure_disabled_by_default_local_cli_provider(self) -> None:
+        """When disabled-by-default local_cli provider fails structured-result probe, do not become actionable or flip aggregate readiness."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "lanes": {
+                    "claude": {
+                        "provider_config": {
+                            "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                            "campaign_adapter_timeout_seconds": 60,
+                        }
+                    },
+                }
+            }
+
+            def fake_capability(provider: str) -> bool:
+                return provider == "claude"
+
+            with mock.patch(
+                "code_mower.campaign_adapters.check_structured_result_capability",
+                side_effect=fake_capability,
+            ):
+                checks = check_adoption_campaign_readiness(
+                    config=config,
+                    repo_root=Path(tmp),
+                    which_fn=lambda cmd: f"/bin/{cmd}" if cmd in {"claude", "agy"} else None,
+                    env={"ANTIGRAVITY_CLI_USE_AMBIENT_HOME": "1"},
+                    providers=["claude", "antigravity"],
+                )
+
+            structured_check = next(
+                c for c in checks if c.name == "doctor.campaign.structured_result" and c.lane == "antigravity"
+            )
+            self.assertEqual(structured_check.status, STATUS_WARN)
+            self.assertFalse(structured_check.detail.get("actionable"))
+            self.assertTrue(structured_check.detail.get("optional"))
+            self.assertNotIn("owner_action", structured_check.detail)
+
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness.status, STATUS_PASS)
+            self.assertIn("claude", readiness.detail.get("ready_providers", []))
+            self.assertNotIn("antigravity", readiness.detail.get("ready_providers", []))
+            self.assertIn("antigravity", readiness.detail.get("optional_providers", []))
+            self.assertNotIn("antigravity", readiness.detail.get("actionable_providers", []))
+
+    def test_structured_result_capability_failure_disabled_optional_hosted_provider(self) -> None:
+        """When disabled/optional hosted provider fails structured-result probe, do not become actionable or flip aggregate readiness."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "lanes": {
+                    "codex": {
+                        "provider_config": {
+                            "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                            "campaign_adapter_timeout_seconds": 60,
+                        }
+                    },
+                }
+            }
+
+            def fake_capability(provider: str) -> bool:
+                return provider == "codex"
+
+            with mock.patch(
+                "code_mower.campaign_adapters.check_structured_result_capability",
+                side_effect=fake_capability,
+            ):
+                checks = check_adoption_campaign_readiness(
+                    config=config,
+                    repo_root=Path(tmp),
+                    which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
+                    env={
+                        "DEVIN_AUDIT_LABEL_TOKEN": "dummy-token",
+                        "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+                    },
+                    repo_slug="codemower-ai/code-mower",
+                    providers=["codex", "devin"],
+                )
+
+            cred_check = next(c for c in checks if c.name == "doctor.campaign.credentials" and c.lane == "devin")
+            self.assertEqual(cred_check.status, STATUS_PASS)
+
+            structured_check = next(
+                c for c in checks if c.name == "doctor.campaign.structured_result" and c.lane == "devin"
+            )
+            self.assertEqual(structured_check.status, STATUS_WARN)
+            self.assertFalse(structured_check.detail.get("actionable"))
+            self.assertTrue(structured_check.detail.get("optional"))
+            self.assertNotIn("owner_action", structured_check.detail)
+
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness.status, STATUS_PASS)
+            self.assertIn("codex", readiness.detail.get("ready_providers", []))
+            self.assertNotIn("devin", readiness.detail.get("ready_providers", []))
+            self.assertIn("devin", readiness.detail.get("optional_providers", []))
+            self.assertNotIn("devin", readiness.detail.get("actionable_providers", []))
+
+    def test_structured_result_capability_failure_disabled_optional_saas_event_provider(self) -> None:
+        """When disabled/optional saas_event hosted provider fails structured-result probe, do not become actionable or flip aggregate readiness."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "lanes": {
+                    "codex": {
+                        "provider_config": {
+                            "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                            "campaign_adapter_timeout_seconds": 60,
+                        }
+                    },
+                }
+            }
+
+            def fake_capability(provider: str) -> bool:
+                return provider == "codex"
+
+            with mock.patch(
+                "code_mower.campaign_adapters.check_structured_result_capability",
+                side_effect=fake_capability,
+            ):
+                checks = check_adoption_campaign_readiness(
+                    config=config,
+                    repo_root=Path(tmp),
+                    which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
+                    env={
+                        "CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "dummy-token",
+                        "CODE_MOWER_CURSOR_BUGBOT_CAMPAIGN_TRANSPORT_READY": "1",
+                    },
+                    repo_slug="codemower-ai/code-mower",
+                    providers=["codex", "cursor_bugbot"],
+                )
+
+            cred_check = next(c for c in checks if c.name == "doctor.campaign.credentials" and c.lane == "cursor_bugbot")
+            self.assertEqual(cred_check.status, STATUS_PASS)
+
+            structured_check = next(
+                c for c in checks if c.name == "doctor.campaign.structured_result" and c.lane == "cursor_bugbot"
+            )
+            self.assertEqual(structured_check.status, STATUS_WARN)
+            self.assertFalse(structured_check.detail.get("actionable"))
+            self.assertTrue(structured_check.detail.get("optional"))
+            self.assertNotIn("owner_action", structured_check.detail)
+
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness.status, STATUS_PASS)
+            self.assertIn("codex", readiness.detail.get("ready_providers", []))
+            self.assertNotIn("cursor_bugbot", readiness.detail.get("ready_providers", []))
+            self.assertIn("cursor_bugbot", readiness.detail.get("optional_providers", []))
+            self.assertNotIn("cursor_bugbot", readiness.detail.get("actionable_providers", []))
 
 
 if __name__ == "__main__":
