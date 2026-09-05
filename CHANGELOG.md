@@ -6,6 +6,12 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
+### Fixed
+
+- Codex release campaigns preserve the OS home required for macOS keychain
+  discovery while keeping Codex configuration and state in an isolated
+  `CODEX_HOME` (#696).
+
 ## v1.0.6
 
 This patch completes the multi-provider release-qualification operator loop.
