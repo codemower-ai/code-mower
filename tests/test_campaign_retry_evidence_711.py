@@ -1600,5 +1600,62 @@ class AttemptHistorySanitizationTests(unittest.TestCase):
             self.assertLessEqual(len(entry["attempted_at"]), 64)
 
 
+class HistoryTimestampValidationTests(unittest.TestCase):
+    """Short secrets and malformed timestamps never survive as history time."""
+
+    def test_short_secret_shaped_string_becomes_none(self) -> None:
+        for secret in (
+            "tok-abc-123",
+            "hunter2-hunter2",
+            "opaque-string-value",
+            "s3cr3t!",
+        ):
+            self.assertIsNone(
+                release_campaigns._sanitize_history_timestamp(secret),
+                f"secret-shaped value retained: {secret!r}",
+            )
+        entry = release_campaigns._sanitize_attempt_history_entry(
+            {
+                "attempted_at": "tok-abc-123",
+                "dispatched_at": OLD_TS,
+                "completed_at": OLD_DONE_TS,
+                "state": "blocked",
+                "outcome": "fail",
+                "error": "",
+                "elapsed_seconds": 1.0,
+            }
+        )
+        assert entry is not None
+        self.assertIsNone(entry["attempted_at"])
+        self.assertEqual(entry["dispatched_at"], OLD_TS)
+
+    def test_malformed_short_timestamp_strings_become_none(self) -> None:
+        for bad in (
+            "not-a-timestamp",
+            "2026-13-01T00:00:00Z",
+            "2026-09-04T25:00:00Z",
+            "2026-02-30T00:00:00Z",
+            "2026-09-04",
+            "2026/09/04 00:00:00",
+            "2026-09-04T00:00:00",
+            "",
+            "   ",
+        ):
+            self.assertIsNone(
+                release_campaigns._sanitize_history_timestamp(bad),
+                f"malformed timestamp retained: {bad!r}",
+            )
+
+    def test_valid_utc_timestamps_are_retained_unchanged(self) -> None:
+        for good in (OLD_TS, OLD_DONE_TS, "2026-01-02T03:04:05Z"):
+            self.assertEqual(
+                release_campaigns._sanitize_history_timestamp(good), good
+            )
+        self.assertIsNone(release_campaigns._sanitize_history_timestamp(None))
+        self.assertIsNone(
+            release_campaigns._sanitize_history_timestamp("t" * 5000)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1708,18 +1708,36 @@ ATTEMPT_HISTORY_OUTCOMES = frozenset({"pass", "pass_with_warnings", "fail", "inc
 
 # Upper bound for an attempt-history timestamp string. The tool writes
 # `%Y-%m-%dT%H:%M:%SZ` (20 characters); retained hand-edited values are kept
-# only when short enough to be timestamps, so arbitrary-size strings stored in
-# these fields can never be preserved across a retry.
+# only when short enough to be timestamps and parse as documented UTC
+# timestamps, so arbitrary-size strings -- and short secrets or other
+# arbitrary strings -- stored in these fields can never be preserved
+# across a retry.
 ATTEMPT_HISTORY_TIMESTAMP_MAX_LENGTH = 64
 
 
 def _sanitize_history_timestamp(value: Any) -> str | None:
-    """Return ``value`` when it fits the retained-entry timestamp bound, else None."""
+    """Return ``value`` when it is a valid documented UTC timestamp, else None.
+
+    Length alone cannot distinguish a timestamp from a short secret or
+    arbitrary string, so retained values must also parse as timestamps.
+    Semantic validation reuses :func:`_parse_board_timestamp`, and the
+    documented ``%Y-%m-%dT%H:%M:%SZ`` syntax is enforced strictly; anything
+    else degrades to None while valid campaign timestamps are returned
+    unchanged.
+    """
     if value is None:
         return None
-    if isinstance(value, str) and len(value) <= ATTEMPT_HISTORY_TIMESTAMP_MAX_LENGTH:
-        return value
-    return None
+    if not isinstance(value, str):
+        return None
+    if len(value) > ATTEMPT_HISTORY_TIMESTAMP_MAX_LENGTH:
+        return None
+    if _parse_board_timestamp(value) is None:
+        return None
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return None
+    return value
 
 
 def _prior_attempt_summary(provider_data: Mapping[str, Any]) -> dict[str, Any] | None:
