@@ -578,9 +578,9 @@ def parse_structured_codex_verdict(data: Any) -> CodexVerdict:
             )
 
         line = raw_finding["line"]
-        if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+        if isinstance(line, bool) or not isinstance(line, int) or line < 0:
             return _unknown_structured_verdict(
-                f"{where}.line must be an integer >= 1"
+                f"{where}.line must be an integer >= 0"
             )
 
         p_counts[int(severity[1])] += 1

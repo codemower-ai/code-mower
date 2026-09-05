@@ -710,6 +710,73 @@ class CodexAuditPrTests(unittest.TestCase):
         self.assertEqual(authorities, ("configured", "owner"))
         run_git.assert_called_once_with(repo, ["show", "origin/main:code-mower.yml"])
 
+    def test_codex_accepts_metadata_findings_with_line_zero(self) -> None:
+        parsed_pass = cap.parse_structured_codex_verdict(
+            {
+                "schema": cap.CODEX_AUDIT_SCHEMA_ID,
+                "verdict": "pass",
+                "summary": "No merge-blocking regressions. One metadata note.",
+                "findings": [
+                    {
+                        "severity": "P3",
+                        "title": "Metadata note",
+                        "file": "metadata",
+                        "line": 0,
+                        "detail": "This is a metadata-only finding.",
+                    }
+                ],
+            }
+        )
+        self.assertEqual(parsed_pass.verdict, "PASS")
+        self.assertEqual(parsed_pass.p3_count, 1)
+
+        parsed_blocked = cap.parse_structured_codex_verdict(
+            {
+                "schema": cap.CODEX_AUDIT_SCHEMA_ID,
+                "verdict": "blocked",
+                "summary": "Blocker plus metadata note.",
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "title": "Real blocker",
+                        "file": "src/app.py",
+                        "line": 12,
+                        "detail": "This explains a concrete regression.",
+                    },
+                    {
+                        "severity": "P3",
+                        "title": "Metadata note",
+                        "file": "metadata",
+                        "line": 0,
+                        "detail": "This is a metadata-only finding.",
+                    },
+                ],
+            }
+        )
+        self.assertEqual(parsed_blocked.verdict, "BLOCKED")
+        self.assertEqual(parsed_blocked.p2_count, 1)
+        self.assertEqual(parsed_blocked.p3_count, 1)
+
+    def test_codex_rejects_negative_line_numbers(self) -> None:
+        parsed = cap.parse_structured_codex_verdict(
+            {
+                "schema": cap.CODEX_AUDIT_SCHEMA_ID,
+                "verdict": "blocked",
+                "summary": "Has a finding with negative line.",
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "title": "Invalid finding",
+                        "file": "src/app.py",
+                        "line": -1,
+                        "detail": "This finding has an invalid line number.",
+                    }
+                ],
+            }
+        )
+        self.assertEqual(parsed.verdict, "UNKNOWN")
+        self.assertIn("line must be an integer >= 0", parsed.prose)
+
 
 if __name__ == "__main__":
     unittest.main()
