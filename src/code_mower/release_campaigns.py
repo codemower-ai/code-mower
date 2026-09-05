@@ -4789,7 +4789,7 @@ def campaign_command(
             stdout=stdout,
             stderr=stderr,
         )
-        if not explicit_campaigns_dir and is_read_only_status:
+        if not explicit_campaigns_dir:
             assert identity is not None
             publish_campaigns_directory(write_dir, identity)
             if campaigns_dir != write_dir:
