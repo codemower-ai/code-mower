@@ -10,9 +10,19 @@ in exactly the environment the adapter builds (for Codex: the isolated
 and reports a bounded owner action instead. Providers without such a command
 stay capability-only: no probe runs and readiness is never guessed.
 
-Probe stdout/stderr is never persisted. Only the exit status, a bounded state
-word, a registered error code, and non-content output shape reach doctor JSON,
-so account names, tokens, credential contents, and local paths cannot leak.
+A nonzero exit alone is never evidence of a missing login: an older or newer
+CLI without the subcommand, a broken keyring backend, or a transient config
+error all exit nonzero while the owner is in fact logged in. Only a provider-
+configured combination of an expected logged-out exit code and a narrowly
+allowlisted logged-out output marker is reported as unauthenticated; every
+other nonzero exit degrades to the non-blocking probe-unavailable skip and
+leaves the provider campaign-ready.
+
+Probe stdout/stderr is never persisted, and the logged-out marker match is
+performed transiently on a bounded prefix of that output. Only the bounded
+state word, a registered error code, and non-content output shape reach doctor
+JSON, so account names, tokens, credential contents, and local paths cannot
+leak.
 """
 
 from __future__ import annotations
@@ -30,7 +40,13 @@ CAMPAIGN_AUTH_CHECK_NAME = "doctor.campaign.auth"
 #: ``provider_config`` keys describing one provider's safe login-status probe.
 CAMPAIGN_AUTH_PROBE_ARGS_KEY = "campaign_auth_probe_args"
 CAMPAIGN_AUTH_PROBE_TIMEOUT_KEY = "campaign_auth_probe_timeout_seconds"
+CAMPAIGN_AUTH_LOGGED_OUT_EXIT_CODES_KEY = "campaign_auth_logged_out_exit_codes"
+CAMPAIGN_AUTH_LOGGED_OUT_MARKERS_KEY = "campaign_auth_logged_out_markers"
 DEFAULT_CAMPAIGN_AUTH_PROBE_TIMEOUT_SECONDS = 20
+
+#: Only this many characters of probe output are inspected for a logged-out
+#: marker. The text is matched in memory and never stored or emitted.
+CAMPAIGN_AUTH_MARKER_SCAN_LIMIT = 4096
 
 #: Set to 0/false/no/off to leave every local adapter capability-only.
 CAMPAIGN_AUTH_PROBE_ENV = "CODE_MOWER_CAMPAIGN_AUTH_PROBE"
@@ -93,6 +109,52 @@ def campaign_auth_probe_timeout(lane: Any) -> int:
     except (TypeError, ValueError):
         return DEFAULT_CAMPAIGN_AUTH_PROBE_TIMEOUT_SECONDS
     return max(1, timeout)
+
+
+def campaign_auth_logged_out_exit_codes(lane: Any) -> tuple[int, ...]:
+    """Return the exit codes one lane uses to report a logged-out home."""
+    provider_config = getattr(lane, "provider_config", None)
+    if not isinstance(provider_config, Mapping):
+        return ()
+    raw = provider_config.get(CAMPAIGN_AUTH_LOGGED_OUT_EXIT_CODES_KEY)
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    codes: list[int] = []
+    for part in raw:
+        try:
+            codes.append(int(part))
+        except (TypeError, ValueError):
+            continue
+    return tuple(codes)
+
+
+def campaign_auth_logged_out_markers(lane: Any) -> tuple[str, ...]:
+    """Return one lane's allowlisted logged-out output markers, lowercased."""
+    provider_config = getattr(lane, "provider_config", None)
+    if not isinstance(provider_config, Mapping):
+        return ()
+    raw = provider_config.get(CAMPAIGN_AUTH_LOGGED_OUT_MARKERS_KEY)
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    markers = tuple(str(part).strip().lower() for part in raw)
+    return tuple(marker for marker in markers if marker)
+
+
+def campaign_auth_confirmed_logged_out(lane: Any, returncode: int, output: str) -> bool:
+    """Return whether a nonzero probe result is a confirmed logged-out home.
+
+    Both signals must be declared by the provider and both must match: the
+    expected logged-out exit code, and one narrowly allowlisted logged-out
+    marker in a bounded prefix of the probe output. Anything else -- an
+    unsupported subcommand, a keyring or config failure, unexpected output --
+    is a probe failure, not proof that the owner is logged out.
+    """
+    exit_codes = campaign_auth_logged_out_exit_codes(lane)
+    markers = campaign_auth_logged_out_markers(lane)
+    if not exit_codes or not markers or returncode not in exit_codes:
+        return False
+    haystack = output[:CAMPAIGN_AUTH_MARKER_SCAN_LIMIT].lower()
+    return any(marker in haystack for marker in markers)
 
 
 def campaign_auth_probe_requested(env: Mapping[str, str] | None = None) -> bool:
@@ -206,7 +268,15 @@ def check_campaign_auth_readiness(
             error = AUTH_ERROR_PROBE_UNAVAILABLE
         else:
             output = f"{completed.stdout or ''}{completed.stderr or ''}"
-            error = "" if returncode == 0 else AUTH_ERROR_UNAUTHENTICATED
+            if returncode == 0:
+                error = ""
+            elif campaign_auth_confirmed_logged_out(lane, returncode, output):
+                error = AUTH_ERROR_UNAUTHENTICATED
+            else:
+                # A nonzero exit without the provider's logged-out signature
+                # (unsupported subcommand, keyring or config failure) is a
+                # probe failure, so the provider stays campaign-ready.
+                error = AUTH_ERROR_PROBE_UNAVAILABLE
 
     if not error:
         return DoctorCheck(
@@ -237,6 +307,7 @@ def check_campaign_auth_readiness(
             timeout_seconds=timeout_seconds,
             error=error,
         )
+        detail.update(auth_probe_output_detail(output))
         detail["actionable"] = False
         detail["optional"] = True
         return DoctorCheck(
@@ -280,10 +351,16 @@ __all__ = (
     "AUTH_STATE_UNAUTHENTICATED",
     "AUTH_STATE_UNKNOWN",
     "CAMPAIGN_AUTH_CHECK_NAME",
+    "CAMPAIGN_AUTH_LOGGED_OUT_EXIT_CODES_KEY",
+    "CAMPAIGN_AUTH_LOGGED_OUT_MARKERS_KEY",
+    "CAMPAIGN_AUTH_MARKER_SCAN_LIMIT",
     "CAMPAIGN_AUTH_PROBE_ARGS_KEY",
     "CAMPAIGN_AUTH_PROBE_ENV",
     "CAMPAIGN_AUTH_PROBE_TIMEOUT_KEY",
     "DEFAULT_CAMPAIGN_AUTH_PROBE_TIMEOUT_SECONDS",
+    "campaign_auth_confirmed_logged_out",
+    "campaign_auth_logged_out_exit_codes",
+    "campaign_auth_logged_out_markers",
     "campaign_auth_probe_args",
     "campaign_auth_probe_env",
     "campaign_auth_probe_requested",

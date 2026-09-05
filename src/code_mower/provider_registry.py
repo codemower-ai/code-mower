@@ -130,6 +130,16 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             # command declare no probe and stay capability-only.
             "campaign_auth_probe_args": ("login", "status"),
             "campaign_auth_probe_timeout_seconds": 20,
+            # A nonzero exit alone does not prove a missing login: an older or
+            # newer CLI without this subcommand, or a keyring/config failure,
+            # also exits nonzero. Only this exact exit code plus one of these
+            # narrow logged-out markers is treated as confirmed logged out;
+            # every other nonzero exit degrades to a non-blocking skip.
+            "campaign_auth_logged_out_exit_codes": (1,),
+            "campaign_auth_logged_out_markers": (
+                "not logged in",
+                "not authenticated",
+            ),
         },
     ),
     "claude_review": ProviderLane(

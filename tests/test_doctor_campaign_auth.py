@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -22,6 +23,8 @@ from code_mower.doctor_checks.campaign_auth import (
     AUTH_ERROR_UNAUTHENTICATED,
     CAMPAIGN_AUTH_CHECK_NAME,
     CAMPAIGN_AUTH_PROBE_ENV,
+    campaign_auth_logged_out_exit_codes,
+    campaign_auth_logged_out_markers,
     campaign_auth_probe_args,
 )
 from code_mower.provider_registry import REFERENCE_PROVIDERS
@@ -76,6 +79,11 @@ def _auth_checks(checks):
     return [check for check in checks if check.name == CAMPAIGN_AUTH_CHECK_NAME]
 
 
+def _rendered(checks):
+    """Render every check the way doctor JSON output would."""
+    return json.dumps([check.as_dict() for check in checks], default=str)
+
+
 class CampaignAuthProbeTests(unittest.TestCase):
     def test_authenticated_isolated_home_passes_without_exposing_output(self) -> None:
         recorded: list[tuple[list[str], int, dict]] = []
@@ -123,7 +131,9 @@ class CampaignAuthProbeTests(unittest.TestCase):
         self.assertNotIn("run codex login", repr(check.as_dict()))
 
     def test_unauthenticated_provider_is_not_campaign_ready(self) -> None:
-        checks = _run_checks(lambda argv, timeout, env: _completed(1))
+        checks = _run_checks(
+            lambda argv, timeout, env: _completed(1, stderr="Not logged in\n")
+        )
         readiness = [c for c in checks if c.name == "doctor.campaign.readiness"]
         self.assertEqual(len(readiness), 1)
         self.assertEqual(readiness[0].status, STATUS_WARN)
@@ -216,6 +226,84 @@ class CampaignAuthProbeTests(unittest.TestCase):
             campaign_auth_probe_args(REFERENCE_PROVIDERS["codex"]),
             ("login", "status"),
         )
+
+    def test_confirmed_logged_out_signature_is_the_only_owner_action(self) -> None:
+        """Expected exit code plus an allowlisted marker: a real owner action."""
+        checks = _run_checks(
+            lambda argv, timeout, env: _completed(
+                1, stdout="Not logged in. Run `codex login` as user@example.com\n"
+            )
+        )
+        check = _auth_checks(checks)[0]
+        self.assertEqual(check.status, STATUS_WARN)
+        self.assertEqual(check.detail.get("error"), AUTH_ERROR_UNAUTHENTICATED)
+        self.assertEqual(check.detail.get("auth_probe"), "unauthenticated")
+        self.assertTrue(check.detail.get("owner_action"))
+        readiness = [c for c in checks if c.name == "doctor.campaign.readiness"]
+        self.assertNotIn("codex", readiness[0].detail.get("ready_providers", []))
+        # Only output shape reaches doctor JSON -- never the matched text.
+        rendered = _rendered(checks)
+        self.assertNotIn("Not logged in", rendered)
+        self.assertNotIn("user@example.com", rendered)
+        self.assertNotIn("codex login", rendered)
+        self.assertTrue(check.detail.get("output_redacted"))
+
+    def test_nonzero_exit_without_logged_out_marker_is_unknown(self) -> None:
+        """A keyring or config failure is not evidence of a missing login."""
+        checks = _run_checks(
+            lambda argv, timeout, env: _completed(
+                1, stderr="error: failed to read keyring entry for user@example.com\n"
+            )
+        )
+        check = _auth_checks(checks)[0]
+        self.assertEqual(check.status, STATUS_SKIP)
+        self.assertEqual(check.detail.get("error"), AUTH_ERROR_PROBE_UNAVAILABLE)
+        self.assertEqual(check.detail.get("auth_probe"), "unknown")
+        self.assertFalse(check.detail.get("actionable"))
+        self.assertNotIn("owner_action", check.detail)
+        # A probe failure never removes a usable provider from readiness.
+        readiness = [c for c in checks if c.name == "doctor.campaign.readiness"]
+        self.assertIn("codex", readiness[0].detail.get("ready_providers", []))
+        rendered = _rendered(checks)
+        self.assertNotIn("keyring", rendered)
+        self.assertNotIn("user@example.com", rendered)
+
+    def test_unsupported_subcommand_is_unknown_not_unauthenticated(self) -> None:
+        """An older or newer CLI without `login status` stays campaign-ready."""
+        checks = _run_checks(
+            lambda argv, timeout, env: _completed(
+                2, stderr="error: unrecognized subcommand 'login'\n"
+            )
+        )
+        check = _auth_checks(checks)[0]
+        self.assertEqual(check.status, STATUS_SKIP)
+        self.assertEqual(check.detail.get("error"), AUTH_ERROR_PROBE_UNAVAILABLE)
+        self.assertEqual(check.detail.get("auth_probe"), "unknown")
+        self.assertNotIn("owner_action", check.detail)
+        readiness = [c for c in checks if c.name == "doctor.campaign.readiness"]
+        self.assertIn("codex", readiness[0].detail.get("ready_providers", []))
+        rendered = _rendered(checks)
+        self.assertNotIn("unrecognized subcommand", rendered)
+
+    def test_logged_out_marker_alone_without_expected_exit_code_is_unknown(self) -> None:
+        checks = _run_checks(
+            lambda argv, timeout, env: _completed(3, stderr="Not logged in\n")
+        )
+        check = _auth_checks(checks)[0]
+        self.assertEqual(check.status, STATUS_SKIP)
+        self.assertEqual(check.detail.get("error"), AUTH_ERROR_PROBE_UNAVAILABLE)
+
+    def test_codex_declares_a_bounded_logged_out_signature(self) -> None:
+        lane = REFERENCE_PROVIDERS["codex"]
+        self.assertEqual(campaign_auth_logged_out_exit_codes(lane), (1,))
+        self.assertEqual(
+            campaign_auth_logged_out_markers(lane),
+            ("not logged in", "not authenticated"),
+        )
+        # Providers without a probe declare no logged-out signature either.
+        capability_only = REFERENCE_PROVIDERS["claude_review"]
+        self.assertEqual(campaign_auth_logged_out_exit_codes(capability_only), ())
+        self.assertEqual(campaign_auth_logged_out_markers(capability_only), ())
 
 
 if __name__ == "__main__":
