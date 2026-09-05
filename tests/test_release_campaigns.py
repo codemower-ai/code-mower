@@ -4471,7 +4471,10 @@ class CampaignAggregateStatusHonestyTests(unittest.TestCase):
                 repo_slug="owner/repo",
                 issue="42",
                 which_fn=lambda cmd: "/bin/aider" if cmd == "aider" else None,
-                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+                env={
+                    "DEVIN_AUDIT_LABEL_TOKEN": "token",
+                    "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+                },
             )
             states = {p["provider"]: p["state"] for p in saved["providers"]}
             self.assertEqual(states, {"devin": "queued", "aider": "unavailable"})

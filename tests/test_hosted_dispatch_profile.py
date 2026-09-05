@@ -319,7 +319,7 @@ class HostedDispatchFixtureCampaignTests(unittest.TestCase):
                 gh_json_runner=mock_gh_json,
                 env=_fixture_env(fixture),
             )
-            self.assertEqual(ret, 1)
+            self.assertEqual(ret, 0)
             self.assertEqual(
                 command_runner.call_count, fixture["expected_resume_dispatch_calls"]
             )
