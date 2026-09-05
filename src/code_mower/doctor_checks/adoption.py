@@ -471,7 +471,7 @@ DEFAULT_CAMPAIGN_PROVIDERS = (
     "codex",
     "antigravity",
     "muse",
-    "cursor_bugbot",
+    "cursor_cloud_agent",
     "devin",
 )
 
