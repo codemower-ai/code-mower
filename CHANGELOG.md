@@ -6,32 +6,37 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
-- Report unverified Cursor/Grok Bot and Devin campaign transports before
-  dispatch, and expire silent hosted qualification runs into explicit
-  manual/retry guidance without automatically duplicating paid work. Existing
-  campaigns receive a fresh response window on first upgraded poll (#701).
+## v1.0.7
+
+This patch hardens multi-provider release qualification using findings from the
+first applied v1.0.6 campaign. It preserves supervised-pilot gate semantics,
+Python 3.12+, and the metadata-only privacy boundary.
 
 ### Added
 
-- Adoption doctor probes campaign authentication readiness for maintained local
-  adapters that expose a safe login-status command, starting with Codex. The
-  probe runs in the adapter's own isolated `CODEX_HOME` plus real OS home, so an
-  unauthenticated isolated home is a bounded owner action instead of a
-  mid-campaign adapter failure. Only a confirmed logged-out result -- the
-  provider's declared logged-out exit code together with one of its narrowly
-  allowlisted logged-out output markers -- is reported as unauthenticated;
-  timeouts, unsupported subcommands, keyring or config failures, and any other
-  nonzero exit degrade to a non-blocking skip that leaves the provider
-  campaign-ready. Orchestrator-only posture stays non-blocking for local
-  adapters, providers without a safe probe stay capability-only, and no auth
-  output, credential contents, tokens, or local paths reach doctor output
-  (#699).
+- Adoption doctor probes isolated authentication readiness for maintained local
+  adapters when a provider offers a safe, bounded login-status command. Known
+  logged-out states become owner actions; unsupported or indeterminate probes
+  remain non-blocking and never expose auth output or local paths (#699).
+- Hosted Cursor/Grok Bot and Devin campaign cards expose transport verification
+  and bounded response deadlines before dispatch, with manual fallback instead
+  of automatic duplicate paid retries when a provider stays silent (#701).
+
+### Changed
+
+- Board projects checkpointed local adapters as running only inside their
+  effective timeout, then presents coherent stale retry guidance at card,
+  campaign, and top-level scope without mutating persisted campaign state
+  (#698).
+- Adoption-result validation enforces bounded timestamps, a stable built-in
+  step taxonomy with namespaced extensions, explicit overhead, coherent timing
+  totals, and zero owner actions for passing results (#700).
 
 ### Fixed
 
-- Codex release campaigns preserve the OS home required for macOS keychain
-  discovery while keeping Codex configuration and state in an isolated
-  `CODEX_HOME` (#696).
+- Isolated Codex campaign execution preserves the real OS home needed for macOS
+  keychain discovery while keeping provider configuration and state isolated in
+  `CODEX_HOME` (#696, PR #697).
 
 ## v1.0.6
 
