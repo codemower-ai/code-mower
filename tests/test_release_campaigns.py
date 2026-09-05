@@ -1854,7 +1854,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 self.assertNotIn(leaked, serialized)
 
     def test_selectable_providers_diversity(self) -> None:
-        """Claude, Codex, Antigravity, Muse, Cursor/Grok Bot, and Devin are all included."""
+        """Claude, Codex, Antigravity, Muse, Cursor Cloud Agent, and Devin are all included."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
 
@@ -1868,7 +1868,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider_names = {p["provider"] for p in saved["providers"]}
-            expected = {"claude", "codex", "antigravity", "muse", "cursor_bugbot", "devin"}
+            expected = {"claude", "codex", "antigravity", "muse", "cursor_cloud_agent", "devin"}
             self.assertEqual(provider_names, expected)
 
     def test_manual_adoption_result_recording(self) -> None:
@@ -4588,8 +4588,8 @@ class DuplicateCampaignProviderTests(unittest.TestCase):
         """Two different names for one canonical provider are still one provider."""
         for names, canonical in (
             (["claude", "claude_code"], "claude"),
-            (["cursor", "grok_bot"], "cursor_bugbot"),
-            (["codex", "cursor_bugbot", "cursor"], "cursor_bugbot"),
+            (["cursor_bugbot", "grok_bot"], "cursor_bugbot"),
+            (["cursor", "cursor_cloud_agent"], "cursor_cloud_agent"),
         ):
             with self.subTest(names=names):
                 with self.assertRaises(ValueError) as ctx:
@@ -4610,13 +4610,84 @@ class DuplicateCampaignProviderTests(unittest.TestCase):
             providers=["claude", "codex", "cursor"],
         )
         names = [p["provider"] for p in campaign.providers]
-        self.assertEqual(names, ["claude", "codex", "cursor_bugbot"])
+        self.assertEqual(names, ["claude", "codex", "cursor_cloud_agent"])
         keys = {p["idempotency_key"] for p in campaign.providers}
         self.assertEqual(len(keys), 3)
         result_files = {
             f"{campaign.campaign_id}_{p['provider']}.json" for p in campaign.providers
         }
         self.assertEqual(len(result_files), 3)
+
+    def test_cursor_and_grok_are_now_distinct(self) -> None:
+        """cursor (builder) and grok_bot (reviewer) are now separate providers."""
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor", "grok_bot"],
+        )
+        names = [p["provider"] for p in campaign.providers]
+        self.assertEqual(sorted(names), ["cursor_bugbot", "cursor_cloud_agent"])
+        keys = {p["idempotency_key"] for p in campaign.providers}
+        self.assertEqual(len(keys), 2)
+
+    def test_stored_cursor_bugbot_campaigns_remain_cursor_bugbot(self) -> None:
+        """Existing stored cursor_bugbot campaigns are not reinterpreted as cursor_cloud_agent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaigns_dir.mkdir(parents=True)
+
+            # Create a legacy campaign with cursor_bugbot
+            legacy_campaign = {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-v1.0.0",
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "package_identity": "code-mower",
+                "normalized_version": "1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "created_at": "2026-09-01T00:00:00Z",
+                "updated_at": "2026-09-01T00:00:00Z",
+                "status": "queued",
+                "applied": False,
+                "providers": [
+                    {
+                        "provider": "cursor_bugbot",
+                        "state": "queued",
+                        "idempotency_key": "campaign-v1.0.0_cursor_bugbot_cold_install",
+                        "attempted_at": None,
+                        "dispatched_at": None,
+                        "completed_at": None,
+                        "elapsed_seconds": None,
+                        "error": None,
+                        "next_action": "run with --apply to dispatch providers",
+                        "dispatch_mode": "preview",
+                        "dispatch_ref": None,
+                    }
+                ],
+            }
+
+            # Save the legacy campaign
+            campaign_file = campaigns_dir / "campaign-v1.0.0.json"
+            campaign_file.write_text(json.dumps(legacy_campaign, indent=2), encoding="utf-8")
+
+            # Load it back and verify it stays cursor_bugbot
+            loaded = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert loaded is not None
+            self.assertEqual(loaded["providers"][0]["provider"], "cursor_bugbot")
+
+            # Resume operations should preserve the provider identity
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=False,
+            )
+
+            reloaded = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert reloaded is not None
+            self.assertEqual(reloaded["providers"][0]["provider"], "cursor_bugbot")
 
     def test_default_provider_set_has_no_duplicates(self) -> None:
         campaign = release_campaigns.initialize_campaign(
