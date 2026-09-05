@@ -11,6 +11,7 @@ output, auth output, paths, or secrets leave the test process.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 import tempfile
@@ -436,6 +437,147 @@ class HostedDoctorProfileTests(unittest.TestCase):
             self.assertIsInstance(profile, dict)
             self.assertTrue(all(profile.values()))
             self.assertNotIn("token", json.dumps(creds[0].detail))
+
+
+def _devin_lane_without(
+    *,
+    trigger_comments: bool = True,
+    trusted_responders: bool = True,
+):
+    """Return the devin lane minus trigger text and/or the responder allowlist."""
+    base = REFERENCE_PROVIDERS["devin"]
+    config = dict(base.provider_config)
+    if not trigger_comments:
+        config["trigger_comments"] = ()
+    if not trusted_responders:
+        config["bot_authors"] = ()
+        config.pop("bot_authors_env", None)
+    return dataclasses.replace(base, provider_config=config)
+
+
+def _verified_devin_env() -> dict[str, str]:
+    return {
+        "DEVIN_AUDIT_LABEL_TOKEN": "s3cret-token-value",
+        "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+    }
+
+
+class HostedDispatchBlockerTests(unittest.TestCase):
+    """Trigger and trusted-responder blockers fail closed in dry-run and doctor."""
+
+    def _dry_run_devin(self, lane, env) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            command_runner = mock.MagicMock()
+            gh_json_runner = mock.MagicMock()
+            with mock.patch.dict(release_campaigns.REFERENCE_PROVIDERS, {"devin": lane}):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["devin"],
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                    issue="42",
+                    apply=False,
+                    command_runner=command_runner,
+                    gh_json_runner=gh_json_runner,
+                    env=env,
+                )
+            self.assertEqual(ret, 0)
+            saved = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert saved is not None
+            command_runner.assert_not_called()
+            gh_json_runner.assert_not_called()
+            return saved
+
+    def _assert_blocked_dry_run(
+        self, saved: dict[str, Any], *, blocker: str, remediation_marker: str
+    ) -> None:
+        entry = saved["providers"][0]
+        self.assertEqual(entry["state"], "unavailable")
+        self.assertEqual(entry["error"], "hosted_transport_unverified")
+        self.assertIn(entry["error"], release_campaigns.SAFE_ERROR_CODES)
+        self.assertIn(blocker, entry["next_detail"])
+        self.assertIn(remediation_marker, entry["next_action"])
+        self.assertIn(remediation_marker, entry["next_detail"])
+        self.assertNotIn("--apply", entry["next_action"])
+        self.assertNotIn("--apply", entry["next_detail"])
+        self.assertEqual(saved["status"], "unavailable")
+        # Bounded metadata only: no secret values, paths, or output.
+        self.assertNotIn("s3cret-token-value", json.dumps(saved))
+
+    def test_dry_run_trigger_blocker_is_unavailable(self) -> None:
+        lane = _devin_lane_without(trigger_comments=False)
+        profile = release_campaigns.hosted_dispatch_profile(
+            lane, env=_verified_devin_env()
+        )
+        self.assertEqual(release_campaigns.hosted_dispatch_blockers(profile), ["trigger"])
+        saved = self._dry_run_devin(lane, _verified_devin_env())
+        self._assert_blocked_dry_run(
+            saved, blocker="trigger", remediation_marker="builder trigger"
+        )
+
+    def test_dry_run_trusted_responder_blocker_is_unavailable(self) -> None:
+        lane = _devin_lane_without(trusted_responders=False)
+        profile = release_campaigns.hosted_dispatch_profile(
+            lane, env=_verified_devin_env()
+        )
+        self.assertEqual(
+            release_campaigns.hosted_dispatch_blockers(profile), ["trusted_responder"]
+        )
+        saved = self._dry_run_devin(lane, _verified_devin_env())
+        self._assert_blocked_dry_run(
+            saved, blocker="trusted_responder", remediation_marker="bot_authors"
+        )
+
+    def _doctor_checks(self, lane) -> tuple:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(release_campaigns.REFERENCE_PROVIDERS, {"devin": lane}):
+                return check_adoption_campaign_readiness(
+                    config={},
+                    repo_root=Path(tmp),
+                    repo_slug="owner/repo",
+                    env=_verified_devin_env(),
+                    providers=["devin"],
+                )
+
+    def _assert_blocked_doctor(
+        self, checks: tuple, *, blocker: str, remediation_marker: str
+    ) -> None:
+        transport = [c for c in checks if c.name == "doctor.campaign.transport"]
+        self.assertEqual(len(transport), 1)
+        check = transport[0]
+        self.assertEqual(check.status, "warn")
+        self.assertIn(blocker, list(check.detail.get("dispatch_blockers") or []))
+        self.assertIn(
+            remediation_marker,
+            json.dumps(check.detail.get("blocker_remediations") or {}),
+        )
+        self.assertIn(remediation_marker, check.remediation)
+        # No PASS for the blocked lane, and the aggregate never calls it ready.
+        passes = [
+            c
+            for c in checks
+            if c.name == "doctor.campaign.credentials" and c.lane == "devin"
+        ]
+        self.assertEqual(passes, [])
+        readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+        self.assertNotIn("devin", readiness.detail.get("ready_providers", []))
+        self.assertNotIn("s3cret-token-value", json.dumps(checks, default=str))
+
+    def test_doctor_trigger_blocker_warns_without_pass(self) -> None:
+        checks = self._doctor_checks(_devin_lane_without(trigger_comments=False))
+        self._assert_blocked_doctor(
+            checks, blocker="trigger", remediation_marker="builder trigger"
+        )
+
+    def test_doctor_trusted_responder_blocker_warns_without_pass(self) -> None:
+        checks = self._doctor_checks(_devin_lane_without(trusted_responders=False))
+        self._assert_blocked_doctor(
+            checks, blocker="trusted_responder", remediation_marker="bot_authors"
+        )
 
 
 if __name__ == "__main__":

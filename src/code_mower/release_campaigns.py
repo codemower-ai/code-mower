@@ -2678,9 +2678,7 @@ def dispatch_or_advance_campaign(
         # 4. Check capabilities and readiness
         cmd_found = _find_command(lane, which_fn=which_fn)
         has_creds, missing_cred = _check_credentials(lane, env=current_env)
-        transport_ready, transport_ready_var = _check_hosted_transport(
-            lane, env=current_env
-        )
+        transport_ready, _ = _check_hosted_transport(lane, env=current_env)
         # Closed hosted dispatch profile: auth, installation, trigger,
         # trusted responder, and result return are judged independently, so
         # one verified dimension can never mask another.
@@ -2689,8 +2687,17 @@ def dispatch_or_advance_campaign(
             if lane.driver in {"hosted_bridge", "saas_event"}
             else {}
         )
-        installation_ready = dispatch_profile.get("installation", {}).get("ready", True)
-        result_return_ready = dispatch_profile.get("result_return", {}).get("ready", True)
+        # Every failed check of the closed dispatch profile blocks the
+        # preview: auth, installation, trigger, trusted responder, and result
+        # return are judged independently, so one verified dimension can
+        # never mask another. Auth and issue prerequisites keep their more
+        # specific errors in the branches above; anything still failing here
+        # surfaces with its exact bounded remediation.
+        dispatch_blockers = (
+            hosted_dispatch_blockers(dispatch_profile)
+            if lane.driver in {"hosted_bridge", "saas_event"}
+            else []
+        )
         if lane.driver in {"hosted_bridge", "saas_event"}:
             provider_data["transport_verified"] = transport_ready
         has_issue = bool(issue_number)
@@ -2761,35 +2768,29 @@ def dispatch_or_advance_campaign(
                     dry_run=True,
                     error="missing issue number",
                 )
-            elif lane.driver in {"hosted_bridge", "saas_event"} and (
-                not installation_ready or not result_return_ready
-            ):
-                # A paid dispatch must never preview as queued when the App
-                # installation or the result-return path is unverified: the
-                # preview judges exactly what --apply would need, so it
-                # reports unavailable with the exact remediation before any
-                # dispatch. An explicit --apply may still dispatch (the
-                # operator's choice), under the bounded response deadline.
+            elif lane.driver in {"hosted_bridge", "saas_event"} and dispatch_blockers:
+                # A paid dispatch must never preview as queued while any
+                # closed dispatch-profile check fails: the preview judges
+                # exactly what --apply would need, so it reports unavailable
+                # with the exact bounded remediation before any dispatch. An
+                # explicit --apply may still dispatch (the operator's
+                # choice), under the bounded response deadline.
                 provider_data["state"] = "unavailable"
                 provider_data["error"] = _safe_error("hosted_transport_unverified")
-                if not installation_ready:
-                    action = (
-                        f"verify the {provider} GitHub App installation answers "
-                        f"campaign issue comments, then set {transport_ready_var}=1"
-                    )
-                    detail = (
-                        f"{provider} transport is not independently verified; "
-                        f"set {transport_ready_var}=1 after verification"
-                    )
-                else:
-                    action = (
-                        f"fix campaign_response_timeout_seconds for {provider} "
-                        f"so silence becomes timeout evidence"
-                    )
-                    detail = (
-                        f"{provider} result-return wait is not a positive integer; "
-                        f"configure campaign_response_timeout_seconds"
-                    )
+                first_blocker = dispatch_blockers[0]
+                first_remediation = str(
+                    dispatch_profile.get(first_blocker, {}).get("remediation") or ""
+                )
+                action = first_remediation or (
+                    f"resolve {first_blocker} for {provider} before dispatching "
+                    f"release qualification"
+                )
+                detail = (
+                    f"{provider} hosted dispatch blocked: "
+                    f"{', '.join(dispatch_blockers)}"
+                )
+                if first_remediation:
+                    detail = f"{detail}; {first_remediation}"
             else:
                 provider_data["state"] = "queued"
                 # A prerequisite recorded by an earlier preview (a missing
