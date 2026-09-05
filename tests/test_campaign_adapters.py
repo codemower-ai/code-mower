@@ -59,7 +59,16 @@ def _adoption_result(provider: str = "codex", **overrides: Any) -> dict[str, Any
 
 def _fake_bin(tmp: Path, name: str = "provider-bin") -> str:
     bin_path = tmp / name
-    bin_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    bin_path.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--help\" ]; then\n"
+        "  echo \"  --new-project  Create a new project\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    bin_path.chmod(0o755)
     return str(bin_path)
 
 
@@ -179,10 +188,37 @@ class ArgvBuilderTests(unittest.TestCase):
         self.assertIn("--print", argv)
         self.assertIn("--sandbox", argv)
         self.assertIn("--dangerously-skip-permissions", argv)
+        self.assertIn("--new-project", argv)
         self.assertIn("--print-timeout", argv)
         self.assertIn("870s", argv)
         self.assertIn("--model", argv)
         self.assertIn("/tmp/work/ws/campaign.prompt-input.txt", argv[-1])
+
+    def test_antigravity_argv_isolation_contract_no_continue_or_resume_semantics(self) -> None:
+        argv = campaign_adapters.build_antigravity_argv(
+            agy_bin="/bin/agy",
+            workspace_dir="/tmp/work/ws",
+            prompt_file="/tmp/work/ws/campaign.prompt-input.txt",
+            timeout_seconds=870,
+            model="gemini-3",
+        )
+        self.assertEqual(argv[0], "/bin/agy")
+        self.assertIn("--sandbox", argv)
+        self.assertIn("--dangerously-skip-permissions", argv)
+        self.assertIn("--new-project", argv)
+        add_dir_idx = argv.index("--add-dir")
+        self.assertEqual(argv[add_dir_idx + 1], "/tmp/work/ws")
+        timeout_idx = argv.index("--print-timeout")
+        self.assertEqual(argv[timeout_idx + 1], "870s")
+        self.assertIn("--print", argv)
+
+        # Proving every run starts a new project and does not use continue or resume semantics:
+        self.assertNotIn("--continue", argv)
+        self.assertNotIn("-c", argv)
+        self.assertNotIn("--conversation", argv)
+        self.assertNotIn("--resume", argv)
+        self.assertNotIn("--prompt-interactive", argv)
+        self.assertNotIn("-i", argv)
 
     def test_shared_prompt_pins_virtualenv_interpreter_commands(self) -> None:
         prompt = campaign_adapters.build_qualification_prompt(
@@ -563,6 +599,87 @@ class AdapterTransportTests(unittest.TestCase):
         self.assertIn("--print-timeout", seen["argv"])
         self.assertEqual(seen["timeout"], 870)
         self.assertTrue(output.is_file())
+
+    def test_check_antigravity_readiness_passes_with_new_project_in_help(self) -> None:
+        def fake_runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(argv, ["/bin/agy", "--help"])
+            return subprocess.CompletedProcess(argv, 0, stdout="  --new-project  Run inside fresh project\n", stderr="")
+
+        res = campaign_adapters.check_antigravity_readiness("/bin/agy", runner=fake_runner)
+        self.assertTrue(res["ready"])
+        self.assertEqual(res["provider"], "antigravity")
+        self.assertEqual(res["capability"], "new_project")
+        self.assertEqual(res["required_flag"], "--new-project")
+        self.assertFalse(res["actionable"])
+        self.assertTrue(campaign_adapters.check_antigravity_new_project_capability("/bin/agy", runner=fake_runner))
+
+    def test_check_antigravity_readiness_fails_without_new_project(self) -> None:
+        def fake_runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 0, stdout="  --continue  Resume session\n", stderr="")
+
+        res = campaign_adapters.check_antigravity_readiness("/bin/agy", runner=fake_runner)
+        self.assertFalse(res["ready"])
+        self.assertEqual(res["provider"], "antigravity")
+        self.assertEqual(res["capability"], "new_project")
+        self.assertEqual(res["required_flag"], "--new-project")
+        self.assertEqual(res["error"], "missing_new_project_capability")
+        self.assertTrue(res["actionable"])
+        self.assertEqual(
+            res["remediation"],
+            "Upgrade agy CLI to a version whose --help exposes --new-project.",
+        )
+        self.assertNotIn("1.1.26", res["remediation"])
+        # Privacy: help text, paths, prompts, secrets must not leak in readiness dict:
+        serialized = json.dumps(res)
+        self.assertNotIn("--continue", serialized)
+        self.assertNotIn("/bin/agy", serialized)
+        self.assertFalse(campaign_adapters.check_antigravity_new_project_capability("/bin/agy", runner=fake_runner))
+
+    def test_check_antigravity_readiness_fails_on_empty_or_nonexistent_command(self) -> None:
+        res_empty = campaign_adapters.check_antigravity_readiness("")
+        self.assertFalse(res_empty["ready"])
+        self.assertEqual(res_empty["error"], "command_not_found")
+        self.assertIn("Install agy CLI on PATH", res_empty["remediation"])
+
+        def failing_runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            raise OSError("No such file or directory")
+
+        res_oserror = campaign_adapters.check_antigravity_readiness("/bin/nonexistent-agy", runner=failing_runner)
+        self.assertFalse(res_oserror["ready"])
+        self.assertEqual(res_oserror["error"], "missing_new_project_capability")
+
+    def test_run_campaign_adapter_antigravity_fails_before_prompt_or_provider_call(self) -> None:
+        def failing_cap_runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 0, stdout="help without new project", stderr="")
+
+        provider_invoked = False
+
+        def provider_runner(*args: Any, **kwargs: Any) -> Any:
+            nonlocal provider_invoked
+            provider_invoked = True
+            raise AssertionError("provider_runner should not have been called")
+
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            output = tmp / "result.json"
+            env = {campaign_adapters.ANTIGRAVITY_AMBIENT_HOME_ENV: "1"}
+            with mock.patch.dict(os.environ, env, clear=False):
+                code = campaign_adapters.run_campaign_adapter(
+                    provider="antigravity",
+                    provider_bin="/bin/agy",
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    qualification_context="cold_install",
+                    starting_version="",
+                    output_path=output,
+                    provider_runner=provider_runner,
+                    capability_runner=failing_cap_runner,
+                )
+            self.assertEqual(code, 1)
+            self.assertFalse(provider_invoked)
+            # Ensure prompt file was never written
+            prompt_files = list(tmp.glob("campaign.prompt-input.txt"))
+            self.assertEqual(len(prompt_files), 0)
 
     def test_muse_reads_jsonl_events_with_prompt_file(self) -> None:
         seen: dict[str, Any] = {}
