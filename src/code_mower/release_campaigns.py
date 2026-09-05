@@ -2544,13 +2544,13 @@ def record_manual_result(
     release_tag = campaign.get("release_tag")
     if adoption_res.get("release_tag") != release_tag:
         raise ValueError(
-            f"adoption result tag {adoption_res.get('release_tag')} does not match campaign {release_tag}"
+            "adoption result release_tag does not match the campaign release tag"
         )
 
     canonical_provider, _ = resolve_provider_lane(provider)
     if adoption_res.get("provider") != canonical_provider:
         raise ValueError(
-            f"adoption result provider {adoption_res.get('provider')!r} does not match {canonical_provider!r}"
+            "adoption result provider does not match the recorded provider"
         )
 
     qualification_context = campaign.get("qualification_context")

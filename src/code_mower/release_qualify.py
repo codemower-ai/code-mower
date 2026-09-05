@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -99,6 +99,28 @@ MAX_ADOPTION_RESULT_STEPS = 32
 TIMESTAMP_UTC_PATTERN = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})"
 )
+
+#: Step ids the built-in `release qualify` runner emits. Provider-authored
+#: results may use these or a namespaced extension (below); arbitrary
+#: unnamespaced ids are rejected so cross-provider analytics stay comparable.
+BUILTIN_QUALIFICATION_STEP_IDS = frozenset(
+    {"board", "doctor", "lanes_status", "package_install"}
+)
+#: Explicit provider-extension step-id form: `<namespace>__<name>`, with both
+#: halves safe identifiers. The double underscore keeps extensions distinct
+#: from every built-in id while staying inside the metadata-only alphabet.
+PROVIDER_STEP_EXTENSION_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}__[a-z][a-z0-9_]{0,31}$")
+
+#: Trust bounds for an executed result's timestamp_utc. Planned previews carry
+#: the wall-clock time of a dry run that did nothing, so only executed results
+#: are bounded: not older than this fixed floor, and not newer than now plus a
+#: small deterministic clock-skew tolerance.
+ADOPTION_RESULT_EARLIEST_TIMESTAMP_UTC = "2020-01-01T00:00:00Z"
+ADOPTION_RESULT_FUTURE_SKEW_SECONDS = 300
+#: Step timings are measured independently from the overall elapsed time, so
+#: their sum must only fit within it tolerantly: each value is stored rounded
+#: to two decimals and per-step timers add overhead, covered by this tolerance.
+ADOPTION_RESULT_STEP_TOTAL_TOLERANCE_SECONDS = 1.0
 
 
 @dataclass
@@ -309,6 +331,44 @@ def _validate_timestamp_utc(value: object) -> None:
         raise ValueError("adoption result timestamp_utc must include a UTC/offset designator")
 
 
+def _validate_step_id(step_id: object, index: int) -> None:
+    """Accept only the built-in step taxonomy or a namespaced extension."""
+    if isinstance(step_id, str) and (
+        step_id in BUILTIN_QUALIFICATION_STEP_IDS
+        or PROVIDER_STEP_EXTENSION_PATTERN.match(step_id)
+    ):
+        return
+    raise ValueError(
+        f"adoption result step {index} id must be a built-in qualification "
+        "step or a namespaced '<namespace>__<name>' provider extension"
+    )
+
+
+def _validate_executed_timestamp_bounds(value: object) -> None:
+    """Bound an executed result's timestamp_utc against the trust window.
+
+    Runs after `_validate_timestamp_utc`, so the value already parses; the
+    bounds themselves are deterministic (a fixed floor plus now with a fixed
+    skew tolerance). Messages name only the bound, never the value.
+    """
+    text = value if isinstance(value, str) else ""
+    normalized = f"{text[:-1]}+00:00" if text.endswith("Z") else text
+    # Runs after _validate_timestamp_utc, so this parse cannot fail.
+    parsed = datetime.fromisoformat(normalized)
+    earliest = datetime.fromisoformat(
+        ADOPTION_RESULT_EARLIEST_TIMESTAMP_UTC.replace("Z", "+00:00")
+    )
+    if parsed < earliest:
+        raise ValueError(
+            "adoption result timestamp_utc is older than the trusted executed-result bound"
+        )
+    now = datetime.now(timezone.utc)
+    if (parsed - now).total_seconds() > ADOPTION_RESULT_FUTURE_SKEW_SECONDS:
+        raise ValueError(
+            "adoption result timestamp_utc is newer than the trusted executed-result bound"
+        )
+
+
 def validate_adoption_result_payload(
     result: object,
     *,
@@ -399,6 +459,9 @@ def validate_adoption_result_payload(
                 "executed pass/pass_with_warnings result"
             )
 
+    if execution_state == "executed":
+        _validate_executed_timestamp_bounds(result.get("timestamp_utc"))
+
     _finite_non_negative(result.get("elapsed_seconds"), "elapsed_seconds")
 
     steps = result.get("steps")
@@ -418,9 +481,7 @@ def validate_adoption_result_payload(
         if missing_step:
             raise ValueError(f"adoption result step {index} missing field(s): {missing_step}")
 
-        step_id = step.get("id")
-        if not isinstance(step_id, str) or not SAFE_IDENTIFIER_PATTERN.match(step_id):
-            raise ValueError(f"adoption result step {index} id must be a safe identifier")
+        _validate_step_id(step.get("id"), index)
         status = step.get("status")
         if status not in VALID_STEP_STATUSES:
             raise ValueError(f"adoption result step {index} has unsupported status {status!r}")
@@ -431,9 +492,14 @@ def validate_adoption_result_payload(
                 raise ValueError(
                     f"adoption result step {index} {count_field} must be a non-negative integer"
                 )
+        if status == "pass" and step["owner_action_count"] > 0:
+            raise ValueError(
+                f"adoption result step {index} reports status 'pass' with a "
+                "nonzero owner_action_count"
+            )
         parsed_steps.append(
             StepResult(
-                id=step_id,
+                id=str(step["id"]),
                 status=status,
                 elapsed_seconds=float(step["elapsed_seconds"]),
                 warning_count=int(step["warning_count"]),
@@ -446,6 +512,22 @@ def validate_adoption_result_payload(
         raise ValueError(
             f"adoption result outcome {outcome!r} disagrees with step statuses; "
             f"expected {expected_outcome!r}"
+        )
+
+    step_total = sum(step.elapsed_seconds for step in parsed_steps)
+    if (
+        step_total - float(result["elapsed_seconds"])
+        > ADOPTION_RESULT_STEP_TOTAL_TOLERANCE_SECONDS
+    ):
+        raise ValueError(
+            "adoption result step elapsed_seconds exceed total elapsed_seconds "
+            "beyond tolerance"
+        )
+    if outcome == "pass" and any(
+        step.owner_action_count > 0 for step in parsed_steps
+    ):
+        raise ValueError(
+            "adoption result outcome 'pass' requires zero owner_action_count"
         )
 
 

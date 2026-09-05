@@ -67,6 +67,19 @@ No local paths, secrets, commands, or raw output.
 - An executed `pass`/`pass_with_warnings` result must report `ending_version`
   exactly equal to `normalized_version`; planned/incomplete results may leave
   it empty
+- Executed results are timestamp-bounded: `timestamp_utc` must not predate
+  `2020-01-01T00:00:00Z` and must not be more than 300 seconds in the future
+  (deterministic clock-skew tolerance). Planned previews are exempt
+- Step ids use the built-in taxonomy (`board`, `doctor`, `lanes_status`,
+  `package_install`) or an explicit namespaced provider extension
+  `<namespace>__<name>` with both halves safe identifiers; arbitrary
+  unnamespaced ids are rejected
+- All timings are finite and non-negative, and the step `elapsed_seconds`
+  values must sum to within 1.0 second of the total (rounding/overhead
+  tolerance)
+- Owner-action counts agree with the outcome: a step with status `pass` must
+  report `owner_action_count: 0`, and outcome `pass` requires zero owner
+  actions overall
 
 ## Release Campaigns
 
