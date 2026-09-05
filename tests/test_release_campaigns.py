@@ -1287,6 +1287,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     "next_action": "",
                     "next_detail": "",
                     "dispatch_ref": {"issue_number": "99"} if status != "queued" else {},
+                    "adoption_result": None,
                 }
             ],
         }
@@ -4678,15 +4679,19 @@ class DuplicateCampaignProviderTests(unittest.TestCase):
 
     def test_cursor_and_grok_are_now_distinct(self) -> None:
         """cursor (builder) and grok_bot (reviewer) are now separate providers."""
-        campaign = release_campaigns.initialize_campaign(
-            release_tag="v1.0.0",
-            package_spec="code-mower==1.0.0",
-            providers=["cursor", "grok_bot"],
-        )
-        names = [p["provider"] for p in campaign.providers]
-        self.assertEqual(sorted(names), ["cursor_bugbot", "cursor_cloud_agent"])
-        keys = {p["idempotency_key"] for p in campaign.providers}
-        self.assertEqual(len(keys), 2)
+        cursor_name, cursor_lane = release_campaigns.resolve_provider_lane("cursor")
+        grok_name, grok_lane = release_campaigns.resolve_provider_lane("grok_bot")
+        
+        # cursor resolves to cursor_cloud_agent (builder)
+        self.assertEqual(cursor_name, "cursor_cloud_agent")
+        self.assertEqual(cursor_lane.provider_config.get("capability"), "work_order_execution")
+        
+        # grok_bot resolves to cursor_bugbot (reviewer)
+        self.assertEqual(grok_name, "cursor_bugbot")
+        self.assertEqual(grok_lane.provider_config.get("capability"), "code_review")
+        
+        # They are distinct providers
+        self.assertNotEqual(cursor_name, grok_name)
 
     def test_stored_cursor_bugbot_campaigns_remain_cursor_bugbot(self) -> None:
         """Existing stored cursor_bugbot campaigns are not reinterpreted as cursor_cloud_agent."""
