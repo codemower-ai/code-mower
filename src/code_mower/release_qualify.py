@@ -239,19 +239,16 @@ def _package_source_pip_index_args(package_source: str) -> tuple[str, tuple[str,
     """Return the closed ``(pip_index_url, pip_extra_index_urls)`` pair for a source.
 
     Used only for the upgrade preinstall spec (the already-published starting
-    version being upgraded from, not the candidate under qualification): a
-    combined index/extra-index install is fine there because nothing needs to
-    prove which index it came from. Never accepts or emits an arbitrary URL:
-    the two candidate sources each resolve to exactly one fixed, canonical
-    pair of index URLs. ``pypi`` uses pip's own default index (no override).
-    ``testpypi`` points the primary index at the canonical TestPyPI simple
-    index and keeps production PyPI as an extra index. See
+    version being upgraded from, not the candidate under qualification).
+    ``pypi`` uses pip's own production default with no override. ``testpypi``
+    names production PyPI explicitly and never includes TestPyPI, proving the
+    baseline is the published production package. See
     :func:`_package_source_candidate_index_args` for the release candidate
     itself, which cannot use a combined index/extra-index install.
     """
     _validate_package_source(package_source)
     if package_source == "testpypi":
-        return TESTPYPI_INDEX_URL, (PRODUCTION_PYPI_INDEX_URL,)
+        return PRODUCTION_PYPI_INDEX_URL, ()
     return "", ()
 
 

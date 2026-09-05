@@ -921,10 +921,10 @@ class PackageSourceTests(unittest.TestCase):
         self.assertEqual(index_url, "")
         self.assertEqual(extra_urls, ())
 
-    def test_testpypi_uses_canonical_index_and_pypi_extra_index(self) -> None:
+    def test_testpypi_upgrade_baseline_uses_only_production_pypi(self) -> None:
         index_url, extra_urls = release_qualify._package_source_pip_index_args("testpypi")
-        self.assertEqual(index_url, "https://test.pypi.org/simple/")
-        self.assertEqual(extra_urls, ("https://pypi.org/simple/",))
+        self.assertEqual(index_url, "https://pypi.org/simple/")
+        self.assertEqual(extra_urls, ())
 
     def test_package_source_pip_index_args_rejects_unknown_source(self) -> None:
         with self.assertRaises(ValueError):
@@ -992,8 +992,8 @@ class PackageSourceTests(unittest.TestCase):
                 mock_rehearsal.call_args.kwargs["candidate_dependency_index_url"], ""
             )
 
-    def test_execute_with_testpypi_source_builds_the_candidate_pip_command(self) -> None:
-        """`package_source=testpypi` threads the canonical index URLs into the install."""
+    def test_testpypi_upgrade_separates_baseline_candidate_and_dependencies(self) -> None:
+        """A TestPyPI upgrade uses one exclusive source for each package role."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "result.json"
             with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
@@ -1004,24 +1004,33 @@ class PackageSourceTests(unittest.TestCase):
                         id="doctor", status="pass", elapsed_seconds=1.0,
                         warning_count=0, owner_action_count=0
                     )
-                    mock_rehearsal.return_value = {"version": "code-mower 1.0.0"}
+                    mock_rehearsal.return_value = {
+                        "preinstall_version": "code-mower 1.0.0",
+                        "version": "code-mower 1.0.1",
+                    }
 
                     result = release_qualify.run_release_qualification(
-                        release_tag="v1.0.0",
-                        package_spec="code-mower==1.0.0",
+                        release_tag="v1.0.1",
+                        package_spec="code-mower==1.0.1",
                         output_path=output_path,
                         dry_run=False,
                         repo_path=Path(tmpdir),
+                        qualification_context="upgrade",
+                        starting_version="1.0.0",
                         package_source="testpypi",
                     )
 
             self.assertEqual(
+                mock_rehearsal.call_args.kwargs["preinstall_package_spec"],
+                "code-mower==1.0.0",
+            )
+            self.assertEqual(
                 mock_rehearsal.call_args.kwargs["pip_index_url"],
-                "https://test.pypi.org/simple/",
+                "https://pypi.org/simple/",
             )
             self.assertEqual(
                 mock_rehearsal.call_args.kwargs["pip_extra_index_urls"],
-                ("https://pypi.org/simple/",),
+                (),
             )
             # allow_package_index stays on, so the existing bounded pip-install
             # retry behavior (see migration_rehearsal) applies unchanged.
@@ -1070,6 +1079,10 @@ class PackageSourceTests(unittest.TestCase):
             self.assertEqual(ret, 0)
             self.assertEqual(
                 mock_rehearsal.call_args.kwargs["pip_index_url"],
+                "https://pypi.org/simple/",
+            )
+            self.assertEqual(
+                mock_rehearsal.call_args.kwargs["candidate_index_url"],
                 "https://test.pypi.org/simple/",
             )
 
