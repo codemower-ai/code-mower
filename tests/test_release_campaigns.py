@@ -2922,8 +2922,8 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(trigger_body.splitlines()[0], "@devin run")
             self.assertIn("CODE_MOWER_RELEASE_TRIGGER", trigger_body)
 
-    def test_cursor_bugbot_dispatch_posts_trigger_comment(self) -> None:
-        """Cursor BugBot dispatch posts the trigger command as a separate actionable comment."""
+    def test_cursor_cloud_agent_dispatch_posts_trigger_comment(self) -> None:
+        """Cursor Cloud Agent dispatch posts the trigger command as a separate actionable comment."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             bodies: list[str] = []
@@ -2946,7 +2946,6 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             # Dispatch body should document the trigger commands
             self.assertIn("@cursor run", dispatch_body)
-            self.assertIn("cursor run", dispatch_body)
 
             # The actionable command stays first; the hidden marker makes a
             # crash-after-post retry externally idempotent.
