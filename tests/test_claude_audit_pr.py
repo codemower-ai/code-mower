@@ -782,6 +782,60 @@ class ClaudeAuditPrTests(unittest.TestCase):
         self.assertEqual(authorities, ("configured", "owner"))
         run_git.assert_called_once_with(repo, ["show", "origin/main:code-mower.yml"])
 
+    def test_claude_accepts_metadata_findings_with_line_zero(self) -> None:
+        parsed_pass = cap.parse_structured_claude_verdict(
+            _payload(
+                verdict="pass",
+                summary="No merge-blocking regressions. One metadata note.",
+                findings=[_finding(severity="P3", line=0, file="metadata", title="Metadata note")],
+            )
+        )
+        self.assertEqual(parsed_pass.verdict, "PASS")
+        self.assertEqual(parsed_pass.p3_count, 1)
+
+        parsed_blocked = cap.parse_structured_claude_verdict(
+            _payload(
+                verdict="blocked",
+                summary="Blocker plus metadata note.",
+                findings=[
+                    _finding(severity="P2", line=12, file="src/app.py", title="Real blocker"),
+                    _finding(severity="P3", line=0, file="metadata", title="Metadata note"),
+                ],
+            )
+        )
+        self.assertEqual(parsed_blocked.verdict, "BLOCKED")
+        self.assertEqual(parsed_blocked.p2_count, 1)
+        self.assertEqual(parsed_blocked.p3_count, 1)
+
+    def test_claude_rejects_line_zero_for_blocking_findings(self) -> None:
+        parsed = cap.parse_structured_claude_verdict(
+            _payload(
+                verdict="blocked",
+                summary="Blocker with line zero.",
+                findings=[_finding(severity="P2", line=0)],
+            )
+        )
+        self.assertEqual(parsed.verdict, "UNKNOWN")
+        self.assertIn("line must be >= 1 for blocking findings", parsed.prose)
+
+    def test_claude_rejects_negative_line_numbers(self) -> None:
+        parsed_p2 = cap.parse_structured_claude_verdict(
+            _payload(
+                findings=[_finding(severity="P2", line=-1)],
+            )
+        )
+        self.assertEqual(parsed_p2.verdict, "UNKNOWN")
+        self.assertIn("line must be >= 1 for blocking findings", parsed_p2.prose)
+
+        parsed_p3 = cap.parse_structured_claude_verdict(
+            _payload(
+                verdict="pass",
+                findings=[_finding(severity="P3", line=-1)],
+            )
+        )
+        self.assertEqual(parsed_p3.verdict, "UNKNOWN")
+        self.assertIn("line must be >= 0", parsed_p3.prose)
+
 
 if __name__ == "__main__":
     unittest.main()
