@@ -4063,7 +4063,7 @@ def release_campaigns_board_payload(
         lookup_dirs = discover_campaign_directories(identity, local_dir=local_dir)
         campaigns, collisions = list_discovered_campaigns(lookup_dirs)
         dir_path = lookup_dirs[0] if lookup_dirs else local_dir
-    if not campaigns and collisions:
+    if collisions:
         named = ", ".join(collisions[:AMBIGUOUS_RELEASE_TAG_ID_LIMIT])
         empty["next_action"] = "resolve ambiguous campaigns with --campaigns-dir"
         empty["next_detail"] = (
@@ -4703,25 +4703,27 @@ def campaign_command(
         print(f"error: {conflict}", file=err)
         return 1
 
-    if not explicit_campaigns_dir:
-        identity = resolve_repo_identity(repo_path, repo_slug)
-        publish_campaigns_directory(write_dir, identity)
-        campaigns_dir, discovery_error = resolve_command_campaigns_dir(
-            write_dir=write_dir,
-            repo_identity=identity,
-            campaign_id=campaign_id,
-            release_tag=release_tag,
-            select_newest=(is_status_request or action == "watch")
-            and not campaign_id
-            and not release_tag,
-        )
-        if discovery_error:
-            print(f"error: {discovery_error}", file=err)
-            return 1
-
     # What remains is exactly the read-only route; every other spelling is
     # potentially mutating and takes the campaign directory lock.
     is_read_only_status = is_status_request or action in {"upload", "watch"}
+
+    identity: str | None = None
+    if not explicit_campaigns_dir:
+        identity = resolve_repo_identity(repo_path, repo_slug)
+        publish_campaigns_directory(write_dir, identity)
+        if is_read_only_status:
+            campaigns_dir, discovery_error = resolve_command_campaigns_dir(
+                write_dir=write_dir,
+                repo_identity=identity,
+                campaign_id=campaign_id,
+                release_tag=release_tag,
+                select_newest=(is_status_request or action == "watch")
+                and not campaign_id
+                and not release_tag,
+            )
+            if discovery_error:
+                print(f"error: {discovery_error}", file=err)
+                return 1
 
     with ExitStack() as stack:
         if not is_read_only_status:
@@ -4787,8 +4789,8 @@ def campaign_command(
             stdout=stdout,
             stderr=stderr,
         )
-        if not explicit_campaigns_dir:
-            identity = resolve_repo_identity(repo_path, repo_slug)
+        if not explicit_campaigns_dir and is_read_only_status:
+            assert identity is not None
             publish_campaigns_directory(write_dir, identity)
             if campaigns_dir != write_dir:
                 publish_campaigns_directory(campaigns_dir, identity)

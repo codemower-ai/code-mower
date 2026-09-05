@@ -337,8 +337,8 @@ def resolve_command_campaigns_dir(
             )
         return hits[0][1], ""
     if select_newest:
-        if unique:
-            return unique[0][1], ""
         if collisions:
             return write_dir, _ambiguous_id_error(collisions[0])
+        if unique:
+            return unique[0][1], ""
     return write_dir, ""
