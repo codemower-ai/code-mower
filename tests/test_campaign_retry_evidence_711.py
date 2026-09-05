@@ -1105,5 +1105,298 @@ class UploadTextTests(unittest.TestCase):
         self.assertNotIn("completed", detail)
 
 
+class StateOutcomePairingTests(unittest.TestCase):
+    """Contradictory terminal state/result pairs are rejected, never published.
+
+    The state machine stores only passing outcomes under `complete` and only
+    failing/incomplete outcomes under `blocked`. A flipped pair can only come
+    from corrupted or hand-edited storage; upload must reject it with a
+    bounded metadata-only reason instead of normalizing it into evidence.
+    """
+
+    def _seed(self, campaigns_dir: Path) -> None:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex", "claude"],
+                campaigns_dir=campaigns_dir,
+            )
+            campaign = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert campaign is not None
+            release_campaigns.record_manual_result(
+                campaign, "codex", _mock_result("codex", "fail"), campaigns_dir=campaigns_dir
+            )
+            campaign = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert campaign is not None
+            release_campaigns.record_manual_result(
+                campaign, "claude", _mock_result("claude", "pass"), campaigns_dir=campaigns_dir
+            )
+
+    def test_complete_with_failing_outcome_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            for entry in stored["providers"]:
+                if entry["provider"] == "codex":
+                    # Corrupted storage: failing result kept, state flipped.
+                    entry["state"] = "complete"
+            path.write_text(json.dumps(stored), encoding="utf-8")
+            campaign = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert campaign is not None
+            plan = release_campaigns.build_campaign_upload_events(campaign)
+            self.assertEqual(plan["accepted_providers"], ["claude"])
+            self.assertEqual(len(plan["rejected_providers"]), 1)
+            rejected = plan["rejected_providers"][0]
+            self.assertEqual(rejected["provider"], "codex")
+            self.assertEqual(rejected["state"], "complete")
+            self.assertEqual(rejected["reason"], "adoption_result_state_mismatch")
+            self.assertIn(
+                rejected["reason"], release_campaigns.CAMPAIGN_UPLOAD_REJECT_CODES
+            )
+            self.assertEqual(len(plan["events"]), 1)
+
+    def test_blocked_with_passing_outcome_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._seed(campaigns_dir)
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            for entry in stored["providers"]:
+                if entry["provider"] == "claude":
+                    # Corrupted storage: passing result kept, state flipped.
+                    entry["state"] = "blocked"
+            path.write_text(json.dumps(stored), encoding="utf-8")
+            campaign = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert campaign is not None
+            plan = release_campaigns.build_campaign_upload_events(campaign)
+            self.assertEqual(plan["accepted_providers"], ["codex"])
+            self.assertEqual(len(plan["rejected_providers"]), 1)
+            rejected = plan["rejected_providers"][0]
+            self.assertEqual(rejected["provider"], "claude")
+            self.assertEqual(rejected["state"], "blocked")
+            self.assertEqual(rejected["reason"], "adoption_result_state_mismatch")
+            self.assertIn(
+                rejected["reason"], release_campaigns.CAMPAIGN_UPLOAD_REJECT_CODES
+            )
+            self.assertEqual(len(plan["events"]), 1)
+
+    def test_valid_state_outcome_pairs_convert(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex", "claude"],
+                    campaigns_dir=campaigns_dir,
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                warn_result = _mock_result("codex", "pass")
+                warn_result["steps"][1]["status"] = "warn"
+                warn_result["outcome"] = "pass_with_warnings"
+                release_campaigns.record_manual_result(
+                    campaign, "codex", warn_result, campaigns_dir=campaigns_dir
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                release_campaigns.record_manual_result(
+                    campaign,
+                    "claude",
+                    _mock_result("claude", "incomplete", execution_state="planned"),
+                    campaigns_dir=campaigns_dir,
+                )
+            campaign = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert campaign is not None
+            by_name = {p["provider"]: p for p in campaign["providers"]}
+            self.assertEqual(by_name["codex"]["state"], "complete")
+            self.assertEqual(by_name["claude"]["state"], "blocked")
+            plan = release_campaigns.build_campaign_upload_events(campaign)
+            self.assertEqual(plan["accepted_providers"], ["claude", "codex"])
+            self.assertEqual(plan["rejected_providers"], [])
+            self.assertEqual(len(plan["events"]), 2)
+            by_provider = {e["dimensions"]["provider"]: e for e in plan["events"]}
+            self.assertEqual(by_provider["codex"]["dimensions"]["outcome"], "pass_with_warnings")
+            self.assertEqual(by_provider["claude"]["dimensions"]["outcome"], "incomplete")
+
+
+class AttemptHistorySanitizationTests(unittest.TestCase):
+    """A retry never preserves hand-edited history content verbatim.
+
+    Retained entries are rebuilt from the closed allowed scalar history
+    fields: unknown/nested fields are dropped, bounded types are
+    validated/coerced, malformed entries are discarded, and length stays
+    capped -- so no result bodies, output, paths, secrets, or
+    arbitrary-size strings survive in saved state.
+    """
+
+    def test_malicious_preloaded_history_is_sanitized_on_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                release_campaigns.record_manual_result(
+                    campaign, "codex", _mock_result("codex", "fail"),
+                    campaigns_dir=campaigns_dir,
+                )
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            provider = stored["providers"][0]
+            provider["attempted_at"] = OLD_TS
+            provider["dispatched_at"] = OLD_TS
+            provider["completed_at"] = OLD_DONE_TS
+            provider["attempt_history"] = [
+                # Valid entry carrying smuggled payload fields.
+                {
+                    "attempted_at": OLD_TS,
+                    "dispatched_at": OLD_TS,
+                    "completed_at": OLD_DONE_TS,
+                    "state": "blocked",
+                    "outcome": "fail",
+                    "error": "",
+                    "elapsed_seconds": 3.5,
+                    "adoption_result": _mock_result("codex", "fail"),
+                    "stdout": "supersecret-adapter-output",
+                    "secret_token": "AKIAIOSFODNN7EXAMPLE",
+                    "output_path": "/etc/passwd",
+                },
+                # No allowed fields at all: result body plus secrets.
+                {
+                    "adoption_result": _mock_result("codex", "pass"),
+                    "transcript": "BEGIN PRIVATE TRANSCRIPT",
+                    "auth_output": "supersecret-auth",
+                },
+                # Malformed non-mapping entries.
+                "just-a-string",
+                42,
+                None,
+                ["blocked", "fail"],
+                # Allowed keys present but with nested/oversized values.
+                {
+                    "attempted_at": "y" * 5000,
+                    "dispatched_at": {"nested": "mapping"},
+                    "completed_at": ["not", "a", "string"],
+                    "state": ["blocked"],
+                    "outcome": {"outcome": "fail"},
+                    "error": "supersecret-raw-error\nwith newline",
+                    "elapsed_seconds": "eternal",
+                    "steps": [{"id": "doctor", "status": "fail"}],
+                },
+                # Ordinary valid entries to overflow the cap.
+                {
+                    "attempted_at": OLD_TS,
+                    "dispatched_at": OLD_TS,
+                    "completed_at": OLD_DONE_TS,
+                    "state": "blocked",
+                    "outcome": "fail",
+                    "error": "",
+                    "elapsed_seconds": 1.0,
+                },
+                {
+                    "attempted_at": OLD_TS,
+                    "dispatched_at": OLD_TS,
+                    "completed_at": OLD_DONE_TS,
+                    "state": "blocked",
+                    "outcome": "fail",
+                    "error": "",
+                    "elapsed_seconds": 2.0,
+                },
+            ]
+            path.write_text(json.dumps(stored), encoding="utf-8")
+
+            def _resolve(name: str) -> tuple[str, ProviderLane]:
+                return name, _fake_lane(name)
+
+            invocations: list[list[str]] = []
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", side_effect=_resolve
+            ):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        resume=True,
+                        apply=True,
+                        retry_provider="codex",
+                        which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                        adapter_runner=_writing_runner("pass", invocations),
+                    )
+
+            self.assertEqual(len(invocations), 1)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            history = saved["providers"][0].get("attempt_history")
+            assert isinstance(history, list)
+            # Bounded: the cap applies after sanitizing plus the new summary.
+            self.assertLessEqual(len(history), release_campaigns.MAX_ATTEMPT_HISTORY_ENTRIES)
+            self.assertGreater(len(history), 0)
+            for entry in history:
+                self.assertIsInstance(entry, dict)
+                self.assertEqual(
+                    set(entry),
+                    {
+                        "attempted_at",
+                        "dispatched_at",
+                        "completed_at",
+                        "state",
+                        "outcome",
+                        "error",
+                        "elapsed_seconds",
+                    },
+                )
+                for value in entry.values():
+                    self.assertTrue(
+                        value is None or isinstance(value, (str, int, float)),
+                        f"non-scalar history value: {value!r}",
+                    )
+                    if isinstance(value, str):
+                        self.assertLessEqual(len(value), 64)
+                self.assertNotIsInstance(entry.get("elapsed_seconds"), bool)
+            # The superseded failing attempt is archived as the newest summary.
+            self.assertEqual(history[-1]["outcome"], "fail")
+            self.assertEqual(history[-1]["state"], "blocked")
+            # No smuggled content survives in retained history. (The
+            # provider legitimately stores its current adoption result;
+            # history must carry summaries only.)
+            blob = json.dumps(history)
+            for marker in (
+                "supersecret",
+                "AKIAIOSFODNN7EXAMPLE",
+                "/etc/passwd",
+                "BEGIN PRIVATE",
+                "adoption_result",
+                "secret_token",
+                "transcript",
+                "auth_output",
+                "stdout",
+                "steps",
+                "package_install",
+                "yyyyyyyyyy",
+            ):
+                self.assertNotIn(marker, blob)
+
+
 if __name__ == "__main__":
     unittest.main()

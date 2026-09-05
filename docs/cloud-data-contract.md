@@ -278,7 +278,10 @@ and failing evidence alike. The campaign route previews by
 default and posts only with `--yes`, using the identical event set both times;
 providers without terminal evidence are counted as skipped, and a terminal provider
 whose stored result no longer validates stops the upload with a bounded error
-instead of publishing a partial set.
+instead of publishing a partial set. A terminal state that contradicts its
+bound result outcome (`complete` with a failing/incomplete outcome, or
+`blocked` with a passing one) is likewise rejected with the bounded
+`adoption_result_state_mismatch` reason, never normalized into evidence.
 
 Required dimensions are `adoption_run_schema`, `release_tag`
 (`v<major>.<minor>.<patch>[-<stage>.<num>]`), `package_identity`
