@@ -120,10 +120,10 @@ def classify_package_install_failure(
     runtime, sandbox_permission, or unknown. Never returns raw output, paths,
     or authentication details.
     """
-    # Collect stderr/stdout previews only from package_install attempt steps
+    # Collect stderr/stdout previews from the provided step slice
     error_text = str(exception).lower()
     for step in steps:
-        if isinstance(step, dict) and "pip_install_attempt" in step:
+        if isinstance(step, dict):
             error_text += " " + step.get("stderr_preview", "").lower()[:2000]
             error_text += " " + step.get("stdout_preview", "").lower()[:2000]
 
@@ -552,6 +552,9 @@ def _run_pip_install_with_retries(
     if retry_delay_seconds < 0:
         raise ValueError("--pip-retry-delay must be zero or greater")
 
+    # Capture boundary before this retry group to isolate classification
+    attempt_steps_start = len(steps)
+
     for attempt in range(1, attempts + 1):
         try:
             completed = _run_rehearsal_step(
@@ -584,7 +587,7 @@ def _run_pip_install_with_retries(
                 if package_index:
                     failure_reason = classify_package_install_failure(
                         exception=exc,
-                        steps=steps
+                        steps=steps[attempt_steps_start:]
                     )
                     raise RehearsalError(
                         (

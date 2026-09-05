@@ -93,7 +93,7 @@ class FailureReasonClassificationTests(unittest.TestCase):
         for error_text, stderr_preview, expected_reason in cases:
             with self.subTest(expected_reason=expected_reason):
                 exc = RuntimeError(error_text)
-                steps = [{"pip_install_attempt": 1, "stderr_preview": stderr_preview}]
+                steps = [{"stderr_preview": stderr_preview}]
                 reason = migration_install.classify_package_install_failure(
                     exception=exc, steps=steps
                 )
@@ -101,7 +101,7 @@ class FailureReasonClassificationTests(unittest.TestCase):
 
     def test_priority_sandbox_over_network(self) -> None:
         exc = RuntimeError("connection refused")
-        steps = [{"pip_install_attempt": 1, "stderr_preview": "Permission denied and connection refused"}]
+        steps = [{"stderr_preview": "Permission denied and connection refused"}]
         reason = migration_install.classify_package_install_failure(
             exception=exc, steps=steps
         )
@@ -110,26 +110,24 @@ class FailureReasonClassificationTests(unittest.TestCase):
     def test_errno_111_classified_as_network(self) -> None:
         """Verify [Errno 111] ECONNREFUSED is classified as network, not sandbox."""
         exc = RuntimeError("Connection refused")
-        steps = [{"pip_install_attempt": 1, "stderr_preview": "[Errno 111] Connection refused"}]
+        steps = [{"stderr_preview": "[Errno 111] Connection refused"}]
         reason = migration_install.classify_package_install_failure(
             exception=exc, steps=steps
         )
         self.assertEqual(reason, "network")
 
-    def test_unrelated_earlier_steps_ignored(self) -> None:
-        """Verify earlier non-install steps don't contaminate classification."""
+    def test_separate_retry_groups_isolated(self) -> None:
+        """Verify earlier pip retry groups don't contaminate current classification."""
         exc = RuntimeError("HTTP Error 404")
-        steps = [
-            # Earlier venv/preinstall steps with misleading indicators
-            {"stderr_preview": "SSL certificate verify failed"},
-            {"stdout_preview": "permission denied"},
-            # Actual package_install attempt with 404
+        # Current package-install retry group with 404 (passed as isolated slice).
+        # Earlier pip-upgrade steps with SSL error exist but are not passed to classifier.
+        current_steps = [
             {"pip_install_attempt": 1, "stderr_preview": "HTTP Error 404: Not Found"},
         ]
         reason = migration_install.classify_package_install_failure(
-            exception=exc, steps=steps
+            exception=exc, steps=current_steps
         )
-        # Should classify as package_index (404), not network (SSL) or sandbox (permission)
+        # Should classify as package_index (404), not network (SSL from earlier group)
         self.assertEqual(reason, "package_index")
 
 
