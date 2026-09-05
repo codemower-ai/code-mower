@@ -1675,7 +1675,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert saved is not None
             cursor_p = saved["providers"][0]
             self.assertEqual(cursor_p["state"], "unavailable")
-            self.assertIn("retry cursor_bugbot dispatch when GitHub is available", cursor_p["next_action"])
+            self.assertIn("retry cursor_cloud_agent dispatch when GitHub is available", cursor_p["next_action"])
             self.assertEqual(cursor_p["error"], "github_dispatch_failed")
             serialized = json.dumps(saved)
             self.assertNotIn("github.com", serialized)
@@ -2257,11 +2257,11 @@ class ReleaseCampaignTests(unittest.TestCase):
             release_campaigns.save_campaign(campaign, campaigns_dir)
 
             idempotency_key = campaign.providers[0]["idempotency_key"]
-            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_cloud_agent", outcome="pass")
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                 "campaign_id": campaign.campaign_id,
-                "provider": "cursor_bugbot",
+                "provider": "cursor_cloud_agent",
                 "release_tag": "v1.0.0",
                 "idempotency_key": idempotency_key,
                 "adoption_result": adoption_res,
@@ -2441,7 +2441,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             adoption_res = _mock_adoption_result_full(
                 release_tag="v2.0.0",
                 normalized_version="2.0.0",
-                provider="cursor_bugbot",
+                provider="cursor_cloud_agent",
                 qualification_context="upgrade",
                 starting_version="1.0.0",
                 ending_version="2.0.0",
@@ -2450,7 +2450,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                 "campaign_id": campaign.campaign_id,
-                "provider": "cursor_bugbot",
+                "provider": "cursor_cloud_agent",
                 "release_tag": "v2.0.0",
                 "idempotency_key": idempotency_key,
                 "adoption_result": adoption_res,
@@ -3032,7 +3032,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             retried = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert retried is not None
             self.assertEqual(retried["providers"][0]["trigger_posted"], True)
-            self.assertIn("poll cursor_bugbot remote progress marker", retried["providers"][0]["next_action"])
+            self.assertIn("poll cursor_cloud_agent remote progress marker", retried["providers"][0]["next_action"])
 
     def test_crash_after_dispatch_before_trigger_is_retriable(self) -> None:
         """Simulates process crash after dispatch but before trigger is recorded."""
@@ -3073,7 +3073,7 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             # Should have posted exactly 1 trigger (no redispatch)
             self.assertEqual(len(bodies), 1)
-            self.assertIn("bugbot run", bodies[0])
+            self.assertIn("@cursor run", bodies[0])
             self.assertNotIn("CODE_MOWER_RELEASE_CAMPAIGN", bodies[0])
 
             resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -3194,7 +3194,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 {
                     "schema": release_campaigns.TRIGGER_MARKER_SCHEMA,
                     "campaign_id": "campaign-v1.0.0",
-                    "provider": "cursor_bugbot",
+                    "provider": "cursor_cloud_agent",
                     "reconciliation_key": "trigger-key",
                 },
                 sort_keys=True,
@@ -3211,7 +3211,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                         "comments": [
                             {
                                 "author": {"login": "cursor[bot]"},
-                                "body": "bugbot run\n\n"
+                                "body": "@cursor run\n\n"
                                 f"<!-- CODE_MOWER_RELEASE_TRIGGER: {trigger_marker} -->",
                             }
                         ]
@@ -3248,7 +3248,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 {
                     "schema": release_campaigns.TRIGGER_MARKER_SCHEMA,
                     "campaign_id": campaign.campaign_id,
-                    "provider": "cursor_bugbot",
+                    "provider": "cursor_cloud_agent",
                     "reconciliation_key": "public-dispatch-key",
                 },
                 sort_keys=True,
@@ -3265,7 +3265,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     {
                         "comments": [
                             {
-                                "body": "bugbot run\n\n"
+                                "body": "@cursor run\n\n"
                                 f"<!-- CODE_MOWER_RELEASE_TRIGGER: {forged_marker} -->"
                             }
                         ]
@@ -3276,7 +3276,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             self.assertEqual(len(bodies), 1)
-            self.assertIn("bugbot run", bodies[0])
+            self.assertIn("@cursor run", bodies[0])
             self.assertIn("private-trigger-key", bodies[0])
             self.assertNotIn("public-dispatch-key", bodies[0])
             resumed = release_campaigns.load_campaign_by_id(
@@ -6809,7 +6809,7 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
             self._seed(campaigns_dir)
             result_path = Path(tmp) / "result.json"
             result_path.write_text(
-                json.dumps(_mock_adoption_result(provider="cursor_bugbot")), encoding="utf-8"
+                json.dumps(_mock_adoption_result(provider="cursor_cloud_agent")), encoding="utf-8"
             )
 
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
@@ -6820,7 +6820,7 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
                     release_tag="v1.0.0",
                     campaigns_dir=campaigns_dir,
                     record_result=result_path,
-                    record_provider="cursor_bugbot",
+                    record_provider="cursor_cloud_agent",
                 )
             self.assertEqual(ret, 1)
             stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -6834,7 +6834,7 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
                     release_tag="v1.0.0",
                     campaigns_dir=campaigns_dir,
                     record_result=result_path,
-                    record_provider="cursor_bugbot",
+                    record_provider="cursor_cloud_agent",
                 )
             self.assertEqual(ret, 0)
             stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -7214,11 +7214,11 @@ class ResultMarkerParsingTests(unittest.TestCase):
         return {
             "schema": release_campaigns.RESULT_MARKER_SCHEMA,
             "campaign_id": campaign.campaign_id,
-            "provider": "cursor_bugbot",
+            "provider": "cursor_cloud_agent",
             "release_tag": "v1.0.0",
             "idempotency_key": campaign.providers[0]["idempotency_key"],
             "adoption_result": _mock_adoption_result(
-                release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass"
+                release_tag="v1.0.0", provider="cursor_cloud_agent", outcome="pass"
             ),
             **extra,
         }
@@ -8060,13 +8060,13 @@ class CampaignPackageIdentityBindingTests(unittest.TestCase):
                     release_campaigns.save_campaign(campaign, campaigns_dir)
 
                     adoption_res = _mock_adoption_result(
-                        release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass"
+                        release_tag="v1.0.0", provider="cursor_cloud_agent", outcome="pass"
                     )
                     adoption_res["package_identity"] = identity
                     wrapper = {
                         "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                         "campaign_id": campaign.campaign_id,
-                        "provider": "cursor_bugbot",
+                        "provider": "cursor_cloud_agent",
                         "release_tag": "v1.0.0",
                         "idempotency_key": campaign.providers[0]["idempotency_key"],
                         "adoption_result": adoption_res,
