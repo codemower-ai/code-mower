@@ -303,9 +303,20 @@ Metrics are atomic values, never precomputed dashboard rates:
   `step_unavailable_count`, and `step_planned_count` are non-negative integers
   that must sum to `step_count`.
 - `elapsed_seconds` is the observed qualification wall time and must be finite
-  and non-negative.
+  and non-negative. Step timings must sum to within 1.0 second of this total
+  (rounding/overhead tolerance).
 - `warning_count` and `owner_action_count` are non-negative integer summaries
-  across steps.
+  across steps. A `pass` outcome requires zero owner actions, matching the
+  local adoption-result contract.
+
+Conversion applies the same semantic validation as local campaign paths:
+executed-result timestamp bounds (not older than `2020-01-01T00:00:00Z`, not
+more than 300 seconds in the future; planned previews exempt), the built-in
+step taxonomy (`board`, `doctor`, `lanes_status`, `overhead`,
+`package_install`) or an
+explicit `<namespace>__<name>` provider extension, and the timing and
+owner-action rules above. Rejections use bounded errors that never echo result
+content, paths, auth output, or raw provider output.
 
 Missing model, token, cost, and optional measurements stay unavailable and
 omitted, never zero-filled: the closed metric set contains no cost, token, or

@@ -63,6 +63,20 @@ ADOPTION_RUN_TIME_METRICS = ("elapsed_seconds",)
 _TAG_PATTERN = re.compile(r"^v(\d+\.\d+\.\d+)(?:-(alpha|beta|rc)\.(\d+))?$")
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[ab]\d+|rc\d+)?$")
 _SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+#: Step taxonomy in lockstep with release_qualify: the built-in qualification
+#: steps plus an explicit `<namespace>__<name>` provider-extension form.
+#: Arbitrary unnamespaced ids are rejected. Kept local on purpose (see
+#: _expected_outcome): cloud_client must not import the qualification runner.
+BUILTIN_QUALIFICATION_STEP_IDS = frozenset(
+    {"board", "doctor", "lanes_status", "overhead", "package_install"}
+)
+_PROVIDER_STEP_EXTENSION_PATTERN = re.compile(
+    r"^[a-z][a-z0-9_]{0,31}__[a-z][a-z0-9_]{0,31}$"
+)
+ADOPTION_RESULT_EARLIEST_TIMESTAMP_UTC = "2020-01-01T00:00:00Z"
+ADOPTION_RESULT_FUTURE_SKEW_SECONDS = 300
+ADOPTION_RESULT_STEP_TOTAL_TOLERANCE_SECONDS = 1.0
 _RUNTIME_CLASS_PATTERN = re.compile(r"^python_\d+\.\d+$")
 _PATH_LIKE_PATTERN = re.compile(
     r"/(home|Users|tmp|var|etc|root|code-mower)/|^[A-Za-z]:\\|~/|\.\.[/\\]"
@@ -329,7 +343,11 @@ def validate_adoption_run_payload(event: Mapping[str, Any]) -> None:
             f"for {execution_state} run; expected {expected!r}"
         )
     _count(metrics, "warning_count", required=True)
-    _count(metrics, "owner_action_count", required=True)
+    owner_action_count = _count(metrics, "owner_action_count", required=True)
+    if outcome == "pass" and owner_action_count:
+        raise CloudBundleError(
+            "adoption_run outcome 'pass' requires zero owner_action_count"
+        )
 
     elapsed = metrics.get("elapsed_seconds")
     if elapsed is None:
@@ -373,6 +391,40 @@ def _expected_outcome(
     if warn_count > 0 or unavailable_count > 0:
         return "pass_with_warnings"
     return "pass"
+
+
+def _validate_executed_timestamp_bounds(value: object) -> None:
+    """Bound an executed result's timestamp_utc against the trust window.
+
+    Lockstep with release_qualify: a fixed floor plus now with a fixed skew
+    tolerance. Messages name only the bound, never the value.
+    """
+
+    text = value if isinstance(value, str) else ""
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CloudBundleError(
+            "adoption result timestamp_utc must be an ISO 8601 timestamp"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise CloudBundleError(
+            "adoption result timestamp_utc must include a UTC offset"
+        )
+    earliest = dt.datetime.fromisoformat(
+        ADOPTION_RESULT_EARLIEST_TIMESTAMP_UTC.replace("Z", "+00:00")
+    )
+    if parsed < earliest:
+        raise CloudBundleError(
+            "adoption result timestamp_utc is older than the trusted "
+            "executed-result bound"
+        )
+    now = dt.datetime.now(dt.timezone.utc)
+    if (parsed - now).total_seconds() > ADOPTION_RESULT_FUTURE_SKEW_SECONDS:
+        raise CloudBundleError(
+            "adoption result timestamp_utc is newer than the trusted "
+            "executed-result bound"
+        )
 
 
 def _adoption_event_id(result: Mapping[str, Any]) -> str:
@@ -428,10 +480,20 @@ def adoption_result_to_event(
     }
     warning_count = 0
     owner_action_count = 0
+    step_total = 0.0
     for index, step in enumerate(steps):
         if not isinstance(step, Mapping):
             raise CloudBundleError(
                 f"adoption result step {index} must be an object"
+            )
+        step_id = step.get("id")
+        if not isinstance(step_id, str) or (
+            step_id not in BUILTIN_QUALIFICATION_STEP_IDS
+            and not _PROVIDER_STEP_EXTENSION_PATTERN.match(step_id)
+        ):
+            raise CloudBundleError(
+                f"adoption result step {index} id must be a built-in "
+                "qualification step or a namespaced provider extension"
             )
         status = step.get("status")
         if status not in ADOPTION_STEP_STATUSES:
@@ -446,6 +508,11 @@ def adoption_result_to_event(
                     f"adoption result step {index} field {field!r} must be "
                     "a non-negative integer"
                 )
+        if status == "pass" and int(step.get("owner_action_count") or 0) > 0:
+            raise CloudBundleError(
+                f"adoption result step {index} reports status 'pass' with a "
+                "nonzero owner_action_count"
+            )
         warning_count += int(step.get("warning_count") or 0)
         owner_action_count += int(step.get("owner_action_count") or 0)
         elapsed_step = step.get("elapsed_seconds")
@@ -460,6 +527,7 @@ def adoption_result_to_event(
                 f"adoption result step {index} elapsed_seconds must be "
                 "finite and non-negative"
             )
+        step_total += float(elapsed_step)
 
     elapsed = result.get("elapsed_seconds")
     if (
@@ -471,6 +539,11 @@ def adoption_result_to_event(
     ):
         raise CloudBundleError(
             "adoption result elapsed_seconds must be finite and non-negative"
+        )
+    if abs(step_total - float(elapsed)) > ADOPTION_RESULT_STEP_TOTAL_TOLERANCE_SECONDS:
+        raise CloudBundleError(
+            "adoption result step elapsed_seconds differ from total elapsed_seconds "
+            "beyond tolerance"
         )
 
     execution_state = str(result.get("execution_state") or "")
@@ -493,6 +566,12 @@ def adoption_result_to_event(
             f"adoption result outcome {outcome!r} disagrees with step statuses "
             f"for {execution_state} run; expected {expected_outcome!r}"
         )
+    if outcome == "pass" and owner_action_count > 0:
+        raise CloudBundleError(
+            "adoption result outcome 'pass' requires zero owner_action_count"
+        )
+    if execution_state == "executed":
+        _validate_executed_timestamp_bounds(result.get("timestamp_utc"))
 
     provider = str(result.get("provider") or "")
     executor = str(result.get("executor") or "")

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from code_mower import campaign_adapters, release_campaigns
+from code_mower import campaign_adapters, release_campaigns, release_qualify
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 
 
@@ -199,6 +200,84 @@ class ArgvBuilderTests(unittest.TestCase):
         self.assertIn(".venv/bin/code-mower doctor --help", prompt)
         self.assertIn("without a leading v", prompt)
         self.assertIn("all-pass steps require outcome pass", prompt)
+
+    def test_shared_prompt_teaches_step_id_taxonomy(self) -> None:
+        prompt = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+        )
+        for step_id in ("board", "doctor", "lanes_status", "overhead", "package_install"):
+            self.assertIn(step_id, prompt)
+        self.assertIn("<namespace>__<name>", prompt)
+
+    def test_guidance_schema_enforces_step_id_taxonomy(self) -> None:
+        step_id_schema = campaign_adapters.ADOPTION_RESULT_JSON_SCHEMA[
+            "properties"
+        ]["steps"]["items"]["properties"]["id"]
+        pattern = re.compile(step_id_schema["pattern"])
+        for step_id in (
+            "board",
+            "doctor",
+            "lanes_status",
+            "overhead",
+            "package_install",
+            "codex__smoke",
+        ):
+            self.assertTrue(pattern.match(step_id), step_id)
+        for step_id in (
+            "install",
+            "verify_cli",
+            "notabuiltinid",
+            "Codex__smoke",
+            "__smoke",
+            "codex__",
+        ):
+            self.assertFalse(pattern.match(step_id), step_id)
+
+    def test_prompt_schema_taxonomy_matches_validator(self) -> None:
+        taught = [
+            "board",
+            "doctor",
+            "lanes_status",
+            "overhead",
+            "package_install",
+            "codex__smoke",
+        ]
+        steps = [
+            {
+                "id": step_id,
+                "status": "pass",
+                "elapsed_seconds": 1.0,
+                "warning_count": 0,
+                "owner_action_count": 0,
+            }
+            for step_id in taught
+        ]
+        release_qualify.validate_adoption_result_payload(
+            _adoption_result(steps=steps, elapsed_seconds=6.0)
+        )
+        for step_id in ("install", "verify_cli", "notabuiltinid"):
+            with self.subTest(step_id=step_id):
+                with self.assertRaisesRegex(ValueError, "namespaced"):
+                    release_qualify.validate_adoption_result_payload(
+                        _adoption_result(
+                            steps=[
+                                {
+                                    "id": step_id,
+                                    "status": "pass",
+                                    "elapsed_seconds": 5.0,
+                                    "warning_count": 0,
+                                    "owner_action_count": 0,
+                                }
+                            ],
+                            elapsed_seconds=5.0,
+                        )
+                    )
 
     def test_muse_argv_uses_exec_with_prompt_file_and_workspace(self) -> None:
         argv = campaign_adapters.build_muse_argv(

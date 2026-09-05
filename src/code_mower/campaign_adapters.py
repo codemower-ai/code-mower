@@ -231,7 +231,18 @@ ADOPTION_RESULT_JSON_SCHEMA: dict[str, Any] = {
                     "owner_action_count",
                 ],
                 "properties": {
-                    "id": {"type": "string"},
+                    "id": {
+                        "type": "string",
+                        "description": (
+                            "Built-in qualification step id (board, doctor, "
+                            "lanes_status, overhead, package_install) or a namespaced "
+                            "<namespace>__<name> provider extension"
+                        ),
+                        "pattern": (
+                            "^(board|doctor|lanes_status|overhead|package_install|"
+                            "[a-z][a-z0-9_]{0,31}__[a-z][a-z0-9_]{0,31})$"
+                        ),
+                    },
                     "status": {
                         "type": "string",
                         "enum": ["pass", "fail", "warn", "unavailable", "planned"],
@@ -339,7 +350,10 @@ def build_qualification_prompt(
         "runtime_class is unknown or python_<major>.<minor>; provider and",
         "executor are lowercase safe identifiers; steps is a non-empty list of",
         "{id, status, elapsed_seconds, warning_count, owner_action_count} with",
-        "status one of pass, fail, warn, unavailable, planned. A step with a",
+        "id one of board, doctor, lanes_status, overhead, package_install or a namespaced",
+        "<namespace>__<name> provider extension (both halves lowercase safe",
+        "identifiers); any other id is rejected. Status is one of",
+        "pass, fail, warn, unavailable, planned. A step with a",
         "nonzero warning_count must use status warn. Derive outcome only from",
         "the step status strings: fail if any status is fail;",
         "pass_with_warnings if any status is warn or unavailable; otherwise",

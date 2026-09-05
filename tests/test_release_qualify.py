@@ -282,7 +282,9 @@ class ReleaseQualifyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "result.json"
 
-            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
+            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor, mock.patch(
+                "code_mower.release_qualify.time.time", side_effect=[100.0, 102.0]
+            ):
                 mock_doctor.return_value = release_qualify.StepResult(
                     id="doctor", status="pass", elapsed_seconds=1.0,
                     warning_count=0, owner_action_count=0
@@ -297,7 +299,14 @@ class ReleaseQualifyTests(unittest.TestCase):
                 )
 
             install_step = [s for s in result["steps"] if s["id"] == "package_install"][0]
+            overhead_step = [s for s in result["steps"] if s["id"] == "overhead"][0]
             self.assertEqual(install_step["status"], "planned")
+            self.assertEqual(overhead_step["status"], "planned")
+            self.assertEqual(overhead_step["elapsed_seconds"], 1.0)
+            self.assertEqual(
+                sum(step["elapsed_seconds"] for step in result["steps"]),
+                result["elapsed_seconds"],
+            )
             self.assertEqual(result["ending_version"], "")
             self.assertEqual(result["execution_state"], "planned")
             self.assertEqual(result["outcome"], "incomplete")
