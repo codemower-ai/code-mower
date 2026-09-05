@@ -146,9 +146,9 @@ def classify_package_install_failure(
         "http error 52",
         "http error 53",
         "proxy",
-        "errno 111",  # ECONNREFUSED
-        "errno 110",  # ETIMEDOUT
-        "errno 113",  # EHOSTUNREACH
+        "[errno 111]",  # ECONNREFUSED
+        "[errno 110]",  # ETIMEDOUT
+        "[errno 113]",  # EHOSTUNREACH
     )
 
     # Package index errors: 404, propagation delay, malformed responses
@@ -187,13 +187,13 @@ def classify_package_install_failure(
     # Sandbox/permission errors: permission denied, disk full, OS restrictions
     sandbox_permission_indicators = (
         "permission denied",
-        "errno 13",  # EACCES
-        "errno 1",   # EPERM
+        "[errno 13]",  # EACCES
+        "[errno 1]",   # EPERM
         "disk full",
         "no space left",
-        "errno 28",  # ENOSPC
+        "[errno 28]",  # ENOSPC
         "read-only file system",
-        "errno 30",  # EROFS
+        "[errno 30]",  # EROFS
         "operation not permitted",
     )
 

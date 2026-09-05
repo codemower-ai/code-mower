@@ -79,9 +79,9 @@ class FailureReasonClassificationTests(unittest.TestCase):
             ("Requires Python >=3.13", "requires python_version", "runtime"),
             ("ModuleNotFoundError", "No module named", "runtime"),
             ("incompatible version", "requires a different version", "runtime"),
-            ("Permission denied", "[Errno 13]", "sandbox_permission"),
-            ("No space left on device", "[Errno 28]", "sandbox_permission"),
-            ("Read-only file system", "[Errno 30]", "sandbox_permission"),
+            ("Permission denied", "permission denied", "sandbox_permission"),
+            ("No space left on device", "no space left", "sandbox_permission"),
+            ("Read-only file system", "read-only file system", "sandbox_permission"),
             ("unexpected exotic failure", "unrecognized error", "unknown"),
         ]
 
@@ -101,6 +101,15 @@ class FailureReasonClassificationTests(unittest.TestCase):
             exception=exc, steps=steps
         )
         self.assertEqual(reason, "sandbox_permission")
+
+    def test_errno_111_classified_as_network(self) -> None:
+        """Verify [Errno 111] ECONNREFUSED is classified as network, not sandbox."""
+        exc = RuntimeError("Connection refused")
+        steps = [{"stderr_preview": "[Errno 111] Connection refused"}]
+        reason = migration_install.classify_package_install_failure(
+            exception=exc, steps=steps
+        )
+        self.assertEqual(reason, "network")
 
 
 class FailureReasonSchemaTests(unittest.TestCase):
