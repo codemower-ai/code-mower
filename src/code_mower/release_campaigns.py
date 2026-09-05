@@ -1739,6 +1739,14 @@ def initialize_campaign(
                 "more than once, directly or through an alias; list each provider "
                 "exactly once"
             )
+        capability = lane.provider_config.get("capability", "")
+        if capability == "code_review":
+            raise ValueError(
+                f"release campaign provider {canonical_name!r} cannot execute package "
+                f"qualification: it has capability 'code_review', not 'work_order_execution'. "
+                f"Review-only providers cannot perform cold_install or upgrade campaigns; "
+                f"choose a builder provider instead"
+            )
         seen_providers.add(canonical_name)
         resolved_providers.append((canonical_name, lane))
 

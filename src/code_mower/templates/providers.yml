@@ -229,9 +229,6 @@ provider_templates:
       role: "builder"
       capability: "work_order_execution"
       status: "hosted async builder with release qualification capability"
-    review_hygiene:
-      workflow: ".github/workflows/cursor-cloud-agent-clear-stale.yml"
-      token_env: "GITHUB_TOKEN"
   cursor_bugbot:
     provider: "cursor_bugbot"
     driver: "saas_event"

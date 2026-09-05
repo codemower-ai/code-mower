@@ -4689,6 +4689,40 @@ class DuplicateCampaignProviderTests(unittest.TestCase):
             assert reloaded is not None
             self.assertEqual(reloaded["providers"][0]["provider"], "cursor_bugbot")
 
+    def test_initialize_campaign_rejects_reviewer_only_providers(self) -> None:
+        """New campaigns reject providers lacking work_order_execution capability."""
+        reviewer_aliases = ["cursor_bugbot", "grok_bot", "cursor_grok_bot"]
+
+        for alias in reviewer_aliases:
+            with self.assertRaises(ValueError) as cm:
+                release_campaigns.initialize_campaign(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=[alias],
+                )
+            self.assertIn("cannot execute package qualification", str(cm.exception))
+            self.assertIn("work_order_execution", str(cm.exception))
+            self.assertIn("code_review", str(cm.exception))
+            self.assertIn("Review-only providers", str(cm.exception))
+
+        # Builder providers should still be accepted
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_cloud_agent"],
+        )
+        self.assertEqual(len(campaign.providers), 1)
+        self.assertEqual(campaign.providers[0]["provider"], "cursor_cloud_agent")
+
+        # Other providers without explicit capability should still be accepted
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["codex"],
+        )
+        self.assertEqual(len(campaign.providers), 1)
+        self.assertEqual(campaign.providers[0]["provider"], "codex")
+
     def test_default_provider_set_has_no_duplicates(self) -> None:
         campaign = release_campaigns.initialize_campaign(
             release_tag="v1.0.0",

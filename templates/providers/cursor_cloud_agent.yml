@@ -28,6 +28,3 @@ cursor_cloud_agent:
     role: "builder"
     capability: "work_order_execution"
     status: "hosted async builder with release qualification capability; can execute work orders and package-install campaigns"
-  review_hygiene:
-    workflow: ".github/workflows/cursor-cloud-agent-clear-stale.yml"
-    token_env: "GITHUB_TOKEN"
