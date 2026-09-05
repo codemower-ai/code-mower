@@ -40,6 +40,18 @@ SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[ab]\d+|rc\d+)?$")
 RUNTIME_CLASS_PATTERN = re.compile(r"^python_\d+\.\d+$")
 VALID_CONTEXTS = {"cold_install", "upgrade", "unknown"}
+# Closed package-index source contract: never an arbitrary or user-supplied
+# URL, only this fixed vocabulary. "pypi" (default) uses pip's own default
+# index. "testpypi" is a bounded candidate source for qualifying a release
+# before it is announced or marked current on production PyPI.
+VALID_PACKAGE_SOURCES = {"pypi", "testpypi"}
+DEFAULT_PACKAGE_SOURCE = "pypi"
+# The one canonical TestPyPI simple index, and the one canonical production
+# PyPI simple index used only as a dependency-only extra index for a TestPyPI
+# candidate (TestPyPI does not mirror every dependency). Fixed constants, not
+# configurable: no credentials, and no other index is ever accepted.
+TESTPYPI_INDEX_URL = "https://test.pypi.org/simple/"
+PRODUCTION_PYPI_INDEX_URL = "https://pypi.org/simple/"
 VALID_STEP_STATUSES = {"pass", "fail", "warn", "unavailable", "planned"}
 VALID_EXECUTION_STATES = {"planned", "executed"}
 VALID_HOST_CLASSES = {"local", "ci", "github_actions", "unknown"}
@@ -215,6 +227,54 @@ def _validate_qualification_context(value: str) -> None:
     """Validate qualification context is in closed set."""
     if value not in VALID_CONTEXTS:
         raise ValueError(f"qualification_context must be one of: {', '.join(sorted(VALID_CONTEXTS))}")
+
+
+def _validate_package_source(value: str) -> None:
+    """Validate package source is in the closed set (default: pypi)."""
+    if value not in VALID_PACKAGE_SOURCES:
+        raise ValueError(f"package_source must be one of: {', '.join(sorted(VALID_PACKAGE_SOURCES))}")
+
+
+def _package_source_pip_index_args(package_source: str) -> tuple[str, tuple[str, ...]]:
+    """Return the closed ``(pip_index_url, pip_extra_index_urls)`` pair for a source.
+
+    Used only for the upgrade preinstall spec (the already-published starting
+    version being upgraded from, not the candidate under qualification): a
+    combined index/extra-index install is fine there because nothing needs to
+    prove which index it came from. Never accepts or emits an arbitrary URL:
+    the two candidate sources each resolve to exactly one fixed, canonical
+    pair of index URLs. ``pypi`` uses pip's own default index (no override).
+    ``testpypi`` points the primary index at the canonical TestPyPI simple
+    index and keeps production PyPI as an extra index. See
+    :func:`_package_source_candidate_index_args` for the release candidate
+    itself, which cannot use a combined index/extra-index install.
+    """
+    _validate_package_source(package_source)
+    if package_source == "testpypi":
+        return TESTPYPI_INDEX_URL, (PRODUCTION_PYPI_INDEX_URL,)
+    return "", ()
+
+
+def _package_source_candidate_index_args(package_source: str) -> tuple[str, str]:
+    """Return the closed ``(candidate_index_url, dependency_index_url)`` pair.
+
+    Used for the exact release candidate under qualification -- the
+    package_spec this run's result is bound to and verified against. Pip does
+    not prioritize ``--index-url`` over ``--extra-index-url``: a single
+    install command naming both cannot prove which configured index actually
+    supplied the candidate, since an identical version on either index could
+    silently satisfy it. The closed two-stage install in
+    ``run_package_install_rehearsal`` instead uses ``candidate_index_url`` as
+    the *only* index for a ``--no-deps`` download, verifies the downloaded
+    artifact's identity and version, then installs that verified local
+    artifact with dependencies resolved from ``dependency_index_url``.
+    ``pypi`` (the default) returns two empty strings: the ordinary
+    single-stage install applies unchanged, with no index override at all.
+    """
+    _validate_package_source(package_source)
+    if package_source == "testpypi":
+        return TESTPYPI_INDEX_URL, PRODUCTION_PYPI_INDEX_URL
+    return "", ""
 
 
 def _normalize_package_name(name: str) -> str:
@@ -667,6 +727,7 @@ def run_release_qualification(
     provider: str = "local_cli",
     executor: str = "unknown",
     timeout: int = 180,
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
 ) -> dict[str, Any]:
     """Run release qualification and emit adoption result."""
     start_time = time.time()
@@ -675,6 +736,7 @@ def run_release_qualification(
     _validate_safe_identifier(provider, "provider")
     _validate_safe_identifier(executor, "executor")
     _validate_starting_version(starting_version)
+    _validate_package_source(package_source)
 
     valid, normalized_version, error = _validate_tag_format(release_tag)
     if not valid:
@@ -746,6 +808,10 @@ def run_release_qualification(
         )
     else:
         rehearsal_start = time.time()
+        pip_index_url, pip_extra_index_urls = _package_source_pip_index_args(package_source)
+        candidate_index_url, candidate_dependency_index_url = (
+            _package_source_candidate_index_args(package_source)
+        )
         try:
             rehearsal_result = run_package_install_rehearsal(
                 package_spec=package_spec,
@@ -757,6 +823,10 @@ def run_release_qualification(
                 repo_path=repo_path,
                 timeout=timeout,
                 allow_package_index=True,
+                pip_index_url=pip_index_url,
+                pip_extra_index_urls=pip_extra_index_urls,
+                candidate_index_url=candidate_index_url,
+                candidate_dependency_index_url=candidate_dependency_index_url,
             )
             rehearsal_version_raw = rehearsal_result.get("version", "")
             rehearsal_version = _normalize_version(rehearsal_version_raw)
@@ -903,6 +973,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=180,
         help="Timeout in seconds",
     )
+    qualify.add_argument(
+        "--package-source",
+        default=DEFAULT_PACKAGE_SOURCE,
+        help=(
+            "Closed package-index source: pypi (default) or testpypi. testpypi "
+            "installs from the canonical TestPyPI simple index, with production "
+            "PyPI as a dependency-only extra index."
+        ),
+    )
     qualify.add_argument("--json", action="store_true")
 
     campaign = subparsers.add_parser(
@@ -992,6 +1071,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--starting-version",
         default="",
         help="Starting version (required for upgrade qualification)",
+    )
+    campaign.add_argument(
+        "--package-source",
+        default="",
+        help=(
+            "Closed package-index source: pypi (default) or testpypi. Compared "
+            "against an existing campaign's stored source whenever it is "
+            "supplied, including an explicit pypi; omit it to advance a "
+            "campaign under whatever source it was created with."
+        ),
     )
     campaign.add_argument(
         "--repo-path",
@@ -1154,6 +1243,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 provider=args.provider,
                 executor=args.executor,
                 timeout=args.timeout,
+                package_source=args.package_source,
             )
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))
@@ -1197,6 +1287,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 providers=providers_list,
                 qualification_context=args.qualification_context,
                 starting_version=args.starting_version,
+                package_source=args.package_source,
                 repo_path=args.repo_path,
                 repo_slug=args.repo_slug,
                 issue=args.issue,

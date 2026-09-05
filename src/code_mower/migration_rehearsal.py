@@ -20,9 +20,14 @@ if __package__ in {None, ""}:
         _default_product_rehearsal_local_command,
         _glob_relative_files,
         _json_payload,
+        _isolated_pip_environment,
         _load_release_readiness,
         _package_spec_uses_package_index,
+        _parse_downloaded_artifact_identity,
+        _parse_exact_name_version_spec,
+        _pip_download_candidate_command,
         _pip_install_command,
+        _pip_install_local_artifact_command,
         _pip_upgrade_command,
         _resolve_install_package_spec,
         _run,
@@ -49,9 +54,14 @@ else:
         _default_product_rehearsal_local_command,
         _glob_relative_files,
         _json_payload,
+        _isolated_pip_environment,
         _load_release_readiness,
         _package_spec_uses_package_index,
+        _parse_downloaded_artifact_identity,
+        _parse_exact_name_version_spec,
+        _pip_download_candidate_command,
         _pip_install_command,
+        _pip_install_local_artifact_command,
         _pip_upgrade_command,
         _resolve_install_package_spec,
         _run,
@@ -91,6 +101,7 @@ __all__ = [
     "_resolve_install_package_spec",
     "_run",
     "_run_pip_install_with_retries",
+    "_run_two_stage_candidate_install",
     "_run_rehearsal_step",
     "_run_rehearsal_step_to_file",
     "_write_json",
@@ -268,6 +279,95 @@ def _pip_install_policy(
     return cache_disabled, attempts
 
 
+def _run_two_stage_candidate_install(
+    *,
+    venv_python: Path,
+    package_spec: str,
+    candidate_index_url: str,
+    dependency_index_url: str,
+    candidate_dir: Path,
+    work_dir: Path,
+    steps: list[dict[str, Any]],
+    timeout: int,
+    attempts: int,
+    retry_delay_seconds: float,
+    pip_no_cache: bool,
+) -> None:
+    """Prove a candidate package-index spec came exclusively from ``candidate_index_url``.
+
+    Pip does not prioritize ``--index-url`` over ``--extra-index-url``: a
+    single install command that names both cannot prove which configured
+    index actually supplied the candidate, since either index may hold a
+    matching version. This closed two-stage flow instead (1) downloads the
+    exact candidate artifact with ``candidate_index_url`` as the *only*
+    configured index and ``--no-deps`` -- nothing but that index can satisfy
+    this command -- verifies exactly one artifact was downloaded and that its
+    filename names the requested package identity and version, then (2)
+    installs that verified local artifact file directly (not by name/version,
+    so its identity is no longer subject to any index resolution), letting
+    only its dependencies -- not the candidate itself -- resolve against
+    ``dependency_index_url``.
+    """
+    expected_identity, expected_version = _parse_exact_name_version_spec(package_spec)
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    _run_pip_install_with_retries(
+        _pip_download_candidate_command(
+            venv_python,
+            package_spec,
+            index_url=candidate_index_url,
+            dest_dir=candidate_dir,
+            pip_no_cache=pip_no_cache,
+        ),
+        cwd=work_dir,
+        env=_isolated_pip_environment(),
+        steps=steps,
+        timeout=timeout,
+        attempts=attempts,
+        retry_delay_seconds=retry_delay_seconds,
+        package_index=True,
+        command_label="pip download",
+    )
+    downloaded = sorted(p for p in candidate_dir.iterdir() if p.is_file())
+    if not downloaded:
+        raise RehearsalError(
+            f"no candidate artifact was downloaded from {candidate_index_url}",
+            steps,
+        )
+    if len(downloaded) > 1:
+        raise RehearsalError(
+            "expected exactly one candidate artifact from "
+            f"{candidate_index_url}, found {len(downloaded)}: "
+            f"{', '.join(p.name for p in downloaded)}",
+            steps,
+        )
+    artifact = downloaded[0]
+    try:
+        artifact_identity, artifact_version = _parse_downloaded_artifact_identity(artifact.name)
+    except ValueError as exc:
+        raise RehearsalError(str(exc), steps) from exc
+    if artifact_identity != expected_identity or artifact_version != expected_version:
+        raise RehearsalError(
+            f"candidate artifact {artifact.name!r} does not match the requested "
+            f"{expected_identity}=={expected_version} spec",
+            steps,
+        )
+    _run_pip_install_with_retries(
+        _pip_install_local_artifact_command(
+            venv_python,
+            artifact,
+            dependency_index_url=dependency_index_url,
+            pip_no_cache=pip_no_cache,
+        ),
+        cwd=work_dir,
+        env=_isolated_pip_environment(),
+        steps=steps,
+        timeout=timeout,
+        attempts=attempts,
+        retry_delay_seconds=retry_delay_seconds,
+        package_index=True,
+    )
+
+
 def run_package_install_rehearsal(
     *,
     package_spec: str,
@@ -281,6 +381,8 @@ def run_package_install_rehearsal(
     standalone_default_cycles: int = 1,
     pip_index_url: str = "",
     pip_extra_index_urls: Sequence[str] | None = None,
+    candidate_index_url: str = "",
+    candidate_dependency_index_url: str = "",
     allow_package_index: bool = False,
     upgrade_pip: bool = False,
     pip_no_cache: bool = False,
@@ -305,6 +407,11 @@ def run_package_install_rehearsal(
         raise ValueError(
             "package-index preinstall specs require --allow-package-index"
         )
+    if candidate_index_url and not (uses_package_index and allow_package_index):
+        raise ValueError(
+            "candidate_index_url requires an exact package-index package_spec "
+            "and --allow-package-index"
+        )
     pip_cache_disabled, pip_install_max_attempts = _pip_install_policy(
         uses_package_index=uses_package_index,
         allow_package_index=allow_package_index,
@@ -323,7 +430,8 @@ def run_package_install_rehearsal(
     venv_dir = work_dir / "venv"
     toy_repo = work_dir / "toy-repo"
     outputs = work_dir / "outputs"
-    if venv_dir.exists() or toy_repo.exists():
+    candidate_dir = work_dir / "testpypi-candidate"
+    if venv_dir.exists() or toy_repo.exists() or candidate_dir.exists():
         raise ValueError(f"work directory is not clean: {work_dir}")
     work_dir.mkdir(parents=True, exist_ok=True)
     outputs.mkdir(parents=True, exist_ok=True)
@@ -384,22 +492,37 @@ def run_package_install_rehearsal(
             timeout=timeout,
         ).stdout.strip()
     pip_install_start = len(steps)
-    _run_pip_install_with_retries(
-        _pip_install_command(
-            venv_python,
-            package_spec,
-            pip_index_url=pip_index_url,
-            pip_extra_index_urls=pip_extra_index_urls,
+    if candidate_index_url:
+        _run_two_stage_candidate_install(
+            venv_python=venv_python,
+            package_spec=package_spec,
+            candidate_index_url=candidate_index_url,
+            dependency_index_url=candidate_dependency_index_url,
+            candidate_dir=candidate_dir,
+            work_dir=work_dir,
+            steps=steps,
+            timeout=timeout,
+            attempts=pip_install_max_attempts,
+            retry_delay_seconds=pip_retry_delay_seconds,
             pip_no_cache=pip_cache_disabled,
-        ),
-        cwd=work_dir,
-        env=None,
-        steps=steps,
-        timeout=timeout,
-        attempts=pip_install_max_attempts,
-        retry_delay_seconds=pip_retry_delay_seconds,
-        package_index=uses_package_index and allow_package_index,
-    )
+        )
+    else:
+        _run_pip_install_with_retries(
+            _pip_install_command(
+                venv_python,
+                package_spec,
+                pip_index_url=pip_index_url,
+                pip_extra_index_urls=pip_extra_index_urls,
+                pip_no_cache=pip_cache_disabled,
+            ),
+            cwd=work_dir,
+            env=None,
+            steps=steps,
+            timeout=timeout,
+            attempts=pip_install_max_attempts,
+            retry_delay_seconds=pip_retry_delay_seconds,
+            package_index=uses_package_index and allow_package_index,
+        )
     pip_install_attempt_count = len(steps) - pip_install_start
     _run_rehearsal_step(
         [str(venv_python), "-m", "pip", "check"],
@@ -752,6 +875,8 @@ def run_package_install_rehearsal(
         "pip_retry_delay_seconds": pip_retry_delay_seconds,
         "pip_index_url": pip_index_url,
         "pip_extra_index_urls": list(pip_extra_index_urls or ()),
+        "candidate_index_url": candidate_index_url,
+        "candidate_dependency_index_url": candidate_dependency_index_url,
         "python": str(python_bin),
         "work_dir": str(work_dir),
         "venv_dir": str(venv_dir),
