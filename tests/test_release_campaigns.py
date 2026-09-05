@@ -11505,6 +11505,132 @@ class RuntimeReadinessCampaignTests(unittest.TestCase):
         python_bin_idx = captured_argv.index("--python-bin")
         self.assertEqual(captured_argv[python_bin_idx + 1], distinct_target_python)
 
+    def test_resolve_supported_runtime_resolves_relative_env_override(self) -> None:
+        """Relative CODE_MOWER_PYTHON candidate must be resolved to an absolute path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            custom_dir = tmp_path / "custom_env"
+            custom_dir.mkdir()
+            custom_py = custom_dir / "python3"
+            custom_py.touch()
+
+            def fake_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                if Path(cmd[0]).resolve() == custom_py.resolve():
+                    return subprocess.CompletedProcess(cmd, 0, stdout="3.12.8\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                for rel_candidate in ("./custom_env/python3", "custom_env/python3"):
+                    with self.subTest(candidate=rel_candidate):
+                        res = release_campaigns.resolve_supported_runtime(
+                            environ={"CODE_MOWER_PYTHON": rel_candidate},
+                            runner=fake_runner,
+                        )
+                        self.assertIsNotNone(res)
+                        bin_path, runtime_class = res
+                        self.assertTrue(Path(bin_path).is_absolute(), f"Expected absolute path, got {bin_path}")
+                        self.assertEqual(Path(bin_path).resolve(), custom_py.resolve())
+                        self.assertEqual(runtime_class, "python_3.12")
+            finally:
+                os.chdir(old_cwd)
+
+    def test_invoke_local_adapter_with_relative_code_mower_python_under_different_launch_cwd(self) -> None:
+        """Relative CODE_MOWER_PYTHON must resolve to absolute path so adapters work under different launch cwd."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "repo"
+            repo_root.mkdir()
+            disposable_cwd = Path(tmp) / "disposable_workdir"
+            disposable_cwd.mkdir()
+
+            custom_bin_dir = repo_root / "tools"
+            custom_bin_dir.mkdir()
+            custom_py = custom_bin_dir / "python3.12"
+            custom_py.touch()
+
+            def fake_python_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                if Path(cmd[0]).resolve() == custom_py.resolve():
+                    return subprocess.CompletedProcess(cmd, 0, stdout="3.12.4\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+            captured_target_python: list[str] = []
+
+            def fake_adapter_runner(argv: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+                python_bin_idx = argv.index("--python-bin")
+                target_py = argv[python_bin_idx + 1]
+                captured_target_python.append(target_py)
+
+                # From disposable_cwd, target_py must be valid and exist
+                old_runner_cwd = os.getcwd()
+                try:
+                    os.chdir(disposable_cwd)
+                    target_path = Path(target_py)
+                    self.assertTrue(target_path.is_absolute(), f"--python-bin must be absolute: {target_py}")
+                    self.assertTrue(target_path.exists(), f"Target python must exist from disposable cwd: {target_py}")
+                finally:
+                    os.chdir(old_runner_cwd)
+
+                output_idx = argv.index("--output")
+                out_file = Path(argv[output_idx + 1])
+                valid_payload = {
+                    "schema": "code_mower.adoptionResult.v1",
+                    "timestamp_utc": "2026-09-05T00:00:00Z",
+                    "release_tag": "v1.0.0",
+                    "package_identity": "code-mower",
+                    "normalized_version": "1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "ending_version": "1.0.0",
+                    "provider": "codex",
+                    "executor": "codex",
+                    "host_class": "local",
+                    "runtime_class": "python_3.12",
+                    "execution_state": "executed",
+                    "elapsed_seconds": 1.0,
+                    "outcome": "pass",
+                    "steps": [
+                        {
+                            "id": "doctor",
+                            "status": "pass",
+                            "elapsed_seconds": 1.0,
+                            "warning_count": 0,
+                            "owner_action_count": 0,
+                        }
+                    ],
+                }
+                out_file.write_text(json.dumps(valid_payload), encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            from code_mower.provider_registry import REFERENCE_PROVIDERS
+            lane = REFERENCE_PROVIDERS["codex"]
+            output_path = repo_root / "output.json"
+
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(repo_root)
+                result, error, detail = release_campaigns._invoke_local_adapter(
+                    lane,
+                    "codex",
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    qualification_context="cold_install",
+                    starting_version="",
+                    output_path=output_path,
+                    repo_path=repo_root,
+                    adapter_runner=fake_adapter_runner,
+                    python_runner=fake_python_runner,
+                    which_fn=lambda _: "/bin/codex",
+                    environ={"CODE_MOWER_PYTHON": "./tools/python3.12"},
+                )
+            finally:
+                os.chdir(old_cwd)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(error, "")
+            self.assertEqual(len(captured_target_python), 1)
+            self.assertEqual(Path(captured_target_python[0]).resolve(), custom_py.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

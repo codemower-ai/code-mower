@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -288,7 +289,7 @@ def build_qualification_prompt(
     local checkout paths: the agent works in a fresh disposable directory it
     creates itself.
     """
-    python_cmd = python_bin or "python3"
+    python_cmd = shlex.quote(python_bin or "python3")
     if qualification_context == "upgrade":
         install_plan = (
             "1. In the current disposable directory, run "

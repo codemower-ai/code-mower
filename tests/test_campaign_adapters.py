@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -200,6 +201,47 @@ class ArgvBuilderTests(unittest.TestCase):
         self.assertIn(".venv/bin/code-mower doctor --help", prompt)
         self.assertIn("without a leading v", prompt)
         self.assertIn("all-pass steps require outcome pass", prompt)
+
+    def test_shared_prompt_quotes_target_interpreter_with_spaces_and_metacharacters(self) -> None:
+        """Target interpreter path containing spaces or shell metacharacters must be safely quoted."""
+        space_py = "/opt/Python 3.12/bin/python3"
+        prompt_cold = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            python_bin=space_py,
+        )
+        self.assertIn(f"`{shlex.quote(space_py)} -m venv .venv`", prompt_cold)
+        self.assertIn("'/opt/Python 3.12/bin/python3' -m venv .venv", prompt_cold)
+
+        prompt_upgrade = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="upgrade",
+            starting_version="0.9.0",
+            python_bin=space_py,
+        )
+        self.assertIn(f"`{shlex.quote(space_py)} -m venv .venv`", prompt_upgrade)
+
+        meta_py = '/opt/py$env;`test`/bin/python3'
+        prompt_meta = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            python_bin=meta_py,
+        )
+        self.assertIn(f"`{shlex.quote(meta_py)} -m venv .venv`", prompt_meta)
 
     def test_shared_prompt_teaches_step_id_taxonomy(self) -> None:
         prompt = campaign_adapters.build_qualification_prompt(

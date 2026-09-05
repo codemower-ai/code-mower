@@ -1472,10 +1472,21 @@ def resolve_supported_runtime(
     for cand in candidates:
         if not cand:
             continue
-        if os.sep in cand or (os.altsep and os.altsep in cand) or cand == sys.executable:
-            resolved = cand if Path(cand).exists() else None
+        cand_path = Path(cand).expanduser()
+        if (
+            os.sep in cand
+            or (os.altsep and os.altsep in cand)
+            or cand == sys.executable
+            or (cand == explicit and cand_path.exists())
+        ):
+            if cand_path.exists():
+                resolved = str(cand_path.resolve()) if not cand_path.is_absolute() else cand
+            else:
+                resolved = None
         else:
             resolved = which(cand)
+            if resolved and not Path(resolved).is_absolute():
+                resolved = str(Path(resolved).resolve())
         if not resolved:
             continue
         try:
@@ -1514,6 +1525,7 @@ def _invoke_local_adapter(
     which_fn: Callable[[str], str | None],
     adapter_runner: AdapterRunner,
     python_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any] | None, str, str]:
     """Invoke a provider's explicit, registry-configured campaign adapter.
 
@@ -1545,7 +1557,7 @@ def _invoke_local_adapter(
     if not argv_template:
         return None, _safe_error("no_campaign_adapter_configured"), "no campaign adapter configured"
 
-    runtime = resolve_supported_runtime(which_fn=which_fn, runner=python_runner)
+    runtime = resolve_supported_runtime(environ=environ, which_fn=which_fn, runner=python_runner)
     if runtime is None:
         return (
             None,
@@ -2373,6 +2385,7 @@ def dispatch_or_advance_campaign(
                 repo_path=repo_path,
                 which_fn=which_fn,
                 adapter_runner=adapter_runner,
+                environ=current_env,
             )
             if result is None:
                 provider_data["state"] = _ADAPTER_ERROR_STATE.get(error_code, "unavailable")
