@@ -226,25 +226,26 @@ Before v1.0.8, `cursor_bugbot` was used for both builder and review capabilities
 - `cursor_bugbot` (also known as Grok Bot or BugBot) is a review-only surface and cannot execute package-install campaigns
 
 The provider alias map routes `cursor` → `cursor_cloud_agent` for new work. Historical `cursor_bugbot` campaigns remain valid but are not accepted for new release qualification.
-- `@cursor review`
-
-After the dispatch comment is posted, one of these trigger commands is posted as a separate comment to actually start the BugBot qualification run.
-Code Mower binds the hidden dispatch and trigger markers to separate locally persisted random nonces. The trigger nonce is never exposed by the earlier dispatch, so an interrupted resume can reconcile its own comments without trusting forgeable public fields or starting the provider twice. Reconciliation is read-only; retrying a missing trigger requires `--resume --apply`.
 
 **Example dispatch:**
 ```bash
 code-mower release campaign \
   --release-tag v1.0.0 \
   --package-spec code-mower==1.0.0 \
-  --providers cursor_bugbot \
+  --providers cursor_cloud_agent \
   --issue 123 \
   --repo-slug owner/repo \
   --apply
 ```
 
-**Aliases:** `cursor`, `cursor_bugbot`, `cursor_grok_bot`, `cursor_cloud_agent`, `grok_bot` all resolve to the canonical `cursor_bugbot` provider.
+**Aliases:**
+- `cursor` → `cursor_cloud_agent` (builder)
+- `cursor_cloud_agent` → `cursor_cloud_agent` (builder)
+- `cursor_bugbot` → `cursor_bugbot` (reviewer, cannot execute campaigns)
+- `cursor_grok_bot` → `cursor_bugbot` (reviewer, cannot execute campaigns)
+- `grok_bot` → `cursor_bugbot` (reviewer, cannot execute campaigns)
 
-**Note:** Cursor BugBot is an opt-in paid provider (`enabled_by_default: false`, `trigger_policy: manual`, `spend_policy: paid`). It must be explicitly requested via `--providers cursor_bugbot` and is not included in the default provider set.
+**Note:** Cursor Cloud Agent is an opt-in paid provider (`enabled_by_default: false`, `trigger_policy: manual`, `spend_policy: paid`). It must be explicitly requested via `--providers cursor_cloud_agent` or `--providers cursor` and is not included in the default provider set.
 
 #### Devin Setup
 
