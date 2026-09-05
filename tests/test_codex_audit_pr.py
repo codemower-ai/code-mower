@@ -757,8 +757,28 @@ class CodexAuditPrTests(unittest.TestCase):
         self.assertEqual(parsed_blocked.p2_count, 1)
         self.assertEqual(parsed_blocked.p3_count, 1)
 
-    def test_codex_rejects_negative_line_numbers(self) -> None:
+    def test_codex_rejects_line_zero_for_blocking_findings(self) -> None:
         parsed = cap.parse_structured_codex_verdict(
+            {
+                "schema": cap.CODEX_AUDIT_SCHEMA_ID,
+                "verdict": "blocked",
+                "summary": "Blocker with line zero.",
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "title": "Invalid blocker",
+                        "file": "src/app.py",
+                        "line": 0,
+                        "detail": "This blocker has line zero.",
+                    }
+                ],
+            }
+        )
+        self.assertEqual(parsed.verdict, "UNKNOWN")
+        self.assertIn("line must be >= 1 for blocking findings", parsed.prose)
+
+    def test_codex_rejects_negative_line_numbers(self) -> None:
+        parsed_p2 = cap.parse_structured_codex_verdict(
             {
                 "schema": cap.CODEX_AUDIT_SCHEMA_ID,
                 "verdict": "blocked",
@@ -774,8 +794,27 @@ class CodexAuditPrTests(unittest.TestCase):
                 ],
             }
         )
-        self.assertEqual(parsed.verdict, "UNKNOWN")
-        self.assertIn("line must be an integer >= 0", parsed.prose)
+        self.assertEqual(parsed_p2.verdict, "UNKNOWN")
+        self.assertIn("line must be >= 0", parsed_p2.prose)
+
+        parsed_p3 = cap.parse_structured_codex_verdict(
+            {
+                "schema": cap.CODEX_AUDIT_SCHEMA_ID,
+                "verdict": "pass",
+                "summary": "Has a P3 finding with negative line.",
+                "findings": [
+                    {
+                        "severity": "P3",
+                        "title": "Invalid metadata",
+                        "file": "metadata",
+                        "line": -1,
+                        "detail": "This metadata has an invalid line number.",
+                    }
+                ],
+            }
+        )
+        self.assertEqual(parsed_p3.verdict, "UNKNOWN")
+        self.assertIn("line must be >= 0", parsed_p3.prose)
 
 
 if __name__ == "__main__":

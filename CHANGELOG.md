@@ -8,11 +8,13 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ### Fixed
 
-- Codex and Claude audit verdict transport now accepts findings with line `0`,
-  preserving the verdict and all valid findings when metadata-only findings
-  omit a meaningful source line. Previously, a single finding with line `0`
-  caused the entire verdict to be marked as UNKNOWN and required a rerun,
-  even when the verdict contained valid P2 blockers (#681).
+- Codex and Claude audit verdict transport now accepts P3 (non-blocking)
+  findings with line `0`, preserving the verdict and all valid findings when
+  metadata-only findings omit a meaningful source line. Blocking findings
+  (P0/P1/P2) continue to require line >= 1 to maintain an actionable source
+  location. Previously, a single P3 finding with line `0` caused the entire
+  verdict to be marked as UNKNOWN and required a rerun, even when the verdict
+  contained valid P2 blockers (#681).
 
 ## v1.0.7
 

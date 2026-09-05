@@ -807,14 +807,34 @@ class ClaudeAuditPrTests(unittest.TestCase):
         self.assertEqual(parsed_blocked.p2_count, 1)
         self.assertEqual(parsed_blocked.p3_count, 1)
 
-    def test_claude_rejects_negative_line_numbers(self) -> None:
+    def test_claude_rejects_line_zero_for_blocking_findings(self) -> None:
         parsed = cap.parse_structured_claude_verdict(
             _payload(
-                findings=[_finding(line=-1)],
+                verdict="blocked",
+                summary="Blocker with line zero.",
+                findings=[_finding(severity="P2", line=0)],
             )
         )
         self.assertEqual(parsed.verdict, "UNKNOWN")
-        self.assertIn("line must be an integer >= 0", parsed.prose)
+        self.assertIn("line must be >= 1 for blocking findings", parsed.prose)
+
+    def test_claude_rejects_negative_line_numbers(self) -> None:
+        parsed_p2 = cap.parse_structured_claude_verdict(
+            _payload(
+                findings=[_finding(severity="P2", line=-1)],
+            )
+        )
+        self.assertEqual(parsed_p2.verdict, "UNKNOWN")
+        self.assertIn("line must be >= 0", parsed_p2.prose)
+
+        parsed_p3 = cap.parse_structured_claude_verdict(
+            _payload(
+                verdict="pass",
+                findings=[_finding(severity="P3", line=-1)],
+            )
+        )
+        self.assertEqual(parsed_p3.verdict, "UNKNOWN")
+        self.assertIn("line must be >= 0", parsed_p3.prose)
 
 
 if __name__ == "__main__":

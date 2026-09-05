@@ -440,8 +440,14 @@ def parse_structured_claude_verdict(data: Any) -> ClaudeVerdict:
             )
 
         line = raw_finding["line"]
-        if isinstance(line, bool) or not isinstance(line, int) or line < 0:
-            return _unknown_structured_verdict(f"{where}.line must be an integer >= 0")
+        if isinstance(line, bool) or not isinstance(line, int):
+            return _unknown_structured_verdict(f"{where}.line must be an integer")
+        if severity in ("P0", "P1", "P2") and line < 1:
+            return _unknown_structured_verdict(
+                f"{where}.line must be >= 1 for blocking findings (got {line})"
+            )
+        if line < 0:
+            return _unknown_structured_verdict(f"{where}.line must be >= 0 (got {line})")
 
         p_counts[int(severity[1])] += 1
         if len(rendered_findings) < MAX_RENDERED_FINDINGS:
