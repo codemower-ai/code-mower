@@ -600,6 +600,79 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             "codemower-ai/code-mower",
         )
 
+    def test_structured_result_capability_failure_emits_actionable_warn(self) -> None:
+        """When command and auth pass but structured-result capability fails, emit actionable WARN."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "lanes": {
+                    "codex": {
+                        "provider_config": {
+                            "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                            "campaign_adapter_timeout_seconds": 60,
+                        }
+                    }
+                }
+            }
+            with mock.patch(
+                "code_mower.campaign_adapters.check_structured_result_capability",
+                return_value=False,
+            ):
+                checks = check_adoption_campaign_readiness(
+                    config=config,
+                    repo_root=Path(tmp),
+                    which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
+                    providers=["codex"],
+                )
+
+            # 1. doctor.campaign.adapter passed
+            adapter_check = next(c for c in checks if c.name == "doctor.campaign.adapter")
+            self.assertEqual(adapter_check.status, STATUS_PASS)
+
+            # 2. doctor.campaign.structured_result emitted WARN
+            structured_check = next(c for c in checks if c.name == "doctor.campaign.structured_result")
+            self.assertEqual(structured_check.status, STATUS_WARN)
+            self.assertEqual(structured_check.lane, "codex")
+            self.assertTrue(structured_check.detail.get("actionable"))
+            self.assertTrue(structured_check.detail.get("owner_action"))
+            self.assertIn("capability probe failed", structured_check.message)
+            self.assertIn("Verify codex campaign adapter output parsing", structured_check.remediation)
+
+            # 3. Provider is in actionable_providers and NOT in ready_providers
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertIn("codex", readiness.detail.get("actionable_providers", []))
+            self.assertNotIn("codex", readiness.detail.get("ready_providers", []))
+            self.assertEqual(readiness.status, STATUS_WARN)
+
+    def test_structured_result_capability_failure_for_hosted_provider(self) -> None:
+        """When hosted provider credentials pass but structured-result capability fails, emit actionable WARN."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "code_mower.campaign_adapters.check_structured_result_capability",
+                return_value=False,
+            ):
+                checks = check_adoption_campaign_readiness(
+                    config={"lanes": {"devin": {"enabled": True}}},
+                    repo_root=Path(tmp),
+                    env={
+                        "DEVIN_AUDIT_LABEL_TOKEN": "dummy-token",
+                        "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+                    },
+                    repo_slug="codemower-ai/code-mower",
+                    providers=["devin"],
+                )
+
+            cred_check = next(c for c in checks if c.name == "doctor.campaign.credentials")
+            self.assertEqual(cred_check.status, STATUS_PASS)
+
+            structured_check = next(c for c in checks if c.name == "doctor.campaign.structured_result")
+            self.assertEqual(structured_check.status, STATUS_WARN)
+            self.assertEqual(structured_check.lane, "devin")
+            self.assertTrue(structured_check.detail.get("actionable"))
+
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertIn("devin", readiness.detail.get("actionable_providers", []))
+            self.assertNotIn("devin", readiness.detail.get("ready_providers", []))
+
 
 if __name__ == "__main__":
     unittest.main()

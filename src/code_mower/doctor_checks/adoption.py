@@ -791,6 +791,30 @@ def check_adoption_campaign_readiness(
                     "auth": auth_state,
                     "structured_result": structured_capability,
                 }
+                auth_pass = auth_check is None or auth_check.status != STATUS_WARN
+                if auth_pass and not structured_capability:
+                    detail = {
+                        "provider": canonical,
+                        "lane": lane.lane_id,
+                        "driver": lane.driver,
+                        "structured_result_capability": False,
+                        "enabled": is_enabled,
+                        "actionable": True,
+                        "optional": False,
+                        "owner_action": True,
+                    }
+                    checks.append(
+                        DoctorCheck(
+                            name="doctor.campaign.structured_result",
+                            status=STATUS_WARN,
+                            lane=canonical,
+                            message=f"{canonical} campaign structured-result capability probe failed",
+                            detail=detail,
+                            remediation=(
+                                f"Verify {canonical} campaign adapter output parsing and schema compliance."
+                            ),
+                        )
+                    )
 
         elif lane.driver in {"hosted_bridge", "saas_event"}:
             has_credentials, missing_var = _check_credentials(lane, env=current_env)
@@ -907,6 +931,29 @@ def check_adoption_campaign_readiness(
                         },
                     )
                 )
+                if not structured_capability:
+                    detail = {
+                        "provider": canonical,
+                        "lane": lane.lane_id,
+                        "driver": lane.driver,
+                        "structured_result_capability": False,
+                        "enabled": is_enabled,
+                        "actionable": True,
+                        "optional": False,
+                        "owner_action": True,
+                    }
+                    checks.append(
+                        DoctorCheck(
+                            name="doctor.campaign.structured_result",
+                            status=STATUS_WARN,
+                            lane=canonical,
+                            message=f"{canonical} campaign structured-result capability probe failed",
+                            detail=detail,
+                            remediation=(
+                                f"Verify {canonical} campaign adapter output parsing and schema compliance."
+                            ),
+                        )
+                    )
 
     # 3. Campaign Storage Writable Check
     storage_rel = ".code-mower/campaigns"
@@ -1101,6 +1148,7 @@ def check_adoption_campaign_readiness(
             "doctor.campaign.adapter",
             "doctor.campaign.credentials",
             CAMPAIGN_AUTH_CHECK_NAME,
+            "doctor.campaign.structured_result",
         }
     ]
     # A provider is ready only when every one of its checks is clean: an

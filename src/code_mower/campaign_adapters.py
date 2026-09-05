@@ -358,7 +358,7 @@ def build_qualification_prompt(
         (
             f"runtime_class is exactly {target_runtime}; provider and"
             if target_runtime
-            else "runtime_class is unknown or python_<major>.<minor>; provider and"
+            else "runtime_class is python_<major>.<minor>; provider and"
         ),
         "executor are lowercase safe identifiers; steps is a non-empty list of",
         "{id, status, elapsed_seconds, warning_count, owner_action_count} with",
@@ -562,7 +562,9 @@ def _extract_claude_result(stdout: str) -> dict[str, Any] | None:
         envelope = json.loads(stdout)
     except json.JSONDecodeError:
         envelope = None
-    if isinstance(envelope, Mapping) and envelope.get("is_error") is not True:
+    if isinstance(envelope, Mapping):
+        if envelope.get("is_error") is True:
+            return None
         structured = envelope.get("structured_output")
         if isinstance(structured, Mapping):
             return dict(structured)
@@ -573,6 +575,7 @@ def _extract_claude_result(stdout: str) -> dict[str, Any] | None:
             parsed = code_mower_gemini_cli.parse_response_json(result)
             if parsed is not None:
                 return parsed
+        return None
     return code_mower_gemini_cli.parse_response_json(stdout)
 
 
@@ -613,12 +616,14 @@ def check_structured_result_capability(provider: str) -> bool:
     Uses a zero-network, zero-token in-memory fixture to verify that Code Mower
     can correctly parse and validate adoption results from this provider.
     """
+    from datetime import datetime, timedelta, timezone
     from code_mower.release_qualify import validate_adoption_result_payload
 
     canonical = provider.lower().replace("-", "_")
+    recent = datetime.now(timezone.utc) - timedelta(seconds=60)
     sample_payload = {
         "schema": "code_mower.adoptionResult.v1",
-        "timestamp_utc": "2026-09-04T08:00:00Z",
+        "timestamp_utc": recent.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "release_tag": "v1.0.8",
         "package_identity": "code-mower",
         "normalized_version": "1.0.8",

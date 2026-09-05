@@ -286,10 +286,9 @@ def check_campaign_auth_readiness(
         )
 
     if canonical == "muse":
-        has_key = bool(
-            current_env.get("META_API_KEY", "").strip()
-            or current_env.get("META_API_KEY_FILE", "").strip()
-        )
+        from .. import muse_cli_audit_pr as code_mower_muse_cli
+
+        has_key = bool(code_mower_muse_cli.resolve_muse_api_key(current_env))
         has_ambient = current_env.get("MUSE_CLI_USE_AMBIENT_HOME", "").strip().lower() in {
             "1",
             "true",
@@ -330,8 +329,8 @@ def check_campaign_auth_readiness(
             message="muse campaign auth requires META_API_KEY or MUSE_CLI_USE_AMBIENT_HOME=1",
             detail=detail,
             remediation=(
-                "Set META_API_KEY or set MUSE_CLI_USE_AMBIENT_HOME=1 in trusted "
-                "environments."
+                "Set META_API_KEY or point META_API_KEY_FILE at a local key file, or set "
+                "MUSE_CLI_USE_AMBIENT_HOME=1 in trusted environments."
             ),
         )
 

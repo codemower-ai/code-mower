@@ -469,6 +469,32 @@ class AdapterTransportTests(unittest.TestCase):
         self.assertEqual(json.loads(output.read_text(encoding="utf-8")), _adoption_result("claude"))
         self.assertNotIn("SECRET-NOISE", output.read_text(encoding="utf-8"))
 
+    def test_claude_rejects_is_error_true_envelope_even_with_valid_fenced_result(self) -> None:
+        """A valid Claude error envelope must fail closed even if result contains fenced JSON."""
+        valid_payload = _adoption_result("claude")
+        fenced_payload = f"Error details:\n```json\n{json.dumps(valid_payload)}\n```"
+        envelope = json.dumps({
+            "is_error": True,
+            "result": fenced_payload,
+        })
+        extracted = campaign_adapters._extract_claude_result(envelope)
+        self.assertIsNone(extracted)
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            return subprocess.CompletedProcess(list(argv), 0, stdout=envelope, stderr="")
+
+        code, output, _tmp = self._run("claude", runner)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.exists())
+
+    def test_claude_fenced_fallback_applies_only_when_not_valid_envelope(self) -> None:
+        valid_payload = _adoption_result("claude")
+        raw_fenced = f"```json\n{json.dumps(valid_payload)}\n```"
+        extracted = campaign_adapters._extract_claude_result(raw_fenced)
+        self.assertEqual(extracted, valid_payload)
+
     def test_antigravity_uses_prompt_file_not_stdin(self) -> None:
         seen: dict[str, Any] = {}
 

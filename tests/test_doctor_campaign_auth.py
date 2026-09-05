@@ -314,6 +314,166 @@ class CampaignAuthProbeTests(unittest.TestCase):
             readiness_key = next(c for c in checks_key if c.name == "doctor.campaign.readiness")
             self.assertIn("muse", readiness_key.detail.get("ready_providers", []))
 
+    def test_muse_meta_api_key_file_validation(self) -> None:
+        config = {
+            "lanes": {
+                "muse_cli": {
+                    "provider_config": {
+                        "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                    }
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            def which_fn(cmd: str) -> str | None:
+                return "/opt/bin/muse" if cmd == "muse" else None
+
+            # 1. Missing file: path does not exist
+            missing_file = tmp_path / "nonexistent.key"
+            checks_missing = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=tmp_path,
+                env={"META_API_KEY_FILE": str(missing_file)},
+                which_fn=which_fn,
+                providers=["muse"],
+            )
+            auth_missing = next(c for c in checks_missing if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_missing.status, STATUS_WARN)
+            self.assertEqual(auth_missing.detail.get("auth_probe"), "missing_auth")
+            readiness_missing = next(c for c in checks_missing if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("muse", readiness_missing.detail.get("ready_providers", []))
+            self.assertNotIn(str(missing_file), auth_missing.message)
+            self.assertNotIn(str(missing_file), str(auth_missing.detail))
+
+            # 2. Non-file (directory)
+            non_file = tmp_path / "key_dir"
+            non_file.mkdir()
+            checks_dir = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=tmp_path,
+                env={"META_API_KEY_FILE": str(non_file)},
+                which_fn=which_fn,
+                providers=["muse"],
+            )
+            auth_dir = next(c for c in checks_dir if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_dir.status, STATUS_WARN)
+            readiness_dir = next(c for c in checks_dir if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("muse", readiness_dir.detail.get("ready_providers", []))
+
+            # 3. Unreadable file where portable
+            unreadable_file = tmp_path / "unreadable.key"
+            unreadable_file.write_text("secret-unreadable-token", encoding="utf-8")
+            try:
+                unreadable_file.chmod(0o000)
+                is_unreadable = not os.access(unreadable_file, os.R_OK)
+            except OSError:
+                is_unreadable = False
+            if is_unreadable:
+                checks_unreadable = check_adoption_campaign_readiness(
+                    config=config,
+                    repo_root=tmp_path,
+                    env={"META_API_KEY_FILE": str(unreadable_file)},
+                    which_fn=which_fn,
+                    providers=["muse"],
+                )
+                auth_unreadable = next(c for c in checks_unreadable if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+                self.assertEqual(auth_unreadable.status, STATUS_WARN)
+                readiness_unreadable = next(c for c in checks_unreadable if c.name == "doctor.campaign.readiness")
+                self.assertNotIn("muse", readiness_unreadable.detail.get("ready_providers", []))
+                self.assertNotIn("secret-unreadable-token", str(auth_unreadable.detail))
+                self.assertNotIn(str(unreadable_file), str(auth_unreadable.detail))
+                unreadable_file.chmod(0o600)
+
+            # 4. Empty and whitespace-only file
+            empty_file = tmp_path / "empty.key"
+            empty_file.write_text("", encoding="utf-8")
+            checks_empty = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=tmp_path,
+                env={"META_API_KEY_FILE": str(empty_file)},
+                which_fn=which_fn,
+                providers=["muse"],
+            )
+            auth_empty = next(c for c in checks_empty if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_empty.status, STATUS_WARN)
+            readiness_empty = next(c for c in checks_empty if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("muse", readiness_empty.detail.get("ready_providers", []))
+
+            ws_file = tmp_path / "whitespace.key"
+            ws_file.write_text("   \n\t \n", encoding="utf-8")
+            checks_ws = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=tmp_path,
+                env={"META_API_KEY_FILE": str(ws_file)},
+                which_fn=which_fn,
+                providers=["muse"],
+            )
+            auth_ws = next(c for c in checks_ws if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_ws.status, STATUS_WARN)
+            readiness_ws = next(c for c in checks_ws if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("muse", readiness_ws.detail.get("ready_providers", []))
+
+            # 5. Malformed file (rejected assignment or comments only)
+            malformed_file = tmp_path / "malformed.key"
+            malformed_file.write_text("OTHER_API_KEY=token123\n", encoding="utf-8")
+            checks_malformed = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=tmp_path,
+                env={"META_API_KEY_FILE": str(malformed_file)},
+                which_fn=which_fn,
+                providers=["muse"],
+            )
+            auth_malformed = next(c for c in checks_malformed if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_malformed.status, STATUS_WARN)
+            readiness_malformed = next(c for c in checks_malformed if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("muse", readiness_malformed.detail.get("ready_providers", []))
+
+            comment_file = tmp_path / "comments.key"
+            comment_file.write_text("# Just a comment\n# Another comment\n", encoding="utf-8")
+            checks_comment = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=tmp_path,
+                env={"META_API_KEY_FILE": str(comment_file)},
+                which_fn=which_fn,
+                providers=["muse"],
+            )
+            auth_comment = next(c for c in checks_comment if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_comment.status, STATUS_WARN)
+            readiness_comment = next(c for c in checks_comment if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("muse", readiness_comment.detail.get("ready_providers", []))
+
+            # 6. Valid file coverage (raw key, shell assignment, export assignment)
+            valid_secret = "muse-super-secret-key-12345"
+            for filename, content in (
+                ("valid_raw.key", valid_secret),
+                ("valid_shell.key", f"META_API_KEY={valid_secret}"),
+                ("valid_export.key", f'export META_API_KEY="{valid_secret}"\n'),
+            ):
+                with self.subTest(file_type=filename):
+                    valid_file = tmp_path / filename
+                    valid_file.write_text(content, encoding="utf-8")
+                    checks_valid = check_adoption_campaign_readiness(
+                        config=config,
+                        repo_root=tmp_path,
+                        env={"META_API_KEY_FILE": str(valid_file)},
+                        which_fn=which_fn,
+                        providers=["muse"],
+                    )
+                    auth_valid = next(c for c in checks_valid if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+                    self.assertEqual(auth_valid.status, STATUS_PASS)
+                    self.assertEqual(auth_valid.detail.get("auth_probe"), "api_key")
+                    readiness_valid = next(c for c in checks_valid if c.name == "doctor.campaign.readiness")
+                    self.assertIn("muse", readiness_valid.detail.get("ready_providers", []))
+                    # Do not expose path or contents
+                    self.assertNotIn(valid_secret, auth_valid.message)
+                    self.assertNotIn(valid_secret, str(auth_valid.detail))
+                    self.assertNotIn(valid_secret, str(readiness_valid.detail))
+                    self.assertNotIn(str(valid_file), auth_valid.message)
+                    self.assertNotIn(str(valid_file), str(auth_valid.detail))
+                    self.assertNotIn(str(valid_file), str(readiness_valid.detail))
+
     def test_only_codex_declares_a_campaign_auth_probe(self) -> None:
         probing = sorted(
             lane_id
