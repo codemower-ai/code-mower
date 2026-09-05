@@ -824,6 +824,77 @@ class ExactPackageSpecParseTests(unittest.TestCase):
                 )
             self.assertIn("Version mismatch", str(ctx.exception))
 
+    def test_validate_adoption_result_payload_requires_python_312_or_higher(self) -> None:
+        release_qualify.validate_adoption_result_payload(_valid_adoption_result(runtime_class="python_3.12"))
+        release_qualify.validate_adoption_result_payload(_valid_adoption_result(runtime_class="python_3.13"))
+        release_qualify.validate_adoption_result_payload(_valid_adoption_result(runtime_class="python_3.14"))
+
+        for unsupported in ("python_3.11", "python_3.10", "python_3.9", "python_3.8"):
+            with self.subTest(runtime_class=unsupported):
+                with self.assertRaisesRegex(ValueError, "must be >= python_3.12"):
+                    release_qualify.validate_adoption_result_payload(_valid_adoption_result(runtime_class=unsupported))
+
+        for non_python in ("unknown", "", "node_22", "ruby_3.2", "python_3", "python_3.12.1", "pypy_3.12"):
+            with self.subTest(runtime_class=non_python):
+                with self.assertRaisesRegex(ValueError, "must be 'python_<major>.<minor>'"):
+                    release_qualify.validate_adoption_result_payload(_valid_adoption_result(runtime_class=non_python))
+
+    def test_validate_adoption_result_rejects_unknown_runtime_across_result_types(self) -> None:
+        """Hosted, manual, and custom results reporting runtime_class unknown must be rejected."""
+        # 1. Hosted runner result (e.g. host_class='github_actions')
+        hosted_unknown = _valid_adoption_result(
+            host_class="github_actions",
+            provider="devin",
+            executor="devin",
+            runtime_class="unknown",
+        )
+        with self.assertRaisesRegex(ValueError, "must be 'python_<major>.<minor>'"):
+            release_qualify.validate_adoption_result_payload(hosted_unknown)
+
+        hosted_valid = _valid_adoption_result(
+            host_class="github_actions",
+            provider="devin",
+            executor="devin",
+            runtime_class="python_3.12",
+        )
+        release_qualify.validate_adoption_result_payload(hosted_valid)
+
+        # 2. Manual qualification result
+        manual_unknown = _valid_adoption_result(
+            host_class="local",
+            provider="manual",
+            executor="manual",
+            runtime_class="unknown",
+        )
+        with self.assertRaisesRegex(ValueError, "must be 'python_<major>.<minor>'"):
+            release_qualify.validate_adoption_result_payload(manual_unknown)
+
+        manual_valid = _valid_adoption_result(
+            host_class="local",
+            provider="manual",
+            executor="manual",
+            runtime_class="python_3.12",
+        )
+        release_qualify.validate_adoption_result_payload(manual_valid)
+
+        # 3. Custom-adapter result
+        custom_unknown = _valid_adoption_result(
+            host_class="local",
+            provider="custom_audit",
+            executor="custom_runner",
+            runtime_class="unknown",
+        )
+        with self.assertRaisesRegex(ValueError, "must be 'python_<major>.<minor>'"):
+            release_qualify.validate_adoption_result_payload(custom_unknown)
+
+        custom_valid = _valid_adoption_result(
+            host_class="local",
+            provider="custom_audit",
+            executor="custom_runner",
+            runtime_class="python_3.12",
+        )
+        release_qualify.validate_adoption_result_payload(custom_valid)
+
 
 if __name__ == "__main__":
     unittest.main()

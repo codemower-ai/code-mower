@@ -592,6 +592,7 @@ def check_adoption_campaign_readiness(
 ) -> tuple[DoctorCheck, ...]:
     """Validate release campaign readiness across configured providers and storage."""
     from code_mower import lane_status
+    from code_mower.campaign_adapters import check_structured_result_capability
     from code_mower.cloud import resolve_cloud_token
     from code_mower.release_campaigns import (
         _check_credentials,
@@ -600,6 +601,7 @@ def check_adoption_campaign_readiness(
         _safe_error,
         _validate_adapter_argv_template,
         _validate_adapter_timeout,
+        resolve_supported_runtime,
         resolve_provider_lane,
     )
 
@@ -607,6 +609,9 @@ def check_adoption_campaign_readiness(
     current_env = os.environ if env is None else env
     runner = lane_status._run_command if command_runner is None else command_runner
     checks: list[DoctorCheck] = []
+    provider_readiness: dict[str, dict[str, Any]] = {}
+    runtime_resolution_checked = False
+    supported_runtime: tuple[str, str] | None = None
 
     for prov in providers:
         try:
@@ -618,6 +623,11 @@ def check_adoption_campaign_readiness(
 
         if lane.driver == "local_cli":
             if adoption_posture in {"hosted-builders", "orchestrator-only"}:
+                provider_readiness[canonical] = {
+                    "command": False,
+                    "auth": "skipped",
+                    "structured_result": check_structured_result_capability(canonical),
+                }
                 checks.append(
                     DoctorCheck(
                         name="doctor.campaign.adapter",
@@ -635,6 +645,51 @@ def check_adoption_campaign_readiness(
                 )
                 continue
 
+            if not runtime_resolution_checked:
+                supported_runtime = resolve_supported_runtime(
+                    environ=current_env,
+                    which_fn=which_fn,
+                )
+                runtime_resolution_checked = True
+            runtime_ready = supported_runtime is not None
+            runtime_detail: dict[str, Any] = {
+                "provider": canonical,
+                "lane": lane.lane_id,
+                "driver": lane.driver,
+                "runtime_available": runtime_ready,
+                "enabled": is_enabled,
+            }
+            if runtime_ready:
+                runtime_detail["runtime_class"] = supported_runtime[1]
+            else:
+                runtime_detail.update(
+                    {
+                        "error": "python_runtime_unavailable",
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
+                    }
+                )
+                if is_enabled:
+                    runtime_detail["owner_action"] = True
+            checks.append(
+                DoctorCheck(
+                    name="doctor.campaign.runtime",
+                    status=STATUS_PASS if runtime_ready else STATUS_WARN,
+                    lane=canonical,
+                    message=(
+                        f"{canonical} campaign Python runtime ready"
+                        if runtime_ready
+                        else f"{canonical} campaign requires Python 3.12+"
+                    ),
+                    detail=runtime_detail,
+                    remediation=(
+                        ""
+                        if runtime_ready
+                        else "Install Python 3.12+ on PATH or set CODE_MOWER_PYTHON to a supported interpreter."
+                    ),
+                )
+            )
+
             argv_template, timeout_value, config_error, config_detail = _resolve_adapter_config_for_lane(
                 lane,
                 repo_root=root,
@@ -651,6 +706,7 @@ def check_adoption_campaign_readiness(
 
             cmd = _find_command(lane, which_fn=which_fn)
             command_name = lane.provider_config.get("command") or lane.provider
+            structured_capability = check_structured_result_capability(canonical)
 
             if config_error:
                 detail = {
@@ -667,6 +723,11 @@ def check_adoption_campaign_readiness(
                 }
                 if is_enabled:
                     detail["owner_action"] = True
+                provider_readiness[canonical] = {
+                    "command": bool(cmd),
+                    "auth": "unknown",
+                    "structured_result": structured_capability,
+                }
                 checks.append(
                     DoctorCheck(
                         name="doctor.campaign.adapter",
@@ -694,6 +755,11 @@ def check_adoption_campaign_readiness(
                 }
                 if is_enabled:
                     detail["owner_action"] = True
+                provider_readiness[canonical] = {
+                    "command": False,
+                    "auth": "unknown",
+                    "structured_result": structured_capability,
+                }
                 checks.append(
                     DoctorCheck(
                         name="doctor.campaign.adapter",
@@ -718,6 +784,11 @@ def check_adoption_campaign_readiness(
                 }
                 if is_enabled:
                     detail["owner_action"] = True
+                provider_readiness[canonical] = {
+                    "command": True,
+                    "auth": "unknown",
+                    "structured_result": structured_capability,
+                }
                 checks.append(
                     DoctorCheck(
                         name="doctor.campaign.adapter",
@@ -746,6 +817,7 @@ def check_adoption_campaign_readiness(
                             "command": cmd,
                             "command_found": True,
                             "adapter_configured": True,
+                            "structured_result_capability": structured_capability,
                             "enabled": is_enabled,
                         },
                     )
@@ -758,8 +830,40 @@ def check_adoption_campaign_readiness(
                     env=current_env,
                     probe_runner=auth_probe_runner,
                 )
+                auth_state = "unprobed"
                 if auth_check is not None:
                     checks.append(auth_check)
+                    auth_state = str(auth_check.detail.get("auth_probe", auth_check.status))
+                provider_readiness[canonical] = {
+                    "command": True,
+                    "auth": auth_state,
+                    "structured_result": structured_capability,
+                }
+                auth_pass = auth_check is None or auth_check.status != STATUS_WARN
+                if auth_pass and not structured_capability:
+                    detail = {
+                        "provider": canonical,
+                        "lane": lane.lane_id,
+                        "driver": lane.driver,
+                        "structured_result_capability": False,
+                        "enabled": is_enabled,
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
+                    }
+                    if is_enabled:
+                        detail["owner_action"] = True
+                    checks.append(
+                        DoctorCheck(
+                            name="doctor.campaign.structured_result",
+                            status=STATUS_WARN,
+                            lane=canonical,
+                            message=f"{canonical} campaign structured-result capability probe failed",
+                            detail=detail,
+                            remediation=(
+                                f"Verify {canonical} campaign adapter output parsing and schema compliance."
+                            ),
+                        )
+                    )
 
         elif lane.driver in {"hosted_bridge", "saas_event"}:
             has_credentials, missing_var = _check_credentials(lane, env=current_env)
@@ -767,6 +871,22 @@ def check_adoption_campaign_readiness(
                 lane, env=current_env
             )
             has_repo = bool(repo_slug)
+            structured_capability = check_structured_result_capability(canonical)
+            cmd_ready = bool(has_credentials and has_repo and transport_ready)
+            if cmd_ready:
+                auth_state = "ready"
+            elif not has_credentials:
+                auth_state = "missing_credentials"
+            elif not has_repo:
+                auth_state = "missing_repo"
+            else:
+                auth_state = "unverified_transport"
+
+            provider_readiness[canonical] = {
+                "command": cmd_ready,
+                "auth": auth_state,
+                "structured_result": structured_capability,
+            }
 
             if not has_credentials:
                 detail = {
@@ -860,6 +980,30 @@ def check_adoption_campaign_readiness(
                         },
                     )
                 )
+                if not structured_capability:
+                    detail = {
+                        "provider": canonical,
+                        "lane": lane.lane_id,
+                        "driver": lane.driver,
+                        "structured_result_capability": False,
+                        "enabled": is_enabled,
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
+                    }
+                    if is_enabled:
+                        detail["owner_action"] = True
+                    checks.append(
+                        DoctorCheck(
+                            name="doctor.campaign.structured_result",
+                            status=STATUS_WARN,
+                            lane=canonical,
+                            message=f"{canonical} campaign structured-result capability probe failed",
+                            detail=detail,
+                            remediation=(
+                                f"Verify {canonical} campaign adapter output parsing and schema compliance."
+                            ),
+                        )
+                    )
 
     # 3. Campaign Storage Writable Check
     storage_rel = ".code-mower/campaigns"
@@ -1052,8 +1196,10 @@ def check_adoption_campaign_readiness(
         if check.name
         in {
             "doctor.campaign.adapter",
+            "doctor.campaign.runtime",
             "doctor.campaign.credentials",
             CAMPAIGN_AUTH_CHECK_NAME,
+            "doctor.campaign.structured_result",
         }
     ]
     # A provider is ready only when every one of its checks is clean: an
@@ -1062,7 +1208,13 @@ def check_adoption_campaign_readiness(
         check.lane for check in provider_checks if check.status == STATUS_WARN and check.lane
     }
     ready_providers = sorted(
-        {check.lane for check in provider_checks if check.status == STATUS_PASS and check.lane}
+        {
+            check.lane
+            for check in provider_checks
+            if check.status == STATUS_PASS
+            and check.lane
+            and provider_readiness.get(check.lane, {}).get("structured_result") is True
+        }
         - warned_providers
     )
     actionable_providers = sorted(
@@ -1123,6 +1275,7 @@ def check_adoption_campaign_readiness(
                 "actionable_providers": actionable_providers,
                 "optional_providers": optional_providers,
                 "preview_command": preview_command,
+                "provider_readiness": provider_readiness,
             },
             remediation=readiness_remediation,
         )
