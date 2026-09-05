@@ -63,7 +63,10 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from code_mower import gemini_cli_audit_pr as code_mower_gemini_cli
     from code_mower import muse_cli_audit_pr as code_mower_muse_cli
-    from code_mower.provider_runners import build_allowlisted_child_env
+    from code_mower.provider_runners import (
+        DEFAULT_HOME_ENV_KEYS,
+        build_allowlisted_child_env,
+    )
     from code_mower.release_qualify import (
         _parse_exact_package_spec,
         _validate_qualification_context,
@@ -75,7 +78,7 @@ if __package__ in {None, ""}:
 else:
     from . import gemini_cli_audit_pr as code_mower_gemini_cli
     from . import muse_cli_audit_pr as code_mower_muse_cli
-    from .provider_runners import build_allowlisted_child_env
+    from .provider_runners import DEFAULT_HOME_ENV_KEYS, build_allowlisted_child_env
     from .release_qualify import (
         _parse_exact_package_spec,
         _validate_qualification_context,
@@ -689,18 +692,19 @@ def build_adapter_child_env(provider: str, *, codex_home: Path | None = None) ->
 
     Provider API keys, GitHub tokens, Code Mower cloud tokens, and unrelated
     shell state never reach the child. Claude, Antigravity, and Muse retain the
-    ambient home only for their existing login stores. Codex instead receives
-    a Code Mower-owned home whose credential is held by the OS keyring. Muse's
-    explicit key uses stdin.
+    ambient home only for their existing login stores. Codex retains only the
+    OS HOME needed to locate the platform keyring while CODEX_HOME points at
+    Code Mower's isolated config and state directory. Muse's explicit key uses
+    stdin.
     """
     allowlist = list(ADAPTER_ENV_ALLOWLIST)
     child_env = build_allowlisted_child_env(
         allowlist,
-        preserve_ambient_home=provider != "codex",
+        preserve_ambient_home=True,
+        ambient_home_keys=("HOME",) if provider == "codex" else DEFAULT_HOME_ENV_KEYS,
     )
     if provider == "codex":
         home = (codex_home or _default_codex_campaign_home()).expanduser().resolve()
-        child_env["HOME"] = str(home)
         child_env["CODEX_HOME"] = str(home)
     return child_env
 

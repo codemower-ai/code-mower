@@ -251,6 +251,7 @@ class AdapterTransportTests(unittest.TestCase):
             {
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
                 "HOME": "/tmp/provider-home",
+                "XDG_CONFIG_HOME": "/tmp/provider-xdg-config",
                 "CODEX_HOME": "/tmp/codex-home",
                 "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
                 "XDG_RUNTIME_DIR": "/run/user/1000",
@@ -271,11 +272,17 @@ class AdapterTransportTests(unittest.TestCase):
                     )
                     self.assertEqual(child_env["XDG_RUNTIME_DIR"], ambient["XDG_RUNTIME_DIR"])
                     if provider == "codex":
-                        self.assertEqual(child_env["HOME"], str(codex_home.resolve()))
+                        # macOS keyring discovery needs the real OS home even
+                        # though Codex config and state stay isolated.
+                        self.assertEqual(child_env["HOME"], ambient["HOME"])
                         self.assertEqual(child_env["CODEX_HOME"], str(codex_home.resolve()))
-                        self.assertNotEqual(child_env["HOME"], ambient["HOME"])
+                        self.assertNotEqual(child_env["HOME"], child_env["CODEX_HOME"])
+                        self.assertNotIn("XDG_CONFIG_HOME", child_env)
                     else:
                         self.assertEqual(child_env["HOME"], ambient["HOME"])
+                        self.assertEqual(
+                            child_env["XDG_CONFIG_HOME"], ambient["XDG_CONFIG_HOME"]
+                        )
                         self.assertNotIn("CODEX_HOME", child_env)
                     for secret_name in secret_names:
                         self.assertNotIn(secret_name, child_env)
