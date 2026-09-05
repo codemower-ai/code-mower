@@ -35,9 +35,9 @@ provider          verified CLI         invocation surface
                                       ``--json``, schema/last-message output, ``-C``
 ``claude``        Claude Code 2.1.258  ``--print`` with stdin, ``--output-format json``,
                                       explicit tool/permission controls, ``--json-schema``
-``antigravity``   agy 1.1.26          ``--print`` with a prompt file, ``--sandbox``,
-                                      noninteractive approval, ``--add-dir``,
-                                      ``--print-timeout``
+``antigravity``   runtime-probed       ``--print`` with a prompt file, ``--sandbox``,
+                                      noninteractive approval, ``--new-project``,
+                                      ``--add-dir``, ``--print-timeout``
 ``muse``          Muse Code 1.0.3      ``exec`` with ``--json``, ``--prompt-file``,
                                       ``--workspace``
 ================= ==================== ====================================================
@@ -105,7 +105,6 @@ SUPPORTED_ADAPTER_PROVIDERS = ("codex", "claude", "antigravity", "muse")
 VERIFIED_CLI_VERSIONS = {
     "codex": "codex-cli 0.147.0",
     "claude": "Claude Code 2.1.258",
-    "antigravity": "agy 1.1.26",
     "muse": "Muse Code 1.0.3",
 }
 
@@ -554,18 +553,21 @@ def build_antigravity_argv(
     timeout_seconds: int,
     model: str = "",
 ) -> list[str]:
-    """Argv for ``agy --print`` with prompt-file transport.
+    """Argv for ``agy --print`` with prompt-file transport and project isolation.
 
     Mirrors the Antigravity audit wrapper (via the Gemini CLI wrapper): the
     prompt lives in a file inside the workspace and the agent is pointed at it
     with a short instruction, sandboxed to that workspace. Headless agy cannot
     prompt for command permission, so permission checks are auto-approved only
-    inside that retained sandbox.
+    inside that retained sandbox. Every qualification run passes
+    ``--new-project`` so the session executes inside a fresh project boundary
+    and never inherits active conversations or resume semantics.
     """
     argv = [
         agy_bin,
         "--sandbox",
         "--dangerously-skip-permissions",
+        "--new-project",
         "--add-dir",
         workspace_dir,
         "--print-timeout",
@@ -742,6 +744,124 @@ def check_structured_result_capability(provider: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def check_antigravity_readiness(
+    agy_bin: str,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    timeout_seconds: int = 10,
+    child_env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Detect whether installed agy CLI supports --new-project for campaign isolation.
+
+    Fails closed with bounded actionable metadata (never leaking stdout/stderr,
+    prompts, paths, auth details, or secrets) when the installed agy lacks the flag.
+    """
+    if not agy_bin:
+        return {
+            "ready": False,
+            "provider": "antigravity",
+            "capability": "new_project",
+            "required_flag": "--new-project",
+            "error": "command_not_found",
+            "actionable": True,
+            "message": "antigravity CLI is not installed",
+            "remediation": "Install agy CLI on PATH or specify the executable in code-mower.yml.",
+        }
+
+    probe_env = dict(child_env) if child_env is not None else build_adapter_child_env("antigravity")
+    probe_error = ""
+    try:
+        if runner is not None:
+            try:
+                completed = runner(
+                    [agy_bin, "--help"],
+                    timeout=timeout_seconds,
+                    env=probe_env,
+                )
+            except TypeError:
+                completed = runner([agy_bin, "--help"])
+        else:
+            completed = subprocess.run(
+                [agy_bin, "--help"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout_seconds,
+                env=probe_env,
+            )
+        output = (completed.stdout or "") + (completed.stderr or "")
+        if completed.returncode != 0:
+            probe_error = "capability_probe_failed"
+        has_new_project = not probe_error and ("--new-project" in output.split())
+    except subprocess.TimeoutExpired:
+        probe_error = "capability_probe_timeout"
+        has_new_project = False
+    except OSError:
+        probe_error = "capability_probe_failed"
+        has_new_project = False
+
+    if probe_error:
+        timed_out = probe_error == "capability_probe_timeout"
+        return {
+            "ready": False,
+            "provider": "antigravity",
+            "capability": "new_project",
+            "required_flag": "--new-project",
+            "error": probe_error,
+            "actionable": True,
+            "message": (
+                "antigravity CLI capability probe timed out"
+                if timed_out
+                else "antigravity CLI capability probe failed"
+            ),
+            "remediation": (
+                "Retry the bounded agy --help probe; if it continues to time out, "
+                "repair the CLI installation before running a campaign."
+                if timed_out
+                else "Verify that agy --help runs successfully, then retry campaign readiness."
+            ),
+        }
+
+    if not has_new_project:
+        return {
+            "ready": False,
+            "provider": "antigravity",
+            "capability": "new_project",
+            "required_flag": "--new-project",
+            "error": "missing_new_project_capability",
+            "actionable": True,
+            "message": "installed agy CLI lacks required --new-project flag for campaign isolation",
+            "remediation": "Upgrade agy CLI to a version whose --help exposes --new-project.",
+        }
+
+    return {
+        "ready": True,
+        "provider": "antigravity",
+        "capability": "new_project",
+        "required_flag": "--new-project",
+        "error": "",
+        "actionable": False,
+        "message": "agy CLI supports --new-project campaign isolation",
+        "remediation": "",
+    }
+
+
+def check_antigravity_new_project_capability(
+    agy_bin: str,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    timeout_seconds: int = 10,
+) -> bool:
+    """Return True if installed agy supports --new-project, False otherwise."""
+    return bool(
+        check_antigravity_readiness(
+            agy_bin,
+            runner=runner,
+            timeout_seconds=timeout_seconds,
+        ).get("ready")
+    )
 
 
 def validate_bound_result(
@@ -944,6 +1064,7 @@ def run_campaign_adapter(
     python_bin: str = "",
     target_runtime: str = "",
     provider_runner: ProviderRunner = run_provider_command,
+    capability_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> int:
     """Run one maintained provider adapter. Returns a process exit code.
 
@@ -1068,6 +1189,13 @@ def run_campaign_adapter(
                     )
                 candidate = _extract_claude_result(completed.stdout)
             elif provider == "antigravity":
+                readiness = check_antigravity_readiness(
+                    resolved_bin,
+                    runner=capability_runner,
+                    child_env=child_env,
+                )
+                if not readiness["ready"]:
+                    return _fail(provider, readiness["message"])
                 prompt_path = workspace_dir / "campaign.prompt-input.txt"
                 prompt_path.write_text(prompt, encoding="utf-8")
                 agy_model = model or _first_env_value(ANTIGRAVITY_MODEL_ENV_NAMES)
