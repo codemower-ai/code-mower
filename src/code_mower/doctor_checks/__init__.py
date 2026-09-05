@@ -22,6 +22,11 @@ from .adoption import (
     normalize_repo_slug,
     repo_slug_from_remote,
 )
+from .campaign_auth import (
+    CAMPAIGN_AUTH_CHECK_NAME,
+    CAMPAIGN_AUTH_PROBE_ENV,
+    check_campaign_auth_readiness,
+)
 from .common import (
     ACTIONS_COST_SAMPLE_DEFAULT,
     ACTIONS_COST_SAMPLE_MAX,
@@ -108,6 +113,8 @@ __all__ = [
     "OPTIONAL_DOCTOR_STAGES",
     "ACTIONS_COST_SAMPLE_DEFAULT",
     "ACTIONS_COST_SAMPLE_MAX",
+    "CAMPAIGN_AUTH_CHECK_NAME",
+    "CAMPAIGN_AUTH_PROBE_ENV",
     "DEFAULT_CLOUD_TOKEN_DIR",
     "DEFAULT_CLOUD_TOKEN_ENV",
     "DoctorCheck",
@@ -124,6 +131,7 @@ __all__ = [
     "check_cloud_token_surface",
     "DEFAULT_CAMPAIGN_PROVIDERS",
     "check_adoption_campaign_readiness",
+    "check_campaign_auth_readiness",
     "check_adoption_posture_guidance",
     "check_adoption_setup",
     "check_github_auth_surface",
