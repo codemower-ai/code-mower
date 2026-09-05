@@ -1044,7 +1044,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--campaigns-dir",
         type=Path,
         default=None,
-        help="Directory to store campaign files (defaults to .code-mower/campaigns)",
+        help=(
+            "Directory to store campaign files. An explicit path is authoritative "
+            "and skips user-level discovery. When omitted, campaigns are stored in "
+            ".code-mower/campaigns and discovered across checkouts of the same "
+            "repository by a metadata-only user-level index."
+        ),
     )
     campaign.add_argument(
         "--record-result",
