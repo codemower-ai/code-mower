@@ -11631,6 +11631,56 @@ class RuntimeReadinessCampaignTests(unittest.TestCase):
             self.assertEqual(len(captured_target_python), 1)
             self.assertEqual(Path(captured_target_python[0]).resolve(), custom_py.resolve())
 
+    def test_build_adapter_argv_default_and_empty_target_runtime_resolves_bounded_runtime(self) -> None:
+        """_build_adapter_argv must evaluate bounded target_runtime deterministically rather than NameError."""
+        lane = _fake_local_cli_lane()
+        for empty_rt in (None, ""):
+            with self.subTest(target_runtime=empty_rt):
+                kwargs: dict[str, Any] = {
+                    "release_tag": "v1.0.0",
+                    "package_spec": "code-mower==1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "output_path": Path("/tmp/out.json"),
+                    "repo_path": Path("/tmp/repo"),
+                    "argv_template": (
+                        "{command}",
+                        "--python",
+                        "{target_python}",
+                        "--runtime",
+                        "{target_runtime}",
+                    ),
+                }
+                if empty_rt is not None:
+                    kwargs["target_runtime"] = empty_rt
+
+                argv = release_campaigns._build_adapter_argv(
+                    lane,
+                    "/bin/fake-provider-cli",
+                    **kwargs,
+                )
+                self.assertEqual(argv[0], "/bin/fake-provider-cli")
+                self.assertEqual(argv[1], "--python")
+                self.assertTrue(argv[2])
+                self.assertEqual(argv[3], "--runtime")
+                self.assertTrue(re.fullmatch(r"python_\d+\.\d+", argv[4]), f"Expected bounded python_X.Y, got {argv[4]}")
+                self.assertEqual(argv[4], release_campaigns._detect_runtime_class())
+
+        # Non-empty target_runtime is preserved
+        argv_explicit = release_campaigns._build_adapter_argv(
+            lane,
+            "/bin/fake-provider-cli",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            output_path=Path("/tmp/out.json"),
+            repo_path=Path("/tmp/repo"),
+            argv_template=("{command}", "--runtime", "{target_runtime}"),
+            target_runtime="python_3.14",
+        )
+        self.assertEqual(argv_explicit, ["/bin/fake-provider-cli", "--runtime", "python_3.14"])
+
 
 if __name__ == "__main__":
     unittest.main()

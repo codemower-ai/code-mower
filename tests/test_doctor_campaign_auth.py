@@ -263,6 +263,24 @@ class CampaignAuthProbeTests(unittest.TestCase):
                 {"command": True, "auth": "ambient_opt_in", "structured_result": True},
             )
 
+            # Disabled probe skips auth check, emits no warning, and stays in ready_providers
+            checks_disabled = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                env={CAMPAIGN_AUTH_PROBE_ENV: "0"},
+                which_fn=lambda cmd: "/opt/bin/agy" if cmd == "agy" else None,
+                providers=["antigravity"],
+            )
+            auth_skip = next(c for c in checks_disabled if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_skip.status, STATUS_SKIP)
+            self.assertEqual(auth_skip.detail.get("auth_probe"), "skipped")
+            readiness_skip = next(c for c in checks_disabled if c.name == "doctor.campaign.readiness")
+            self.assertIn("antigravity", readiness_skip.detail.get("ready_providers", []))
+            self.assertEqual(
+                readiness_skip.detail.get("provider_readiness", {}).get("antigravity"),
+                {"command": True, "auth": "skipped", "structured_result": True},
+            )
+
     def test_muse_requires_api_key_or_ambient_home(self) -> None:
         config = {
             "lanes": {
@@ -313,6 +331,24 @@ class CampaignAuthProbeTests(unittest.TestCase):
             self.assertEqual(auth_key.status, STATUS_PASS)
             readiness_key = next(c for c in checks_key if c.name == "doctor.campaign.readiness")
             self.assertIn("muse", readiness_key.detail.get("ready_providers", []))
+
+            # Disabled probe skips auth check, emits no warning, and stays in ready_providers
+            checks_disabled = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                env={CAMPAIGN_AUTH_PROBE_ENV: "0"},
+                which_fn=lambda cmd: "/opt/bin/muse" if cmd == "muse" else None,
+                providers=["muse"],
+            )
+            auth_skip = next(c for c in checks_disabled if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_skip.status, STATUS_SKIP)
+            self.assertEqual(auth_skip.detail.get("auth_probe"), "skipped")
+            readiness_skip = next(c for c in checks_disabled if c.name == "doctor.campaign.readiness")
+            self.assertIn("muse", readiness_skip.detail.get("ready_providers", []))
+            self.assertEqual(
+                readiness_skip.detail.get("provider_readiness", {}).get("muse"),
+                {"command": True, "auth": "skipped", "structured_result": True},
+            )
 
     def test_muse_meta_api_key_file_validation(self) -> None:
         config = {
@@ -563,6 +599,47 @@ class CampaignAuthProbeTests(unittest.TestCase):
         capability_only = REFERENCE_PROVIDERS["claude_review"]
         self.assertEqual(campaign_auth_logged_out_exit_codes(capability_only), ())
         self.assertEqual(campaign_auth_logged_out_markers(capability_only), ())
+
+    def test_disabled_auth_probe_skips_ambient_home_providers_and_preserves_readiness(self) -> None:
+        """Disabled auth probing must skip Antigravity and Muse ambient checks without warnings, preserving readiness."""
+        config = {
+            "lanes": {
+                "antigravity_cli": {
+                    "provider_config": {
+                        "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                    }
+                },
+                "muse_cli": {
+                    "provider_config": {
+                        "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                    }
+                },
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                env={CAMPAIGN_AUTH_PROBE_ENV: "0"},
+                which_fn=lambda cmd: f"/opt/bin/{cmd}" if cmd in {"agy", "muse"} else None,
+                providers=["antigravity", "muse"],
+            )
+            auth_checks = [c for c in checks if c.name == CAMPAIGN_AUTH_CHECK_NAME]
+            self.assertEqual(len(auth_checks), 2)
+            for c in auth_checks:
+                self.assertEqual(c.status, STATUS_SKIP)
+                self.assertEqual(c.detail.get("auth_probe"), "skipped")
+
+            warn_checks = [
+                c for c in checks if c.status == STATUS_WARN and c.lane in {"antigravity", "muse"}
+            ]
+            self.assertEqual(warn_checks, [])
+
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness.status, STATUS_PASS)
+            self.assertEqual(readiness.detail.get("ready_providers"), ["antigravity", "muse"])
+            self.assertEqual(readiness.detail.get("actionable_providers"), [])
+            self.assertEqual(readiness.detail.get("optional_providers"), [])
 
 
 if __name__ == "__main__":

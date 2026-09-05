@@ -236,6 +236,24 @@ def check_campaign_auth_readiness(
         return None
 
     current_env = os.environ if env is None else env
+    if not campaign_auth_probe_requested(current_env):
+        if canonical in {"antigravity", "muse"} or campaign_auth_probe_args(lane):
+            timeout_seconds = campaign_auth_probe_timeout(lane)
+            return DoctorCheck(
+                name=CAMPAIGN_AUTH_CHECK_NAME,
+                status=STATUS_SKIP,
+                lane=canonical,
+                message=f"skipped {canonical} campaign authentication probe ({CAMPAIGN_AUTH_PROBE_ENV})",
+                detail=_detail(
+                    canonical=canonical,
+                    lane=lane,
+                    state=AUTH_STATE_SKIPPED,
+                    enabled=enabled,
+                    timeout_seconds=timeout_seconds,
+                ),
+            )
+        return None
+
     if canonical == "antigravity":
         opted_in = current_env.get("ANTIGRAVITY_CLI_USE_AMBIENT_HOME", "").strip().lower() in {
             "1",
@@ -339,20 +357,6 @@ def check_campaign_auth_readiness(
         return None
 
     timeout_seconds = campaign_auth_probe_timeout(lane)
-    if not campaign_auth_probe_requested(env):
-        return DoctorCheck(
-            name=CAMPAIGN_AUTH_CHECK_NAME,
-            status=STATUS_SKIP,
-            lane=canonical,
-            message=f"skipped {canonical} campaign authentication probe ({CAMPAIGN_AUTH_PROBE_ENV})",
-            detail=_detail(
-                canonical=canonical,
-                lane=lane,
-                state=AUTH_STATE_SKIPPED,
-                enabled=enabled,
-                timeout_seconds=timeout_seconds,
-            ),
-        )
 
     provider = str(getattr(lane, "provider", "") or canonical)
     child_env, env_error = campaign_auth_probe_env(provider)

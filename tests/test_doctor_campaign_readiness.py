@@ -878,6 +878,58 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertIn("cursor_bugbot", readiness.detail.get("optional_providers", []))
             self.assertNotIn("cursor_bugbot", readiness.detail.get("actionable_providers", []))
 
+    def test_disabled_auth_probe_preserves_aggregate_readiness_for_ambient_providers(self) -> None:
+        """Setting CODE_MOWER_CAMPAIGN_AUTH_PROBE=0 keeps Antigravity and Muse ready without opt-ins or warnings."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "lanes": {
+                    "antigravity_cli": {
+                        "provider_config": {
+                            "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                            "campaign_adapter_timeout_seconds": 60,
+                        }
+                    },
+                    "muse_cli": {
+                        "provider_config": {
+                            "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                            "campaign_adapter_timeout_seconds": 60,
+                        }
+                    },
+                }
+            }
+
+            # 1. Probing enabled (default) without ambient opt-ins emits warnings and excludes both
+            checks_probed = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                which_fn=lambda cmd: f"/bin/{cmd}" if cmd in {"agy", "muse"} else None,
+                env={},
+                providers=["antigravity", "muse"],
+            )
+            readiness_probed = next(c for c in checks_probed if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness_probed.status, STATUS_WARN)
+            self.assertEqual(readiness_probed.detail.get("ready_providers"), [])
+            self.assertIn("antigravity", readiness_probed.detail.get("actionable_providers", []))
+            self.assertIn("muse", readiness_probed.detail.get("actionable_providers", []))
+
+            # 2. Probing disabled via CODE_MOWER_CAMPAIGN_AUTH_PROBE=0 skips auth, no warnings, both ready
+            checks_disabled = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                which_fn=lambda cmd: f"/bin/{cmd}" if cmd in {"agy", "muse"} else None,
+                env={"CODE_MOWER_CAMPAIGN_AUTH_PROBE": "0"},
+                providers=["antigravity", "muse"],
+            )
+            readiness_disabled = next(c for c in checks_disabled if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness_disabled.status, STATUS_PASS)
+            self.assertEqual(readiness_disabled.detail.get("ready_providers"), ["antigravity", "muse"])
+            self.assertEqual(readiness_disabled.detail.get("actionable_providers"), [])
+            self.assertEqual(readiness_disabled.detail.get("optional_providers"), [])
+            warn_checks = [
+                c for c in checks_disabled if c.status == STATUS_WARN and c.lane in {"antigravity", "muse"}
+            ]
+            self.assertEqual(warn_checks, [])
+
 
 if __name__ == "__main__":
     unittest.main()
