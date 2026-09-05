@@ -606,6 +606,39 @@ def _response_deadline_expired(deadline: Any, now_utc: str) -> bool:
         return False
 
 
+def _failure_reason_remediation(failure_reason: str) -> str:
+    """Return safe, actionable remediation for a package_install failure reason."""
+    remediation_map = {
+        "network": "retry after verifying network connectivity and DNS resolution",
+        "package_index": "retry after index propagation or verify package is published",
+        "runtime": "verify Python version compatibility and system dependencies",
+        "sandbox_permission": "check disk space, filesystem permissions, and sandbox config",
+        "unknown": "examine full qualification logs for diagnostic details",
+    }
+    return remediation_map.get(failure_reason, "examine qualification logs")
+
+
+def _extract_failure_detail(result: Mapping[str, Any] | None) -> str:
+    """Extract failure_reason and remediation from a blocked adoption result."""
+    if not isinstance(result, Mapping):
+        return ""
+    outcome = result.get("outcome")
+    if outcome not in {"fail", "incomplete"}:
+        return f"outcome: {outcome}"
+
+    # Look for package_install step with failure_reason
+    steps = result.get("steps", [])
+    if isinstance(steps, list):
+        for step in steps:
+            if isinstance(step, dict) and step.get("id") == "package_install":
+                failure_reason = step.get("failure_reason")
+                if failure_reason:
+                    remediation = _failure_reason_remediation(failure_reason)
+                    return f"outcome: {outcome}, package_install: {failure_reason} ({remediation})"
+
+    return f"outcome: {outcome}"
+
+
 def _provider_next_action(
     provider: str,
     lane: ProviderLane,
@@ -2342,7 +2375,7 @@ def dispatch_or_advance_campaign(
             else:
                 provider_data["state"] = "blocked"
                 provider_data["next_action"] = f"inspect {provider} qualification failures"
-                provider_data["next_detail"] = f"outcome: {outcome}"
+                provider_data["next_detail"] = _extract_failure_detail(bound_result)
             continue
 
         # 2. If already complete, preserve state
@@ -2416,7 +2449,7 @@ def dispatch_or_advance_campaign(
                             provider_data["next_action"] = (
                                 f"inspect {provider} qualification failures"
                             )
-                            provider_data["next_detail"] = f"outcome: {outcome}"
+                            provider_data["next_detail"] = _extract_failure_detail(found_result)
                         break
             if found_result is not None:
                 continue
@@ -2915,7 +2948,7 @@ def dispatch_or_advance_campaign(
                 else:
                     provider_data["state"] = "blocked"
                     provider_data["next_action"] = f"inspect {provider} qualification failures"
-                    provider_data["next_detail"] = f"outcome: {outcome}"
+                    provider_data["next_detail"] = _extract_failure_detail(result)
 
         elif lane.driver in {"saas_event", "hosted_bridge"}:
             # Only an explicit retry can reach this branch with the provider

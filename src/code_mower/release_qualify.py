@@ -568,7 +568,7 @@ def validate_adoption_result_payload(
         # Validate failure_reason if present
         failure_reason = step.get("failure_reason")
         if failure_reason is not None:
-            from code_mower.migration_rehearsal import PACKAGE_INSTALL_FAILURE_REASONS
+            from code_mower.migration_install import PACKAGE_INSTALL_FAILURE_REASONS
             if not isinstance(failure_reason, str):
                 raise ValueError(f"adoption result step {index} failure_reason must be a string")
             if failure_reason not in PACKAGE_INSTALL_FAILURE_REASONS:
@@ -579,6 +579,10 @@ def validate_adoption_result_payload(
             if status != "fail":
                 raise ValueError(
                     f"adoption result step {index} failure_reason is only valid when status is fail"
+                )
+            if str(step.get("id")) != "package_install":
+                raise ValueError(
+                    f"adoption result step {index} failure_reason is only valid for package_install step"
                 )
 
         parsed_steps.append(
