@@ -469,7 +469,7 @@ def run_package_install_rehearsal(
                 pip_no_cache=pip_cache_disabled,
             ),
             cwd=work_dir,
-            env=None,
+            env=_isolated_pip_environment() if pip_index_url else None,
             steps=steps,
             timeout=timeout,
             attempts=pip_install_max_attempts,
@@ -516,7 +516,11 @@ def run_package_install_rehearsal(
                 pip_no_cache=pip_cache_disabled,
             ),
             cwd=work_dir,
-            env=None,
+            env=(
+                _isolated_pip_environment()
+                if pip_index_url or pip_extra_index_urls
+                else None
+            ),
             steps=steps,
             timeout=timeout,
             attempts=pip_install_max_attempts,

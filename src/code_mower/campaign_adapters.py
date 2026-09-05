@@ -328,6 +328,7 @@ def build_qualification_prompt(
             "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null "
             ".venv/bin/python -m pip --isolated"
         )
+        source_reset = "--extra-index-url '' --find-links '' --trusted-host ''"
         steps = [
             "1. In the current disposable directory, run "
             f"`{python_cmd} -m venv .venv`. Use only `.venv/bin/python` and installed "
@@ -338,20 +339,23 @@ def build_qualification_prompt(
             steps.append(
                 f'{step_number}. Install the starting version from production PyPI with '
                 f'`{pip} install --index-url "{PRODUCTION_PYPI_INDEX_URL}" '
-                f'{package_identity}=={starting_version}`.'
+                f'{source_reset} {package_identity}=={starting_version}`.'
             )
             step_number += 1
         steps.extend(
             [
                 f"{step_number}. Create an empty `candidate` directory, then download the "
                 f"candidate only with `{pip} download --no-deps --no-cache-dir "
-                f'--index-url "{TESTPYPI_INDEX_URL}" --dest candidate "{package_spec}"`.',
+                f'--index-url "{TESTPYPI_INDEX_URL}" --dest candidate {source_reset} '
+                f'"{package_spec}"`.',
                 f"{step_number + 1}. Before installing, fail closed unless `candidate` contains "
                 "exactly one wheel or source archive and its normalized distribution name and "
                 f"version are exactly `{package_identity}` and `{normalized_version}`.",
                 f"{step_number + 2}. Install that verified local artifact path with `{pip} install "
-                f'--index-url "{PRODUCTION_PYPI_INDEX_URL}" candidate/<verified-artifact>`. '
-                "Do not use `--extra-index-url` or install the release spec from a combined index.",
+                f'--index-url "{PRODUCTION_PYPI_INDEX_URL}" {source_reset} '
+                f"candidate/<verified-artifact>`. "
+                "Do not provide a non-empty `--extra-index-url` or install the release spec "
+                "from a combined index.",
             ]
         )
         install_plan = "\n".join(steps)

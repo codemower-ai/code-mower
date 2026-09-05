@@ -35,6 +35,14 @@ _WHEEL_FILENAME_PATTERN = re.compile(
 _SDIST_FILENAME_PATTERN = re.compile(
     r"^(?P<name>[A-Za-z0-9_.]+)-(?P<version>[A-Za-z0-9_.!+]+)\.(?:tar\.gz|zip)$"
 )
+_PIP_SOURCE_RESET_ARGS = (
+    "--extra-index-url",
+    "",
+    "--find-links",
+    "",
+    "--trusted-host",
+    "",
+)
 
 MIRRORED_IMPLEMENTATION_PATTERNS = (
     "tools/code_mower_*.py",
@@ -258,14 +266,20 @@ def _pip_install_command(
     pip_extra_index_urls: Sequence[str] | None = None,
     pip_no_cache: bool = False,
 ) -> list[str]:
-    command = [str(venv_python), "-m", "pip", "install"]
+    extra_index_urls = tuple(url for url in pip_extra_index_urls or () if url)
+    source_isolated = bool(pip_index_url or extra_index_urls)
+    command = [str(venv_python), "-m", "pip"]
+    if source_isolated:
+        command.append("--isolated")
+    command.append("install")
     if pip_no_cache:
         command.append("--no-cache-dir")
     if pip_index_url:
         command.extend(["--index-url", pip_index_url])
-    for extra_index_url in pip_extra_index_urls or ():
-        if extra_index_url:
-            command.extend(["--extra-index-url", extra_index_url])
+    if source_isolated:
+        command.extend(_PIP_SOURCE_RESET_ARGS)
+    for extra_index_url in extra_index_urls:
+        command.extend(["--extra-index-url", extra_index_url])
     command.append(package_spec)
     return command
 
@@ -326,6 +340,7 @@ def _pip_download_candidate_command(
     if pip_no_cache:
         command.append("--no-cache-dir")
     command.extend(["--index-url", index_url, "--dest", str(dest_dir)])
+    command.extend(_PIP_SOURCE_RESET_ARGS)
     command.append(package_spec)
     return command
 
@@ -349,6 +364,7 @@ def _pip_install_local_artifact_command(
         command.append("--no-cache-dir")
     if dependency_index_url:
         command.extend(["--index-url", dependency_index_url])
+    command.extend(_PIP_SOURCE_RESET_ARGS)
     command.append(str(artifact_path))
     return command
 

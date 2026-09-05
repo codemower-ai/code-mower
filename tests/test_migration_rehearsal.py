@@ -49,11 +49,17 @@ class CandidateCommandBuilderTests(unittest.TestCase):
                 "https://test.pypi.org/simple/",
                 "--dest",
                 "/tmp/candidate",
+                "--extra-index-url",
+                "",
+                "--find-links",
+                "",
+                "--trusted-host",
+                "",
                 "code-mower==1.0.0",
             ],
         )
-        # No --extra-index-url anywhere: this is the whole point of the fix.
-        self.assertNotIn("--extra-index-url", command)
+        # The explicit empty value overrides global and site pip config.
+        self.assertEqual(command[command.index("--extra-index-url") + 1], "")
 
     def test_candidate_environment_ignores_ambient_pip_indexes(self) -> None:
         with mock.patch.dict(
@@ -70,6 +76,23 @@ class CandidateCommandBuilderTests(unittest.TestCase):
         self.assertNotIn("PIP_EXTRA_INDEX_URL", env)
         self.assertEqual(env["PIP_CONFIG_FILE"], migration_install.os.devnull)
         self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_candidate_commands_override_global_and_site_source_lists(self) -> None:
+        download = migration_install._pip_download_candidate_command(
+            Path("/venv/bin/python"),
+            "code-mower==1.0.0",
+            index_url="https://test.pypi.org/simple/",
+            dest_dir=Path("/tmp/candidate"),
+        )
+        install = migration_install._pip_install_local_artifact_command(
+            Path("/venv/bin/python"),
+            Path("/tmp/candidate/code_mower-1.0.0-py3-none-any.whl"),
+            dependency_index_url="https://pypi.org/simple/",
+        )
+        for command in (download, install):
+            for flag in ("--extra-index-url", "--find-links", "--trusted-host"):
+                self.assertIn(flag, command)
+                self.assertEqual(command[command.index(flag) + 1], "")
 
     def test_download_command_honors_no_cache(self) -> None:
         command = migration_install._pip_download_candidate_command(
@@ -97,6 +120,12 @@ class CandidateCommandBuilderTests(unittest.TestCase):
                 "install",
                 "--index-url",
                 "https://pypi.org/simple/",
+                "--extra-index-url",
+                "",
+                "--find-links",
+                "",
+                "--trusted-host",
+                "",
                 "/tmp/candidate/code_mower-1.0.0-py3-none-any.whl",
             ],
         )
@@ -233,13 +262,13 @@ class TwoStageCandidateInstallTests(unittest.TestCase):
         self.assertIn("download", download_command)
         self.assertIn("--index-url", download_command)
         self.assertIn("https://test.pypi.org/simple/", download_command)
-        self.assertNotIn("--extra-index-url", download_command)
+        self.assertEqual(download_command[download_command.index("--extra-index-url") + 1], "")
         self.assertIn("--no-deps", download_command)
 
         self.assertIn("install", install_command)
         self.assertIn("--index-url", install_command)
         self.assertIn("https://pypi.org/simple/", install_command)
-        self.assertNotIn("--extra-index-url", install_command)
+        self.assertEqual(install_command[install_command.index("--extra-index-url") + 1], "")
         self.assertTrue(install_command[-1].endswith("code_mower-1.0.0-py3-none-any.whl"))
 
     def test_fails_closed_on_zero_artifacts(self) -> None:
