@@ -41,14 +41,24 @@ code-mower release qualify \
 ```
 
 `--package-source` is a closed vocabulary: `pypi` (the default) or `testpypi`.
-It never accepts an arbitrary index URL. `testpypi` installs from the
-canonical TestPyPI simple index (`https://test.pypi.org/simple/`), with
-production PyPI (`https://pypi.org/simple/`) as a dependency-only extra index
-so the candidate's own distribution comes from TestPyPI while its
-dependencies -- which are not part of this release candidate -- still
-resolve normally. Omit the flag, or pass `--package-source pypi` explicitly,
-for the production-PyPI default. TestPyPI installs reuse the same bounded
-pip-install retry behavior as any other package-index install (see
+It never accepts an arbitrary index URL. Pip does not prioritize
+`--index-url` over `--extra-index-url`: a single install command naming both
+the canonical TestPyPI simple index and production PyPI cannot prove which
+one actually supplied the candidate, since an identical version already on
+production PyPI could silently satisfy it instead. `testpypi` therefore runs
+a closed two-stage install: it first downloads the exact candidate artifact
+with the canonical TestPyPI simple index (`https://test.pypi.org/simple/`)
+as the *only* configured index and `--no-deps`, verifies exactly one
+artifact came back and that its filename names the requested package
+identity and version -- failing closed on zero, multiple, malformed, or
+mismatched artifacts -- and only then installs that verified local artifact
+file, resolving its dependencies (which are not part of this release
+candidate) from production PyPI (`https://pypi.org/simple/`). Both steps run
+pip in isolated mode with ambient pip index variables and configuration
+disabled, so a workstation's extra indexes cannot widen either source. Omit the flag,
+or pass `--package-source pypi` explicitly, for the production-PyPI default,
+which applies no index override at all. TestPyPI installs reuse the same
+bounded pip-install retry behavior as any other package-index install (see
 [Cache Bypass And Propagation Triage](pypi-release.md#cache-bypass-and-propagation-triage)).
 
 ## Schema

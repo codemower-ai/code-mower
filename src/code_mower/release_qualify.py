@@ -238,18 +238,43 @@ def _validate_package_source(value: str) -> None:
 def _package_source_pip_index_args(package_source: str) -> tuple[str, tuple[str, ...]]:
     """Return the closed ``(pip_index_url, pip_extra_index_urls)`` pair for a source.
 
-    Never accepts or emits an arbitrary URL: the two candidate sources each
-    resolve to exactly one fixed, canonical pair of index URLs. ``pypi`` uses
-    pip's own default index (no override). ``testpypi`` points the primary
-    index at the canonical TestPyPI simple index and keeps production PyPI as
-    a dependency-only extra index, so a candidate's own distribution is
-    installed from TestPyPI while its dependencies -- which are not part of
-    this release candidate -- still resolve normally.
+    Used only for the upgrade preinstall spec (the already-published starting
+    version being upgraded from, not the candidate under qualification): a
+    combined index/extra-index install is fine there because nothing needs to
+    prove which index it came from. Never accepts or emits an arbitrary URL:
+    the two candidate sources each resolve to exactly one fixed, canonical
+    pair of index URLs. ``pypi`` uses pip's own default index (no override).
+    ``testpypi`` points the primary index at the canonical TestPyPI simple
+    index and keeps production PyPI as an extra index. See
+    :func:`_package_source_candidate_index_args` for the release candidate
+    itself, which cannot use a combined index/extra-index install.
     """
     _validate_package_source(package_source)
     if package_source == "testpypi":
         return TESTPYPI_INDEX_URL, (PRODUCTION_PYPI_INDEX_URL,)
     return "", ()
+
+
+def _package_source_candidate_index_args(package_source: str) -> tuple[str, str]:
+    """Return the closed ``(candidate_index_url, dependency_index_url)`` pair.
+
+    Used for the exact release candidate under qualification -- the
+    package_spec this run's result is bound to and verified against. Pip does
+    not prioritize ``--index-url`` over ``--extra-index-url``: a single
+    install command naming both cannot prove which configured index actually
+    supplied the candidate, since an identical version on either index could
+    silently satisfy it. The closed two-stage install in
+    ``run_package_install_rehearsal`` instead uses ``candidate_index_url`` as
+    the *only* index for a ``--no-deps`` download, verifies the downloaded
+    artifact's identity and version, then installs that verified local
+    artifact with dependencies resolved from ``dependency_index_url``.
+    ``pypi`` (the default) returns two empty strings: the ordinary
+    single-stage install applies unchanged, with no index override at all.
+    """
+    _validate_package_source(package_source)
+    if package_source == "testpypi":
+        return TESTPYPI_INDEX_URL, PRODUCTION_PYPI_INDEX_URL
+    return "", ""
 
 
 def _normalize_package_name(name: str) -> str:
@@ -784,6 +809,9 @@ def run_release_qualification(
     else:
         rehearsal_start = time.time()
         pip_index_url, pip_extra_index_urls = _package_source_pip_index_args(package_source)
+        candidate_index_url, candidate_dependency_index_url = (
+            _package_source_candidate_index_args(package_source)
+        )
         try:
             rehearsal_result = run_package_install_rehearsal(
                 package_spec=package_spec,
@@ -797,6 +825,8 @@ def run_release_qualification(
                 allow_package_index=True,
                 pip_index_url=pip_index_url,
                 pip_extra_index_urls=pip_extra_index_urls,
+                candidate_index_url=candidate_index_url,
+                candidate_dependency_index_url=candidate_dependency_index_url,
             )
             rehearsal_version_raw = rehearsal_result.get("version", "")
             rehearsal_version = _normalize_version(rehearsal_version_raw)

@@ -930,6 +930,24 @@ class PackageSourceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release_qualify._package_source_pip_index_args("bogus")
 
+    def test_pypi_candidate_index_args_have_no_override(self) -> None:
+        candidate_index_url, dependency_index_url = (
+            release_qualify._package_source_candidate_index_args("pypi")
+        )
+        self.assertEqual(candidate_index_url, "")
+        self.assertEqual(dependency_index_url, "")
+
+    def test_testpypi_candidate_index_args_are_the_canonical_pair(self) -> None:
+        candidate_index_url, dependency_index_url = (
+            release_qualify._package_source_candidate_index_args("testpypi")
+        )
+        self.assertEqual(candidate_index_url, "https://test.pypi.org/simple/")
+        self.assertEqual(dependency_index_url, "https://pypi.org/simple/")
+
+    def test_package_source_candidate_index_args_rejects_unknown_source(self) -> None:
+        with self.assertRaises(ValueError):
+            release_qualify._package_source_candidate_index_args("bogus")
+
     def test_run_release_qualification_rejects_unknown_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError) as ctx:
@@ -967,6 +985,12 @@ class PackageSourceTests(unittest.TestCase):
 
             self.assertEqual(mock_rehearsal.call_args.kwargs["pip_index_url"], "")
             self.assertEqual(mock_rehearsal.call_args.kwargs["pip_extra_index_urls"], ())
+            # The default source never triggers the closed two-stage candidate
+            # flow: no index override at all applies to the candidate either.
+            self.assertEqual(mock_rehearsal.call_args.kwargs["candidate_index_url"], "")
+            self.assertEqual(
+                mock_rehearsal.call_args.kwargs["candidate_dependency_index_url"], ""
+            )
 
     def test_execute_with_testpypi_source_builds_the_candidate_pip_command(self) -> None:
         """`package_source=testpypi` threads the canonical index URLs into the install."""
@@ -1002,6 +1026,17 @@ class PackageSourceTests(unittest.TestCase):
             # allow_package_index stays on, so the existing bounded pip-install
             # retry behavior (see migration_rehearsal) applies unchanged.
             self.assertTrue(mock_rehearsal.call_args.kwargs["allow_package_index"])
+            # The candidate itself goes through the closed two-stage flow:
+            # TestPyPI as the only candidate index, production PyPI only for
+            # the local artifact's own dependencies.
+            self.assertEqual(
+                mock_rehearsal.call_args.kwargs["candidate_index_url"],
+                "https://test.pypi.org/simple/",
+            )
+            self.assertEqual(
+                mock_rehearsal.call_args.kwargs["candidate_dependency_index_url"],
+                "https://pypi.org/simple/",
+            )
             self.assertEqual(result["outcome"], "pass")
 
     def test_cli_qualify_accepts_package_source_flag(self) -> None:
