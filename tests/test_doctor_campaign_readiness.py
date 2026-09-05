@@ -46,6 +46,97 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertTrue(check.detail.get("adapter_configured"))
             self.assertTrue(check.detail.get("command_found"))
 
+    def test_campaign_runtime_unavailable_excludes_enabled_local_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "lanes": {
+                    "codex": {
+                        "provider_config": {
+                            "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                        }
+                    }
+                }
+            }
+            with mock.patch(
+                "code_mower.release_campaigns.resolve_supported_runtime",
+                return_value=None,
+            ):
+                checks = check_adoption_campaign_readiness(
+                    config=config,
+                    repo_root=Path(tmp),
+                    env={"CODE_MOWER_CAMPAIGN_AUTH_PROBE": "0"},
+                    which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
+                    providers=["codex"],
+                )
+
+            runtime = next(c for c in checks if c.name == "doctor.campaign.runtime")
+            self.assertEqual(runtime.status, STATUS_WARN)
+            self.assertEqual(runtime.lane, "codex")
+            self.assertTrue(runtime.detail.get("actionable"))
+            self.assertTrue(runtime.detail.get("owner_action"))
+            self.assertEqual(runtime.detail.get("error"), "python_runtime_unavailable")
+            self.assertNotIn("executable", runtime.detail)
+            self.assertIn("CODE_MOWER_PYTHON", runtime.remediation)
+
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("codex", readiness.detail.get("ready_providers", []))
+            self.assertIn("codex", readiness.detail.get("actionable_providers", []))
+
+    def test_campaign_runtime_available_keeps_local_provider_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "code_mower.release_campaigns.resolve_supported_runtime",
+                return_value=("/private/python", "python_3.13"),
+            ):
+                checks = check_adoption_campaign_readiness(
+                    config={
+                        "lanes": {
+                            "codex": {
+                                "provider_config": {
+                                    "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                                }
+                            }
+                        }
+                    },
+                    repo_root=Path(tmp),
+                    env={"CODE_MOWER_CAMPAIGN_AUTH_PROBE": "0"},
+                    which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
+                    providers=["codex"],
+                )
+
+            runtime = next(c for c in checks if c.name == "doctor.campaign.runtime")
+            self.assertEqual(runtime.status, STATUS_PASS)
+            self.assertEqual(runtime.detail.get("runtime_class"), "python_3.13")
+            self.assertNotIn("/private/python", repr(runtime.as_dict()))
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertIn(
+                "codex",
+                readiness.detail.get("ready_providers", []),
+                [(c.name, c.status, c.lane, c.detail) for c in checks],
+            )
+
+    def test_campaign_runtime_unavailable_is_optional_for_disabled_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "code_mower.release_campaigns.resolve_supported_runtime",
+                return_value=None,
+            ):
+                checks = check_adoption_campaign_readiness(
+                    config={"lanes": {"codex": {"enabled": False}}},
+                    repo_root=Path(tmp),
+                    which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
+                    providers=["codex"],
+                )
+
+            runtime = next(c for c in checks if c.name == "doctor.campaign.runtime")
+            self.assertEqual(runtime.status, STATUS_WARN)
+            self.assertTrue(runtime.detail.get("optional"))
+            self.assertFalse(runtime.detail.get("actionable"))
+            self.assertNotIn("owner_action", runtime.detail)
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("codex", readiness.detail.get("ready_providers", []))
+            self.assertIn("codex", readiness.detail.get("optional_providers", []))
+
     def test_campaign_adapter_warns_actionable_when_enabled_missing_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -556,6 +647,7 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             checks = check_adoption_campaign_readiness(
                 config={"lanes": {"gitar": {"enabled": True}}},
                 repo_root=Path(tmp),
+                env={"CODE_MOWER_CAMPAIGN_AUTH_PROBE": "0"},
                 which_fn=lambda command: f"/bin/{command}",
                 providers=["codex"],
             )
@@ -620,6 +712,7 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                 checks = check_adoption_campaign_readiness(
                     config=config,
                     repo_root=Path(tmp),
+                    env={"CODE_MOWER_CAMPAIGN_AUTH_PROBE": "0"},
                     which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
                     providers=["codex"],
                 )
@@ -707,6 +800,7 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                 checks = check_adoption_campaign_readiness(
                     config=config,
                     repo_root=Path(tmp),
+                    env={"CODE_MOWER_CAMPAIGN_AUTH_PROBE": "0"},
                     which_fn=lambda cmd: f"/bin/{cmd}" if cmd in {"claude", "codex"} else None,
                     providers=["claude", "codex"],
                 )
@@ -802,6 +896,7 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                     repo_root=Path(tmp),
                     which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
                     env={
+                        "CODE_MOWER_CAMPAIGN_AUTH_PROBE": "0",
                         "DEVIN_AUDIT_LABEL_TOKEN": "dummy-token",
                         "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
                     },
@@ -853,6 +948,7 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                     repo_root=Path(tmp),
                     which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
                     env={
+                        "CODE_MOWER_CAMPAIGN_AUTH_PROBE": "0",
                         "CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "dummy-token",
                         "CODE_MOWER_CURSOR_BUGBOT_CAMPAIGN_TRANSPORT_READY": "1",
                     },

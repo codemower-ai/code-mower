@@ -601,6 +601,7 @@ def check_adoption_campaign_readiness(
         _safe_error,
         _validate_adapter_argv_template,
         _validate_adapter_timeout,
+        resolve_supported_runtime,
         resolve_provider_lane,
     )
 
@@ -609,6 +610,8 @@ def check_adoption_campaign_readiness(
     runner = lane_status._run_command if command_runner is None else command_runner
     checks: list[DoctorCheck] = []
     provider_readiness: dict[str, dict[str, Any]] = {}
+    runtime_resolution_checked = False
+    supported_runtime: tuple[str, str] | None = None
 
     for prov in providers:
         try:
@@ -641,6 +644,51 @@ def check_adoption_campaign_readiness(
                     )
                 )
                 continue
+
+            if not runtime_resolution_checked:
+                supported_runtime = resolve_supported_runtime(
+                    environ=current_env,
+                    which_fn=which_fn,
+                )
+                runtime_resolution_checked = True
+            runtime_ready = supported_runtime is not None
+            runtime_detail: dict[str, Any] = {
+                "provider": canonical,
+                "lane": lane.lane_id,
+                "driver": lane.driver,
+                "runtime_available": runtime_ready,
+                "enabled": is_enabled,
+            }
+            if runtime_ready:
+                runtime_detail["runtime_class"] = supported_runtime[1]
+            else:
+                runtime_detail.update(
+                    {
+                        "error": "python_runtime_unavailable",
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
+                    }
+                )
+                if is_enabled:
+                    runtime_detail["owner_action"] = True
+            checks.append(
+                DoctorCheck(
+                    name="doctor.campaign.runtime",
+                    status=STATUS_PASS if runtime_ready else STATUS_WARN,
+                    lane=canonical,
+                    message=(
+                        f"{canonical} campaign Python runtime ready"
+                        if runtime_ready
+                        else f"{canonical} campaign requires Python 3.12+"
+                    ),
+                    detail=runtime_detail,
+                    remediation=(
+                        ""
+                        if runtime_ready
+                        else "Install Python 3.12+ on PATH or set CODE_MOWER_PYTHON to a supported interpreter."
+                    ),
+                )
+            )
 
             argv_template, timeout_value, config_error, config_detail = _resolve_adapter_config_for_lane(
                 lane,
@@ -1148,6 +1196,7 @@ def check_adoption_campaign_readiness(
         if check.name
         in {
             "doctor.campaign.adapter",
+            "doctor.campaign.runtime",
             "doctor.campaign.credentials",
             CAMPAIGN_AUTH_CHECK_NAME,
             "doctor.campaign.structured_result",
