@@ -83,6 +83,11 @@ class FailureReasonClassificationTests(unittest.TestCase):
             ("No space left on device", "no space left", "sandbox_permission"),
             ("Read-only file system", "read-only file system", "sandbox_permission"),
             ("unexpected exotic failure", "unrecognized error", "unknown"),
+            # HTTP 5xx range coverage (codex audit P2 finding)
+            ("HTTP Error 500", "Internal Server Error", "network"),
+            ("HTTP Error 510", "Not Extended", "network"),
+            ("HTTP Error 511", "Network Authentication Required", "network"),
+            ("HTTP Error 599", "Network Connect Timeout Error", "network"),
         ]
 
         for error_text, stderr_preview, expected_reason in cases:

@@ -201,6 +201,10 @@ def classify_package_install_failure(
     if any(indicator in error_text for indicator in sandbox_permission_indicators):
         return "sandbox_permission"
 
+    # Check for any HTTP 5xx server error (500-599)
+    if re.search(r"http error 5\d\d", error_text):
+        return "network"
+
     if any(indicator in error_text for indicator in network_indicators):
         return "network"
 
