@@ -1051,7 +1051,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     campaign.add_argument(
         "--providers",
         default="",
-        help="Comma-separated provider list (default: claude,codex,antigravity,muse,cursor_bugbot,devin)",
+        help="Comma-separated provider list (default: claude,codex,antigravity,muse,cursor_cloud_agent,devin)",
     )
     campaign.add_argument(
         "--qualification-context",
