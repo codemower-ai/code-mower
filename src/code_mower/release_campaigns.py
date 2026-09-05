@@ -1449,6 +1449,26 @@ def _resolve_campaign_adapter_config(
     return argv_template, timeout_value, "", ""
 
 
+_VERSIONED_PYTHON_RE = re.compile(r"^python3\.(\d+)$")
+
+
+def _versioned_python_candidates(path_value: str) -> tuple[str, ...]:
+    """Return discovered Python 3.12+ command names in newest-first order."""
+    minors: set[int] = set()
+    for raw_dir in path_value.split(os.pathsep):
+        if not raw_dir:
+            continue
+        try:
+            entries = Path(raw_dir).expanduser().iterdir()
+            for entry in entries:
+                match = _VERSIONED_PYTHON_RE.fullmatch(entry.name)
+                if match and int(match.group(1)) >= 12:
+                    minors.add(int(match.group(1)))
+        except OSError:
+            continue
+    return tuple(f"python3.{minor}" for minor in sorted(minors, reverse=True))
+
+
 def resolve_supported_runtime(
     *,
     environ: Mapping[str, str] | None = None,
@@ -1465,8 +1485,10 @@ def resolve_supported_runtime(
     if explicit:
         candidates = (explicit,)
     else:
+        discovered = _versioned_python_candidates(str(env.get("PATH", "")))
         candidates = (
             sys.executable,
+            *discovered,
             "python3.12",
             "python3.13",
             "python3.14",

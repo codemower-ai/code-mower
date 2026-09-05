@@ -11355,6 +11355,29 @@ class RuntimeReadinessCampaignTests(unittest.TestCase):
         self.assertEqual(bin_path, "/usr/local/bin/python3.12")
         self.assertEqual(runtime_class, "python_3.12")
 
+    def test_resolve_supported_runtime_discovers_newer_versioned_python(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            python315 = bin_dir / "python3.15"
+            python315.touch()
+
+            def fake_which(cmd: str) -> str | None:
+                return str(python315) if cmd == "python3.15" else None
+
+            def fake_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                if cmd[0] == str(python315):
+                    return subprocess.CompletedProcess(cmd, 0, stdout="3.15.0\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+            res = release_campaigns.resolve_supported_runtime(
+                environ={"PATH": str(bin_dir)},
+                runner=fake_runner,
+                which_fn=fake_which,
+            )
+
+        self.assertEqual(res, (str(python315), "python_3.15"))
+
     def test_invoke_local_adapter_fails_closed_when_runtime_unavailable(self) -> None:
         invoked: list[str] = []
 
