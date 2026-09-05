@@ -221,8 +221,7 @@ provider_templates:
         - "cursor"
       bot_authors_env: "CURSOR_CLOUD_AGENT_BOT_AUTHORS"
       trigger_comments:
-        - "@cursor run"
-        - "cursor run"
+        - "@cursor"
       campaign_transport_ready_env: "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY"
       campaign_response_timeout_seconds: 3600
       rules_file: ".cursor/AGENT.md"

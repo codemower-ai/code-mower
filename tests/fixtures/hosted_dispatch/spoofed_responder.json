@@ -1,0 +1,12 @@
+{
+  "name": "spoofed_responder",
+  "description": "A comment carries an otherwise well-formed result marker but is posted by a login outside the lane's trusted responder allowlist. The marker must be ignored and the provider stays running.",
+  "provider": "cursor_cloud_agent",
+  "token_env": "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
+  "transport_env": "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY",
+  "trusted_author": "cursor[bot]",
+  "comment_author": "mallory",
+  "comment_has_bound_marker": true,
+  "expected_state": "running",
+  "expected_adoption_result": null
+}

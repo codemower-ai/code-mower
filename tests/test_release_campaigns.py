@@ -2204,7 +2204,7 @@ class ReleaseCampaignTests(unittest.TestCase):
         """A bare adoptionResult JSON with no identity-bound wrapper is not accepted."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
-            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_cloud_agent", outcome="pass")
             unbound_marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(adoption_res)} -->"
 
             def mock_gh_json(args, **kwargs):
@@ -2333,7 +2333,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             adoption_res = _mock_adoption_result_full(
                 release_tag="v2.0.0",
                 normalized_version="2.0.0",
-                provider="cursor_bugbot",
+                provider="cursor_cloud_agent",
                 qualification_context="upgrade",
                 starting_version="0.9.0",
                 ending_version="2.0.0",
@@ -2342,7 +2342,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                 "campaign_id": campaign.campaign_id,
-                "provider": "cursor_bugbot",
+                "provider": "cursor_cloud_agent",
                 "release_tag": "v2.0.0",
                 "idempotency_key": idempotency_key,
                 "adoption_result": adoption_res,
@@ -2387,7 +2387,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             adoption_res = _mock_adoption_result_full(
                 release_tag="v2.0.0",
                 normalized_version="2.0.0",
-                provider="cursor_bugbot",
+                provider="cursor_cloud_agent",
                 qualification_context="cold_install",
                 starting_version="",
                 ending_version="2.0.0",
@@ -2396,7 +2396,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                 "campaign_id": campaign.campaign_id,
-                "provider": "cursor_bugbot",
+                "provider": "cursor_cloud_agent",
                 "release_tag": "v2.0.0",
                 "idempotency_key": idempotency_key,
                 "adoption_result": adoption_res,
@@ -2945,11 +2945,11 @@ class ReleaseCampaignTests(unittest.TestCase):
             trigger_body = bodies[1]
 
             # Dispatch body should document the trigger commands
-            self.assertIn("@cursor run", dispatch_body)
+            self.assertIn("@cursor", dispatch_body)
 
             # The actionable command stays first; the hidden marker makes a
             # crash-after-post retry externally idempotent.
-            self.assertEqual(trigger_body.splitlines()[0], "@cursor run")
+            self.assertEqual(trigger_body.splitlines()[0], "@cursor")
             self.assertIn("CODE_MOWER_RELEASE_TRIGGER", trigger_body)
 
     def test_failed_trigger_post_retries_on_resume(self) -> None:
@@ -3072,7 +3072,7 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             # Should have posted exactly 1 trigger (no redispatch)
             self.assertEqual(len(bodies), 1)
-            self.assertIn("@cursor run", bodies[0])
+            self.assertIn("@cursor", bodies[0])
             self.assertNotIn("CODE_MOWER_RELEASE_CAMPAIGN", bodies[0])
 
             resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -3210,7 +3210,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                         "comments": [
                             {
                                 "author": {"login": "cursor[bot]"},
-                                "body": "@cursor run\n\n"
+                                "body": "@cursor\n\n"
                                 f"<!-- CODE_MOWER_RELEASE_TRIGGER: {trigger_marker} -->",
                             }
                         ]
@@ -3264,7 +3264,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     {
                         "comments": [
                             {
-                                "body": "@cursor run\n\n"
+                                "body": "@cursor\n\n"
                                 f"<!-- CODE_MOWER_RELEASE_TRIGGER: {forged_marker} -->"
                             }
                         ]
@@ -3275,7 +3275,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             )
 
             self.assertEqual(len(bodies), 1)
-            self.assertIn("@cursor run", bodies[0])
+            self.assertIn("@cursor", bodies[0])
             self.assertIn("private-trigger-key", bodies[0])
             self.assertNotIn("public-dispatch-key", bodies[0])
             resumed = release_campaigns.load_campaign_by_id(
@@ -4135,31 +4135,54 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
             )
             self._assert_no_dispatch(entry, command_runner, gh_json_runner, adapter_runner)
 
-    def test_hosted_transport_is_reported_unverified_without_blocking_preview(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            campaigns_dir = Path(tmp) / "campaigns"
-            ret = release_campaigns.campaign_command(
-                release_tag="v1.0.0",
-                package_spec="code-mower==1.0.0",
-                providers=("devin",),
-                campaigns_dir=campaigns_dir,
-                repo_slug="owner/repo",
-                issue="42",
-                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
-            )
+    def test_hosted_transport_unverified_is_unavailable_before_dispatch(self) -> None:
+        """An unverified App transport never previews as queued.
 
-            self.assertEqual(ret, 0)
-            saved = release_campaigns.load_campaign_by_id(
-                "campaign-v1.0.0", campaigns_dir
-            )
-            assert saved is not None
-            entry = saved["providers"][0]
-            self.assertEqual(entry["state"], "queued")
-            self.assertFalse(entry["transport_verified"])
-            self.assertIn(
-                "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY=1",
-                entry["next_detail"],
-            )
+        Credentials plus an issue number are not dispatch readiness for paid
+        hosted work: without the explicit transport acknowledgement the
+        dry-run reports unavailable with the exact remediation, before any
+        dispatch. An explicit --apply remains the operator's own choice.
+        """
+        for provider, token_env, transport_var in (
+            ("devin", "DEVIN_AUDIT_LABEL_TOKEN", "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY"),
+            (
+                "cursor_cloud_agent",
+                "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
+                "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY",
+            ),
+        ):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                campaigns_dir = Path(tmp) / "campaigns"
+                command_runner = mock.MagicMock()
+                gh_json_runner = mock.MagicMock()
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=(provider,),
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                    issue="42",
+                    env={token_env: "token"},
+                    command_runner=command_runner,
+                    gh_json_runner=gh_json_runner,
+                )
+
+                self.assertEqual(ret, 0)
+                saved = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert saved is not None
+                entry = saved["providers"][0]
+                self.assertEqual(entry["state"], "unavailable")
+                self.assertEqual(entry["error"], "hosted_transport_unverified")
+                self.assertIn(entry["error"], release_campaigns.SAFE_ERROR_CODES)
+                self.assertFalse(entry["transport_verified"])
+                self.assertIn(f"{transport_var}=1", entry["next_action"])
+                self.assertIn(f"{transport_var}=1", entry["next_detail"])
+                self.assertNotIn("--apply", entry["next_action"])
+                self.assertEqual(saved["status"], "unavailable")
+                command_runner.assert_not_called()
+                gh_json_runner.assert_not_called()
 
     def test_hosted_dry_run_without_repo_slug_is_unavailable(self) -> None:
         """An issue number with no repo slug addresses nothing, exactly as under --apply."""
@@ -4833,6 +4856,45 @@ class DuplicateCampaignProviderTests(unittest.TestCase):
             adapter_mock.assert_not_called()
             cmd_runner_mock.assert_not_called()
             self.assertEqual(release_campaigns.list_campaigns(campaigns_dir), [])
+
+    def test_cli_rejects_reviewer_only_providers_without_creating_a_campaign(self) -> None:
+        """CLI-facing: a reviewer-only alias is a bounded error, not a campaign.
+
+        Every reviewer-only spelling (`cursor_bugbot`, `grok_bot`,
+        `cursor_grok_bot`) must fail closed at the command boundary with no
+        traceback, no runner side effect, and no campaign state file -- while
+        the builder identity (`cursor_cloud_agent`) still creates a campaign.
+        """
+        for alias in ("cursor_bugbot", "grok_bot", "cursor_grok_bot"):
+            with self.subTest(provider=alias), tempfile.TemporaryDirectory() as tmp:
+                campaigns_dir = Path(tmp) / "campaigns"
+                adapter_mock = mock.MagicMock()
+                cmd_runner_mock = mock.MagicMock()
+                gh_json_mock = mock.MagicMock()
+
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    ret = release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=[alias],
+                        campaigns_dir=campaigns_dir,
+                        apply=True,
+                        adapter_runner=adapter_mock,
+                        command_runner=cmd_runner_mock,
+                        gh_json_runner=gh_json_mock,
+                    )
+
+                self.assertEqual(ret, 1)
+                self.assertIn("review-only lane", stderr.getvalue())
+                self.assertNotIn("Traceback", stderr.getvalue())
+                adapter_mock.assert_not_called()
+                cmd_runner_mock.assert_not_called()
+                gh_json_mock.assert_not_called()
+                self.assertEqual(release_campaigns.list_campaigns(campaigns_dir), [])
+                self.assertFalse(
+                    (campaigns_dir / "campaign-v1.0.0.json").exists()
+                )
 
 
 class CampaignRepoSlugSupplyTests(unittest.TestCase):

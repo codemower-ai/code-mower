@@ -1,0 +1,16 @@
+{
+  "name": "timeout",
+  "description": "Running paid dispatch passes its response deadline with no trusted result. The provider becomes unavailable with hosted_response_timeout evidence, and an ordinary resume must not redispatch; only an explicit retry may mutate.",
+  "provider": "cursor_cloud_agent",
+  "token_env": "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
+  "transport_env": "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY",
+  "token_present": true,
+  "transport_acknowledged": true,
+  "issue_present": true,
+  "repo_slug": "owner/repo",
+  "comments": [],
+  "response_deadline_at": "2026-01-01T00:00:00Z",
+  "expected_state": "unavailable",
+  "expected_error": "hosted_response_timeout",
+  "expected_resume_dispatch_calls": 0
+}

@@ -617,6 +617,8 @@ def check_adoption_campaign_readiness(
         _safe_error,
         _validate_adapter_argv_template,
         _validate_adapter_timeout,
+        hosted_dispatch_blockers,
+        hosted_dispatch_profile,
         resolve_supported_runtime,
         resolve_provider_lane,
     )
@@ -933,6 +935,14 @@ def check_adoption_campaign_readiness(
             transport_ready, transport_var = _check_hosted_transport(
                 lane, env=current_env
             )
+            # Closed dispatch profile: auth, installation, trigger,
+            # trusted responder, and result return are reported
+            # independently, so one verified dimension never masks another.
+            dispatch_profile = hosted_dispatch_profile(lane, env=current_env)
+            dispatch_blockers = hosted_dispatch_blockers(dispatch_profile)
+            dispatch_summary = {
+                name: bool(entry.get("ready")) for name, entry in dispatch_profile.items()
+            }
             has_repo = bool(repo_slug)
             structured_capability = check_structured_result_capability(canonical)
             cmd_ready = bool(has_credentials and has_repo and transport_ready)
@@ -1006,6 +1016,8 @@ def check_adoption_campaign_readiness(
                     "has_credentials": True,
                     "transport_verified": False,
                     "verification_variable": transport_var,
+                    "dispatch_profile": dispatch_summary,
+                    "dispatch_blockers": dispatch_blockers,
                     "enabled": is_enabled,
                     "actionable": is_enabled,
                     "optional": not is_enabled,
@@ -1039,6 +1051,7 @@ def check_adoption_campaign_readiness(
                             "repo_slug": repo_slug,
                             "has_credentials": True,
                             "transport_verified": True,
+                            "dispatch_profile": dispatch_summary,
                             "enabled": is_enabled,
                         },
                     )

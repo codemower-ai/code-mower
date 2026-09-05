@@ -1,0 +1,22 @@
+{
+  "name": "verified",
+  "description": "Hosted dispatch profile fully verified: token present, App transport acknowledged, builder trigger declared, trusted responder allowlist configured, bounded result-return wait. Dry-run previews as queued with no dispatch side effect.",
+  "provider": "cursor_cloud_agent",
+  "token_env": "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
+  "transport_env": "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY",
+  "token_present": true,
+  "transport_acknowledged": true,
+  "issue_present": true,
+  "repo_slug": "owner/repo",
+  "expected_profile": {
+    "auth": true,
+    "installation": true,
+    "trigger": true,
+    "trusted_responder": true,
+    "result_return": true
+  },
+  "expected_state": "queued",
+  "expected_error": "",
+  "expected_transport_verified": true,
+  "expected_dispatch_calls": 0
+}
