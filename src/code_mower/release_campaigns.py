@@ -1852,6 +1852,13 @@ def dispatch_or_advance_campaign(
 
     for provider_data in campaign.get("providers", []):
         provider = str(provider_data.get("provider") or "")
+        # Retry freeze: an explicit --retry-provider run advances only the
+        # retried provider. Every other participant is byte-stable for this
+        # run -- no polling, error clearing, deadline expiry, state,
+        # evidence, next-action, or timestamp mutations. Aggregate campaign
+        # fields still recompute on save.
+        if retry_canonical and provider != retry_canonical:
+            continue
         try:
             _, lane = resolve_provider_lane(provider)
         except ValueError:
@@ -1887,12 +1894,17 @@ def dispatch_or_advance_campaign(
             else None
         )
         if bound_result is not None:
-            if provider_data.get("adoption_result") != bound_result:
+            prior_result = provider_data.get("adoption_result")
+            if prior_result != bound_result:
                 # Genuinely new evidence supersedes the stored attempt: leave
-                # a bounded summary, then stamp this completion. Re-reading
-                # identical evidence (a resume re-poll, or another provider's
-                # retry) is not a new attempt and must not move chronology.
-                _record_attempt_history(provider_data)
+                # a bounded summary only when a prior stored result actually
+                # existed (the first completion of a running attempt
+                # supersedes nothing), then stamp this completion.
+                # Re-reading identical evidence (a resume re-poll, or another
+                # provider's retry) is not a new attempt and must not move
+                # chronology.
+                if isinstance(prior_result, Mapping) and prior_result:
+                    _record_attempt_history(provider_data)
                 provider_data["completed_at"] = now_utc
             provider_data["adoption_result"] = bound_result
             provider_data["elapsed_seconds"] = float(bound_result.get("elapsed_seconds") or 0.0)
@@ -1954,11 +1966,16 @@ def dispatch_or_advance_campaign(
                     )
                     if found_result:
                         if not frozen_for_retry:
-                            if provider_data.get("adoption_result") != found_result:
+                            prior_found = provider_data.get("adoption_result")
+                            if prior_found != found_result:
                                 # Genuinely new evidence supersedes the stored
-                                # attempt; identical evidence must not move
+                                # attempt; record history only when a prior
+                                # stored result actually existed (the first
+                                # completion of a running attempt supersedes
+                                # nothing). Identical evidence must not move
                                 # chronology (see the drop-in path above).
-                                _record_attempt_history(provider_data)
+                                if isinstance(prior_found, Mapping) and prior_found:
+                                    _record_attempt_history(provider_data)
                                 provider_data["completed_at"] = now_utc
                             provider_data["adoption_result"] = found_result
                             provider_data["elapsed_seconds"] = float(
@@ -2192,7 +2209,7 @@ def dispatch_or_advance_campaign(
             if not is_explicit_retry:
                 # Ordinary resume is poll/reconciliation-only and never
                 # redispatches. Explicit retry may continue below only after
-                # the trusted result scan above found no completed evidence.
+                # the trusted result scan above found no terminal evidence.
                 continue
             # Explicit retry of a still-running provider with no valid
             # trusted result yet: fall through to the capability checks and
@@ -2377,8 +2394,11 @@ def dispatch_or_advance_campaign(
                 pass
             # A new attempt supersedes the stored one: keep its bounded
             # metadata-only summary before restamping. First attempts record
-            # nothing (there is no prior attempt to summarize).
+            # nothing (there is no prior attempt to summarize). The stored
+            # result is cleared before the new attempt, so a result-less
+            # failed retry cannot upload superseded evidence.
             _record_attempt_history(provider_data)
+            provider_data["adoption_result"] = None
             provider_data["attempted_at"] = now_utc
             provider_data["state"] = "running"
             provider_data["error"] = ""
@@ -2524,10 +2544,13 @@ def dispatch_or_advance_campaign(
                 #
                 # A redispatch supersedes the stored attempt, so its bounded
                 # metadata-only summary is kept first (a first dispatch
-                # records nothing). Frozen providers never reach here: the
-                # retry freeze above allows only the retried provider to start
-                # a new attempt.
+                # records nothing) and the stored result is cleared before
+                # the new attempt, so a result-less failed retry cannot
+                # upload superseded evidence. Frozen providers never reach
+                # here: the retry freeze above allows only the retried
+                # provider to start a new attempt.
                 _record_attempt_history(provider_data)
+                provider_data["adoption_result"] = None
                 provider_data["attempted_at"] = now_utc
                 provider_data["state"] = "running"
                 provider_data["error"] = ""
@@ -2723,6 +2746,11 @@ def record_manual_result(
         if p.get("provider") == canonical_provider:
             # A re-recorded result supersedes the stored attempt: keep its
             # bounded metadata-only summary first (a first record keeps none).
+            # Byte-identical evidence is idempotent: no history entry and no
+            # completion restamp.
+            if p.get("adoption_result") == adoption_res:
+                matched = True
+                break
             _record_attempt_history(p)
             p["adoption_result"] = adoption_res
             p["elapsed_seconds"] = float(adoption_res.get("elapsed_seconds") or 0.0)
@@ -3009,7 +3037,7 @@ def _campaign_upload_next_action(
     if status == "no_events":
         return (
             "complete at least one provider before uploading",
-            f"{len(skipped)} provider(s) have no completed qualification evidence",
+            f"{len(skipped)} provider(s) have no terminal qualification evidence",
         )
     if status == "uploaded":
         return ("none", f"{event_count} adoption_run event(s) uploaded")
@@ -3037,8 +3065,8 @@ def render_campaign_upload_text(result: Mapping[str, Any]) -> str:
         f"Endpoint: {result.get('endpoint')}",
         f"Events: {counts.get('events', 0)} adoption_run event(s) "
         f"from {counts.get('accepted', 0)} terminal provider(s)",
-        f"Skipped: {counts.get('skipped', 0)} provider(s) without completed evidence",
-        f"Rejected: {counts.get('rejected', 0)} completed provider(s) with unusable results",
+        f"Skipped: {counts.get('skipped', 0)} provider(s) without terminal evidence",
+        f"Rejected: {counts.get('rejected', 0)} terminal provider(s) with unusable results",
         "Model/token/cost: unavailable (metadata-only, never zero-filled)",
         f"Next: {result.get('next_action')}",
     ]
@@ -3061,7 +3089,7 @@ def campaign_upload(
     yes: bool = False,
     timeout: float = 20.0,
 ) -> dict[str, Any]:
-    """Preview or perform the cloud upload of one campaign's completed evidence.
+    """Preview or perform the cloud upload of one campaign's terminal evidence.
 
     Preview is the default and is the same computation as the applied upload:
     both build the identical deterministic event set and the identical payload,
@@ -4485,7 +4513,7 @@ def _upload_intent_conflict(
         if not intents:
             return ""
         return (
-            "upload publishes an existing campaign's completed evidence and cannot be "
+            "upload publishes an existing campaign's terminal evidence and cannot be "
             f"combined with {', '.join(intents)}; run that campaign action first, then "
             "upload"
         )

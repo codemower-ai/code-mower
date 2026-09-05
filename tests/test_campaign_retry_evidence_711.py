@@ -448,5 +448,444 @@ class TerminalUploadTests(unittest.TestCase):
             self.assertEqual(rejected["reason"], "adoption_result_invalid")
 
 
+class RetryEvidenceClearingTests(unittest.TestCase):
+    """A result-less failed retry must not upload superseded evidence."""
+
+    def test_failed_retry_clears_superseded_evidence_and_upload_skips_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex", "claude"],
+                    campaigns_dir=campaigns_dir,
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                release_campaigns.record_manual_result(
+                    campaign, "codex", _mock_result("codex", "fail"),
+                    campaigns_dir=campaigns_dir,
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                release_campaigns.record_manual_result(
+                    campaign, "claude", _mock_result("claude", "pass"),
+                    campaigns_dir=campaigns_dir,
+                )
+
+            def _resolve(name: str) -> tuple[str, ProviderLane]:
+                return name, _fake_lane(name)
+
+            invocations: list[list[str]] = []
+
+            def _failing_runner(argv: Any, timeout: int) -> subprocess.CompletedProcess[str]:
+                invocations.append(list(argv))
+                return subprocess.CompletedProcess(list(argv), 1, stdout="", stderr="boom")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", side_effect=_resolve
+            ):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        resume=True,
+                        apply=True,
+                        retry_provider="codex",
+                        which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                        adapter_runner=_failing_runner,
+                    )
+
+            self.assertEqual(len(invocations), 1)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            by_name = {p["provider"]: p for p in saved["providers"]}
+            codex = by_name["codex"]
+            # Superseded evidence is cleared before the new attempt, so the
+            # result-less retry leaves nothing uploadable behind.
+            self.assertIsNone(codex.get("adoption_result"))
+            history = codex.get("attempt_history")
+            assert isinstance(history, list) and len(history) == 1
+            self.assertEqual(history[0]["outcome"], "fail")
+            plan = release_campaigns.build_campaign_upload_events(saved)
+            self.assertEqual(plan["accepted_providers"], ["claude"])
+            self.assertEqual(plan["rejected_providers"], [])
+            self.assertEqual(
+                [r["provider"] for r in plan["skipped_providers"]], ["codex"]
+            )
+
+
+class RetryFreezeHostedTests(unittest.TestCase):
+    """An unrelated running hosted provider is byte-stable during another retry."""
+
+    def test_retry_freezes_running_hosted_provider_with_expired_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex", "claude"],
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                release_campaigns.record_manual_result(
+                    campaign, "codex", _mock_result("codex", "fail"),
+                    campaigns_dir=campaigns_dir,
+                )
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            for entry in stored["providers"]:
+                if entry["provider"] == "claude":
+                    entry["state"] = "running"
+                    entry["attempted_at"] = OLD_TS
+                    entry["dispatched_at"] = OLD_TS
+                    entry["completed_at"] = None
+                    entry["adoption_result"] = None
+                    entry["error"] = ""
+                    entry["trigger_posted"] = True
+                    entry["response_deadline_at"] = "2000-01-01T00:00:00Z"
+                    entry["dispatch_ref"] = {
+                        "issue_number": "99",
+                        "comment_posted": True,
+                    }
+                    entry["next_action"] = "wait for hosted provider result"
+                    entry["next_detail"] = "polling"
+                    entry.pop("attempt_history", None)
+            path.write_text(json.dumps(stored), encoding="utf-8")
+            before = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert before is not None
+            frozen_before = json.loads(
+                json.dumps(
+                    next(
+                        p for p in before["providers"] if p["provider"] == "claude"
+                    )
+                )
+            )
+
+            hosted_lane = ProviderLane(
+                lane_id="fake_claude_hosted",
+                lane_type="audit",
+                driver="hosted_bridge",
+                provider="claude",
+                labels=LaneLabels(
+                    needs="needs-fake", done="fake-done", blocked="fake-blocked"
+                ),
+                trigger_policy="manual",
+                provider_config={},
+            )
+
+            def _resolve(name: str) -> tuple[str, ProviderLane]:
+                if name == "claude":
+                    return "claude", hosted_lane
+                return "codex", _fake_lane("codex")
+
+            def _forbidden_gh(*args: Any, **kwargs: Any) -> Any:
+                raise AssertionError("frozen provider must not be polled")
+
+            invocations: list[list[str]] = []
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", side_effect=_resolve
+            ):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        resume=True,
+                        apply=True,
+                        retry_provider="codex",
+                        which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                        adapter_runner=_writing_runner("pass", invocations),
+                        gh_json_runner=_forbidden_gh,
+                    )
+
+            self.assertEqual(len(invocations), 1)
+            after = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert after is not None
+            frozen_after = next(
+                p for p in after["providers"] if p["provider"] == "claude"
+            )
+            self.assertEqual(frozen_after, frozen_before)
+            self.assertEqual(frozen_after["state"], "running")
+
+
+class FirstCompletionHistoryTests(unittest.TestCase):
+    """First completions stamp completion without consuming history slots."""
+
+    def test_first_dropin_completion_records_no_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                )
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            stored["providers"][0]["state"] = "running"
+            stored["providers"][0]["attempted_at"] = OLD_TS
+            stored["providers"][0]["dispatched_at"] = OLD_TS
+            stored["providers"][0]["completed_at"] = None
+            stored["providers"][0]["adoption_result"] = None
+            stored["providers"][0].pop("attempt_history", None)
+            path.write_text(json.dumps(stored), encoding="utf-8")
+            results_dir = campaigns_dir / "results"
+            results_dir.mkdir(parents=True, exist_ok=True)
+            (results_dir / "campaign-v1.0.0_codex.json").write_text(
+                json.dumps(_mock_result("codex", "pass")), encoding="utf-8"
+            )
+            fake_lane = _fake_lane("codex")
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane",
+                return_value=("codex", fake_lane),
+            ):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        resume=True,
+                        apply=True,
+                        which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    )
+            saved = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert saved is not None
+            entry = saved["providers"][0]
+            self.assertEqual(entry["state"], "complete")
+            self.assertEqual(entry["adoption_result"]["outcome"], "pass")
+            self.assertIsNotNone(entry.get("completed_at"))
+            self.assertEqual(entry.get("attempt_history", []), [])
+
+    def test_first_hosted_poll_completion_records_no_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["devin"],
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                )
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            stored["providers"][0]["state"] = "running"
+            stored["providers"][0]["attempted_at"] = OLD_TS
+            stored["providers"][0]["dispatched_at"] = OLD_TS
+            stored["providers"][0]["completed_at"] = None
+            stored["providers"][0]["adoption_result"] = None
+            stored["providers"][0]["dispatch_ref"] = {"issue_number": "99"}
+            stored["providers"][0]["trigger_posted"] = True
+            stored["providers"][0]["response_deadline_at"] = "2099-01-01T00:00:00Z"
+            stored["providers"][0].pop("attempt_history", None)
+            path.write_text(json.dumps(stored), encoding="utf-8")
+            campaign = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert campaign is not None
+            idempotency_key = campaign["providers"][0]["idempotency_key"]
+            adoption_res = _mock_result("devin", "pass")
+            wrapper = {
+                "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+                "campaign_id": "campaign-v1.0.0",
+                "provider": "devin",
+                "release_tag": "v1.0.0",
+                "idempotency_key": idempotency_key,
+                "adoption_result": adoption_res,
+            }
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+
+            def mock_gh_json(args: Any, **kwargs: Any) -> Any:
+                return {
+                    "comments": [
+                        {
+                            "author": {"login": "devin-ai-integration[bot]"},
+                            "body": marker,
+                        }
+                    ]
+                }, ""
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    repo_slug="owner/repo",
+                    gh_json_runner=mock_gh_json,
+                )
+            saved = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert saved is not None
+            entry = saved["providers"][0]
+            self.assertEqual(entry["state"], "complete")
+            self.assertEqual(entry["adoption_result"]["outcome"], "pass")
+            self.assertIsNotNone(entry.get("completed_at"))
+            self.assertEqual(entry.get("attempt_history", []), [])
+
+    def test_second_completion_supersedes_first_with_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                release_campaigns.record_manual_result(
+                    campaign, "codex", _mock_result("codex", "pass"),
+                    campaigns_dir=campaigns_dir,
+                )
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            stored["providers"][0]["completed_at"] = OLD_DONE_TS
+            stored["providers"][0].pop("attempt_history", None)
+            path.write_text(json.dumps(stored), encoding="utf-8")
+            campaign = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert campaign is not None
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.record_manual_result(
+                    campaign, "codex", _mock_result("codex", "fail"),
+                    campaigns_dir=campaigns_dir,
+                )
+            saved = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert saved is not None
+            entry = saved["providers"][0]
+            self.assertEqual(entry["adoption_result"]["outcome"], "fail")
+            history = entry.get("attempt_history")
+            assert isinstance(history, list) and len(history) == 1
+            self.assertEqual(history[0]["outcome"], "pass")
+
+
+class ManualResultIdempotencyTests(unittest.TestCase):
+    """Byte-identical re-records add no history and move no timestamps."""
+
+    def test_identical_manual_result_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                release_campaigns.record_manual_result(
+                    campaign, "codex", _mock_result("codex", "pass"),
+                    campaigns_dir=campaigns_dir,
+                )
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            stored["providers"][0]["completed_at"] = OLD_DONE_TS
+            stored["providers"][0].pop("attempt_history", None)
+            path.write_text(json.dumps(stored), encoding="utf-8")
+            campaign = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert campaign is not None
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.record_manual_result(
+                    campaign, "codex", _mock_result("codex", "pass"),
+                    campaigns_dir=campaigns_dir,
+                )
+            saved = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert saved is not None
+            entry = saved["providers"][0]
+            self.assertEqual(entry.get("attempt_history", []), [])
+            self.assertEqual(entry.get("completed_at"), OLD_DONE_TS)
+
+
+class UploadTextTests(unittest.TestCase):
+    """Upload summaries describe terminal (complete+blocked) evidence."""
+
+    def test_upload_text_uses_terminal_wording(self) -> None:
+        text = release_campaigns.render_campaign_upload_text(
+            {
+                "release_tag": "v1.0.0",
+                "campaign_id": "campaign-v1.0.0",
+                "status": "dry_run",
+                "endpoint": "https://example.invalid",
+                "counts": {
+                    "events": 2,
+                    "accepted": 2,
+                    "skipped": 1,
+                    "rejected": 1,
+                },
+                "next_action": "inspect",
+                "next_detail": "",
+            }
+        )
+        self.assertIn("terminal provider(s)", text)
+        self.assertIn("without terminal evidence", text)
+        self.assertNotIn("completed evidence", text)
+        self.assertNotIn("completed provider", text)
+
+    def test_no_events_detail_uses_terminal_wording(self) -> None:
+        _, detail = release_campaigns._campaign_upload_next_action(
+            status="no_events",
+            event_count=0,
+            rejected=[],
+            skipped=[{"provider": "codex"}],
+            token_status="ok",
+        )
+        self.assertIn("terminal", detail)
+        self.assertNotIn("completed", detail)
+
+
 if __name__ == "__main__":
     unittest.main()
