@@ -38,7 +38,22 @@ This document tracks the tool/model/version provenance metadata for v1.0 provide
 - **Bot Authors**: gitar-ai[bot], gitar-bot, gitar-bot[bot]
 - **Status**: informational adapter-based lane, opt-in required
 
-### Cursor BugBot
+### Cursor Cloud Agent (Builder)
+- **Provider**: cursor_cloud_agent
+- **Driver**: hosted_bridge
+- **Schema**: codeMower.cursorCloudAgentAudit.v1
+- **Result Source**: trailer_comment
+- **Model Source**: vendor_hidden
+- **Version Detection**: vendor_hidden
+- **Merge Authority**: true (enabled_by_default=false, manual trigger)
+- **Spend Policy**: paid
+- **Role**: builder
+- **Capability**: work_order_execution
+- **Bot Authors**: cursor[bot], cursor
+- **Trigger Comments**: "@cursor run", "cursor run"
+- **Status**: hosted async builder with release qualification capability; can execute work orders and package-install campaigns
+
+### Cursor BugBot (Reviewer)
 - **Provider**: cursor_bugbot
 - **Driver**: saas_event
 - **Schema**: codeMower.cursorBugbotAudit.v1 (fixture schema)
@@ -47,9 +62,11 @@ This document tracks the tool/model/version provenance metadata for v1.0 provide
 - **Version Detection**: vendor_hidden
 - **Merge Authority**: false (informational)
 - **Spend Policy**: paid
+- **Role**: reviewer
+- **Capability**: code_review
 - **Bot Authors**: cursor[bot], cursor
 - **Trigger Comments**: "bugbot run", "@cursor review"
-- **Status**: manual informational lane, calibration-only until output shape captured
+- **Status**: manual informational review lane; Grok Bot and BugBot are review surfaces only and cannot execute package-install campaigns
 
 ### Antigravity CLI
 - **Provider**: antigravity

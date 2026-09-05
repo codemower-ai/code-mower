@@ -199,6 +199,39 @@ provider_templates:
     review_hygiene:
       workflow: ".github/workflows/codex-clear-stale.yml"
       token_env: "GITHUB_TOKEN"
+  cursor_cloud_agent:
+    provider: "cursor_cloud_agent"
+    driver: "hosted_bridge"
+    type: "audit"
+    adapter: null
+    trailer_lane: null
+    spend_policy: "paid"
+    merge_authority: true
+    informational: false
+    enabled_by_default: false
+    events: []
+    token_env:
+      - "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN"
+      - "GITHUB_TOKEN"
+    token_env_any: []
+    trigger_policy: "manual"
+    provider_config:
+      bot_authors:
+        - "cursor[bot]"
+        - "cursor"
+      bot_authors_env: "CURSOR_CLOUD_AGENT_BOT_AUTHORS"
+      trigger_comments:
+        - "@cursor run"
+        - "cursor run"
+      campaign_transport_ready_env: "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY"
+      campaign_response_timeout_seconds: 3600
+      rules_file: ".cursor/AGENT.md"
+      role: "builder"
+      capability: "work_order_execution"
+      status: "hosted async builder with release qualification capability"
+    review_hygiene:
+      workflow: ".github/workflows/cursor-cloud-agent-clear-stale.yml"
+      token_env: "GITHUB_TOKEN"
   cursor_bugbot:
     provider: "cursor_bugbot"
     driver: "saas_event"
@@ -220,11 +253,14 @@ provider_templates:
       bot_authors:
         - "cursor[bot]"
         - "cursor"
+      bot_authors_env: "CURSOR_BUGBOT_BOT_AUTHORS"
       trigger_comments:
         - "bugbot run"
         - "@cursor review"
       rules_file: ".cursor/BUGBOT.md"
-      status: "manual informational lane; keep calibration-only until enabled BugBot output shape is captured and adjudicated"
+      role: "reviewer"
+      capability: "code_review"
+      status: "manual informational review lane; Grok Bot and BugBot are review surfaces only"
     review_hygiene: {}
   devin:
     provider: "devin"

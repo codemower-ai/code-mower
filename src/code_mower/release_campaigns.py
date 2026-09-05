@@ -111,7 +111,7 @@ DEFAULT_CAMPAIGN_PROVIDERS = (
     "codex",
     "antigravity",
     "muse",
-    "cursor_bugbot",
+    "cursor_cloud_agent",
     "devin",
 )
 
@@ -126,10 +126,10 @@ PROVIDER_ALIAS_MAP: dict[str, str] = {
     "antigravity_cli": "antigravity_cli",
     "muse": "muse_cli",
     "muse_cli": "muse_cli",
-    "cursor": "cursor_bugbot",
+    "cursor": "cursor_cloud_agent",
+    "cursor_cloud_agent": "cursor_cloud_agent",
     "cursor_bugbot": "cursor_bugbot",
     "cursor_grok_bot": "cursor_bugbot",
-    "cursor_cloud_agent": "cursor_bugbot",
     "grok_bot": "cursor_bugbot",
     "grok": "grok_build",
     "grok_build": "grok_build",

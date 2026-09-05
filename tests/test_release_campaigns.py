@@ -180,6 +180,46 @@ class ResolveProviderLaneTests(unittest.TestCase):
         self.assertEqual(canonical, "claude")
         self.assertEqual(lane.lane_id, "claude_audit")
 
+    def test_cursor_alias_resolves_to_cursor_cloud_agent(self) -> None:
+        """The 'cursor' alias routes to cursor_cloud_agent (builder), not cursor_bugbot."""
+        canonical, lane = release_campaigns.resolve_provider_lane("cursor")
+        self.assertEqual(canonical, "cursor_cloud_agent")
+        self.assertEqual(lane.lane_id, "cursor_cloud_agent")
+        self.assertEqual(lane.provider, "cursor_cloud_agent")
+
+    def test_cursor_cloud_agent_direct_lookup(self) -> None:
+        """cursor_cloud_agent as direct provider name resolves to itself."""
+        canonical, lane = release_campaigns.resolve_provider_lane("cursor_cloud_agent")
+        self.assertEqual(canonical, "cursor_cloud_agent")
+        self.assertEqual(lane.lane_id, "cursor_cloud_agent")
+        self.assertEqual(lane.driver, "hosted_bridge")
+        # Verify builder capability metadata
+        self.assertEqual(lane.provider_config.get("role"), "builder")
+        self.assertEqual(lane.provider_config.get("capability"), "work_order_execution")
+
+    def test_cursor_bugbot_stays_cursor_bugbot(self) -> None:
+        """cursor_bugbot as provider name resolves to cursor_bugbot reviewer lane."""
+        canonical, lane = release_campaigns.resolve_provider_lane("cursor_bugbot")
+        self.assertEqual(canonical, "cursor_bugbot")
+        self.assertEqual(lane.lane_id, "cursor_bugbot")
+        self.assertEqual(lane.driver, "saas_event")
+        # Verify reviewer capability metadata
+        self.assertEqual(lane.provider_config.get("role"), "reviewer")
+        self.assertEqual(lane.provider_config.get("capability"), "code_review")
+
+    def test_grok_bot_alias_resolves_to_cursor_bugbot(self) -> None:
+        """The 'grok_bot' alias routes to cursor_bugbot (reviewer)."""
+        canonical, lane = release_campaigns.resolve_provider_lane("grok_bot")
+        self.assertEqual(canonical, "cursor_bugbot")
+        self.assertEqual(lane.lane_id, "cursor_bugbot")
+        self.assertEqual(lane.provider, "cursor_bugbot")
+
+    def test_cursor_grok_bot_alias_resolves_to_cursor_bugbot(self) -> None:
+        """The 'cursor_grok_bot' alias also routes to cursor_bugbot (reviewer)."""
+        canonical, lane = release_campaigns.resolve_provider_lane("cursor_grok_bot")
+        self.assertEqual(canonical, "cursor_bugbot")
+        self.assertEqual(lane.lane_id, "cursor_bugbot")
+
     def test_unknown_provider_name_raises(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             release_campaigns.resolve_provider_lane("totally-made-up-provider")

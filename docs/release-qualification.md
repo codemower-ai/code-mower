@@ -84,7 +84,7 @@ No local paths, secrets, commands, or raw output.
 
 ## Release Campaigns
 
-The `code-mower release campaign` command coordinates multi-provider qualification across Claude, Codex, Antigravity, Muse, Cursor/Grok Bot, and Devin:
+The `code-mower release campaign` command coordinates multi-provider qualification across Claude, Codex, Antigravity, Muse, Cursor Cloud Agent, and Devin:
 
 ```bash
 code-mower release campaign \
@@ -94,7 +94,7 @@ code-mower release campaign \
 ```
 
 - **Dry-run by default, applied once and for all:** Omit `--apply` for a safe preview. Add `--apply` for live local execution, GitHub comment dispatch, or paid runs. `applied` is a *monotonic* transition: a dry-run campaign becomes applied the first time it is dispatched with `--apply`, and nothing moves it back. A later `resume` or `--status` poll that simply omits `--apply` is not a claim that the dispatches and attempts already made never happened, so it leaves the campaign (and each dispatched provider's `dispatch_mode`) applied -- in stored state, in the rendered text, and on the Board. Previously such a poll relabelled real evidence as a dry-run preview and regressed the aggregate status to "run with --apply to dispatch providers" for providers that had already been dispatched. A poll still never dispatches anything: only `--apply` does that. The aggregate headline of a preview is held to the same standard as the individual providers it summarizes: `queued` / "run with --apply to dispatch providers" is only reported while at least one provider is genuinely dispatchable. When every provider that is not already complete is `unavailable` -- for a missing `--issue`, a missing `--repo-slug`, missing credentials, or an unconfigured adapter alike -- the campaign reports `unavailable` and the actionable "configure prerequisites for unavailable providers: ..." next action instead of pointing at an `--apply` run that could dispatch nothing. A mixed preview stays `queued`, and its detail line still counts the queued and unavailable providers separately.
-- **Provider diversity:** Tracks Claude, Codex, Antigravity, Muse, Cursor/Grok Bot, and Devin. Missing tools, tokens, or adapters -- and a `code-mower.yml` that configures one lane under two spellings -- degrade gracefully to `unavailable` without failing the campaign. Each provider may appear at most once: `--providers` is canonicalized before any participant is built, so naming the same provider twice -- directly, or through two aliases of one lane such as `cursor` and `grok_bot` -- is rejected with an explicit error instead of creating two participants that share a single idempotency key and result path (which would let one provider's evidence count twice).
+- **Provider diversity:** Tracks Claude, Codex, Antigravity, Muse, Cursor Cloud Agent, and Devin. Missing tools, tokens, or adapters -- and a `code-mower.yml` that configures one lane under two spellings -- degrade gracefully to `unavailable` without failing the campaign. Each provider may appear at most once: `--providers` is canonicalized before any participant is built, so naming the same provider twice -- directly, or through two aliases of one lane such as `cursor` and `cursor_cloud_agent` -- is rejected with an explicit error instead of creating two participants that share a single idempotency key and result path (which would let one provider's evidence count twice).
 - **Idempotent resume:** Pass `--resume` to re-poll running providers or advance queued participants without duplicating dispatch or re-invoking an adapter that already completed. Once a provider's applied dispatch/adapter has been attempted (even if it failed or its outcome was uncertain), ordinary resume never repeats it automatically -- pass `--retry-provider <provider>` to explicitly retry that one provider. `--retry-provider` is rejected unless the named provider is already part of the campaign.
 - **A hosted dispatch is checkpointed as pollable before it is posted:** Posting the dispatch comment is an external side effect that the campaign cannot undo and cannot re-observe, so everything a later resume needs is persisted *first*: the attempt (`attempted_at`), the `running` state, the issue the comment is addressed to (in `dispatch_ref`), the applied dispatch mode, and the matching campaign status and next action. A process killed anywhere around the post therefore leaves a campaign that an ordinary `--resume` polls to a conclusion against the original issue -- accepting the trusted, identity-bound result if the comment did get posted and answered -- and that never reposts on its own. Previously the campaign recorded only `attempted_at` and stayed `queued` until the post returned, which resume neither polled (not running) nor redispatched (already attempted): the provider stalled until an explicit retry posted a second comment for a dispatch that may well have succeeded. The checkpoint never claims the post succeeded -- `dispatched_at` is stamped and `dispatch_ref` is replaced with the returned dispatch metadata only when the post returns successfully; a dispatch that fails in-process records the usual `github_dispatch_failed` unavailable result. If nothing was ever posted, resume simply keeps polling and finds nothing, and dispatching again still requires an explicit `--retry-provider` (which, being explicit, may post a second comment). A retry that cannot dispatch for a prerequisite reason -- no `--issue`, missing credentials -- leaves an outstanding dispatch `running` and pollable rather than demoting it to `unavailable`, since refusing to dispatch reveals nothing about the comment already posted.
 - **Never reinitialized:** An existing campaign is never replaced by a fresh queued one. Repeating the same invocation (same `--release-tag` or `--campaign-id`, with or without `--resume`) advances the stored campaign under resume semantics, so a repeated `--apply` never reruns a local adapter, reposts a hosted dispatch, or discards recorded provider state and evidence. The explicit `create` action fails when that campaign already exists, and `resume`/`dispatch` fail when it does not -- neither falls through to creating one. A request that asks for two actions at once is refused rather than resolved to one of them: an action may be spelled with the equivalent legacy flag (`status` with `--status`, `resume`/`dispatch` with `--resume`), but combining an action with a flag naming a *different* action -- `create --resume` above all -- exits non-zero with a bounded conflict message before any campaign lookup, directory creation, lock, state write, adapter run, dispatch, or poll, so the rejected request leaves nothing behind. Previously `create --resume` reached the command body with both intents live and was answered by whichever branch tested its flag first, reporting "no existing campaign to resume" for an explicit `create`. Creation arguments that describe a different campaign (`--package-spec`, `--providers`, `--qualification-context`, `--starting-version`, or a `--campaign-id`/`--release-tag` pair that disagree) are rejected explicitly rather than silently ignored. `--qualification-context` is compared whenever it is supplied, including an explicit `--qualification-context cold_install` against a stored upgrade campaign: the flag has no default value of its own, so an omitted flag (which advances the stored campaign under its own context, and creates a `cold_install` campaign when there is none) is distinguishable from an explicitly requested `cold_install` and the latter is never silently ignored. `--repo-slug` is the one field an existing campaign can still be *completed* with: a campaign created without a repository slug has nowhere to dispatch, so supplying `--repo-slug` on a later `resume`/`dispatch` fills the empty stored value and persists it before any hosted dispatch uses it. A `--repo-slug` that disagrees with a non-empty stored slug is rejected like any other identity change -- an in-flight campaign is never repointed at a different repository.
@@ -175,16 +175,16 @@ Hosted / SaaS providers (`hosted_bridge`/`saas_event` driver: Devin, Cursor BugB
 - The provider's reply comment must embed a `CODE_MOWER_ADOPTION_RESULT` marker as a single-line HTML comment on a line of its own (`<!-- CODE_MOWER_ADOPTION_RESULT: {...} -->`), wrapping schema `code_mower.releaseCampaignResult.v1` with `campaign_id`, `provider`, `release_tag`, and `idempotency_key` matching the original dispatch, plus a validated `adoption_result`. A bare or unbound result is ignored so a stale or unrelated comment can never be replayed as evidence. The embedded `adoption_result`'s own `qualification_context` and `starting_version` must also match the campaign's exactly, independent of the wrapper's idempotency key -- a cold-install result cannot complete an upgrade campaign, and an upgrade result from one starting version cannot complete a same-tag upgrade campaign from a different starting version. The marker line is matched end to end and its JSON is captured through the object's own final brace, so a literal `-->` inside a permitted string value cannot truncate an otherwise valid trusted result; a marker whose JSON is genuinely malformed is still ignored (fail-closed), never guessed at.
 - These identity fields are visible in the public dispatch comment, so binding alone does not prove authorship -- anyone could reply with a matching marker. A result marker is only ever accepted from a GitHub comment author present in the lane's `provider_config.bot_authors` list (and, if configured, the comma-separated login list in the environment variable named by `provider_config.bot_authors_env`). A lane with no trusted authors configured trusts nobody; an untrusted or spoofed author's comment is ignored and the provider keeps running.
 
-#### Cursor BugBot Setup
+#### Cursor Cloud Agent Setup
 
-Cursor BugBot (also known as Cursor/Grok Bot, or Cursor Cloud Agents) is a hosted SaaS provider using the `saas_event` driver.
+Cursor Cloud Agent is a hosted async builder using the `hosted_bridge` driver.
 
 **Prerequisites:**
 - GitHub App authorization for Cursor in your repository
-- `CURSOR_BUGBOT_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN` as fallback) for applying audit labels
+- `CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN` as fallback) for applying audit labels
 - `GITHUB_TOKEN` for posting dispatch comments
 - After verifying that the installed App answers campaign issue comments, set
-  `CODE_MOWER_CURSOR_BUGBOT_CAMPAIGN_TRANSPORT_READY=1`. Without it, doctor and
+  `CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY=1`. Without it, doctor and
   Board report the transport as unverified, but an explicit `--apply` may still
   dispatch it under the response deadline below. Token presence alone proves
   comment permission, not that the App supports this transport.
@@ -194,10 +194,39 @@ Cursor BugBot (also known as Cursor/Grok Bot, or Cursor Cloud Agents) is a hoste
 - `cursor`
 
 **Environment override:**
-Set `CURSOR_BUGBOT_BOT_AUTHORS` to a comma-separated list of additional trusted GitHub logins. This extends (does not replace) the default trusted authors, allowing self-hosted or alternative Cursor integrations to be trusted.
+Set `CURSOR_CLOUD_AGENT_BOT_AUTHORS` to a comma-separated list of additional trusted GitHub logins. This extends (does not replace) the default trusted authors, allowing self-hosted or alternative Cursor integrations to be trusted.
 
 **Trigger comments:**
-- `bugbot run`
+- `@cursor run`
+- `cursor run`
+
+**Role and capability:**
+- `role: builder`
+- `capability: work_order_execution`
+- Can execute work orders and package-install campaigns
+
+**Response timeout:**
+- 3600 seconds (1 hour)
+
+**Campaign dispatch:**
+The campaign posts a GitHub issue comment with schema `code_mower.releaseCampaignDispatch.v1` containing:
+- `campaign_id`
+- `provider`: `cursor_cloud_agent`
+- `release_tag`
+- `package_spec`
+- `qualification_context` (cold_install/upgrade/unknown)
+- `starting_version` (for upgrade campaigns only)
+- `idempotency_key`
+
+Cursor Cloud Agent replies with a comment containing `<!-- CODE_MOWER_ADOPTION_RESULT: {...} -->` wrapping schema `code_mower.releaseCampaignResult.v1`. The embedded `adoption_result` must match the campaign's provider, release tag, package identity, qualification context, and (for upgrades) starting version.
+
+#### Historical Cursor BugBot Note
+
+Before v1.0.8, `cursor_bugbot` was used for both builder and review capabilities. As of v1.0.8:
+- `cursor_cloud_agent` is the canonical builder identity with work-order execution capability
+- `cursor_bugbot` (also known as Grok Bot or BugBot) is a review-only surface and cannot execute package-install campaigns
+
+The provider alias map routes `cursor` → `cursor_cloud_agent` for new work. Historical `cursor_bugbot` campaigns remain valid but are not accepted for new release qualification.
 - `@cursor review`
 
 After the dispatch comment is posted, one of these trigger commands is posted as a separate comment to actually start the BugBot qualification run.
