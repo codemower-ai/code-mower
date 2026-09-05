@@ -273,9 +273,10 @@ Two local routes produce these events, and both go through one converter, so
 the same result always yields the same event id: `code-mower cloud dogfood
 --event adoption_run=path/to/result.json` (and `cloud export`) converts one
 result file at a time, while `code-mower release campaign upload` converts every
-completed provider result a campaign holds. The campaign route previews by
+terminal (`complete` or `blocked`) provider result a campaign holds -- passing
+and failing evidence alike. The campaign route previews by
 default and posts only with `--yes`, using the identical event set both times;
-providers that are not complete are counted as skipped, and a completed provider
+providers without terminal evidence are counted as skipped, and a terminal provider
 whose stored result no longer validates stops the upload with a bounded error
 instead of publishing a partial set.
 
