@@ -34,7 +34,7 @@ provider          verified CLI         invocation surface
                                       ``--json``, schema/last-message output, ``-C``
 ``claude``        Claude Code 2.1.258  ``--print`` with stdin, ``--output-format json``,
                                       explicit tool/permission controls, ``--json-schema``
-``antigravity``   agy 1.1.26          ``--print`` with a prompt file, ``--sandbox``,
+``antigravity``   runtime-probed       ``--print`` with a prompt file, ``--sandbox``,
                                       noninteractive approval, ``--new-project``,
                                       ``--add-dir``, ``--print-timeout``
 ``muse``          Muse Code 1.0.3      ``exec`` with ``--json``, ``--prompt-file``,
@@ -96,7 +96,6 @@ SUPPORTED_ADAPTER_PROVIDERS = ("codex", "claude", "antigravity", "muse")
 VERIFIED_CLI_VERSIONS = {
     "codex": "codex-cli 0.147.0",
     "claude": "Claude Code 2.1.258",
-    "antigravity": "agy 1.1.26",
     "muse": "Muse Code 1.0.3",
 }
 
@@ -676,6 +675,7 @@ def check_antigravity_readiness(
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     timeout_seconds: int = 10,
+    child_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Detect whether installed agy CLI supports --new-project for campaign isolation.
 
@@ -694,10 +694,15 @@ def check_antigravity_readiness(
             "remediation": "Install agy CLI on PATH or specify the executable in code-mower.yml.",
         }
 
+    probe_env = dict(child_env) if child_env is not None else build_adapter_child_env("antigravity")
     try:
         if runner is not None:
             try:
-                completed = runner([agy_bin, "--help"], timeout=timeout_seconds)
+                completed = runner(
+                    [agy_bin, "--help"],
+                    timeout=timeout_seconds,
+                    env=probe_env,
+                )
             except TypeError:
                 completed = runner([agy_bin, "--help"])
         else:
@@ -707,9 +712,10 @@ def check_antigravity_readiness(
                 text=True,
                 check=False,
                 timeout=timeout_seconds,
+                env=probe_env,
             )
         output = (completed.stdout or "") + (completed.stderr or "")
-        has_new_project = (completed.returncode == 0) and ("--new-project" in output)
+        has_new_project = (completed.returncode == 0) and ("--new-project" in output.split())
     except (subprocess.TimeoutExpired, OSError):
         has_new_project = False
 
@@ -1075,6 +1081,7 @@ def run_campaign_adapter(
                 readiness = check_antigravity_readiness(
                     resolved_bin,
                     runner=capability_runner,
+                    child_env=child_env,
                 )
                 if not readiness["ready"]:
                     return _fail(provider, readiness["message"])

@@ -635,6 +635,50 @@ class AdapterTransportTests(unittest.TestCase):
         self.assertNotIn("/bin/agy", serialized)
         self.assertFalse(campaign_adapters.check_antigravity_new_project_capability("/bin/agy", runner=fake_runner))
 
+    def test_check_antigravity_readiness_rejects_flag_name_substrings(self) -> None:
+        def fake_runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout="  --new-project-template  Select a project template\n",
+                stderr="",
+            )
+
+        result = campaign_adapters.check_antigravity_readiness(
+            "/bin/agy",
+            runner=fake_runner,
+        )
+        self.assertFalse(result["ready"])
+
+    def test_check_antigravity_readiness_production_probe_uses_allowlisted_env(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            seen.update(kwargs)
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout="  --new-project  Create a new project\n",
+                stderr="",
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GITHUB_TOKEN": "secret-github-token",
+                "CODE_MOWER_CLOUD_TOKEN": "secret-cloud-token",
+                "META_API_KEY": "secret-provider-key",
+            },
+            clear=False,
+        ), mock.patch.object(campaign_adapters.subprocess, "run", side_effect=fake_run):
+            result = campaign_adapters.check_antigravity_readiness("/bin/agy")
+
+        self.assertTrue(result["ready"])
+        probe_env = seen["env"]
+        self.assertNotIn("GITHUB_TOKEN", probe_env)
+        self.assertNotIn("CODE_MOWER_CLOUD_TOKEN", probe_env)
+        self.assertNotIn("META_API_KEY", probe_env)
+
     def test_check_antigravity_readiness_fails_on_empty_or_nonexistent_command(self) -> None:
         res_empty = campaign_adapters.check_antigravity_readiness("")
         self.assertFalse(res_empty["ready"])
