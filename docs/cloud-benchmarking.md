@@ -29,9 +29,9 @@ observability/evaluation backend.
 
 ## Release Stages
 
-### Current v1.0.7: Metadata-Only Upload, Board, Productivity, And Qualification
+### Current v1.0.8: Metadata-Only Upload, Board, Productivity, And Qualification
 
-The current v1.0.7 line keeps cloud sharing opt-in for adopters who explicitly
+The current v1.0.8 line keeps cloud sharing opt-in for adopters who explicitly
 want to share sanitized benchmark metadata, summarized Board mirrors, or
 aggregate productivity metrics with Code Mower Cloud. The OSS tool is still
 local-first:
@@ -43,7 +43,7 @@ code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 code-mower cloud dogfood --json
 code-mower cloud dogfood --event productivity_summary=productivity-summary.json --json
 code-mower cloud board-snapshot --repo-slug OWNER/REPO --json
-code-mower release qualify --release-tag v1.0.7 --package-spec code-mower==1.0.7 --output adoption-result.json --execute
+code-mower release qualify --release-tag v1.0.8 --package-spec code-mower==1.0.8 --output adoption-result.json --execute
 code-mower cloud export --event adoption_run=adoption-result.json --repo-slug OWNER/REPO --json
 ```
 
