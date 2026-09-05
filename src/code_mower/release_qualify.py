@@ -21,6 +21,7 @@ if __package__ in {None, ""}:
     from code_mower import board as code_mower_board
     from code_mower import doctor_checks
     from code_mower import lane_status
+    from code_mower.migration_install import PACKAGE_INSTALL_FAILURE_REASONS
     from code_mower.migration_rehearsal import (
         _package_spec_uses_package_index,
         run_package_install_rehearsal,
@@ -30,6 +31,7 @@ else:
     from . import board as code_mower_board
     from . import doctor_checks
     from . import lane_status
+    from .migration_install import PACKAGE_INSTALL_FAILURE_REASONS
     from .migration_rehearsal import (
         _package_spec_uses_package_index,
         run_package_install_rehearsal,
@@ -568,7 +570,6 @@ def validate_adoption_result_payload(
         # Validate failure_reason if present
         failure_reason = step.get("failure_reason")
         if failure_reason is not None:
-            from code_mower.migration_install import PACKAGE_INSTALL_FAILURE_REASONS
             if not isinstance(failure_reason, str):
                 raise ValueError(f"adoption result step {index} failure_reason must be a string")
             if failure_reason not in PACKAGE_INSTALL_FAILURE_REASONS:

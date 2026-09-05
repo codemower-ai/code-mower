@@ -613,9 +613,9 @@ def _failure_reason_remediation(failure_reason: str) -> str:
         "package_index": "retry after index propagation or verify package is published",
         "runtime": "verify Python version compatibility and system dependencies",
         "sandbox_permission": "check disk space, filesystem permissions, and sandbox config",
-        "unknown": "examine full qualification logs for diagnostic details",
+        "unknown": "rerun qualification in provider environment and inspect local diagnostics",
     }
-    return remediation_map.get(failure_reason, "examine qualification logs")
+    return remediation_map.get(failure_reason, "rerun in provider environment")
 
 
 def _extract_failure_detail(result: Mapping[str, Any] | None) -> str:
