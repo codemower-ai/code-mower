@@ -2547,3 +2547,176 @@ class StatusCacheTests(TestCase):
         self.assertNotIn(secret, summary)
         self.assertNotIn(local_path, summary)
         self.assertNotIn("stdout", summary)
+
+    def test_refresh_thread_base_exception_recovers_and_advances(self) -> None:
+        class CustomThreadExit(BaseException):
+            pass
+
+        def make_compute(target_exc: BaseException) -> tuple[object, list[int]]:
+            attempts: list[int] = []
+
+            def compute() -> dict:
+                attempts.append(1)
+                if len(attempts) == 1:
+                    raise target_exc
+                return {"n": len(attempts)}
+
+            return compute, attempts
+
+        for exc in (SystemExit(1), CustomThreadExit("aborted")):
+            with self.subTest(exc=exc.__class__.__name__):
+                pending: list = []
+                compute, attempts = make_compute(exc)
+                clock = _FakeClock(0.0)
+                cache = board.StatusCache(
+                    compute,
+                    ttl_seconds=10,
+                    clock=clock,
+                    now=lambda: NOW,
+                    start_thread=pending.append,
+                    retry_base_seconds=5.0,
+                )
+
+                _snapshot, meta = cache.get()
+                self.assertTrue(meta["refresh_in_progress"])
+                pending.pop()()  # raises BaseException
+
+                _snapshot, meta = cache.get()
+                self.assertFalse(meta["refresh_in_progress"])
+                self.assertEqual(meta["last_error"], f"status refresh failed: {exc.__class__.__name__}")
+                self.assertEqual(meta["retry_in_seconds"], 5.0)
+
+                clock.advance(5.0)
+                cache.get()  # starts retry
+                pending.pop()()  # retry succeeds
+                snapshot, meta = cache.get()
+                self.assertEqual(snapshot, {"n": 2})
+                self.assertEqual(meta["generation"], 1)
+                self.assertEqual(meta["state"], "fresh")
+                self.assertEqual(meta["last_error"], "")
+
+    def test_abandoned_refresh_recovery_preserves_stale_and_advances_generation(self) -> None:
+        pending: list = []
+        calls: list[int] = []
+
+        def compute() -> dict:
+            calls.append(1)
+            return {"n": len(calls)}
+
+        clock = _FakeClock(0.0)
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=5,
+            clock=clock,
+            now=lambda: NOW,
+            start_thread=pending.append,
+            retry_base_seconds=5.0,
+            refresh_timeout_seconds=20.0,
+        )
+
+        # Generation 1 completes
+        cache.get()
+        pending.pop()()
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 1})
+        self.assertEqual(meta["generation"], 1)
+
+        # Stale snapshot served while refresh is in flight
+        clock.advance(6.0)
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 1})
+        self.assertTrue(meta["refresh_in_progress"])
+        self.assertEqual(len(pending), 1)
+
+        # Still in progress before recovery bound
+        clock.advance(19.9)
+        snapshot, meta = cache.get()
+        self.assertTrue(meta["refresh_in_progress"])
+
+        # Exceeds recovery bound: dead refresh recovered into bounded backoff
+        clock.advance(0.1)
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 1})  # stale snapshot preserved
+        self.assertFalse(meta["refresh_in_progress"])
+        self.assertEqual(meta["last_error"], "status refresh failed: TimeoutError")
+        self.assertEqual(meta["retry_in_seconds"], 5.0)
+        self.assertEqual(meta["generation"], 1)
+
+        # Late-running abandoned worker is ignored and does not mutate generation
+        abandoned_worker = pending.pop(0)
+        abandoned_worker()
+        self.assertEqual(cache.generation, 1)
+
+        # Backoff expires: single retry starts, succeeds, and advances generation
+        clock.advance(5.0)
+        cache.get()
+        self.assertEqual(len(pending), 1)
+        pending.pop()()
+        snapshot, meta = cache.get()
+        self.assertEqual(snapshot, {"n": 3})
+        self.assertEqual(meta["generation"], 2)
+        self.assertEqual(meta["state"], "fresh")
+        self.assertEqual(meta["last_error"], "")
+
+    def test_live_board_rehearsal_generation_advances_after_recovery(self) -> None:
+        """Live Board rehearsal demonstrating that generation advances after recovery."""
+        calls: list[int] = []
+        fail_with_exit = threading.Event()
+
+        def compute() -> dict:
+            calls.append(len(calls) + 1)
+            if fail_with_exit.is_set():
+                fail_with_exit.clear()
+                raise SystemExit("simulated thread exit")
+            return {"board": {"schema": "code_mower.board.v1"}, "n": len(calls)}
+
+        cache = board.StatusCache(
+            compute,
+            ttl_seconds=0.1,
+            retry_base_seconds=0.1,
+            retry_max_seconds=0.5,
+            refresh_timeout_seconds=1.0,
+        )
+        server = board.ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            board.make_handler(board.BoardConfig(repo="owner/repo"), status_cache=cache),
+        )
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        try:
+            port = int(server.server_address[1])
+            url = f"http://127.0.0.1:{port}/api/status"
+
+            def poll_status() -> dict:
+                with urllib.request.urlopen(url, timeout=2) as resp:
+                    return json.loads(resp.read().decode("utf-8")).get("board", {}).get("cache", {})
+
+            # 1. Warm initial snapshot -> generation 1
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and poll_status().get("generation", 0) < 1:
+                time.sleep(0.05)
+            self.assertEqual(poll_status().get("generation"), 1)
+
+            # 2. Trigger abnormal thread exit on next refresh
+            time.sleep(0.15)
+            fail_with_exit.set()
+            poll_status()
+
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                meta = poll_status()
+                if "SystemExit" in meta.get("last_error", "") and not meta.get("refresh_in_progress"):
+                    break
+                time.sleep(0.05)
+            self.assertIn("SystemExit", poll_status().get("last_error", ""))
+
+            # 3. Wait for backoff to expire, retry, and generation to advance to 2
+            time.sleep(0.15)
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and poll_status().get("generation", 0) < 2:
+                time.sleep(0.05)
+            self.assertEqual(poll_status().get("generation"), 2)
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=5)

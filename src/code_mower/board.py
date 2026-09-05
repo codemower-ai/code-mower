@@ -297,6 +297,8 @@ def _format_timestamp(value: datetime) -> str:
 
 STATUS_CACHE_RETRY_BASE_SECONDS = 5.0
 STATUS_CACHE_RETRY_MAX_SECONDS = 60.0
+STATUS_CACHE_REFRESH_TIMEOUT_SECONDS = 120.0
+STATUS_CACHE_TIMEOUT_SECONDS = STATUS_CACHE_REFRESH_TIMEOUT_SECONDS
 
 
 class StatusCache:
@@ -314,16 +316,20 @@ class StatusCache:
     consumers can identify *which* completed snapshot they are holding
     independently of whether that snapshot is still fresh.
 
-    A failed refresh (or a failed refresh thread start) opens a bounded retry
-    backoff window. Without it the cached snapshot stays stale while
-    ``refresh_in_progress`` returns to false the instant the failure is
-    recorded, so the very next request would start another expensive
-    GitHub/local recomputation -- once per fast poll (~750ms) for as long as the
-    failure persists. During the window ``get()`` still answers immediately from
-    cold/stale metadata but starts nothing and reports ``refresh_in_progress``
-    false, so the browser drops back to its normal interval. The window doubles
-    per consecutive failure from ``retry_base_seconds`` up to
-    ``retry_max_seconds`` and is cleared by the first success.
+    A failed refresh (including abnormal thread exits or non-``Exception``
+    terminations), a dead/abandoned refresh that exceeds the recovery timeout,
+    or a failed refresh thread start opens a bounded retry backoff window.
+    Without it the cached snapshot stays stale while ``refresh_in_progress``
+    returns to false the instant the failure is recorded, so the very next
+    request would start another expensive GitHub/local recomputation -- once
+    per fast poll (~750ms) for as long as the failure persists. During the
+    window ``get()`` still answers immediately from cold/stale metadata but
+    starts nothing and reports ``refresh_in_progress`` false, so the browser
+    drops back to its normal interval. The window doubles per consecutive
+    failure from ``retry_base_seconds`` up to ``retry_max_seconds`` and is
+    cleared by the first success. Ownership tokens ensure that late-exiting or
+    abandoned threads cannot overwrite newer generations or clear the
+    in-progress flag of a replacement refresh.
     """
 
     def __init__(
@@ -336,6 +342,8 @@ class StatusCache:
         start_thread: Any = None,
         retry_base_seconds: float = STATUS_CACHE_RETRY_BASE_SECONDS,
         retry_max_seconds: float = STATUS_CACHE_RETRY_MAX_SECONDS,
+        refresh_timeout_seconds: float = STATUS_CACHE_REFRESH_TIMEOUT_SECONDS,
+        timeout_seconds: float | None = None,
     ) -> None:
         self._compute = compute
         self._ttl_seconds = max(float(ttl_seconds), 0.0)
@@ -344,11 +352,16 @@ class StatusCache:
         self._start_thread = start_thread or self._default_start_thread
         self._retry_base_seconds = max(float(retry_base_seconds), 0.0)
         self._retry_max_seconds = max(float(retry_max_seconds), self._retry_base_seconds)
+        if timeout_seconds is not None:
+            refresh_timeout_seconds = timeout_seconds
+        self._refresh_timeout_seconds = max(float(refresh_timeout_seconds), 0.0)
         self._lock = Lock()
         self._snapshot: dict[str, Any] | None = None
         self._computed_at: datetime | None = None
         self._computed_monotonic: float | None = None
         self._refreshing = False
+        self._refresh_started_monotonic: float | None = None
+        self._refresh_owner = 0
         self._generation = 0
         self._last_error: str = ""
         self._last_error_at: datetime | None = None
@@ -403,6 +416,8 @@ class StatusCache:
         so nothing here can leak paths, output, or credentials.
         """
         self._refreshing = False
+        self._refresh_started_monotonic = None
+        self._refresh_owner += 1
         self._last_error = _cache_error_summary(exc)
         self._last_error_at = self._now()
         self._consecutive_failures += 1
@@ -418,6 +433,13 @@ class StatusCache:
                 else None
             )
             is_stale = snapshot is None or age is None or age >= self._ttl_seconds
+            if (
+                self._refreshing
+                and self._refresh_started_monotonic is not None
+                and self._refresh_timeout_seconds > 0.0
+                and max(elapsed - self._refresh_started_monotonic, 0.0) >= self._refresh_timeout_seconds
+            ):
+                self._record_failure_locked(TimeoutError("status refresh timed out"))
             retry_in = (
                 max(self._retry_after_monotonic - elapsed, 0.0)
                 if self._retry_after_monotonic is not None
@@ -425,8 +447,12 @@ class StatusCache:
             )
             in_backoff = retry_in > 0.0
             should_start = is_stale and not self._refreshing and not in_backoff
+            owner: int | None = None
             if should_start:
                 self._refreshing = True
+                self._refresh_owner += 1
+                owner = self._refresh_owner
+                self._refresh_started_monotonic = elapsed
                 self._retry_after_monotonic = None
             metadata_snapshot = {
                 "state": "cold" if snapshot is None else ("stale" if is_stale else "fresh"),
@@ -439,35 +465,54 @@ class StatusCache:
                 "last_error": self._last_error,
                 "last_error_at": _format_timestamp(self._last_error_at) if self._last_error_at else "",
             }
-        if should_start:
+        if should_start and owner is not None:
+            def refresh_worker() -> None:
+                self._refresh(owner)
+
             try:
-                self._start_thread(self._refresh)
-            except Exception as exc:  # noqa: BLE001 - a failed thread start must never crash the endpoint
+                self._start_thread(refresh_worker)
+            except (Exception, SystemExit) as exc:  # noqa: BLE001 - a failed thread start must never crash the endpoint
                 with self._lock:
-                    self._record_failure_locked(exc)
-                    metadata_snapshot["refresh_in_progress"] = False
-                    metadata_snapshot["retry_in_seconds"] = round(self._retry_delay_locked(), 3)
-                    metadata_snapshot["last_error"] = self._last_error
-                    metadata_snapshot["last_error_at"] = _format_timestamp(self._last_error_at)
+                    if self._refresh_owner == owner:
+                        self._record_failure_locked(exc)
+                        metadata_snapshot["refresh_in_progress"] = False
+                        metadata_snapshot["retry_in_seconds"] = round(self._retry_delay_locked(), 3)
+                        metadata_snapshot["last_error"] = self._last_error
+                        metadata_snapshot["last_error_at"] = _format_timestamp(self._last_error_at)
         return snapshot, metadata_snapshot
 
-    def _refresh(self) -> None:
+    def _refresh(self, owner: int | None = None) -> None:
+        if owner is None:
+            with self._lock:
+                owner = self._refresh_owner
+        completed = False
         try:
             result = self._compute()
-        except Exception as exc:  # noqa: BLE001 - a background refresh must never crash the server
             with self._lock:
-                self._record_failure_locked(exc)
+                if self._refresh_owner == owner:
+                    self._snapshot = result
+                    self._computed_at = self._now()
+                    self._computed_monotonic = self._clock()
+                    self._generation += 1
+                    self._refreshing = False
+                    self._refresh_started_monotonic = None
+                    self._last_error = ""
+                    self._last_error_at = None
+                    self._consecutive_failures = 0
+                    self._retry_after_monotonic = None
+                    self._refresh_owner += 1
+                    completed = True
+        except BaseException as exc:  # noqa: BLE001 - a background refresh must never crash the server
+            with self._lock:
+                if self._refresh_owner == owner:
+                    self._record_failure_locked(exc)
+                    completed = True
             return
-        with self._lock:
-            self._snapshot = result
-            self._computed_at = self._now()
-            self._computed_monotonic = self._clock()
-            self._generation += 1
-            self._refreshing = False
-            self._last_error = ""
-            self._last_error_at = None
-            self._consecutive_failures = 0
-            self._retry_after_monotonic = None
+        finally:
+            if not completed:
+                with self._lock:
+                    if self._refresh_owner == owner and self._refreshing:
+                        self._record_failure_locked(RuntimeError("refresh thread exited abnormally"))
 
 
 def _pending_status_payload(config: BoardConfig) -> dict[str, Any]:
@@ -1815,14 +1860,16 @@ def make_handler(
     *,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
+    status_cache: StatusCache | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     last_recorded_at: datetime | None = None
     last_recorded_generation = 0
     recording_lock = Lock()
-    status_cache = StatusCache(
-        lambda: status_payload(config, gh_json_runner=gh_json_runner, command_runner=command_runner),
-        ttl_seconds=config.refresh_seconds,
-    )
+    if status_cache is None:
+        status_cache = StatusCache(
+            lambda: status_payload(config, gh_json_runner=gh_json_runner, command_runner=command_runner),
+            ttl_seconds=config.refresh_seconds,
+        )
 
     class BoardHandler(BaseHTTPRequestHandler):
         server_version = "CodeMowerBoard/0.1"

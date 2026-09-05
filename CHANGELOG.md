@@ -7,7 +7,11 @@ later entries are regular releases.
 
 ## Unreleased
 
-No changes yet.
+### Fixed
+
+- Prevent Board status cache from remaining stuck in `refresh_in_progress` after
+  abnormal background thread exits or abandoned refreshes by safely recovering
+  into bounded retry backoff (#728).
 
 ## v1.0.8
 
