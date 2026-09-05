@@ -17,6 +17,7 @@ import time
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO, Any, Callable, Iterator, Mapping, Sequence
 
@@ -68,6 +69,7 @@ DEFAULT_ADAPTER_TIMEOUT_SECONDS = 900
 ADAPTER_INNER_TIMEOUT_MARGIN_SECONDS = 30
 DEFAULT_WATCH_INTERVAL_SECONDS = 10.0
 DEFAULT_WATCH_TIMEOUT_SECONDS = 600.0
+DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS = 3600
 
 # Campaign identifiers are storage keys: each one maps to exactly one file named
 # `<campaign_id>.json`. The mapping is one-to-one and lossless -- no character is
@@ -147,6 +149,7 @@ SAFE_ERROR_CODES = frozenset(
         "campaign_identity_incomplete",
         "github_dispatch_failed",
         "github_poll_unavailable",
+        "hosted_response_timeout",
         "unknown_provider",
     }
 )
@@ -212,6 +215,8 @@ class CampaignProvider:
     dispatch_mode: str = "dry_run"
     dispatched_at: str | None = None
     completed_at: str | None = None
+    response_deadline_at: str | None = None
+    transport_verified: bool | None = None
     # Set before invoking a paid/hosted dispatch or local adapter (even if it
     # fails or the outcome is uncertain). Once set, resume never repeats the
     # attempt automatically -- only an explicit --retry-provider does. A hosted
@@ -371,6 +376,58 @@ def _check_credentials(
     if required_any and not any(current_env.get(var) for var in required_any):
         return False, required_any[0]
     return True, ""
+
+
+def _check_hosted_transport(
+    lane: ProviderLane,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> tuple[bool, str]:
+    """Read an explicit acknowledgement when GitHub cannot verify an App transport."""
+    variable = str(lane.provider_config.get("campaign_transport_ready_env") or "")
+    if not variable:
+        return True, ""
+    current_env = os.environ if env is None else env
+    ready = str(current_env.get(variable) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return ready, variable
+
+
+def _hosted_response_timeout(lane: ProviderLane) -> int:
+    value = lane.provider_config.get(
+        "campaign_response_timeout_seconds",
+        DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS,
+    )
+    if isinstance(value, bool):
+        return DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
+    return parsed if parsed > 0 else DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
+
+
+def _response_deadline(started_at: str, timeout_seconds: int) -> str:
+    try:
+        started = datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        started = datetime.now(UTC).replace(microsecond=0)
+    return (started + timedelta(seconds=timeout_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _response_deadline_expired(deadline: Any, now_utc: str) -> bool:
+    if not isinstance(deadline, str) or not deadline:
+        return False
+    try:
+        return datetime.strptime(now_utc, "%Y-%m-%dT%H:%M:%SZ") >= datetime.strptime(
+            deadline, "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except ValueError:
+        return False
 
 
 def _provider_next_action(
@@ -1859,6 +1916,10 @@ def dispatch_or_advance_campaign(
                         trigger_expected,
                     ):
                         provider_data["trigger_posted"] = True
+                        provider_data["response_deadline_at"] = _response_deadline(
+                            now_utc,
+                            _hosted_response_timeout(lane),
+                        )
                         provider_data["next_action"], provider_data["next_detail"] = (
                             _provider_next_action(
                                 provider,
@@ -1925,6 +1986,10 @@ def dispatch_or_advance_campaign(
                     # exact side effect without assuming which human-owned
                     # token posted the trigger comment.
                     provider_data["trigger_posted"] = True
+                    provider_data["response_deadline_at"] = _response_deadline(
+                        now_utc,
+                        _hosted_response_timeout(lane),
+                    )
                     provider_data["next_action"], provider_data["next_detail"] = (
                         _provider_next_action(
                             provider,
@@ -1955,6 +2020,10 @@ def dispatch_or_advance_campaign(
                     )
                     provider_data["trigger_posted"] = trigger_ok
                     if trigger_ok:
+                        provider_data["response_deadline_at"] = _response_deadline(
+                            now_utc,
+                            _hosted_response_timeout(lane),
+                        )
                         provider_data["next_action"], provider_data["next_detail"] = (
                             _provider_next_action(
                                 provider,
@@ -1971,6 +2040,43 @@ def dispatch_or_advance_campaign(
                         provider_data["next_detail"] = "trigger comment post failed on retry"
                 _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
                 # After trigger reconciliation, continue to result polling below.
+
+            trigger_posted = provider_data.get(
+                "trigger_posted", not bool(trigger_comments)
+            )
+            if (
+                lane.driver in {"saas_event", "hosted_bridge"}
+                and trigger_posted
+            ):
+                deadline = provider_data.get("response_deadline_at")
+                deadline_was_missing = not isinstance(deadline, str) or not deadline
+                if deadline_was_missing:
+                    # A running campaign created before response deadlines
+                    # shipped gets a full window from its first upgraded poll.
+                    # Backdating from attempted_at could falsely time out paid
+                    # work immediately and encourage a duplicate retry.
+                    deadline = _response_deadline(
+                        now_utc,
+                        _hosted_response_timeout(lane),
+                    )
+                    provider_data["response_deadline_at"] = deadline
+                if (
+                    not poll_error
+                    and not is_explicit_retry
+                    and not deadline_was_missing
+                    and _response_deadline_expired(deadline, now_utc)
+                ):
+                    provider_data["state"] = "unavailable"
+                    provider_data["response_deadline_at"] = deadline
+                    provider_data["error"] = _safe_error("hosted_response_timeout")
+                    provider_data["next_action"] = (
+                        f"record manual result for {provider} or run with --apply "
+                        f"--retry-provider {provider}"
+                    )
+                    provider_data["next_detail"] = (
+                        "hosted provider returned no trusted result before its response deadline"
+                    )
+                    continue
 
             if not is_explicit_retry:
                 # Ordinary resume is poll/reconciliation-only and never
@@ -2016,6 +2122,11 @@ def dispatch_or_advance_campaign(
         # 4. Check capabilities and readiness
         cmd_found = _find_command(lane, which_fn=which_fn)
         has_creds, missing_cred = _check_credentials(lane, env=current_env)
+        transport_ready, transport_ready_var = _check_hosted_transport(
+            lane, env=current_env
+        )
+        if lane.driver in {"hosted_bridge", "saas_event"}:
+            provider_data["transport_verified"] = transport_ready
         has_issue = bool(issue_number)
         effective_argv_template, _, adapter_config_error, _ = _resolve_campaign_adapter_config(
             lane, repo_path
@@ -2101,6 +2212,14 @@ def dispatch_or_advance_campaign(
                     has_issue=has_issue,
                     dry_run=True,
                 )
+                if (
+                    lane.driver in {"hosted_bridge", "saas_event"}
+                    and not transport_ready
+                ):
+                    detail = (
+                        f"{provider} transport is not independently verified; "
+                        f"set {transport_ready_var}=1 after verification"
+                    )
             provider_data["next_action"] = action
             provider_data["next_detail"] = detail
             continue
@@ -2269,6 +2388,14 @@ def dispatch_or_advance_campaign(
                 # for manually triggered providers before the pre-post save.
                 trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
                 provider_data["trigger_posted"] = not bool(trigger_comments)
+                provider_data["response_deadline_at"] = (
+                    None
+                    if trigger_comments
+                    else _response_deadline(
+                        now_utc,
+                        _hosted_response_timeout(lane),
+                    )
+                )
                 if trigger_comments:
                     provider_data["dispatch_reconciliation_key"] = uuid.uuid4().hex
                     provider_data["trigger_reconciliation_key"] = uuid.uuid4().hex
@@ -2338,6 +2465,11 @@ def dispatch_or_advance_campaign(
                         )
                         # Persist trigger status so resume can retry on failure
                         provider_data["trigger_posted"] = trigger_ok
+                        if trigger_ok:
+                            provider_data["response_deadline_at"] = _response_deadline(
+                                now_utc,
+                                _hosted_response_timeout(lane),
+                            )
                         if not trigger_ok:
                             provider_data["next_action"] = (
                                 f"retry {provider} trigger comment post"
@@ -2355,6 +2487,7 @@ def dispatch_or_advance_campaign(
                     # and the reference is left reporting that no comment was
                     # posted.
                     provider_data["state"] = "unavailable"
+                    provider_data["response_deadline_at"] = None
                     provider_data["error"] = err
                     if err == "campaign_identity_incomplete":
                         provider_data["next_action"] = (
@@ -3725,6 +3858,14 @@ def release_campaigns_board_payload(
                     "environment": _board_text(p, "environment", "local"),
                     "state": _board_text(p, "state", "queued"),
                     "elapsed_seconds": _board_elapsed_seconds(p.get("elapsed_seconds")),
+                    "response_deadline_at": _board_text(
+                        p, "response_deadline_at", ""
+                    ),
+                    "transport_verified": (
+                        p.get("transport_verified")
+                        if isinstance(p.get("transport_verified"), bool)
+                        else None
+                    ),
                     "next_action": _board_text(p, "next_action", ""),
                     "next_detail": _board_text(p, "next_detail", ""),
                 }

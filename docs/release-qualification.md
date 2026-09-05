@@ -157,6 +157,11 @@ Cursor BugBot (also known as Cursor/Grok Bot, or Cursor Cloud Agents) is a hoste
 - GitHub App authorization for Cursor in your repository
 - `CURSOR_BUGBOT_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN` as fallback) for applying audit labels
 - `GITHUB_TOKEN` for posting dispatch comments
+- After verifying that the installed App answers campaign issue comments, set
+  `CODE_MOWER_CURSOR_BUGBOT_CAMPAIGN_TRANSPORT_READY=1`. Without it, doctor and
+  Board report the transport as unverified, but an explicit `--apply` may still
+  dispatch it under the response deadline below. Token presence alone proves
+  comment permission, not that the App supports this transport.
 
 **Trusted authors (default):**
 - `cursor[bot]`
@@ -195,6 +200,19 @@ Devin is a hosted paid provider using the `hosted_bridge` driver.
 - Devin GitHub App authorization in your repository
 - `DEVIN_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN` as fallback) for applying audit labels
 - `GITHUB_TOKEN` for posting dispatch comments
+- After verifying that the installed App answers campaign issue comments, set
+  `CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY=1`. Without it, doctor and Board
+  report the transport as unverified, but an explicit `--apply` may still
+  dispatch it under the response deadline below. Token presence alone does not
+  prove that the App supports this transport.
+
+Successful hosted dispatches carry a one-hour response deadline. A result from
+a trusted author still wins when it arrives before the deadline. Silence after
+the deadline becomes `hosted_response_timeout` with manual-result or explicit
+`--retry-provider` guidance; Code Mower never redispatches paid work by itself.
+Campaigns created before this field existed receive a fresh full window on
+their first poll after upgrade, so the migration never retroactively times out
+an older paid run.
 
 **Trusted authors (default):**
 - `devin-ai-integration[bot]`

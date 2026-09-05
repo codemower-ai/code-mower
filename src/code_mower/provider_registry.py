@@ -206,6 +206,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "bot_authors": ("devin-ai-integration", "devin-ai-integration[bot]"),
             "bot_authors_env": "DEVIN_BOT_AUTHORS",
             "trigger_comments": ("@devin run", "devin run"),
+            "campaign_transport_ready_env": "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY",
+            "campaign_response_timeout_seconds": 3600,
         },
     ),
     "greptile": ProviderLane(
@@ -292,6 +294,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "bot_authors": ("cursor[bot]", "cursor"),
             "bot_authors_env": "CURSOR_BUGBOT_BOT_AUTHORS",
             "trigger_comments": ("bugbot run", "@cursor review"),
+            "campaign_transport_ready_env": "CODE_MOWER_CURSOR_BUGBOT_CAMPAIGN_TRANSPORT_READY",
+            "campaign_response_timeout_seconds": 3600,
             "rules_file": ".cursor/BUGBOT.md",
             "status": (
                 "manual informational lane; keep calibration-only until enabled "
