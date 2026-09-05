@@ -1055,7 +1055,11 @@ def prune_stale_agent_adapters(
     return result
 
 
-def release_campaigns_payload(config: BoardConfig) -> dict[str, Any]:
+def release_campaigns_payload(
+    config: BoardConfig,
+    *,
+    now: Any = None,
+) -> dict[str, Any]:
     try:
         from . import release_campaigns
     except ImportError:
@@ -1064,6 +1068,7 @@ def release_campaigns_payload(config: BoardConfig) -> dict[str, Any]:
     return release_campaigns.release_campaigns_board_payload(
         repo_path=config.repo_path,
         campaigns_dir=_campaigns_path(config),
+        now=now,
     )
 
 
