@@ -104,7 +104,7 @@ TIMESTAMP_UTC_PATTERN = re.compile(
 #: results may use these or a namespaced extension (below); arbitrary
 #: unnamespaced ids are rejected so cross-provider analytics stay comparable.
 BUILTIN_QUALIFICATION_STEP_IDS = frozenset(
-    {"board", "doctor", "lanes_status", "package_install"}
+    {"board", "doctor", "lanes_status", "overhead", "package_install"}
 )
 #: Explicit provider-extension step-id form: `<namespace>__<name>`, with both
 #: halves safe identifiers. The double underscore keeps extensions distinct
@@ -118,8 +118,9 @@ PROVIDER_STEP_EXTENSION_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}__[a-z][a-z0
 ADOPTION_RESULT_EARLIEST_TIMESTAMP_UTC = "2020-01-01T00:00:00Z"
 ADOPTION_RESULT_FUTURE_SKEW_SECONDS = 300
 #: Step timings are measured independently from the overall elapsed time, so
-#: their sum must only fit within it tolerantly: each value is stored rounded
-#: to two decimals and per-step timers add overhead, covered by this tolerance.
+#: their sum must match it within this absolute tolerance: each value is
+#: stored rounded to two decimals and per-step timers add overhead, covered
+#: by this tolerance in both directions.
 ADOPTION_RESULT_STEP_TOTAL_TOLERANCE_SECONDS = 1.0
 
 
@@ -516,11 +517,11 @@ def validate_adoption_result_payload(
 
     step_total = sum(step.elapsed_seconds for step in parsed_steps)
     if (
-        step_total - float(result["elapsed_seconds"])
+        abs(step_total - float(result["elapsed_seconds"]))
         > ADOPTION_RESULT_STEP_TOTAL_TOLERANCE_SECONDS
     ):
         raise ValueError(
-            "adoption result step elapsed_seconds exceed total elapsed_seconds "
+            "adoption result step elapsed_seconds differ from total elapsed_seconds "
             "beyond tolerance"
         )
     if outcome == "pass" and any(
@@ -780,8 +781,18 @@ def run_release_qualification(
             )
         )
 
+    elapsed = round(time.time() - start_time, 2)
+    measured_step_seconds = round(sum(step.elapsed_seconds for step in steps), 2)
+    steps.append(
+        StepResult(
+            id="overhead",
+            status="planned" if dry_run else "pass",
+            elapsed_seconds=max(0.0, round(elapsed - measured_step_seconds, 2)),
+            warning_count=0,
+            owner_action_count=0,
+        )
+    )
     outcome = _aggregate_outcome(steps, execution_state=execution_state)
-    elapsed = time.time() - start_time
 
     result = AdoptionResult(
         schema=ADOPTION_RESULT_SCHEMA,
@@ -797,7 +808,7 @@ def run_release_qualification(
         host_class=_detect_host_class(),
         runtime_class=_detect_runtime_class(),
         execution_state=execution_state,
-        elapsed_seconds=round(elapsed, 2),
+        elapsed_seconds=elapsed,
         outcome=outcome,
         steps=[
             {

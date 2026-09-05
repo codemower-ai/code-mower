@@ -312,7 +312,8 @@ Metrics are atomic values, never precomputed dashboard rates:
 Conversion applies the same semantic validation as local campaign paths:
 executed-result timestamp bounds (not older than `2020-01-01T00:00:00Z`, not
 more than 300 seconds in the future; planned previews exempt), the built-in
-step taxonomy (`board`, `doctor`, `lanes_status`, `package_install`) or an
+step taxonomy (`board`, `doctor`, `lanes_status`, `overhead`,
+`package_install`) or an
 explicit `<namespace>__<name>` provider extension, and the timing and
 owner-action rules above. Rejections use bounded errors that never echo result
 content, paths, auth output, or raw provider output.

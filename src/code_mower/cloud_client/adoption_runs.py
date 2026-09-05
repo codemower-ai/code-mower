@@ -69,7 +69,7 @@ _SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 #: Arbitrary unnamespaced ids are rejected. Kept local on purpose (see
 #: _expected_outcome): cloud_client must not import the qualification runner.
 BUILTIN_QUALIFICATION_STEP_IDS = frozenset(
-    {"board", "doctor", "lanes_status", "package_install"}
+    {"board", "doctor", "lanes_status", "overhead", "package_install"}
 )
 _PROVIDER_STEP_EXTENSION_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]{0,31}__[a-z][a-z0-9_]{0,31}$"
@@ -343,7 +343,11 @@ def validate_adoption_run_payload(event: Mapping[str, Any]) -> None:
             f"for {execution_state} run; expected {expected!r}"
         )
     _count(metrics, "warning_count", required=True)
-    _count(metrics, "owner_action_count", required=True)
+    owner_action_count = _count(metrics, "owner_action_count", required=True)
+    if outcome == "pass" and owner_action_count:
+        raise CloudBundleError(
+            "adoption_run outcome 'pass' requires zero owner_action_count"
+        )
 
     elapsed = metrics.get("elapsed_seconds")
     if elapsed is None:
@@ -536,9 +540,9 @@ def adoption_result_to_event(
         raise CloudBundleError(
             "adoption result elapsed_seconds must be finite and non-negative"
         )
-    if step_total - float(elapsed) > ADOPTION_RESULT_STEP_TOTAL_TOLERANCE_SECONDS:
+    if abs(step_total - float(elapsed)) > ADOPTION_RESULT_STEP_TOTAL_TOLERANCE_SECONDS:
         raise CloudBundleError(
-            "adoption result step elapsed_seconds exceed total elapsed_seconds "
+            "adoption result step elapsed_seconds differ from total elapsed_seconds "
             "beyond tolerance"
         )
 

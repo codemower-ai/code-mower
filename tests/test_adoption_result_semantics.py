@@ -163,7 +163,12 @@ class AdoptionResultSemanticsTests(unittest.TestCase):
         self.assertNotIn("notabuiltinid", str(cloud_ctx.exception))
 
     def test_step_total_beyond_tolerance_rejected(self) -> None:
+        # Step sum (12.34) exceeds the total: the inverse direction.
         self.assertRejectsBoth(_result(elapsed_seconds=1.0), "beyond tolerance")
+
+    def test_total_larger_than_step_sum_beyond_tolerance_rejected(self) -> None:
+        # Total (100.0) dwarfs the step sum (12.34): same bound, other direction.
+        self.assertRejectsBoth(_result(elapsed_seconds=100.0), "beyond tolerance")
 
     def test_step_total_within_tolerance_accepted(self) -> None:
         self.assertAcceptsBoth(_result(elapsed_seconds=12.0))

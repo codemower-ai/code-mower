@@ -57,7 +57,7 @@ def _result(**overrides: object) -> dict[str, object]:
             {
                 "id": "package_install",
                 "status": "pass",
-                "elapsed_seconds": 10.0,
+                "elapsed_seconds": 11.5,
                 "warning_count": 0,
                 "owner_action_count": 0,
             },
@@ -178,6 +178,7 @@ class AdoptionRunContractTests(unittest.TestCase):
                 execution_state="planned",
                 outcome="incomplete",
                 ending_version="",
+                elapsed_seconds=0.0,
                 steps=[
                     {
                         "id": "package_install",
@@ -327,6 +328,11 @@ class AdoptionRunContractTests(unittest.TestCase):
         with self.assertRaisesRegex(CloudBundleError, "must equal 1"):
             validate_cloud_event(counted)
 
+        owner_action_pass = copy.deepcopy(base)
+        owner_action_pass["metrics"]["owner_action_count"] = 1
+        with self.assertRaisesRegex(CloudBundleError, "zero owner_action_count"):
+            validate_cloud_event(owner_action_pass)
+
         planned_pass = copy.deepcopy(base)
         planned_pass["dimensions"]["execution_state"] = "planned"
         planned_pass["dimensions"]["outcome"] = "pass"
@@ -358,7 +364,7 @@ class AdoptionRunContractTests(unittest.TestCase):
                 {
                     "id": "package_install",
                     "status": "pass",
-                    "elapsed_seconds": 10.0,
+                    "elapsed_seconds": 11.5,
                     "warning_count": 0,
                     "owner_action_count": 0,
                 },
@@ -378,6 +384,7 @@ class AdoptionRunContractTests(unittest.TestCase):
         executed_planned_step = _result(
             execution_state="executed",
             outcome="pass_with_warnings",
+            elapsed_seconds=1.0,
             steps=[
                 {
                     "id": "doctor",
@@ -402,6 +409,7 @@ class AdoptionRunContractTests(unittest.TestCase):
             execution_state="planned",
             outcome="pass",
             ending_version="",
+            elapsed_seconds=0.0,
             steps=[
                 {
                     "id": "package_install",
@@ -419,6 +427,7 @@ class AdoptionRunContractTests(unittest.TestCase):
             execution_state="planned",
             outcome="fail",
             ending_version="",
+            elapsed_seconds=0.0,
             steps=[
                 {
                     "id": "package_install",
