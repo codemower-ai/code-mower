@@ -1706,6 +1706,22 @@ TERMINAL_EVIDENCE_STATES = frozenset({"complete", "blocked"})
 ATTEMPT_HISTORY_OUTCOMES = frozenset({"pass", "pass_with_warnings", "fail", "incomplete"})
 
 
+# Upper bound for an attempt-history timestamp string. The tool writes
+# `%Y-%m-%dT%H:%M:%SZ` (20 characters); retained hand-edited values are kept
+# only when short enough to be timestamps, so arbitrary-size strings stored in
+# these fields can never be preserved across a retry.
+ATTEMPT_HISTORY_TIMESTAMP_MAX_LENGTH = 64
+
+
+def _sanitize_history_timestamp(value: Any) -> str | None:
+    """Return ``value`` when it fits the retained-entry timestamp bound, else None."""
+    if value is None:
+        return None
+    if isinstance(value, str) and len(value) <= ATTEMPT_HISTORY_TIMESTAMP_MAX_LENGTH:
+        return value
+    return None
+
+
 def _prior_attempt_summary(provider_data: Mapping[str, Any]) -> dict[str, Any] | None:
     """Summarize the stored attempt in metadata-only form, or None when no attempt exists."""
     stored_result = provider_data.get("adoption_result")
@@ -1732,21 +1748,15 @@ def _prior_attempt_summary(provider_data: Mapping[str, Any]) -> dict[str, Any] |
         state = ""
     dispatched_at = provider_data.get("dispatched_at")
     return {
-        "attempted_at": attempted_at if isinstance(attempted_at, str) else None,
-        "dispatched_at": dispatched_at if isinstance(dispatched_at, str) else None,
-        "completed_at": completed_at if isinstance(completed_at, str) else None,
+        "attempted_at": _sanitize_history_timestamp(attempted_at),
+        "dispatched_at": _sanitize_history_timestamp(dispatched_at),
+        "completed_at": _sanitize_history_timestamp(completed_at),
         "state": state,
         "outcome": outcome,
         "error": error,
         "elapsed_seconds": round(float(elapsed), 2),
     }
 
-
-# Upper bound for an attempt-history timestamp string. The tool writes
-# `%Y-%m-%dT%H:%M:%SZ` (20 characters); retained hand-edited values are kept
-# only when short enough to be timestamps, so arbitrary-size strings stored in
-# these fields can never be preserved across a retry.
-ATTEMPT_HISTORY_TIMESTAMP_MAX_LENGTH = 64
 
 # The only fields an attempt-history entry may carry. Everything else --
 # result bodies, output, paths, secrets, nested mappings -- is dropped when
@@ -1781,16 +1791,6 @@ def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
     if not any(field in entry for field in ATTEMPT_HISTORY_FIELDS):
         return None
 
-    def _timestamp(value: Any) -> str | None:
-        if value is None:
-            return None
-        if (
-            isinstance(value, str)
-            and len(value) <= ATTEMPT_HISTORY_TIMESTAMP_MAX_LENGTH
-        ):
-            return value
-        return None
-
     state = entry.get("state")
     if not isinstance(state, str) or state not in VALID_PROVIDER_STATES:
         state = ""
@@ -1809,9 +1809,9 @@ def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
     ):
         elapsed = 0.0
     return {
-        "attempted_at": _timestamp(entry.get("attempted_at")),
-        "dispatched_at": _timestamp(entry.get("dispatched_at")),
-        "completed_at": _timestamp(entry.get("completed_at")),
+        "attempted_at": _sanitize_history_timestamp(entry.get("attempted_at")),
+        "dispatched_at": _sanitize_history_timestamp(entry.get("dispatched_at")),
+        "completed_at": _sanitize_history_timestamp(entry.get("completed_at")),
         "state": state,
         "outcome": outcome,
         "error": error,
@@ -1820,10 +1820,13 @@ def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
 
 
 def _record_attempt_history(provider_data: dict[str, Any]) -> None:
-    """Append the superseded attempt's bounded summary, keeping history bounded."""
-    summary = _prior_attempt_summary(provider_data)
-    if summary is None:
-        return
+    """Append the superseded attempt's bounded summary, keeping history bounded.
+
+    Retained history is always sanitized and capped, even when there is no
+    new current-attempt summary to append: a queued provider with no
+    timestamps/result can still carry hand-edited malicious or unbounded
+    ``attempt_history``, and an explicit retry must not preserve it verbatim.
+    """
     history = provider_data.get("attempt_history")
     if not isinstance(history, list):
         history = []
@@ -1832,10 +1835,12 @@ def _record_attempt_history(provider_data: dict[str, Any]) -> None:
     # result bodies, output, paths, secrets, or arbitrarily large values, and
     # saving them again would preserve that content despite the metadata-only
     # contract. Malformed entries are discarded; survivors are capped with the
-    # new summary.
+    # new summary (when one exists).
     sanitized = [_sanitize_attempt_history_entry(item) for item in history]
     history = [item for item in sanitized if item is not None]
-    history.append(summary)
+    summary = _prior_attempt_summary(provider_data)
+    if summary is not None:
+        history.append(summary)
     provider_data["attempt_history"] = history[-MAX_ATTEMPT_HISTORY_ENTRIES:]
 
 

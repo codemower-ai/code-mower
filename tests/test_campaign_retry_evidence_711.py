@@ -1397,6 +1397,208 @@ class AttemptHistorySanitizationTests(unittest.TestCase):
             ):
                 self.assertNotIn(marker, blob)
 
+    def test_queued_retry_sanitizes_history_with_no_current_attempt(self) -> None:
+        """An explicit first retry of a queued provider still sanitizes history.
+
+        With no timestamps and no stored result there is no new summary to
+        append, but hand-edited secret-bearing/unbounded preloaded history
+        must be sanitized and capped rather than preserved verbatim.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                )
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            provider = stored["providers"][0]
+            provider["state"] = "queued"
+            provider["attempted_at"] = None
+            provider["dispatched_at"] = None
+            provider["completed_at"] = None
+            provider["adoption_result"] = None
+            provider["elapsed_seconds"] = 0.0
+            provider["attempt_history"] = [
+                {
+                    "attempted_at": OLD_TS,
+                    "dispatched_at": OLD_TS,
+                    "completed_at": OLD_DONE_TS,
+                    "state": "blocked",
+                    "outcome": "fail",
+                    "error": "",
+                    "elapsed_seconds": 3.5,
+                    "stdout": "supersecret-adapter-output",
+                    "secret_token": "[REDACTED]",
+                },
+                {
+                    "adoption_result": _mock_result("codex", "fail"),
+                    "transcript": "BEGIN PRIVATE TRANSCRIPT",
+                },
+                "just-a-string",
+                {
+                    "attempted_at": "y" * 5000,
+                    "dispatched_at": OLD_TS,
+                    "completed_at": OLD_DONE_TS,
+                    "state": "blocked",
+                    "outcome": "fail",
+                    "error": "",
+                    "elapsed_seconds": 1.0,
+                },
+                {
+                    "attempted_at": OLD_TS,
+                    "dispatched_at": OLD_TS,
+                    "completed_at": OLD_DONE_TS,
+                    "state": "blocked",
+                    "outcome": "fail",
+                    "error": "",
+                    "elapsed_seconds": 2.0,
+                },
+            ]
+            path.write_text(json.dumps(stored), encoding="utf-8")
+
+            def _resolve(name: str) -> tuple[str, ProviderLane]:
+                return name, _fake_lane(name)
+
+            invocations: list[list[str]] = []
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", side_effect=_resolve
+            ):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        resume=True,
+                        apply=True,
+                        retry_provider="codex",
+                        which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                        adapter_runner=_writing_runner("pass", invocations),
+                    )
+
+            self.assertEqual(len(invocations), 1)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = saved["providers"][0]
+            self.assertEqual(entry["state"], "complete")
+            history = entry.get("attempt_history")
+            assert isinstance(history, list)
+            # No prior attempt existed, so nothing new is appended: only the
+            # sanitized survivors remain, bounded by the cap.
+            self.assertLessEqual(len(history), release_campaigns.MAX_ATTEMPT_HISTORY_ENTRIES)
+            self.assertGreater(len(history), 0)
+            for item in history:
+                self.assertEqual(
+                    set(item),
+                    {
+                        "attempted_at",
+                        "dispatched_at",
+                        "completed_at",
+                        "state",
+                        "outcome",
+                        "error",
+                        "elapsed_seconds",
+                    },
+                )
+                for value in item.values():
+                    if isinstance(value, str):
+                        self.assertLessEqual(len(value), 64)
+            blob = json.dumps(history)
+            for marker in (
+                "supersecret",
+                "[REDACTED]",
+                "BEGIN PRIVATE",
+                "adoption_result",
+                "secret_token",
+                "transcript",
+                "stdout",
+                "yyyyyyyyyy",
+            ):
+                self.assertNotIn(marker, blob)
+
+    def test_oversized_current_timestamps_are_bounded_in_new_summary(self) -> None:
+        """A hand-edited oversized current timestamp never enters a new summary.
+
+        The fresh summary is built through the same closed timestamp
+        sanitizer as retained entries, so oversized values degrade to None
+        while the remaining metadata (state/outcome/error/elapsed) survives.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                release_campaigns.record_manual_result(
+                    campaign, "codex", _mock_result("codex", "fail"),
+                    campaigns_dir=campaigns_dir,
+                )
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            provider = stored["providers"][0]
+            oversized = "t" * 5000
+            provider["attempted_at"] = oversized
+            provider["dispatched_at"] = oversized
+            provider["completed_at"] = oversized
+            provider.pop("attempt_history", None)
+            path.write_text(json.dumps(stored), encoding="utf-8")
+
+            def _resolve(name: str) -> tuple[str, ProviderLane]:
+                return name, _fake_lane(name)
+
+            invocations: list[list[str]] = []
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", side_effect=_resolve
+            ):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        resume=True,
+                        apply=True,
+                        retry_provider="codex",
+                        which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                        adapter_runner=_writing_runner("pass", invocations),
+                    )
+
+            self.assertEqual(len(invocations), 1)
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = saved["providers"][0]
+            self.assertEqual(entry["state"], "complete")
+            history = entry.get("attempt_history")
+            assert isinstance(history, list) and len(history) == 1
+            summary = history[0]
+            self.assertIsNone(summary["attempted_at"])
+            self.assertIsNone(summary["dispatched_at"])
+            self.assertIsNone(summary["completed_at"])
+            self.assertEqual(summary["outcome"], "fail")
+            self.assertEqual(summary["state"], "blocked")
+            for value in summary.values():
+                if isinstance(value, str):
+                    self.assertLessEqual(len(value), 64)
+            self.assertNotIn("tttttttttt", json.dumps(history))
+            # The new attempt itself stamps fresh bounded chronology.
+            assert isinstance(entry.get("attempted_at"), str)
+            self.assertLessEqual(len(entry["attempted_at"]), 64)
+
 
 if __name__ == "__main__":
     unittest.main()
