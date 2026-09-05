@@ -213,6 +213,11 @@ class RetryChronologyTests(unittest.TestCase):
             for entry in stored["providers"]:
                 if entry["provider"] == "codex":
                     entry["attempted_at"] = OLD_TS
+                elif entry["provider"] == "claude":
+                    entry["state"] = "queued"
+                    entry["attempted_at"] = None
+                    entry["dispatched_at"] = None
+                    entry["completed_at"] = None
             path.write_text(json.dumps(stored), encoding="utf-8")
             invocations: list[list[str]] = []
 
