@@ -150,7 +150,7 @@ Supported placeholders: `{command}` (resolved binary), `{release_tag}`, `{packag
 
 Codex campaign runs use an isolated `CODEX_HOME` at `~/.config/code-mower/provider-homes/codex` (override with `CODE_MOWER_CODEX_CAMPAIGN_HOME`). Code Mower creates its non-secret restricted config automatically and refuses a readable `auth.json`. Authenticate that home once with `CODEX_HOME="$HOME/.config/code-mower/provider-homes/codex" codex login --device-auth -c 'cli_auth_credentials_store="keyring"' --enable secret_auth_storage`; the explicit login flags make Codex store that home-specific credential in the OS keyring even before Code Mower has created the config file. The adapter preserves the real OS `HOME` only so the platform keyring can locate the user's login keychain; Codex configuration and state remain isolated under `CODEX_HOME`, ambient token variables are removed, and the root-deny policy lets the agent write only its disposable workspace. Network remains available for package installation. A previous result file is removed before every adapter attempt, and a failed run never leaves stale evidence for a caller to accept.
 
-An explicit `--retry-provider` never accepts a pre-existing result file for that provider -- the stale file is removed before the new attempt runs, so a retry can only be satisfied by fresh evidence.
+An explicit `--retry-provider` never accepts a pre-existing result file for that provider -- the stale file is removed before the new attempt runs, so a retry can only be satisfied by fresh evidence. A retry advances only the retried provider: every other participant keeps its recorded state, evidence, and attempt, dispatch, and completion timestamps (aggregate campaign fields still recompute), and newly arrived evidence for them waits for the next ordinary resume. The superseded attempt leaves one bounded metadata-only summary per retry (`attempt_history`, most recent 5: timestamps, state, outcome, error code, and elapsed time -- never results, output, paths, or secrets). Retained entries are rebuilt from those allowed scalar fields on every retry, so a malformed or hand-edited stored history is sanitized (unknown/nested fields dropped, malformed entries discarded) rather than copied verbatim.
 
 ### Campaign Authentication Readiness
 
@@ -356,15 +356,23 @@ code-mower release campaign upload --release-tag v1.0.0 --yes --json
 - **Preview by default:** without `--yes` nothing leaves the machine. The
   preview reports the exact events, event ids, and counts the `--yes` run will
   upload, so it can be inspected first.
-- **Completed evidence only:** every provider whose result is `complete` is
-  revalidated against the closed adoption-result schema and rebound to this
-  campaign's provider, release tag, package identity, qualification context, and
-  starting version before it is converted to one metadata-only `adoption_run`
-  event. Incomplete and unavailable providers are counted as skipped, never
-  fabricated. A provider that is complete but whose stored result is missing or
-  no longer valid is *rejected*: the upload stops with a bounded error naming the
-  provider and a safe reason code, rather than publishing a partial event set or
-  repairing the result.
+- **Terminal evidence only:** every provider in a terminal state (`complete`
+  or `blocked`) with a stored result is revalidated against the closed
+  adoption-result schema and rebound to this campaign's provider, release tag,
+  package identity, qualification context, and starting version before it is
+  converted to one metadata-only `adoption_run` event -- passing and failing
+  terminal results alike, so `fail` (and schema-valid `incomplete`) evidence
+  reaches `adoption_run` analytics instead of being skipped. The terminal
+  state must also agree with the bound result outcome (`complete` carries
+  only passing outcomes; `blocked` only failing/incomplete ones, exactly as
+  the state machine stores them): a contradictory pair can only come from
+  corrupted or hand-edited storage and is *rejected* with the bounded
+  `adoption_result_state_mismatch` reason, never published. Queued, running,
+  and unavailable providers are counted as skipped, never fabricated, as is a
+  `blocked` provider whose adapter never produced a result. A terminal provider
+  whose stored result is present but missing or no longer valid is *rejected*:
+  the upload stops with a bounded error naming the provider and a safe reason
+  code, rather than publishing a partial event set or repairing the result.
 - **Idempotent:** each event id is derived from the result's own content, so
   repeating an upload republishes the same events instead of duplicating them.
   A failed post can simply be re-run.

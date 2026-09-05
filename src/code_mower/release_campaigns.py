@@ -243,6 +243,11 @@ class CampaignProvider:
     error: str = ""
     dispatch_ref: dict[str, Any] = field(default_factory=dict)
     adoption_result: dict[str, Any] | None = None
+    # Bounded metadata-only summaries of superseded attempts (see
+    # MAX_ATTEMPT_HISTORY_ENTRIES). Stored campaigns written before this field
+    # existed lack the key; readers must use .get with a default, never direct
+    # indexing.
+    attempt_history: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.state not in VALID_PROVIDER_STATES:
@@ -1681,6 +1686,182 @@ def _record_dry_run_dispatch_mode(provider_data: dict[str, Any]) -> None:
         provider_data["dispatch_mode"] = "dry_run"
 
 
+# Bounded per-provider attempt history. An explicit --retry-provider starts a new
+# attempt that supersedes the stored one, and newly arrived evidence may do the
+# same on resume; the superseded attempt leaves one metadata-only summary here
+# so prior applied attempts stay auditable. Entries carry timestamps, state,
+# outcome, error code, and elapsed time only -- never the adoption result, raw
+# output, paths, or secrets -- and only the most recent entries are kept.
+MAX_ATTEMPT_HISTORY_ENTRIES = 5
+
+# Provider states whose stored adoption result is terminal qualification
+# evidence. `complete` holds passing evidence; `blocked` holds failing
+# evidence. Both convert to metadata-only adoption_run events on upload, while
+# providers that emitted no valid result stay skipped.
+TERMINAL_EVIDENCE_STATES = frozenset({"complete", "blocked"})
+
+# Closed outcome vocabulary for attempt-history summaries. Mirrors
+# release_qualify.VALID_OUTCOMES without importing the runner; anything else
+# degrades to "" rather than leaking stored content.
+ATTEMPT_HISTORY_OUTCOMES = frozenset({"pass", "pass_with_warnings", "fail", "incomplete"})
+
+
+# Upper bound for an attempt-history timestamp string. The tool writes
+# `%Y-%m-%dT%H:%M:%SZ` (20 characters); retained hand-edited values are kept
+# only when short enough to be timestamps and parse as documented UTC
+# timestamps, so arbitrary-size strings -- and short secrets or other
+# arbitrary strings -- stored in these fields can never be preserved
+# across a retry.
+ATTEMPT_HISTORY_TIMESTAMP_MAX_LENGTH = 64
+
+
+def _sanitize_history_timestamp(value: Any) -> str | None:
+    """Return ``value`` when it is a valid documented UTC timestamp, else None.
+
+    Length alone cannot distinguish a timestamp from a short secret or
+    arbitrary string, so retained values must also parse as timestamps.
+    Semantic validation reuses :func:`_parse_board_timestamp`, and the
+    documented ``%Y-%m-%dT%H:%M:%SZ`` syntax is enforced strictly; anything
+    else degrades to None while valid campaign timestamps are returned
+    unchanged.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    if len(value) > ATTEMPT_HISTORY_TIMESTAMP_MAX_LENGTH:
+        return None
+    if _parse_board_timestamp(value) is None:
+        return None
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return None
+    return value
+
+
+def _prior_attempt_summary(provider_data: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Summarize the stored attempt in metadata-only form, or None when no attempt exists."""
+    stored_result = provider_data.get("adoption_result")
+    outcome = stored_result.get("outcome") if isinstance(stored_result, Mapping) else ""
+    if not isinstance(outcome, str) or outcome not in ATTEMPT_HISTORY_OUTCOMES:
+        outcome = ""
+    error = provider_data.get("error")
+    if not isinstance(error, str) or error not in SAFE_ERROR_CODES:
+        error = ""
+    elapsed = provider_data.get("elapsed_seconds")
+    if (
+        isinstance(elapsed, bool)
+        or not isinstance(elapsed, (int, float))
+        or not math.isfinite(elapsed)
+        or elapsed < 0
+    ):
+        elapsed = 0.0
+    attempted_at = provider_data.get("attempted_at")
+    completed_at = provider_data.get("completed_at")
+    if not attempted_at and not completed_at and not isinstance(stored_result, Mapping):
+        return None
+    state = provider_data.get("state")
+    if not isinstance(state, str) or state not in VALID_PROVIDER_STATES:
+        state = ""
+    dispatched_at = provider_data.get("dispatched_at")
+    return {
+        "attempted_at": _sanitize_history_timestamp(attempted_at),
+        "dispatched_at": _sanitize_history_timestamp(dispatched_at),
+        "completed_at": _sanitize_history_timestamp(completed_at),
+        "state": state,
+        "outcome": outcome,
+        "error": error,
+        "elapsed_seconds": round(float(elapsed), 2),
+    }
+
+
+# The only fields an attempt-history entry may carry. Everything else --
+# result bodies, output, paths, secrets, nested mappings -- is dropped when
+# retained entries are rebuilt.
+ATTEMPT_HISTORY_FIELDS = frozenset(
+    {
+        "attempted_at",
+        "dispatched_at",
+        "completed_at",
+        "state",
+        "outcome",
+        "error",
+        "elapsed_seconds",
+    }
+)
+
+
+def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
+    """Rebuild one retained history entry from the closed allowed scalar fields.
+
+    Stored campaign files are untrusted input: a retained entry may have been
+    hand-edited to carry result bodies, output, paths, secrets, nested
+    values, or arbitrarily large strings. Only the bounded scalar history
+    fields survive, each validated and coerced exactly as
+    :func:`_prior_attempt_summary` validates fresh summaries; unknown and
+    nested fields are discarded. Returns None for malformed entries (not a
+    mapping, or a mapping with none of the allowed fields), which the caller
+    drops instead of preserving.
+    """
+    if not isinstance(entry, Mapping):
+        return None
+    if not any(field in entry for field in ATTEMPT_HISTORY_FIELDS):
+        return None
+
+    state = entry.get("state")
+    if not isinstance(state, str) or state not in VALID_PROVIDER_STATES:
+        state = ""
+    outcome = entry.get("outcome")
+    if not isinstance(outcome, str) or outcome not in ATTEMPT_HISTORY_OUTCOMES:
+        outcome = ""
+    error = entry.get("error")
+    if not isinstance(error, str) or error not in SAFE_ERROR_CODES:
+        error = ""
+    elapsed = entry.get("elapsed_seconds")
+    if (
+        isinstance(elapsed, bool)
+        or not isinstance(elapsed, (int, float))
+        or not math.isfinite(elapsed)
+        or elapsed < 0
+    ):
+        elapsed = 0.0
+    return {
+        "attempted_at": _sanitize_history_timestamp(entry.get("attempted_at")),
+        "dispatched_at": _sanitize_history_timestamp(entry.get("dispatched_at")),
+        "completed_at": _sanitize_history_timestamp(entry.get("completed_at")),
+        "state": state,
+        "outcome": outcome,
+        "error": error,
+        "elapsed_seconds": round(float(elapsed), 2),
+    }
+
+
+def _record_attempt_history(provider_data: dict[str, Any]) -> None:
+    """Append the superseded attempt's bounded summary, keeping history bounded.
+
+    Retained history is always sanitized and capped, even when there is no
+    new current-attempt summary to append: a queued provider with no
+    timestamps/result can still carry hand-edited malicious or unbounded
+    ``attempt_history``, and an explicit retry must not preserve it verbatim.
+    """
+    history = provider_data.get("attempt_history")
+    if not isinstance(history, list):
+        history = []
+    # Retained entries are rebuilt from the closed allowed scalar fields, not
+    # copied verbatim: a malformed or hand-edited stored history can carry
+    # result bodies, output, paths, secrets, or arbitrarily large values, and
+    # saving them again would preserve that content despite the metadata-only
+    # contract. Malformed entries are discarded; survivors are capped with the
+    # new summary (when one exists).
+    sanitized = [_sanitize_attempt_history_entry(item) for item in history]
+    history = [item for item in sanitized if item is not None]
+    summary = _prior_attempt_summary(provider_data)
+    if summary is not None:
+        history.append(summary)
+    provider_data["attempt_history"] = history[-MAX_ATTEMPT_HISTORY_ENTRIES:]
+
+
 def _save_campaign_progress(
     campaign: dict[str, Any],
     campaigns_dir: Path,
@@ -1778,6 +1959,16 @@ def dispatch_or_advance_campaign(
 
     for provider_data in campaign.get("providers", []):
         provider = str(provider_data.get("provider") or "")
+        # Retry freeze: an explicit --retry-provider run advances only the
+        # retried provider. This early continue is the single authoritative
+        # freeze: every other participant is byte-stable for this run -- no
+        # polling, error clearing, deadline expiry, state, evidence,
+        # next-action, or timestamp mutations. Byte stability is exact: the
+        # frozen provider's dict, including next_action/next_detail, remains
+        # unchanged during another provider's explicit retry. Aggregate
+        # campaign fields still recompute on save.
+        if retry_canonical and provider != retry_canonical:
+            continue
         try:
             _, lane = resolve_provider_lane(provider)
         except ValueError:
@@ -1807,6 +1998,18 @@ def dispatch_or_advance_campaign(
             else None
         )
         if bound_result is not None:
+            prior_result = provider_data.get("adoption_result")
+            if prior_result != bound_result:
+                # Genuinely new evidence supersedes the stored attempt: leave
+                # a bounded summary only when a prior stored result actually
+                # existed (the first completion of a running attempt
+                # supersedes nothing), then stamp this completion.
+                # Re-reading identical evidence (a resume re-poll, or another
+                # provider's retry) is not a new attempt and must not move
+                # chronology.
+                if isinstance(prior_result, Mapping) and prior_result:
+                    _record_attempt_history(provider_data)
+                provider_data["completed_at"] = now_utc
             provider_data["adoption_result"] = bound_result
             provider_data["elapsed_seconds"] = float(bound_result.get("elapsed_seconds") or 0.0)
             provider_data["error"] = ""
@@ -1819,7 +2022,6 @@ def dispatch_or_advance_campaign(
                 provider_data["state"] = "blocked"
                 provider_data["next_action"] = f"inspect {provider} qualification failures"
                 provider_data["next_detail"] = f"outcome: {outcome}"
-            provider_data["completed_at"] = now_utc
             continue
 
         # 2. If already complete, preserve state
@@ -1867,11 +2069,21 @@ def dispatch_or_advance_campaign(
                         package_identity=package_identity,
                     )
                     if found_result:
+                        prior_found = provider_data.get("adoption_result")
+                        if prior_found != found_result:
+                            # Genuinely new evidence supersedes the stored
+                            # attempt; record history only when a prior
+                            # stored result actually existed (the first
+                            # completion of a running attempt supersedes
+                            # nothing). Identical evidence must not move
+                            # chronology (see the drop-in path above).
+                            if isinstance(prior_found, Mapping) and prior_found:
+                                _record_attempt_history(provider_data)
+                            provider_data["completed_at"] = now_utc
                         provider_data["adoption_result"] = found_result
                         provider_data["elapsed_seconds"] = float(
                             found_result.get("elapsed_seconds") or 0.0
                         )
-                        provider_data["completed_at"] = now_utc
                         outcome = found_result.get("outcome")
                         if outcome in {"pass", "pass_with_warnings"}:
                             provider_data["state"] = "complete"
@@ -1896,7 +2108,11 @@ def dispatch_or_advance_campaign(
                 provider_data.setdefault("trigger_posted", not bool(trigger_comments))
             trigger_posted = provider_data.get("trigger_posted", not bool(trigger_comments))
 
-            if trigger_comments and not trigger_posted and not is_explicit_retry:
+            if (
+                trigger_comments
+                and not trigger_posted
+                and not is_explicit_retry
+            ):
                 dispatch_key = str(provider_data.get("dispatch_reconciliation_key") or "")
                 trigger_key = str(provider_data.get("trigger_reconciliation_key") or "")
                 if poll_only:
@@ -2095,7 +2311,7 @@ def dispatch_or_advance_campaign(
             if not is_explicit_retry:
                 # Ordinary resume is poll/reconciliation-only and never
                 # redispatches. Explicit retry may continue below only after
-                # the trusted result scan above found no completed evidence.
+                # the trusted result scan above found no terminal evidence.
                 continue
             # Explicit retry of a still-running provider with no valid
             # trusted result yet: fall through to the capability checks and
@@ -2262,6 +2478,20 @@ def dispatch_or_advance_campaign(
                 result_path.unlink()
             except FileNotFoundError:
                 pass
+            # A new attempt supersedes the stored one: keep its bounded
+            # metadata-only summary before restamping. First attempts record
+            # nothing (there is no prior attempt to summarize). The complete
+            # superseded current-attempt surface -- stored result, both
+            # timestamps, and elapsed time -- is reset before the new
+            # attempt, so a result-less failed retry (or an interruption
+            # before the adapter finishes) cannot retain superseded
+            # evidence or chronology. A successful completion restamps its
+            # new values normally below.
+            _record_attempt_history(provider_data)
+            provider_data["adoption_result"] = None
+            provider_data["completed_at"] = None
+            provider_data["dispatched_at"] = None
+            provider_data["elapsed_seconds"] = 0.0
             provider_data["attempted_at"] = now_utc
             provider_data["state"] = "running"
             provider_data["error"] = ""
@@ -2404,6 +2634,21 @@ def dispatch_or_advance_campaign(
                 # is neither. If nothing was ever posted, resume keeps polling
                 # and finds nothing, and the existing explicit-retry policy
                 # remains the only way to dispatch again.
+                #
+                # A redispatch supersedes the stored attempt, so its bounded
+                # metadata-only summary is kept first (a first dispatch
+                # records nothing) and the complete superseded
+                # current-attempt surface -- stored result, both timestamps,
+                # and elapsed time -- is reset before the new attempt, so a
+                # result-less failed retry (or an interruption after this
+                # checkpoint) cannot upload superseded evidence or retain
+                # superseded chronology. A subsequent successful dispatch
+                # stamps its new dispatched_at normally below.
+                _record_attempt_history(provider_data)
+                provider_data["adoption_result"] = None
+                provider_data["completed_at"] = None
+                provider_data["dispatched_at"] = None
+                provider_data["elapsed_seconds"] = 0.0
                 provider_data["attempted_at"] = now_utc
                 provider_data["state"] = "running"
                 provider_data["error"] = ""
@@ -2597,6 +2842,14 @@ def record_manual_result(
 
     for p in campaign.get("providers", []):
         if p.get("provider") == canonical_provider:
+            # A re-recorded result supersedes the stored attempt: keep its
+            # bounded metadata-only summary first (a first record keeps none).
+            # Byte-identical evidence is idempotent: no history entry and no
+            # completion restamp.
+            if p.get("adoption_result") == adoption_res:
+                matched = True
+                break
+            _record_attempt_history(p)
             p["adoption_result"] = adoption_res
             p["elapsed_seconds"] = float(adoption_res.get("elapsed_seconds") or 0.0)
             p["error"] = ""
@@ -2665,8 +2918,18 @@ CAMPAIGN_UPLOAD_REJECT_CODES = frozenset(
         "adoption_result_missing",
         "adoption_result_invalid",
         "adoption_result_unconvertible",
+        "adoption_result_state_mismatch",
     }
 )
+
+# Outcomes the campaign state machine stores under each terminal provider
+# state (see the `complete`/`blocked` assignments in
+# dispatch_or_advance_campaign and record_manual_result): `complete` carries
+# only passing evidence, `blocked` only failing/incomplete evidence. Upload
+# enforces this pairing so a corrupted or hand-edited campaign whose terminal
+# state contradicts its bound result outcome is rejected, never published.
+COMPLETE_STATE_OUTCOMES = frozenset({"pass", "pass_with_warnings"})
+BLOCKED_STATE_OUTCOMES = frozenset({"fail", "incomplete"})
 
 # A campaign's provider list holds at most one entry per known provider, so this
 # bound is far above anything the tool itself writes. It exists because a stored
@@ -2706,25 +2969,35 @@ def build_campaign_upload_events(
     install_id: str = "",
     source: str = CAMPAIGN_UPLOAD_SOURCE,
 ) -> dict[str, Any]:
-    """Convert every completed provider's revalidated result into adoption_run events.
+    """Convert every terminal provider's revalidated result into adoption_run events.
 
-    Completion is the campaign's own record, but it is never taken on trust:
-    each stored result is revalidated against the closed adoption-result schema
-    and rebound to this campaign's provider, release tag, package identity,
-    qualification context, and starting version -- the same contract
-    :func:`is_bound_adoption_result` applies to a drop-in result file -- before
-    :func:`cloud_client.adoption_result_to_event` converts it. Conversion itself
-    enforces the metadata-only adoption_run contract, so missing model, token,
-    and cost data stays unavailable rather than zero-filled, and no report text,
-    output, path, or prose can reach an event.
+    Terminal state is the campaign's own record, but it is never taken on
+    trust: each stored result is revalidated against the closed
+    adoption-result schema and rebound to this campaign's provider, release
+    tag, package identity, qualification context, and starting version -- the
+    same contract :func:`is_bound_adoption_result` applies to a drop-in result
+    file -- before :func:`cloud_client.adoption_result_to_event` converts it.
+    Conversion itself enforces the metadata-only adoption_run contract, so
+    missing model, token, and cost data stays unavailable rather than
+    zero-filled, and no report text, output, path, or prose can reach an
+    event.
 
-    A provider that is not complete is *skipped* and counted separately: an
-    incomplete or unavailable provider has no evidence to publish, which is not
-    an error. A provider that *is* complete but whose stored result is missing,
-    unbindable, or malformed is *rejected*, with one bounded code from
-    :data:`CAMPAIGN_UPLOAD_REJECT_CODES`. The caller refuses the whole upload in
-    that case: silently skipping it would publish a partial event set while
-    reporting success, and repairing it would fabricate evidence.
+    Both terminal states carry evidence: `complete` holds passing results and
+    `blocked` holds failing ones (`fail`, and `incomplete` where the schema
+    allows it), so every schema-valid executed terminal result becomes one
+    metadata-only event. A provider that is not terminal is *skipped* and
+    counted separately: a queued, running, or unavailable provider has no
+    evidence to publish, which is not an error -- and neither does a
+    `blocked` provider whose adapter never produced a result file. A terminal
+    provider whose stored result is present but missing, unbindable, or
+    malformed is *rejected*, with one bounded code from
+    :data:`CAMPAIGN_UPLOAD_REJECT_CODES` -- as is a terminal provider whose
+    state contradicts its bound result outcome (`complete` with a
+    failing/incomplete outcome, or `blocked` with a passing one), which can
+    only come from corrupted or hand-edited storage. The caller refuses the
+    whole upload in that case: silently skipping it would publish a partial
+    event set while reporting success, and repairing it would fabricate
+    evidence.
 
     The stored ``providers`` value is itself untrusted: it is converted only
     when it is an actual list or tuple of at most
@@ -2790,16 +3063,23 @@ def build_campaign_upload_events(
         state = entry.get("state")
         if not isinstance(state, str) or state not in VALID_PROVIDER_STATES:
             state = "unavailable"
-        if state != "complete":
+        if state not in TERMINAL_EVIDENCE_STATES:
             skipped.append(_skipped_provider_row(entry, provider, str(state)))
             continue
-        complete_count += 1
         result = entry.get("adoption_result")
         if not isinstance(result, Mapping) or not result:
-            rejected.append(
-                {"provider": provider, "state": state, "reason": "adoption_result_missing"}
-            )
+            if state == "complete":
+                complete_count += 1
+                rejected.append(
+                    {"provider": provider, "state": state, "reason": "adoption_result_missing"}
+                )
+            else:
+                # Blocked without stored evidence: the adapter failed before
+                # producing a result. Nothing to publish, and not an error.
+                skipped.append(_skipped_provider_row(entry, provider, str(state)))
             continue
+        if state == "complete":
+            complete_count += 1
         if not is_bound_adoption_result(
             dict(result),
             provider=provider,
@@ -2810,6 +3090,25 @@ def build_campaign_upload_events(
         ):
             rejected.append(
                 {"provider": provider, "state": state, "reason": "adoption_result_invalid"}
+            )
+            continue
+        # Terminal state is never normalized into evidence: a `complete`
+        # provider may carry only a passing outcome, and `blocked` terminal
+        # evidence must carry a failing/incomplete outcome, exactly as the
+        # state machine stores them. A contradictory pair can only come from
+        # corrupted or hand-edited storage, so it is rejected with a bounded
+        # metadata-only reason rather than published as successful evidence.
+        outcome = result.get("outcome")
+        allowed_outcomes = (
+            COMPLETE_STATE_OUTCOMES if state == "complete" else BLOCKED_STATE_OUTCOMES
+        )
+        if outcome not in allowed_outcomes:
+            rejected.append(
+                {
+                    "provider": provider,
+                    "state": state,
+                    "reason": "adoption_result_state_mismatch",
+                }
             )
             continue
         try:
@@ -2869,7 +3168,7 @@ def _campaign_upload_next_action(
     if status == "no_events":
         return (
             "complete at least one provider before uploading",
-            f"{len(skipped)} provider(s) have no completed qualification evidence",
+            f"{len(skipped)} provider(s) have no terminal qualification evidence",
         )
     if status == "uploaded":
         return ("none", f"{event_count} adoption_run event(s) uploaded")
@@ -2896,9 +3195,9 @@ def render_campaign_upload_text(result: Mapping[str, Any]) -> str:
         f"Status: {result.get('status')}",
         f"Endpoint: {result.get('endpoint')}",
         f"Events: {counts.get('events', 0)} adoption_run event(s) "
-        f"from {counts.get('accepted', 0)} complete provider(s)",
-        f"Skipped: {counts.get('skipped', 0)} provider(s) without completed evidence",
-        f"Rejected: {counts.get('rejected', 0)} completed provider(s) with unusable results",
+        f"from {counts.get('accepted', 0)} terminal provider(s)",
+        f"Skipped: {counts.get('skipped', 0)} provider(s) without terminal evidence",
+        f"Rejected: {counts.get('rejected', 0)} terminal provider(s) with unusable results",
         "Model/token/cost: unavailable (metadata-only, never zero-filled)",
         f"Next: {result.get('next_action')}",
     ]
@@ -2921,7 +3220,7 @@ def campaign_upload(
     yes: bool = False,
     timeout: float = 20.0,
 ) -> dict[str, Any]:
-    """Preview or perform the cloud upload of one campaign's completed evidence.
+    """Preview or perform the cloud upload of one campaign's terminal evidence.
 
     Preview is the default and is the same computation as the applied upload:
     both build the identical deterministic event set and the identical payload,
@@ -4345,7 +4644,7 @@ def _upload_intent_conflict(
         if not intents:
             return ""
         return (
-            "upload publishes an existing campaign's completed evidence and cannot be "
+            "upload publishes an existing campaign's terminal evidence and cannot be "
             f"combined with {', '.join(intents)}; run that campaign action first, then "
             "upload"
         )
