@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+import json
 from pathlib import Path
 import subprocess
 import tempfile
+from typing import Any
 import unittest
 from unittest import mock
 
@@ -846,6 +849,9 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             with mock.patch(
                 "code_mower.campaign_adapters.check_structured_result_capability",
                 side_effect=fake_capability,
+            ), mock.patch(
+                "code_mower.campaign_adapters.check_antigravity_readiness",
+                return_value={"ready": True, "provider": "antigravity", "capability": "new_project"},
             ):
                 checks = check_adoption_campaign_readiness(
                     config=config,
@@ -1025,6 +1031,183 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                 c for c in checks_disabled if c.status == STATUS_WARN and c.lane in {"antigravity", "muse"}
             ]
             self.assertEqual(warn_checks, [])
+
+    def test_antigravity_campaign_readiness_passes_with_new_project_capability(self) -> None:
+        """When agy --help contains --new-project, Antigravity passes adapter check and is campaign ready."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "lanes": {
+                    "antigravity_cli": {
+                        "enabled": True,
+                    }
+                }
+            }
+
+            def cap_runner(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(
+                    list(argv), 0, stdout="  --new-project  Create new project\n", stderr=""
+                )
+
+            checks = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "agy" else None,
+                capability_runner=cap_runner,
+                env={"ANTIGRAVITY_CLI_USE_AMBIENT_HOME": "1"},
+                providers=["antigravity"],
+            )
+
+            adapter_check = next(
+                c for c in checks if c.name == "doctor.campaign.adapter" and c.lane == "antigravity"
+            )
+            self.assertEqual(adapter_check.status, STATUS_PASS)
+
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness.status, STATUS_PASS)
+            self.assertEqual(readiness.detail.get("ready_providers"), ["antigravity"])
+            self.assertEqual(readiness.detail.get("actionable_providers"), [])
+
+    def test_antigravity_campaign_readiness_fails_without_new_project_capability(self) -> None:
+        """When agy lacks --new-project, Antigravity is excluded from ready_providers with actionable warning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "lanes": {
+                    "antigravity_cli": {
+                        "enabled": True,
+                    }
+                }
+            }
+
+            def cap_runner(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(
+                    list(argv), 0, stdout="  --continue  Resume existing session\n", stderr=""
+                )
+
+            checks = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "agy" else None,
+                capability_runner=cap_runner,
+                env={"ANTIGRAVITY_CLI_USE_AMBIENT_HOME": "1"},
+                providers=["antigravity"],
+            )
+
+            adapter_check = next(
+                c for c in checks if c.name == "doctor.campaign.adapter" and c.lane == "antigravity"
+            )
+            self.assertEqual(adapter_check.status, STATUS_WARN)
+            self.assertEqual(
+                adapter_check.message,
+                "installed agy CLI lacks required --new-project flag for campaign isolation",
+            )
+            self.assertEqual(
+                adapter_check.remediation,
+                "Upgrade agy CLI to a version whose --help exposes --new-project.",
+            )
+            self.assertNotIn("1.1.26", adapter_check.remediation)
+
+            detail = adapter_check.detail
+            self.assertEqual(detail["provider"], "antigravity")
+            self.assertEqual(detail["lane"], "antigravity_cli")
+            self.assertEqual(detail["command"], "agy")
+            self.assertTrue(detail["command_found"])
+            self.assertTrue(detail["adapter_configured"])
+            self.assertEqual(detail["capability"], "new_project")
+            self.assertEqual(detail["required_flag"], "--new-project")
+            self.assertEqual(detail["error"], "missing_new_project_capability")
+            self.assertTrue(detail["enabled"])
+            self.assertTrue(detail["actionable"])
+            self.assertFalse(detail["optional"])
+            self.assertTrue(detail.get("owner_action"))
+
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness.status, STATUS_WARN)
+            self.assertNotIn("antigravity", readiness.detail.get("ready_providers", []))
+            self.assertIn("antigravity", readiness.detail.get("actionable_providers", []))
+
+    def test_antigravity_capability_check_preserves_evidence_privacy(self) -> None:
+        """Doctor Antigravity capability check strictly keeps help text, paths, prompts, secrets out of evidence."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "lanes": {
+                    "antigravity_cli": {
+                        "enabled": True,
+                    }
+                }
+            }
+
+            fake_help = (
+                "Usage: /mock/path/custom/agy [options]\n"
+                "Help text with unshared-arg-canary and user-prompt-canary\n"
+            )
+
+            def cap_runner(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(list(argv), 0, stdout=fake_help, stderr="")
+
+            checks = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                which_fn=lambda cmd: "/mock/path/custom/agy" if cmd == "agy" else None,
+                capability_runner=cap_runner,
+                env={"ANTIGRAVITY_CLI_USE_AMBIENT_HOME": "1"},
+                providers=["antigravity"],
+            )
+
+            adapter_check = next(
+                c for c in checks if c.name == "doctor.campaign.adapter" and c.lane == "antigravity"
+            )
+            serialized = json.dumps(adapter_check.as_dict())
+
+            self.assertNotIn("/mock/path/custom", serialized)
+            self.assertNotIn("unshared-arg-canary", serialized)
+            self.assertNotIn("user-prompt-canary", serialized)
+            self.assertEqual(adapter_check.detail.get("command"), "agy")
+
+    def test_antigravity_capability_failure_disabled_optional_provider(self) -> None:
+        """When optional/disabled Antigravity fails capability check, it does not become actionable or flip aggregate readiness."""
+        with tempfile.TemporaryDirectory() as tmp:
+            # Only claude enabled
+            config = {
+                "lanes": {
+                    "claude": {
+                        "provider_config": {
+                            "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                            "campaign_adapter_timeout_seconds": 60,
+                        }
+                    }
+                }
+            }
+
+            def cap_runner(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(list(argv), 0, stdout="help without new project", stderr="")
+
+            with mock.patch(
+                "code_mower.campaign_adapters.check_structured_result_capability",
+                return_value=True,
+            ):
+                checks = check_adoption_campaign_readiness(
+                    config=config,
+                    repo_root=Path(tmp),
+                    which_fn=lambda cmd: f"/bin/{cmd}" if cmd in {"claude", "agy"} else None,
+                    capability_runner=cap_runner,
+                    env={"ANTIGRAVITY_CLI_USE_AMBIENT_HOME": "1"},
+                    providers=["claude", "antigravity"],
+                )
+
+            adapter_check = next(
+                c for c in checks if c.name == "doctor.campaign.adapter" and c.lane == "antigravity"
+            )
+            self.assertEqual(adapter_check.status, STATUS_WARN)
+            self.assertFalse(adapter_check.detail.get("actionable"))
+            self.assertTrue(adapter_check.detail.get("optional"))
+            self.assertNotIn("owner_action", adapter_check.detail)
+
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertEqual(readiness.status, STATUS_PASS)
+            self.assertIn("claude", readiness.detail.get("ready_providers", []))
+            self.assertNotIn("antigravity", readiness.detail.get("ready_providers", []))
+            self.assertIn("antigravity", readiness.detail.get("optional_providers", []))
+            self.assertNotIn("antigravity", readiness.detail.get("actionable_providers", []))
 
 
 if __name__ == "__main__":
