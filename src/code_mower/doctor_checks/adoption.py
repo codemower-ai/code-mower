@@ -593,6 +593,7 @@ def check_adoption_campaign_readiness(
     from code_mower.cloud import resolve_cloud_token
     from code_mower.release_campaigns import (
         _check_credentials,
+        _check_hosted_transport,
         _find_command,
         _safe_error,
         _validate_adapter_argv_template,
@@ -750,6 +751,9 @@ def check_adoption_campaign_readiness(
 
         elif lane.driver in {"hosted_bridge", "saas_event"}:
             has_credentials, missing_var = _check_credentials(lane, env=current_env)
+            transport_ready, transport_var = _check_hosted_transport(
+                lane, env=current_env
+            )
             has_repo = bool(repo_slug)
 
             if not has_credentials:
@@ -798,6 +802,34 @@ def check_adoption_campaign_readiness(
                         remediation="Run from a GitHub checkout or pass `code-mower doctor --adoption --repo OWNER/REPO`.",
                     )
                 )
+            elif not transport_ready:
+                detail = {
+                    "provider": canonical,
+                    "lane": lane.lane_id,
+                    "driver": lane.driver,
+                    "repo_slug": repo_slug,
+                    "has_credentials": True,
+                    "transport_verified": False,
+                    "verification_variable": transport_var,
+                    "enabled": is_enabled,
+                    "actionable": is_enabled,
+                    "optional": not is_enabled,
+                }
+                if is_enabled:
+                    detail["owner_action"] = True
+                checks.append(
+                    DoctorCheck(
+                        name="doctor.campaign.transport",
+                        status=STATUS_WARN,
+                        lane=canonical,
+                        message=f"{canonical} hosted campaign transport is not verified",
+                        detail=detail,
+                        remediation=(
+                            f"Verify the {canonical} GitHub integration can answer campaign "
+                            f"comments, then set {transport_var}=1."
+                        ),
+                    )
+                )
             else:
                 checks.append(
                     DoctorCheck(
@@ -811,6 +843,7 @@ def check_adoption_campaign_readiness(
                             "driver": lane.driver,
                             "repo_slug": repo_slug,
                             "has_credentials": True,
+                            "transport_verified": True,
                             "enabled": is_enabled,
                         },
                     )

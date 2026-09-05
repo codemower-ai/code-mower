@@ -6,6 +6,11 @@ provider posture, and optional cloud sharing loop are still hardening.
 
 ## Unreleased
 
+- Report unverified Cursor/Grok Bot and Devin campaign transports before
+  dispatch, and expire silent hosted qualification runs into explicit
+  manual/retry guidance without automatically duplicating paid work. Existing
+  campaigns receive a fresh response window on first upgraded poll (#701).
+
 ### Fixed
 
 - Codex release campaigns preserve the OS home required for macOS keychain

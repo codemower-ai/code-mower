@@ -233,7 +233,10 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                 config={},
                 repo_root=repo_root,
                 repo_slug="owner/repo",
-                env={"DEVIN_AUDIT_LABEL_TOKEN": "secret-token"},
+                env={
+                    "DEVIN_AUDIT_LABEL_TOKEN": "secret-token",
+                    "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+                },
                 providers=["devin"],
             )
             cred_checks = [c for c in checks if c.name == "doctor.campaign.credentials"]
@@ -244,6 +247,27 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertTrue(check.detail.get("has_credentials"))
             self.assertEqual(check.detail.get("repo_slug"), "owner/repo")
             # Must not leak secret value
+            self.assertNotIn("secret-token", str(check.detail))
+
+    def test_campaign_transport_warns_until_explicitly_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = check_adoption_campaign_readiness(
+                config={},
+                repo_root=Path(tmp),
+                repo_slug="owner/repo",
+                env={"DEVIN_AUDIT_LABEL_TOKEN": "secret-token"},
+                providers=["devin"],
+            )
+
+            transport = [c for c in checks if c.name == "doctor.campaign.transport"]
+            self.assertEqual(len(transport), 1)
+            check = transport[0]
+            self.assertEqual(check.status, STATUS_WARN)
+            self.assertFalse(check.detail.get("transport_verified"))
+            self.assertEqual(
+                check.detail.get("verification_variable"),
+                "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY",
+            )
             self.assertNotIn("secret-token", str(check.detail))
 
     def test_campaign_credentials_warns_when_missing_token(self) -> None:

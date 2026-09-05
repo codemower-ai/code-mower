@@ -136,7 +136,11 @@ def _fake_local_cli_lane(*, command: str = "fake-provider-cli") -> ProviderLane:
     )
 
 
-def _fake_hosted_bridge_lane(*, bot_authors: tuple[str, ...] = ()) -> ProviderLane:
+def _fake_hosted_bridge_lane(
+    *,
+    bot_authors: tuple[str, ...] = (),
+    response_timeout: int | None = None,
+) -> ProviderLane:
     """A hosted_bridge lane with no registry defaults, for controlled trust tests."""
     return ProviderLane(
         lane_id="fake_hosted",
@@ -145,7 +149,14 @@ def _fake_hosted_bridge_lane(*, bot_authors: tuple[str, ...] = ()) -> ProviderLa
         provider="devin",
         labels=LaneLabels(needs="needs-fake", done="fake-done", blocked="fake-blocked"),
         trigger_policy="manual",
-        provider_config={"bot_authors": bot_authors} if bot_authors else {},
+        provider_config={
+            **({"bot_authors": bot_authors} if bot_authors else {}),
+            **(
+                {"campaign_response_timeout_seconds": response_timeout}
+                if response_timeout is not None
+                else {}
+            ),
+        },
     )
 
 
@@ -3877,6 +3888,10 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
         command_runner = mock.MagicMock()
         gh_json_runner = mock.MagicMock()
         adapter_runner = mock.MagicMock()
+        transport_vars = {
+            "devin": "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY",
+            "cursor_bugbot": "CODE_MOWER_CURSOR_BUGBOT_CAMPAIGN_TRANSPORT_READY",
+        }
         ret = release_campaigns.campaign_command(
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
@@ -3889,7 +3904,7 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
             command_runner=command_runner,
             gh_json_runner=gh_json_runner,
             adapter_runner=adapter_runner,
-            env={token_env: "token"},
+            env={token_env: "token", transport_vars[provider]: "1"},
         )
         self.assertEqual(ret, 0)
         saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -3964,6 +3979,32 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
                 "dry-run preview with 1 queued and 0 unavailable provider(s)",
             )
             self._assert_no_dispatch(entry, command_runner, gh_json_runner, adapter_runner)
+
+    def test_hosted_transport_is_reported_unverified_without_blocking_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            ret = release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=("devin",),
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                issue="42",
+                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual(ret, 0)
+            saved = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert saved is not None
+            entry = saved["providers"][0]
+            self.assertEqual(entry["state"], "queued")
+            self.assertFalse(entry["transport_verified"])
+            self.assertIn(
+                "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY=1",
+                entry["next_detail"],
+            )
 
     def test_hosted_dry_run_without_repo_slug_is_unavailable(self) -> None:
         """An issue number with no repo slug addresses nothing, exactly as under --apply."""
@@ -8479,6 +8520,83 @@ class HostedDispatchCrashWindowTests(unittest.TestCase):
                 sorted(p.name for p in campaigns_dir.glob("*.json")),
                 [f"{self.CAMPAIGN_ID}.json"],
             )
+
+    def test_nonresponsive_hosted_provider_expires_without_redispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            lane = _fake_hosted_bridge_lane(response_timeout=60)
+            self._dispatch(
+                campaigns_dir,
+                lane=lane,
+                command_runner=self._ok_command_runner,
+            )
+            stored = self._load(campaigns_dir)
+            stored["providers"][0]["response_deadline_at"] = "2000-01-01T00:00:00Z"
+            release_campaigns.save_campaign(stored, campaigns_dir)
+
+            runner = self._resume(campaigns_dir, lane=lane)
+
+            runner.assert_not_called()
+            expired = self._load(campaigns_dir)["providers"][0]
+            self.assertEqual(expired["state"], "unavailable")
+            self.assertEqual(expired["error"], "hosted_response_timeout")
+            self.assertIn("--retry-provider devin", expired["next_action"])
+            board_payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir
+            )
+            self.assertEqual(
+                board_payload["campaigns"][0]["cards"][0]["response_deadline_at"],
+                "2000-01-01T00:00:00Z",
+            )
+
+    def test_legacy_hosted_provider_gets_fresh_deadline_before_expiry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            lane = _fake_hosted_bridge_lane(response_timeout=60)
+            self._dispatch(
+                campaigns_dir,
+                lane=lane,
+                command_runner=self._ok_command_runner,
+            )
+            stored = self._load(campaigns_dir)
+            stored["providers"][0].pop("response_deadline_at", None)
+            stored["providers"][0]["attempted_at"] = "2000-01-01T00:00:00Z"
+            stored["providers"][0]["dispatched_at"] = "2000-01-01T00:00:00Z"
+            release_campaigns.save_campaign(stored, campaigns_dir)
+
+            runner = self._resume(campaigns_dir, lane=lane)
+
+            runner.assert_not_called()
+            migrated = self._load(campaigns_dir)["providers"][0]
+            self.assertEqual(migrated["state"], "running")
+            self.assertEqual(migrated["error"], "")
+            self.assertTrue(migrated["response_deadline_at"])
+
+    def test_github_outage_does_not_expire_hosted_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            lane = _fake_hosted_bridge_lane(response_timeout=60)
+            self._dispatch(
+                campaigns_dir,
+                lane=lane,
+                command_runner=self._ok_command_runner,
+            )
+            stored = self._load(campaigns_dir)
+            stored["providers"][0]["response_deadline_at"] = "2000-01-01T00:00:00Z"
+            release_campaigns.save_campaign(stored, campaigns_dir)
+
+            self._resume(
+                campaigns_dir,
+                lane=lane,
+                gh_json_runner=lambda *_args, **_kwargs: (
+                    {},
+                    "github_poll_unavailable",
+                ),
+            )
+
+            waiting = self._load(campaigns_dir)["providers"][0]
+            self.assertEqual(waiting["state"], "running")
+            self.assertEqual(waiting["error"], "github_poll_unavailable")
 
     def test_resume_completes_from_a_valid_trusted_bound_result(self) -> None:
         """The comment the interrupted dispatch may have posted is still honored."""
