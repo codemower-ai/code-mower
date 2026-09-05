@@ -795,7 +795,7 @@ class CodexAuditPrTests(unittest.TestCase):
             }
         )
         self.assertEqual(parsed_p2.verdict, "UNKNOWN")
-        self.assertIn("line must be >= 0", parsed_p2.prose)
+        self.assertIn("line must be >= 1 for blocking findings", parsed_p2.prose)
 
         parsed_p3 = cap.parse_structured_codex_verdict(
             {
