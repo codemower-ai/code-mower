@@ -2777,20 +2777,22 @@ def dispatch_or_advance_campaign(
                 # choice), under the bounded response deadline.
                 provider_data["state"] = "unavailable"
                 provider_data["error"] = _safe_error("hosted_transport_unverified")
-                first_blocker = dispatch_blockers[0]
-                first_remediation = str(
-                    dispatch_profile.get(first_blocker, {}).get("remediation") or ""
-                )
-                action = first_remediation or (
-                    f"resolve {first_blocker} for {provider} before dispatching "
-                    f"release qualification"
-                )
+                blocker_remediations = [
+                    str(dispatch_profile.get(name, {}).get("remediation") or "")
+                    for name in dispatch_blockers
+                ]
+                action = "; ".join(item for item in blocker_remediations if item)
+                if not action:
+                    action = (
+                        f"resolve {', '.join(dispatch_blockers)} for {provider} "
+                        f"before dispatching release qualification"
+                    )
                 detail = (
                     f"{provider} hosted dispatch blocked: "
                     f"{', '.join(dispatch_blockers)}"
                 )
-                if first_remediation:
-                    detail = f"{detail}; {first_remediation}"
+                if action:
+                    detail = f"{detail}; {action}"
             else:
                 provider_data["state"] = "queued"
                 # A prerequisite recorded by an earlier preview (a missing

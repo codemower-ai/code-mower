@@ -532,6 +532,19 @@ class HostedDispatchBlockerTests(unittest.TestCase):
             saved, blocker="trusted_responder", remediation_marker="bot_authors"
         )
 
+    def test_dry_run_reports_every_blocker_remediation(self) -> None:
+        lane = _devin_lane_without(
+            trigger_comments=False,
+            trusted_responders=False,
+        )
+        saved = self._dry_run_devin(lane, _verified_devin_env())
+        entry = saved["providers"][0]
+        for blocker in ("trigger", "trusted_responder"):
+            self.assertIn(blocker, entry["next_detail"])
+        for remediation_marker in ("builder trigger", "bot_authors"):
+            self.assertIn(remediation_marker, entry["next_action"])
+            self.assertIn(remediation_marker, entry["next_detail"])
+
     def _doctor_checks(self, lane) -> tuple:
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.dict(release_campaigns.REFERENCE_PROVIDERS, {"devin": lane}):
