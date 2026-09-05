@@ -4660,7 +4660,6 @@ class DuplicateCampaignProviderTests(unittest.TestCase):
                 message = str(ctx.exception)
                 self.assertIn("duplicate release campaign provider", message)
                 self.assertIn(canonical, message)
-                self.assertIn(canonical, message)
 
     def test_distinct_providers_are_accepted_and_canonicalized(self) -> None:
         """The normal case: distinct providers keep distinct keys and result paths."""
