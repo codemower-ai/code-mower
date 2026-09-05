@@ -690,7 +690,21 @@ class AdapterTransportTests(unittest.TestCase):
 
         res_oserror = campaign_adapters.check_antigravity_readiness("/bin/nonexistent-agy", runner=failing_runner)
         self.assertFalse(res_oserror["ready"])
-        self.assertEqual(res_oserror["error"], "missing_new_project_capability")
+        self.assertEqual(res_oserror["error"], "capability_probe_failed")
+        self.assertIn("agy --help runs successfully", res_oserror["remediation"])
+
+    def test_check_antigravity_readiness_distinguishes_probe_timeout(self) -> None:
+        def timeout_runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired(argv, 10)
+
+        result = campaign_adapters.check_antigravity_readiness(
+            "/bin/agy",
+            runner=timeout_runner,
+        )
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["error"], "capability_probe_timeout")
+        self.assertIn("timed out", result["message"])
+        self.assertNotIn("upgrade", result["remediation"].lower())
 
     def test_run_campaign_adapter_antigravity_fails_before_prompt_or_provider_call(self) -> None:
         def failing_cap_runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:

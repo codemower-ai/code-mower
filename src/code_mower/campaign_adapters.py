@@ -695,6 +695,7 @@ def check_antigravity_readiness(
         }
 
     probe_env = dict(child_env) if child_env is not None else build_adapter_child_env("antigravity")
+    probe_error = ""
     try:
         if runner is not None:
             try:
@@ -715,9 +716,37 @@ def check_antigravity_readiness(
                 env=probe_env,
             )
         output = (completed.stdout or "") + (completed.stderr or "")
-        has_new_project = (completed.returncode == 0) and ("--new-project" in output.split())
-    except (subprocess.TimeoutExpired, OSError):
+        if completed.returncode != 0:
+            probe_error = "capability_probe_failed"
+        has_new_project = not probe_error and ("--new-project" in output.split())
+    except subprocess.TimeoutExpired:
+        probe_error = "capability_probe_timeout"
         has_new_project = False
+    except OSError:
+        probe_error = "capability_probe_failed"
+        has_new_project = False
+
+    if probe_error:
+        timed_out = probe_error == "capability_probe_timeout"
+        return {
+            "ready": False,
+            "provider": "antigravity",
+            "capability": "new_project",
+            "required_flag": "--new-project",
+            "error": probe_error,
+            "actionable": True,
+            "message": (
+                "antigravity CLI capability probe timed out"
+                if timed_out
+                else "antigravity CLI capability probe failed"
+            ),
+            "remediation": (
+                "Retry the bounded agy --help probe; if it continues to time out, "
+                "repair the CLI installation before running a campaign."
+                if timed_out
+                else "Verify that agy --help runs successfully, then retry campaign readiness."
+            ),
+        }
 
     if not has_new_project:
         return {
