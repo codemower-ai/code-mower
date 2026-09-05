@@ -524,6 +524,214 @@ class RetryEvidenceClearingTests(unittest.TestCase):
             )
 
 
+class RetrySupersededTimestampTests(unittest.TestCase):
+    """A failed/interrupted retry keeps no superseded evidence or timestamps.
+
+    Covers the Codex chronology invariant in both retry paths: the local
+    adapter path and the hosted redispatch path must archive the bounded
+    prior attempt, then clear adoption_result, completed_at, and
+    dispatched_at before checkpointing the new attempt -- so an adapter
+    failure, a failed dispatch post, or an interruption cannot retain
+    superseded timestamps while attempt_history preserves the prior
+    bounded summary.
+    """
+
+    def test_failed_local_retry_clears_superseded_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                release_campaigns.record_manual_result(
+                    campaign, "codex", _mock_result("codex", "fail"),
+                    campaigns_dir=campaigns_dir,
+                )
+            # Simulate a prior adapter-completed attempt with full chronology.
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            stored["providers"][0]["attempted_at"] = OLD_TS
+            stored["providers"][0]["dispatched_at"] = OLD_TS
+            stored["providers"][0]["completed_at"] = OLD_DONE_TS
+            stored["providers"][0].pop("attempt_history", None)
+            path.write_text(json.dumps(stored), encoding="utf-8")
+
+            def _resolve(name: str) -> tuple[str, ProviderLane]:
+                return name, _fake_lane(name)
+
+            def _failing_runner(argv: Any, timeout: int) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(list(argv), 1, stdout="", stderr="boom")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", side_effect=_resolve
+            ):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        resume=True,
+                        apply=True,
+                        retry_provider="codex",
+                        which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                        adapter_runner=_failing_runner,
+                    )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            codex = saved["providers"][0]
+            # No superseded evidence or timestamps survive the failed retry.
+            self.assertIsNone(codex.get("adoption_result"))
+            self.assertIsNone(codex.get("completed_at"))
+            self.assertIsNone(codex.get("dispatched_at"))
+            # The new attempt itself is still recorded.
+            self.assertTrue(codex.get("attempted_at"))
+            self.assertNotEqual(codex.get("attempted_at"), OLD_TS)
+            # The prior attempt survives only as a bounded metadata-only summary.
+            history = codex.get("attempt_history")
+            assert isinstance(history, list) and len(history) == 1
+            self.assertEqual(
+                set(history[0]),
+                {
+                    "attempted_at",
+                    "dispatched_at",
+                    "completed_at",
+                    "state",
+                    "outcome",
+                    "error",
+                    "elapsed_seconds",
+                },
+            )
+            self.assertEqual(history[0]["outcome"], "fail")
+            self.assertEqual(history[0]["attempted_at"], OLD_TS)
+            self.assertEqual(history[0]["dispatched_at"], OLD_TS)
+            self.assertEqual(history[0]["completed_at"], OLD_DONE_TS)
+            plan = release_campaigns.build_campaign_upload_events(saved)
+            self.assertEqual(
+                [r["provider"] for r in plan["skipped_providers"]], ["codex"]
+            )
+
+    def test_failed_hosted_redispatch_clears_superseded_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["devin"],
+                    campaigns_dir=campaigns_dir,
+                    repo_slug="owner/repo",
+                    issue="42",
+                )
+                campaign = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert campaign is not None
+                release_campaigns.record_manual_result(
+                    campaign, "devin", _mock_result("devin", "fail"),
+                    campaigns_dir=campaigns_dir,
+                )
+            # Simulate a prior hosted attempt with full chronology.
+            path = campaigns_dir / "campaign-v1.0.0.json"
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            stored["providers"][0]["attempted_at"] = OLD_TS
+            stored["providers"][0]["dispatched_at"] = OLD_TS
+            stored["providers"][0]["completed_at"] = OLD_DONE_TS
+            stored["providers"][0]["dispatch_ref"] = {
+                "issue_number": "42",
+                "comment_posted": True,
+            }
+            stored["providers"][0].pop("attempt_history", None)
+            path.write_text(json.dumps(stored), encoding="utf-8")
+
+            hosted_lane = ProviderLane(
+                lane_id="fake_devin_hosted",
+                lane_type="audit",
+                driver="hosted_bridge",
+                provider="devin",
+                labels=LaneLabels(
+                    needs="needs-fake", done="fake-done", blocked="fake-blocked"
+                ),
+                trigger_policy="manual",
+                provider_config={},
+            )
+
+            def failing_command_runner(argv: Any, **_kwargs: Any) -> Any:
+                return subprocess.CompletedProcess(list(argv), 1, stdout="", stderr="boom")
+
+            def _no_comments(*_args: Any, **_kwargs: Any) -> tuple[dict[str, Any], str]:
+                return {"comments": []}, ""
+
+            with mock.patch.object(
+                release_campaigns,
+                "resolve_provider_lane",
+                return_value=("devin", hosted_lane),
+            ):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()
+                ):
+                    release_campaigns.campaign_command(
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        resume=True,
+                        apply=True,
+                        retry_provider="devin",
+                        repo_slug="owner/repo",
+                        issue="42",
+                        which_fn=lambda _cmd: "/bin/gh",
+                        command_runner=failing_command_runner,
+                        gh_json_runner=_no_comments,
+                        env={"DEVIN_API_KEY": "token"},
+                    )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            devin = saved["providers"][0]
+            # The failed redispatch records its own outcome with no
+            # superseded evidence or timestamps.
+            self.assertEqual(devin["state"], "unavailable")
+            self.assertIsNone(devin.get("adoption_result"))
+            self.assertIsNone(devin.get("completed_at"))
+            self.assertIsNone(devin.get("dispatched_at"))
+            self.assertTrue(devin.get("attempted_at"))
+            self.assertNotEqual(devin.get("attempted_at"), OLD_TS)
+            # The prior attempt survives only as a bounded metadata-only summary.
+            history = devin.get("attempt_history")
+            assert isinstance(history, list) and len(history) == 1
+            self.assertEqual(
+                set(history[0]),
+                {
+                    "attempted_at",
+                    "dispatched_at",
+                    "completed_at",
+                    "state",
+                    "outcome",
+                    "error",
+                    "elapsed_seconds",
+                },
+            )
+            self.assertEqual(history[0]["outcome"], "fail")
+            self.assertEqual(history[0]["attempted_at"], OLD_TS)
+            self.assertEqual(history[0]["dispatched_at"], OLD_TS)
+            self.assertEqual(history[0]["completed_at"], OLD_DONE_TS)
+            plan = release_campaigns.build_campaign_upload_events(saved)
+            self.assertEqual(
+                [r["provider"] for r in plan["skipped_providers"]], ["devin"]
+            )
+
+
 class RetryFreezeHostedTests(unittest.TestCase):
     """An unrelated running hosted provider is byte-stable during another retry."""
 

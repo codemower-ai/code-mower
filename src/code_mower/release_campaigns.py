@@ -2395,10 +2395,14 @@ def dispatch_or_advance_campaign(
             # A new attempt supersedes the stored one: keep its bounded
             # metadata-only summary before restamping. First attempts record
             # nothing (there is no prior attempt to summarize). The stored
-            # result is cleared before the new attempt, so a result-less
-            # failed retry cannot upload superseded evidence.
+            # result and both superseded timestamps are cleared before the
+            # new attempt, so a result-less failed retry (or an
+            # interruption before the adapter finishes) cannot retain
+            # superseded evidence or chronology.
             _record_attempt_history(provider_data)
             provider_data["adoption_result"] = None
+            provider_data["completed_at"] = None
+            provider_data["dispatched_at"] = None
             provider_data["attempted_at"] = now_utc
             provider_data["state"] = "running"
             provider_data["error"] = ""
@@ -2544,13 +2548,18 @@ def dispatch_or_advance_campaign(
                 #
                 # A redispatch supersedes the stored attempt, so its bounded
                 # metadata-only summary is kept first (a first dispatch
-                # records nothing) and the stored result is cleared before
-                # the new attempt, so a result-less failed retry cannot
-                # upload superseded evidence. Frozen providers never reach
-                # here: the retry freeze above allows only the retried
-                # provider to start a new attempt.
+                # records nothing) and the stored result plus both
+                # superseded timestamps are cleared before the new attempt,
+                # so a result-less failed retry (or an interruption after
+                # this checkpoint) cannot upload superseded evidence or
+                # retain superseded chronology. A subsequent successful
+                # dispatch stamps its new dispatched_at normally below.
+                # Frozen providers never reach here: the retry freeze above
+                # allows only the retried provider to start a new attempt.
                 _record_attempt_history(provider_data)
                 provider_data["adoption_result"] = None
+                provider_data["completed_at"] = None
+                provider_data["dispatched_at"] = None
                 provider_data["attempted_at"] = now_utc
                 provider_data["state"] = "running"
                 provider_data["error"] = ""
