@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -321,6 +322,58 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertIsNotNone(provider_entry["dispatched_at"])
             self.assertIsNotNone(provider_entry["completed_at"])
             self.assertEqual(provider_entry["adoption_result"]["outcome"], "pass")
+
+    def test_explicit_local_retry_checkpoints_running_before_adapter_returns(self) -> None:
+        """A retry replaces stale terminal state while its local adapter is active."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            fake_lane = _fake_local_cli_lane()
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            provider = campaign["providers"][0]
+            provider["state"] = "unavailable"
+            provider["attempted_at"] = "2026-09-04T18:00:00Z"
+            provider["error"] = "adapter_exited_nonzero"
+            campaign["dry_run"] = False
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            def retry_adapter(argv, timeout):
+                checkpoint = release_campaigns.load_campaign_by_id(
+                    "campaign-v1.0.0", campaigns_dir
+                )
+                assert checkpoint is not None
+                active = checkpoint["providers"][0]
+                self.assertEqual(active["state"], "running")
+                self.assertEqual(active["error"], "")
+                self.assertIn("poll codex local process", active["next_action"])
+                output_path = Path(argv[argv.index("--output") + 1])
+                output_path.write_text(
+                    json.dumps(_mock_adoption_result(provider="codex")),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            with mock.patch.object(
+                release_campaigns, "resolve_provider_lane", return_value=("codex", fake_lane)
+            ):
+                result = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    apply=True,
+                    retry_provider="codex",
+                    which_fn=lambda _cmd: "/bin/fake-provider-cli",
+                    adapter_runner=retry_adapter,
+                )
+
+            self.assertEqual(result, 0)
+            stored = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert stored is not None
+            self.assertEqual(stored["providers"][0]["state"], "complete")
 
     def test_adapter_invocation_without_result_file_cannot_complete(self) -> None:
         """If the adapter runs but writes no result file, the provider is blocked, not complete."""
@@ -1732,8 +1785,11 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             bad_projection = projected["campaign-v8.0.0"]
             self.assertEqual(bad_projection["elapsed_seconds"], 0.0)
-            self.assertEqual(bad_projection["next_action"], "")
-            self.assertEqual(bad_projection["next_detail"], "")
+            self.assertEqual(
+                bad_projection["next_action"],
+                "run with --apply to dispatch providers",
+            )
+            self.assertIn("7 queued", bad_projection["next_detail"])
             self.assertTrue(bad_projection["dry_run"])
             # The one non-object provider entry is skipped; the rest survive.
             self.assertEqual(len(bad_projection["cards"]), 7)
@@ -10836,7 +10892,7 @@ class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
     """
 
     def test_checkpointed_local_cli_adapter_renders_running_on_board(self) -> None:
-        """A local_cli provider checkpointed with attempted_at renders as running."""
+        """A genuinely fresh local_cli provider checkpointed with attempted_at renders as running."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             campaign = release_campaigns.initialize_campaign(
@@ -10844,8 +10900,9 @@ class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
                 package_spec="code-mower==1.0.0",
                 providers=["codex"],
             ).to_dict()
+            now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             provider_entry = campaign["providers"][0]
-            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["attempted_at"] = now_utc
             provider_entry["dispatch_mode"] = "applied"
             provider_entry["state"] = "queued"
             release_campaigns.save_campaign(campaign, campaigns_dir)
@@ -10862,7 +10919,7 @@ class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
             stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert stored is not None
             self.assertEqual(stored["providers"][0]["state"], "queued")
-            self.assertEqual(stored["providers"][0]["attempted_at"], "2026-09-04T19:00:00Z")
+            self.assertEqual(stored["providers"][0]["attempted_at"], now_utc)
 
     def test_untouched_dry_run_queued_provider_renders_queued_on_board(self) -> None:
         """A dry-run queued provider without attempted_at stays queued on Board."""
@@ -10905,8 +10962,8 @@ class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
                     card = payload["campaigns"][0]["cards"][0]
                     self.assertEqual(card["state"], terminal_state)
 
-    def test_completion_or_result_evidence_prevents_running_projection(self) -> None:
-        """A provider with completion timestamp or result evidence stays queued."""
+    def test_recorded_completion_evidence_prevents_running_projection(self) -> None:
+        """A provider with recorded completion evidence stays queued."""
         # Case A: completed_at set
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
@@ -10947,7 +11004,8 @@ class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
             card = payload["campaigns"][0]["cards"][0]
             self.assertEqual(card["state"], "queued")
 
-        # Case C: result file on disk
+    def test_unconsumed_result_file_does_not_hide_running_adapter(self) -> None:
+        """A result file is not completion evidence until the adapter exits and records it."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             results_dir = campaigns_dir / "results"
@@ -10966,10 +11024,13 @@ class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
             result_file.write_text('{"outcome": "pass"}', encoding="utf-8")
 
             payload = release_campaigns.release_campaigns_board_payload(
-                campaigns_dir=campaigns_dir
+                campaigns_dir=campaigns_dir,
+                now="2026-09-04T19:05:00Z",
             )
             card = payload["campaigns"][0]["cards"][0]
-            self.assertEqual(card["state"], "queued")
+            self.assertEqual(card["state"], "running")
+            self.assertEqual(card["next_action"], "wait for codex local adapter")
+            self.assertIn("900s timeout window", card["next_detail"])
 
     def test_non_local_cli_provider_with_queued_state_is_not_projected_as_running(self) -> None:
         """Providers that are not local_cli (e.g. hosted_bridge) are not affected."""
@@ -11002,8 +11063,9 @@ class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
                 package_spec="code-mower==1.0.0",
                 providers=["codex"],
             ).to_dict()
+            now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             provider_entry = campaign["providers"][0]
-            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["attempted_at"] = now_utc
             provider_entry["dispatch_mode"] = "applied"
             provider_entry["state"] = "queued"
             release_campaigns.save_campaign(campaign, campaigns_dir)
@@ -11014,7 +11076,230 @@ class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
             self.assertEqual(card["provider"], "codex")
             self.assertEqual(card["state"], "running")
 
+    def test_fresh_in_flight_adapter_within_timeout_renders_running(self) -> None:
+        """A checkpointed in-flight adapter within effective timeout projects as running."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            provider_entry = campaign["providers"][0]
+            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["dispatch_mode"] = "applied"
+            provider_entry["state"] = "queued"
+            provider_entry["next_action"] = "poll codex local process"
+            provider_entry["next_detail"] = "codex local adapter is still running"
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            # 300 seconds elapsed (within 900s default timeout)
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir,
+                now="2026-09-04T19:05:00Z",
+            )
+            card = payload["campaigns"][0]["cards"][0]
+            self.assertEqual(card["provider"], "codex")
+            self.assertEqual(card["state"], "running")
+
+    def test_stale_checkpointed_adapter_exceeding_timeout_renders_queued_with_retry_guidance(self) -> None:
+        """A stale checkpointed adapter exceeding timeout projects as queued with retry guidance."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            provider_entry = campaign["providers"][0]
+            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["dispatch_mode"] = "applied"
+            provider_entry["state"] = "queued"
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            # 901 seconds elapsed (exceeds 900s default timeout)
+            payload = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir,
+                now="2026-09-04T19:15:01Z",
+            )
+            projected_campaign = payload["campaigns"][0]
+            card = projected_campaign["cards"][0]
+            self.assertEqual(card["provider"], "codex")
+            self.assertEqual(card["state"], "queued")
+            self.assertEqual(card["next_action"], "use --retry-provider codex to retry codex")
+            self.assertIn("900s timeout", card["next_detail"])
+            self.assertNotIn("still running", card["next_detail"])
+            self.assertEqual(projected_campaign["status"], "queued")
+            self.assertEqual(projected_campaign["next_action"], card["next_action"])
+            self.assertEqual(projected_campaign["next_detail"], card["next_detail"])
+            self.assertEqual(payload["next_action"], card["next_action"])
+
+            # Persisted state on disk remains untouched
+            stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert stored is not None
+            self.assertEqual(stored["providers"][0]["state"], "queued")
+            self.assertEqual(stored["providers"][0]["attempted_at"], "2026-09-04T19:00:00Z")
+
+    def test_boundary_projection_at_exact_timeout(self) -> None:
+        """At exact timeout the adapter is still plausibly live; at timeout+1 it is stale."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            provider_entry = campaign["providers"][0]
+            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["dispatch_mode"] = "applied"
+            provider_entry["state"] = "queued"
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            # Exactly 900.0s elapsed -> running
+            payload_boundary = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir,
+                now="2026-09-04T19:15:00Z",
+            )
+            card_boundary = payload_boundary["campaigns"][0]["cards"][0]
+            self.assertEqual(card_boundary["state"], "running")
+
+            # 901.0s elapsed -> queued with retry guidance
+            payload_past = release_campaigns.release_campaigns_board_payload(
+                campaigns_dir=campaigns_dir,
+                now="2026-09-04T19:15:01Z",
+            )
+            card_past = payload_past["campaigns"][0]["cards"][0]
+            self.assertEqual(card_past["state"], "queued")
+            self.assertEqual(card_past["next_action"], "use --retry-provider codex to retry codex")
+            self.assertIn("900s timeout", card_past["next_detail"])
+
+    def test_valid_repository_config_override_bounds_projection(self) -> None:
+        """A valid repository code-mower.yml timeout override bounds the live window."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            campaigns_dir = repo_path / ".code-mower" / "campaigns"
+            config_file = repo_path / "code-mower.yml"
+            config_file.write_text(
+                "lanes:\n"
+                "  codex:\n"
+                "    provider_config:\n"
+                "      campaign_adapter_timeout_seconds: 120\n",
+                encoding="utf-8",
+            )
+
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+            ).to_dict()
+            provider_entry = campaign["providers"][0]
+            provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+            provider_entry["dispatch_mode"] = "applied"
+            provider_entry["state"] = "queued"
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            # 100 seconds elapsed (< 120s override) -> running
+            payload_fresh = release_campaigns.release_campaigns_board_payload(
+                repo_path=repo_path,
+                campaigns_dir=campaigns_dir,
+                now="2026-09-04T19:01:40Z",
+            )
+            card_fresh = payload_fresh["campaigns"][0]["cards"][0]
+            self.assertEqual(card_fresh["state"], "running")
+
+            # 121 seconds elapsed (> 120s override) -> queued with retry guidance
+            payload_stale = release_campaigns.release_campaigns_board_payload(
+                repo_path=repo_path,
+                campaigns_dir=campaigns_dir,
+                now="2026-09-04T19:02:01Z",
+            )
+            card_stale = payload_stale["campaigns"][0]["cards"][0]
+            self.assertEqual(card_stale["state"], "queued")
+            self.assertEqual(card_stale["next_action"], "use --retry-provider codex to retry codex")
+            self.assertIn("120s timeout", card_stale["next_detail"])
+
+    def test_malformed_or_invalid_repository_config_degrades_safely(self) -> None:
+        """Malformed or invalid repo configs degrade safely to default timeout without crashing."""
+        invalid_configs = [
+            # Non-integer string
+            "lanes:\n  codex:\n    provider_config:\n      campaign_adapter_timeout_seconds: not_a_number\n",
+            # Negative integer
+            "lanes:\n  codex:\n    provider_config:\n      campaign_adapter_timeout_seconds: -60\n",
+            # Boolean
+            "lanes:\n  codex:\n    provider_config:\n      campaign_adapter_timeout_seconds: true\n",
+            # Malformed YAML
+            "lanes:\n  codex:\n    [unclosed list\n",
+        ]
+        for cfg_text in invalid_configs:
+            with self.subTest(config=cfg_text):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_path = Path(tmp)
+                    campaigns_dir = repo_path / ".code-mower" / "campaigns"
+                    config_file = repo_path / "code-mower.yml"
+                    config_file.write_text(cfg_text, encoding="utf-8")
+
+                    campaign = release_campaigns.initialize_campaign(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=["codex"],
+                    ).to_dict()
+                    provider_entry = campaign["providers"][0]
+                    provider_entry["attempted_at"] = "2026-09-04T19:00:00Z"
+                    provider_entry["dispatch_mode"] = "applied"
+                    provider_entry["state"] = "queued"
+                    release_campaigns.save_campaign(campaign, campaigns_dir)
+
+                    # At 100s, still under 900s default timeout -> running
+                    payload = release_campaigns.release_campaigns_board_payload(
+                        repo_path=repo_path,
+                        campaigns_dir=campaigns_dir,
+                        now="2026-09-04T19:01:40Z",
+                    )
+                    card = payload["campaigns"][0]["cards"][0]
+                    self.assertEqual(card["state"], "running")
+
+                    # At 901s, exceeds 900s default timeout -> queued with retry guidance
+                    payload_stale = release_campaigns.release_campaigns_board_payload(
+                        repo_path=repo_path,
+                        campaigns_dir=campaigns_dir,
+                        now="2026-09-04T19:15:01Z",
+                    )
+                    card_stale = payload_stale["campaigns"][0]["cards"][0]
+                    self.assertEqual(card_stale["state"], "queued")
+                    self.assertEqual(card_stale["next_action"], "use --retry-provider codex to retry codex")
+                    self.assertIn("900s timeout", card_stale["next_detail"])
+
+    def test_malformed_or_future_attempted_at_timestamp_degrades_safely(self) -> None:
+        """Malformed or future timestamps degrade safely to non-running queued without raising."""
+        bad_timestamps = [
+            ("garbage_string", "timestamp is malformed"),
+            ("2026-99-99T99:99:99Z", "timestamp is malformed"),
+            ("2099-01-01T00:00:00Z", "timestamp is in the future"),
+        ]
+        for bad_ts, expected_detail_snippet in bad_timestamps:
+            with self.subTest(timestamp=bad_ts):
+                with tempfile.TemporaryDirectory() as tmp:
+                    campaigns_dir = Path(tmp) / "campaigns"
+                    campaign = release_campaigns.initialize_campaign(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        providers=["codex"],
+                    ).to_dict()
+                    provider_entry = campaign["providers"][0]
+                    provider_entry["attempted_at"] = bad_ts
+                    provider_entry["dispatch_mode"] = "applied"
+                    provider_entry["state"] = "queued"
+                    release_campaigns.save_campaign(campaign, campaigns_dir)
+
+                    payload = release_campaigns.release_campaigns_board_payload(
+                        campaigns_dir=campaigns_dir,
+                        now="2026-09-04T19:05:00Z",
+                    )
+                    card = payload["campaigns"][0]["cards"][0]
+                    self.assertEqual(card["state"], "queued")
+                    self.assertEqual(card["next_action"], "use --retry-provider codex to retry codex")
+                    self.assertIn(expected_detail_snippet, card["next_detail"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

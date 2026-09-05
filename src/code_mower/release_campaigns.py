@@ -2249,6 +2249,20 @@ def dispatch_or_advance_campaign(
             except FileNotFoundError:
                 pass
             provider_data["attempted_at"] = now_utc
+            provider_data["state"] = "running"
+            provider_data["error"] = ""
+            (
+                provider_data["next_action"],
+                provider_data["next_detail"],
+            ) = _provider_next_action(
+                provider,
+                lane,
+                "running",
+                command_available=True,
+                has_credentials=True,
+                has_issue=True,
+                dry_run=False,
+            )
             _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
             start_p = time.time()
             result, error_code, detail = _invoke_local_adapter(
@@ -3834,55 +3848,187 @@ def _is_local_cli_provider(p: Mapping[str, Any]) -> bool:
     return False
 
 
+def _parse_board_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO 8601 timestamp string into a timezone-aware UTC datetime.
+
+    Degrades safely to None on any malformed, out-of-range, or non-string input.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        raw = value.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _resolve_board_now(now: datetime | str | float | None) -> datetime:
+    """Resolve current time for Board projection to a timezone-aware UTC datetime."""
+    if now is None:
+        return datetime.now(UTC)
+    if isinstance(now, datetime):
+        if now.tzinfo is None:
+            return now.replace(tzinfo=UTC)
+        return now.astimezone(UTC)
+    if isinstance(now, (int, float)):
+        if not math.isfinite(now):
+            return datetime.now(UTC)
+        try:
+            return datetime.fromtimestamp(now, tz=UTC)
+        except (ValueError, OverflowError, OSError):
+            return datetime.now(UTC)
+    if isinstance(now, str):
+        parsed = _parse_board_timestamp(now)
+        if parsed is not None:
+            return parsed
+    return datetime.now(UTC)
+
+
+def _effective_adapter_timeout(
+    provider: str,
+    *,
+    repo_path: Path | str = ".",
+) -> int:
+    """Resolve the effective campaign adapter timeout for a provider in seconds.
+
+    Checks the repository override in code-mower.yml when valid. Malformed or
+    missing configs degrade safely to the lane's default timeout or
+    DEFAULT_ADAPTER_TIMEOUT_SECONDS.
+    """
+    try:
+        _, lane = resolve_provider_lane(provider)
+    except ValueError:
+        return DEFAULT_ADAPTER_TIMEOUT_SECONDS
+
+    default_timeout = DEFAULT_ADAPTER_TIMEOUT_SECONDS
+    try:
+        lane_cfg_timeout = lane.provider_config.get("campaign_adapter_timeout_seconds")
+        if lane_cfg_timeout is not None:
+            default_timeout = _validate_adapter_timeout(lane_cfg_timeout)
+    except ValueError:
+        default_timeout = DEFAULT_ADAPTER_TIMEOUT_SECONDS
+
+    try:
+        path = Path(repo_path)
+        overrides, error_code, _ = _load_campaign_adapter_overrides(lane, path)
+        if not error_code and "campaign_adapter_timeout_seconds" in overrides:
+            override_val = overrides["campaign_adapter_timeout_seconds"]
+            return _validate_adapter_timeout(override_val)
+    except (ValueError, OSError, TypeError):
+        pass
+
+    return default_timeout
+
+
+def _is_checkpointed_local_cli_candidate(
+    p: Mapping[str, Any],
+) -> bool:
+    """Whether provider is a candidate for checkpointed in-flight / stale projection."""
+    persisted_state = _board_text(p, "state", "queued")
+    if persisted_state not in {"queued", "running"}:
+        return False
+
+    attempted_at = p.get("attempted_at")
+    if not isinstance(attempted_at, str) or not attempted_at.strip():
+        return False
+
+    if not _is_local_cli_provider(p):
+        return False
+
+    if p.get("completed_at") or p.get("adoption_result"):
+        return False
+
+    return True
+
+
+def _board_provider_projection(
+    p: Mapping[str, Any],
+    *,
+    campaign_id: str = "",
+    campaigns_dir: Path | None = None,
+    repo_path: Path | str = ".",
+    now: datetime | str | float | None = None,
+) -> tuple[str, str, str]:
+    """Project a provider participant's state, next_action, and next_detail for Board.
+
+    A local_cli provider checkpointed with attempted_at while still persisted
+    queued and without completion/result evidence renders as running only while
+    plausibly live within its effective campaign adapter timeout (including
+    valid repository overrides in code-mower.yml).
+
+    Once that bounded window is exceeded, or when timestamps are malformed, it
+    degrades safely to non-running queued state with concise retry guidance
+    without mutating persisted campaign state on disk.
+    """
+    persisted_state = _board_text(p, "state", "queued")
+    next_action = _board_text(p, "next_action", "")
+    next_detail = _board_text(p, "next_detail", "")
+
+    if persisted_state not in {"queued", "running"}:
+        return persisted_state, next_action, next_detail
+
+    if not _is_checkpointed_local_cli_candidate(p):
+        return persisted_state, next_action, next_detail
+
+    provider = _board_text(p, "provider", "")
+    attempted_dt = _parse_board_timestamp(p.get("attempted_at"))
+    timeout_seconds = _effective_adapter_timeout(provider, repo_path=repo_path)
+    now_dt = _resolve_board_now(now)
+
+    if (
+        attempted_dt is not None
+        and -5.0 <= (now_dt - attempted_dt).total_seconds() <= timeout_seconds
+    ):
+        return (
+            "running",
+            f"wait for {provider} local adapter",
+            f"local adapter attempt is within its {timeout_seconds}s timeout window",
+        )
+
+    retry_action = (
+        next_action
+        if "--retry-provider" in next_action
+        else f"use --retry-provider {provider} to retry {provider}"
+    )
+    if attempted_dt is None:
+        retry_detail = "local adapter attempt timestamp is malformed"
+    elif (now_dt - attempted_dt).total_seconds() < -5.0:
+        retry_detail = "local adapter attempt timestamp is in the future"
+    else:
+        retry_detail = f"local adapter attempt exceeded {timeout_seconds}s timeout"
+
+    return "queued", retry_action, retry_detail
+
+
 def _board_provider_state(
     p: Mapping[str, Any],
     *,
     campaign_id: str = "",
     campaigns_dir: Path | None = None,
+    repo_path: Path | str = ".",
+    now: datetime | str | float | None = None,
 ) -> str:
-    """Project a provider's state for the Board.
-
-    A local_cli provider checkpointed with attempted_at while still persisted
-    queued and without completion/result evidence renders as running on the
-    Board, reflecting that its local process is actively working. Terminal
-    attempts (blocked, unavailable) and untouched dry-run queued providers
-    remain as they are.
-    """
-    persisted_state = _board_text(p, "state", "queued")
-    if persisted_state != "queued":
-        return persisted_state
-
-    attempted_at = p.get("attempted_at")
-    if not isinstance(attempted_at, str) or not attempted_at.strip():
-        return "queued"
-
-    if not _is_local_cli_provider(p):
-        return "queued"
-
-    if p.get("completed_at") or p.get("adoption_result") or p.get("error"):
-        return "queued"
-
-    provider = p.get("provider")
-    if (
-        campaigns_dir is not None
-        and isinstance(campaign_id, str)
-        and campaign_id
-        and isinstance(provider, str)
-        and provider
-    ):
-        try:
-            if (campaigns_dir / "results" / f"{campaign_id}_{provider}.json").is_file():
-                return "queued"
-        except OSError:
-            pass
-
-    return "running"
+    """Project a provider participant's state for the Board."""
+    state, _, _ = _board_provider_projection(
+        p,
+        campaign_id=campaign_id,
+        campaigns_dir=campaigns_dir,
+        repo_path=repo_path,
+        now=now,
+    )
+    return state
 
 
 def release_campaigns_board_payload(
     repo_path: Path | str = ".",
     *,
     campaigns_dir: Path | None = None,
+    now: datetime | str | float | None = None,
 ) -> dict[str, Any]:
     dir_path = campaigns_dir or default_campaigns_dir(repo_path)
     if not dir_path.is_dir():
@@ -3911,17 +4057,20 @@ def release_campaigns_board_payload(
             if not isinstance(p, Mapping):
                 continue
             provider = _board_text(p, "provider", "")
+            state, next_action, next_detail = _board_provider_projection(
+                p,
+                campaign_id=campaign_id,
+                campaigns_dir=dir_path,
+                repo_path=repo_path,
+                now=now,
+            )
             cards.append(
                 {
                     "release": _board_text(c, "release_tag", ""),
                     "provider": provider,
                     "lane_id": _board_text(p, "lane_id", provider),
                     "environment": _board_text(p, "environment", "local"),
-                    "state": _board_provider_state(
-                        p,
-                        campaign_id=campaign_id,
-                        campaigns_dir=dir_path,
-                    ),
+                    "state": state,
                     "elapsed_seconds": _board_elapsed_seconds(p.get("elapsed_seconds")),
                     "response_deadline_at": _board_text(
                         p, "response_deadline_at", ""
@@ -3931,10 +4080,29 @@ def release_campaigns_board_payload(
                         if isinstance(p.get("transport_verified"), bool)
                         else None
                     ),
-                    "next_action": _board_text(p, "next_action", ""),
-                    "next_detail": _board_text(p, "next_detail", ""),
+                    "next_action": next_action,
+                    "next_detail": next_detail,
                 }
             )
+        dry_run = _board_dry_run(c.get("dry_run", True))
+        status, next_action, next_detail = _aggregate_campaign_status(
+            cards,
+            dry_run=dry_run,
+        )
+        retry_cards = [
+            card
+            for card in cards
+            if card["state"] == "queued"
+            and "--retry-provider" in card["next_action"]
+        ]
+        if status == "queued" and retry_cards:
+            if len(retry_cards) == 1:
+                next_action = retry_cards[0]["next_action"]
+                next_detail = retry_cards[0]["next_detail"]
+            else:
+                providers = ", ".join(card["provider"] for card in retry_cards)
+                next_action = f"retry stale local adapters: {providers}"
+                next_detail = f"{len(retry_cards)} local adapter attempt(s) exceeded their timeout"
         total_cards += len(cards)
         projected_campaigns.append(
             {
@@ -3942,11 +4110,11 @@ def release_campaigns_board_payload(
                 "release_tag": _board_text(c, "release_tag", ""),
                 "package_spec": _board_text(c, "package_spec", ""),
                 "qualification_context": _board_text(c, "qualification_context", ""),
-                "status": _board_text(c, "status", "queued"),
-                "dry_run": _board_dry_run(c.get("dry_run", True)),
+                "status": status,
+                "dry_run": dry_run,
                 "elapsed_seconds": _board_elapsed_seconds(c.get("elapsed_seconds")),
-                "next_action": _board_text(c, "next_action", ""),
-                "next_detail": _board_text(c, "next_detail", ""),
+                "next_action": next_action,
+                "next_detail": next_detail,
                 "cards": cards,
             }
         )
