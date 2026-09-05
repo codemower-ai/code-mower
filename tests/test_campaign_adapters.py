@@ -817,7 +817,13 @@ class MaintainedRegistryTests(unittest.TestCase):
                 self.assertIsNotNone(template)
                 assert template is not None
                 joined = " ".join(template)
-                for placeholder in ("{python}", "{command}", "{adapter_timeout}", "{output}"):
+                for placeholder in (
+                    "{python}",
+                    "{target_python}",
+                    "{command}",
+                    "{adapter_timeout}",
+                    "{output}",
+                ):
                     self.assertIn(placeholder, joined)
                 self.assertIn(adapter_provider, template)
                 timeout = lane.provider_config.get("campaign_adapter_timeout_seconds")
@@ -826,6 +832,63 @@ class MaintainedRegistryTests(unittest.TestCase):
 
     def test_lanes_without_adapters_stay_manual(self) -> None:
         self.assertNotIn("campaign_adapter_argv", REFERENCE_PROVIDERS["aider"].provider_config)
+
+
+class StructuredResultCapabilityTests(unittest.TestCase):
+    """The offline structured-result probe exercises real provider extraction paths."""
+
+    def test_all_maintained_lanes_pass_structured_result_capability(self) -> None:
+        for prov in (
+            "codex",
+            "claude_audit",
+            "claude",
+            "antigravity_cli",
+            "antigravity",
+            "muse_cli",
+            "muse",
+        ):
+            with self.subTest(provider=prov):
+                self.assertTrue(campaign_adapters.check_structured_result_capability(prov))
+
+    def test_claude_audit_routes_through_extract_claude_result(self) -> None:
+        """claude_audit must explicitly route through _extract_claude_result."""
+        with mock.patch(
+            "code_mower.campaign_adapters._extract_claude_result",
+            wraps=campaign_adapters._extract_claude_result,
+        ) as mock_extract:
+            self.assertTrue(campaign_adapters.check_structured_result_capability("claude_audit"))
+            mock_extract.assert_called_once()
+
+    def test_claude_audit_fails_if_generic_extractor_used_on_envelope(self) -> None:
+        """Regression: claude_audit envelope fails schema validation under generic extractor.
+
+        If claude_audit falls through to the generic parse_response_json extractor,
+        the Claude envelope object (with is_error, result) is returned directly
+        instead of unwrapping the inner adoption result, causing validation to fail.
+        """
+        from code_mower import gemini_cli_audit_pr as code_mower_gemini_cli
+
+        sample_payload = _adoption_result("claude_audit")
+        claude_envelope = json.dumps({"is_error": False, "result": json.dumps(sample_payload)})
+
+        # Generic extractor cannot unwrap the envelope
+        generic_extracted = code_mower_gemini_cli.parse_response_json(claude_envelope)
+        self.assertIsNotNone(generic_extracted)
+        with self.assertRaises(ValueError):
+            release_qualify.validate_adoption_result_payload(generic_extracted)
+
+        # But _extract_claude_result correctly extracts and validates it
+        extracted = campaign_adapters._extract_claude_result(claude_envelope)
+        self.assertEqual(extracted, sample_payload)
+        release_qualify.validate_adoption_result_payload(extracted)
+
+    def test_claude_audit_capability_probe_fails_on_error_envelope(self) -> None:
+        """If _extract_claude_result returns None (e.g. is_error=True), check_structured_result_capability fails."""
+        with mock.patch(
+            "code_mower.campaign_adapters._extract_claude_result",
+            return_value=None,
+        ):
+            self.assertFalse(campaign_adapters.check_structured_result_capability("claude_audit"))
 
 
 if __name__ == "__main__":

@@ -85,7 +85,7 @@ def _maintained_campaign_adapter_argv(provider: str) -> tuple[str, ...]:
         "--provider-bin",
         "{command}",
         "--python-bin",
-        "{python}",
+        "{target_python}",
         "--target-runtime",
         "{target_runtime}",
         "--release-tag",

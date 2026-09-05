@@ -457,6 +457,7 @@ def _provider_next_action(
     dry_run: bool,
     adapter_configured: bool = True,
     error: str = "",
+    error_code: str = "",
 ) -> tuple[str, str]:
     if state == "complete":
         return "none", ""
@@ -472,10 +473,13 @@ def _provider_next_action(
                 f"record manual result for {provider}",
                 "no campaign adapter configured",
             )
-        if lane.driver == "local_cli" and error == "supported Python 3.12+ runtime is unavailable":
+        if lane.driver == "local_cli" and (
+            error_code == "python_runtime_unavailable"
+            or error == "python_runtime_unavailable"
+        ):
             return (
                 "install Python 3.12+ on PATH or set CODE_MOWER_PYTHON",
-                error,
+                error if error != "python_runtime_unavailable" else "supported Python 3.12+ runtime is unavailable",
             )
         if lane.driver == "local_cli" and not command_available:
             cmd = lane.provider_config.get("command") or provider
@@ -1286,8 +1290,9 @@ def _build_adapter_argv(
         "starting_version": starting_version,
         "output": str(output_path),
         "repo_path": str(repo_path),
-        # The running interpreter or resolved supported Python executable
-        "python": python_bin or sys.executable,
+        # The running interpreter running Code Mower
+        "python": sys.executable,
+        # The resolved supported Python executable for target runtime qualification
         "target_python": python_bin or sys.executable,
         "target_runtime": target_runtime or _detect_runtime_class(),
     }
@@ -2389,6 +2394,7 @@ def dispatch_or_advance_campaign(
                         dry_run=False,
                         adapter_configured=adapter_configured,
                         error=detail,
+                        error_code=error_code,
                     )
             else:
                 provider_data["adoption_result"] = result

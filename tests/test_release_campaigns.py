@@ -11399,19 +11399,111 @@ class RuntimeReadinessCampaignTests(unittest.TestCase):
             has_credentials=True,
             has_issue=True,
             dry_run=False,
+            error_code="python_runtime_unavailable",
             error="supported Python 3.12+ runtime is unavailable",
         )
         self.assertIn("install Python 3.12+ on PATH or set CODE_MOWER_PYTHON", next_action)
         self.assertIn("supported Python 3.12+ runtime is unavailable", next_detail)
 
+    def test_provider_next_action_remediation_keyed_on_error_code_not_message(self) -> None:
+        """Remediation must key on stable python_runtime_unavailable error code, not free-text detail."""
+        lane = _fake_local_cli_lane()
+        next_action, next_detail = release_campaigns._provider_next_action(
+            provider="codex",
+            lane=lane,
+            state="unavailable",
+            command_available=True,
+            has_credentials=True,
+            has_issue=True,
+            dry_run=False,
+            error_code="python_runtime_unavailable",
+            error="a different arbitrary human error message",
+        )
+        self.assertEqual("install Python 3.12+ on PATH or set CODE_MOWER_PYTHON", next_action)
+        self.assertEqual("a different arbitrary human error message", next_detail)
+
     def test_maintained_adapter_argv_includes_python_bin_and_target_runtime(self) -> None:
         from code_mower.provider_registry import _maintained_campaign_adapter_argv
 
         argv = _maintained_campaign_adapter_argv("codex")
+        self.assertEqual(argv[0], "{python}")
         self.assertIn("--python-bin", argv)
-        self.assertIn("{python}", argv)
+        python_bin_idx = argv.index("--python-bin")
+        self.assertEqual(argv[python_bin_idx + 1], "{target_python}")
         self.assertIn("--target-runtime", argv)
-        self.assertIn("{target_runtime}", argv)
+        target_runtime_idx = argv.index("--target-runtime")
+        self.assertEqual(argv[target_runtime_idx + 1], "{target_runtime}")
+
+    def test_invoke_local_adapter_with_distinct_launcher_and_target_interpreters(self) -> None:
+        """Launcher must remain sys.executable even when target runtime is a distinct interpreter."""
+        captured_argv: list[str] = []
+
+        def fake_adapter_runner(argv: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            captured_argv.extend(argv)
+            output_idx = argv.index("--output")
+            out_file = Path(argv[output_idx + 1])
+            valid_payload = {
+                "schema": "code_mower.adoptionResult.v1",
+                "timestamp_utc": "2026-09-05T00:00:00Z",
+                "release_tag": "v1.0.0",
+                "package_identity": "code-mower",
+                "normalized_version": "1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "ending_version": "1.0.0",
+                "provider": "codex",
+                "executor": "codex",
+                "host_class": "local",
+                "runtime_class": "python_3.12",
+                "execution_state": "executed",
+                "elapsed_seconds": 1.0,
+                "outcome": "pass",
+                "steps": [
+                    {
+                        "id": "doctor",
+                        "status": "pass",
+                        "elapsed_seconds": 1.0,
+                        "warning_count": 0,
+                        "owner_action_count": 0,
+                    }
+                ],
+            }
+            out_file.write_text(json.dumps(valid_payload), encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        from code_mower.provider_registry import REFERENCE_PROVIDERS
+
+        distinct_target_python = "/opt/custom_python312/bin/python3.12"
+        lane = REFERENCE_PROVIDERS["codex"]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_path = tmp_path / "output.json"
+            with mock.patch(
+                "code_mower.release_campaigns.resolve_supported_runtime",
+                return_value=(distinct_target_python, "python_3.12"),
+            ):
+                result, error, detail = release_campaigns._invoke_local_adapter(
+                    lane,
+                    "codex",
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    qualification_context="cold_install",
+                    starting_version="",
+                    output_path=output_path,
+                    repo_path=tmp_path,
+                    adapter_runner=fake_adapter_runner,
+                    which_fn=lambda _: "/bin/codex",
+                )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(error, "")
+        # Launcher must be the interpreter running Code Mower (sys.executable)
+        self.assertEqual(captured_argv[0], sys.executable)
+        self.assertNotEqual(captured_argv[0], distinct_target_python)
+        self.assertEqual(captured_argv[1:3], ["-m", "code_mower.campaign_adapters"])
+        # Target Python must be passed to --python-bin
+        python_bin_idx = captured_argv.index("--python-bin")
+        self.assertEqual(captured_argv[python_bin_idx + 1], distinct_target_python)
 
 
 if __name__ == "__main__":

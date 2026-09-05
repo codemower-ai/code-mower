@@ -649,8 +649,9 @@ def check_structured_result_capability(provider: str) -> bool:
     }
     payload_str = json.dumps(sample_payload)
     try:
-        if canonical in {"claude", "claude_review", "claude_code"}:
-            extracted = _extract_claude_result(f"```json\n{payload_str}\n```")
+        if canonical in {"claude_audit", "claude"}:
+            claude_envelope = json.dumps({"is_error": False, "result": payload_str})
+            extracted = _extract_claude_result(claude_envelope)
         elif canonical in {"antigravity", "antigravity_cli"}:
             extracted = _extract_antigravity_result(payload_str)
         elif canonical in {"muse", "muse_cli"}:
