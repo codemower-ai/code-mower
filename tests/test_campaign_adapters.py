@@ -313,6 +313,137 @@ class ArgvBuilderTests(unittest.TestCase):
         self.assertIn("--no-session-log", argv)
 
 
+class PackageSourceTests(unittest.TestCase):
+    """Local adapters receive the same closed `package_source` contract."""
+
+    def test_claude_argv_defaults_to_pypi_domains(self) -> None:
+        argv = campaign_adapters.build_claude_argv(
+            claude_bin="/bin/claude",
+            model="sonnet",
+            max_budget_usd="5.00",
+            schema_json="{}",
+        )
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        self.assertEqual(
+            settings["sandbox"]["network"]["allowedDomains"],
+            ["pypi.org", "files.pythonhosted.org"],
+        )
+
+    def test_claude_argv_adds_testpypi_domains_for_testpypi_source(self) -> None:
+        argv = campaign_adapters.build_claude_argv(
+            claude_bin="/bin/claude",
+            model="sonnet",
+            max_budget_usd="5.00",
+            schema_json="{}",
+            package_source="testpypi",
+        )
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        allowed = settings["sandbox"]["network"]["allowedDomains"]
+        self.assertIn("test.pypi.org", allowed)
+        self.assertIn("test-files.pythonhosted.org", allowed)
+        # Production PyPI stays allowed too: a TestPyPI candidate's
+        # dependencies still resolve from the production extra index.
+        self.assertIn("pypi.org", allowed)
+        self.assertIn("files.pythonhosted.org", allowed)
+
+    def test_prompt_names_pip_default_index_for_pypi_source(self) -> None:
+        prompt = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+        )
+        self.assertIn("- package_source: pypi", prompt)
+        self.assertNotIn("--index-url", prompt)
+        self.assertNotIn("test.pypi.org", prompt)
+
+    def test_prompt_names_canonical_testpypi_index_for_testpypi_source(self) -> None:
+        prompt = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            package_source="testpypi",
+        )
+        self.assertIn("- package_source: testpypi", prompt)
+        self.assertIn("https://test.pypi.org/simple/", prompt)
+        self.assertIn("https://pypi.org/simple/", prompt)
+
+    def test_prompt_names_canonical_testpypi_index_for_upgrade_context(self) -> None:
+        prompt = campaign_adapters.build_qualification_prompt(
+            provider="codex",
+            release_tag="v1.0.1",
+            package_spec="code-mower==1.0.1",
+            package_identity="code-mower",
+            normalized_version="1.0.1",
+            qualification_context="upgrade",
+            starting_version="1.0.0",
+            package_source="testpypi",
+        )
+        self.assertIn("https://test.pypi.org/simple/", prompt)
+        # Both the starting-version preinstall and the upgrade install use it.
+        self.assertEqual(prompt.count("https://test.pypi.org/simple/"), 2)
+
+    def test_check_campaign_identity_rejects_unknown_source(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            campaign_adapters._check_campaign_identity(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                qualification_context="cold_install",
+                starting_version="",
+                package_source="bogus",
+            )
+        self.assertIn("package_source must be one of", str(ctx.exception))
+
+    def test_cli_accepts_package_source_flag(self) -> None:
+        parser = campaign_adapters.build_parser()
+        args = parser.parse_args(
+            [
+                "--provider",
+                "codex",
+                "--provider-bin",
+                "/bin/codex",
+                "--release-tag",
+                "v1.0.0",
+                "--package-spec",
+                "code-mower==1.0.0",
+                "--qualification-context",
+                "cold_install",
+                "--output",
+                "/tmp/out.json",
+                "--package-source",
+                "testpypi",
+            ]
+        )
+        self.assertEqual(args.package_source, "testpypi")
+
+    def test_cli_defaults_package_source_to_pypi(self) -> None:
+        parser = campaign_adapters.build_parser()
+        args = parser.parse_args(
+            [
+                "--provider",
+                "codex",
+                "--provider-bin",
+                "/bin/codex",
+                "--release-tag",
+                "v1.0.0",
+                "--package-spec",
+                "code-mower==1.0.0",
+                "--qualification-context",
+                "cold_install",
+                "--output",
+                "/tmp/out.json",
+            ]
+        )
+        self.assertEqual(args.package_source, "pypi")
+
+
 class AdapterTransportTests(unittest.TestCase):
     """End-to-end adapter runs with a mocked provider subprocess."""
 

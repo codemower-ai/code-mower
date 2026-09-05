@@ -92,6 +92,8 @@ def _maintained_campaign_adapter_argv(provider: str) -> tuple[str, ...]:
         "{qualification_context}",
         "--starting-version",
         "{starting_version}",
+        "--package-source",
+        "{package_source}",
         "--timeout-seconds",
         "{adapter_timeout}",
         "--output",

@@ -15,6 +15,7 @@ The campaign runner invokes this module as::
         --package-spec {package_spec} \
         --qualification-context {qualification_context} \
         --starting-version {starting_version} \
+        --package-source {package_source} \
         --timeout-seconds {adapter_timeout} --output {output}
 
 ``{command}`` resolves to the installed provider CLI (the campaign refuses to
@@ -68,7 +69,11 @@ if __package__ in {None, ""}:
         build_allowlisted_child_env,
     )
     from code_mower.release_qualify import (
+        DEFAULT_PACKAGE_SOURCE,
+        PRODUCTION_PYPI_INDEX_URL,
+        TESTPYPI_INDEX_URL,
         _parse_exact_package_spec,
+        _validate_package_source,
         _validate_qualification_context,
         _validate_starting_version,
         _validate_tag_format,
@@ -80,7 +85,11 @@ else:
     from . import muse_cli_audit_pr as code_mower_muse_cli
     from .provider_runners import DEFAULT_HOME_ENV_KEYS, build_allowlisted_child_env
     from .release_qualify import (
+        DEFAULT_PACKAGE_SOURCE,
+        PRODUCTION_PYPI_INDEX_URL,
+        TESTPYPI_INDEX_URL,
         _parse_exact_package_spec,
+        _validate_package_source,
         _validate_qualification_context,
         _validate_starting_version,
         _validate_tag_format,
@@ -124,17 +133,38 @@ CLAUDE_MODEL_ENV_NAME = "CLAUDE_AUDIT_MODEL"
 CLAUDE_DEFAULT_MODEL = "sonnet"
 CLAUDE_BUDGET_ENV_NAME = "CLAUDE_AUDIT_MAX_BUDGET_USD"
 CLAUDE_DEFAULT_MAX_BUDGET_USD = "5.00"
-CLAUDE_SANDBOX_SETTINGS: dict[str, Any] = {
-    "permissions": {"allow": ["Bash"]},
-    "sandbox": {
-        "enabled": True,
-        "failIfUnavailable": True,
-        "autoAllowBashIfSandboxed": True,
-        "allowUnsandboxedCommands": False,
-        "filesystem": {"denyRead": ["~"], "denyWrite": ["~"]},
-        "network": {"allowedDomains": ["pypi.org", "files.pythonhosted.org"]},
-    },
+#: Domains the Claude campaign adapter's sandbox may reach for package
+#: downloads, keyed by the closed ``package_source`` vocabulary. ``testpypi``
+#: adds the canonical TestPyPI file-serving domains on top of the production
+#: ones, since a candidate's dependencies still resolve from production PyPI
+#: via the extra index.
+CLAUDE_SANDBOX_ALLOWED_DOMAINS: dict[str, tuple[str, ...]] = {
+    "pypi": ("pypi.org", "files.pythonhosted.org"),
+    "testpypi": (
+        "pypi.org",
+        "files.pythonhosted.org",
+        "test.pypi.org",
+        "test-files.pythonhosted.org",
+    ),
 }
+
+
+def _claude_sandbox_settings(package_source: str) -> dict[str, Any]:
+    """Build the Claude campaign adapter's sandbox settings for one package source."""
+    allowed_domains = CLAUDE_SANDBOX_ALLOWED_DOMAINS.get(
+        package_source, CLAUDE_SANDBOX_ALLOWED_DOMAINS[DEFAULT_PACKAGE_SOURCE]
+    )
+    return {
+        "permissions": {"allow": ["Bash"]},
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "autoAllowBashIfSandboxed": True,
+            "allowUnsandboxedCommands": False,
+            "filesystem": {"denyRead": ["~"], "denyWrite": ["~"]},
+            "network": {"allowedDomains": list(allowed_domains)},
+        },
+    }
 ANTIGRAVITY_MODEL_ENV_NAMES = ("CODE_MOWER_ANTIGRAVITY_MODEL", "ANTIGRAVITY_MODEL")
 ANTIGRAVITY_AMBIENT_HOME_ENV = "ANTIGRAVITY_CLI_USE_AMBIENT_HOME"
 MUSE_MODEL_ENV_NAMES = ("CODE_MOWER_MUSE_MODEL", "MUSE_MODEL", "META_MUSE_MODEL")
@@ -278,31 +308,40 @@ def build_qualification_prompt(
     normalized_version: str,
     qualification_context: str,
     starting_version: str,
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
 ) -> str:
     """Build the shared release-qualification prompt for one provider run.
 
     The prompt carries only campaign identity (provider, tag, spec, context,
-    versions). It never includes credentials, home-directory paths, tokens, or
-    local checkout paths: the agent works in a fresh disposable directory it
-    creates itself.
+    versions, source). It never includes credentials, home-directory paths,
+    tokens, or local checkout paths: the agent works in a fresh disposable
+    directory it creates itself. ``package_source`` is the closed vocabulary
+    (``pypi``/``testpypi``); when it is ``testpypi`` the pip invocations name
+    the two fixed, canonical index URLs directly rather than an arbitrary one.
     """
+    pip_index_flags = (
+        f' --index-url "{TESTPYPI_INDEX_URL}" --extra-index-url "{PRODUCTION_PYPI_INDEX_URL}"'
+        if package_source == "testpypi"
+        else ""
+    )
     if qualification_context == "upgrade":
         install_plan = (
             "1. In the current disposable directory, run "
             "`python3 -m venv .venv`. Use only `.venv/bin/python` and installed "
             "entry points for the remaining steps.\n"
-            f"2. Install the starting version with `.venv/bin/python -m pip install "
+            f"2. Install the starting version with `.venv/bin/python -m pip install"
+            f"{pip_index_flags} "
             f"{package_identity}=={starting_version}` to rehearse "
             f"an upgrade from exactly that version.\n"
-            f'3. Upgrade with `.venv/bin/python -m pip install "{package_spec}"`.'
+            f'3. Upgrade with `.venv/bin/python -m pip install{pip_index_flags} "{package_spec}"`.'
         )
     else:
         install_plan = (
             "1. In the current disposable directory, run "
             "`python3 -m venv .venv`. Use only `.venv/bin/python` and installed "
             "entry points for the remaining steps.\n"
-            f"2. Install the exact release with `.venv/bin/python -m pip install "
-            f'"{package_spec}"`. No other version is acceptable.'
+            f"2. Install the exact release with `.venv/bin/python -m pip install"
+            f'{pip_index_flags} "{package_spec}"`. No other version is acceptable.'
         )
     lines = [
         f"You are the {provider} release-qualification agent for Code Mower.",
@@ -321,6 +360,7 @@ def build_qualification_prompt(
         f"- package_spec: {package_spec}",
         f"- qualification_context: {qualification_context}",
         f"- starting_version: {starting_version if starting_version else '(empty)'}",
+        f"- package_source: {package_source}",
         "",
         "Procedure (measure wall-clock seconds for each step):",
         install_plan,
@@ -413,6 +453,7 @@ def build_claude_argv(
     max_budget_usd: str,
     schema_json: str,
     workspace_dir: str = "",
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
 ) -> list[str]:
     """Argv for ``claude --print``: stdin prompt, single JSON envelope.
 
@@ -421,8 +462,10 @@ def build_claude_argv(
     agent gets exactly one tool -- ``Bash`` -- inside Claude's OS-level
     sandbox. Sandboxed commands are auto-approved, the sandbox must be
     available, its unsandboxed escape hatch is disabled, home reads/writes are
-    denied, and network access is limited to the package index. The disabled
-    escape hatch makes anything outside that boundary fail closed.
+    denied, and network access is limited to the package index for the
+    requested closed ``package_source`` (production PyPI, plus TestPyPI's
+    fixed file-serving domains when qualifying a TestPyPI candidate). The
+    disabled escape hatch makes anything outside that boundary fail closed.
     """
     argv = [
         claude_bin,
@@ -440,7 +483,9 @@ def build_claude_argv(
         "--tools",
         "Bash",
         "--settings",
-        json.dumps(CLAUDE_SANDBOX_SETTINGS, separators=(",", ":"), sort_keys=True),
+        json.dumps(
+            _claude_sandbox_settings(package_source), separators=(",", ":"), sort_keys=True
+        ),
     ]
     if workspace_dir:
         argv.extend(["--add-dir", workspace_dir])
@@ -748,6 +793,7 @@ def _check_campaign_identity(
     package_spec: str,
     qualification_context: str,
     starting_version: str,
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
 ) -> tuple[str, str]:
     """Return (package_identity, normalized_version) or raise ValueError."""
     valid, normalized_version, tag_error = _validate_tag_format(release_tag)
@@ -758,6 +804,7 @@ def _check_campaign_identity(
         raise ValueError("release tag and package spec versions disagree")
     _validate_qualification_context(qualification_context)
     _validate_starting_version(starting_version)
+    _validate_package_source(package_source)
     if qualification_context == "upgrade":
         if not starting_version:
             raise ValueError("upgrade qualification requires starting_version")
@@ -783,6 +830,7 @@ def run_campaign_adapter(
     muse_max_model_steps: int = MUSE_DEFAULT_MAX_MODEL_STEPS,
     muse_reasoning_effort: str = "",
     codex_home: Path | None = None,
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
     provider_runner: ProviderRunner = run_provider_command,
 ) -> int:
     """Run one maintained provider adapter. Returns a process exit code.
@@ -812,6 +860,7 @@ def run_campaign_adapter(
             package_spec=package_spec,
             qualification_context=qualification_context,
             starting_version=starting_version,
+            package_source=package_source,
         )
     except ValueError as exc:
         return _fail(provider, str(exc)[:180])
@@ -824,6 +873,7 @@ def run_campaign_adapter(
         normalized_version=normalized_version,
         qualification_context=qualification_context,
         starting_version=starting_version,
+        package_source=package_source,
     )
     prepared_codex_home: Path | None = None
     if provider == "codex":
@@ -894,6 +944,7 @@ def run_campaign_adapter(
                     max_budget_usd=budget,
                     schema_json=json.dumps(ADOPTION_RESULT_JSON_SCHEMA, separators=(",", ":")),
                     workspace_dir=str(workdir),
+                    package_source=package_source,
                 )
                 completed = provider_runner(argv, prompt, timeout_seconds, workdir, child_env)
                 if completed.returncode != 0:
@@ -982,6 +1033,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--package-spec", required=True)
     parser.add_argument("--qualification-context", required=True)
     parser.add_argument("--starting-version", default="")
+    parser.add_argument("--package-source", default=DEFAULT_PACKAGE_SOURCE)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=int, default=DEFAULT_PROVIDER_TIMEOUT_SECONDS)
     parser.add_argument("--model", default="")
@@ -1005,6 +1057,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         package_spec=args.package_spec,
         qualification_context=args.qualification_context,
         starting_version=args.starting_version,
+        package_source=args.package_source,
         output_path=args.output,
         timeout_seconds=args.timeout_seconds,
         model=args.model,

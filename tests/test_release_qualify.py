@@ -825,5 +825,177 @@ class ExactPackageSpecParseTests(unittest.TestCase):
             self.assertIn("Version mismatch", str(ctx.exception))
 
 
+class PackageSourceTests(unittest.TestCase):
+    """Closed `package_source` vocabulary: parsing, index construction, defaults."""
+
+    def test_default_source_is_pypi(self) -> None:
+        self.assertEqual(release_qualify.DEFAULT_PACKAGE_SOURCE, "pypi")
+
+    def test_valid_sources_are_closed(self) -> None:
+        self.assertEqual(release_qualify.VALID_PACKAGE_SOURCES, {"pypi", "testpypi"})
+
+    def test_validate_rejects_anything_outside_the_closed_set(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            release_qualify._validate_package_source("https://example.invalid/simple")
+        self.assertIn("package_source must be one of", str(ctx.exception))
+        # An attempted arbitrary URL never survives into the error message.
+        self.assertNotIn("example.invalid", str(ctx.exception))
+
+    def test_validate_accepts_pypi_and_testpypi(self) -> None:
+        release_qualify._validate_package_source("pypi")
+        release_qualify._validate_package_source("testpypi")
+
+    def test_pypi_uses_no_index_override(self) -> None:
+        index_url, extra_urls = release_qualify._package_source_pip_index_args("pypi")
+        self.assertEqual(index_url, "")
+        self.assertEqual(extra_urls, ())
+
+    def test_testpypi_uses_canonical_index_and_pypi_extra_index(self) -> None:
+        index_url, extra_urls = release_qualify._package_source_pip_index_args("testpypi")
+        self.assertEqual(index_url, "https://test.pypi.org/simple/")
+        self.assertEqual(extra_urls, ("https://pypi.org/simple/",))
+
+    def test_package_source_pip_index_args_rejects_unknown_source(self) -> None:
+        with self.assertRaises(ValueError):
+            release_qualify._package_source_pip_index_args("bogus")
+
+    def test_run_release_qualification_rejects_unknown_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError) as ctx:
+                release_qualify.run_release_qualification(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    output_path=Path(tmp) / "result.json",
+                    repo_path=Path(tmp),
+                    dry_run=True,
+                    package_source="bogus",
+                )
+            self.assertIn("package_source must be one of", str(ctx.exception))
+
+    def test_execute_with_pypi_source_passes_no_index_override(self) -> None:
+        """The default source builds a pip command with no index override at all."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "result.json"
+            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
+                with mock.patch(
+                    "code_mower.release_qualify.run_package_install_rehearsal"
+                ) as mock_rehearsal:
+                    mock_doctor.return_value = release_qualify.StepResult(
+                        id="doctor", status="pass", elapsed_seconds=1.0,
+                        warning_count=0, owner_action_count=0
+                    )
+                    mock_rehearsal.return_value = {"version": "code-mower 1.0.0"}
+
+                    release_qualify.run_release_qualification(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        output_path=output_path,
+                        dry_run=False,
+                        repo_path=Path(tmpdir),
+                    )
+
+            self.assertEqual(mock_rehearsal.call_args.kwargs["pip_index_url"], "")
+            self.assertEqual(mock_rehearsal.call_args.kwargs["pip_extra_index_urls"], ())
+
+    def test_execute_with_testpypi_source_builds_the_candidate_pip_command(self) -> None:
+        """`package_source=testpypi` threads the canonical index URLs into the install."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "result.json"
+            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
+                with mock.patch(
+                    "code_mower.release_qualify.run_package_install_rehearsal"
+                ) as mock_rehearsal:
+                    mock_doctor.return_value = release_qualify.StepResult(
+                        id="doctor", status="pass", elapsed_seconds=1.0,
+                        warning_count=0, owner_action_count=0
+                    )
+                    mock_rehearsal.return_value = {"version": "code-mower 1.0.0"}
+
+                    result = release_qualify.run_release_qualification(
+                        release_tag="v1.0.0",
+                        package_spec="code-mower==1.0.0",
+                        output_path=output_path,
+                        dry_run=False,
+                        repo_path=Path(tmpdir),
+                        package_source="testpypi",
+                    )
+
+            self.assertEqual(
+                mock_rehearsal.call_args.kwargs["pip_index_url"],
+                "https://test.pypi.org/simple/",
+            )
+            self.assertEqual(
+                mock_rehearsal.call_args.kwargs["pip_extra_index_urls"],
+                ("https://pypi.org/simple/",),
+            )
+            # allow_package_index stays on, so the existing bounded pip-install
+            # retry behavior (see migration_rehearsal) applies unchanged.
+            self.assertTrue(mock_rehearsal.call_args.kwargs["allow_package_index"])
+            self.assertEqual(result["outcome"], "pass")
+
+    def test_cli_qualify_accepts_package_source_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "result.json"
+            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
+                with mock.patch(
+                    "code_mower.release_qualify.run_package_install_rehearsal"
+                ) as mock_rehearsal:
+                    mock_doctor.return_value = release_qualify.StepResult(
+                        id="doctor", status="pass", elapsed_seconds=1.0,
+                        warning_count=0, owner_action_count=0
+                    )
+                    mock_rehearsal.return_value = {"version": "code-mower 1.0.0"}
+                    ret = release_qualify.main(
+                        [
+                            "qualify",
+                            "--release-tag",
+                            "v1.0.0",
+                            "--package-spec",
+                            "code-mower==1.0.0",
+                            "--output",
+                            str(output_path),
+                            "--repo-path",
+                            tmpdir,
+                            "--execute",
+                            "--package-source",
+                            "testpypi",
+                        ]
+                    )
+            self.assertEqual(ret, 0)
+            self.assertEqual(
+                mock_rehearsal.call_args.kwargs["pip_index_url"],
+                "https://test.pypi.org/simple/",
+            )
+
+    def test_cli_qualify_defaults_package_source_to_pypi(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "result.json"
+            with mock.patch("code_mower.release_qualify._run_doctor_check") as mock_doctor:
+                with mock.patch(
+                    "code_mower.release_qualify.run_package_install_rehearsal"
+                ) as mock_rehearsal:
+                    mock_doctor.return_value = release_qualify.StepResult(
+                        id="doctor", status="pass", elapsed_seconds=1.0,
+                        warning_count=0, owner_action_count=0
+                    )
+                    mock_rehearsal.return_value = {"version": "code-mower 1.0.0"}
+                    ret = release_qualify.main(
+                        [
+                            "qualify",
+                            "--release-tag",
+                            "v1.0.0",
+                            "--package-spec",
+                            "code-mower==1.0.0",
+                            "--output",
+                            str(output_path),
+                            "--repo-path",
+                            tmpdir,
+                            "--execute",
+                        ]
+                    )
+            self.assertEqual(ret, 0)
+            self.assertEqual(mock_rehearsal.call_args.kwargs["pip_index_url"], "")
+
+
 if __name__ == "__main__":
     unittest.main()
