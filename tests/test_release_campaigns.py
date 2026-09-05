@@ -5271,14 +5271,14 @@ class CampaignPackageSourceSupplyTests(unittest.TestCase):
     `--qualification-context`.
     """
 
-    _ENV = {"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"}
+    _ENV = {"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"}
 
     def _create_testpypi(self, campaigns_dir: Path) -> dict[str, Any]:
         ret = release_campaigns.campaign_command(
             action="create",
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
             package_source="testpypi",
             campaigns_dir=campaigns_dir,
             repo_slug="owner/repo",
@@ -5299,7 +5299,7 @@ class CampaignPackageSourceSupplyTests(unittest.TestCase):
                 action="create",
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 apply=False,
                 command_runner=mock.MagicMock(),
@@ -5454,15 +5454,7 @@ class PackageSourceBackwardCompatibilityTests(unittest.TestCase):
     def test_legacy_campaign_missing_the_field_is_read_as_pypi(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
-            campaigns_dir.mkdir(parents=True)
-            legacy = release_campaigns.initialize_campaign(
-                release_tag="v1.0.0",
-                package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
-                repo_slug="owner/repo",
-            ).to_dict()
-            del legacy["package_source"]
-            release_campaigns.save_campaign(legacy, campaigns_dir)
+            ReleaseCampaignTests._create_stored_cursor_bugbot_campaign(campaigns_dir)
 
             loaded = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert loaded is not None
@@ -5595,7 +5587,7 @@ class LocalAdapterPackageSourceCommandConstructionTests(unittest.TestCase):
 class HostedDispatchPackageSourceTests(unittest.TestCase):
     """Hosted dispatch instructions receive the same closed source contract."""
 
-    _ENV = {"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"}
+    _ENV = {"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"}
 
     def test_pypi_dispatch_marker_and_body_name_the_default_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5604,7 +5596,7 @@ class HostedDispatchPackageSourceTests(unittest.TestCase):
                 action="create",
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 apply=False,
@@ -5645,7 +5637,7 @@ class HostedDispatchPackageSourceTests(unittest.TestCase):
                 action="create",
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 package_source="testpypi",
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
