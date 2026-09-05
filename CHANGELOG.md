@@ -11,6 +11,22 @@ provider posture, and optional cloud sharing loop are still hardening.
   manual/retry guidance without automatically duplicating paid work. Existing
   campaigns receive a fresh response window on first upgraded poll (#701).
 
+### Added
+
+- Adoption doctor probes campaign authentication readiness for maintained local
+  adapters that expose a safe login-status command, starting with Codex. The
+  probe runs in the adapter's own isolated `CODEX_HOME` plus real OS home, so an
+  unauthenticated isolated home is a bounded owner action instead of a
+  mid-campaign adapter failure. Only a confirmed logged-out result -- the
+  provider's declared logged-out exit code together with one of its narrowly
+  allowlisted logged-out output markers -- is reported as unauthenticated;
+  timeouts, unsupported subcommands, keyring or config failures, and any other
+  nonzero exit degrade to a non-blocking skip that leaves the provider
+  campaign-ready. Orchestrator-only posture stays non-blocking for local
+  adapters, providers without a safe probe stay capability-only, and no auth
+  output, credential contents, tokens, or local paths reach doctor output
+  (#699).
+
 ### Fixed
 
 - Codex release campaigns preserve the OS home required for macOS keychain

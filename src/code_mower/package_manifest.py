@@ -190,6 +190,11 @@ PACKAGE_FILES = (
         "core",
     ),
     (
+        "src/code_mower/doctor_checks/campaign_auth.py",
+        "src/code_mower/doctor_checks/campaign_auth.py",
+        "core",
+    ),
+    (
         "src/code_mower/doctor_checks/provider_local_cli_probe_config.py",
         "src/code_mower/doctor_checks/provider_local_cli_probe_config.py",
         "core",

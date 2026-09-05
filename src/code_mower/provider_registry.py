@@ -123,6 +123,23 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "doctor_probe_args": ("--version",),
             "campaign_adapter_argv": _maintained_campaign_adapter_argv("codex"),
             "campaign_adapter_timeout_seconds": 900,
+            # Safe, read-only login-status command. Doctor runs it in the same
+            # isolated CODEX_HOME the campaign adapter uses, so an installed CLI
+            # with an unauthenticated campaign home is an owner action rather
+            # than a mid-campaign adapter failure. Providers without such a
+            # command declare no probe and stay capability-only.
+            "campaign_auth_probe_args": ("login", "status"),
+            "campaign_auth_probe_timeout_seconds": 20,
+            # A nonzero exit alone does not prove a missing login: an older or
+            # newer CLI without this subcommand, or a keyring/config failure,
+            # also exits nonzero. Only this exact exit code plus one of these
+            # narrow logged-out markers is treated as confirmed logged out;
+            # every other nonzero exit degrades to a non-blocking skip.
+            "campaign_auth_logged_out_exit_codes": (1,),
+            "campaign_auth_logged_out_markers": (
+                "not logged in",
+                "not authenticated",
+            ),
         },
     ),
     "claude_review": ProviderLane(

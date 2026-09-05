@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 
+from .campaign_auth import CAMPAIGN_AUTH_CHECK_NAME, check_campaign_auth_readiness
 from .cloud import DEFAULT_CLOUD_TOKEN_DIR, DEFAULT_CLOUD_TOKEN_ENV
 from .models import STATUS_PASS, STATUS_SKIP, STATUS_WARN, DoctorCheck
 
@@ -585,6 +586,7 @@ def check_adoption_campaign_readiness(
     env: Mapping[str, str] | None = None,
     which_fn: Callable[[str], str | None] = shutil.which,
     command_runner: Any = None,
+    auth_probe_runner: Any = None,
     token_dir: Path | None = None,
     providers: Sequence[str] = DEFAULT_CAMPAIGN_PROVIDERS,
 ) -> tuple[DoctorCheck, ...]:
@@ -748,6 +750,16 @@ def check_adoption_campaign_readiness(
                         },
                     )
                 )
+                auth_check = check_campaign_auth_readiness(
+                    lane=lane,
+                    canonical=canonical,
+                    enabled=is_enabled,
+                    command=cmd,
+                    env=current_env,
+                    probe_runner=auth_probe_runner,
+                )
+                if auth_check is not None:
+                    checks.append(auth_check)
 
         elif lane.driver in {"hosted_bridge", "saas_event"}:
             has_credentials, missing_var = _check_credentials(lane, env=current_env)
@@ -1037,10 +1049,21 @@ def check_adoption_campaign_readiness(
     provider_checks = [
         check
         for check in checks
-        if check.name in {"doctor.campaign.adapter", "doctor.campaign.credentials"}
+        if check.name
+        in {
+            "doctor.campaign.adapter",
+            "doctor.campaign.credentials",
+            CAMPAIGN_AUTH_CHECK_NAME,
+        }
     ]
+    # A provider is ready only when every one of its checks is clean: an
+    # installed adapter whose isolated home is unauthenticated is not ready.
+    warned_providers = {
+        check.lane for check in provider_checks if check.status == STATUS_WARN and check.lane
+    }
     ready_providers = sorted(
         {check.lane for check in provider_checks if check.status == STATUS_PASS and check.lane}
+        - warned_providers
     )
     actionable_providers = sorted(
         {
