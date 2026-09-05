@@ -53,8 +53,6 @@ class CandidateCommandBuilderTests(unittest.TestCase):
                 "",
                 "--find-links",
                 "",
-                "--trusted-host",
-                "",
                 "code-mower==1.0.0",
             ],
         )
@@ -90,7 +88,7 @@ class CandidateCommandBuilderTests(unittest.TestCase):
             dependency_index_url="https://pypi.org/simple/",
         )
         for command in (download, install):
-            for flag in ("--extra-index-url", "--find-links", "--trusted-host"):
+            for flag in ("--extra-index-url", "--find-links"):
                 self.assertIn(flag, command)
                 self.assertEqual(command[command.index(flag) + 1], "")
 
@@ -123,8 +121,6 @@ class CandidateCommandBuilderTests(unittest.TestCase):
                 "--extra-index-url",
                 "",
                 "--find-links",
-                "",
-                "--trusted-host",
                 "",
                 "/tmp/candidate/code_mower-1.0.0-py3-none-any.whl",
             ],

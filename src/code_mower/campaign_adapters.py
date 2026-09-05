@@ -328,7 +328,7 @@ def build_qualification_prompt(
             "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null "
             ".venv/bin/python -m pip --isolated"
         )
-        source_reset = "--extra-index-url '' --find-links '' --trusted-host ''"
+        source_reset = "--extra-index-url '' --find-links ''"
         steps = [
             "1. In the current disposable directory, run "
             f"`{python_cmd} -m venv .venv`. Use only `.venv/bin/python` and installed "

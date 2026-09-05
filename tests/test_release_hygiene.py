@@ -7517,8 +7517,6 @@ def main():
                 "",
                 "--find-links",
                 "",
-                "--trusted-host",
-                "",
                 "code-mower==0.6.0b3",
             ],
         )

@@ -40,8 +40,6 @@ _PIP_SOURCE_RESET_ARGS = (
     "",
     "--find-links",
     "",
-    "--trusted-host",
-    "",
 )
 
 MIRRORED_IMPLEMENTATION_PATTERNS = (
