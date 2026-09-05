@@ -1256,7 +1256,7 @@ class ReleaseCampaignTests(unittest.TestCase):
         campaign_id = f"campaign-{release_tag}"
         version = release_tag.lstrip("v")
         idempotency_key = f"{campaign_id}_cursor_bugbot_cold_install"
-        
+
         campaign_dict = {
             "schema": release_campaigns.CAMPAIGN_SCHEMA,
             "campaign_id": campaign_id,
@@ -1291,7 +1291,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 }
             ],
         }
-        
+
         campaigns_dir.mkdir(parents=True, exist_ok=True)
         campaign_file = campaigns_dir / f"{campaign_id}.json"
         campaign_file.write_text(json.dumps(campaign_dict, indent=2), encoding="utf-8")
@@ -1324,12 +1324,13 @@ class ReleaseCampaignTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             campaign = self._running_cursor_bugbot_campaign(campaigns_dir)
+            assert campaign is not None
 
-            idempotency_key = campaign.providers[0]["idempotency_key"]
+            idempotency_key = campaign["providers"][0]["idempotency_key"]
             adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
-                "campaign_id": campaign.campaign_id,
+                "campaign_id": campaign["campaign_id"],
                 "provider": "cursor_bugbot",
                 "release_tag": "v1.0.0",
                 "idempotency_key": idempotency_key,
@@ -1350,10 +1351,10 @@ class ReleaseCampaignTests(unittest.TestCase):
                 issue="99",
                 resume=True,
                 apply=True,
-                retry_provider="cursor_cloud_agent",
+                retry_provider="cursor_bugbot",
                 gh_json_runner=mock_gh_json,
                 command_runner=self._no_op_dispatch_command_runner(dispatch_calls),
-                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             self.assertEqual(dispatch_calls, [])
@@ -1383,10 +1384,10 @@ class ReleaseCampaignTests(unittest.TestCase):
                 issue="99",
                 resume=True,
                 apply=True,
-                retry_provider="cursor_cloud_agent",
+                retry_provider="cursor_bugbot",
                 gh_json_runner=mock_gh_json,
                 command_runner=self._no_op_dispatch_command_runner(dispatch_calls),
-                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             # Cursor BugBot has trigger_comments, so 2 calls: dispatch + trigger
@@ -1417,10 +1418,10 @@ class ReleaseCampaignTests(unittest.TestCase):
                 issue="99",
                 resume=True,
                 apply=False,
-                retry_provider="cursor_cloud_agent",
+                retry_provider="cursor_bugbot",
                 gh_json_runner=mock_gh_json,
                 command_runner=self._no_op_dispatch_command_runner(dispatch_calls),
-                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             self.assertEqual(dispatch_calls, [])
@@ -2823,7 +2824,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 campaigns_dir, status="running", state="running"
             )
             idempotency_key = campaign_dict["providers"][0]["idempotency_key"]
-            
+
             adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
@@ -2930,13 +2931,13 @@ class ReleaseCampaignTests(unittest.TestCase):
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 issue="99",
                 apply=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token", "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY": "1"},
             )
 
             self.assertEqual(len(bodies), 2)
@@ -2944,12 +2945,12 @@ class ReleaseCampaignTests(unittest.TestCase):
             trigger_body = bodies[1]
 
             # Dispatch body should document the trigger commands
-            self.assertIn("bugbot run", dispatch_body)
-            self.assertIn("@cursor review", dispatch_body)
+            self.assertIn("@cursor run", dispatch_body)
+            self.assertIn("cursor run", dispatch_body)
 
             # The actionable command stays first; the hidden marker makes a
             # crash-after-post retry externally idempotent.
-            self.assertEqual(trigger_body.splitlines()[0], "bugbot run")
+            self.assertEqual(trigger_body.splitlines()[0], "@cursor run")
             self.assertIn("CODE_MOWER_RELEASE_TRIGGER", trigger_body)
 
     def test_failed_trigger_post_retries_on_resume(self) -> None:
@@ -3304,12 +3305,12 @@ class ReleaseCampaignTests(unittest.TestCase):
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                 "campaign_id": campaign.campaign_id,
-                "provider": "cursor_bugbot",
+                "provider": "cursor_cloud_agent",
                 "release_tag": "v1.0.0",
                 "idempotency_key": provider["idempotency_key"],
                 "adoption_result": _mock_adoption_result(
                     release_tag="v1.0.0",
-                    provider="cursor_bugbot",
+                    provider="cursor_cloud_agent",
                     outcome="pass",
                 ),
             }
@@ -4045,7 +4046,7 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
         adapter_runner = mock.MagicMock()
         transport_vars = {
             "devin": "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY",
-            "cursor_bugbot": "CODE_MOWER_CURSOR_BUGBOT_CAMPAIGN_TRANSPORT_READY",
+            "cursor_cloud_agent": "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY",
         }
         ret = release_campaigns.campaign_command(
             release_tag="v1.0.0",
@@ -4681,17 +4682,33 @@ class DuplicateCampaignProviderTests(unittest.TestCase):
         """cursor (builder) and grok_bot (reviewer) are now separate providers."""
         cursor_name, cursor_lane = release_campaigns.resolve_provider_lane("cursor")
         grok_name, grok_lane = release_campaigns.resolve_provider_lane("grok_bot")
-        
+
         # cursor resolves to cursor_cloud_agent (builder)
         self.assertEqual(cursor_name, "cursor_cloud_agent")
         self.assertEqual(cursor_lane.provider_config.get("capability"), "work_order_execution")
-        
+
         # grok_bot resolves to cursor_bugbot (reviewer)
         self.assertEqual(grok_name, "cursor_bugbot")
         self.assertEqual(grok_lane.provider_config.get("capability"), "code_review")
-        
+
         # They are distinct providers
         self.assertNotEqual(cursor_name, grok_name)
+
+    def test_cursor_cloud_agent_and_bugbot_alias_mappings(self) -> None:
+        """Verify all alias mappings match documentation."""
+        # Cursor Cloud Agent (builder) aliases
+        for alias in ["cursor", "cursor_cloud_agent"]:
+            canonical, lane = release_campaigns.resolve_provider_lane(alias)
+            self.assertEqual(canonical, "cursor_cloud_agent", f"{alias} should resolve to cursor_cloud_agent")
+            self.assertEqual(lane.provider_config.get("role"), "builder")
+            self.assertEqual(lane.provider_config.get("capability"), "work_order_execution")
+
+        # Cursor BugBot (reviewer) aliases
+        for alias in ["cursor_bugbot", "cursor_grok_bot", "grok_bot"]:
+            canonical, lane = release_campaigns.resolve_provider_lane(alias)
+            self.assertEqual(canonical, "cursor_bugbot", f"{alias} should resolve to cursor_bugbot")
+            self.assertEqual(lane.provider_config.get("role"), "reviewer")
+            self.assertEqual(lane.provider_config.get("capability"), "code_review")
 
     def test_stored_cursor_bugbot_campaigns_remain_cursor_bugbot(self) -> None:
         """Existing stored cursor_bugbot campaigns are not reinterpreted as cursor_cloud_agent."""
@@ -4763,10 +4780,9 @@ class DuplicateCampaignProviderTests(unittest.TestCase):
                     package_spec="code-mower==1.0.0",
                     providers=[alias],
                 )
-            self.assertIn("cannot execute package qualification", str(cm.exception))
+            self.assertIn("review-only lane", str(cm.exception))
             self.assertIn("work_order_execution", str(cm.exception))
             self.assertIn("code_review", str(cm.exception))
-            self.assertIn("Review-only providers", str(cm.exception))
 
         # Builder providers should still be accepted
         campaign = release_campaigns.initialize_campaign(

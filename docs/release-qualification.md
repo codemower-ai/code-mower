@@ -219,13 +219,9 @@ The campaign posts a GitHub issue comment with schema `code_mower.releaseCampaig
 
 Cursor Cloud Agent replies with a comment containing `<!-- CODE_MOWER_ADOPTION_RESULT: {...} -->` wrapping schema `code_mower.releaseCampaignResult.v1`. The embedded `adoption_result` must match the campaign's provider, release tag, package identity, qualification context, and (for upgrades) starting version.
 
-#### Historical Cursor BugBot Note
-
-Before v1.0.8, `cursor_bugbot` was used for both builder and review capabilities. As of v1.0.8:
-- `cursor_cloud_agent` is the canonical builder identity with work-order execution capability
-- `cursor_bugbot` (also known as Grok Bot or BugBot) is a review-only surface and cannot execute package-install campaigns
-
-The provider alias map routes `cursor` → `cursor_cloud_agent` for new work. Historical `cursor_bugbot` campaigns remain valid but are not accepted for new release qualification.
+**Trusted authors:**
+- `cursor[bot]`, `cursor` (registry defaults)
+- Override via `CURSOR_CLOUD_AGENT_BOT_AUTHORS` environment variable
 
 **Example dispatch:**
 ```bash
@@ -239,13 +235,37 @@ code-mower release campaign \
 ```
 
 **Aliases:**
-- `cursor` → `cursor_cloud_agent` (builder)
-- `cursor_cloud_agent` → `cursor_cloud_agent` (builder)
-- `cursor_bugbot` → `cursor_bugbot` (reviewer, cannot execute campaigns)
-- `cursor_grok_bot` → `cursor_bugbot` (reviewer, cannot execute campaigns)
-- `grok_bot` → `cursor_bugbot` (reviewer, cannot execute campaigns)
+- `cursor` → `cursor_cloud_agent`
+- `cursor_cloud_agent` → `cursor_cloud_agent`
 
-**Note:** Cursor Cloud Agent is an opt-in paid provider (`enabled_by_default: false`, `trigger_policy: manual`, `spend_policy: paid`). It must be explicitly requested via `--providers cursor_cloud_agent` or `--providers cursor` and is not included in the default provider set.
+**Note:** Cursor Cloud Agent is an opt-in paid provider (`enabled_by_default: false`, `trigger_policy: manual`, `spend_policy: paid`). It must be explicitly requested via `--providers cursor_cloud_agent` or `--providers cursor`.
+
+#### Cursor BugBot / Grok Bot Setup
+
+Cursor BugBot and Grok Bot are **review-only** hosted providers using the `saas_event` driver. They provide code review and cannot execute package-install qualification campaigns.
+
+**Prerequisites:**
+- `CURSOR_BUGBOT_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN` as fallback) for applying audit labels
+- `GITHUB_TOKEN` for posting review trigger comments
+
+**Trigger comments** (for review, not campaigns):
+- `bugbot run`
+- `@cursor review`
+
+**Trusted authors:**
+- `cursor[bot]`, `cursor` (registry defaults)
+- Override via `CURSOR_BUGBOT_BOT_AUTHORS` environment variable
+
+**Aliases:**
+- `cursor_bugbot` → `cursor_bugbot`
+- `cursor_grok_bot` → `cursor_bugbot`
+- `grok_bot` → `cursor_bugbot`
+
+**Note:** Cursor BugBot is an opt-in paid review provider. It is review-only with `role: reviewer` and `capability: code_review`. It cannot participate in release qualification campaigns.
+
+#### Historical Note
+
+Before v1.0.8, `cursor_bugbot` was used for both builder and review capabilities. As of v1.0.8, `cursor_cloud_agent` is the builder identity and `cursor_bugbot` is review-only.
 
 #### Devin Setup
 

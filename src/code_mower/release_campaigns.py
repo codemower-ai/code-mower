@@ -1739,13 +1739,17 @@ def initialize_campaign(
                 "more than once, directly or through an alias; list each provider "
                 "exactly once"
             )
+        # New campaigns may include providers with work_order_execution capability.
+        # Lanes marked role:reviewer or capability:code_review must fail before dispatch.
+        role = lane.provider_config.get("role", "")
         capability = lane.provider_config.get("capability", "")
-        if capability == "code_review":
+        if role == "reviewer" or capability == "code_review":
             raise ValueError(
-                f"release campaign provider {canonical_name!r} cannot execute package "
-                f"qualification: it has capability 'code_review', not 'work_order_execution'. "
-                f"Review-only providers cannot perform cold_install or upgrade campaigns; "
-                f"choose a builder provider instead"
+                f"release campaign provider {canonical_name!r} is a review-only lane "
+                f"(role: {role!r}, capability: {capability!r}) and cannot execute "
+                f"package qualification campaigns. Release campaigns require providers "
+                f"with work_order_execution capability; choose cursor_cloud_agent or "
+                f"another builder provider instead"
             )
         seen_providers.add(canonical_name)
         resolved_providers.append((canonical_name, lane))
