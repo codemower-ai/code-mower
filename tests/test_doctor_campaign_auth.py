@@ -85,6 +85,45 @@ def _rendered(checks):
 
 
 class CampaignAuthProbeTests(unittest.TestCase):
+    def test_lane_id_aliases_reach_provider_specific_auth_checks(self) -> None:
+        cases = (
+            ("antigravity_cli", "agy", "antigravity", "missing_opt_in"),
+            ("muse_cli", "muse", "muse", "missing_auth"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            for lane_id, command, provider, auth_state in cases:
+                with self.subTest(lane_id=lane_id):
+                    checks = check_adoption_campaign_readiness(
+                        config={
+                            "lanes": {
+                                lane_id: {
+                                    "provider_config": {
+                                        "campaign_adapter_argv": [
+                                            "{command}",
+                                            "qualify",
+                                            "--output",
+                                            "{output}",
+                                        ],
+                                    }
+                                }
+                            }
+                        },
+                        repo_root=Path(tmp),
+                        env={},
+                        which_fn=lambda candidate, expected=command: (
+                            f"/opt/bin/{expected}" if candidate == expected else None
+                        ),
+                        providers=[lane_id],
+                    )
+
+                    auth = next(c for c in checks if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+                    self.assertEqual(auth.lane, provider)
+                    self.assertEqual(auth.status, STATUS_WARN)
+                    self.assertEqual(auth.detail.get("auth_probe"), auth_state)
+                    readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+                    self.assertNotIn(provider, readiness.detail.get("ready_providers", []))
+                    self.assertIn(provider, readiness.detail.get("actionable_providers", []))
+
     def test_authenticated_isolated_home_passes_without_exposing_output(self) -> None:
         recorded: list[tuple[list[str], int, dict]] = []
 
