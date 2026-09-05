@@ -15,6 +15,7 @@ import sys
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -102,33 +103,56 @@ class FailureReasonClassificationTests(unittest.TestCase):
     def test_priority_sandbox_over_network(self) -> None:
         exc = RuntimeError("connection refused")
         steps = [{"stderr_preview": "Permission denied and connection refused"}]
-        reason = migration_install.classify_package_install_failure(
-            exception=exc, steps=steps
-        )
+        reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
         self.assertEqual(reason, "sandbox_permission")
 
     def test_errno_111_classified_as_network(self) -> None:
         """Verify [Errno 111] ECONNREFUSED is classified as network, not sandbox."""
         exc = RuntimeError("Connection refused")
         steps = [{"stderr_preview": "[Errno 111] Connection refused"}]
-        reason = migration_install.classify_package_install_failure(
-            exception=exc, steps=steps
-        )
+        reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
         self.assertEqual(reason, "network")
 
     def test_separate_retry_groups_isolated(self) -> None:
         """Verify earlier pip retry groups don't contaminate current classification."""
-        exc = RuntimeError("HTTP Error 404")
-        # Current package-install retry group with 404 (passed as isolated slice).
-        # Earlier pip-upgrade steps with SSL error exist but are not passed to classifier.
-        current_steps = [
-            {"pip_install_attempt": 1, "stderr_preview": "HTTP Error 404: Not Found"},
+        # Shared steps list with earlier pip-upgrade attempt that failed with SSL
+        steps: list[dict[str, Any]] = [
+            {
+                "pip_install_attempt": 1,
+                "stderr_preview": "SSL certificate verify failed",
+                "stdout_preview": "",
+            }
         ]
-        reason = migration_install.classify_package_install_failure(
-            exception=exc, steps=current_steps
-        )
-        # Should classify as package_index (404), not network (SSL from earlier group)
-        self.assertEqual(reason, "package_index")
+
+        # Mock _run_rehearsal_step to simulate HTTP 404 failure
+        def mock_rehearsal_step(command, *, cwd, env, steps, timeout):
+            # Append step with 404 error
+            steps.append(
+                {
+                    "stderr_preview": "HTTP Error 404: Not Found",
+                    "stdout_preview": "",
+                    "returncode": 1,
+                }
+            )
+            raise migration_install.RehearsalError("HTTP Error 404", steps)
+
+        with patch.object(
+            migration_install, "_run_rehearsal_step", side_effect=mock_rehearsal_step
+        ):
+            with self.assertRaises(migration_install.RehearsalError) as ctx:
+                migration_install._run_pip_install_with_retries(
+                    command=["pip", "install", "test-package"],
+                    cwd=Path("/tmp"),
+                    env=None,
+                    steps=steps,
+                    timeout=60,
+                    attempts=1,
+                    retry_delay_seconds=0,
+                    package_index=True,
+                )
+
+        # Assert failure_reason is package_index (404) not network (SSL from earlier)
+        self.assertEqual(ctx.exception.failure_reason, "package_index")
 
 
 class FailureReasonSchemaTests(unittest.TestCase):
@@ -157,9 +181,7 @@ class FailureReasonSchemaTests(unittest.TestCase):
 
     def test_pass_with_reason_rejected(self) -> None:
         result = _mock_result("pass", "pass", "network", ending_version="1.0.8")
-        with self.assertRaisesRegex(
-            ValueError, "failure_reason is only valid when status is fail"
-        ):
+        with self.assertRaisesRegex(ValueError, "failure_reason is only valid when status is fail"):
             release_qualify.validate_adoption_result_payload(
                 result, expected_package_identity="code-mower"
             )
@@ -196,9 +218,7 @@ class NoSecretPersistenceTests(unittest.TestCase):
                 )
             }
         ]
-        reason = migration_install.classify_package_install_failure(
-            exception=exc, steps=steps
-        )
+        reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
         self.assertIn(reason, migration_install.PACKAGE_INSTALL_FAILURE_REASONS)
         self.assertNotIn("ABC123XYZ", reason)
         self.assertNotIn("/home/user", reason)
@@ -212,13 +232,15 @@ class NoSecretPersistenceTests(unittest.TestCase):
     def test_taxonomy_is_stable_frozenset(self) -> None:
         self.assertEqual(
             migration_install.PACKAGE_INSTALL_FAILURE_REASONS,
-            frozenset({
-                "network",
-                "package_index",
-                "runtime",
-                "sandbox_permission",
-                "unknown",
-            }),
+            frozenset(
+                {
+                    "network",
+                    "package_index",
+                    "runtime",
+                    "sandbox_permission",
+                    "unknown",
+                }
+            ),
         )
 
 

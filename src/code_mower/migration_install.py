@@ -21,13 +21,15 @@ from .git_identity import scratch_git_config_commands
 #: Closed taxonomy for package-install failure reasons. Always one of these
 #: stable codes; never raw output, paths, or secrets. Used only when
 #: package_install fails; omitted for pass/warn/unavailable/planned.
-PACKAGE_INSTALL_FAILURE_REASONS = frozenset({
-    "network",             # DNS, connection, timeout, proxy, SSL errors
-    "package_index",       # 404, index propagation, malformed index response
-    "runtime",             # Python version, missing system library, incompatible deps
-    "sandbox_permission",  # Permission denied, disk full, OS-level sandbox denial
-    "unknown",             # Unclassifiable failures
-})
+PACKAGE_INSTALL_FAILURE_REASONS = frozenset(
+    {
+        "network",  # DNS, connection, timeout, proxy, SSL errors
+        "package_index",  # 404, index propagation, malformed index response
+        "runtime",  # Python version, missing system library, incompatible deps
+        "sandbox_permission",  # Permission denied, disk full, OS-level sandbox denial
+        "unknown",  # Unclassifiable failures
+    }
+)
 
 # Grammar for the one exact package-index spec shape a candidate-only download
 # accepts: <name>==<version>. Anything else (ranges, extras, paths, URLs) has
@@ -98,22 +100,14 @@ class RunOutput:
 
 class RehearsalError(RuntimeError):
     def __init__(
-        self,
-        message: str,
-        steps: list[dict[str, Any]],
-        *,
-        failure_reason: str | None = None
+        self, message: str, steps: list[dict[str, Any]], *, failure_reason: str | None = None
     ) -> None:
         super().__init__(message)
         self.steps = steps
         self.failure_reason = failure_reason
 
 
-def classify_package_install_failure(
-    *,
-    exception: Exception,
-    steps: list[dict[str, Any]]
-) -> str:
+def classify_package_install_failure(*, exception: Exception, steps: list[dict[str, Any]]) -> str:
     """Classify a package-install failure into a closed reason taxonomy.
 
     Returns one of PACKAGE_INSTALL_FAILURE_REASONS: network, package_index,
@@ -188,7 +182,7 @@ def classify_package_install_failure(
     sandbox_permission_indicators = (
         "permission denied",
         "[errno 13]",  # EACCES
-        "[errno 1]",   # EPERM
+        "[errno 1]",  # EPERM
         "disk full",
         "no space left",
         "[errno 28]",  # ENOSPC
@@ -439,7 +433,9 @@ def _parse_downloaded_artifact_identity(filename: str) -> tuple[str, str]:
     """
     match = _WHEEL_FILENAME_PATTERN.match(filename) or _SDIST_FILENAME_PATTERN.match(filename)
     if not match:
-        raise ValueError(f"downloaded candidate artifact has an unrecognized filename: {filename!r}")
+        raise ValueError(
+            f"downloaded candidate artifact has an unrecognized filename: {filename!r}"
+        )
     return _normalize_distribution_name(match.group("name")), match.group("version")
 
 
@@ -586,8 +582,7 @@ def _run_pip_install_with_retries(
             if attempt >= attempts:
                 if package_index:
                     failure_reason = classify_package_install_failure(
-                        exception=exc,
-                        steps=steps[attempt_steps_start:]
+                        exception=exc, steps=steps[attempt_steps_start:]
                     )
                     raise RehearsalError(
                         (
