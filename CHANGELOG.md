@@ -1,28 +1,49 @@
 # Changelog
 
 All notable public Code Mower OSS changes should be summarized here. The
-project uses alpha/beta prerelease tags while the first-user setup path,
-provider posture, and optional cloud sharing loop are still hardening.
+project used alpha/beta prerelease tags while the first-user setup path,
+provider posture, and optional cloud sharing loop were hardening; v1.0 and
+later entries are regular releases.
 
 ## Unreleased
 
+No changes yet.
+
+## v1.0.8
+
+This patch closes trust gaps found while dogfooding the multi-provider release
+campaign. It preserves supervised-pilot gate semantics, Python 3.12+, and the
+metadata-only privacy boundary.
+
 ### Added
 
-- Release campaign `status`, `watch`, `upload`, and Board discover the same
-  campaign set across worktrees and checkouts of one repository through a
-  metadata-only user-level index. Repo-local `.code-mower/campaigns` files and
-  explicit `--campaigns-dir` stay authoritative; ambiguity fails closed with
-  campaign ids only, never local paths (#712).
+- Local campaign adapters prove that the requested Python 3.12+ runtime ran the
+  candidate and that the expected closed result artifact was produced (#710).
+- Release qualification accepts an explicit, closed TestPyPI package source so
+  the exact candidate can be installed before production publication (#713).
+- Hosted Cursor Cloud Agent and Devin profiles require five explicit readiness
+  checks for dispatch and result transport before an applied campaign can start
+  (#718).
+
+### Changed
+
+- Campaign retries retain ordered attempt chronology and terminal failure
+  evidence, making timeout and retry behavior auditable without raw output
+  (#711).
+- Campaign discovery uses a metadata-only user index so status, watch, upload,
+  and Board continue to find campaigns after a checkout or worktree changes
+  (#712).
+- Cursor Cloud Agent is the builder identity; Cursor BugBot and Grok Bot remain
+  reviewer identities, preventing hosted builder results from being attributed
+  to the review lane (#717).
+- Antigravity campaigns require an explicit project identity and isolate each
+  execution without relying on ambient IDE state (#721).
 
 ### Fixed
 
-- Codex and Claude audit verdict transport now accepts P3 (non-blocking)
-  findings with line `0`, preserving the verdict and all valid findings when
-  metadata-only findings omit a meaningful source line. Blocking findings
-  (P0/P1/P2) continue to require line >= 1 to maintain an actionable source
-  location. Previously, a single P3 finding with line `0` caused the entire
-  verdict to be marked as UNKNOWN and required a rerun, even when the verdict
-  contained valid P2 blockers (#681).
+- Codex and Claude audit transport preserves a valid verdict when a
+  metadata-only P3 finding uses line 0; blocking findings still require an
+  actionable source line (#681).
 
 ## v1.0.7
 
