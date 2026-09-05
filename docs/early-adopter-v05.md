@@ -1,7 +1,7 @@
 # Code Mower Early Adopter Guide
 
 This document records the historical v0.5 early-adopter product plan. The
-current public install path is the v1.0.6 supervised-pilot release; use
+current public install path is the v1.0.7 supervised-pilot release; use
 [Install And Bootstrap](install.md), [Try Code Mower In 10 Minutes](try-in-10-minutes.md),
 and [Quickstart](quickstart.md) for live adoption steps.
 
@@ -145,7 +145,7 @@ Cut a v0.5 alpha or beta only after:
 
 ## Current Release
 
-`v1.0.6` is the current supervised-pilot release. It keeps the
+`v1.0.7` is the current supervised-pilot release. It keeps the
 local-first package path from alpha.1, the cloud doctor service-readiness check
 from alpha.5, the hardened provider-auth doctor diagnostics needed for
 early-adopter troubleshooting, the dogfood dry-run path that feeds the

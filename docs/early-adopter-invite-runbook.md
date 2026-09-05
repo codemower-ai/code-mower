@@ -38,7 +38,7 @@ It is an OSS local-first tool for setting up AI peer-programmer/reviewer lanes
 on your real codebase, with optional privacy-first cloud reporting.
 
 Start here:
-https://github.com/codemower-ai/code-mower/blob/v1.0.6/docs/try-in-10-minutes.md
+https://github.com/codemower-ai/code-mower/blob/v1.0.7/docs/try-in-10-minutes.md
 
 Cloud sharing is optional. The default bundle excludes source code, raw diffs,
 model transcripts, raw stdout/stderr, auth output, and secrets.
@@ -53,7 +53,7 @@ Before inviting a user:
    ```bash
    python3.12 --version
    export CODE_MOWER_PYTHON="$(command -v python3.12)"
-   pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.6
+   pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.7
    code-mower --version
    ```
 

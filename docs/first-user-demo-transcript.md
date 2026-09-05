@@ -14,9 +14,9 @@ release.
 ```bash
 python3.12 -m venv "$WORK_DIR/venv"
 "$WORK_DIR/venv/bin/python" -m pip install --upgrade pip
-"$WORK_DIR/venv/bin/python" -m pip install code-mower==1.0.6
+"$WORK_DIR/venv/bin/python" -m pip install code-mower==1.0.7
 "$WORK_DIR/venv/bin/code-mower" migration package-install-rehearsal \
-  --package-spec code-mower==1.0.6 \
+  --package-spec code-mower==1.0.7 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --json
@@ -29,7 +29,7 @@ python3.12 -m venv "$WORK_DIR/venv"
   "mode": "package-install-rehearsal",
   "status": "pass",
   "steps": 27,
-  "package_spec": "code-mower==1.0.6",
+  "package_spec": "code-mower==1.0.7",
   "toy_repo": "$WORK_DIR/toy-repo",
   "doctor_status": "warn",
   "generated_artifacts": {
