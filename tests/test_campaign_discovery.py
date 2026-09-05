@@ -63,7 +63,7 @@ class CampaignDiscoveryTests(unittest.TestCase):
                 repo_path=repo_path,
                 campaign_id=campaign_id,
                 campaigns_dir=campaigns_dir,
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
             )
 
     def _status(
@@ -155,7 +155,7 @@ class CampaignDiscoveryTests(unittest.TestCase):
         campaign = release_campaigns.initialize_campaign(
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
         ).to_dict()
         release_campaigns.save_campaign(campaign, local_dir)
         identity = campaign_discovery.resolve_repo_identity(repo)

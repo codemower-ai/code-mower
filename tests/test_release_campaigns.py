@@ -180,6 +180,46 @@ class ResolveProviderLaneTests(unittest.TestCase):
         self.assertEqual(canonical, "claude")
         self.assertEqual(lane.lane_id, "claude_audit")
 
+    def test_cursor_alias_resolves_to_cursor_cloud_agent(self) -> None:
+        """The 'cursor' alias routes to cursor_cloud_agent (builder), not cursor_bugbot."""
+        canonical, lane = release_campaigns.resolve_provider_lane("cursor")
+        self.assertEqual(canonical, "cursor_cloud_agent")
+        self.assertEqual(lane.lane_id, "cursor_cloud_agent")
+        self.assertEqual(lane.provider, "cursor_cloud_agent")
+
+    def test_cursor_cloud_agent_direct_lookup(self) -> None:
+        """cursor_cloud_agent as direct provider name resolves to itself."""
+        canonical, lane = release_campaigns.resolve_provider_lane("cursor_cloud_agent")
+        self.assertEqual(canonical, "cursor_cloud_agent")
+        self.assertEqual(lane.lane_id, "cursor_cloud_agent")
+        self.assertEqual(lane.driver, "hosted_bridge")
+        # Verify builder capability metadata
+        self.assertEqual(lane.provider_config.get("role"), "builder")
+        self.assertEqual(lane.provider_config.get("capability"), "work_order_execution")
+
+    def test_cursor_bugbot_stays_cursor_bugbot(self) -> None:
+        """cursor_bugbot as provider name resolves to cursor_bugbot reviewer lane."""
+        canonical, lane = release_campaigns.resolve_provider_lane("cursor_bugbot")
+        self.assertEqual(canonical, "cursor_bugbot")
+        self.assertEqual(lane.lane_id, "cursor_bugbot")
+        self.assertEqual(lane.driver, "saas_event")
+        # Verify reviewer capability metadata
+        self.assertEqual(lane.provider_config.get("role"), "reviewer")
+        self.assertEqual(lane.provider_config.get("capability"), "code_review")
+
+    def test_grok_bot_alias_resolves_to_cursor_bugbot(self) -> None:
+        """The 'grok_bot' alias routes to cursor_bugbot (reviewer)."""
+        canonical, lane = release_campaigns.resolve_provider_lane("grok_bot")
+        self.assertEqual(canonical, "cursor_bugbot")
+        self.assertEqual(lane.lane_id, "cursor_bugbot")
+        self.assertEqual(lane.provider, "cursor_bugbot")
+
+    def test_cursor_grok_bot_alias_resolves_to_cursor_bugbot(self) -> None:
+        """The 'cursor_grok_bot' alias also routes to cursor_bugbot (reviewer)."""
+        canonical, lane = release_campaigns.resolve_provider_lane("cursor_grok_bot")
+        self.assertEqual(canonical, "cursor_bugbot")
+        self.assertEqual(lane.lane_id, "cursor_bugbot")
+
     def test_unknown_provider_name_raises(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             release_campaigns.resolve_provider_lane("totally-made-up-provider")
@@ -1176,13 +1216,13 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             common_kwargs = dict(
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 issue="42",
                 apply=True,
                 command_runner=failing_command_runner,
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             release_campaigns.campaign_command(release_tag="v1.0.0", **common_kwargs)
@@ -1199,24 +1239,68 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             # Explicit --retry-provider dispatches exactly once more.
             release_campaigns.campaign_command(
-                release_tag="v1.0.0", resume=True, retry_provider="cursor_bugbot", **common_kwargs
+                release_tag="v1.0.0", resume=True, retry_provider="cursor_cloud_agent", **common_kwargs
             )
             self.assertEqual(len(dispatch_calls), 2)
 
+    @staticmethod
+    def _create_stored_cursor_bugbot_campaign(
+        campaigns_dir: Path,
+        release_tag: str = "v1.0.0",
+        package_spec: str = "code-mower==1.0.0",
+        status: str = "queued",
+        state: str = "queued",
+        repo_slug: str = "owner/repo",
+    ) -> dict:
+        """Helper to create a stored legacy cursor_bugbot campaign for testing backward compatibility."""
+        campaign_id = f"campaign-{release_tag}"
+        version = release_tag.lstrip("v")
+        idempotency_key = f"{campaign_id}_cursor_bugbot_cold_install"
+
+        campaign_dict = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": campaign_id,
+            "release_tag": release_tag,
+            "package_spec": package_spec,
+            "package_identity": package_spec.split("==")[0],
+            "normalized_version": version,
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "created_at": "2026-09-04T00:00:00Z",
+            "updated_at": "2026-09-04T00:00:00Z",
+            "status": status,
+            "applied": True if status != "queued" else False,
+            "providers": [
+                {
+                    "provider": "cursor_bugbot",
+                    "lane_id": "cursor_bugbot",
+                    "driver": "saas_event",
+                    "state": state,
+                    "environment": "local/python_3.12",
+                    "elapsed_seconds": 0.0,
+                    "idempotency_key": idempotency_key,
+                    "dispatch_mode": "apply" if status != "queued" else "dry_run",
+                    "attempted_at": "2026-09-04T00:00:00Z" if status != "queued" else None,
+                    "dispatched_at": "2026-09-04T00:00:00Z" if status == "running" else None,
+                    "completed_at": None,
+                    "error": None,
+                    "next_action": "",
+                    "next_detail": "",
+                    "dispatch_ref": {"issue_number": "99"} if status != "queued" else {},
+                    "adoption_result": None,
+                }
+            ],
+        }
+
+        campaigns_dir.mkdir(parents=True, exist_ok=True)
+        campaign_file = campaigns_dir / f"{campaign_id}.json"
+        campaign_file.write_text(json.dumps(campaign_dict, indent=2), encoding="utf-8")
+        return campaign_dict
+
     def _running_cursor_bugbot_campaign(self, campaigns_dir: Path) -> "release_campaigns.ReleaseCampaign":
-        campaign = release_campaigns.initialize_campaign(
-            release_tag="v1.0.0",
-            package_spec="code-mower==1.0.0",
-            providers=["cursor_bugbot"],
-            repo_slug="owner/repo",
-        )
-        campaign.status = "running"
-        campaign.providers[0]["state"] = "running"
-        campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
-        campaign.providers[0]["attempted_at"] = "2026-09-04T00:00:00Z"
-        campaign.providers[0]["dispatched_at"] = "2026-09-04T00:00:00Z"
-        release_campaigns.save_campaign(campaign, campaigns_dir)
-        return campaign
+        """Create a stored legacy cursor_bugbot campaign for testing backward compatibility."""
+        self._create_stored_cursor_bugbot_campaign(campaigns_dir, status="running", state="running")
+        return release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
 
     @staticmethod
     def _no_op_dispatch_command_runner(calls: list[Any]):
@@ -1240,12 +1324,13 @@ class ReleaseCampaignTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             campaign = self._running_cursor_bugbot_campaign(campaigns_dir)
+            assert campaign is not None
 
-            idempotency_key = campaign.providers[0]["idempotency_key"]
+            idempotency_key = campaign["providers"][0]["idempotency_key"]
             adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
-                "campaign_id": campaign.campaign_id,
+                "campaign_id": campaign["campaign_id"],
                 "provider": "cursor_bugbot",
                 "release_tag": "v1.0.0",
                 "idempotency_key": idempotency_key,
@@ -1477,7 +1562,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 apply=True,
                 gh_json_runner=mock_gh_json,
                 command_runner=self._no_op_dispatch_command_runner(dispatch_calls),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             self.assertEqual(dispatch_calls, [])
@@ -1576,21 +1661,21 @@ class ReleaseCampaignTests(unittest.TestCase):
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 issue="42",
                 apply=True,
                 command_runner=failing_command_runner,
                 gh_json_runner=failing_gh_json,
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             cursor_p = saved["providers"][0]
             self.assertEqual(cursor_p["state"], "unavailable")
-            self.assertIn("retry cursor_bugbot dispatch when GitHub is available", cursor_p["next_action"])
+            self.assertIn("retry cursor_cloud_agent dispatch when GitHub is available", cursor_p["next_action"])
             self.assertEqual(cursor_p["error"], "github_dispatch_failed")
             serialized = json.dumps(saved)
             self.assertNotIn("github.com", serialized)
@@ -1814,7 +1899,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 self.assertNotIn(leaked, serialized)
 
     def test_selectable_providers_diversity(self) -> None:
-        """Claude, Codex, Antigravity, Muse, Cursor/Grok Bot, and Devin are all included."""
+        """Claude, Codex, Antigravity, Muse, Cursor Cloud Agent, and Devin are all included."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
 
@@ -1828,7 +1913,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
             provider_names = {p["provider"] for p in saved["providers"]}
-            expected = {"claude", "codex", "antigravity", "muse", "cursor_bugbot", "devin"}
+            expected = {"claude", "codex", "antigravity", "muse", "cursor_cloud_agent", "devin"}
             self.assertEqual(provider_names, expected)
 
     def test_manual_adoption_result_recording(self) -> None:
@@ -2135,7 +2220,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             campaign.status = "running"
@@ -2163,7 +2248,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             campaign.status = "running"
@@ -2172,11 +2257,11 @@ class ReleaseCampaignTests(unittest.TestCase):
             release_campaigns.save_campaign(campaign, campaigns_dir)
 
             idempotency_key = campaign.providers[0]["idempotency_key"]
-            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
+            adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_cloud_agent", outcome="pass")
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                 "campaign_id": campaign.campaign_id,
-                "provider": "cursor_bugbot",
+                "provider": "cursor_cloud_agent",
                 "release_tag": "v1.0.0",
                 "idempotency_key": idempotency_key,
                 "adoption_result": adoption_res,
@@ -2236,7 +2321,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 package_spec="code-mower==2.0.0",
                 qualification_context="upgrade",
                 starting_version="1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             campaign.status = "running"
@@ -2290,7 +2375,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 package_spec="code-mower==2.0.0",
                 qualification_context="upgrade",
                 starting_version="1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             campaign.status = "running"
@@ -2344,7 +2429,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 package_spec="code-mower==2.0.0",
                 qualification_context="upgrade",
                 starting_version="1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             campaign.status = "running"
@@ -2356,7 +2441,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             adoption_res = _mock_adoption_result_full(
                 release_tag="v2.0.0",
                 normalized_version="2.0.0",
-                provider="cursor_bugbot",
+                provider="cursor_cloud_agent",
                 qualification_context="upgrade",
                 starting_version="1.0.0",
                 ending_version="2.0.0",
@@ -2365,7 +2450,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                 "campaign_id": campaign.campaign_id,
-                "provider": "cursor_bugbot",
+                "provider": "cursor_cloud_agent",
                 "release_tag": "v2.0.0",
                 "idempotency_key": idempotency_key,
                 "adoption_result": adoption_res,
@@ -2395,7 +2480,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             campaign.status = "running"
@@ -2443,7 +2528,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             campaign.status = "running"
@@ -2663,23 +2748,50 @@ class ReleaseCampaignTests(unittest.TestCase):
         """Cursor BugBot's registry defaults trust cursor[bot]'s bound reply."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
+            campaigns_dir.mkdir(parents=True)
 
-            campaign = release_campaigns.initialize_campaign(
-                release_tag="v1.0.0",
-                package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
-                repo_slug="owner/repo",
-            )
-            campaign.status = "running"
-            campaign.providers[0]["state"] = "running"
-            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
-            release_campaigns.save_campaign(campaign, campaigns_dir)
+            # Create stored legacy cursor_bugbot campaign
+            idempotency_key = "campaign-v1.0.0_cursor_bugbot_cold_install"
+            campaign_dict = {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-v1.0.0",
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "package_identity": "code-mower",
+                "normalized_version": "1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "created_at": "2026-09-04T00:00:00Z",
+                "updated_at": "2026-09-04T00:00:00Z",
+                "status": "running",
+                "applied": True,
+                "providers": [
+                    {
+                        "provider": "cursor_bugbot",
+                        "lane_id": "cursor_bugbot",
+                        "driver": "saas_event",
+                        "state": "running",
+                        "environment": "local/python_3.12",
+                        "elapsed_seconds": 0.0,
+                        "idempotency_key": idempotency_key,
+                        "dispatch_mode": "apply",
+                        "attempted_at": None,
+                        "dispatched_at": None,
+                        "completed_at": None,
+                        "error": None,
+                        "next_action": "",
+                        "next_detail": "",
+                        "dispatch_ref": {"issue_number": "99"},
+                    }
+                ],
+            }
+            campaign_file = campaigns_dir / "campaign-v1.0.0.json"
+            campaign_file.write_text(json.dumps(campaign_dict, indent=2), encoding="utf-8")
 
-            idempotency_key = campaign.providers[0]["idempotency_key"]
             adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
-                "campaign_id": campaign.campaign_id,
+                "campaign_id": "campaign-v1.0.0",
                 "provider": "cursor_bugbot",
                 "release_tag": "v1.0.0",
                 "idempotency_key": idempotency_key,
@@ -2707,22 +2819,16 @@ class ReleaseCampaignTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
 
-            campaign = release_campaigns.initialize_campaign(
-                release_tag="v1.0.0",
-                package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
-                repo_slug="owner/repo",
+            # Create stored legacy cursor_bugbot campaign
+            campaign_dict = self._create_stored_cursor_bugbot_campaign(
+                campaigns_dir, status="running", state="running"
             )
-            campaign.status = "running"
-            campaign.providers[0]["state"] = "running"
-            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
-            release_campaigns.save_campaign(campaign, campaigns_dir)
+            idempotency_key = campaign_dict["providers"][0]["idempotency_key"]
 
-            idempotency_key = campaign.providers[0]["idempotency_key"]
             adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
-                "campaign_id": campaign.campaign_id,
+                "campaign_id": "campaign-v1.0.0",
                 "provider": "cursor_bugbot",
                 "release_tag": "v1.0.0",
                 "idempotency_key": idempotency_key,
@@ -2751,22 +2857,16 @@ class ReleaseCampaignTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
 
-            campaign = release_campaigns.initialize_campaign(
-                release_tag="v1.0.0",
-                package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
-                repo_slug="owner/repo",
+            # Create stored legacy cursor_bugbot campaign
+            campaign_dict = self._create_stored_cursor_bugbot_campaign(
+                campaigns_dir, status="running", state="running"
             )
-            campaign.status = "running"
-            campaign.providers[0]["state"] = "running"
-            campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
-            release_campaigns.save_campaign(campaign, campaigns_dir)
+            idempotency_key = campaign_dict["providers"][0]["idempotency_key"]
 
-            idempotency_key = campaign.providers[0]["idempotency_key"]
             adoption_res = _mock_adoption_result(release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass")
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
-                "campaign_id": campaign.campaign_id,
+                "campaign_id": "campaign-v1.0.0",
                 "provider": "cursor_bugbot",
                 "release_tag": "v1.0.0",
                 "idempotency_key": idempotency_key,
@@ -2822,8 +2922,8 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(trigger_body.splitlines()[0], "@devin run")
             self.assertIn("CODE_MOWER_RELEASE_TRIGGER", trigger_body)
 
-    def test_cursor_bugbot_dispatch_posts_trigger_comment(self) -> None:
-        """Cursor BugBot dispatch posts the trigger command as a separate actionable comment."""
+    def test_cursor_cloud_agent_dispatch_posts_trigger_comment(self) -> None:
+        """Cursor Cloud Agent dispatch posts the trigger command as a separate actionable comment."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             bodies: list[str] = []
@@ -2831,13 +2931,13 @@ class ReleaseCampaignTests(unittest.TestCase):
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 issue="99",
                 apply=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token", "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY": "1"},
             )
 
             self.assertEqual(len(bodies), 2)
@@ -2845,12 +2945,11 @@ class ReleaseCampaignTests(unittest.TestCase):
             trigger_body = bodies[1]
 
             # Dispatch body should document the trigger commands
-            self.assertIn("bugbot run", dispatch_body)
-            self.assertIn("@cursor review", dispatch_body)
+            self.assertIn("@cursor run", dispatch_body)
 
             # The actionable command stays first; the hidden marker makes a
             # crash-after-post retry externally idempotent.
-            self.assertEqual(trigger_body.splitlines()[0], "bugbot run")
+            self.assertEqual(trigger_body.splitlines()[0], "@cursor run")
             self.assertIn("CODE_MOWER_RELEASE_TRIGGER", trigger_body)
 
     def test_failed_trigger_post_retries_on_resume(self) -> None:
@@ -2892,14 +2991,14 @@ class ReleaseCampaignTests(unittest.TestCase):
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 issue="42",
                 apply=True,
                 command_runner=failing_then_succeeding_runner,
                 gh_json_runner=mock_gh_json,
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             # Should have dispatch comment + failed trigger attempt
@@ -2921,7 +3020,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 apply=True,
                 gh_json_runner=mock_gh_json,
                 command_runner=failing_then_succeeding_runner,
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             # Should have 1 more trigger attempt, no new dispatch
@@ -2932,7 +3031,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             retried = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert retried is not None
             self.assertEqual(retried["providers"][0]["trigger_posted"], True)
-            self.assertIn("poll cursor_bugbot remote progress marker", retried["providers"][0]["next_action"])
+            self.assertIn("poll cursor_cloud_agent remote progress marker", retried["providers"][0]["next_action"])
 
     def test_crash_after_dispatch_before_trigger_is_retriable(self) -> None:
         """Simulates process crash after dispatch but before trigger is recorded."""
@@ -2944,7 +3043,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             campaign.status = "running"
@@ -2968,12 +3067,12 @@ class ReleaseCampaignTests(unittest.TestCase):
                 apply=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
                 gh_json_runner=mock_gh_json,
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             # Should have posted exactly 1 trigger (no redispatch)
             self.assertEqual(len(bodies), 1)
-            self.assertIn("bugbot run", bodies[0])
+            self.assertIn("@cursor run", bodies[0])
             self.assertNotIn("CODE_MOWER_RELEASE_CAMPAIGN", bodies[0])
 
             resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -2986,7 +3085,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             provider = campaign.providers[0]
@@ -3027,7 +3126,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     },
                     "",
                 ),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             self.assertEqual(bodies, [])
@@ -3079,7 +3178,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             provider = campaign.providers[0]
@@ -3094,7 +3193,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 {
                     "schema": release_campaigns.TRIGGER_MARKER_SCHEMA,
                     "campaign_id": "campaign-v1.0.0",
-                    "provider": "cursor_bugbot",
+                    "provider": "cursor_cloud_agent",
                     "reconciliation_key": "trigger-key",
                 },
                 sort_keys=True,
@@ -3111,14 +3210,14 @@ class ReleaseCampaignTests(unittest.TestCase):
                         "comments": [
                             {
                                 "author": {"login": "cursor[bot]"},
-                                "body": "bugbot run\n\n"
+                                "body": "@cursor run\n\n"
                                 f"<!-- CODE_MOWER_RELEASE_TRIGGER: {trigger_marker} -->",
                             }
                         ]
                     },
                     "",
                 ),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             self.assertEqual(bodies, [])
@@ -3132,7 +3231,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             provider = campaign.providers[0]
@@ -3148,7 +3247,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 {
                     "schema": release_campaigns.TRIGGER_MARKER_SCHEMA,
                     "campaign_id": campaign.campaign_id,
-                    "provider": "cursor_bugbot",
+                    "provider": "cursor_cloud_agent",
                     "reconciliation_key": "public-dispatch-key",
                 },
                 sort_keys=True,
@@ -3165,18 +3264,18 @@ class ReleaseCampaignTests(unittest.TestCase):
                     {
                         "comments": [
                             {
-                                "body": "bugbot run\n\n"
+                                "body": "@cursor run\n\n"
                                 f"<!-- CODE_MOWER_RELEASE_TRIGGER: {forged_marker} -->"
                             }
                         ]
                     },
                     "",
                 ),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             self.assertEqual(len(bodies), 1)
-            self.assertIn("bugbot run", bodies[0])
+            self.assertIn("@cursor run", bodies[0])
             self.assertIn("private-trigger-key", bodies[0])
             self.assertNotIn("public-dispatch-key", bodies[0])
             resumed = release_campaigns.load_campaign_by_id(
@@ -3191,7 +3290,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             provider = campaign.providers[0]
@@ -3205,12 +3304,12 @@ class ReleaseCampaignTests(unittest.TestCase):
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                 "campaign_id": campaign.campaign_id,
-                "provider": "cursor_bugbot",
+                "provider": "cursor_cloud_agent",
                 "release_tag": "v1.0.0",
                 "idempotency_key": provider["idempotency_key"],
                 "adoption_result": _mock_adoption_result(
                     release_tag="v1.0.0",
-                    provider="cursor_bugbot",
+                    provider="cursor_cloud_agent",
                     outcome="pass",
                 ),
             }
@@ -3231,7 +3330,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                     },
                     "",
                 ),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             self.assertEqual(bodies, [])
@@ -3245,7 +3344,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             provider = campaign.providers[0]
@@ -3264,7 +3363,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 resume=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
                 gh_json_runner=lambda args, **kwargs: ({"comments": []}, ""),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             self.assertEqual(bodies, [])
@@ -3279,7 +3378,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             provider = campaign.providers[0]
@@ -3297,7 +3396,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 resume=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
                 gh_json_runner=lambda args, **kwargs: ({"comments": []}, ""),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             self.assertEqual(bodies, [])
@@ -3317,7 +3416,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign = release_campaigns.initialize_campaign(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             campaign.status = "running"
@@ -3357,13 +3456,13 @@ class ReleaseCampaignTests(unittest.TestCase):
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 campaigns_dir=campaigns_dir,
-                retry_provider="cursor_bugbot",
+                retry_provider="cursor_cloud_agent",
                 apply=True,
                 repo_slug="owner/repo",
                 issue="42",
                 command_runner=counting_runner,
                 gh_json_runner=mock_gh_json,
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             # Should have 1 dispatch + 1 trigger (not 2 triggers)
@@ -3479,14 +3578,14 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             common_kwargs = dict(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 issue="42",
                 apply=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
                 gh_json_runner=mock_gh_json,
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             release_campaigns.campaign_command(**common_kwargs)
@@ -3580,13 +3679,13 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 issue="42",
                 apply=False,
                 command_runner=_capturing_dispatch_command_runner(bodies),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
             self.assertEqual(bodies, [])
 
@@ -3599,7 +3698,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
                 apply=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
                 gh_json_runner=mock_gh_json,
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
             release_campaigns.campaign_command(**dispatch_kwargs)
             # Cursor BugBot has trigger_comments, so 2 bodies: dispatch + trigger
@@ -3673,7 +3772,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             release_campaigns.campaign_command(
                 release_tag="v2.0.0",
                 package_spec="code-mower==2.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 apply=False,
             )
@@ -3686,13 +3785,13 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
                     package_spec="code-mower==2.0.0",
                     qualification_context="upgrade",
                     starting_version="1.0.0",
-                    providers=["cursor_bugbot"],
+                    providers=["cursor_cloud_agent"],
                     campaigns_dir=campaigns_dir,
                     repo_slug="owner/repo",
                     issue="42",
                     apply=True,
                     command_runner=command_runner,
-                    env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                    env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
                 )
 
             self.assertEqual(ret, 1)
@@ -3710,7 +3809,7 @@ class RepeatedCampaignInvocationTests(unittest.TestCase):
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 apply=False,
             )
@@ -3743,13 +3842,13 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
             package_spec="code-mower==2.0.0",
             qualification_context="upgrade",
             starting_version="1.0.3",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
             campaigns_dir=campaigns_dir,
             repo_slug="owner/repo",
             issue="42",
             apply=True,
             command_runner=_capturing_dispatch_command_runner(bodies),
-            env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
         )
         saved = release_campaigns.load_campaign_by_id("campaign-v2.0.0", campaigns_dir)
         assert saved is not None
@@ -3786,13 +3885,13 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 issue="42",
                 apply=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             # Cursor BugBot has trigger_comments, so 2 bodies: dispatch + trigger
@@ -3842,7 +3941,7 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
                 apply=True,
                 command_runner=_capturing_dispatch_command_runner(dispatch_calls),
                 gh_json_runner=mock_gh_json,
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             self.assertEqual(ret, 0)
@@ -3870,7 +3969,7 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
                 package_spec="code-mower==2.0.0",
                 qualification_context="upgrade",
                 starting_version="1.0.3",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 repo_slug="owner/repo",
             )
             tampered = campaign.to_dict()
@@ -3885,7 +3984,7 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
                 issue="42",
                 apply=True,
                 command_runner=command_runner,
-                env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
 
             command_runner.assert_not_called()
@@ -3946,7 +4045,7 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
         adapter_runner = mock.MagicMock()
         transport_vars = {
             "devin": "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY",
-            "cursor_bugbot": "CODE_MOWER_CURSOR_BUGBOT_CAMPAIGN_TRANSPORT_READY",
+            "cursor_cloud_agent": "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY",
         }
         ret = release_campaigns.campaign_command(
             release_tag="v1.0.0",
@@ -3982,7 +4081,7 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
         """Credentials alone are not readiness: the preview names the missing --issue."""
         for provider, token_env in (
             ("devin", "DEVIN_AUDIT_LABEL_TOKEN"),
-            ("cursor_bugbot", "CURSOR_BUGBOT_AUDIT_LABEL_TOKEN"),
+            ("cursor_cloud_agent", "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN"),
         ):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
                 campaigns_dir = Path(tmp) / "campaigns"
@@ -4399,13 +4498,13 @@ class CampaignStatusIdentifierTests(unittest.TestCase):
         older = release_campaigns.initialize_campaign(
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
         ).to_dict()
         older["updated_at"] = "2026-09-03T12:00:00Z"
         newer = release_campaigns.initialize_campaign(
             release_tag="v1.1.0",
             package_spec="code-mower==1.1.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
         ).to_dict()
         newer["updated_at"] = "2026-09-04T12:00:00Z"
         release_campaigns.save_campaign(older, campaigns_dir)
@@ -4548,8 +4647,7 @@ class DuplicateCampaignProviderTests(unittest.TestCase):
         """Two different names for one canonical provider are still one provider."""
         for names, canonical in (
             (["claude", "claude_code"], "claude"),
-            (["cursor", "grok_bot"], "cursor_bugbot"),
-            (["codex", "cursor_bugbot", "cursor"], "cursor_bugbot"),
+            (["cursor", "cursor_cloud_agent"], "cursor_cloud_agent"),
         ):
             with self.subTest(names=names):
                 with self.assertRaises(ValueError) as ctx:
@@ -4570,13 +4668,137 @@ class DuplicateCampaignProviderTests(unittest.TestCase):
             providers=["claude", "codex", "cursor"],
         )
         names = [p["provider"] for p in campaign.providers]
-        self.assertEqual(names, ["claude", "codex", "cursor_bugbot"])
+        self.assertEqual(names, ["claude", "codex", "cursor_cloud_agent"])
         keys = {p["idempotency_key"] for p in campaign.providers}
         self.assertEqual(len(keys), 3)
         result_files = {
             f"{campaign.campaign_id}_{p['provider']}.json" for p in campaign.providers
         }
         self.assertEqual(len(result_files), 3)
+
+    def test_cursor_and_grok_are_now_distinct(self) -> None:
+        """cursor (builder) and grok_bot (reviewer) are now separate providers."""
+        cursor_name, cursor_lane = release_campaigns.resolve_provider_lane("cursor")
+        grok_name, grok_lane = release_campaigns.resolve_provider_lane("grok_bot")
+
+        # cursor resolves to cursor_cloud_agent (builder)
+        self.assertEqual(cursor_name, "cursor_cloud_agent")
+        self.assertEqual(cursor_lane.provider_config.get("capability"), "work_order_execution")
+
+        # grok_bot resolves to cursor_bugbot (reviewer)
+        self.assertEqual(grok_name, "cursor_bugbot")
+        self.assertEqual(grok_lane.provider_config.get("capability"), "code_review")
+
+        # They are distinct providers
+        self.assertNotEqual(cursor_name, grok_name)
+
+    def test_cursor_cloud_agent_and_bugbot_alias_mappings(self) -> None:
+        """Verify all alias mappings match documentation."""
+        # Cursor Cloud Agent (builder) aliases
+        for alias in ["cursor", "cursor_cloud_agent"]:
+            canonical, lane = release_campaigns.resolve_provider_lane(alias)
+            self.assertEqual(canonical, "cursor_cloud_agent", f"{alias} should resolve to cursor_cloud_agent")
+            self.assertEqual(lane.provider_config.get("role"), "builder")
+            self.assertEqual(lane.provider_config.get("capability"), "work_order_execution")
+
+        # Cursor BugBot (reviewer) aliases
+        for alias in ["cursor_bugbot", "cursor_grok_bot", "grok_bot"]:
+            canonical, lane = release_campaigns.resolve_provider_lane(alias)
+            self.assertEqual(canonical, "cursor_bugbot", f"{alias} should resolve to cursor_bugbot")
+            self.assertEqual(lane.provider_config.get("role"), "reviewer")
+            self.assertEqual(lane.provider_config.get("capability"), "code_review")
+
+    def test_stored_cursor_bugbot_campaigns_remain_cursor_bugbot(self) -> None:
+        """Existing stored cursor_bugbot campaigns are not reinterpreted as cursor_cloud_agent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaigns_dir.mkdir(parents=True)
+
+            # Create a legacy campaign with cursor_bugbot
+            legacy_campaign = {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-v1.0.0",
+                "release_tag": "v1.0.0",
+                "package_spec": "code-mower==1.0.0",
+                "package_identity": "code-mower",
+                "normalized_version": "1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "created_at": "2026-09-01T00:00:00Z",
+                "updated_at": "2026-09-01T00:00:00Z",
+                "status": "queued",
+                "applied": False,
+                "providers": [
+                    {
+                        "provider": "cursor_bugbot",
+                        "state": "queued",
+                        "idempotency_key": "campaign-v1.0.0_cursor_bugbot_cold_install",
+                        "attempted_at": None,
+                        "dispatched_at": None,
+                        "completed_at": None,
+                        "elapsed_seconds": None,
+                        "error": None,
+                        "next_action": "run with --apply to dispatch providers",
+                        "dispatch_mode": "preview",
+                        "dispatch_ref": None,
+                    }
+                ],
+            }
+
+            # Save the legacy campaign
+            campaign_file = campaigns_dir / "campaign-v1.0.0.json"
+            campaign_file.write_text(json.dumps(legacy_campaign, indent=2), encoding="utf-8")
+
+            # Load it back and verify it stays cursor_bugbot
+            loaded = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert loaded is not None
+            self.assertEqual(loaded["providers"][0]["provider"], "cursor_bugbot")
+
+            # Resume operations should preserve the provider identity
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                apply=False,
+            )
+
+            reloaded = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert reloaded is not None
+            self.assertEqual(reloaded["providers"][0]["provider"], "cursor_bugbot")
+
+    def test_initialize_campaign_rejects_reviewer_only_providers(self) -> None:
+        """New campaigns reject providers lacking work_order_execution capability."""
+        reviewer_aliases = ["cursor_bugbot", "grok_bot", "cursor_grok_bot"]
+
+        for alias in reviewer_aliases:
+            with self.assertRaises(ValueError) as cm:
+                release_campaigns.initialize_campaign(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=[alias],
+                )
+            self.assertIn("review-only lane", str(cm.exception))
+            self.assertIn("work_order_execution", str(cm.exception))
+            self.assertIn("code_review", str(cm.exception))
+
+        # Builder providers should still be accepted
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_cloud_agent"],
+        )
+        self.assertEqual(len(campaign.providers), 1)
+        self.assertEqual(campaign.providers[0]["provider"], "cursor_cloud_agent")
+
+        # Other providers without explicit capability should still be accepted
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["codex"],
+        )
+        self.assertEqual(len(campaign.providers), 1)
+        self.assertEqual(campaign.providers[0]["provider"], "codex")
 
     def test_default_provider_set_has_no_duplicates(self) -> None:
         campaign = release_campaigns.initialize_campaign(
@@ -4621,14 +4843,14 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
     recorded. A slug that conflicts with a non-empty stored one is refused.
     """
 
-    _ENV = {"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"}
+    _ENV = {"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"}
 
     def _create_without_slug(self, campaigns_dir: Path) -> dict[str, Any]:
         ret = release_campaigns.campaign_command(
             action="create",
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
             campaigns_dir=campaigns_dir,
             apply=False,
             command_runner=mock.MagicMock(),
@@ -4736,7 +4958,7 @@ class CampaignRepoSlugSupplyTests(unittest.TestCase):
                     action="create",
                     release_tag="v1.0.0",
                     package_spec="code-mower==1.0.0",
-                    providers=["cursor_bugbot"],
+                    providers=["cursor_cloud_agent"],
                     campaigns_dir=campaigns_dir,
                     repo_slug="owner/repo",
                     apply=False,
@@ -4807,14 +5029,14 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
     before any mutation, polling, or dispatch.
     """
 
-    _ENV = {"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"}
+    _ENV = {"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"}
 
     def _create_upgrade(self, campaigns_dir: Path) -> dict[str, Any]:
         ret = release_campaigns.campaign_command(
             action="create",
             release_tag="v1.1.0",
             package_spec="code-mower==1.1.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
             qualification_context="upgrade",
             starting_version="1.0.0",
             campaigns_dir=campaigns_dir,
@@ -4932,7 +5154,7 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
                 action="create",
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 apply=False,
                 command_runner=mock.MagicMock(),
@@ -4952,7 +5174,7 @@ class CampaignQualificationContextSupplyTests(unittest.TestCase):
                 action="create",
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 qualification_context="cold_install",
                 campaigns_dir=campaigns_dir,
                 apply=False,
@@ -5049,14 +5271,14 @@ class CampaignPackageSourceSupplyTests(unittest.TestCase):
     `--qualification-context`.
     """
 
-    _ENV = {"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"}
+    _ENV = {"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"}
 
     def _create_testpypi(self, campaigns_dir: Path) -> dict[str, Any]:
         ret = release_campaigns.campaign_command(
             action="create",
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
             package_source="testpypi",
             campaigns_dir=campaigns_dir,
             repo_slug="owner/repo",
@@ -5077,7 +5299,7 @@ class CampaignPackageSourceSupplyTests(unittest.TestCase):
                 action="create",
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 apply=False,
                 command_runner=mock.MagicMock(),
@@ -5232,15 +5454,7 @@ class PackageSourceBackwardCompatibilityTests(unittest.TestCase):
     def test_legacy_campaign_missing_the_field_is_read_as_pypi(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
-            campaigns_dir.mkdir(parents=True)
-            legacy = release_campaigns.initialize_campaign(
-                release_tag="v1.0.0",
-                package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
-                repo_slug="owner/repo",
-            ).to_dict()
-            del legacy["package_source"]
-            release_campaigns.save_campaign(legacy, campaigns_dir)
+            ReleaseCampaignTests._create_stored_cursor_bugbot_campaign(campaigns_dir)
 
             loaded = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert loaded is not None
@@ -5373,7 +5587,7 @@ class LocalAdapterPackageSourceCommandConstructionTests(unittest.TestCase):
 class HostedDispatchPackageSourceTests(unittest.TestCase):
     """Hosted dispatch instructions receive the same closed source contract."""
 
-    _ENV = {"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"}
+    _ENV = {"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"}
 
     def test_pypi_dispatch_marker_and_body_name_the_default_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5382,7 +5596,7 @@ class HostedDispatchPackageSourceTests(unittest.TestCase):
                 action="create",
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 apply=False,
@@ -5423,7 +5637,7 @@ class HostedDispatchPackageSourceTests(unittest.TestCase):
                 action="create",
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["cursor_bugbot"],
+                providers=["cursor_cloud_agent"],
                 package_source="testpypi",
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
@@ -6095,7 +6309,7 @@ class CampaignLockFreeStatusTests(unittest.TestCase):
         campaign = release_campaigns.initialize_campaign(
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
         ).to_dict()
         release_campaigns.save_campaign(campaign, campaigns_dir)
         return campaign
@@ -6444,7 +6658,7 @@ class CampaignReleaseTagLookupTests(unittest.TestCase):
         campaign = release_campaigns.initialize_campaign(
             release_tag=release_tag,
             package_spec=f"code-mower=={normalized}",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
             campaign_id=campaign_id,
             repo_slug=repo_slug,
         ).to_dict()
@@ -6763,7 +6977,7 @@ class CampaignIdExactLookupTests(unittest.TestCase):
         campaign = release_campaigns.initialize_campaign(
             release_tag=release_tag,
             package_spec=f"code-mower=={normalized}",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
             campaign_id=campaign_id,
         ).to_dict()
         release_campaigns.save_campaign(campaign, campaigns_dir)
@@ -6972,7 +7186,7 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
         campaign = release_campaigns.initialize_campaign(
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
             repo_slug="owner/repo",
         ).to_dict()
         release_campaigns.save_campaign(campaign, campaigns_dir)
@@ -7092,7 +7306,7 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 ret = release_campaigns.campaign_command(
                     status=True,
-                    retry_provider="cursor_bugbot",
+                    retry_provider="cursor_cloud_agent",
                     release_tag="v1.0.0",
                     repo_slug="owner/repo",
                     issue="99",
@@ -7116,7 +7330,7 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
             self._seed(campaigns_dir)
             result_path = Path(tmp) / "result.json"
             result_path.write_text(
-                json.dumps(_mock_adoption_result(provider="cursor_bugbot")), encoding="utf-8"
+                json.dumps(_mock_adoption_result(provider="cursor_cloud_agent")), encoding="utf-8"
             )
 
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
@@ -7127,7 +7341,7 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
                     release_tag="v1.0.0",
                     campaigns_dir=campaigns_dir,
                     record_result=result_path,
-                    record_provider="cursor_bugbot",
+                    record_provider="cursor_cloud_agent",
                 )
             self.assertEqual(ret, 1)
             stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -7141,7 +7355,7 @@ class CampaignStatusIsReadOnlyTests(unittest.TestCase):
                     release_tag="v1.0.0",
                     campaigns_dir=campaigns_dir,
                     record_result=result_path,
-                    record_provider="cursor_bugbot",
+                    record_provider="cursor_cloud_agent",
                 )
             self.assertEqual(ret, 0)
             stored = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -7211,7 +7425,7 @@ class ContradictoryCampaignIntentTests(unittest.TestCase):
         campaign = release_campaigns.initialize_campaign(
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
             repo_slug="owner/repo",
         ).to_dict()
         release_campaigns.save_campaign(campaign, campaigns_dir)
@@ -7260,7 +7474,7 @@ class ContradictoryCampaignIntentTests(unittest.TestCase):
                 ret = release_campaigns.campaign_command(
                     release_tag="v1.0.0",
                     package_spec="code-mower==1.0.0",
-                    providers=["cursor_bugbot"],
+                    providers=["cursor_cloud_agent"],
                     campaigns_dir=campaigns_dir,
                     repo_slug="owner/repo",
                     issue="99",
@@ -7521,11 +7735,11 @@ class ResultMarkerParsingTests(unittest.TestCase):
         return {
             "schema": release_campaigns.RESULT_MARKER_SCHEMA,
             "campaign_id": campaign.campaign_id,
-            "provider": "cursor_bugbot",
+            "provider": "cursor_cloud_agent",
             "release_tag": "v1.0.0",
             "idempotency_key": campaign.providers[0]["idempotency_key"],
             "adoption_result": _mock_adoption_result(
-                release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass"
+                release_tag="v1.0.0", provider="cursor_cloud_agent", outcome="pass"
             ),
             **extra,
         }
@@ -7535,7 +7749,7 @@ class ResultMarkerParsingTests(unittest.TestCase):
         campaign = release_campaigns.initialize_campaign(
             release_tag="v1.0.0",
             package_spec="code-mower==1.0.0",
-            providers=["cursor_bugbot"],
+            providers=["cursor_cloud_agent"],
             repo_slug="owner/repo",
         )
         campaign.status = "running"
@@ -8124,14 +8338,14 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
                 release_campaigns.campaign_command(
                     release_tag="v1.0.0",
                     package_spec="code-mower==1.0.0",
-                    providers=["cursor_bugbot"],
+                    providers=["cursor_cloud_agent"],
                     campaigns_dir=campaigns_dir,
                     repo_slug="owner/repo",
                     issue="42",
                     apply=True,
                     command_runner=_capturing_dispatch_command_runner(bodies),
                     gh_json_runner=mock_gh_json,
-                    env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                    env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
                 )
             # Cursor BugBot has trigger_comments, so 2 comments posted: dispatch + trigger
             self.assertEqual(len(bodies), 2)
@@ -8146,7 +8360,7 @@ class AppliedCampaignIdentityIsMonotonicTests(unittest.TestCase):
                     campaigns_dir=campaigns_dir,
                     resume=True,
                     gh_json_runner=mock_gh_json,
-                    env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+                    env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
                 )
 
             polled = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -8358,7 +8572,7 @@ class CampaignPackageIdentityBindingTests(unittest.TestCase):
                     campaign = release_campaigns.initialize_campaign(
                         release_tag="v1.0.0",
                         package_spec="other-widget==1.0.0",
-                        providers=["cursor_bugbot"],
+                        providers=["cursor_cloud_agent"],
                         repo_slug="owner/repo",
                     )
                     campaign.status = "running"
@@ -8367,13 +8581,13 @@ class CampaignPackageIdentityBindingTests(unittest.TestCase):
                     release_campaigns.save_campaign(campaign, campaigns_dir)
 
                     adoption_res = _mock_adoption_result(
-                        release_tag="v1.0.0", provider="cursor_bugbot", outcome="pass"
+                        release_tag="v1.0.0", provider="cursor_cloud_agent", outcome="pass"
                     )
                     adoption_res["package_identity"] = identity
                     wrapper = {
                         "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                         "campaign_id": campaign.campaign_id,
-                        "provider": "cursor_bugbot",
+                        "provider": "cursor_cloud_agent",
                         "release_tag": "v1.0.0",
                         "idempotency_key": campaign.providers[0]["idempotency_key"],
                         "adoption_result": adoption_res,
@@ -10741,7 +10955,7 @@ class CampaignWatchTests(unittest.TestCase):
             time_fn=self.clock.time,
             sleep_fn=self.clock.sleep,
             gh_json_runner=gh_json,
-            env={"CURSOR_BUGBOT_AUDIT_LABEL_TOKEN": "token"},
+            env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
         )
 
         self.assertEqual(summary["stop_reason"], "complete")

@@ -11,7 +11,9 @@ from typing import Any
 import unittest
 from unittest import mock
 
+from code_mower import release_campaigns
 from code_mower.doctor_checks import (
+    DEFAULT_CAMPAIGN_PROVIDERS,
     STATUS_PASS,
     STATUS_SKIP,
     STATUS_WARN,
@@ -22,6 +24,11 @@ from code_mower.doctor_checks import (
 
 
 class DoctorCampaignReadinessTests(unittest.TestCase):
+    def test_default_providers_match_campaign_runtime(self) -> None:
+        self.assertEqual(DEFAULT_CAMPAIGN_PROVIDERS, release_campaigns.DEFAULT_CAMPAIGN_PROVIDERS)
+        self.assertIn("cursor_cloud_agent", DEFAULT_CAMPAIGN_PROVIDERS)
+        self.assertNotIn("cursor_bugbot", DEFAULT_CAMPAIGN_PROVIDERS)
+
     def test_campaign_adapter_passes_when_command_and_adapter_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

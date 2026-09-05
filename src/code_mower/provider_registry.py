@@ -295,6 +295,37 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "spend_policy": "never trigger automatically from the reference workflows",
         },
     ),
+    "cursor_cloud_agent": ProviderLane(
+        lane_id="cursor_cloud_agent",
+        lane_type="audit",
+        driver="hosted_bridge",
+        provider="cursor_cloud_agent",
+        labels=LaneLabels(
+            needs="needs-cursor-cloud-agent-audit",
+            done="cursor-cloud-agent-audit-done",
+            blocked="cursor-cloud-agent-audit-blocked",
+        ),
+        token_env=("CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"),
+        result_sources=("trailer_comment",),
+        merge_authority=True,
+        enabled_by_default=False,
+        trigger_policy="manual",
+        spend_policy="paid",
+        provider_config={
+            "bot_authors": ("cursor[bot]", "cursor"),
+            "bot_authors_env": "CURSOR_CLOUD_AGENT_BOT_AUTHORS",
+            "trigger_comments": ("@cursor run", "cursor run"),
+            "campaign_transport_ready_env": "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY",
+            "campaign_response_timeout_seconds": 3600,
+            "rules_file": ".cursor/AGENT.md",
+            "role": "builder",
+            "capability": "work_order_execution",
+            "status": (
+                "hosted async builder with release qualification capability; "
+                "can execute work orders and package-install campaigns"
+            ),
+        },
+    ),
     "cursor_bugbot": ProviderLane(
         lane_id="cursor_bugbot",
         lane_type="audit",
@@ -317,12 +348,12 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "bot_authors": ("cursor[bot]", "cursor"),
             "bot_authors_env": "CURSOR_BUGBOT_BOT_AUTHORS",
             "trigger_comments": ("bugbot run", "@cursor review"),
-            "campaign_transport_ready_env": "CODE_MOWER_CURSOR_BUGBOT_CAMPAIGN_TRANSPORT_READY",
-            "campaign_response_timeout_seconds": 3600,
             "rules_file": ".cursor/BUGBOT.md",
+            "role": "reviewer",
+            "capability": "code_review",
             "status": (
-                "manual informational lane; keep calibration-only until enabled "
-                "BugBot output shape is captured and adjudicated"
+                "manual informational review lane; Grok Bot and BugBot are "
+                "review surfaces only and cannot execute package-install campaigns"
             ),
         },
     ),

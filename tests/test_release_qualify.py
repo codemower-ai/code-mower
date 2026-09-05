@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -18,6 +20,14 @@ from code_mower import release_qualify
 
 class ReleaseQualifyTests(unittest.TestCase):
     """Tests for release qualification command."""
+
+    def test_campaign_help_names_builder_default(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit) as caught:
+            release_qualify.main(["campaign", "--help"])
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn("cursor_cloud_agent", stdout.getvalue())
+        self.assertNotIn("cursor_bugbot", stdout.getvalue())
 
     def test_safe_identifier_rejects_unsafe(self) -> None:
         """Provider/executor must be safe identifiers."""

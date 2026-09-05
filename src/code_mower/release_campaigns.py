@@ -119,7 +119,7 @@ DEFAULT_CAMPAIGN_PROVIDERS = (
     "codex",
     "antigravity",
     "muse",
-    "cursor_bugbot",
+    "cursor_cloud_agent",
     "devin",
 )
 
@@ -134,10 +134,10 @@ PROVIDER_ALIAS_MAP: dict[str, str] = {
     "antigravity_cli": "antigravity_cli",
     "muse": "muse_cli",
     "muse_cli": "muse_cli",
-    "cursor": "cursor_bugbot",
+    "cursor": "cursor_cloud_agent",
+    "cursor_cloud_agent": "cursor_cloud_agent",
     "cursor_bugbot": "cursor_bugbot",
     "cursor_grok_bot": "cursor_bugbot",
-    "cursor_cloud_agent": "cursor_bugbot",
     "grok_bot": "cursor_bugbot",
     "grok": "grok_build",
     "grok_build": "grok_build",
@@ -1779,6 +1779,18 @@ def initialize_campaign(
                 f"duplicate release campaign provider {canonical_name!r}: it was named "
                 "more than once, directly or through an alias; list each provider "
                 "exactly once"
+            )
+        # New campaigns may include providers with work_order_execution capability.
+        # Lanes marked role:reviewer or capability:code_review must fail before dispatch.
+        role = lane.provider_config.get("role", "")
+        capability = lane.provider_config.get("capability", "")
+        if role == "reviewer" or capability == "code_review":
+            raise ValueError(
+                f"release campaign provider {canonical_name!r} is a review-only lane "
+                f"(role: {role!r}, capability: {capability!r}) and cannot execute "
+                f"package qualification campaigns. Release campaigns require providers "
+                f"with work_order_execution capability; choose cursor_cloud_agent or "
+                f"another builder provider instead"
             )
         seen_providers.add(canonical_name)
         resolved_providers.append((canonical_name, lane))
