@@ -525,15 +525,15 @@ class RetryEvidenceClearingTests(unittest.TestCase):
 
 
 class RetrySupersededTimestampTests(unittest.TestCase):
-    """A failed/interrupted retry keeps no superseded evidence or timestamps.
+    """A failed/interrupted retry keeps no superseded evidence or timing.
 
     Covers the Codex chronology invariant in both retry paths: the local
     adapter path and the hosted redispatch path must archive the bounded
-    prior attempt, then clear adoption_result, completed_at, and
-    dispatched_at before checkpointing the new attempt -- so an adapter
-    failure, a failed dispatch post, or an interruption cannot retain
-    superseded timestamps while attempt_history preserves the prior
-    bounded summary.
+    prior attempt, then reset adoption_result, completed_at, dispatched_at,
+    and elapsed_seconds before checkpointing the new attempt -- so an
+    adapter failure, a failed dispatch post, or an interruption cannot
+    retain superseded evidence or chronology while attempt_history preserves
+    the prior bounded summary (including its elapsed time).
     """
 
     def test_failed_local_retry_clears_superseded_timestamps(self) -> None:
@@ -562,6 +562,7 @@ class RetrySupersededTimestampTests(unittest.TestCase):
             stored["providers"][0]["attempted_at"] = OLD_TS
             stored["providers"][0]["dispatched_at"] = OLD_TS
             stored["providers"][0]["completed_at"] = OLD_DONE_TS
+            stored["providers"][0]["elapsed_seconds"] = 42.5
             stored["providers"][0].pop("attempt_history", None)
             path.write_text(json.dumps(stored), encoding="utf-8")
 
@@ -594,6 +595,7 @@ class RetrySupersededTimestampTests(unittest.TestCase):
             self.assertIsNone(codex.get("adoption_result"))
             self.assertIsNone(codex.get("completed_at"))
             self.assertIsNone(codex.get("dispatched_at"))
+            self.assertEqual(codex.get("elapsed_seconds"), 0.0)
             # The new attempt itself is still recorded.
             self.assertTrue(codex.get("attempted_at"))
             self.assertNotEqual(codex.get("attempted_at"), OLD_TS)
@@ -616,6 +618,7 @@ class RetrySupersededTimestampTests(unittest.TestCase):
             self.assertEqual(history[0]["attempted_at"], OLD_TS)
             self.assertEqual(history[0]["dispatched_at"], OLD_TS)
             self.assertEqual(history[0]["completed_at"], OLD_DONE_TS)
+            self.assertEqual(history[0]["elapsed_seconds"], 42.5)
             plan = release_campaigns.build_campaign_upload_events(saved)
             self.assertEqual(
                 [r["provider"] for r in plan["skipped_providers"]], ["codex"]
@@ -649,6 +652,7 @@ class RetrySupersededTimestampTests(unittest.TestCase):
             stored["providers"][0]["attempted_at"] = OLD_TS
             stored["providers"][0]["dispatched_at"] = OLD_TS
             stored["providers"][0]["completed_at"] = OLD_DONE_TS
+            stored["providers"][0]["elapsed_seconds"] = 42.5
             stored["providers"][0]["dispatch_ref"] = {
                 "issue_number": "42",
                 "comment_posted": True,
@@ -705,6 +709,7 @@ class RetrySupersededTimestampTests(unittest.TestCase):
             self.assertIsNone(devin.get("adoption_result"))
             self.assertIsNone(devin.get("completed_at"))
             self.assertIsNone(devin.get("dispatched_at"))
+            self.assertEqual(devin.get("elapsed_seconds"), 0.0)
             self.assertTrue(devin.get("attempted_at"))
             self.assertNotEqual(devin.get("attempted_at"), OLD_TS)
             # The prior attempt survives only as a bounded metadata-only summary.
@@ -726,6 +731,7 @@ class RetrySupersededTimestampTests(unittest.TestCase):
             self.assertEqual(history[0]["attempted_at"], OLD_TS)
             self.assertEqual(history[0]["dispatched_at"], OLD_TS)
             self.assertEqual(history[0]["completed_at"], OLD_DONE_TS)
+            self.assertEqual(history[0]["elapsed_seconds"], 42.5)
             plan = release_campaigns.build_campaign_upload_events(saved)
             self.assertEqual(
                 [r["provider"] for r in plan["skipped_providers"]], ["devin"]
@@ -733,7 +739,11 @@ class RetrySupersededTimestampTests(unittest.TestCase):
 
 
 class RetryFreezeHostedTests(unittest.TestCase):
-    """An unrelated running hosted provider is byte-stable during another retry."""
+    """An unrelated running hosted provider is byte-stable during another retry.
+
+    Byte stability is exact: the frozen provider dict, including
+    next_action/next_detail, remains unchanged by the other retry.
+    """
 
     def test_retry_freezes_running_hosted_provider_with_expired_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

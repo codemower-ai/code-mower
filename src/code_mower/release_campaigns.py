@@ -1853,10 +1853,13 @@ def dispatch_or_advance_campaign(
     for provider_data in campaign.get("providers", []):
         provider = str(provider_data.get("provider") or "")
         # Retry freeze: an explicit --retry-provider run advances only the
-        # retried provider. Every other participant is byte-stable for this
-        # run -- no polling, error clearing, deadline expiry, state,
-        # evidence, next-action, or timestamp mutations. Aggregate campaign
-        # fields still recompute on save.
+        # retried provider. This early continue is the single authoritative
+        # freeze: every other participant is byte-stable for this run -- no
+        # polling, error clearing, deadline expiry, state, evidence,
+        # next-action, or timestamp mutations. Byte stability is exact: the
+        # frozen provider's dict, including next_action/next_detail, remains
+        # unchanged during another provider's explicit retry. Aggregate
+        # campaign fields still recompute on save.
         if retry_canonical and provider != retry_canonical:
             continue
         try:
@@ -1869,12 +1872,6 @@ def dispatch_or_advance_campaign(
             continue
         current_state = str(provider_data.get("state") or "queued")
         is_explicit_retry = bool(retry_canonical) and provider == retry_canonical
-        # An explicit retry advances only the retried provider: every other
-        # participant is frozen for this run, so retrying A can never start,
-        # restamp, or redispatch B. Frozen providers keep their recorded
-        # evidence and all three attempt timestamps; newly arrived evidence
-        # for them waits for the next ordinary resume.
-        frozen_for_retry = bool(retry_canonical) and not is_explicit_retry
 
         # 1. Check local result drop-in first (manual override or adapter output).
         # An explicit retry of this provider must not accept a pre-existing
@@ -1890,7 +1887,7 @@ def dispatch_or_advance_campaign(
                 starting_version=starting_version,
                 package_identity=package_identity,
             )
-            if local_result_file.is_file() and not is_explicit_retry and not frozen_for_retry
+            if local_result_file.is_file() and not is_explicit_retry
             else None
         )
         if bound_result is not None:
@@ -1965,33 +1962,32 @@ def dispatch_or_advance_campaign(
                         package_identity=package_identity,
                     )
                     if found_result:
-                        if not frozen_for_retry:
-                            prior_found = provider_data.get("adoption_result")
-                            if prior_found != found_result:
-                                # Genuinely new evidence supersedes the stored
-                                # attempt; record history only when a prior
-                                # stored result actually existed (the first
-                                # completion of a running attempt supersedes
-                                # nothing). Identical evidence must not move
-                                # chronology (see the drop-in path above).
-                                if isinstance(prior_found, Mapping) and prior_found:
-                                    _record_attempt_history(provider_data)
-                                provider_data["completed_at"] = now_utc
-                            provider_data["adoption_result"] = found_result
-                            provider_data["elapsed_seconds"] = float(
-                                found_result.get("elapsed_seconds") or 0.0
+                        prior_found = provider_data.get("adoption_result")
+                        if prior_found != found_result:
+                            # Genuinely new evidence supersedes the stored
+                            # attempt; record history only when a prior
+                            # stored result actually existed (the first
+                            # completion of a running attempt supersedes
+                            # nothing). Identical evidence must not move
+                            # chronology (see the drop-in path above).
+                            if isinstance(prior_found, Mapping) and prior_found:
+                                _record_attempt_history(provider_data)
+                            provider_data["completed_at"] = now_utc
+                        provider_data["adoption_result"] = found_result
+                        provider_data["elapsed_seconds"] = float(
+                            found_result.get("elapsed_seconds") or 0.0
+                        )
+                        outcome = found_result.get("outcome")
+                        if outcome in {"pass", "pass_with_warnings"}:
+                            provider_data["state"] = "complete"
+                            provider_data["next_action"] = "none"
+                            provider_data["next_detail"] = ""
+                        else:
+                            provider_data["state"] = "blocked"
+                            provider_data["next_action"] = (
+                                f"inspect {provider} qualification failures"
                             )
-                            outcome = found_result.get("outcome")
-                            if outcome in {"pass", "pass_with_warnings"}:
-                                provider_data["state"] = "complete"
-                                provider_data["next_action"] = "none"
-                                provider_data["next_detail"] = ""
-                            else:
-                                provider_data["state"] = "blocked"
-                                provider_data["next_action"] = (
-                                    f"inspect {provider} qualification failures"
-                                )
-                                provider_data["next_detail"] = f"outcome: {outcome}"
+                            provider_data["next_detail"] = f"outcome: {outcome}"
                         break
             if found_result is not None:
                 continue
@@ -2009,7 +2005,6 @@ def dispatch_or_advance_campaign(
                 trigger_comments
                 and not trigger_posted
                 and not is_explicit_retry
-                and not frozen_for_retry
             ):
                 dispatch_key = str(provider_data.get("dispatch_reconciliation_key") or "")
                 trigger_key = str(provider_data.get("trigger_reconciliation_key") or "")
@@ -2247,22 +2242,6 @@ def dispatch_or_advance_campaign(
             )
             continue
 
-        # 3.7 Retry freeze: below this point a run would evaluate capabilities
-        # and, with --apply, start a new attempt for this provider. A frozen
-        # participant gets neither: its recorded state, evidence, error, and
-        # attempt timestamps are preserved, and only its next action notes
-        # that another provider's retry is in progress.
-        if frozen_for_retry:
-            if not apply:
-                _record_dry_run_dispatch_mode(provider_data)
-            provider_data["next_action"] = (
-                f"run without --retry-provider to advance {provider}"
-            )
-            provider_data["next_detail"] = (
-                f"--retry-provider {retry_canonical} advances only {retry_canonical}"
-            )
-            continue
-
         # 4. Check capabilities and readiness
         cmd_found = _find_command(lane, which_fn=which_fn)
         has_creds, missing_cred = _check_credentials(lane, env=current_env)
@@ -2394,15 +2373,18 @@ def dispatch_or_advance_campaign(
                 pass
             # A new attempt supersedes the stored one: keep its bounded
             # metadata-only summary before restamping. First attempts record
-            # nothing (there is no prior attempt to summarize). The stored
-            # result and both superseded timestamps are cleared before the
-            # new attempt, so a result-less failed retry (or an
-            # interruption before the adapter finishes) cannot retain
-            # superseded evidence or chronology.
+            # nothing (there is no prior attempt to summarize). The complete
+            # superseded current-attempt surface -- stored result, both
+            # timestamps, and elapsed time -- is reset before the new
+            # attempt, so a result-less failed retry (or an interruption
+            # before the adapter finishes) cannot retain superseded
+            # evidence or chronology. A successful completion restamps its
+            # new values normally below.
             _record_attempt_history(provider_data)
             provider_data["adoption_result"] = None
             provider_data["completed_at"] = None
             provider_data["dispatched_at"] = None
+            provider_data["elapsed_seconds"] = 0.0
             provider_data["attempted_at"] = now_utc
             provider_data["state"] = "running"
             provider_data["error"] = ""
@@ -2548,18 +2530,18 @@ def dispatch_or_advance_campaign(
                 #
                 # A redispatch supersedes the stored attempt, so its bounded
                 # metadata-only summary is kept first (a first dispatch
-                # records nothing) and the stored result plus both
-                # superseded timestamps are cleared before the new attempt,
-                # so a result-less failed retry (or an interruption after
-                # this checkpoint) cannot upload superseded evidence or
-                # retain superseded chronology. A subsequent successful
-                # dispatch stamps its new dispatched_at normally below.
-                # Frozen providers never reach here: the retry freeze above
-                # allows only the retried provider to start a new attempt.
+                # records nothing) and the complete superseded
+                # current-attempt surface -- stored result, both timestamps,
+                # and elapsed time -- is reset before the new attempt, so a
+                # result-less failed retry (or an interruption after this
+                # checkpoint) cannot upload superseded evidence or retain
+                # superseded chronology. A subsequent successful dispatch
+                # stamps its new dispatched_at normally below.
                 _record_attempt_history(provider_data)
                 provider_data["adoption_result"] = None
                 provider_data["completed_at"] = None
                 provider_data["dispatched_at"] = None
+                provider_data["elapsed_seconds"] = 0.0
                 provider_data["attempted_at"] = now_utc
                 provider_data["state"] = "running"
                 provider_data["error"] = ""
