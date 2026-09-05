@@ -7,6 +7,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,30 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .git_identity import scratch_git_config_commands
+
+# Grammar for the one exact package-index spec shape a candidate-only download
+# accepts: <name>==<version>. Anything else (ranges, extras, paths, URLs) has
+# no single artifact a downloaded file could be checked against, so it is
+# refused rather than downloaded.
+_EXACT_NAME_VERSION_SPEC_PATTERN = re.compile(
+    r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)==(?P<version>[A-Za-z0-9.]+)$"
+)
+# Wheel and sdist filenames as pip/setuptools emit them: the distribution name
+# and version are escaped (runs of ``-_.`` collapsed to ``_``) ahead of a
+# fixed suffix -- wheel tags for a wheel, ``.tar.gz``/``.zip`` for an sdist.
+_WHEEL_FILENAME_PATTERN = re.compile(
+    r"^(?P<name>[A-Za-z0-9_.]+)-(?P<version>[A-Za-z0-9_.!+]+)"
+    r"(?:-\d[^-]*)?-[^-]+-[^-]+-[^-]+\.whl$"
+)
+_SDIST_FILENAME_PATTERN = re.compile(
+    r"^(?P<name>[A-Za-z0-9_.]+)-(?P<version>[A-Za-z0-9_.!+]+)\.(?:tar\.gz|zip)$"
+)
+_PIP_SOURCE_RESET_ARGS = (
+    "--extra-index-url",
+    "",
+    "--find-links",
+    "",
+)
 
 MIRRORED_IMPLEMENTATION_PATTERNS = (
     "tools/code_mower_*.py",
@@ -239,16 +264,114 @@ def _pip_install_command(
     pip_extra_index_urls: Sequence[str] | None = None,
     pip_no_cache: bool = False,
 ) -> list[str]:
-    command = [str(venv_python), "-m", "pip", "install"]
+    extra_index_urls = tuple(url for url in pip_extra_index_urls or () if url)
+    source_isolated = bool(pip_index_url or extra_index_urls)
+    command = [str(venv_python), "-m", "pip"]
+    if source_isolated:
+        command.append("--isolated")
+    command.append("install")
     if pip_no_cache:
         command.append("--no-cache-dir")
     if pip_index_url:
         command.extend(["--index-url", pip_index_url])
-    for extra_index_url in pip_extra_index_urls or ():
-        if extra_index_url:
-            command.extend(["--extra-index-url", extra_index_url])
+    if source_isolated:
+        command.extend(_PIP_SOURCE_RESET_ARGS)
+    for extra_index_url in extra_index_urls:
+        command.extend(["--extra-index-url", extra_index_url])
     command.append(package_spec)
     return command
+
+
+def _normalize_distribution_name(name: str) -> str:
+    """PEP 503 normalization, so a spec and a downloaded filename agree on identity."""
+    return re.sub(r"[-_.]+", "-", name.strip()).lower()
+
+
+def _parse_exact_name_version_spec(package_spec: str) -> tuple[str, str]:
+    """Parse a candidate-only download spec into ``(identity, version)``.
+
+    Only the exact ``<name>==<version>`` shape has one artifact a downloaded
+    file can be checked against; anything else is refused rather than
+    downloaded, matching :func:`_package_spec_uses_package_index`'s refusal of
+    inexact specs elsewhere in this module.
+    """
+    match = _EXACT_NAME_VERSION_SPEC_PATTERN.match(package_spec.strip())
+    if not match:
+        raise ValueError(
+            "candidate-only download requires an exact <name>==<version> spec, "
+            f"got: {package_spec!r}"
+        )
+    return _normalize_distribution_name(match.group("name")), match.group("version")
+
+
+def _parse_downloaded_artifact_identity(filename: str) -> tuple[str, str]:
+    """Parse a downloaded wheel/sdist filename into ``(identity, version)``.
+
+    Raises ``ValueError`` for any filename that is not a recognized wheel or
+    sdist shape, so a candidate-only download can fail closed on a malformed
+    artifact instead of accepting it on faith.
+    """
+    match = _WHEEL_FILENAME_PATTERN.match(filename) or _SDIST_FILENAME_PATTERN.match(filename)
+    if not match:
+        raise ValueError(f"downloaded candidate artifact has an unrecognized filename: {filename!r}")
+    return _normalize_distribution_name(match.group("name")), match.group("version")
+
+
+def _pip_download_candidate_command(
+    venv_python: Path,
+    package_spec: str,
+    *,
+    index_url: str,
+    dest_dir: Path,
+    pip_no_cache: bool = False,
+) -> list[str]:
+    """Download the exact candidate artifact with ``index_url`` as the *only* index.
+
+    No ``--extra-index-url`` is ever added here: pip does not prioritize
+    ``--index-url`` over ``--extra-index-url``, so a single combined install
+    command cannot prove which configured index actually supplied a
+    candidate. Passing exactly one index -- and ``--no-deps``, since
+    dependencies are not part of this release candidate -- is what makes the
+    proof possible: nothing but ``index_url`` can satisfy this command.
+    """
+    command = [str(venv_python), "-m", "pip", "--isolated", "download", "--no-deps"]
+    if pip_no_cache:
+        command.append("--no-cache-dir")
+    command.extend(["--index-url", index_url, "--dest", str(dest_dir)])
+    command.extend(_PIP_SOURCE_RESET_ARGS)
+    command.append(package_spec)
+    return command
+
+
+def _pip_install_local_artifact_command(
+    venv_python: Path,
+    artifact_path: Path,
+    *,
+    dependency_index_url: str = "",
+    pip_no_cache: bool = False,
+) -> list[str]:
+    """Install an already-downloaded local artifact file, not a name/version spec.
+
+    The candidate's own distribution comes from the local file, so its
+    identity is not subject to index resolution at all here; only its
+    dependencies -- which are not part of this release candidate -- resolve
+    against ``dependency_index_url``.
+    """
+    command = [str(venv_python), "-m", "pip", "--isolated", "install"]
+    if pip_no_cache:
+        command.append("--no-cache-dir")
+    if dependency_index_url:
+        command.extend(["--index-url", dependency_index_url])
+    command.extend(_PIP_SOURCE_RESET_ARGS)
+    command.append(str(artifact_path))
+    return command
+
+
+def _isolated_pip_environment() -> dict[str, str]:
+    """Return the process environment with ambient pip index policy disabled."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("PIP_")}
+    env["PIP_CONFIG_FILE"] = os.devnull
+    return env
 
 
 def _preview_timeout_output(output: bytes | str | None) -> str:
@@ -296,6 +419,7 @@ def _run_pip_install_with_retries(
     attempts: int,
     retry_delay_seconds: float,
     package_index: bool,
+    command_label: str = "pip install",
 ) -> subprocess.CompletedProcess[str]:
     if attempts < 1:
         raise ValueError("--pip-install-attempts must be at least 1")
@@ -334,7 +458,7 @@ def _run_pip_install_with_retries(
                 if package_index:
                     raise RehearsalError(
                         (
-                            f"pip install failed after {attempts} attempts. "
+                            f"{command_label} failed after {attempts} attempts. "
                             "If this followed a fresh package publish, retry after "
                             "PyPI/TestPyPI propagation or install the local wheel to "
                             "separate source failures from package-index lag."
