@@ -146,6 +146,21 @@ class HostedDispatchProfileTests(unittest.TestCase):
         self.assertFalse(profile["result_return"]["ready"])
         self.assertIn("campaign_response_timeout_seconds", profile["result_return"]["remediation"])
 
+    def test_result_return_accepts_numeric_timeout_string(self) -> None:
+        base = REFERENCE_PROVIDERS["devin"]
+        config = dict(base.provider_config)
+        config["campaign_response_timeout_seconds"] = "3600"
+        lane = dataclasses.replace(base, provider_config=config)
+        profile = release_campaigns.hosted_dispatch_profile(
+            lane,
+            env={
+                "DEVIN_AUDIT_LABEL_TOKEN": "token",
+                "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+            },
+        )
+        self.assertTrue(profile["result_return"]["ready"])
+        self.assertEqual(release_campaigns._hosted_response_timeout(lane), 3600)
+
     def test_cursor_builder_trigger_is_the_real_mention_contract(self) -> None:
         """Cursor Cloud Agent uses `@cursor`, never BugBot/reviewer trigger text."""
         lane = REFERENCE_PROVIDERS["cursor_cloud_agent"]

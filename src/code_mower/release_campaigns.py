@@ -430,18 +430,22 @@ def _check_hosted_transport(
     return ready, variable
 
 
-def _hosted_response_timeout(lane: ProviderLane) -> int:
+def _configured_hosted_response_timeout(lane: ProviderLane) -> int | None:
     value = lane.provider_config.get(
         "campaign_response_timeout_seconds",
         DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS,
     )
     if isinstance(value, bool):
-        return DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
+        return None
     try:
         parsed = int(value)
     except (TypeError, ValueError, OverflowError):
-        return DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
-    return parsed if parsed > 0 else DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _hosted_response_timeout(lane: ProviderLane) -> int:
+    return _configured_hosted_response_timeout(lane) or DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
 
 
 # Closed hosted dispatch profile: the five independent readiness checks a
@@ -558,15 +562,7 @@ def hosted_dispatch_profile(
         ),
     }
 
-    raw_timeout = lane.provider_config.get(
-        "campaign_response_timeout_seconds",
-        DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS,
-    )
-    timeout_ready = (
-        isinstance(raw_timeout, int)
-        and not isinstance(raw_timeout, bool)
-        and raw_timeout > 0
-    )
+    timeout_ready = _configured_hosted_response_timeout(lane) is not None
     profile["result_return"] = {
         "ready": timeout_ready,
         "detail": (
