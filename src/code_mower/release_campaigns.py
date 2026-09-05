@@ -164,6 +164,7 @@ SAFE_ERROR_CODES = frozenset(
         "github_dispatch_failed",
         "github_poll_unavailable",
         "hosted_response_timeout",
+        "python_runtime_unavailable",
         "unknown_provider",
     }
 )
@@ -175,6 +176,7 @@ _ADAPTER_ERROR_STATE = {
     "adapter_configuration_invalid": "unavailable",
     "command_not_found": "unavailable",
     "adapter_timeout": "unavailable",
+    "python_runtime_unavailable": "unavailable",
     "adapter_exited_nonzero": "blocked",
     "adapter_produced_no_result": "blocked",
     "adapter_result_invalid": "blocked",
@@ -469,6 +471,11 @@ def _provider_next_action(
             return (
                 f"record manual result for {provider}",
                 "no campaign adapter configured",
+            )
+        if lane.driver == "local_cli" and error == "supported Python 3.12+ runtime is unavailable":
+            return (
+                "install Python 3.12+ on PATH or set CODE_MOWER_PYTHON",
+                error,
             )
         if lane.driver == "local_cli" and not command_available:
             cmd = lane.provider_config.get("command") or provider
@@ -1267,6 +1274,8 @@ def _build_adapter_argv(
     repo_path: Path,
     argv_template: Any,
     adapter_timeout: int | None = None,
+    python_bin: str = "",
+    target_runtime: str = "",
 ) -> list[str]:
     validated_template = _validate_adapter_argv_template(argv_template)
     substitutions = {
@@ -1277,10 +1286,10 @@ def _build_adapter_argv(
         "starting_version": starting_version,
         "output": str(output_path),
         "repo_path": str(repo_path),
-        # The running interpreter, for maintained adapters that re-enter Code
-        # Mower (`{python} -m code_mower.campaign_adapters ...`). Templates
-        # that do not name it are unaffected: unused substitutions are ignored.
-        "python": sys.executable,
+        # The running interpreter or resolved supported Python executable
+        "python": python_bin or sys.executable,
+        "target_python": python_bin or sys.executable,
+        "target_runtime": target_runtime or _detect_runtime_class(),
     }
     if adapter_timeout is not None:
         substitutions["adapter_timeout"] = str(adapter_timeout)
@@ -1430,6 +1439,63 @@ def _resolve_campaign_adapter_config(
     return argv_template, timeout_value, "", ""
 
 
+def resolve_supported_runtime(
+    *,
+    environ: Mapping[str, str] | None = None,
+    which_fn: Callable[[str], str | None] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> tuple[str, str] | None:
+    """Resolve one supported Python 3.12+ runtime deterministically.
+
+    Returns (executable, target_runtime) where target_runtime is
+    f"python_{major}.{minor}", or None when no supported runtime exists.
+    """
+    env = os.environ if environ is None else environ
+    explicit = env.get("CODE_MOWER_PYTHON", "").strip()
+    if explicit:
+        candidates = (explicit,)
+    else:
+        candidates = (
+            sys.executable,
+            "python3.12",
+            "python3.13",
+            "python3.14",
+            "python3",
+        )
+    which = shutil.which if which_fn is None else which_fn
+    run = subprocess.run if runner is None else runner
+    for cand in candidates:
+        if not cand:
+            continue
+        if os.sep in cand or (os.altsep and os.altsep in cand) or cand == sys.executable:
+            resolved = cand if Path(cand).exists() else None
+        else:
+            resolved = which(cand)
+        if not resolved:
+            continue
+        try:
+            completed = run(
+                [resolved, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if completed.returncode != 0:
+            continue
+        out = (completed.stdout or "").strip()
+        parts = out.split(".")
+        try:
+            major, minor = int(parts[0]), int(parts[1])
+        except (IndexError, ValueError):
+            continue
+        if (major, minor) >= (3, 12):
+            return resolved, f"python_{major}.{minor}"
+    return None
+
+
 def _invoke_local_adapter(
     lane: ProviderLane,
     provider: str,
@@ -1442,6 +1508,7 @@ def _invoke_local_adapter(
     repo_path: Path,
     which_fn: Callable[[str], str | None],
     adapter_runner: AdapterRunner,
+    python_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> tuple[dict[str, Any] | None, str, str]:
     """Invoke a provider's explicit, registry-configured campaign adapter.
 
@@ -1472,6 +1539,15 @@ def _invoke_local_adapter(
         )
     if not argv_template:
         return None, _safe_error("no_campaign_adapter_configured"), "no campaign adapter configured"
+
+    runtime = resolve_supported_runtime(which_fn=which_fn, runner=python_runner)
+    if runtime is None:
+        return (
+            None,
+            _safe_error("python_runtime_unavailable"),
+            "supported Python 3.12+ runtime is unavailable",
+        )
+    python_bin, target_runtime = runtime
 
     try:
         output_path.unlink(missing_ok=True)
@@ -1512,6 +1588,8 @@ def _invoke_local_adapter(
             repo_path=repo_path,
             argv_template=argv_template,
             adapter_timeout=max(1, timeout - ADAPTER_INNER_TIMEOUT_MARGIN_SECONDS),
+            python_bin=python_bin,
+            target_runtime=target_runtime,
         )
     except ValueError:
         return (

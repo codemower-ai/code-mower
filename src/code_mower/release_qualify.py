@@ -441,10 +441,17 @@ def validate_adoption_result_payload(
     if result.get("host_class") not in VALID_HOST_CLASSES:
         raise ValueError(f"unsupported adoption result host_class {result.get('host_class')!r}")
     runtime_class = str(result.get("runtime_class") or "")
-    if runtime_class != "unknown" and not RUNTIME_CLASS_PATTERN.match(runtime_class):
-        raise ValueError(
-            "adoption result runtime_class must be 'unknown' or 'python_<major>.<minor>'"
-        )
+    if runtime_class != "unknown":
+        if not RUNTIME_CLASS_PATTERN.match(runtime_class):
+            raise ValueError(
+                "adoption result runtime_class must be 'unknown' or 'python_<major>.<minor>'"
+            )
+        parts = runtime_class.removeprefix("python_").split(".")
+        try:
+            if tuple(int(p) for p in parts[:2]) < (3, 12):
+                raise ValueError("adoption result runtime_class must be >= python_3.12")
+        except (IndexError, ValueError) as exc:
+            raise ValueError("adoption result runtime_class must be >= python_3.12") from exc
 
     execution_state = result.get("execution_state")
     if execution_state not in VALID_EXECUTION_STATES:

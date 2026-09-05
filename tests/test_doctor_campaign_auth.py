@@ -195,7 +195,7 @@ class CampaignAuthProbeTests(unittest.TestCase):
 
         config = {
             "lanes": {
-                "muse_cli": {
+                "claude_review": {
                     "provider_config": {
                         "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
                     }
@@ -207,13 +207,112 @@ class CampaignAuthProbeTests(unittest.TestCase):
                 config=config,
                 repo_root=Path(tmp),
                 env={},
-                which_fn=lambda cmd: "/opt/bin/muse" if cmd == "muse" else None,
+                which_fn=lambda cmd: "/opt/bin/claude" if cmd == "claude" else None,
                 auth_probe_runner=runner,
-                providers=["muse"],
+                providers=["claude"],
             )
         self.assertEqual(_auth_checks(checks), [])
         adapter = [c for c in checks if c.name == "doctor.campaign.adapter"]
         self.assertEqual(adapter[0].status, STATUS_PASS)
+
+    def test_antigravity_requires_ambient_home_opt_in(self) -> None:
+        config = {
+            "lanes": {
+                "antigravity_cli": {
+                    "provider_config": {
+                        "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                    }
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            # Missing opt-in warns and is excluded from ready_providers
+            checks = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                env={},
+                which_fn=lambda cmd: "/opt/bin/agy" if cmd == "agy" else None,
+                providers=["antigravity"],
+            )
+            auth_check = next(c for c in checks if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_check.status, STATUS_WARN)
+            self.assertEqual(auth_check.lane, "antigravity")
+            self.assertEqual(auth_check.detail.get("auth_probe"), "missing_opt_in")
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("antigravity", readiness.detail.get("ready_providers", []))
+            self.assertEqual(
+                readiness.detail.get("provider_readiness", {}).get("antigravity"),
+                {"command": True, "auth": "missing_opt_in", "structured_result": True},
+            )
+
+            # Present opt-in passes and is included in ready_providers
+            checks_opted_in = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                env={"ANTIGRAVITY_CLI_USE_AMBIENT_HOME": "1"},
+                which_fn=lambda cmd: "/opt/bin/agy" if cmd == "agy" else None,
+                providers=["antigravity"],
+            )
+            auth_pass = next(c for c in checks_opted_in if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_pass.status, STATUS_PASS)
+            self.assertEqual(auth_pass.lane, "antigravity")
+            readiness_pass = next(c for c in checks_opted_in if c.name == "doctor.campaign.readiness")
+            self.assertIn("antigravity", readiness_pass.detail.get("ready_providers", []))
+            self.assertEqual(
+                readiness_pass.detail.get("provider_readiness", {}).get("antigravity"),
+                {"command": True, "auth": "ambient_opt_in", "structured_result": True},
+            )
+
+    def test_muse_requires_api_key_or_ambient_home(self) -> None:
+        config = {
+            "lanes": {
+                "muse_cli": {
+                    "provider_config": {
+                        "campaign_adapter_argv": ["{command}", "qualify", "--output", "{output}"],
+                    }
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            # Missing auth warns and drops from ready_providers
+            checks = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                env={},
+                which_fn=lambda cmd: "/opt/bin/muse" if cmd == "muse" else None,
+                providers=["muse"],
+            )
+            auth_check = next(c for c in checks if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_check.status, STATUS_WARN)
+            self.assertEqual(auth_check.detail.get("auth_probe"), "missing_auth")
+            readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("muse", readiness.detail.get("ready_providers", []))
+
+            # Opted in via ambient home passes
+            checks_ambient = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                env={"MUSE_CLI_USE_AMBIENT_HOME": "1"},
+                which_fn=lambda cmd: "/opt/bin/muse" if cmd == "muse" else None,
+                providers=["muse"],
+            )
+            auth_pass = next(c for c in checks_ambient if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_pass.status, STATUS_PASS)
+            readiness_ambient = next(c for c in checks_ambient if c.name == "doctor.campaign.readiness")
+            self.assertIn("muse", readiness_ambient.detail.get("ready_providers", []))
+
+            # Opted in via META_API_KEY passes
+            checks_key = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=Path(tmp),
+                env={"META_API_KEY": "dummy-key"},
+                which_fn=lambda cmd: "/opt/bin/muse" if cmd == "muse" else None,
+                providers=["muse"],
+            )
+            auth_key = next(c for c in checks_key if c.name == CAMPAIGN_AUTH_CHECK_NAME)
+            self.assertEqual(auth_key.status, STATUS_PASS)
+            readiness_key = next(c for c in checks_key if c.name == "doctor.campaign.readiness")
+            self.assertIn("muse", readiness_key.detail.get("ready_providers", []))
 
     def test_only_codex_declares_a_campaign_auth_probe(self) -> None:
         probing = sorted(

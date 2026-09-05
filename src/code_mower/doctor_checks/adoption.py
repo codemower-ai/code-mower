@@ -592,6 +592,7 @@ def check_adoption_campaign_readiness(
 ) -> tuple[DoctorCheck, ...]:
     """Validate release campaign readiness across configured providers and storage."""
     from code_mower import lane_status
+    from code_mower.campaign_adapters import check_structured_result_capability
     from code_mower.cloud import resolve_cloud_token
     from code_mower.release_campaigns import (
         _check_credentials,
@@ -607,6 +608,7 @@ def check_adoption_campaign_readiness(
     current_env = os.environ if env is None else env
     runner = lane_status._run_command if command_runner is None else command_runner
     checks: list[DoctorCheck] = []
+    provider_readiness: dict[str, dict[str, Any]] = {}
 
     for prov in providers:
         try:
@@ -618,6 +620,11 @@ def check_adoption_campaign_readiness(
 
         if lane.driver == "local_cli":
             if adoption_posture in {"hosted-builders", "orchestrator-only"}:
+                provider_readiness[canonical] = {
+                    "command": False,
+                    "auth": "skipped",
+                    "structured_result": check_structured_result_capability(canonical),
+                }
                 checks.append(
                     DoctorCheck(
                         name="doctor.campaign.adapter",
@@ -651,6 +658,7 @@ def check_adoption_campaign_readiness(
 
             cmd = _find_command(lane, which_fn=which_fn)
             command_name = lane.provider_config.get("command") or lane.provider
+            structured_capability = check_structured_result_capability(canonical)
 
             if config_error:
                 detail = {
@@ -667,6 +675,11 @@ def check_adoption_campaign_readiness(
                 }
                 if is_enabled:
                     detail["owner_action"] = True
+                provider_readiness[canonical] = {
+                    "command": bool(cmd),
+                    "auth": "unknown",
+                    "structured_result": structured_capability,
+                }
                 checks.append(
                     DoctorCheck(
                         name="doctor.campaign.adapter",
@@ -694,6 +707,11 @@ def check_adoption_campaign_readiness(
                 }
                 if is_enabled:
                     detail["owner_action"] = True
+                provider_readiness[canonical] = {
+                    "command": False,
+                    "auth": "unknown",
+                    "structured_result": structured_capability,
+                }
                 checks.append(
                     DoctorCheck(
                         name="doctor.campaign.adapter",
@@ -718,6 +736,11 @@ def check_adoption_campaign_readiness(
                 }
                 if is_enabled:
                     detail["owner_action"] = True
+                provider_readiness[canonical] = {
+                    "command": True,
+                    "auth": "unknown",
+                    "structured_result": structured_capability,
+                }
                 checks.append(
                     DoctorCheck(
                         name="doctor.campaign.adapter",
@@ -746,6 +769,7 @@ def check_adoption_campaign_readiness(
                             "command": cmd,
                             "command_found": True,
                             "adapter_configured": True,
+                            "structured_result_capability": structured_capability,
                             "enabled": is_enabled,
                         },
                     )
@@ -758,8 +782,15 @@ def check_adoption_campaign_readiness(
                     env=current_env,
                     probe_runner=auth_probe_runner,
                 )
+                auth_state = "unprobed"
                 if auth_check is not None:
                     checks.append(auth_check)
+                    auth_state = str(auth_check.detail.get("auth_probe", auth_check.status))
+                provider_readiness[canonical] = {
+                    "command": True,
+                    "auth": auth_state,
+                    "structured_result": structured_capability,
+                }
 
         elif lane.driver in {"hosted_bridge", "saas_event"}:
             has_credentials, missing_var = _check_credentials(lane, env=current_env)
@@ -767,6 +798,22 @@ def check_adoption_campaign_readiness(
                 lane, env=current_env
             )
             has_repo = bool(repo_slug)
+            structured_capability = check_structured_result_capability(canonical)
+            cmd_ready = bool(has_credentials and has_repo and transport_ready)
+            if cmd_ready:
+                auth_state = "ready"
+            elif not has_credentials:
+                auth_state = "missing_credentials"
+            elif not has_repo:
+                auth_state = "missing_repo"
+            else:
+                auth_state = "unverified_transport"
+
+            provider_readiness[canonical] = {
+                "command": cmd_ready,
+                "auth": auth_state,
+                "structured_result": structured_capability,
+            }
 
             if not has_credentials:
                 detail = {
@@ -1062,7 +1109,13 @@ def check_adoption_campaign_readiness(
         check.lane for check in provider_checks if check.status == STATUS_WARN and check.lane
     }
     ready_providers = sorted(
-        {check.lane for check in provider_checks if check.status == STATUS_PASS and check.lane}
+        {
+            check.lane
+            for check in provider_checks
+            if check.status == STATUS_PASS
+            and check.lane
+            and provider_readiness.get(check.lane, {}).get("structured_result") is True
+        }
         - warned_providers
     )
     actionable_providers = sorted(
@@ -1123,6 +1176,7 @@ def check_adoption_campaign_readiness(
                 "actionable_providers": actionable_providers,
                 "optional_providers": optional_providers,
                 "preview_command": preview_command,
+                "provider_readiness": provider_readiness,
             },
             remediation=readiness_remediation,
         )

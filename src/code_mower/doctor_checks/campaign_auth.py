@@ -232,8 +232,111 @@ def check_campaign_auth_readiness(
     Returns ``None`` when the provider exposes no safe status command, which
     keeps that lane capability-only instead of guessing it is authenticated.
     """
+    if not command:
+        return None
+
+    current_env = os.environ if env is None else env
+    if canonical == "antigravity":
+        opted_in = current_env.get("ANTIGRAVITY_CLI_USE_AMBIENT_HOME", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if opted_in:
+            return DoctorCheck(
+                name=CAMPAIGN_AUTH_CHECK_NAME,
+                status=STATUS_PASS,
+                lane=canonical,
+                message="antigravity ambient-home auth opt-in configured",
+                detail={
+                    "provider": canonical,
+                    "lane": getattr(lane, "lane_id", canonical),
+                    "driver": getattr(lane, "driver", "local_cli"),
+                    "auth_probe": "ambient_opt_in",
+                    "auth_ready": True,
+                    "ambient_home_opt_in": True,
+                    "enabled": enabled,
+                },
+            )
+        detail = {
+            "provider": canonical,
+            "lane": getattr(lane, "lane_id", canonical),
+            "driver": getattr(lane, "driver", "local_cli"),
+            "auth_probe": "missing_opt_in",
+            "auth_ready": False,
+            "ambient_home_opt_in": False,
+            "missing_variable": "ANTIGRAVITY_CLI_USE_AMBIENT_HOME",
+            "enabled": enabled,
+            "actionable": enabled,
+            "optional": not enabled,
+        }
+        if enabled:
+            detail["owner_action"] = True
+        return DoctorCheck(
+            name=CAMPAIGN_AUTH_CHECK_NAME,
+            status=STATUS_WARN,
+            lane=canonical,
+            message="antigravity campaign auth requires ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1 in trusted environments",
+            detail=detail,
+            remediation=(
+                "Set ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1 in trusted environments to "
+                "allow local OAuth state."
+            ),
+        )
+
+    if canonical == "muse":
+        has_key = bool(
+            current_env.get("META_API_KEY", "").strip()
+            or current_env.get("META_API_KEY_FILE", "").strip()
+        )
+        has_ambient = current_env.get("MUSE_CLI_USE_AMBIENT_HOME", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if has_key or has_ambient:
+            return DoctorCheck(
+                name=CAMPAIGN_AUTH_CHECK_NAME,
+                status=STATUS_PASS,
+                lane=canonical,
+                message="muse campaign authentication configured",
+                detail={
+                    "provider": canonical,
+                    "lane": getattr(lane, "lane_id", canonical),
+                    "driver": getattr(lane, "driver", "local_cli"),
+                    "auth_probe": "api_key" if has_key else "ambient_opt_in",
+                    "auth_ready": True,
+                    "enabled": enabled,
+                },
+            )
+        detail = {
+            "provider": canonical,
+            "lane": getattr(lane, "lane_id", canonical),
+            "driver": getattr(lane, "driver", "local_cli"),
+            "auth_probe": "missing_auth",
+            "auth_ready": False,
+            "enabled": enabled,
+            "actionable": enabled,
+            "optional": not enabled,
+        }
+        if enabled:
+            detail["owner_action"] = True
+        return DoctorCheck(
+            name=CAMPAIGN_AUTH_CHECK_NAME,
+            status=STATUS_WARN,
+            lane=canonical,
+            message="muse campaign auth requires META_API_KEY or MUSE_CLI_USE_AMBIENT_HOME=1",
+            detail=detail,
+            remediation=(
+                "Set META_API_KEY or set MUSE_CLI_USE_AMBIENT_HOME=1 in trusted "
+                "environments."
+            ),
+        )
+
     probe_args = campaign_auth_probe_args(lane)
-    if not probe_args or not command:
+    if not probe_args:
         return None
 
     timeout_seconds = campaign_auth_probe_timeout(lane)

@@ -824,6 +824,16 @@ class ExactPackageSpecParseTests(unittest.TestCase):
                 )
             self.assertIn("Version mismatch", str(ctx.exception))
 
+    def test_validate_adoption_result_payload_requires_python_312_or_higher(self) -> None:
+        release_qualify.validate_adoption_result_payload(_valid_adoption_result(runtime_class="python_3.12"))
+        release_qualify.validate_adoption_result_payload(_valid_adoption_result(runtime_class="python_3.13"))
+        release_qualify.validate_adoption_result_payload(_valid_adoption_result(runtime_class="python_3.14"))
+
+        for unsupported in ("python_3.11", "python_3.10", "python_3.9", "python_3.8"):
+            with self.subTest(runtime_class=unsupported):
+                with self.assertRaisesRegex(ValueError, "must be >= python_3.12"):
+                    release_qualify.validate_adoption_result_payload(_valid_adoption_result(runtime_class=unsupported))
+
 
 if __name__ == "__main__":
     unittest.main()
