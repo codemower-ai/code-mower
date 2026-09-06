@@ -199,12 +199,7 @@ def classify_package_install_failure(*, exception: Exception, steps: list[dict[s
     if re.search(r"http error 5\d\d", error_text):
         return "network"
 
-    # Generic timeout: only classify as network when accompanied by network evidence
-    has_timeout = "timeout expired" in error_text or "timed out" in error_text
     has_network_evidence = any(indicator in error_text for indicator in network_indicators)
-
-    if has_timeout and has_network_evidence:
-        return "network"
 
     if has_network_evidence:
         return "network"
@@ -214,10 +209,6 @@ def classify_package_install_failure(*, exception: Exception, steps: list[dict[s
 
     if any(indicator in error_text for indicator in runtime_indicators):
         return "runtime"
-
-    # Generic timeout without network evidence: unknown
-    if has_timeout:
-        return "unknown"
 
     return "unknown"
 

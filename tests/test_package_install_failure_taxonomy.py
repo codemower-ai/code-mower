@@ -127,6 +127,13 @@ class FailureReasonClassificationTests(unittest.TestCase):
         reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
         self.assertEqual(reason, "unknown")
 
+    def test_timeout_with_runtime_evidence_classified_as_runtime(self) -> None:
+        """Timeout plus runtime evidence retains the runtime classification."""
+        exc = RuntimeError("timeout expired")
+        steps = [{"stderr_preview": "Requires Python >=3.13"}]
+        reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
+        self.assertEqual(reason, "runtime")
+
     def test_network_error_without_timeout_classified_as_network(self) -> None:
         """Network error without timeout still classifies as network."""
         exc = RuntimeError("Connection refused")
