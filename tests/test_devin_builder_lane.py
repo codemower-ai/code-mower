@@ -726,7 +726,7 @@ class DevinBuilderProvenanceInferenceTests(unittest.TestCase):
             repo="owner/repo",
             number="12",
             url="https://github.com/owner/repo/pull/12",
-            author="jhuber",
+            author="someone",
             branch="devin/issue-12-fix",
             body="",
         )
@@ -766,7 +766,7 @@ class DevinLaneStatusProcessDiscoveryTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 0, stdout=ps_output, stderr="")
             if args[:1] == ["lsof"]:
                 return subprocess.CompletedProcess(
-                    args, 0, stdout="n/private/tmp/lanes/devin/owner__repo\n", stderr=""
+                    args, 0, stdout="n/tmp/lanes/devin/owner__repo\n", stderr=""
                 )
             return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
 
