@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import gc
 import json
 import os
 import signal
@@ -9,6 +11,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import warnings
 from pathlib import Path
 
 from code_mower import lane_delivery
@@ -20,6 +23,20 @@ PACKAGED_RUNNER_TEMPLATE = ROOT / "src/code_mower/templates/lanes/run_mac_lane.s
 REPO_RUNNER = ROOT / "tools/lanes/run_mac_lane.sh"
 SHA_A = "a" * 40
 SHA_B = "b" * 40
+
+
+def _wait_for_pid_exit(pid: int, timeout: float = 5.0) -> bool:
+    """Return whether ``pid`` is gone within ``timeout`` seconds."""
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
 
 
 def _state(**overrides: object) -> lane_delivery.TargetState:
@@ -184,6 +201,45 @@ class ProcessGroupCleanupTests(unittest.TestCase):
         with self.assertRaises(lane_delivery.LaneDeliveryError):
             lane_delivery.terminate_process_group(0)
 
+    def _terminate_with_unkillable_group(
+        self, raised: OSError
+    ) -> tuple[list[int], tuple[str, ...]]:
+        sent: list[int] = []
+
+        def fake_killpg(_pgid: int, sig: int) -> None:
+            sent.append(sig)
+            if sig == signal.SIGKILL:
+                raise raised
+
+        signals = lane_delivery.terminate_process_group(
+            424242,
+            grace_seconds=0.05,
+            poll_interval=0.01,
+            killpg=fake_killpg,
+            is_group_alive=lambda _pgid: True,
+            sleep=lambda _seconds: None,
+        )
+        return sent, signals
+
+    def test_terminate_survives_a_group_that_vanishes_mid_cleanup(self) -> None:
+        """Cleanup races the group it tears down, so it must not raise.
+
+        ``SIGKILL`` after the grace period lands on a group that may already be
+        gone: Linux reports that as ``ESRCH`` and Darwin's ``killpg`` as
+        ``EPERM``. Neither may escape as an exception, and neither may be
+        recorded as a signal that was actually delivered.
+        """
+
+        for label, raised in (
+            ("ESRCH", OSError(errno.ESRCH, "No such process")),
+            ("EPERM", PermissionError(errno.EPERM, "Operation not permitted")),
+        ):
+            with self.subTest(errno=label):
+                sent, signals = self._terminate_with_unkillable_group(raised)
+
+                self.assertEqual(sent, [signal.SIGTERM, signal.SIGKILL])
+                self.assertEqual(signals, ("SIGTERM",))
+
     def test_timeout_reaps_the_whole_provider_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -206,24 +262,25 @@ class ProcessGroupCleanupTests(unittest.TestCase):
             self.assertIn("SIGTERM", result.signals_sent)
 
             grandchild = int(child_pid_file.read_text(encoding="utf-8").strip())
-            deadline = time.monotonic() + 5
-            alive = True
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(grandchild, 0)
-                except OSError:
-                    alive = False
-                    break
-                time.sleep(0.05)
 
-        self.assertFalse(alive, "orphaned provider transport survived the timeout")
+        self.assertTrue(
+            _wait_for_pid_exit(grandchild),
+            "orphaned provider transport survived the timeout",
+        )
 
     def test_output_overflow_terminates_the_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            log_path = Path(tmp) / "run.log"
+            root = Path(tmp)
+            log_path = root / "run.log"
+            child_pid_file = root / "child.pid"
+            script = (
+                "sleep 120 & echo $! > "
+                + str(child_pid_file)
+                + "; while true; do printf 'noise %s\\n' $RANDOM; done"
+            )
 
             result = lane_delivery.supervise_process(
-                ["bash", "-c", "while true; do printf 'noise %s\\n' $RANDOM; done"],
+                ["bash", "-c", script],
                 log_path=log_path,
                 timeout_seconds=30.0,
                 max_log_bytes=4096,
@@ -232,7 +289,61 @@ class ProcessGroupCleanupTests(unittest.TestCase):
 
             self.assertTrue(result.overflowed)
             self.assertEqual(result.exit_code, lane_delivery.EXIT_OUTPUT_OVERFLOW)
+            self.assertIn("SIGTERM", result.signals_sent)
             self.assertLessEqual(log_path.stat().st_size, 4096)
+
+            grandchild = int(child_pid_file.read_text(encoding="utf-8").strip())
+
+        self.assertTrue(
+            _wait_for_pid_exit(grandchild),
+            "orphaned provider transport survived the output overflow",
+        )
+
+    def test_interruption_cleanup(self) -> None:
+        """Interrupting the runner reaps the group and closes every pipe."""
+
+        # Restored by ``supervise_process``, so a signal that lands after the
+        # call cannot fall through to SIG_DFL and kill the test runner.
+        previous = signal.signal(signal.SIGTERM, lambda _signum, _frame: None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                child_pid_file = root / "child.pid"
+                script = (
+                    "sleep 120 & echo $! > "
+                    + str(child_pid_file)
+                    + f"; kill -TERM {os.getpid()}; sleep 120"
+                )
+
+                gc.collect()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    result = lane_delivery.supervise_process(
+                        ["bash", "-c", script],
+                        log_path=root / "run.log",
+                        timeout_seconds=30.0,
+                        term_grace_seconds=1.0,
+                    )
+                    gc.collect()
+
+                leaked = [
+                    str(entry.message)
+                    for entry in caught
+                    if issubclass(entry.category, ResourceWarning)
+                ]
+                grandchild = int(child_pid_file.read_text(encoding="utf-8").strip())
+
+            self.assertTrue(result.interrupted)
+            self.assertEqual(result.reason, "interrupted")
+            self.assertEqual(result.exit_code, lane_delivery.EXIT_INTERRUPTED)
+            self.assertIn("SIGTERM", result.signals_sent)
+            self.assertEqual(leaked, [])
+            self.assertTrue(
+                _wait_for_pid_exit(grandchild),
+                "orphaned provider transport survived the interruption",
+            )
+        finally:
+            signal.signal(signal.SIGTERM, previous)
 
     def test_clean_provider_exit_is_reported_verbatim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -384,10 +495,32 @@ class AuthMaterialExposureTests(unittest.TestCase):
 
 
 class DeliveryOutcomeRecordTests(unittest.TestCase):
-    def _outcome(self) -> lane_delivery.DeliveryOutcome:
+    # Not ``_outcome``: ``unittest.TestCase`` binds an ``_Outcome`` instance to
+    # ``self._outcome`` in ``run()``, which shadows a helper of that name.
+    def _pr_opened_outcome(self) -> lane_delivery.DeliveryOutcome:
         return lane_delivery.classify_delivery(
             _state(), _state(pr_number="901", head_sha=SHA_A), provider_exit=0
         )
+
+    def test_helpers_do_not_shadow_testcase_internals(self) -> None:
+        self.assertIsInstance(self._pr_opened_outcome(), lane_delivery.DeliveryOutcome)
+
+        # ``unittest`` binds these on the instance, so a class-level helper
+        # sharing one of their names is silently replaced at run time.
+        reserved = {
+            name for name in vars(unittest.TestCase()) if not name.startswith("__")
+        }
+        reserved.add("_outcome")
+        for klass in (
+            DeliveryClassificationTests,
+            ProcessGroupCleanupTests,
+            RecoveryHandoffTests,
+            AuthMaterialExposureTests,
+            DeliveryOutcomeRecordTests,
+            RunnerScriptContractTests,
+        ):
+            with self.subTest(klass=klass.__name__):
+                self.assertEqual(set(vars(klass)) & reserved, set())
 
     def test_record_carries_only_delivery_metadata(self) -> None:
         event = lane_delivery.build_delivery_outcome_event(
@@ -395,7 +528,7 @@ class DeliveryOutcomeRecordTests(unittest.TestCase):
             repo="owner/repo",
             kind="issue",
             number="751",
-            outcome=self._outcome(),
+            outcome=self._pr_opened_outcome(),
             supervision_reason="completed",
             signals_sent=["SIGTERM"],
             elapsed_seconds=91.5,
@@ -450,7 +583,7 @@ class DeliveryOutcomeRecordTests(unittest.TestCase):
                         repo="owner/repo",
                         kind="issue",
                         number="751",
-                        outcome=self._outcome(),
+                        outcome=self._pr_opened_outcome(),
                         supervision_reason=value,
                     )
 
@@ -460,7 +593,7 @@ class DeliveryOutcomeRecordTests(unittest.TestCase):
             repo="owner/repo",
             kind="issue",
             number="751",
-            outcome=self._outcome(),
+            outcome=self._pr_opened_outcome(),
         )
 
         with tempfile.TemporaryDirectory() as tmp:

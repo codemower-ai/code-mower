@@ -310,14 +310,33 @@ def classify_delivery(
 # ---------------------------------------------------------------------------
 
 
+#: ``killpg`` reports an empty process group differently per platform. Linux
+#: returns ``ESRCH`` and reserves ``EPERM`` for a group whose members exist but
+#: cannot be signalled. Darwin's BSD ``killpg(3)`` returns ``EPERM`` for a group
+#: with no members at all, so on Darwin ``EPERM`` means drained, not "alive but
+#: out of reach". Getting this wrong is what made cleanup burn the whole TERM
+#: grace period and then raise ``PermissionError`` from the SIGKILL escalation.
+_EMPTY_GROUP_ERRNOS: frozenset[int] = (
+    frozenset({errno.ESRCH, errno.EPERM})
+    if sys.platform == "darwin"
+    else frozenset({errno.ESRCH})
+)
+
+#: Errnos that mean a cleanup signal reached nothing. Cleanup races the group it
+#: is tearing down, so the last member can exit between the liveness probe and
+#: the signal; both platforms' "nothing there" errnos are the outcome cleanup
+#: wanted, not a failure to propagate out of the runner.
+_UNSIGNALABLE_ERRNOS = frozenset({errno.ESRCH, errno.EPERM})
+
+
 def _default_is_group_alive(pgid: int) -> bool:
+    """Return whether ``pgid`` still has a member this process could signal."""
+
     try:
         os.killpg(pgid, 0)
-    except OSError as exc:  # pragma: no cover - errno branches are trivial
-        if exc.errno == errno.ESRCH:
+    except OSError as exc:
+        if exc.errno in _EMPTY_GROUP_ERRNOS:
             return False
-        if exc.errno == errno.EPERM:
-            return True
         raise
     return True
 
@@ -335,9 +354,13 @@ def terminate_process_group(
     """Terminate and reap an entire provider process group.
 
     Sends ``SIGTERM`` to the group, waits up to ``grace_seconds`` for it to
-    drain, then escalates to ``SIGKILL``. Returns the signals actually sent so
-    callers can record a metadata-only cleanup trace. Refuses to signal the
-    caller's own process group.
+    drain, then escalates to ``SIGKILL``. Returns the signals actually
+    delivered so callers can record a metadata-only cleanup trace. Refuses to
+    signal the caller's own process group.
+
+    Cleanup fails closed: a group that vanishes or becomes unsignalable while
+    it is being torn down is reported as having received nothing further, never
+    by raising out of the runner's cleanup path.
     """
 
     if pgid <= 1:
@@ -350,10 +373,12 @@ def terminate_process_group(
     sent: list[str] = []
 
     def _signal(sig: int, name: str) -> bool:
+        """Send ``sig`` to the group and report whether it reached anything."""
+
         try:
             send(pgid, sig)
         except OSError as exc:
-            if exc.errno == errno.ESRCH:
+            if exc.errno in _UNSIGNALABLE_ERRNOS:
                 return False
             raise
         sent.append(name)
@@ -393,21 +418,23 @@ class SupervisionResult:
         return "completed"
 
 
-def _reap_group(pgid: int, *, deadline_seconds: float = 5.0) -> None:
-    """Reap any remaining children of this process, bounded by a deadline."""
+def _wait_for_group_exit(pgid: int, *, deadline_seconds: float = 5.0) -> bool:
+    """Wait, bounded, for a terminated provider group to drain.
+
+    Only the supervisor's direct child is its to reap, and ``supervise_process``
+    already waits on that one. Anything the provider spawned is reparented to
+    init the moment the provider dies, so this polls group liveness rather than
+    calling ``waitpid(-1)``, which would steal the exit status of an unrelated
+    child of the runner.
+    """
 
     end = time.monotonic() + deadline_seconds
-    while time.monotonic() < end:
-        try:
-            pid, _status = os.waitpid(-1, os.WNOHANG)
-        except ChildProcessError:
-            return
-        except OSError:  # pragma: no cover - defensive
-            return
-        if pid == 0:
-            if not _default_is_group_alive(pgid):
-                return
-            time.sleep(0.05)
+    while True:
+        if not _default_is_group_alive(pgid):
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.05)
 
 
 def supervise_process(
@@ -449,9 +476,11 @@ def supervise_process(
 
     stdin_handle = None
     proc: subprocess.Popen[bytes] | None = None
+    selector: selectors.BaseSelector | None = None
     timed_out = False
     overflowed = False
     written = 0
+    exit_code = 1
     signals_sent: tuple[str, ...] = ()
     try:
         stdin_handle = (
@@ -466,7 +495,16 @@ def supervise_process(
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        pgid = os.getpgid(proc.pid)
+        child = proc
+        pgid = os.getpgid(child.pid)
+
+        def _group_alive(group_id: int) -> bool:
+            # Reap the direct child first. A zombie group leader still counts
+            # as a group member on Linux, so probing without reaping would
+            # burn the whole TERM grace period on an already-drained group.
+            child.poll()
+            return _default_is_group_alive(group_id)
+
         deadline = time.monotonic() + timeout_seconds
         selector = selectors.DefaultSelector()
         assert proc.stdout is not None
@@ -495,30 +533,35 @@ def supervise_process(
                     break
                 if proc.poll() is not None and not selector.get_map():
                     break
-        selector.close()
 
         if timed_out or overflowed or interrupted["value"]:
             signals_sent = terminate_process_group(
-                pgid, grace_seconds=term_grace_seconds
+                pgid, grace_seconds=term_grace_seconds, is_group_alive=_group_alive
             )
         try:
             proc.wait(timeout=term_grace_seconds + 5)
         except subprocess.TimeoutExpired:  # pragma: no cover - defensive
             signals_sent = signals_sent + terminate_process_group(
-                pgid, grace_seconds=1.0
+                pgid, grace_seconds=1.0, is_group_alive=_group_alive
             )
             proc.wait(timeout=5)
         # Sweep any grandchildren the provider left behind, even on a clean
         # exit: an orphaned transport is exactly the failure this closes.
         if _default_is_group_alive(pgid):
             signals_sent = signals_sent + terminate_process_group(
-                pgid, grace_seconds=term_grace_seconds
+                pgid, grace_seconds=term_grace_seconds, is_group_alive=_group_alive
             )
-        _reap_group(pgid)
+        _wait_for_group_exit(pgid)
         exit_code = proc.returncode if proc.returncode is not None else 1
         if exit_code < 0:
             exit_code = 128 - exit_code
     finally:
+        # Every terminal path closes the supervisor's own descriptors: the
+        # provider pipe, the selector, and any stdin file handle.
+        if proc is not None and proc.stdout is not None:
+            proc.stdout.close()
+        if selector is not None:
+            selector.close()
         if stdin_handle not in (None, subprocess.DEVNULL):
             stdin_handle.close()  # type: ignore[union-attr]
         for sig, handler in previous_handlers.items():
