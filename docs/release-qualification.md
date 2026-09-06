@@ -151,6 +151,10 @@ as unclassified failures.
 - Owner-action counts agree with the outcome: a step with status `pass` must
   report `owner_action_count: 0`, and outcome `pass` requires zero owner
   actions overall
+- `failure_reason` is only accepted for a failed `package_install` step. It must
+  be one of the closed taxonomy values (network, package_index, runtime,
+  sandbox_permission, unknown) and is rejected on steps with any other `id` or
+  any `status` other than `fail`
 
 ## Release Campaigns
 

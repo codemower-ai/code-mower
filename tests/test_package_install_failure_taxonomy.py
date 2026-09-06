@@ -74,7 +74,7 @@ class FailureReasonClassificationTests(unittest.TestCase):
             ("connection refused", "connection timed out", "network"),
             ("temporary failure in name resolution", "Could not resolve host", "network"),
             ("SSL certificate verify failed", "ssl: validation failed", "network"),
-            ("timeout expired", "", "network"),
+            ("timeout expired", "connection refused", "network"),  # timeout + network evidence
             ("HTTP Error 404", "Could not find a version", "package_index"),
             ("No matching distribution found", "", "package_index"),
             ("Requires Python >=3.13", "requires python_version", "runtime"),
@@ -110,6 +110,27 @@ class FailureReasonClassificationTests(unittest.TestCase):
         """Verify [Errno 111] ECONNREFUSED is classified as network, not sandbox."""
         exc = RuntimeError("Connection refused")
         steps = [{"stderr_preview": "[Errno 111] Connection refused"}]
+        reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
+        self.assertEqual(reason, "network")
+
+    def test_timeout_with_network_evidence_classified_as_network(self) -> None:
+        """Timeout + network evidence = network."""
+        exc = RuntimeError("timeout expired")
+        steps = [{"stderr_preview": "connection timed out to pypi.org"}]
+        reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
+        self.assertEqual(reason, "network")
+
+    def test_timeout_without_network_evidence_classified_as_unknown(self) -> None:
+        """Timeout without network evidence = unknown."""
+        exc = RuntimeError("timeout expired")
+        steps = [{"stderr_preview": "building wheel for complex-package"}]
+        reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
+        self.assertEqual(reason, "unknown")
+
+    def test_network_error_without_timeout_classified_as_network(self) -> None:
+        """Network error without timeout still classifies as network."""
+        exc = RuntimeError("Connection refused")
+        steps = [{"stderr_preview": "connection refused"}]
         reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
         self.assertEqual(reason, "network")
 
