@@ -31,6 +31,7 @@ PROCESS_PROVIDERS = {
     "claude": "claude",
     "codex": "codex",
     "cursor": "cursor",
+    "devin": "devin",
     "gemini": "gemini",
     "gitar": "gitar",
 }

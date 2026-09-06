@@ -112,10 +112,11 @@ fi
 if [ -z "$kind" ]; then
   num="$(
     gh pr list -R "$REPO" --state open --label "$builder_label" --limit 100 \
-      --json number,labels,updatedAt,headRepository \
-      | jq -r --arg repo "$expected_repo_slug" '
+      --json number,labels,updatedAt,headRepository,headRefName \
+      | jq -r --arg repo "$expected_repo_slug" --argjson prefixes "$lane_branch_prefixes_json" '
         def same_head_repo: ((.headRepository.nameWithOwner // "") | ascii_downcase) == $repo;
-        [.[] | select(same_head_repo) | select(any(.labels[]; '"${audit_block_filter}"'))]
+        def has_lane_prefix: (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
+        [.[] | select(same_head_repo) | select(has_lane_prefix) | select(any(.labels[]; '"${audit_block_filter}"'))]
         | sort_by(.updatedAt) | .[0].number // empty'
   )"
   [ -n "$num" ] && kind="pr" && mode="fix"
@@ -288,17 +289,15 @@ if [ "$kind" = "pr" ]; then
     fi
     target_pr_owned_by_lane="$(
       printf '%s\n' "$target_pr_json" \
-        | jq -r --arg builder "$builder_label" --argjson prefixes "$lane_branch_prefixes_json" '
-          def has_builder_label:
-            any((.labels // [])[]; (.name // "") == $builder);
+        | jq -r --argjson prefixes "$lane_branch_prefixes_json" '
           def has_lane_prefix:
             (.headRefName // "") as $branch
             | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
-          if has_builder_label or has_lane_prefix then "true" else "false" end
+          if has_lane_prefix then "true" else "false" end
         '
     )"
     if [ "$target_pr_owned_by_lane" != "true" ]; then
-      echo "${LANE}: refusing ${mode} PR #${num}; head branch ${target_pr_branch:-missing} is not owned by this lane (expected label ${builder_label} or branch prefix ${lane_branch_prefixes_display})" >&2
+      echo "${LANE}: refusing ${mode} PR #${num}; head branch ${target_pr_branch:-missing} is not owned by this lane (expected branch prefix ${lane_branch_prefixes_display})" >&2
       exit 1
     fi
   fi
@@ -328,6 +327,7 @@ git -C "$work" clean -fdxq -e .build -e node_modules -e .venv
 install_pre_push_guard "$target_pr_branch" "$mode"
 
 prompt_file="$(mktemp)"
+trap 'rm -f "$prompt_file"' EXIT
 {
   echo "You are the ${LANE} builder lane for ${REPO}, running non-interactively on the owner's Mac. Nobody will answer questions: decide, act, and leave the state on GitHub. Wall-clock budget: ${MAX_MINUTES} minutes; push and report before it runs out."
   echo
@@ -515,6 +515,7 @@ case "$LANE" in
 esac
 set -e
 rm -f "$prompt_file"
+trap - EXIT
 tail -c 4000 "$log" || true
 echo
 if [ "$rc" -eq 124 ]; then

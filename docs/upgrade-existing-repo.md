@@ -182,3 +182,55 @@ lane in `init` (`local_audit_eligible: false`) until #746 lands the local audit
 wrapper. To use it in a campaign, install `devin` on PATH, run `devin auth login`
 in a trusted environment, and set `CODE_MOWER_DEVIN_CLI_MODEL` or
 `DEVIN_CLI_MODEL`.
+
+## Local Devin Builder Lane
+
+Separately from the `devin_cli` reviewer contract above, `devin` can now also
+run as a local **builder** lane on the self-hosted Mac lane runner, alongside
+`codex` and `claude`. This reuses the same engine as those lanes: trusted-author
+work-order filtering, one-issue/one-PR selection, single-writer pre-push
+branch protection, and peer-audit dispatch.
+
+To adopt it in a new or existing repo:
+
+1. Install the `devin` CLI on the runner's `PATH` (or set
+   `CODE_MOWER_DEVIN_CLI_COMMAND` to an absolute path) and authenticate it
+   ahead of time; the lane runner never handles interactive login.
+2. Add `devin` to the `--builders` list passed to `code-mower init` (for
+   example `--builders codex,claude,devin`). This generates
+   `docs/lanes/devin.md`, adds `devin` to the Mac lane runner script and
+   workflow, and adds `builder:devin` / `dispatched:devin` labels.
+3. Optionally set `CODE_MOWER_DEVIN_CLI_MODEL` (or `DEVIN_CLI_MODEL`/
+   `DEVIN_MODEL`) to record which model Devin CLI is running, and
+   `LANE_DEVIN_EXTRA_FLAGS` for owner-approved extra CLI flags. The runner
+   refuses to start if that override includes `--export`, `--continue`/`-c`,
+   `--resume`/`-r`, or an attempt to override `--permission-mode`,
+   `--sandbox`, `--prompt-file`, `--print`, `--respect-workspace-trust`, or
+   `--config` (including their `--flag=value` forms).
+
+Permission posture: the runner invokes the Devin CLI's non-interactive
+`--print` mode with `--sandbox --permission-mode autonomous`. The Devin CLI's
+own OS sandbox — not the lane's dedicated, disposable checkout by itself — is
+the actual security boundary; the checkout-scoping is the same one used for
+Codex and Claude, but a dedicated cwd alone is never described as a safety
+boundary here. Autonomous mode auto-approves shell commands but still
+requires interactive confirmation for Devin's dedicated file write/edit
+tools, which a noninteractive `--print` run cannot answer and which would
+abort the run, so the frozen work-order prompt explicitly instructs Devin to
+perform every file creation and edit through shell commands only and never
+call those dedicated tools. The frozen work order is written to a mode-0600
+prompt file and passed with `--prompt-file`, never piped over stdin (the CLI
+is invoked with stdin closed) and never inlined as prompt text in argv. The
+runner never invokes `--export`, `--continue`, or `--resume`, and there is no
+session continuation or export in this lane; it never uploads the prompt,
+transcript, source, diff, issue body, raw stdout/stderr, auth output, or
+local paths. After a successful build or fix round it records only bounded
+provenance (provider/executor, model, tool version, elapsed time,
+intervention count of zero, PR/head identity, and status) via `code-mower
+builder record`, using `--provider devin_cli --executor devin_cli` — a
+distinct local identity from a hosted Devin session (`devin`/`devin_cloud`),
+even though both share the `builder:devin` label.
+
+`code-mower lanes status` and the Board's local process discovery recognize
+a running `devin` process as the Devin lane, reporting only its checkout
+path (redacted by default) — never the prompt file path or prompt text.
