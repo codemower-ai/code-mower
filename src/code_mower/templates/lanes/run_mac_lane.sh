@@ -8,8 +8,11 @@
 #   4. the oldest open issue labeled dispatched:<lane> with no open PR
 #
 # The CLIs run sandboxed by default. The runner owner can append extra CLI flags
-# by exporting LANE_CODEX_EXTRA_FLAGS or LANE_CLAUDE_EXTRA_FLAGS in the runner
-# environment.
+# by exporting LANE_CODEX_EXTRA_FLAGS, LANE_CLAUDE_EXTRA_FLAGS, or
+# LANE_DEVIN_EXTRA_FLAGS in the runner environment. Devin CLI has no sandboxed
+# noninteractive mode (its sandbox forces interactive confirmation), so it runs
+# in a dangerous-permission posture confined to the dedicated lane checkout
+# below; extra flags may never include --export.
 set -euo pipefail
 
 LANE=""
@@ -328,6 +331,7 @@ git -C "$work" clean -fdxq -e .build -e node_modules -e .venv
 install_pre_push_guard "$target_pr_branch" "$mode"
 
 prompt_file="$(mktemp)"
+chmod 600 "$prompt_file"
 {
   echo "You are the ${LANE} builder lane for ${REPO}, running non-interactively on the owner's Mac. Nobody will answer questions: decide, act, and leave the state on GitHub. Wall-clock budget: ${MAX_MINUTES} minutes; push and report before it runs out."
   echo
@@ -464,6 +468,11 @@ run_with_cap() {
 codex_extra=( ${LANE_CODEX_EXTRA_FLAGS:-} )
 # shellcheck disable=SC2206
 claude_extra=( ${LANE_CLAUDE_EXTRA_FLAGS:-} )
+# shellcheck disable=SC2206
+devin_extra=( ${LANE_DEVIN_EXTRA_FLAGS:-} )
+devin_model=""
+devin_tool_version=""
+run_started_at="$(date +%s)"
 claude_allow=(
   'Bash(git *)'
   'Bash(gh *)'
@@ -512,11 +521,70 @@ case "$LANE" in
         --output-format text --max-turns 400 < "$prompt_file" ) > "$log" 2>&1
     rc=$?
     ;;
+  devin)
+    devin_command="${CODE_MOWER_DEVIN_CLI_COMMAND:-devin}"
+    command -v "$devin_command" >/dev/null 2>&1 || { echo "devin CLI not on PATH" >&2; exit 1; }
+    if [ "${#devin_extra[@]}" -gt 0 ]; then
+      for devin_extra_flag in "${devin_extra[@]}"; do
+        case "$devin_extra_flag" in
+          --export|--export=*)
+            echo "devin: LANE_DEVIN_EXTRA_FLAGS must not include --export" >&2
+            exit 2
+            ;;
+        esac
+      done
+    fi
+    devin_model="${CODE_MOWER_DEVIN_CLI_MODEL:-${DEVIN_CLI_MODEL:-${DEVIN_MODEL:-}}}"
+    devin_tool_version="$("$devin_command" --version 2>/dev/null | head -n 1)" || devin_tool_version=""
+    devin_args=(run --permission-mode dangerous --output-format text)
+    [ -n "$devin_model" ] && devin_args+=(--model "$devin_model")
+    if [ "${#devin_extra[@]}" -gt 0 ]; then
+      devin_args+=("${devin_extra[@]}")
+    fi
+    devin_args+=(-)
+    # The Devin CLI sandbox forces interactive confirmation and cannot finish
+    # noninteractively, so this runs in its dangerous-permission posture,
+    # confined to the dedicated, disposable checkout at "$work" only.
+    ( cd "$work" && run_with_cap "$devin_command" "${devin_args[@]}" < "$prompt_file" ) > "$log" 2>&1
+    rc=$?
+    ;;
 esac
 set -e
 rm -f "$prompt_file"
 tail -c 4000 "$log" || true
 echo
+if [ "$LANE" = "devin" ] && [ "$rc" -eq 0 ]; then
+  (
+    set +e
+    devin_elapsed_seconds=$(( $(date +%s) - run_started_at ))
+    devin_status="observed"
+    devin_pr_number="$num"
+    if [ "$kind" = "issue" ]; then
+      devin_pr_number="$(gh pr list -R "$REPO" --state open --search "\"#${num}\" in:body" --limit 30 \
+        --json number,closingIssuesReferences,headRefName \
+        | jq -r --arg issue "$num" --argjson prefixes "$lane_branch_prefixes_json" '
+          def has_lane_prefix: (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
+          [.[] | select(has_lane_prefix) | select(any((.closingIssuesReferences // [])[]; ((.number // "") | tostring) == $issue))]
+          | sort_by(.number) | last | .number // empty')"
+      [ -n "$devin_pr_number" ] && devin_status="pr-opened"
+    fi
+    if [ -n "$devin_pr_number" ] && command -v code-mower >/dev/null 2>&1; then
+      devin_model_source="missing"
+      [ -n "$devin_model" ] && devin_model_source="env"
+      devin_version_source="missing"
+      [ -n "$devin_tool_version" ] && devin_version_source="probe"
+      cd "$work" && code-mower builder record \
+        --provider devin --executor devin_cli \
+        --pr "${REPO}#${devin_pr_number}" --repo "$REPO" \
+        --status "$devin_status" \
+        --model "$devin_model" --model-source "$devin_model_source" \
+        --tool-version "$devin_tool_version" --version-source "$devin_version_source" \
+        --elapsed-seconds "$devin_elapsed_seconds" --user-interventions 0 \
+        --lens implementation --force --json >/dev/null 2>&1
+    fi
+    exit 0
+  ) || echo "${LANE}: builder provenance record skipped" >&2
+fi
 if [ "$rc" -eq 124 ]; then
   echo "${LANE}: hit the ${MAX_MINUTES}-minute cap on ${kind} #${num}"
   subcommand="issue"

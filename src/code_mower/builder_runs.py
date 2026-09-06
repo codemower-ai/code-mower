@@ -39,6 +39,8 @@ AUTHOR_INFERENCE_RULES = {
     "claude-bot": ("claude", "claude_code_action"),
     "cursor[bot]": ("cursor_cloud_agent", "cursor_cloud_agent"),
     "cursor": ("cursor_cloud_agent", "cursor_cloud_agent"),
+    "devin-ai-integration": ("devin", "devin_cli"),
+    "devin-ai-integration[bot]": ("devin", "devin_cli"),
 }
 BRANCH_PREFIX_INFERENCE_RULES = (
     ("cursor/", "cursor_cloud_agent", "cursor_cloud_agent"),
@@ -49,6 +51,8 @@ BRANCH_PREFIX_INFERENCE_RULES = (
     ("chatgpt-codex-", "codex", "chatgpt-codex-connector"),
     ("claude/", "claude", "claude_code_action"),
     ("claude-", "claude", "claude_code_action"),
+    ("devin/", "devin", "devin_cli"),
+    ("devin-", "devin", "devin_cli"),
 )
 
 

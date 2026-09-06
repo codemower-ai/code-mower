@@ -123,8 +123,9 @@ BUILDER_DEFAULT_DOC_SLUGS = {
     "claude": "claude",
     "codex": "codex",
     "cursor": "cursor",
+    "devin": "devin",
 }
-MAC_RUNNER_BUILDER_LANES = {"claude", "codex"}
+MAC_RUNNER_BUILDER_LANES = {"claude", "codex", "devin"}
 
 DEFAULT_APPLY_OUTPUT_DIR = ".code-mower.generated"
 APPLY_MANIFEST_FILENAME = "code-mower-init-plan.json"

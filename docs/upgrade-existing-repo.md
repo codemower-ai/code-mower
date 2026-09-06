@@ -182,3 +182,42 @@ lane in `init` (`local_audit_eligible: false`) until #746 lands the local audit
 wrapper. To use it in a campaign, install `devin` on PATH, run `devin auth login`
 in a trusted environment, and set `CODE_MOWER_DEVIN_CLI_MODEL` or
 `DEVIN_CLI_MODEL`.
+
+## Local Devin Builder Lane
+
+Separately from the `devin_cli` reviewer contract above, `devin` can now also
+run as a local **builder** lane on the self-hosted Mac lane runner, alongside
+`codex` and `claude`. This reuses the same engine as those lanes: trusted-author
+work-order filtering, one-issue/one-PR selection, single-writer pre-push
+branch protection, and peer-audit dispatch.
+
+To adopt it in a new or existing repo:
+
+1. Install the `devin` CLI on the runner's `PATH` (or set
+   `CODE_MOWER_DEVIN_CLI_COMMAND` to an absolute path) and authenticate it
+   ahead of time; the lane runner never handles interactive login.
+2. Add `devin` to the `--builders` list passed to `code-mower init` (for
+   example `--builders codex,claude,devin`). This generates
+   `docs/lanes/devin.md`, adds `devin` to the Mac lane runner script and
+   workflow, and adds `builder:devin` / `dispatched:devin` labels.
+3. Optionally set `CODE_MOWER_DEVIN_CLI_MODEL` (or `DEVIN_CLI_MODEL`/
+   `DEVIN_MODEL`) to record which model Devin CLI is running, and
+   `LANE_DEVIN_EXTRA_FLAGS` for owner-approved extra CLI flags. The runner
+   refuses to start if that override includes `--export`.
+
+Permission posture: Devin CLI's sandboxed permission mode blocks on
+interactive confirmation and cannot complete a noninteractive lane run, so
+the runner invokes it in its dangerous-permission mode, confined to the
+lane's dedicated, disposable checkout only — the same checkout-scoping used
+for Codex and Claude. The frozen work order is written to a mode-0600 prompt
+file and piped to the CLI over stdin, never passed as a command-line
+argument, so it never appears in `ps` output. The runner never invokes
+`--export`, never uploads the prompt, transcript, source, diff, issue body,
+raw stdout/stderr, auth output, or local paths; after a successful build or
+fix round it records only bounded provenance (provider/executor, model,
+tool version, elapsed time, intervention count of zero, PR/head identity,
+and status) via `code-mower builder record`.
+
+`code-mower lanes status` and the Board's local process discovery recognize
+a running `devin` process as the Devin lane, reporting only its checkout
+path (redacted by default) — never the prompt file path or prompt text.
