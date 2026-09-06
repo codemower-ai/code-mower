@@ -77,7 +77,10 @@ It also records automated-vs-manual outcomes (`match`, `missed_blocker`,
 missed a manual plan-of-record blocker.
 
 The generated policy is advisory. Repository-specific merge bars still require
-explicit configuration and the usual Code Mower audit protocol.
+explicit configuration and the usual Code Mower audit protocol. For
+builder-provider delivery evidence, see the [Provider Calibration
+Scorecard](provider-calibration-scorecard.md): builder success supports
+continued supervised use but never promotes reviewer merge authority.
 
 ## Lane Classes
 

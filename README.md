@@ -530,6 +530,7 @@ first so local work exercises the same package entrypoint users install.
 - [Claude Lane Standing Instructions](docs/lanes/claude.md)
 - [Cursor Hosted Lane Standing Instructions](docs/lanes/cursor.md)
 - [Provider Matrix](docs/provider-matrix.md)
+- [Provider Calibration Scorecard](docs/provider-calibration-scorecard.md)
 - [GitHub Setup](docs/github-setup.md)
 - [First Run Transcript](docs/first-run-transcript.md)
 - [First-User Demo Transcript](docs/first-user-demo-transcript.md)

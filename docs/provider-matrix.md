@@ -268,6 +268,11 @@ and is disabled by default.
 
 ## Promotion Policy
 
+The 20-sample builder evidence is summarized in the
+[Provider Calibration Scorecard](provider-calibration-scorecard.md).
+Builder delivery success does not change any lane's reviewer merge
+authority.
+
 A lane can move from informational to selective trigger or merge authority only
 after calibration answers:
 
