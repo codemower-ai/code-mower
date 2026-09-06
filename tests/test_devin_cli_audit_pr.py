@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -90,6 +91,18 @@ class _DevinCliAuditTestCase(unittest.TestCase):
             base_ref="main",
             **overrides,
         )
+
+    def _run_with_fake(self, fake: Path, **overrides: object):
+        with mock.patch(
+            "code_mower.devin_cli_audit_pr.fetch_pull_request",
+            return_value=self._pr_meta(),
+        ), mock.patch(
+            "code_mower.devin_cli_audit_pr.post_pr_comment",
+            return_value={"id": 123},
+        ):
+            config = self._config(**overrides)
+            config.command = str(fake)
+            return devin_cli_audit.audit_pr(config)
 
 
 class TestDevinCliAuditPass(_DevinCliAuditTestCase):
@@ -188,13 +201,34 @@ class TestDevinCliAuditPass(_DevinCliAuditTestCase):
             "code_mower.devin_cli_audit_pr.post_pr_comment",
             return_value={"id": 123},
         ) as post:
-            result = devin_cli_audit.audit_pr(self._config(allow_dirty=False))
+            result = devin_cli_audit.audit_pr(self._config())
 
         self.assertEqual(result.verdict, "UNKNOWN")
         self.assertIn("needs-devin-cli-audit", result.comment_body)
         self.assertIn("INCOMPLETE", result.comment_body)
         self.assertNotIn("PASS", result.comment_body)
         self.assertTrue(post.called)
+
+    def test_allow_dirty_option_is_rejected(self) -> None:
+        # The lane has no dirty-checkout escape hatch; argparse must reject the
+        # flag outright rather than silently ignoring it.
+        argv = [
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "1",
+            "--repo-paths",
+            f"owner/repo={self.repo}",
+            "--dry-run",
+            "--allow-dirty",
+        ]
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", new=stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                devin_cli_audit.main(argv)
+
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("unrecognized arguments: --allow-dirty", stderr.getvalue())
 
     def test_timeout_fails_closed(self) -> None:
         self._write_fake(
@@ -461,18 +495,6 @@ exit EXIT_CODE
         fake.chmod(0o755)
         return fake, mode_log, path_log
 
-    def _run_with_fake(self, fake: Path, **overrides: object):
-        with mock.patch(
-            "code_mower.devin_cli_audit_pr.fetch_pull_request",
-            return_value=self._pr_meta(),
-        ), mock.patch(
-            "code_mower.devin_cli_audit_pr.post_pr_comment",
-            return_value={"id": 123},
-        ):
-            config = self._config(**overrides)
-            config.command = str(fake)
-            return devin_cli_audit.audit_pr(config)
-
     def test_prompt_file_mode_and_cleanup_on_success(self) -> None:
         fake, mode_log, path_log = self._write_prompt_observer("ok")
         result = self._run_with_fake(fake)
@@ -492,6 +514,27 @@ exit EXIT_CODE
         result = self._run_with_fake(fake, timeout=1)
         self.assertEqual(result.verdict, "UNKNOWN")
         self.assertFalse(Path(path_log.read_text(encoding="utf-8")).exists())
+
+
+def _child_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - still alive, owned elsewhere
+        return True
+    return True
+
+
+def _assert_child_reaped(test: unittest.TestCase, pid_file: Path, what: str) -> None:
+    pid = int(pid_file.read_text(encoding="utf-8").strip())
+    deadline = time.monotonic() + 15.0
+    while _child_is_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    test.assertFalse(_child_is_alive(pid), f"spawned child survived the {what}")
+
+
+_SPAWN_ORPHAN = "sh -c 'while true; do sleep 1; done' &\n"
 
 
 class TestGitLimitedDeadline(_DevinCliAuditTestCase):
@@ -560,6 +603,144 @@ class TestGitLimitedDeadline(_DevinCliAuditTestCase):
         self.assertLess(time.monotonic() - started, 30)
         self.assertTrue(truncated)
         self.assertIn("diff truncated by devin-cli-audit wrapper", text)
+
+    def test_timeout_reaps_spawned_git_child(self) -> None:
+        pid_file = self.tmp / "git-child.pid"
+        bin_dir = self._fake_git(
+            "#!/bin/sh\n"
+            + _SPAWN_ORPHAN
+            + f'echo $! > "{pid_file}"\n'
+            + "sleep 60\n"
+        )
+        with self.assertRaises(devin_cli_audit.NoTrustworthyVerdictError):
+            self._run_with_path(bin_dir, max_bytes=1024, timeout=2)
+
+        _assert_child_reaped(self, pid_file, "bounded git timeout")
+
+
+class TestDevinCliProcessBounds(_DevinCliAuditTestCase):
+    """The Devin CLI process is byte-bounded, deadline-bounded, and reaped."""
+
+    SENTINEL = "SENTINEL_RAW_OUTPUT_9c31ab"
+    VERDICT = '{"verdict": "pass", "summary": "OK", "findings": []}'
+
+    def _fake(self, name: str, body: str) -> Path:
+        fake = self.tmp / f"fake-devin-{name}"
+        fake.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        fake.chmod(0o755)
+        return fake
+
+    def _flood(self, text: str, *, to_stderr: bool = False) -> str:
+        redirect = " >&2" if to_stderr else ""
+        return (
+            "i=0\n"
+            "while [ $i -lt 512 ]; do\n"
+            f"  printf '%s\\n' '{text}'{redirect}\n"
+            "  i=$((i + 1))\n"
+            "done\n"
+        )
+
+    def _run(self, fake: Path, **kwargs: object):
+        return devin_cli_audit._run_devin_cli(
+            command=str(fake),
+            prompt="prompt",
+            model="",
+            cwd=self.repo,
+            **kwargs,
+        )
+
+    def test_bounded_output_returned_with_independent_stream_bounds(self) -> None:
+        # Noisy stderr well past the stdout bound must neither consume the
+        # stdout budget nor reject an otherwise small, complete stdout verdict.
+        fake = self._fake(
+            "independent",
+            self._flood(self.SENTINEL, to_stderr=True) + f"echo '{self.VERDICT}'\n",
+        )
+        stdout, returncode, _duration = self._run(
+            fake, timeout=30, max_stdout_bytes=1024, max_stderr_bytes=1024 * 1024
+        )
+
+        self.assertEqual(returncode, 0)
+        self.assertIn('"verdict": "pass"', stdout)
+        self.assertNotIn(self.SENTINEL, stdout)
+
+    def test_overflow_and_timeout_fail_closed_without_raw_output(self) -> None:
+        cases = (
+            (
+                "stdout-overflow",
+                self._flood(self.SENTINEL),
+                {"timeout": 30, "max_stdout_bytes": 1024, "max_stderr_bytes": 1024},
+                "stdout exceeded",
+            ),
+            (
+                "stderr-overflow",
+                self._flood(self.SENTINEL, to_stderr=True) + f"echo '{self.VERDICT}'\n",
+                {
+                    "timeout": 30,
+                    "max_stdout_bytes": 1024 * 1024,
+                    "max_stderr_bytes": 1024,
+                },
+                "stderr exceeded",
+            ),
+            (
+                "timeout",
+                f"printf '%s\\n' '{self.SENTINEL}'\n"
+                f"printf '%s\\n' '{self.SENTINEL}' >&2\n"
+                "sleep 60\n",
+                {"timeout": 1, "max_stdout_bytes": 1024, "max_stderr_bytes": 1024},
+                "timed out",
+            ),
+        )
+        for name, body, kwargs, expected in cases:
+            with self.subTest(case=name):
+                fake = self._fake(name, body)
+                started = time.monotonic()
+                failure = devin_cli_audit.NoTrustworthyVerdictError
+                with self.assertRaises(failure) as ctx:
+                    self._run(fake, **kwargs)
+
+                self.assertLess(time.monotonic() - started, 30)
+                message = str(ctx.exception)
+                self.assertIn(expected, message)
+                self.assertNotIn(self.SENTINEL, message)
+
+    def test_spawned_process_group_is_reaped(self) -> None:
+        cases = (
+            (
+                "timeout",
+                "sleep 60\n",
+                {"timeout": 2, "max_stdout_bytes": 1024, "max_stderr_bytes": 1024},
+            ),
+            (
+                "stdout-overflow",
+                self._flood("x" * 40) + "sleep 60\n",
+                {"timeout": 30, "max_stdout_bytes": 1024, "max_stderr_bytes": 1024},
+            ),
+        )
+        for name, tail, kwargs in cases:
+            with self.subTest(case=name):
+                pid_file = self.tmp / f"devin-{name}-child.pid"
+                fake = self._fake(
+                    f"spawner-{name}",
+                    _SPAWN_ORPHAN + f'echo $! > "{pid_file}"\n' + tail,
+                )
+                with self.assertRaises(devin_cli_audit.NoTrustworthyVerdictError):
+                    self._run(fake, **kwargs)
+
+                _assert_child_reaped(self, pid_file, f"Devin CLI {name}")
+
+    def test_overflow_does_not_leak_raw_output_to_comment_or_artifact(self) -> None:
+        fake = self._fake("audit-overflow", self._flood(self.SENTINEL))
+        with mock.patch.object(devin_cli_audit, "MAX_DEVIN_STDOUT_BYTES", 512):
+            result = self._run_with_fake(fake)
+
+        self.assertEqual(result.verdict, "UNKNOWN")
+        self.assertIn("needs-devin-cli-audit", result.comment_body)
+        self.assertIn("exceeded", result.comment_body)
+        self.assertNotIn(self.SENTINEL, result.comment_body)
+        self.assertIsNotNone(result.verdict_artifact_path)
+        payload = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
+        self.assertNotIn(self.SENTINEL, json.dumps(payload))
 
 
 if __name__ == "__main__":

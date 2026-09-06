@@ -84,6 +84,16 @@ tools/run_devin_cli_audit_pr.sh \
 The Devin CLI lane uses the `needs-devin-cli-audit` label, runs with
 `devin --sandbox --permission-mode auto` (source-edit tools are not approved
 for this reviewer), and never passes `--export`, `--continue`, or `--resume`.
+Its stdout and stderr are streamed under independent byte bounds against a
+wall-clock deadline; a timeout or an overflow on either stream terminates the
+whole spawned process group and fails closed to `needs-devin-cli-audit` with a
+metadata-only reason, never raw provider output.
+
+The lane has no `--allow-dirty` escape hatch (passing it is rejected by the
+argument parser). The checkout must be clean at the exact PR head before the
+provider runs, and clean again afterwards, so a verdict is only ever produced
+for the committed tree it claims to have reviewed. Commit or stash local
+changes before invoking it.
 
 The path must point at an existing checkout of the pull request head. It must
 not be the Code Mower support checkout or the wrapper's current working

@@ -24,6 +24,7 @@ import json
 import os
 import re
 import selectors
+import signal
 import subprocess
 import sys
 import tempfile
@@ -133,6 +134,13 @@ PASS_TRAILER = f"<!-- {TRAILER_PREFIX}: devin-cli-audit-done -->"
 BLOCKED_TRAILER = f"<!-- {TRAILER_PREFIX}: devin-cli-audit-blocked -->"
 NEEDS_TRAILER = f"<!-- {TRAILER_PREFIX}: needs-devin-cli-audit -->"
 _MAX_GIT_STDERR_BYTES = 64 * 1024
+# Independent, explicit byte bounds for the Devin CLI process. Overflow on
+# either stream fails closed; raw bytes never leave this module.
+MAX_DEVIN_STDOUT_BYTES = 4 * 1024 * 1024
+MAX_DEVIN_STDERR_BYTES = 1 * 1024 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
+_GROUP_TERM_GRACE_SECONDS = 0.2
+_REAP_TIMEOUT_SECONDS = 10
 VERDICT_JSON_KEYS = {"verdict", "summary", "findings"}
 FINDING_KEYS = {"severity", "title", "file", "line", "detail"}
 BLOCKER_SEVERITIES = {"P0", "P1", "P2"}
@@ -193,6 +201,193 @@ def _resolve_diff_hard_limit(max_diff_bytes: int, max_diff_hard_limit_bytes: int
     return hard_limit
 
 
+@dataclass
+class BoundedProcessResult:
+    """Metadata-only result of a bounded, deadline-aware subprocess run.
+
+    ``stdout``/``stderr`` hold at most the configured number of bytes. Callers
+    that must not leak provider output simply never read them.
+    """
+
+    stdout: bytes = b""
+    stderr: bytes = b""
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    timed_out: bool = False
+    returncode: Optional[int] = None
+
+
+def _signal_process_group(pgid: int, sig: int) -> None:
+    try:
+        os.killpg(pgid, sig)
+    except OSError:
+        # Already gone, or not ours to signal; either way there is nothing to
+        # clean up and the failure must not mask the audit outcome.
+        pass
+
+
+def _terminate_process_group(process: "subprocess.Popen[bytes]") -> None:
+    """Terminate and reap the child plus everything in its process group.
+
+    Every bounded child is started with ``start_new_session=True``, so the
+    child is its own group leader and any process it spawned inherits that
+    group. Signalling the group is what keeps a timed-out or overflowing
+    provider from leaving grandchildren behind.
+    """
+
+    if process.returncode is not None:
+        # Already reaped; the pid may have been recycled, so signalling it now
+        # could hit an unrelated process group.
+        return
+    pgid: Optional[int] = None
+    if hasattr(os, "getpgid") and hasattr(os, "killpg"):
+        try:
+            pgid = os.getpgid(process.pid)
+        except OSError:
+            pgid = None
+    if pgid is not None and pgid == process.pid:
+        _signal_process_group(pgid, signal.SIGTERM)
+        # Deliberately sleep rather than wait() here: reaping the child frees
+        # its pid, and that pid is the group id we are about to signal again.
+        time.sleep(_GROUP_TERM_GRACE_SECONDS)
+        # Always follow with SIGKILL: the direct child exiting on SIGTERM says
+        # nothing about children it spawned.
+        _signal_process_group(pgid, signal.SIGKILL)
+    else:  # pragma: no cover - only reachable if the session split failed
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=_REAP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:  # pragma: no cover - kill should suffice
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=_REAP_TIMEOUT_SECONDS)
+        except Exception:
+            pass
+
+
+def _stream_bounded_process(
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    env: Optional[Dict[str, str]] = None,
+    timeout: float,
+    max_stdout_bytes: int,
+    max_stderr_bytes: int,
+    stop_on_stdout_overflow: bool = True,
+    stop_on_stderr_overflow: bool = True,
+) -> BoundedProcessResult:
+    """Run ``argv`` with independent byte bounds and a hard wall-clock deadline.
+
+    Both pipes are drained through a deadline-aware selector loop, so a stalled
+    or chatty child can neither block the lane nor buffer unbounded output. On
+    timeout or overflow the whole spawned process group is terminated and the
+    direct child reaped before returning.
+    """
+
+    if timeout <= 0:
+        raise ValueError("timeout must be greater than zero")
+    if max_stdout_bytes <= 0:
+        raise ValueError("max_stdout_bytes must be greater than zero")
+    if max_stderr_bytes <= 0:
+        raise ValueError("max_stderr_bytes must be greater than zero")
+
+    process = subprocess.Popen(
+        list(argv),
+        cwd=str(cwd),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert process.stdout is not None and process.stderr is not None
+    buffers: Dict[str, List[bytes]] = {"stdout": [], "stderr": []}
+    counts: Dict[str, int] = {"stdout": 0, "stderr": 0}
+    limits: Dict[str, int] = {
+        "stdout": max_stdout_bytes,
+        "stderr": max_stderr_bytes,
+    }
+    stops: Dict[str, bool] = {
+        "stdout": stop_on_stdout_overflow,
+        "stderr": stop_on_stderr_overflow,
+    }
+    truncated: Dict[str, bool] = {"stdout": False, "stderr": False}
+    timed_out = False
+    stop = False
+    deadline = time.monotonic() + timeout
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        while selector.get_map() and not stop:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            events = selector.select(timeout=remaining)
+            if not events:
+                timed_out = True
+                break
+            for key, _mask in events:
+                stream = str(key.data)
+                try:
+                    chunk = os.read(key.fileobj.fileno(), _READ_CHUNK_BYTES)
+                except OSError:
+                    selector.unregister(key.fileobj)
+                    continue
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                previous_bytes = counts[stream]
+                counts[stream] = previous_bytes + len(chunk)
+                if counts[stream] <= limits[stream]:
+                    buffers[stream].append(chunk)
+                    continue
+                keep = max(0, limits[stream] - previous_bytes)
+                if keep:
+                    buffers[stream].append(chunk[:keep])
+                truncated[stream] = True
+                if stops[stream]:
+                    stop = True
+        if timed_out or stop:
+            _terminate_process_group(process)
+        else:
+            try:
+                process.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _terminate_process_group(process)
+    except BaseException:
+        _terminate_process_group(process)
+        raise
+    finally:
+        selector.close()
+        for pipe in (process.stdout, process.stderr):
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+    return BoundedProcessResult(
+        stdout=b"".join(buffers["stdout"]),
+        stderr=b"".join(buffers["stderr"]),
+        stdout_bytes=counts["stdout"],
+        stderr_bytes=counts["stderr"],
+        stdout_truncated=truncated["stdout"],
+        stderr_truncated=truncated["stderr"],
+        timed_out=timed_out,
+        returncode=process.returncode,
+    )
+
+
 def _run_git_limited(
     cwd: Path,
     args: Sequence[str],
@@ -204,88 +399,28 @@ def _run_git_limited(
 
     Both pipes are drained through a deadline-aware selector loop so a stalled
     git process or filter cannot block the lane indefinitely, and stdout is
-    never buffered beyond ``max_bytes``.
+    never buffered beyond ``max_bytes``. On timeout or overflow the whole git
+    process group -- including any filter/textconv child it spawned -- is
+    terminated and reaped.
     """
 
     if max_bytes <= 0:
         raise ValueError("max_bytes must be greater than zero")
     if timeout <= 0:
         raise ValueError("timeout must be greater than zero")
-    process = subprocess.Popen(
+    result = _stream_bounded_process(
         ["git", *args],
-        cwd=str(cwd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        cwd=cwd,
+        timeout=timeout,
+        max_stdout_bytes=max_bytes,
+        # Git stderr is diagnostic plumbing only; dropping the overflow keeps a
+        # chatty-but-healthy git from aborting an otherwise complete diff.
+        max_stderr_bytes=_MAX_GIT_STDERR_BYTES,
+        stop_on_stdout_overflow=True,
+        stop_on_stderr_overflow=False,
     )
-    assert process.stdout is not None and process.stderr is not None
-    chunks: list[bytes] = []
-    stderr_chunks: list[bytes] = []
-    observed_bytes = 0
-    stderr_bytes = 0
-    truncated = False
-    timed_out = False
-    deadline = time.monotonic() + timeout
-    selector = selectors.DefaultSelector()
-    try:
-        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-        while selector.get_map():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                break
-            events = selector.select(timeout=remaining)
-            if not events:
-                timed_out = True
-                break
-            for key, _mask in events:
-                try:
-                    chunk = os.read(key.fileobj.fileno(), 64 * 1024)
-                except OSError:
-                    selector.unregister(key.fileobj)
-                    continue
-                if not chunk:
-                    selector.unregister(key.fileobj)
-                    continue
-                if key.data == "stderr":
-                    stderr_bytes += len(chunk)
-                    if stderr_bytes <= _MAX_GIT_STDERR_BYTES:
-                        stderr_chunks.append(chunk)
-                    continue
-                previous_bytes = observed_bytes
-                observed_bytes += len(chunk)
-                if observed_bytes <= max_bytes:
-                    chunks.append(chunk)
-                    continue
-                keep = max(0, max_bytes - previous_bytes)
-                if keep:
-                    chunks.append(chunk[:keep])
-                truncated = True
-            if truncated:
-                break
-        if timed_out or truncated:
-            process.kill()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=10)
-    except Exception:
-        process.kill()
-        try:
-            process.wait(timeout=10)
-        except Exception:
-            pass
-        raise
-    finally:
-        selector.close()
-        for pipe in (process.stdout, process.stderr):
-            try:
-                pipe.close()
-            except Exception:
-                pass
 
-    if timed_out:
+    if result.timed_out:
         # Metadata-only failure reason: no raw process output may reach
         # exceptions, comments, or artifacts.
         raise NoTrustworthyVerdictError(
@@ -293,20 +428,20 @@ def _run_git_limited(
             "no trustworthy verdict available"
         )
 
-    if not truncated and process.returncode != 0:
+    if not result.stdout_truncated and result.returncode != 0:
         raise subprocess.CalledProcessError(
-            process.returncode,
+            result.returncode or 1,
             ["git", *args],
-            output=b"".join(chunks),
-            stderr=b"".join(stderr_chunks),
+            output=result.stdout,
+            stderr=result.stderr,
         )
-    text = b"".join(chunks).decode("utf-8", errors="ignore")
-    if truncated:
+    text = result.stdout.decode("utf-8", errors="ignore")
+    if result.stdout_truncated:
         text = (
             text.rstrip()
             + "\n\n[diff truncated by devin-cli-audit wrapper; hard limit reached]\n"
         )
-    return text, observed_bytes, truncated
+    return text, result.stdout_bytes, result.stdout_truncated
 
 
 def _resolve_base_ref(repo_path: Path, base_ref: str) -> str:
@@ -716,7 +851,16 @@ def _run_devin_cli(
     model: str,
     cwd: Path,
     timeout: int,
+    max_stdout_bytes: Optional[int] = None,
+    max_stderr_bytes: Optional[int] = None,
 ) -> tuple[str, int, float]:
+    # Resolved at call time so the module-level bounds stay overridable.
+    max_stdout_bytes = (
+        MAX_DEVIN_STDOUT_BYTES if max_stdout_bytes is None else max_stdout_bytes
+    )
+    max_stderr_bytes = (
+        MAX_DEVIN_STDERR_BYTES if max_stderr_bytes is None else max_stderr_bytes
+    )
     with tempfile.TemporaryDirectory(prefix="code-mower-devin-cli-") as tmp:
         prompt_path = Path(tmp) / "audit.prompt"
         prompt_path.write_text(prompt, encoding="utf-8")
@@ -742,25 +886,42 @@ def _run_devin_cli(
         )
 
         started = time.monotonic()
-        try:
-            completed = subprocess.run(
-                argv,
-                cwd=cwd,
-                env=child_env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
+        result = _stream_bounded_process(
+            argv,
+            cwd=cwd,
+            env=child_env,
+            timeout=timeout,
+            max_stdout_bytes=max_stdout_bytes,
+            max_stderr_bytes=max_stderr_bytes,
+            stop_on_stdout_overflow=True,
+            stop_on_stderr_overflow=True,
+        )
+        duration = time.monotonic() - started
+
+        # Every failure reason below is metadata only: no captured byte of the
+        # provider's stdout or stderr may reach exceptions, comments, or
+        # artifacts.
+        if result.timed_out:
             raise NoTrustworthyVerdictError(
                 f"Devin CLI timed out after {timeout}s; no trustworthy verdict available"
-            ) from exc
-        duration = time.monotonic() - started
+            )
+        if result.stdout_truncated:
+            raise NoTrustworthyVerdictError(
+                f"Devin CLI stdout exceeded the {max_stdout_bytes} byte capture "
+                "limit; no trustworthy verdict available"
+            )
+        if result.stderr_truncated:
+            raise NoTrustworthyVerdictError(
+                f"Devin CLI stderr exceeded the {max_stderr_bytes} byte capture "
+                "limit; no trustworthy verdict available"
+            )
         # Raw stderr is captured only for subprocess plumbing; it is never
         # returned to callers so it cannot reach comments or artifacts.
-        return completed.stdout, completed.returncode, duration
+        return (
+            result.stdout.decode("utf-8", errors="replace"),
+            result.returncode if result.returncode is not None else 1,
+            duration,
+        )
 
 
 def _parse_devin_output(
@@ -788,7 +949,6 @@ class AuditConfig:
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES
     max_diff_hard_limit_bytes: int = DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES
     dry_run: bool = False
-    allow_dirty: bool = False
     prompt_lenses: Tuple[str, ...] = field(default_factory=lambda: DEFAULT_PROMPT_LENSES)
     prompt_dir: Optional[Path] = None
     actions_run_id: Optional[str] = None
@@ -893,11 +1053,14 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
     if not repo_path.is_dir():
         raise ValueError(f"PR head checkout does not exist: {repo_path}")
 
+    # The reviewer lane has no dirty-checkout escape hatch: the checkout must be
+    # clean at the exact head before the provider runs and clean afterwards, so
+    # a verdict is only ever produced for the committed tree it claims to review.
     verify = verify_checkout_at_head(
         repo_path,
         expected_head_sha=pr_head_sha,
-        allow_dirty=config.allow_dirty,
         purpose="Devin CLI review",
+        dirty_remediation="commit or stash them before running this reviewer lane",
     )
     head_sha_start = verify["local_head_sha"]
 
@@ -1124,7 +1287,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES,
     )
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument(
         "--prompt-lenses",
         default=",".join(DEFAULT_PROMPT_LENSES),
@@ -1165,7 +1327,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_diff_bytes=args.max_diff_bytes,
         max_diff_hard_limit_bytes=args.max_diff_hard_limit_bytes,
         dry_run=args.dry_run,
-        allow_dirty=args.allow_dirty,
         prompt_lenses=prompt_lenses,
         prompt_dir=args.prompt_dir,
         actions_run_id=args.actions_run_id or None,
