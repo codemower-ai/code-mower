@@ -8014,6 +8014,64 @@ class HostedResultRejectionTests(unittest.TestCase):
             self.assertEqual(provider["error"], "hosted_result_rejected")
             self.assertIn("package_identity", provider["next_detail"])
 
+    def test_binding_mismatches_are_rejected_with_field_reasons(self) -> None:
+        """A correctly bound wrapper whose payload mismatches campaign binding is rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._running_campaign(campaigns_dir)
+            for field_name, value, extra in (
+                ("provider", "other-provider", {}),
+                (
+                    "release_tag",
+                    "v2.0.0",
+                    {"normalized_version": "2.0.0"},
+                ),
+                (
+                    "qualification_context",
+                    "upgrade",
+                    {"starting_version": "0.9.0"},
+                ),
+                ("starting_version", "0.9.0", {}),
+            ):
+                with self.subTest(field=field_name):
+                    wrapper = self._wrapper(campaign)
+                    wrapper["adoption_result"][field_name] = value
+                    wrapper["adoption_result"].update(extra)
+                    marker = (
+                        f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+                    )
+                    saved = self._poll(campaigns_dir, marker)
+                    provider = saved["providers"][0]
+                    self.assertEqual(provider["state"], "running")
+                    self.assertEqual(provider["error"], "hosted_result_rejected")
+                    self.assertIn(field_name, provider["next_detail"])
+                    # The mismatched value is never persisted.
+                    self.assertNotIn(value, json.dumps(saved))
+
+    def test_binding_mismatch_followed_by_valid_correction(self) -> None:
+        """A later valid trusted marker wins after a binding-mismatch rejection."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._running_campaign(campaigns_dir)
+            bad = self._wrapper(campaign)
+            bad["adoption_result"]["release_tag"] = "v2.0.0"
+            good = self._wrapper(campaign)
+            comments = [
+                {
+                    "author": {"login": "cursor[bot]"},
+                    "body": f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(bad)} -->",
+                },
+                {
+                    "author": {"login": "cursor[bot]"},
+                    "body": f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(good)} -->",
+                },
+            ]
+            saved = self._poll_comments(campaigns_dir, comments)
+            provider = saved["providers"][0]
+            self.assertEqual(provider["state"], "complete")
+            self.assertEqual(provider.get("error"), "")
+            self.assertEqual(provider["next_action"], "none")
+
     def test_invalid_marker_followed_by_valid_correction(self) -> None:
         """A later valid trusted marker wins without duplicating dispatch."""
         with tempfile.TemporaryDirectory() as tmp:

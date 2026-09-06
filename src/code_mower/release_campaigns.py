@@ -1203,6 +1203,42 @@ def _adoption_result_rejection_detail(exc: ValueError) -> str:
     return "adoption result rejected"
 
 
+def _adoption_result_binding_detail(
+    adoption_result: Mapping[str, Any],
+    *,
+    provider: str,
+    release_tag: str,
+    qualification_context: str,
+    starting_version: str,
+) -> str:
+    """Return a bounded, field-level reason for a campaign-binding mismatch.
+
+    The wrapper already matched this campaign, so a mismatch here means the
+    embedded adoption_result claims a different provider, release,
+    qualification context, or starting version than the dispatch it is wrapped
+    in. Only the bounded field name is surfaced; the actual and expected values
+    are never logged or persisted.
+    """
+    checks = (
+        ("provider", adoption_result.get("provider"), provider),
+        ("release_tag", adoption_result.get("release_tag"), release_tag),
+        (
+            "qualification_context",
+            adoption_result.get("qualification_context"),
+            qualification_context,
+        ),
+        (
+            "starting_version",
+            str(adoption_result.get("starting_version") or ""),
+            starting_version,
+        ),
+    )
+    for field_name, actual, expected in checks:
+        if actual != expected:
+            return f"adoption result field '{field_name}' rejected"
+    return "adoption result binding rejected"
+
+
 def _extract_bound_adoption_result_ex(
     text: str,
     *,
@@ -1265,19 +1301,26 @@ def _extract_bound_adoption_result_ex(
         if not isinstance(adoption_result, dict):
             last_rejection_detail = "adoption result missing"
             continue
-        try:
-            validate_adoption_result_payload(
-                adoption_result, expected_package_identity=package_identity
-            )
-        except ValueError as exc:
-            last_rejection_detail = _adoption_result_rejection_detail(exc)
-            continue
         if (
             adoption_result.get("provider") != provider
             or adoption_result.get("release_tag") != release_tag
             or adoption_result.get("qualification_context") != qualification_context
             or str(adoption_result.get("starting_version") or "") != starting_version
         ):
+            last_rejection_detail = _adoption_result_binding_detail(
+                adoption_result,
+                provider=provider,
+                release_tag=release_tag,
+                qualification_context=qualification_context,
+                starting_version=starting_version,
+            )
+            continue
+        try:
+            validate_adoption_result_payload(
+                adoption_result, expected_package_identity=package_identity
+            )
+        except ValueError as exc:
+            last_rejection_detail = _adoption_result_rejection_detail(exc)
             continue
         return adoption_result, ""
     return None, last_rejection_detail
