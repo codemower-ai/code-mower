@@ -145,8 +145,12 @@ validated GitHub state transition, not from the provider exit code. It
 snapshots the target issue/PR before the provider runs, snapshots it again
 afterwards, and passes both to `code-mower lane-delivery classify`. A build or
 fix round only passes when a new pull request appears or the lane's PR head
-advances. When the honest answer is that nothing needed to change, the provider
-writes `.code-mower/lane-outcome.json` in the working copy:
+advances. For issue targets the frozen builder prompt requires the pull request
+body to close the exact issue with a GitHub closing keyword (`Closes #N`): the
+runner's issue-to-PR lookup reads GitHub `closingIssuesReferences`, so a pull
+request that only mentions the issue is not a delivery. When the honest
+answer is that nothing needed to change, the provider writes
+`.code-mower/lane-outcome.json` in the working copy:
 
 ```json
 {"outcome": "no_change", "summary": "one line"}

@@ -1418,6 +1418,26 @@ class RunnerScriptContractTests(unittest.TestCase):
             PACKAGED_RUNNER_TEMPLATE.read_text(encoding="utf-8"),
         )
 
+    def test_issue_target_prompts_require_the_closing_reference(self) -> None:
+        # Delivery is observed through GitHub closingIssuesReferences, so a
+        # cold issue-target prompt has to name the exact closing reference the
+        # pull request body must carry. A provider left to guess can open a
+        # pull request that only mentions the issue and deliver nothing.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                gate = text.index('if [ "$kind" = "issue" ]; then')
+                rule = text.index(
+                    'echo "- Issue-linked delivery: the pull request you open '
+                    'must close this exact target issue in its body with a '
+                    'GitHub closing keyword'
+                )
+                self.assertGreater(rule, gate)
+                self.assertIn('\\"Closes #${num}\\"', text)
+                self.assertIn("closing-issue references", text)
+                self.assertIn("merely mentions #${num}", text)
+                self.assertIn("closes a different issue, is not delivered", text)
+
     def test_runner_scripts_resolve_lane_delivery_explicitly(self) -> None:
         # Ambient PATH resolution is the whole problem: a consumer repo can
         # have an older installed code-mower, and a source checkout must run
