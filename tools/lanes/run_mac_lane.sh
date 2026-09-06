@@ -852,7 +852,7 @@ case "$LANE" in
     provider_stdin="$prompt_file"
     run_provider codex exec --cd "$work" --skip-git-repo-check \
       --sandbox workspace-write -c 'sandbox_workspace_write.network_access=true' \
-      "${codex_extra[@]}" \
+      "${codex_extra[@]+"${codex_extra[@]}"}" \
       --output-last-message "${log%.log}.last.md" \
       -
     rc=$?
@@ -861,7 +861,7 @@ case "$LANE" in
     command -v claude >/dev/null 2>&1 || { echo "claude CLI not on PATH" >&2; exit 1; }
     provider_stdin="$prompt_file"
     run_provider claude -p --permission-mode acceptEdits \
-      --allowedTools "${claude_allow[@]}" "${claude_extra[@]}" \
+      --allowedTools "${claude_allow[@]}" "${claude_extra[@]+"${claude_extra[@]}"}" \
       --output-format text --max-turns 400
     rc=$?
     ;;

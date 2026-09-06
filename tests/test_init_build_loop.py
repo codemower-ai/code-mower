@@ -1029,6 +1029,136 @@ printf 'fake codex completed\\n'
         self.assertNotIn("Untrusted title injection", prompt)
         self.assertNotIn("Untrusted body injection", prompt)
 
+
+    def test_mac_lane_runner_extra_flags_unset_or_empty_reach_provider(self) -> None:
+        """Regression for issue #753: optional extra-flag arrays must be safe under set -u."""
+        for lane, flag_var, provider_name in (
+            ("codex", "LANE_CODEX_EXTRA_FLAGS", "codex"),
+            ("claude", "LANE_CLAUDE_EXTRA_FLAGS", "claude"),
+        ):
+            for state in ("unset", "empty"):
+                with self.subTest(lane=lane, extra_flags=state):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        bin_dir = root / "bin"
+                        bin_dir.mkdir()
+                        work_root = root / "work"
+                        work = work_root / lane / "owner__repo"
+                        work.joinpath(".git", "hooks").mkdir(parents=True)
+
+                        head_oid = "a" * 40
+                        fake_gh = bin_dir / "gh"
+                        fake_gh.write_text(
+                            f"""#!/usr/bin/env bash
+set -euo pipefail
+cmd="${{1:-}} ${{2:-}}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
+  if [ -f "$HOME/lane-delivered" ]; then
+    printf '%s\\n' '[{{"number":77,"headRefName":"{lane}/issue-12","closingIssuesReferences":[{{"number":12}}]}}]'
+  else
+    printf '%s\\n' '[]'
+  fi
+  exit 0
+elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
+  printf '%s\\n' '["tier:R","builder:{lane}","dispatched:{lane}"]'
+  exit 0
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefOid,state,labels"* ]]; then
+  printf '%s\\n' '{{"headRefOid":"{head_oid}","state":"OPEN","labels":[]}}'
+  exit 0
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:{lane}"* ]]; then
+  printf '%s\\n' '[]'
+  exit 0
+elif [ "$cmd" = "issue list" ]; then
+  printf '%s\\n' '[{{"number":12,"title":"Issue 12","labels":[{{"name":"tier:R"}},{{"name":"builder:{lane}"}},{{"name":"dispatched:{lane}"}}],"assignees":[],"author":{{"login":"owner"}}}}]'
+  exit 0
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
+  printf '%s\\n' '[]'
+  exit 0
+elif [ "$cmd" = "repo view" ]; then
+  printf 'main\\n'
+  exit 0
+elif [ "$cmd" = "issue view" ]; then
+  printf '%s\\n' '{{"title":"Issue 12","body":"Body","labels":[{{"name":"tier:R"}}],"url":"https://github.com/owner/repo/issues/12","author":{{"login":"owner"}}}}'
+  exit 0
+elif [ "$cmd" = "issue comment" ] || [ "$cmd" = "pr comment" ]; then
+  printf 'https://github.com/owner/repo/issues/12#issuecomment-1\\n'
+  exit 0
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                            encoding="utf-8",
+                        )
+                        fake_gh.chmod(0o755)
+
+                        fake_git = bin_dir / "git"
+                        fake_git.write_text(
+                            """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "config" ]; then
+  printf '%s\\n' 'https://github.com/owner/repo.git'
+  exit 0
+fi
+if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--git-path" ]; then
+  printf '%s\\n' ".git/${3}"
+  exit 0
+fi
+exit 0
+""",
+                            encoding="utf-8",
+                        )
+                        fake_git.chmod(0o755)
+
+                        fake_provider = bin_dir / provider_name
+                        fake_provider.write_text(
+                            f"""#!/usr/bin/env bash
+set -euo pipefail
+cat >/dev/null
+: > "$HOME/lane-delivered"
+printf 'fake {lane} completed\\n'
+""",
+                            encoding="utf-8",
+                        )
+                        fake_provider.chmod(0o755)
+
+                        env = {
+                            **os.environ,
+                            "HOME": str(root),
+                            "LANE_WORK_ROOT": str(work_root),
+                            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                            **_LANE_DELIVERY_ENV,
+                        }
+                        if state == "empty":
+                            env[flag_var] = ""
+                        else:
+                            env.pop(flag_var, None)
+
+                        completed = subprocess.run(
+                            [
+                                str(ROOT / "tools/lanes/run_mac_lane.sh"),
+                                "--lane",
+                                lane,
+                                "--repo",
+                                "owner/repo",
+                                "--max-minutes",
+                                "1",
+                            ],
+                            cwd=ROOT,
+                            env=env,
+                            text=True,
+                            capture_output=True,
+                            check=False,
+                        )
+
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    self.assertIn(
+                        f"{lane}: selected build issue #12", completed.stdout
+                    )
+                    self.assertIn(f"fake {lane} completed", completed.stdout)
+                    self.assertNotIn("unbound variable", completed.stderr)
+
     def test_mac_lane_runner_rejects_untrusted_issue_target_without_work_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
