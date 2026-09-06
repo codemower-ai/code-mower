@@ -444,8 +444,6 @@ printf 'fake devin completed\\n'
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
-elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]] && [[ "$args" == *"closingIssuesReferences,headRefName"* ]]; then
-  printf '%s\\n' '[{"number":34,"headRefName":"devin/issue-12-fix","closingIssuesReferences":[{"number":12}]}]'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "repo view" ]; then
@@ -518,7 +516,11 @@ exit 0
         # it records as devin_cli/devin_cli, never as the hosted devin provider.
         self.assertIn("--provider devin_cli --executor devin_cli", record_argv)
         self.assertNotIn("--provider devin --executor", record_argv)
-        self.assertIn("--pr owner/repo#34", record_argv)
+        # The provenance record names the pull request the delivery snapshot
+        # observed, so it cannot disagree with the delivery record for the same
+        # run. `_FAKE_GH_DELIVERY_HEADER` opens #77 once the provider delivers.
+        self.assertIn("--pr owner/repo#77", record_argv)
+        self.assertIn("--status pr-opened", record_argv)
 
     def test_devin_lane_warns_but_still_succeeds_when_builder_record_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -539,8 +541,6 @@ exit 0
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
-elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]] && [[ "$args" == *"closingIssuesReferences,headRefName"* ]]; then
-  printf '%s\\n' '[{"number":34,"headRefName":"devin/issue-12-fix","closingIssuesReferences":[{"number":12}]}]'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "repo view" ]; then
