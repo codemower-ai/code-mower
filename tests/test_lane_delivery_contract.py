@@ -587,6 +587,50 @@ class DeliveryOutcomeRecordTests(unittest.TestCase):
                         supervision_reason=value,
                     )
 
+    def test_record_rejects_credential_shaped_bearer_and_token_prefixes(self) -> None:
+        cases = (
+            "Bearer abcdef012345",
+            "bearer abcdef012345",
+            "BEARER AbCd1234EfGh5678",
+            "authorization Bearer ya29.a0Ae4lvC1x-2y",
+            "bearer ghp_0123456789abcdefghij",
+            "ghp_0123456789abcdefghijklmnop",
+            "gho_0123456789abcdefghijklmnop",
+        )
+
+        for value in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(lane_delivery.LaneDeliveryError):
+                    lane_delivery.build_delivery_outcome_event(
+                        lane="claude",
+                        repo="owner/repo",
+                        kind="issue",
+                        number="751",
+                        outcome=self._pr_opened_outcome(),
+                        supervision_reason=value,
+                    )
+
+    def test_record_accepts_prose_containing_the_word_bearer(self) -> None:
+        cases = (
+            "bearer",
+            "bearer of bad news",
+            "bearer authentication is unchanged",
+            "the bearer must sign",
+            "bearer scheme rejected by provider",
+        )
+
+        for value in cases:
+            with self.subTest(value=value):
+                event = lane_delivery.build_delivery_outcome_event(
+                    lane="claude",
+                    repo="owner/repo",
+                    kind="issue",
+                    number="751",
+                    outcome=self._pr_opened_outcome(),
+                    supervision_reason=value,
+                )
+                self.assertEqual(event["provider"]["supervision"], value)
+
     def test_record_round_trips_as_json(self) -> None:
         event = lane_delivery.build_delivery_outcome_event(
             lane="claude",

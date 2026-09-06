@@ -102,6 +102,22 @@ AUTH_MATERIAL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private_key_file", re.compile(r"\bid_(?:rsa|ecdsa|ed25519)\b", re.IGNORECASE)),
 )
 
+#: Characters a bearer credential value is built from.
+_TOKEN_VALUE_CHARS = r"A-Za-z0-9_./+=~-"
+
+#: A bearer credential is the authentication scheme, then whitespace, then a
+#: credential-shaped value: at least ``_MIN_TOKEN_VALUE_CHARS`` characters from
+#: the token alphabet, of which at least one is not a letter. Requiring the
+#: whitespace is what makes the scheme form match at all; requiring a non-letter
+#: keeps ordinary prose that happens to follow the word "bearer" ("bearer of
+#: bad news", "bearer authentication") out of the rule. The search window is
+#: bounded because metadata values are length-capped before these rules run.
+#: A ``ghp_``-style prefix is itself the evidence, so the value after it keeps
+#: the original, lower threshold rather than the bearer form's.
+_MIN_TOKEN_VALUE_CHARS = 12
+_MIN_PREFIXED_TOKEN_CHARS = 8
+_MAX_TOKEN_VALUE_CHARS = 255
+
 #: Metadata values must never smuggle transcripts, paths, or secrets into a
 #: recorded outcome. Applied to every string leaf of an outcome event.
 _UNSAFE_METADATA_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -109,7 +125,23 @@ _UNSAFE_METADATA_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("absolute_path", re.compile(r"(?:^|\s)(?:/|~/|[A-Za-z]:\\)")),
     ("home_path_segment", re.compile(r"(?:Users|home)/[^/\s]+", re.IGNORECASE)),
     ("secret_assignment", re.compile(r"\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)\b\s*[:=]\s*\S", re.IGNORECASE)),
-    ("bearer_token", re.compile(r"\b(?:bearer|gh[pousr]_)[A-Za-z0-9_./+=-]{8,}", re.IGNORECASE)),
+    (
+        "bearer_token",
+        re.compile(
+            rf"\bbearer\s+"
+            rf"(?=[{_TOKEN_VALUE_CHARS}]{{{_MIN_TOKEN_VALUE_CHARS}}})"
+            rf"[{_TOKEN_VALUE_CHARS}]{{0,{_MAX_TOKEN_VALUE_CHARS}}}[0-9_./+=~-]",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "github_token_prefix",
+        re.compile(
+            rf"\bgh[pousr]_[{_TOKEN_VALUE_CHARS}]"
+            rf"{{{_MIN_PREFIXED_TOKEN_CHARS},{_MAX_TOKEN_VALUE_CHARS}}}",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 _MAX_METADATA_VALUE_CHARS = 200
