@@ -19,7 +19,8 @@ This module holds the provider-neutral pieces of the fix:
   in a dedicated process group and terminate/reap the whole group on timeout,
   interruption, and output overflow.
 * :func:`validate_handoff` and :func:`authorize_branch_write` implement the
-  explicit recovery handoff and reject implicit cross-lane takeover.
+  explicit recovery handoff and reject implicit cross-lane takeover. A handoff
+  only authorizes a branch the named source lane actually owns.
 * :func:`scan_auth_material` keeps provider prompts free of instructions that
   would make a provider discover or read auth material; GitHub mutations are
   brokered by the runner instead.
@@ -692,7 +693,8 @@ def validate_handoff(
     running_lane: str,
     repo: str,
     observed_head: str,
-    target_branch: str = "",
+    target_branch: str,
+    source_branch_prefixes: Iterable[str],
 ) -> Handoff:
     """Validate an explicit orchestrator recovery handoff.
 
@@ -700,6 +702,13 @@ def validate_handoff(
     addressed to the lane that is actually running, point at a PR in the repo
     under work, and pin the head the orchestrator inspected. A stale
     ``expected_head`` is rejected rather than silently retargeted.
+
+    A handoff also has to prove the branch it hands over is the source lane's
+    to give. ``source_branch_prefixes`` is the source lane's configured branch
+    prefixes, and ``target_branch`` must carry one of them. Without that check
+    a handoff naming any cooperating lane as its source would authorize a write
+    to any foreign branch at all -- another builder's, or a bot's -- which is
+    the single-writer guarantee this contract exists to keep.
     """
 
     source = _text(source_lane).lower()
@@ -740,12 +749,33 @@ def validate_handoff(
             "re-issue the handoff against the current head"
         )
 
+    branch = _text(target_branch)
+    if not branch:
+        raise LaneDeliveryError(
+            "handoff requires --target-branch; a handoff authorizes exactly one "
+            "branch and has nothing to authorize without it"
+        )
+    prefixes = tuple(
+        text for text in (_text(prefix) for prefix in source_branch_prefixes) if text
+    )
+    if not prefixes:
+        raise LaneDeliveryError(
+            f"handoff source lane {source} has no configured branch prefixes; "
+            "only a configured builder lane can hand a branch over"
+        )
+    if not any(branch.startswith(prefix) for prefix in prefixes):
+        raise LaneDeliveryError(
+            f"handoff target branch {branch} is not owned by source lane {source} "
+            f"(expected branch prefix {', '.join(prefixes)}); a lane may only hand "
+            "over a branch it owns"
+        )
+
     return Handoff(
         source_lane=source,
         destination_lane=destination,
         target_pr=f"{match.group('repo')}#{match.group('number')}",
         expected_head=expected,
-        target_branch=_text(target_branch),
+        target_branch=branch,
     )
 
 
@@ -975,7 +1005,19 @@ def _add_handoff_parser(subparsers: Any) -> None:
     handoff.add_argument("--target-pr", required=True, help="owner/repo#number")
     handoff.add_argument("--expected-head", required=True)
     handoff.add_argument("--observed-head", required=True)
-    handoff.add_argument("--target-branch", default="")
+    handoff.add_argument("--target-branch", required=True)
+    handoff.add_argument(
+        "--source-branch-prefix",
+        dest="source_branch_prefixes",
+        action="append",
+        default=[],
+        required=True,
+        metavar="PREFIX",
+        help=(
+            "A branch prefix configured for the source lane. Repeatable. The "
+            "target branch must carry one of these."
+        ),
+    )
     handoff.add_argument("--output", type=Path)
     handoff.add_argument("--json", action="store_true")
 
@@ -1096,6 +1138,7 @@ def _handoff_main(args: argparse.Namespace) -> int:
         repo=args.repo,
         observed_head=args.observed_head,
         target_branch=args.target_branch,
+        source_branch_prefixes=args.source_branch_prefixes,
     )
     payload = handoff.as_dict()
     _assert_safe_metadata(payload, path="handoff")

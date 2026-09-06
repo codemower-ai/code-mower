@@ -152,7 +152,10 @@ writes `.code-mower/lane-outcome.json` in the working copy:
 {"outcome": "no_change", "summary": "one line"}
 ```
 
-`owner_action` is the other accepted value. The runner — never the provider —
+`owner_action` is the other accepted value. Both need a `summary` that is a
+non-empty one-line string: it is the only thing that tells the owner why the
+unit closed without a change, so a declaration missing one is discarded and the
+run counts as undelivered. The runner — never the provider —
 posts the resulting comment and applies `needs-owner`, so the provider never
 needs credentials of its own. Runs without a validated delivery exit `3` and
 leave a note on the unit. `code-mower lane-delivery scan-prompt` refuses to
@@ -229,6 +232,13 @@ The runner validates the handoff, refuses it if the expected head is stale or
 the destination lane is not the one running, records it in the pre-push guard
 config, and posts an audit comment on the PR. Without those flags, a foreign
 head branch stays a hard refusal — there is no implicit cross-lane takeover.
+
+A handoff can only hand over a branch the named source lane actually owns. The
+runner looks the source lane's branch prefixes up in its own identity config,
+never from the caller, and refuses the handoff if the PR head branch does not
+carry one of them, or if the named source lane has no configured prefixes at
+all. So `--handoff-source-lane codex` recovers a `codex/` branch and nothing
+else: not another builder's branch, and not a bot's.
 
 ## Keychain And Signing Notes
 

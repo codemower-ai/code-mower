@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import gc
+import io
 import json
 import os
 import signal
@@ -568,8 +570,8 @@ class ProcessGroupCleanupTests(unittest.TestCase):
 
 
 class RecoveryHandoffTests(unittest.TestCase):
-    def _valid(self, **overrides: str) -> lane_delivery.Handoff:
-        kwargs: dict[str, str] = {
+    def _valid(self, **overrides: object) -> lane_delivery.Handoff:
+        kwargs: dict[str, object] = {
             "source_lane": "codex",
             "destination_lane": "claude",
             "target_pr": "owner/repo#750",
@@ -578,6 +580,7 @@ class RecoveryHandoffTests(unittest.TestCase):
             "repo": "owner/repo",
             "observed_head": SHA_A,
             "target_branch": "codex/750-fix",
+            "source_branch_prefixes": ["codex/"],
         }
         kwargs.update(overrides)
         return lane_delivery.validate_handoff(**kwargs)  # type: ignore[arg-type]
@@ -611,6 +614,78 @@ class RecoveryHandoffTests(unittest.TestCase):
             self._valid(source_lane="")
         with self.assertRaises(lane_delivery.LaneDeliveryError):
             self._valid(expected_head="")
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            self._valid(target_branch="")
+
+    def test_handoff_rejects_a_branch_the_source_lane_does_not_own(self) -> None:
+        # Naming a cooperating lane as the source must not turn into authority
+        # over any foreign branch: another builder's, or a bot's.
+        for branch in (
+            "claude/751-other",
+            "dependabot/npm_and_yarn/left-pad-1.3.0",
+            "main",
+            "codex-lookalike/750-fix",
+        ):
+            with self.subTest(branch=branch):
+                with self.assertRaises(lane_delivery.LaneDeliveryError) as caught:
+                    self._valid(target_branch=branch)
+                self.assertIn("not owned by source lane", str(caught.exception))
+
+    def test_handoff_rejects_a_source_lane_with_no_configured_prefixes(self) -> None:
+        # An unknown source lane resolves to no prefixes, and a lane that owns
+        # nothing has nothing to hand over.
+        for prefixes in ([], [""], ()):
+            with self.subTest(prefixes=prefixes):
+                with self.assertRaises(lane_delivery.LaneDeliveryError) as caught:
+                    self._valid(source_branch_prefixes=prefixes)
+                self.assertIn("no configured branch prefixes", str(caught.exception))
+
+    def test_handoff_accepts_any_configured_prefix_of_the_source_lane(self) -> None:
+        handoff = self._valid(
+            target_branch="codex-fix/750",
+            source_branch_prefixes=["codex/", "codex-fix/"],
+        )
+
+        self.assertEqual(handoff.target_branch, "codex-fix/750")
+
+    def test_handoff_cli_requires_the_source_lanes_own_prefixes(self) -> None:
+        def argv(**overrides: str) -> list[str]:
+            fields = {
+                "--lane": "claude",
+                "--repo": "owner/repo",
+                "--source-lane": "codex",
+                "--destination-lane": "claude",
+                "--target-pr": "owner/repo#750",
+                "--expected-head": SHA_A,
+                "--observed-head": SHA_A,
+                "--target-branch": "codex/750-fix",
+            }
+            fields.update({f"--{k.replace('_', '-')}": v for k, v in overrides.items()})
+            return ["handoff", *(part for pair in fields.items() for part in pair)]
+
+        def run(args: list[str]) -> int:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                return lane_delivery.main(args)
+
+        # Omitting the prefixes is a usage error, not a silently unchecked
+        # handoff: argparse exits 2 before validation runs.
+        with self.assertRaises(SystemExit) as missing:
+            run(argv())
+        self.assertEqual(missing.exception.code, 2)
+
+        self.assertEqual(run([*argv(), "--source-branch-prefix", "codex/"]), 0)
+        self.assertEqual(
+            run(
+                [
+                    *argv(target_branch="dependabot/npm_and_yarn/left-pad-1.3.0"),
+                    "--source-branch-prefix",
+                    "codex/",
+                ]
+            ),
+            2,
+        )
 
     def test_lane_prefix_authority_is_unchanged(self) -> None:
         authority = lane_delivery.authorize_branch_write(
@@ -989,6 +1064,43 @@ class RunnerScriptContractTests(unittest.TestCase):
                 self.assertIn("--handoff-expected-head", text)
                 self.assertIn("Implicit cross-lane takeover", text)
                 self.assertIn("no validated delivery", text)
+
+    def test_runner_scripts_prove_the_handoff_source_owns_the_branch(self) -> None:
+        # The source lane's prefixes come from the runner's own identity config
+        # keyed by the named source lane, never from the caller, and they are
+        # resolved before the handoff is validated.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                derive = text.index("handoff_source_prefix_args=()")
+                lookup = text.index('--arg lane "$handoff_source_lane_key"')
+                guard = text.index("has no configured branch prefixes")
+                call = text.index('"${lane_delivery[@]}" handoff')
+                self.assertLess(lookup, derive)
+                self.assertLess(derive, guard)
+                self.assertLess(guard, call)
+                self.assertIn(
+                    '"${handoff_source_prefix_args[@]}" \\', text[call : call + 600]
+                )
+                self.assertIn("$branch_prefixes_json", text[lookup - 300 : lookup])
+
+    def test_runner_scripts_require_a_summary_for_a_bounded_outcome(self) -> None:
+        # A bounded outcome without an actionable one-line summary must not
+        # produce a runner-owned comment, because classification reads that
+        # comment as the delivery.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                # The old form accepted a missing or non-string summary.
+                self.assertNotIn('(.summary // "") | tostring', text)
+                self.assertIn('if (.summary | type) == "string"', text)
+                void = text.index("declared_outcome_voided=\"$declared_outcome\"")
+                post = text.index('gh "$outcome_subcommand" comment')
+                self.assertLess(void, post)
+                self.assertIn(
+                    ".summary must be a non-empty one-line string", text
+                )
+                self.assertIn("voided declared outcome", text)
 
     def test_runner_scripts_do_not_exempt_the_wall_clock_cap(self) -> None:
         # A timed-out provider that delivered nothing is an unfinished unit.

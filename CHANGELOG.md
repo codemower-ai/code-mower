@@ -18,6 +18,8 @@ later entries are regular releases.
   group that is terminated and reaped on timeout, interruption, and overflow,
   and an explicit orchestrator handoff (source lane, destination lane, target
   PR, expected head) is the only way to write a PR branch owned by another lane.
+  A handoff only authorizes a branch the named source lane actually owns, and a
+  bounded outcome only counts with a non-empty one-line summary.
 - Each local builder run records a metadata-only delivery outcome for Board and
   productivity reporting: provider exit, delivery transition, handoff, elapsed
   time, and intervention count.
