@@ -329,8 +329,11 @@ def build_codex_response_format_schema() -> dict[str, Any]:
     The full :data:`ADOPTION_RESULT_JSON_SCHEMA` remains authoritative for
     local closed validation, including the conditional rule that
     ``failure_reason`` is only permitted on a failed ``package_install`` step.
-    Codex receives this stripped schema because the OpenAI structured-output
-    endpoint rejects ``if``/``then``/``else`` keywords inside ``steps.items``.
+    Codex receives this relaxed schema because the OpenAI structured-output
+    endpoint rejects ``if``/``then``/``else`` keywords inside ``steps.items`` and
+    requires every declared object property to be ``required``. To keep the
+    field optional in practice, ``failure_reason`` is a required nullable
+    field; any ``null`` values are stripped before the closed validator runs.
     The local validator rejects any misuse the provider-relaxed schema allows.
     """
     schema = copy.deepcopy(ADOPTION_RESULT_JSON_SCHEMA)
@@ -338,6 +341,23 @@ def build_codex_response_format_schema() -> dict[str, Any]:
     step_schema.pop("if", None)
     step_schema.pop("then", None)
     step_schema.pop("else", None)
+    # Structured outputs require every declared property to be required.
+    # Represent the optional failure_reason as a required nullable field.
+    step_properties = step_schema["properties"]
+    step_properties["failure_reason"] = {
+        "description": (
+            "Required nullable closed failure classification. Either one of: "
+            f"{', '.join(sorted(PACKAGE_INSTALL_FAILURE_REASONS))}, or null when "
+            "the step is not a failed package_install. Never raw output, paths, or secrets."
+        ),
+        "anyOf": [
+            {"type": "string", "enum": sorted(PACKAGE_INSTALL_FAILURE_REASONS)},
+            {"type": "null"},
+        ],
+    }
+    step_required = set(step_schema.get("required", []))
+    step_required.add("failure_reason")
+    step_schema["required"] = sorted(step_required)
     return schema
 
 
@@ -1020,6 +1040,24 @@ def check_antigravity_new_project_capability(
     )
 
 
+def _strip_null_optional_step_fields(candidate: Any) -> None:
+    """Normalize provider-omitted optional fields encoded as JSON ``null``.
+
+    The Codex structured-output schema declares ``failure_reason`` as a
+    required nullable field, so a missing value arrives as ``null``. The
+    authoritative local schema treats the field as optional and non-nullable;
+    strip ``null`` before validation so the two representations line up.
+    """
+    if not isinstance(candidate, dict):
+        return
+    steps = candidate.get("steps")
+    if not isinstance(steps, list):
+        return
+    for step in steps:
+        if isinstance(step, dict) and step.get("failure_reason") is None:
+            step.pop("failure_reason", None)
+
+
 def validate_bound_result(
     candidate: Any,
     *,
@@ -1038,6 +1076,7 @@ def validate_bound_result(
     """
     if not isinstance(candidate, dict):
         raise ValueError("provider did not emit a JSON result object")
+    _strip_null_optional_step_fields(candidate)
     validate_adoption_result_payload(candidate, expected_package_identity=package_identity)
     if candidate.get("provider") != provider:
         raise ValueError("provider result identity mismatch")

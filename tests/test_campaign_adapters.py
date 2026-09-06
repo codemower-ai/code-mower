@@ -663,11 +663,23 @@ class SchemaCompatibilityTests(unittest.TestCase):
             "Codex response schema contains unsupported structured-output keywords: "
             f"{sorted(keywords & unsupported)}",
         )
-        # The relaxed schema still allows failure_reason so a failed package_install
-        # can communicate the closed reason; local validation rejects misuse.
-        self.assertIn(
-            "failure_reason",
-            schema["properties"]["steps"]["items"]["properties"],
+        step_schema = schema["properties"]["steps"]["items"]
+        step_props = step_schema["properties"]
+        # Structured outputs require every declared property to be required.
+        self.assertEqual(
+            set(step_schema.get("required", [])),
+            set(step_props.keys()),
+        )
+        # The relaxed schema still carries failure_reason as a nullable field so a
+        # failed package_install can communicate the closed reason; local validation
+        # rejects misuse and the authoritative schema keeps the conditional rule.
+        self.assertIn("failure_reason", step_props)
+        self.assertEqual(
+            step_props["failure_reason"]["anyOf"],
+            [
+                {"type": "string", "enum": sorted(campaign_adapters.PACKAGE_INSTALL_FAILURE_REASONS)},
+                {"type": "null"},
+            ],
         )
 
     def test_full_schema_retains_conditional_failure_reason_rules(self) -> None:
@@ -1241,6 +1253,61 @@ class AdapterFailureTests(unittest.TestCase):
         code, output = self._run_raw("codex", runner)
         self.assertNotEqual(code, 0)
         self.assertFalse(output.is_file())
+
+    def test_codex_accepts_null_failure_reason_and_strips_it(self) -> None:
+        """Codex may emit the required-nullable failure_reason as null; it is stripped before validation."""
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            last = Path(argv[argv.index("--output-last-message") + 1])
+            result = _adoption_result("codex")
+            result["steps"] = [
+                {
+                    "id": "package_install",
+                    "status": "pass",
+                    "elapsed_seconds": 12.34,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                    "failure_reason": None,
+                },
+            ]
+            last.write_text(json.dumps(result), encoding="utf-8")
+            return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+        code, output = self._run_raw("codex", runner)
+        self.assertEqual(code, 0)
+        self.assertTrue(output.is_file())
+        stored = json.loads(output.read_text(encoding="utf-8"))
+        self.assertNotIn("failure_reason", stored["steps"][0])
+
+    def test_codex_accepts_failure_reason_on_failed_package_install(self) -> None:
+        """A failed package_install step may communicate a closed failure_reason."""
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            last = Path(argv[argv.index("--output-last-message") + 1])
+            result = _adoption_result("codex")
+            result["outcome"] = "fail"
+            result["steps"] = [
+                {
+                    "id": "package_install",
+                    "status": "fail",
+                    "elapsed_seconds": 12.34,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                    "failure_reason": "network",
+                },
+            ]
+            last.write_text(json.dumps(result), encoding="utf-8")
+            return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+        code, output = self._run_raw("codex", runner)
+        self.assertEqual(code, 0)
+        self.assertTrue(output.is_file())
+        stored = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(stored["steps"][0]["failure_reason"], "network")
 
     def test_mismatched_provider_is_rejected(self) -> None:
         def runner(
