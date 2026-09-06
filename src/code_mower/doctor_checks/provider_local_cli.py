@@ -57,6 +57,33 @@ def _local_cli_reported_commands(lane: Mapping[str, Any], commands: list[str]) -
     return reported
 
 
+def _local_cli_version_detail(
+    lane: Mapping[str, Any],
+    command: str,
+    resolved: str,
+    version_detail: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return version-probe detail safe to report for this lane.
+
+    Lanes that opt in via ``local_cli_path_basename_only`` also reduce the
+    resolved executable path and configured command to their reported
+    basename forms inside ``tool_version_error``, so an exec-level failure
+    (for example a missing script interpreter) cannot leak a local
+    directory into doctor output.
+    """
+    sanitized = dict(version_detail)
+    error = sanitized.get("tool_version_error")
+    if isinstance(error, str) and error:
+        reported_path = _local_cli_reported_value(lane, resolved)
+        reported_command = _local_cli_reported_value(lane, command)
+        if reported_path != resolved:
+            error = error.replace(resolved, reported_path)
+        if reported_command != command:
+            error = error.replace(command, reported_command)
+        sanitized["tool_version_error"] = error
+    return sanitized
+
+
 def check_local_cli(lane_id: str, lane: Mapping[str, Any]) -> DoctorCheck:
     provider_config = lane.get("provider_config", {})
     commands = candidate_local_cli_commands(lane)
@@ -73,7 +100,12 @@ def check_local_cli(lane_id: str, lane: Mapping[str, Any]) -> DoctorCheck:
     for command in commands:
         resolved = shutil.which(command)
         if resolved:
-            version_detail = detect_local_cli_version(resolved)
+            version_detail = _local_cli_version_detail(
+                lane,
+                command,
+                resolved,
+                detect_local_cli_version(resolved),
+            )
             reported_command = _local_cli_reported_value(lane, command)
             detail.update(
                 {

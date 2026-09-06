@@ -434,6 +434,34 @@ class TestDevinLocalCliDoctor(_DevinTempDirTestCase):
         self.assertNotIn(override, rendered)
         self.assertNotIn(os.fspath(self.tmp_path), rendered)
 
+    def test_check_local_cli_redacts_version_probe_error_path(self) -> None:
+        executable = _write_executable(
+            self.tmp_path / "devin",
+            "#!/nonexistent-devin-interpreter\nprintf x\n",
+        )
+        override = os.fspath(executable)
+        with _override_env(
+            {
+                "CODE_MOWER_DEVIN_CLI_COMMAND": override,
+                "PATH": "/nonexistent",
+            }
+        ):
+            check = check_local_cli(
+                "devin_cli",
+                _lane_dict("devin_cli"),
+            )
+
+        self.assertEqual(check.status, "pass")
+        self.assertEqual(check.detail["command"], "devin")
+        self.assertEqual(check.detail["path"], "devin")
+        self.assertFalse(check.detail["tool_version_available"])
+        error = check.detail["tool_version_error"]
+        self.assertIn("No such file or directory", error)
+        self.assertIn("devin", error)
+        rendered = json.dumps(check.as_dict())
+        self.assertNotIn(override, rendered)
+        self.assertNotIn(os.fspath(self.tmp_path), rendered)
+
     def test_check_local_cli_preserves_path_for_unrelated_provider(self) -> None:
         executable = _write_executable(
             self.tmp_path / "claude",
