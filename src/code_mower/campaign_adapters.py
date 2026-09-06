@@ -420,21 +420,32 @@ def build_qualification_prompt(
         "any existing checkout, home directory, credential file, or environment",
         "variable holding a secret. Never print secrets, tokens, file paths,",
         "commands you ran, or raw logs in your final answer.",
-        "Perform every file creation and edit through shell commands only;",
-        "dedicated file write/edit tools cannot be approved in this unattended",
-        "run and any call to them ends the session without a result.",
-        "",
-        "Binding (echo these values back exactly in your result):",
-        f"- provider: {provider}",
-        f"- executor: {provider}",
-        f"- release_tag: {release_tag}",
-        f"- package_identity: {package_identity}",
-        f"- normalized_version: {normalized_version}",
-        f"- package_spec: {package_spec}",
-        f"- qualification_context: {qualification_context}",
-        f"- starting_version: {starting_version if starting_version else '(empty)'}",
-        f"- package_source: {package_source}",
     ]
+    if provider == "devin_cli":
+        # Devin Autonomous+sandbox cannot approve dedicated file write/edit tool
+        # calls non-interactively; the shell is the only available file surface.
+        lines.extend(
+            [
+                "Perform every file creation and edit through shell commands only;",
+                "dedicated file write/edit tools cannot be approved in this unattended",
+                "run and any call to them ends the session without a result.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "Binding (echo these values back exactly in your result):",
+            f"- provider: {provider}",
+            f"- executor: {provider}",
+            f"- release_tag: {release_tag}",
+            f"- package_identity: {package_identity}",
+            f"- normalized_version: {normalized_version}",
+            f"- package_spec: {package_spec}",
+            f"- qualification_context: {qualification_context}",
+            f"- starting_version: {starting_version if starting_version else '(empty)'}",
+            f"- package_source: {package_source}",
+        ]
+    )
     if target_runtime:
         lines.append(f"- target_runtime: {target_runtime}")
     lines.extend(
@@ -675,18 +686,20 @@ def build_devin_argv(
     *,
     devin_bin: str,
     prompt_file: str,
-    workspace_dir: str,
     model: str = "",
 ) -> list[str]:
     """Argv for ``devin --print`` with prompt-file transport and OS sandbox.
 
-    Noninteractive ``--print`` cannot show the workspace-trust prompt, so the
-    adapter passes ``--respect-workspace-trust false``. The least-permissive
-    unattended posture that can still create a venv, install the candidate, and
-    run smoke checks is ``--sandbox`` with ``--permission-mode autonomous``;
-    the OS sandbox bounds filesystem and network access while auto-approving the
-    shell commands the qualification prompt requires. Conversation export is
-    never requested.
+    The workspace is scoped by the caller through ``subprocess.run(cwd=...)``;
+    ``prompt_file`` is passed relative to that cwd. The real Devin CLI has no
+    separate workspace flag, so none is emitted. Noninteractive ``--print``
+    cannot show the workspace-trust prompt, so the adapter passes
+    ``--respect-workspace-trust false``. The least-permissive unattended
+    posture that can still create a venv, install the candidate, and run smoke
+    checks is ``--sandbox`` with ``--permission-mode autonomous``; the OS
+    sandbox bounds filesystem and network access while auto-approving the shell
+    commands the qualification prompt requires. Conversation export is never
+    requested.
     """
     argv = [
         devin_bin,
@@ -1343,7 +1356,6 @@ def run_campaign_adapter(
                 argv = build_devin_argv(
                     devin_bin=resolved_bin,
                     prompt_file=prompt_path.name,
-                    workspace_dir=str(workspace_dir),
                     model=devin_model,
                 )
                 completed = provider_runner(
