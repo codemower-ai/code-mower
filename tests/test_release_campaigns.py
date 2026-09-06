@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import json
 import math
@@ -9717,26 +9718,31 @@ class CampaignUploadTests(unittest.TestCase):
     def _seed(
         self,
         *,
+        campaigns_dir: Path | None = None,
+        release_tag: str = "v1.0.0",
         providers: tuple[str, ...] = ("claude", "codex"),
+        required_providers: tuple[str, ...] | None = None,
         complete: tuple[str, ...] = ("claude",),
     ) -> dict[str, Any]:
+        target_dir = campaigns_dir or self.campaigns_dir
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             release_campaigns.campaign_command(
-                release_tag="v1.0.0",
+                release_tag=release_tag,
                 package_spec="code-mower==1.0.0",
                 providers=list(providers),
-                campaigns_dir=self.campaigns_dir,
+                required_providers=required_providers,
+                campaigns_dir=target_dir,
             )
             campaign = release_campaigns.load_campaign_by_id(
-                "campaign-v1.0.0", self.campaigns_dir
+                f"campaign-{release_tag}", target_dir
             )
             assert campaign is not None
             for provider in complete:
                 campaign = release_campaigns.record_manual_result(
                     campaign,
                     provider,
-                    _mock_adoption_result(provider=provider),
-                    campaigns_dir=self.campaigns_dir,
+                    _mock_adoption_result(release_tag=release_tag, provider=provider),
+                    campaigns_dir=target_dir,
                 )
         return campaign
 
@@ -10183,10 +10189,11 @@ class CampaignUploadTests(unittest.TestCase):
     def test_cloud_dogfood_adoption_run_event_path_stays_compatible(self) -> None:
         """The existing `cloud dogfood --event adoption_run=...` route is unchanged.
 
-        Both routes convert one adoption result through the same converter, so
-        an operator who already uploads results file-by-file and one who uploads
-        a whole campaign publish the same idempotent event id for the same
-        evidence.
+        Both routes convert one adoption result through the same converter: standalone
+        file export omits posture and preserves the unpostured event identity. Older
+        campaigns and new campaigns created without posture data preserve the exact
+        standalone dimensions and event id, while campaigns with explicitly configured
+        posture record provider_posture in dimensions and use a posture-specific stable id.
         """
         campaign = self._seed(complete=("claude",))
         cloud = release_campaigns._load_cloud_client()
@@ -10201,10 +10208,45 @@ class CampaignUploadTests(unittest.TestCase):
 
         self.assertEqual(len(file_events), 1)
         self.assertEqual(len(plan["events"]), 1)
-        self.assertEqual(file_events[0]["event_id"], plan["events"][0]["event_id"])
-        self.assertEqual(
-            file_events[0]["dimensions"], plan["events"][0]["dimensions"]
+        self.assertFalse(campaign.get("provider_posture_configured"))
+        self.assertNotIn("provider_posture", file_events[0]["dimensions"])
+        self.assertNotIn("provider_posture", plan["events"][0]["dimensions"])
+        self.assertEqual(plan["events"][0]["event_id"], file_events[0]["event_id"])
+        self.assertEqual(plan["events"][0]["dimensions"], file_events[0]["dimensions"])
+
+        # Explicitly configured campaign attaches provider_posture and uses posture-specific event id
+        explicit_dir = self.tmp / "explicit_campaigns"
+        explicit_campaign = self._seed(
+            campaigns_dir=explicit_dir,
+            required_providers=("claude", "codex"),
+            complete=("claude",),
         )
+        self.assertTrue(explicit_campaign.get("provider_posture_configured"))
+        with self._cloud_env():
+            explicit_plan = release_campaigns.build_campaign_upload_events(explicit_campaign)
+        self.assertEqual(len(explicit_plan["events"]), 1)
+        self.assertEqual(
+            explicit_plan["events"][0]["dimensions"]["provider_posture"], "required"
+        )
+        expected_explicit_event = cloud.adoption_result_to_event(
+            _mock_adoption_result(provider="claude"),
+            provider_posture="required",
+        )
+        self.assertEqual(
+            explicit_plan["events"][0]["event_id"], expected_explicit_event["event_id"]
+        )
+        self.assertNotEqual(explicit_plan["events"][0]["event_id"], file_events[0]["event_id"])
+
+        # Legacy campaign missing posture metadata preserves unpostured event identity
+        legacy_campaign = copy.deepcopy(campaign)
+        legacy_campaign["providers"][0].pop("posture", None)
+        legacy_campaign.pop("provider_posture_configured", None)
+        with self._cloud_env():
+            legacy_plan = release_campaigns.build_campaign_upload_events(legacy_campaign)
+        self.assertEqual(len(legacy_plan["events"]), 1)
+        self.assertEqual(legacy_plan["events"][0]["event_id"], file_events[0]["event_id"])
+        self.assertEqual(legacy_plan["events"][0]["dimensions"], file_events[0]["dimensions"])
+        self.assertNotIn("provider_posture", legacy_plan["events"][0]["dimensions"])
 
 
 class FakeClock:
@@ -11529,7 +11571,39 @@ class CampaignWatchTests(unittest.TestCase):
             self.assertEqual(res, 1)
             self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
 
-        # 3. Assert NO campaign mutation occurred on disk
+        # 3. Read-only actions and legacy status flag reject --required-providers
+        for act in ["status", "watch", "upload"]:
+            err = io.StringIO()
+            res = release_campaigns.campaign_command(
+                action=act,
+                campaign_id="campaign-v1.0.0",
+                release_tag="v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                required_providers=["claude"],
+                stderr=err,
+            )
+            self.assertEqual(res, 1)
+            self.assertIn(
+                "--required-providers applies only to campaign creation, resume, and dispatch",
+                err.getvalue(),
+            )
+
+        # Legacy status flag rejects --required-providers
+        err = io.StringIO()
+        res = release_campaigns.campaign_command(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            status=True,
+            required_providers=["claude"],
+            stderr=err,
+        )
+        self.assertEqual(res, 1)
+        self.assertIn(
+            "--required-providers applies only to campaign creation, resume, and dispatch",
+            err.getvalue(),
+        )
+
+        # 4. Assert NO campaign mutation occurred on disk
         self.assertEqual(campaign_path.read_text(encoding="utf-8"), initial_content)
         current_stat = campaign_path.stat()
         self.assertEqual(current_stat.st_mtime_ns, initial_stat.st_mtime_ns)
@@ -11688,6 +11762,220 @@ class CampaignWatchTests(unittest.TestCase):
             )
         self.assertEqual(code, 1)
         self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # --required-providers on status
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "status",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "--required-providers applies only to campaign creation, resume, and dispatch",
+            err.getvalue(),
+        )
+
+        # --required-providers on watch
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "watch",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "--required-providers applies only to campaign creation, resume, and dispatch",
+            err.getvalue(),
+        )
+
+        # --required-providers on upload
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "upload",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "--required-providers applies only to campaign creation, resume, and dispatch",
+            err.getvalue(),
+        )
+
+        # --required-providers on legacy --status flag
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "--status",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "--required-providers applies only to campaign creation, resume, and dispatch",
+            err.getvalue(),
+        )
+
+    def test_matching_posture_accepted_on_resume_and_dispatch(self) -> None:
+        """Mutating resume and dispatch accept matching --required-providers, rejecting mismatches."""
+        self._seed_campaign(
+            campaign_id="campaign-resume-test",
+            release_tag="v2.0.0",
+            status="running",
+            providers=[
+                {
+                    "provider": "claude",
+                    "lane_id": "claude_code",
+                    "driver": "local_cli",
+                    "state": "complete",
+                    "posture": "required",
+                    "environment": "local",
+                    "elapsed_seconds": 10.0,
+                    "idempotency_key": "idemp-claude",
+                    "dispatch_mode": "applied",
+                    "next_action": "none",
+                    "next_detail": "",
+                },
+                {
+                    "provider": "codex",
+                    "lane_id": "codex_cli",
+                    "driver": "local_cli",
+                    "state": "queued",
+                    "posture": "informational",
+                    "environment": "local",
+                    "elapsed_seconds": 0.0,
+                    "idempotency_key": "idemp-codex",
+                    "dispatch_mode": "dry_run",
+                    "next_action": "run with --apply",
+                    "next_detail": "",
+                },
+            ],
+        )
+
+        # 1. Library resume with matching posture succeeds
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            res = release_campaigns.campaign_command(
+                action="resume",
+                campaign_id="campaign-resume-test",
+                release_tag="v2.0.0",
+                campaigns_dir=self.campaigns_dir,
+                required_providers=["claude"],
+            )
+        self.assertEqual(res, 0)
+
+        # 2. Library dispatch with matching posture succeeds
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            res = release_campaigns.campaign_command(
+                action="dispatch",
+                campaign_id="campaign-resume-test",
+                release_tag="v2.0.0",
+                campaigns_dir=self.campaigns_dir,
+                required_providers=["claude"],
+            )
+        self.assertEqual(res, 0)
+
+        # 3. CLI resume with matching posture succeeds
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "resume",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 0)
+
+        # 4. CLI dispatch with matching posture succeeds
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "dispatch",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 0)
+
+        # 5. Mismatched posture on resume is rejected
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "resume",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "codex",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--required-providers does not match existing campaign provider posture", err.getvalue())
+
+        # 6. Mismatched posture on dispatch is rejected
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "dispatch",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "codex",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--required-providers does not match existing campaign provider posture", err.getvalue())
 
 
 class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):
@@ -12513,6 +12801,818 @@ class RuntimeReadinessCampaignTests(unittest.TestCase):
             target_runtime="python_3.14",
         )
         self.assertEqual(argv_explicit, ["/bin/fake-provider-cli", "--runtime", "python_3.14"])
+
+
+class ReleaseCampaignPostureTests(unittest.TestCase):
+    """Tests for required-versus-informational provider posture in release campaigns (#730)."""
+
+    def test_required_providers_cli_parsing(self) -> None:
+        """CLI parser accepts comma-separated subset and rejects empty values."""
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = release_qualify.main([
+                "campaign",
+                "--release-tag", "v1.0.0",
+                "--providers", "claude,codex",
+                "--required-providers", "",
+            ])
+        self.assertEqual(code, 1)
+        self.assertIn("--required-providers cannot be empty", stderr.getvalue())
+
+    def test_initialize_campaign_posture_assignment(self) -> None:
+        """Selected providers outside required set are informational; omitting required sets all required."""
+        camp = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            providers=["claude", "codex", "antigravity"],
+            required_providers=["claude", "codex"],
+        )
+        postures = {p["provider"]: p["posture"] for p in camp.providers}
+        self.assertEqual(postures["claude"], "required")
+        self.assertEqual(postures["codex"], "required")
+        self.assertEqual(postures["antigravity"], "informational")
+
+        # When omitted, all are required
+        camp_default = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            providers=["claude", "codex"],
+        )
+        postures_default = {p["provider"]: p["posture"] for p in camp_default.providers}
+        self.assertEqual(postures_default["claude"], "required")
+        self.assertEqual(postures_default["codex"], "required")
+
+        # Invalid provider name in required
+        with self.assertRaises(ValueError) as ctx:
+            release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                providers=["claude"],
+                required_providers=["nonexistent_provider"],
+            )
+        self.assertIn("unknown release campaign provider", str(ctx.exception))
+
+        # Required provider outside selected set
+        with self.assertRaises(ValueError) as ctx:
+            release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                providers=["claude"],
+                required_providers=["codex"],
+            )
+        self.assertIn("not in the selected providers", str(ctx.exception))
+
+        # Duplicate in required
+        with self.assertRaises(ValueError) as ctx:
+            release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                providers=["claude"],
+                required_providers=["claude", "claude"],
+            )
+        self.assertIn("duplicate required provider", str(ctx.exception))
+
+        # Empty required list
+        with self.assertRaises(ValueError) as ctx:
+            release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                providers=["claude"],
+                required_providers=[],
+            )
+        self.assertIn("--required-providers cannot be empty", str(ctx.exception))
+
+    def test_required_pass_informational_fail_isolation(self) -> None:
+        """Required success is unblocked by informational failure or unavailable findings."""
+        providers = [
+            {"provider": "claude", "posture": "required", "state": "complete"},
+            {"provider": "antigravity", "posture": "informational", "state": "blocked"},
+        ]
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            providers, dry_run=False
+        )
+        self.assertEqual(status, "complete")
+        self.assertIn("informational findings", action)
+        self.assertTrue(detail.startswith("success with informational findings"))
+        self.assertIn("antigravity", detail)
+
+        providers_unavail = [
+            {"provider": "claude", "posture": "required", "state": "complete"},
+            {"provider": "antigravity", "posture": "informational", "state": "unavailable"},
+        ]
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            providers_unavail, dry_run=False
+        )
+        self.assertEqual(status, "complete")
+        self.assertTrue(detail.startswith("success with informational findings"))
+
+    def test_required_provider_failure_blocks_campaign(self) -> None:
+        """Required provider failure or unavailable blocks campaign with explicit text."""
+        providers_fail = [
+            {"provider": "claude", "posture": "required", "state": "blocked"},
+            {"provider": "antigravity", "posture": "informational", "state": "complete"},
+        ]
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            providers_fail, dry_run=False
+        )
+        self.assertEqual(status, "blocked")
+        self.assertTrue(detail.startswith("blocked required evidence"))
+
+        providers_unavail = [
+            {"provider": "claude", "posture": "required", "state": "unavailable"},
+            {"provider": "antigravity", "posture": "informational", "state": "complete"},
+        ]
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            providers_unavail, dry_run=False
+        )
+        self.assertEqual(status, "blocked")
+        self.assertTrue(detail.startswith("blocked required evidence"))
+
+        providers_running = [
+            {"provider": "claude", "posture": "required", "state": "running"},
+            {"provider": "antigravity", "posture": "informational", "state": "blocked"},
+        ]
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            providers_running, dry_run=False
+        )
+        self.assertEqual(status, "running")
+        self.assertTrue(detail.startswith("waiting required evidence"))
+
+        providers_queued = [
+            {"provider": "claude", "posture": "required", "state": "queued"},
+            {"provider": "antigravity", "posture": "informational", "state": "complete"},
+        ]
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            providers_queued, dry_run=False
+        )
+        self.assertEqual(status, "queued")
+        self.assertTrue(detail.startswith("waiting required evidence"))
+
+    def test_posture_aware_dry_run_mixed_required_providers(self) -> None:
+        """In posture-aware dry-run aggregation, mixed required providers retain queued and unavailable counts/names."""
+        providers = [
+            {"provider": "claude", "posture": "required", "state": "queued"},
+            {"provider": "codex", "posture": "required", "state": "unavailable"},
+            {"provider": "antigravity", "posture": "informational", "state": "queued"},
+        ]
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            providers, dry_run=True
+        )
+        self.assertEqual(status, "queued")
+        self.assertEqual(action, "run with --apply to dispatch providers")
+        self.assertEqual(
+            detail,
+            "waiting required evidence: dry-run preview with 1 queued and 1 unavailable required provider(s)",
+        )
+
+        # Applied run blocks on the unavailable required provider naming it
+        applied_status, applied_action, applied_detail = release_campaigns._aggregate_campaign_status(
+            providers, dry_run=False
+        )
+        self.assertEqual(applied_status, "blocked")
+        self.assertEqual(
+            applied_action,
+            "configure prerequisites for unavailable required provider(s): codex",
+        )
+        self.assertEqual(
+            applied_detail,
+            "blocked required evidence: 1 required provider(s) unavailable (codex)",
+        )
+
+        # Full rendered campaign preserves provider names, postures, states, and the mixed count detail
+        campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": status,
+            "dry_run": True,
+            "next_action": action,
+            "next_detail": detail,
+            "providers": providers,
+        }
+        rendered = release_campaigns.render_campaign_text(campaign)
+        self.assertIn("Status: queued (dry-run)", rendered)
+        self.assertIn("Next: run with --apply to dispatch providers", rendered)
+        self.assertIn(
+            "Detail: waiting required evidence: dry-run preview with 1 queued and 1 unavailable required provider(s)",
+            rendered,
+        )
+        self.assertIn("- claude: queued (required,", rendered)
+        self.assertIn("- codex: unavailable (required,", rendered)
+        self.assertIn("- antigravity: queued (informational,", rendered)
+
+    def test_backward_compatible_campaign_without_posture(self) -> None:
+        """Campaigns created without posture treat all providers as required."""
+        legacy_providers = [
+            {"provider": "claude", "state": "complete"},
+            {"provider": "codex", "state": "blocked"},
+        ]
+        for p in legacy_providers:
+            self.assertEqual(release_campaigns._provider_posture(p), "required")
+
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            legacy_providers, dry_run=False
+        )
+        self.assertEqual(status, "blocked")
+        self.assertEqual(detail, "1 provider(s) failed qualification checks")
+
+        legacy_campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": "blocked",
+            "dry_run": False,
+            "elapsed_seconds": 1.0,
+            "created_at": "2026-09-04T00:00:00Z",
+            "updated_at": "2026-09-04T00:00:00Z",
+            "next_action": "inspect qualification failures for codex",
+            "next_detail": "1 provider(s) failed qualification checks",
+            "providers": legacy_providers,
+        }
+        rendered = release_campaigns.render_campaign_text(legacy_campaign)
+        self.assertIn("claude: complete (required,", rendered)
+        self.assertIn("codex: blocked (required,", rendered)
+
+    def test_resume_posture_mismatch_rejected(self) -> None:
+        """Resuming an existing campaign with differing required posture is rejected."""
+        stored_campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "providers": [
+                {"provider": "claude", "posture": "required", "state": "complete"},
+                {"provider": "codex", "posture": "informational", "state": "queued"},
+            ],
+        }
+        # Mismatched required providers
+        conflict = release_campaigns._existing_campaign_conflict(
+            stored_campaign,
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            providers=["claude", "codex"],
+            required_providers=["codex"],
+        )
+        self.assertIn("--required-providers does not match existing campaign provider posture", conflict)
+        self.assertIn("an existing campaign's provider posture is fixed once set", conflict)
+
+        # Invalid provider name in required
+        conflict_unknown = release_campaigns._existing_campaign_conflict(
+            stored_campaign,
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            providers=["claude", "codex"],
+            required_providers=["unknown_provider"],
+        )
+        self.assertIn("unknown release campaign provider", conflict_unknown)
+
+        # Required provider not in stored campaign
+        conflict_missing = release_campaigns._existing_campaign_conflict(
+            stored_campaign,
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            providers=["claude", "codex"],
+            required_providers=["devin"],
+        )
+        self.assertIn("not in the existing campaign's providers", conflict_missing)
+
+        # Matching required providers succeeds
+        conflict_ok = release_campaigns._existing_campaign_conflict(
+            stored_campaign,
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            providers=["claude", "codex"],
+            required_providers=["claude"],
+        )
+        self.assertEqual(conflict_ok, "")
+
+        # Omitted required providers on resume succeeds
+        conflict_omitted = release_campaigns._existing_campaign_conflict(
+            stored_campaign,
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            providers=["claude", "codex"],
+            required_providers=None,
+        )
+        self.assertEqual(conflict_omitted, "")
+
+    def test_hosted_dispatch_and_reconciliation_posture(self) -> None:
+        """Hosted dispatch comment marker and body preserve posture; reconciliation checks posture."""
+        runner = mock.MagicMock(return_value=mock.MagicMock(returncode=0))
+        ok, ref, err = release_campaigns._dispatch_github_comment(
+            "owner/repo",
+            "123",
+            "campaign-v1.0.0",
+            "v1.0.0",
+            "code-mower==1.0.0",
+            "devin",
+            "cold_install",
+            "idemp123",
+            posture="informational",
+            command_runner=runner,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(err, "")
+        marker = {
+            "schema": release_campaigns.DISPATCH_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "provider": "devin",
+            "idempotency_key": "idemp123",
+            "reconciliation_key": "rec123",
+            "posture": "informational",
+        }
+        comment = {
+            "body": f"<!-- CODE_MOWER_RELEASE_CAMPAIGN: {json.dumps(marker)} -->",
+        }
+        # Matching expected succeeds
+        self.assertTrue(
+            release_campaigns._has_matching_release_marker(
+                [comment],
+                "CODE_MOWER_RELEASE_CAMPAIGN",
+                {
+                    "schema": release_campaigns.DISPATCH_SCHEMA,
+                    "campaign_id": "campaign-v1.0.0",
+                    "provider": "devin",
+                    "idempotency_key": "idemp123",
+                    "reconciliation_key": "rec123",
+                    "posture": "informational",
+                },
+            )
+        )
+        # Mismatched expected posture fails
+        self.assertFalse(
+            release_campaigns._has_matching_release_marker(
+                [comment],
+                "CODE_MOWER_RELEASE_CAMPAIGN",
+                {
+                    "schema": release_campaigns.DISPATCH_SCHEMA,
+                    "campaign_id": "campaign-v1.0.0",
+                    "provider": "devin",
+                    "idempotency_key": "idemp123",
+                    "reconciliation_key": "rec123",
+                    "posture": "required",
+                },
+            )
+        )
+        # Legacy comment without posture matches expected posture="required"
+        legacy_marker = {
+            "schema": release_campaigns.DISPATCH_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "provider": "devin",
+            "idempotency_key": "idemp123",
+            "reconciliation_key": "rec123",
+        }
+        legacy_comment = {
+            "body": f"<!-- CODE_MOWER_RELEASE_CAMPAIGN: {json.dumps(legacy_marker)} -->",
+        }
+        self.assertTrue(
+            release_campaigns._has_matching_release_marker(
+                [legacy_comment],
+                "CODE_MOWER_RELEASE_CAMPAIGN",
+                {
+                    "schema": release_campaigns.DISPATCH_SCHEMA,
+                    "campaign_id": "campaign-v1.0.0",
+                    "provider": "devin",
+                    "idempotency_key": "idemp123",
+                    "reconciliation_key": "rec123",
+                    "posture": "required",
+                },
+            )
+        )
+
+    def test_board_payload_and_rendering(self) -> None:
+        """Board payload projects provider posture on cards and in status calculation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            camp_dir = Path(tmp) / "campaigns"
+            camp = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                providers=["claude", "antigravity"],
+                required_providers=["claude"],
+            )
+            release_campaigns.save_campaign(camp, camp_dir)
+            payload = release_campaigns.release_campaigns_board_payload(
+                repo_path=tmp,
+                campaigns_dir=camp_dir,
+            )
+            self.assertEqual(len(payload["campaigns"]), 1)
+            cards = payload["campaigns"][0]["cards"]
+            posture_by_p = {c["provider"]: c["posture"] for c in cards}
+            self.assertEqual(posture_by_p["claude"], "required")
+            self.assertEqual(posture_by_p["antigravity"], "informational")
+
+    def test_upload_conversion_posture(self) -> None:
+        """Upload events and summary retain provider posture metadata."""
+        campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": "complete",
+            "dry_run": False,
+            "provider_posture_configured": True,
+            "providers": [
+                {
+                    "provider": "claude",
+                    "posture": "required",
+                    "state": "complete",
+                    "adoption_result": _mock_adoption_result(provider="claude"),
+                },
+                {
+                    "provider": "antigravity",
+                    "posture": "informational",
+                    "state": "queued",
+                },
+            ],
+        }
+        plan = release_campaigns.build_campaign_upload_events(campaign)
+        self.assertEqual(len(plan["events"]), 1)
+        self.assertEqual(
+            plan["events"][0]["dimensions"]["provider_posture"], "required"
+        )
+        self.assertNotIn("posture", plan["events"][0])
+        self.assertEqual(len(plan["skipped_providers"]), 1)
+        self.assertEqual(plan["skipped_providers"][0]["posture"], "informational")
+        self.assertEqual(plan["provider_postures"]["claude"], "required")
+        self.assertEqual(plan["provider_postures"]["antigravity"], "informational")
+
+    def test_legacy_missing_posture_campaign_upload_matches_standalone_conversion(self) -> None:
+        """A legacy missing-posture campaign upload has the same event id and dimensions as standalone conversion."""
+        result = _mock_adoption_result(provider="claude")
+        cloud = release_campaigns._load_cloud_client()
+        standalone_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+        )
+        legacy_campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": "complete",
+            "dry_run": False,
+            "providers": [
+                {
+                    "provider": "claude",
+                    "state": "complete",
+                    "adoption_result": result,
+                },
+            ],
+        }
+        plan = release_campaigns.build_campaign_upload_events(legacy_campaign)
+        self.assertEqual(len(plan["events"]), 1)
+        campaign_event = plan["events"][0]
+        self.assertEqual(campaign_event["event_id"], standalone_event["event_id"])
+        self.assertEqual(campaign_event["dimensions"], standalone_event["dimensions"])
+        self.assertNotIn("provider_posture", campaign_event["dimensions"])
+        self.assertNotIn("posture", campaign_event)
+        self.assertEqual(plan["provider_postures"]["claude"], "required")
+
+    def test_explicit_required_campaign_upload_has_posture_and_stable_id(self) -> None:
+        """A new explicitly-required campaign includes provider_posture=required and has a posture-specific stable id."""
+        result = _mock_adoption_result(provider="claude")
+        cloud = release_campaigns._load_cloud_client()
+        standalone_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+        )
+        expected_req_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+            provider_posture="required",
+        )
+        campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": "complete",
+            "dry_run": False,
+            "provider_posture_configured": True,
+            "providers": [
+                {
+                    "provider": "claude",
+                    "posture": "required",
+                    "state": "complete",
+                    "adoption_result": result,
+                },
+            ],
+        }
+        plan = release_campaigns.build_campaign_upload_events(campaign)
+        self.assertEqual(len(plan["events"]), 1)
+        req_event = plan["events"][0]
+        self.assertEqual(req_event["dimensions"]["provider_posture"], "required")
+        self.assertNotIn("posture", req_event)
+        self.assertEqual(req_event["event_id"], expected_req_event["event_id"])
+        self.assertNotEqual(req_event["event_id"], standalone_event["event_id"])
+        self.assertEqual(plan["provider_postures"]["claude"], "required")
+
+    def test_explicit_informational_campaign_upload_distinct_and_validated(self) -> None:
+        """Informational remains distinct, validated, and non-colliding."""
+        result = _mock_adoption_result(provider="claude")
+        cloud = release_campaigns._load_cloud_client()
+        standalone_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+        )
+        expected_req_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+            provider_posture="required",
+        )
+        expected_info_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+            provider_posture="informational",
+        )
+        campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": "complete",
+            "dry_run": False,
+            "provider_posture_configured": True,
+            "providers": [
+                {
+                    "provider": "claude",
+                    "posture": "informational",
+                    "state": "complete",
+                    "adoption_result": result,
+                },
+            ],
+        }
+        plan = release_campaigns.build_campaign_upload_events(campaign)
+        self.assertEqual(len(plan["events"]), 1)
+        info_event = plan["events"][0]
+        self.assertEqual(info_event["dimensions"]["provider_posture"], "informational")
+        self.assertNotIn("posture", info_event)
+        self.assertEqual(info_event["event_id"], expected_info_event["event_id"])
+        self.assertNotEqual(info_event["event_id"], standalone_event["event_id"])
+        self.assertNotEqual(info_event["event_id"], expected_req_event["event_id"])
+        self.assertEqual(plan["provider_postures"]["claude"], "informational")
+        cloud.validate_cloud_event(info_event)
+
+    def test_omitted_posture_default_campaign_upload_matches_standalone(self) -> None:
+        """A new campaign created without posture options omits provider_posture and matches standalone id."""
+        result = _mock_adoption_result(provider="claude")
+        cloud = release_campaigns._load_cloud_client()
+        standalone_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+        )
+        campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": "complete",
+            "dry_run": False,
+            "provider_posture_configured": False,
+            "providers": [
+                {
+                    "provider": "claude",
+                    "posture": "required",
+                    "state": "complete",
+                    "adoption_result": result,
+                },
+            ],
+        }
+        plan = release_campaigns.build_campaign_upload_events(campaign)
+        self.assertEqual(len(plan["events"]), 1)
+        event = plan["events"][0]
+        self.assertNotIn("provider_posture", event["dimensions"])
+        self.assertNotIn("posture", event)
+        self.assertEqual(event["event_id"], standalone_event["event_id"])
+        self.assertEqual(event["dimensions"], standalone_event["dimensions"])
+        self.assertEqual(plan["provider_postures"]["claude"], "required")
+
+    def test_posture_aware_dry_run_partial_complete_and_unavailable(self) -> None:
+        """In dry-run, required-provider unavailability never blocks; partial complete and unavailable returns unavailable."""
+        providers = [
+            {"provider": "claude", "posture": "required", "state": "complete"},
+            {"provider": "codex", "posture": "required", "state": "unavailable"},
+            {"provider": "antigravity", "posture": "informational", "state": "complete"},
+        ]
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            providers, dry_run=True
+        )
+        self.assertEqual(status, "unavailable")
+        self.assertEqual(
+            action,
+            "configure prerequisites for unavailable required provider(s): codex",
+        )
+        self.assertEqual(
+            detail,
+            "blocked required evidence: 1 required provider(s) unavailable (codex)",
+        )
+
+        # Applied run blocks on the unavailable required provider
+        applied_status, applied_action, applied_detail = release_campaigns._aggregate_campaign_status(
+            providers, dry_run=False
+        )
+        self.assertEqual(applied_status, "blocked")
+        self.assertEqual(
+            applied_action,
+            "configure prerequisites for unavailable required provider(s): codex",
+        )
+        self.assertEqual(
+            applied_detail,
+            "blocked required evidence: 1 required provider(s) unavailable (codex)",
+        )
+
+    def test_campaign_upload_posture_table_driven_cases(self) -> None:
+        """Table-driven verification of upload events across legacy, default, and explicit configurations."""
+        cloud = release_campaigns._load_cloud_client()
+        result_claude = _mock_adoption_result(provider="claude")
+        result_anti = _mock_adoption_result(provider="antigravity")
+        standalone_claude = cloud.adoption_result_to_event(result_claude, repo_slug="owner/repo")
+        req_claude = cloud.adoption_result_to_event(
+            result_claude, repo_slug="owner/repo", provider_posture="required"
+        )
+        info_anti = cloud.adoption_result_to_event(
+            result_anti, repo_slug="owner/repo", provider_posture="informational"
+        )
+
+        cases = [
+            (
+                "legacy_omitted_posture",
+                {
+                    "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                    "campaign_id": "c-leg",
+                    "release_tag": "v1.0.0",
+                    "package_spec": "code-mower==1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "repo_slug": "owner/repo",
+                    "providers": [
+                        {"provider": "claude", "state": "complete", "adoption_result": result_claude}
+                    ],
+                },
+                {"claude": None},
+                {"claude": standalone_claude["event_id"]},
+            ),
+            (
+                "new_omitted_option_default",
+                {
+                    "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                    "campaign_id": "c-def",
+                    "release_tag": "v1.0.0",
+                    "package_spec": "code-mower==1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "repo_slug": "owner/repo",
+                    "provider_posture_configured": False,
+                    "providers": [
+                        {
+                            "provider": "claude",
+                            "posture": "required",
+                            "state": "complete",
+                            "adoption_result": result_claude,
+                        }
+                    ],
+                },
+                {"claude": None},
+                {"claude": standalone_claude["event_id"]},
+            ),
+            (
+                "explicit_all_required",
+                {
+                    "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                    "campaign_id": "c-exp-all",
+                    "release_tag": "v1.0.0",
+                    "package_spec": "code-mower==1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "repo_slug": "owner/repo",
+                    "provider_posture_configured": True,
+                    "providers": [
+                        {
+                            "provider": "claude",
+                            "posture": "required",
+                            "state": "complete",
+                            "adoption_result": result_claude,
+                        }
+                    ],
+                },
+                {"claude": "required"},
+                {"claude": req_claude["event_id"]},
+            ),
+            (
+                "explicit_partitioned",
+                {
+                    "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                    "campaign_id": "c-exp-part",
+                    "release_tag": "v1.0.0",
+                    "package_spec": "code-mower==1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "repo_slug": "owner/repo",
+                    "provider_posture_configured": True,
+                    "providers": [
+                        {
+                            "provider": "claude",
+                            "posture": "required",
+                            "state": "complete",
+                            "adoption_result": result_claude,
+                        },
+                        {
+                            "provider": "antigravity",
+                            "posture": "informational",
+                            "state": "complete",
+                            "adoption_result": result_anti,
+                        },
+                    ],
+                },
+                {"claude": "required", "antigravity": "informational"},
+                {"claude": req_claude["event_id"], "antigravity": info_anti["event_id"]},
+            ),
+        ]
+
+        for case_name, campaign_dict, expected_postures, expected_ids in cases:
+            with self.subTest(case=case_name):
+                plan = release_campaigns.build_campaign_upload_events(campaign_dict)
+                events_by_prov = {e["dimensions"]["provider"]: e for e in plan["events"]}
+                for prov, exp_posture in expected_postures.items():
+                    event = events_by_prov[prov]
+                    if exp_posture is None:
+                        self.assertNotIn("provider_posture", event["dimensions"])
+                    else:
+                        self.assertEqual(event["dimensions"]["provider_posture"], exp_posture)
+                    self.assertEqual(event["event_id"], expected_ids[prov])
+
+    def test_initialize_campaign_sets_provider_posture_configured(self) -> None:
+        """initialize_campaign sets provider_posture_configured based on required_providers presence."""
+        c_default = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["claude", "codex"],
+            required_providers=None,
+        )
+        self.assertFalse(c_default.provider_posture_configured)
+        self.assertFalse(c_default.to_dict()["provider_posture_configured"])
+
+        c_explicit = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["claude", "codex"],
+            required_providers=["claude"],
+        )
+        self.assertTrue(c_explicit.provider_posture_configured)
+        self.assertTrue(c_explicit.to_dict()["provider_posture_configured"])
 
 
 if __name__ == "__main__":

@@ -167,6 +167,27 @@ code-mower release campaign \
   --qualification-context cold_install
 ```
 
+### Required vs Informational Provider Posture
+
+Release campaigns support partitioning selected providers into closed **required** and **informational** postures using the `--required-providers` CLI option.
+
+- **Required providers:** Providers whose qualification is mandatory for campaign success. A required provider failure (`blocked`) or unavailable prerequisite (`unavailable`) blocks the campaign (`blocked required evidence`).
+- **Informational providers:** Selected providers outside the `--required-providers` subset provide non-blocking qualification signals. An informational provider failure or unavailable result remains visible evidence across status, watch, Board, and uploads, but does not block campaign completion when required providers pass (`success with informational findings`).
+- **Backward compatibility:** When `--required-providers` is omitted, every selected provider is treated as required, exactly as in previous releases.
+- **Fixed posture:** An existing campaign's provider posture cannot be modified when resuming or dispatching; posture mismatches and invalid required-provider names are rejected.
+- **Option scope:** `--required-providers` is valid for campaign creation (`create` or omitted action) and for mutating resume/dispatch actions (`resume`, `dispatch`) where it verifies stored posture against incoming arguments. It is rejected for read-only actions (`status`, `watch`, `upload`, including legacy `--status`).
+
+Example: Requiring Claude and Codex while running Antigravity, Muse, Cursor Cloud Agent, and Devin as informational:
+
+```bash
+code-mower release campaign \
+  --release-tag v1.0.0 \
+  --package-spec code-mower==1.0.0 \
+  --providers claude,codex,antigravity,muse,cursor_cloud_agent,devin \
+  --required-providers claude,codex \
+  --apply
+```
+
 ### TestPyPI candidates
 
 Add `--package-source testpypi` to qualify an exact TestPyPI candidate before

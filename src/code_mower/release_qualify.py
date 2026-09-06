@@ -1112,6 +1112,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     campaign.add_argument(
+        "--required-providers",
+        default=None,
+        help=(
+            "Comma-separated subset of providers whose success is required. "
+            "Selected providers outside this subset are informational. "
+            "When omitted, all selected providers are required. "
+            "Applies to campaign create, resume, and dispatch; rejected for "
+            "read-only status, watch, and upload."
+        ),
+    )
+    campaign.add_argument(
         "--qualification-context",
         default="",
         help=(
@@ -1326,6 +1337,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.providers
             else ()
         )
+        if args.required_providers is not None:
+            required_providers_list = [
+                p.strip() for p in args.required_providers.split(",") if p.strip()
+            ]
+            if not required_providers_list:
+                print(
+                    "error: --required-providers cannot be empty; specify a non-empty subset of selected providers",
+                    file=sys.stderr,
+                )
+                return 1
+        else:
+            required_providers_list = None
         # Same guard shape as `qualify` above: the campaign implementation
         # already answers every anticipated failure with its own bounded,
         # path-free message and a non-zero exit, and those returns pass straight
@@ -1340,6 +1363,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 release_tag=args.release_tag,
                 package_spec=args.package_spec,
                 providers=providers_list,
+                required_providers=required_providers_list,
                 qualification_context=args.qualification_context,
                 starting_version=args.starting_version,
                 package_source=args.package_source,

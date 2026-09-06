@@ -152,6 +152,34 @@ VALID_PROVIDER_STATES = {
     "complete",
 }
 
+VALID_PROVIDER_POSTURES = frozenset({"required", "informational"})
+DEFAULT_PROVIDER_POSTURE = "required"
+
+
+def _provider_posture(provider_data: Mapping[str, Any]) -> str:
+    """Return closed provider posture ('required' or 'informational').
+
+    Preserves compatibility: campaigns or provider entries without posture data
+    treat the provider as required, exactly as current releases do.
+    """
+    posture = provider_data.get("posture")
+    if isinstance(posture, str) and posture in VALID_PROVIDER_POSTURES:
+        return posture
+    return DEFAULT_PROVIDER_POSTURE
+
+
+def _stored_provider_posture(provider_data: Mapping[str, Any]) -> str | None:
+    """Return stored provider posture if explicitly present and valid, else None.
+
+    Legacy campaign provider entries predating posture storage return None so
+    their upload events preserve the exact pre-v1.0.9 event shape and
+    deterministic event id.
+    """
+    posture = provider_data.get("posture")
+    if isinstance(posture, str) and posture in VALID_PROVIDER_POSTURES:
+        return posture
+    return None
+
 # Bounded, safe error codes. Persisted campaign state may only ever carry one
 # of these values in the `error` field -- never a raw exception message, gh
 # stdout/stderr, or adapter output. `_safe_error` enforces this at the source.
@@ -237,6 +265,7 @@ class CampaignProvider:
     environment: str
     elapsed_seconds: float
     idempotency_key: str
+    posture: str = "required"
     dispatch_mode: str = "dry_run"
     dispatched_at: str | None = None
     completed_at: str | None = None
@@ -263,6 +292,8 @@ class CampaignProvider:
     def __post_init__(self) -> None:
         if self.state not in VALID_PROVIDER_STATES:
             self.state = "unavailable"
+        if self.posture not in VALID_PROVIDER_POSTURES:
+            self.posture = "required"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -290,6 +321,7 @@ class ReleaseCampaign:
     next_action: str
     next_detail: str
     providers: list[dict[str, Any]]
+    provider_posture_configured: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -704,54 +736,154 @@ def _aggregate_campaign_status(
     if not providers:
         return "queued", "add providers to campaign", ""
 
-    blocked = [p["provider"] for p in providers if p.get("state") == "blocked"]
-    running = [p["provider"] for p in providers if p.get("state") == "running"]
-    queued = [p["provider"] for p in providers if p.get("state") == "queued"]
-    unavailable = [p["provider"] for p in providers if p.get("state") == "unavailable"]
-    complete = [p["provider"] for p in providers if p.get("state") == "complete"]
+    req = [p for p in providers if _provider_posture(p) == "required"]
+    info = [p for p in providers if _provider_posture(p) == "informational"]
 
-    if blocked:
+    if not info:
+        blocked = [p["provider"] for p in providers if p.get("state") == "blocked"]
+        running = [p["provider"] for p in providers if p.get("state") == "running"]
+        queued = [p["provider"] for p in providers if p.get("state") == "queued"]
+        unavailable = [p["provider"] for p in providers if p.get("state") == "unavailable"]
+        complete = [p["provider"] for p in providers if p.get("state") == "complete"]
+
+        if blocked:
+            return (
+                "blocked",
+                f"inspect qualification failures for {', '.join(blocked)}",
+                f"{len(blocked)} provider(s) failed qualification checks",
+            )
+        if running:
+            return (
+                "running",
+                f"poll running providers: {', '.join(running)}",
+                f"{len(running)} provider(s) currently running",
+            )
+        if len(complete) == len(providers):
+            return (
+                "complete",
+                "campaign complete; all providers passed",
+                f"all {len(complete)} provider(s) qualified successfully",
+            )
+        # "queued" is a claim that applying would dispatch something, so it is only
+        # honest while at least one provider is actually dispatchable. A dry run is
+        # not an exception: previewing every provider as unavailable and still
+        # advising "run with --apply" points at a command that cannot dispatch
+        # anything. Report the prerequisite work instead -- which covers a missing
+        # issue number, repo slug, credentials and adapter configuration alike,
+        # because each of those already lands its provider in "unavailable".
+        if queued:
+            if dry_run:
+                return (
+                    "queued",
+                    "run with --apply to dispatch providers",
+                    f"dry-run preview with {len(queued)} queued and {len(unavailable)} unavailable provider(s)",
+                )
+            return (
+                "queued",
+                f"dispatch queued providers: {', '.join(queued)}",
+                f"{len(queued)} provider(s) waiting for dispatch",
+            )
+        if unavailable and len(unavailable) == len(providers) - len(complete):
+            return (
+                "unavailable",
+                f"configure prerequisites for unavailable providers: {', '.join(unavailable)}",
+                f"{len(unavailable)} provider(s) unavailable",
+            )
+        return "queued", "inspect campaign providers", ""
+
+    req_blocked = [p["provider"] for p in req if p.get("state") == "blocked"]
+    req_running = [p["provider"] for p in req if p.get("state") == "running"]
+    req_queued = [p["provider"] for p in req if p.get("state") == "queued"]
+    req_unavailable = [p["provider"] for p in req if p.get("state") == "unavailable"]
+    req_complete = [p["provider"] for p in req if p.get("state") == "complete"]
+
+    info_blocked = [p["provider"] for p in info if p.get("state") == "blocked"]
+    info_running = [p["provider"] for p in info if p.get("state") == "running"]
+    info_queued = [p["provider"] for p in info if p.get("state") == "queued"]
+    info_unavailable = [p["provider"] for p in info if p.get("state") == "unavailable"]
+    info_complete = [p["provider"] for p in info if p.get("state") == "complete"]
+
+    if req_blocked:
         return (
             "blocked",
-            f"inspect qualification failures for {', '.join(blocked)}",
-            f"{len(blocked)} provider(s) failed qualification checks",
+            f"inspect qualification failures for required provider(s): {', '.join(req_blocked)}",
+            f"blocked required evidence: {len(req_blocked)} required provider(s) failed qualification checks ({', '.join(req_blocked)})",
         )
-    if running:
+    if not dry_run and req_unavailable:
+        return (
+            "blocked",
+            f"configure prerequisites for unavailable required provider(s): {', '.join(req_unavailable)}",
+            f"blocked required evidence: {len(req_unavailable)} required provider(s) unavailable ({', '.join(req_unavailable)})",
+        )
+    if dry_run and len(req_unavailable) == len(req):
+        return (
+            "unavailable",
+            f"configure prerequisites for unavailable required provider(s): {', '.join(req_unavailable)}",
+            f"blocked required evidence: all {len(req_unavailable)} required provider(s) unavailable ({', '.join(req_unavailable)})",
+        )
+    if req_running:
+        running_names = req_running + info_running
         return (
             "running",
-            f"poll running providers: {', '.join(running)}",
-            f"{len(running)} provider(s) currently running",
+            f"poll running providers: {', '.join(running_names)}",
+            f"waiting required evidence: {len(req_running)} required provider(s) currently running ({', '.join(req_running)})",
         )
-    if len(complete) == len(providers):
-        return (
-            "complete",
-            "campaign complete; all providers passed",
-            f"all {len(complete)} provider(s) qualified successfully",
-        )
-    # "queued" is a claim that applying would dispatch something, so it is only
-    # honest while at least one provider is actually dispatchable. A dry run is
-    # not an exception: previewing every provider as unavailable and still
-    # advising "run with --apply" points at a command that cannot dispatch
-    # anything. Report the prerequisite work instead -- which covers a missing
-    # issue number, repo slug, credentials and adapter configuration alike,
-    # because each of those already lands its provider in "unavailable".
-    if queued:
+    if req_queued:
         if dry_run:
             return (
                 "queued",
                 "run with --apply to dispatch providers",
-                f"dry-run preview with {len(queued)} queued and {len(unavailable)} unavailable provider(s)",
+                f"waiting required evidence: dry-run preview with {len(req_queued)} queued and {len(req_unavailable)} unavailable required provider(s)",
             )
+        queued_names = req_queued + info_queued
         return (
             "queued",
-            f"dispatch queued providers: {', '.join(queued)}",
-            f"{len(queued)} provider(s) waiting for dispatch",
+            f"dispatch queued providers: {', '.join(queued_names)}",
+            f"waiting required evidence: {len(req_queued)} required provider(s) waiting for dispatch",
         )
-    if unavailable and len(unavailable) == len(providers) - len(complete):
+    if len(req_complete) == len(req):
+        if info_running:
+            return (
+                "running",
+                f"poll running informational providers: {', '.join(info_running)}",
+                f"required providers passed; {len(info_running)} informational provider(s) currently running",
+            )
+        if info_queued:
+            if dry_run:
+                return (
+                    "queued",
+                    "run with --apply to dispatch providers",
+                    f"required providers passed; dry-run preview with {len(info_queued)} queued and {len(info_unavailable)} unavailable informational provider(s)",
+                )
+            return (
+                "queued",
+                f"dispatch queued informational providers: {', '.join(info_queued)}",
+                f"required providers passed; {len(info_queued)} informational provider(s) waiting for dispatch",
+            )
+        info_findings = info_blocked + info_unavailable
+        if info_findings:
+            return (
+                "complete",
+                "campaign complete with informational findings; required providers passed",
+                f"success with informational findings: all {len(req_complete)} required provider(s) passed; "
+                f"{len(info_findings)} informational provider(s) reported findings ({', '.join(info_findings)})",
+            )
         return (
-            "unavailable",
-            f"configure prerequisites for unavailable providers: {', '.join(unavailable)}",
-            f"{len(unavailable)} provider(s) unavailable",
+            "complete",
+            "campaign complete; all providers passed",
+            f"all {len(req_complete) + len(info_complete)} provider(s) qualified successfully",
+        )
+    if req_unavailable:
+        if dry_run:
+            return (
+                "unavailable",
+                f"configure prerequisites for unavailable required provider(s): {', '.join(req_unavailable)}",
+                f"blocked required evidence: {len(req_unavailable)} required provider(s) unavailable ({', '.join(req_unavailable)})",
+            )
+        return (
+            "blocked",
+            f"configure prerequisites for unavailable required provider(s): {', '.join(req_unavailable)}",
+            f"blocked required evidence: {len(req_unavailable)} required provider(s) unavailable ({', '.join(req_unavailable)})",
         )
     return "queued", "inspect campaign providers", ""
 
@@ -1122,6 +1254,7 @@ def _dispatch_github_comment(
     qualification_context: str,
     idempotency_key: str,
     *,
+    posture: str = "required",
     starting_version: str = "",
     package_source: str = DEFAULT_PACKAGE_SOURCE,
     trigger_comments: tuple[str, ...] = (),
@@ -1152,6 +1285,7 @@ def _dispatch_github_comment(
         "release_tag": release_tag,
         "package_spec": package_spec,
         "provider": provider,
+        "posture": posture,
         "qualification_context": qualification_context,
         "package_source": package_source,
         "idempotency_key": idempotency_key,
@@ -1194,6 +1328,7 @@ def _dispatch_github_comment(
         f"- **Release Tag:** `{release_tag}`\n"
         f"- **Package Spec:** `{package_spec}`\n"
         f"- **Provider:** `{provider}`\n"
+        f"- **Posture:** `{posture}`\n"
         f"- **Context:** `{qualification_context}`\n"
         f"{starting_version_line}"
         f"{package_source_line}"
@@ -1334,7 +1469,10 @@ def _has_matching_release_marker(
             continue
         if not isinstance(payload, Mapping):
             continue
-        if all(str(payload.get(key) or "") == value for key, value in expected.items()):
+        if all(
+            str(payload.get(key) or ("required" if key == "posture" else "")) == value
+            for key, value in expected.items()
+        ):
             return True
     return False
 
@@ -1900,6 +2038,7 @@ def initialize_campaign(
     starting_version: str = "",
     package_source: str = DEFAULT_PACKAGE_SOURCE,
     providers: Sequence[str] = (),
+    required_providers: Sequence[str] | None = None,
     repo_slug: str = "",
     campaign_id: str = "",
 ) -> ReleaseCampaign:
@@ -1972,6 +2111,32 @@ def initialize_campaign(
         seen_providers.add(canonical_name)
         resolved_providers.append((canonical_name, lane))
 
+    if required_providers is not None:
+        if not required_providers:
+            raise ValueError(
+                "--required-providers cannot be empty; specify a non-empty subset of selected providers"
+            )
+        resolved_required: set[str] = set()
+        seen_required: set[str] = set()
+        for r_name in required_providers:
+            r_canonical, _ = resolve_provider_lane(r_name)
+            if r_canonical in seen_required:
+                raise ValueError(
+                    f"duplicate required provider {r_canonical!r}: it was named more than once; "
+                    "list each required provider exactly once"
+                )
+            seen_required.add(r_canonical)
+            resolved_required.add(r_canonical)
+
+        for r_canonical in resolved_required:
+            if r_canonical not in seen_providers:
+                raise ValueError(
+                    f"required provider {r_canonical!r} is not in the selected providers for this campaign: "
+                    f"{', '.join(sorted(seen_providers))}"
+                )
+    else:
+        resolved_required = set(seen_providers)
+
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     environment = _detect_environment()
 
@@ -1985,6 +2150,7 @@ def initialize_campaign(
             starting_version,
             package_source,
         )
+        posture = "required" if canonical_name in resolved_required else "informational"
         cp = CampaignProvider(
             provider=canonical_name,
             lane_id=lane.lane_id,
@@ -1993,6 +2159,7 @@ def initialize_campaign(
             environment=environment,
             elapsed_seconds=0.0,
             idempotency_key=idemp_key,
+            posture=posture,
             dispatch_mode="dry_run",
             next_action=f"run with --apply to execute {canonical_name}",
             next_detail="",
@@ -2023,6 +2190,7 @@ def initialize_campaign(
         next_action=next_action,
         next_detail=next_detail,
         providers=campaign_providers,
+        provider_posture_configured=required_providers is not None,
     )
 
 
@@ -2479,6 +2647,7 @@ def dispatch_or_advance_campaign(
                         "provider": provider,
                         "idempotency_key": str(provider_data.get("idempotency_key") or ""),
                         "reconciliation_key": dispatch_key,
+                        "posture": _provider_posture(provider_data),
                     }
                     dispatch_posted = bool(dispatch_ref.get("comment_posted"))
                     if not dispatch_posted and _has_matching_release_marker(
@@ -2534,6 +2703,7 @@ def dispatch_or_advance_campaign(
                     "provider": provider,
                     "idempotency_key": str(provider_data.get("idempotency_key") or ""),
                     "reconciliation_key": dispatch_key,
+                    "posture": _provider_posture(provider_data),
                 }
                 if not dispatch_posted and not poll_error:
                     dispatch_posted = _has_matching_release_marker(
@@ -3087,6 +3257,7 @@ def dispatch_or_advance_campaign(
                     provider,
                     context,
                     provider_data["idempotency_key"],
+                    posture=_provider_posture(provider_data),
                     starting_version=starting_version,
                     package_source=package_source,
                     trigger_comments=trigger_comments,
@@ -3350,6 +3521,7 @@ def _skipped_provider_row(entry: Mapping[str, Any], provider: str, state: str) -
     error = entry.get("error")
     return {
         "provider": provider,
+        "posture": _provider_posture(entry),
         "state": state,
         "reason": error if isinstance(error, str) and error in SAFE_ERROR_CODES else "",
     }
@@ -3440,6 +3612,12 @@ def build_campaign_upload_events(
             "repo_slug": repo_slug,
         }
 
+    posture_configured = bool(
+        campaign.get("provider_posture_configured")
+        if isinstance(campaign, Mapping)
+        else getattr(campaign, "provider_posture_configured", False)
+    )
+
     for entry in entries:
         if not isinstance(entry, Mapping):
             complete_count += 1
@@ -3464,7 +3642,12 @@ def build_campaign_upload_events(
             if state == "complete":
                 complete_count += 1
                 rejected.append(
-                    {"provider": provider, "state": state, "reason": "adoption_result_missing"}
+                    {
+                        "provider": provider,
+                        "posture": _provider_posture(entry),
+                        "state": state,
+                        "reason": "adoption_result_missing",
+                    }
                 )
             else:
                 # Blocked without stored evidence: the adapter failed before
@@ -3482,7 +3665,12 @@ def build_campaign_upload_events(
             package_identity=package_identity,
         ):
             rejected.append(
-                {"provider": provider, "state": state, "reason": "adoption_result_invalid"}
+                {
+                    "provider": provider,
+                    "posture": _provider_posture(entry),
+                    "state": state,
+                    "reason": "adoption_result_invalid",
+                }
             )
             continue
         # Terminal state is never normalized into evidence: a `complete`
@@ -3499,11 +3687,15 @@ def build_campaign_upload_events(
             rejected.append(
                 {
                     "provider": provider,
+                    "posture": _provider_posture(entry),
                     "state": state,
                     "reason": "adoption_result_state_mismatch",
                 }
             )
             continue
+        provider_posture = (
+            _stored_provider_posture(entry) if posture_configured else None
+        )
         try:
             event = cloud.adoption_result_to_event(
                 dict(result),
@@ -3511,6 +3703,7 @@ def build_campaign_upload_events(
                 team_id=team_id,
                 install_id=install_id,
                 source=source,
+                provider_posture=provider_posture,
             )
         except cloud.CloudBundleError:
             # The converter's message describes the offending field, but it is
@@ -3519,6 +3712,7 @@ def build_campaign_upload_events(
             rejected.append(
                 {
                     "provider": provider,
+                    "posture": _provider_posture(entry),
                     "state": state,
                     "reason": "adoption_result_unconvertible",
                 }
@@ -3536,6 +3730,11 @@ def build_campaign_upload_events(
         "complete_count": complete_count,
         "package_identity": package_identity,
         "repo_slug": repo_slug,
+        "provider_postures": {
+            _safe_provider_name(entry.get("provider")): _provider_posture(entry)
+            for entry in entries
+            if isinstance(entry, Mapping)
+        },
     }
 
 
@@ -3686,6 +3885,7 @@ def campaign_upload(
         # every later upload of the same evidence carry the same ids: repeating
         # an upload is idempotent rather than duplicative.
         "event_ids": [str(event.get("event_id") or "") for event in events],
+        "provider_postures": plan.get("provider_postures", {}),
         "unavailable_measurements": ["cost", "model", "token"],
     }
 
@@ -3761,7 +3961,8 @@ def render_campaign_text(campaign: Mapping[str, Any]) -> str:
         elapsed = p.get("elapsed_seconds") or 0.0
         action = p.get("next_action") or "none"
         detail = f" ({p.get('next_detail')})" if p.get("next_detail") else ""
-        lines.append(f"- {p.get('provider')}: {state} ({env}, elapsed {elapsed:.1f}s) -> {action}{detail}")
+        posture = _provider_posture(p)
+        lines.append(f"- {p.get('provider')}: {state} ({posture}, {env}, elapsed {elapsed:.1f}s) -> {action}{detail}")
     return "\n".join(lines)
 
 
@@ -3904,6 +4105,7 @@ def _build_watch_summary(
         "providers": [
             {
                 "provider": str(p.get("provider") or ""),
+                "posture": _provider_posture(p),
                 "state": str(p.get("state") or ""),
                 "elapsed_seconds": round(float(p.get("elapsed_seconds") or 0.0), 2),
                 "next_action": str(p.get("next_action") or ""),
@@ -4800,6 +5002,7 @@ def release_campaigns_board_payload(
                 {
                     "release": _board_text(c, "release_tag", ""),
                     "provider": provider,
+                    "posture": _provider_posture(p),
                     "lane_id": _board_text(p, "lane_id", provider),
                     "environment": _board_text(p, "environment", "local"),
                     "state": state,
@@ -5088,6 +5291,21 @@ def _watch_intent_conflict(
     return ""
 
 
+def _required_providers_intent_conflict(
+    *,
+    action: str | None,
+    status: bool,
+    required_providers: Any = None,
+) -> str:
+    """Report an option-scope conflict when --required-providers is passed to read-only actions."""
+    if required_providers is not None and (status or action in {"status", "watch", "upload"}):
+        return (
+            "--required-providers applies only to campaign creation, resume, and dispatch; "
+            "re-run as `campaign create`, `campaign resume`, or `campaign dispatch`"
+        )
+    return ""
+
+
 def _command_intent_conflict(
     *,
     action: str | None,
@@ -5099,6 +5317,7 @@ def _command_intent_conflict(
     yes: bool = False,
     interval: float | None = None,
     timeout: float | None = None,
+    required_providers: Any = None,
 ) -> str:
     """Report the one bounded reason this invocation states conflicting intents.
 
@@ -5141,6 +5360,13 @@ def _command_intent_conflict(
         yes=yes,
         interval=interval,
         timeout=timeout,
+    )
+    if conflict:
+        return conflict
+    conflict = _required_providers_intent_conflict(
+        action=action,
+        status=status,
+        required_providers=required_providers,
     )
     if conflict:
         return conflict
@@ -5204,6 +5430,7 @@ def _existing_campaign_conflict(
     starting_version: str,
     package_source: str = "",
     providers: Sequence[str],
+    required_providers: Sequence[str] | None = None,
     repo_slug: str = "",
 ) -> str:
     """Report a bounded conflict between an existing campaign and creation arguments.
@@ -5272,6 +5499,45 @@ def _existing_campaign_conflict(
                 f"({', '.join(sorted(stored))}); an existing campaign's provider set "
                 "is fixed at creation"
             )
+    if required_providers is not None:
+        if not required_providers:
+            return "--required-providers cannot be empty; specify a non-empty subset of selected providers"
+        stored_providers = campaign.get("providers", [])
+        stored_names = {
+            str(p.get("provider") or "")
+            for p in stored_providers
+            if isinstance(p, Mapping)
+        }
+        req_requested: set[str] = set()
+        seen_required: set[str] = set()
+        for name in required_providers:
+            try:
+                canonical, _ = resolve_provider_lane(name)
+            except ValueError as exc:
+                return str(exc)
+            if canonical in seen_required:
+                return (
+                    f"duplicate required provider {canonical!r}: it was named more than once; "
+                    "list each required provider exactly once"
+                )
+            seen_required.add(canonical)
+            if canonical not in stored_names:
+                return (
+                    f"required provider {canonical!r} is not in the existing campaign's providers "
+                    f"({', '.join(sorted(stored_names))})"
+                )
+            req_requested.add(canonical)
+        stored_required = {
+            str(p.get("provider") or "")
+            for p in stored_providers
+            if isinstance(p, Mapping) and _provider_posture(p) == "required"
+        }
+        if req_requested != stored_required:
+            return (
+                f"--required-providers does not match existing campaign provider posture "
+                f"({', '.join(sorted(stored_required))}); an existing campaign's provider posture "
+                "is fixed once set"
+            )
     return ""
 
 
@@ -5281,6 +5547,7 @@ def campaign_command(
     release_tag: str = "",
     package_spec: str = "",
     providers: Sequence[str] = (),
+    required_providers: Sequence[str] | str | None = None,
     qualification_context: str = "",
     starting_version: str = "",
     package_source: str = "",
@@ -5360,9 +5627,11 @@ def campaign_command(
     to whichever of the two the command body happens to test first.
 
     Option scope is enforced before any locks or lookups: ``--interval`` is
-    valid only for the ``watch`` action, and ``--timeout`` is valid only for
+    valid only for the ``watch`` action, ``--timeout`` is valid only for
     ``watch`` and ``upload`` (which use it for watch duration and request timeout
-    respectively). Supplying either option to an action where it would be
+    respectively), and ``--required-providers`` is valid only for campaign
+    creation, resume, and dispatch (where it configures or verifies stored
+    provider posture). Supplying an option to an action where it would be
     silently ignored is rejected with a bounded error before touching campaign
     state.
 
@@ -5375,13 +5644,6 @@ def campaign_command(
     write_dir = campaigns_dir if explicit_campaigns_dir else default_campaigns_dir(repo_path)
     campaigns_dir = write_dir
     err = stderr if stderr is not None else sys.stderr
-
-    if campaign_id and action != "watch":
-        try:
-            validate_campaign_id(campaign_id)
-        except ValueError as exc:
-            print(f"error: {exc}", file=err)
-            return 1
 
     # Command intent is validated as a whole, once, before anything else: a
     # request that states two conflicting intents is refused here rather than
@@ -5402,10 +5664,37 @@ def campaign_command(
         yes=yes,
         interval=interval,
         timeout=timeout,
+        required_providers=required_providers,
     )
     if conflict:
         print(f"error: {conflict}", file=err)
         return 1
+
+    parsed_required_providers: tuple[str, ...] | None = None
+    if isinstance(required_providers, str):
+        req_list = [p.strip() for p in required_providers.split(",") if p.strip()]
+        if not req_list:
+            print(
+                "error: --required-providers cannot be empty; specify a non-empty subset of selected providers",
+                file=err,
+            )
+            return 1
+        parsed_required_providers = tuple(req_list)
+    elif required_providers is not None:
+        parsed_required_providers = tuple(required_providers)
+        if not parsed_required_providers:
+            print(
+                "error: --required-providers cannot be empty; specify a non-empty subset of selected providers",
+                file=err,
+            )
+            return 1
+
+    if campaign_id and action != "watch":
+        try:
+            validate_campaign_id(campaign_id)
+        except ValueError as exc:
+            print(f"error: {exc}", file=err)
+            return 1
 
     # What remains is exactly the read-only route; every other spelling is
     # potentially mutating and takes the campaign directory lock.
@@ -5462,6 +5751,7 @@ def campaign_command(
             release_tag=release_tag,
             package_spec=package_spec,
             providers=providers,
+            required_providers=parsed_required_providers,
             qualification_context=qualification_context,
             starting_version=starting_version,
             package_source=package_source,
@@ -5510,6 +5800,7 @@ def _campaign_command_impl(
     release_tag: str = "",
     package_spec: str = "",
     providers: Sequence[str] = (),
+    required_providers: Sequence[str] | None = None,
     qualification_context: str = "",
     starting_version: str = "",
     package_source: str = "",
@@ -5726,6 +6017,7 @@ def _campaign_command_impl(
             starting_version=starting_version,
             package_source=package_source,
             providers=providers,
+            required_providers=required_providers,
             repo_slug=repo_slug,
         )
         if conflict:
@@ -5802,6 +6094,7 @@ def _campaign_command_impl(
             # same "unspecified vs. explicit default" distinction as context.
             package_source=package_source or DEFAULT_PACKAGE_SOURCE,
             providers=providers,
+            required_providers=required_providers,
             repo_slug=repo_slug,
             campaign_id=campaign_id,
         )
