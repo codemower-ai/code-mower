@@ -7524,10 +7524,6 @@ def main():
                 "--no-cache-dir",
                 "--index-url",
                 "https://pypi.org/simple/",
-                "--extra-index-url",
-                "",
-                "--find-links",
-                "",
                 "code-mower==0.6.0b3",
             ],
         )

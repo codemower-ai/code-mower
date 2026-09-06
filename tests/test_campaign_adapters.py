@@ -575,7 +575,8 @@ class PackageSourceTests(unittest.TestCase):
         self.assertEqual(prompt.count("https://test.pypi.org/simple/"), 1)
         self.assertIn("Install the starting version from production PyPI", prompt)
         self.assertIn("code-mower==1.0.0", prompt)
-        self.assertIn("--extra-index-url ''", prompt)
+        self.assertNotIn("--extra-index-url ''", prompt)
+        self.assertNotIn("--find-links ''", prompt)
         self.assertIn("Do not provide a non-empty `--extra-index-url`", prompt)
 
     def test_check_campaign_identity_rejects_unknown_source(self) -> None:
