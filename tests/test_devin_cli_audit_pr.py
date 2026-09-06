@@ -256,6 +256,93 @@ class TestDevinCliAuditPass(_DevinCliAuditTestCase):
         self.assertNotIn("prompt", payload)
         self.assertNotIn("token", payload)
 
+class TestDevinCliAuditPostureAndLimits(_DevinCliAuditTestCase):
+    def test_permission_mode_argv_uses_auto(self) -> None:
+        argv_log = self.tmp / "devin-argv.log"
+        fake = self.tmp / "fake-devin-argv"
+        script = """#!/bin/sh
+for a in "$@"; do
+  echo "$a"
+done > ARGV_LOG
+echo '{"verdict": "pass", "summary": "OK", "findings": []}'
+"""
+        fake.write_text(script.replace("ARGV_LOG", str(argv_log)), encoding="utf-8")
+        fake.chmod(0o755)
+        with mock.patch(
+            "code_mower.devin_cli_audit_pr.fetch_pull_request",
+            return_value=self._pr_meta(),
+        ), mock.patch(
+            "code_mower.devin_cli_audit_pr.post_pr_comment",
+            return_value={"id": 123},
+        ):
+            config = self._config()
+            config.command = str(fake)
+            devin_cli_audit.audit_pr(config)
+
+        self.assertTrue(argv_log.exists())
+        argv = argv_log.read_text(encoding="utf-8").splitlines()
+        self.assertIn("--permission-mode", argv)
+        permission_index = argv.index("--permission-mode")
+        self.assertEqual(argv[permission_index + 1], "auto")
+        self.assertNotIn("autonomous", argv)
+        self.assertIn("--sandbox", argv)
+        self.assertIn("--print", argv)
+        self.assertIn("--prompt-file", argv)
+        self.assertIn("--respect-workspace-trust", argv)
+
+    def test_nonzero_exit_does_not_leak_raw_output(self) -> None:
+        sentinel = "SECRET_TOKEN_d7f2a9c1"
+        fake = self.tmp / "fake-devin-leak"
+        fake.write_text(
+            """#!/bin/sh
+echo 'SECRET_TOKEN_d7f2a9c1'
+echo 'SECRET_TOKEN_d7f2a9c1' >&2
+exit 1
+""",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        with mock.patch(
+            "code_mower.devin_cli_audit_pr.fetch_pull_request",
+            return_value=self._pr_meta(),
+        ), mock.patch(
+            "code_mower.devin_cli_audit_pr.post_pr_comment",
+            return_value={"id": 123},
+        ):
+            config = self._config()
+            config.command = str(fake)
+            result = devin_cli_audit.audit_pr(config)
+
+        self.assertEqual(result.verdict, "UNKNOWN")
+        self.assertNotIn(sentinel, result.comment_body)
+        self.assertIn("no trustworthy verdict available", result.comment_body)
+        self.assertIsNotNone(result.verdict_artifact_path)
+        payload = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
+        self.assertNotIn(sentinel, payload["comment_body"])
+        self.assertNotIn("stdout", payload)
+        self.assertNotIn("stderr", payload)
+        self.assertNotIn("prompt", payload)
+
+    def test_diff_hard_limit_truncates_to_unknown(self) -> None:
+        self._write_fake(
+            json.dumps({"verdict": "pass", "summary": "OK", "findings": []})
+        )
+        with mock.patch(
+            "code_mower.devin_cli_audit_pr.fetch_pull_request",
+            return_value=self._pr_meta(),
+        ), mock.patch(
+            "code_mower.devin_cli_audit_pr.post_pr_comment",
+            return_value={"id": 123},
+        ):
+            result = devin_cli_audit.audit_pr(
+                self._config(max_diff_bytes=50, max_diff_hard_limit_bytes=50)
+            )
+
+        self.assertEqual(result.verdict, "UNKNOWN")
+        self.assertIn("hard limit", result.comment_body.lower())
+        self.assertNotIn("PASS", result.comment_body)
+
+
 
 if __name__ == "__main__":
     unittest.main()

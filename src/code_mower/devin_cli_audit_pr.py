@@ -30,7 +30,7 @@ import time
 import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 if __package__ in {None, ""}:
     module_dir = Path(__file__).resolve().parent
@@ -42,7 +42,9 @@ if __package__ in {None, ""}:
         bind_actions_run_comment_id,
         build_allowlisted_child_env,
         clip_text,
-        fetch_pull_request,
+        fetch_base_ref_sha,
+    fetch_pr_head_sha_unless_local_matches,
+    fetch_pull_request,
         format_audit_comment_header,
         limit_comment_body,
         local_head_sha,
@@ -54,6 +56,7 @@ if __package__ in {None, ""}:
         run_git,
         validate_repo_path_for_wrapper,
         verify_checkout_at_head,
+    working_tree_status,
         write_audit_verdict_artifact,
     )
 elif __package__ == "tools":  # pragma: no cover - direct helper execution
@@ -64,7 +67,9 @@ elif __package__ == "tools":  # pragma: no cover - direct helper execution
         bind_actions_run_comment_id,
         build_allowlisted_child_env,
         clip_text,
-        fetch_pull_request,
+        fetch_base_ref_sha,
+    fetch_pr_head_sha_unless_local_matches,
+    fetch_pull_request,
         format_audit_comment_header,
         limit_comment_body,
         local_head_sha,
@@ -76,6 +81,7 @@ elif __package__ == "tools":  # pragma: no cover - direct helper execution
         run_git,
         validate_repo_path_for_wrapper,
         verify_checkout_at_head,
+    working_tree_status,
         write_audit_verdict_artifact,
     )
 else:  # pragma: no cover - exercised after package extraction
@@ -86,7 +92,9 @@ else:  # pragma: no cover - exercised after package extraction
         bind_actions_run_comment_id,
         build_allowlisted_child_env,
         clip_text,
-        fetch_pull_request,
+        fetch_base_ref_sha,
+    fetch_pr_head_sha_unless_local_matches,
+    fetch_pull_request,
         format_audit_comment_header,
         limit_comment_body,
         local_head_sha,
@@ -98,6 +106,7 @@ else:  # pragma: no cover - exercised after package extraction
         run_git,
         validate_repo_path_for_wrapper,
         verify_checkout_at_head,
+    working_tree_status,
         write_audit_verdict_artifact,
     )
 
@@ -166,16 +175,145 @@ def _diff_file_matches(file_path: str, allowed_files: set[str]) -> bool:
     return len(suffix_matches) == 1
 
 
-def _changed_files(repo_path: Path, base_ref: str) -> tuple[str, ...]:
+def _resolve_diff_hard_limit(max_diff_bytes: int, max_diff_hard_limit_bytes: int) -> int:
+    if max_diff_bytes <= 0:
+        raise ValueError("max_diff_bytes must be greater than zero")
+    hard_limit = max_diff_hard_limit_bytes
+    if hard_limit <= 0:
+        raise ValueError("max_diff_hard_limit_bytes must be greater than zero")
+    if hard_limit < max_diff_bytes:
+        raise ValueError(
+            "max_diff_hard_limit_bytes must be greater than or equal to max_diff_bytes"
+        )
+    return hard_limit
+
+
+def _run_git_limited(
+    cwd: Path,
+    args: Sequence[str],
+    *,
+    max_bytes: int,
+    timeout: int = 120,
+) -> tuple[str, int, bool]:
+    """Run a git command while bounding captured stdout bytes."""
+
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be greater than zero")
+    process = subprocess.Popen(
+        ["git", *args],
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    chunks: list[bytes] = []
+    observed_bytes = 0
+    truncated = False
     try:
-        text = run_git(
-            repo_path,
-            ["diff", "--name-only", f"{base_ref}...HEAD"],
-            timeout=120,
-        ).stdout
-    except subprocess.CalledProcessError:
-        return ()
-    return tuple(line.strip() for line in text.splitlines() if line.strip())
+        while True:
+            chunk = process.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            previous_bytes = observed_bytes
+            observed_bytes += len(chunk)
+            if observed_bytes <= max_bytes:
+                chunks.append(chunk)
+                continue
+
+            remaining = max(0, max_bytes - previous_bytes)
+            if remaining:
+                chunks.append(chunk[:remaining])
+            truncated = True
+            process.kill()
+            break
+        _, stderr = process.communicate(timeout=10)
+    except Exception:
+        process.kill()
+        process.wait(timeout=10)
+        raise
+
+    if not truncated and process.returncode != 0:
+        raise subprocess.CalledProcessError(
+            process.returncode,
+            ["git", *args],
+            output=b"".join(chunks),
+            stderr=stderr,
+        )
+    text = b"".join(chunks).decode("utf-8", errors="ignore")
+    if truncated:
+        text = (
+            text.rstrip()
+            + "\n\n[diff truncated by devin-cli-audit wrapper; hard limit reached]\n"
+        )
+    return text, observed_bytes, truncated
+
+
+def _resolve_base_ref(repo_path: Path, base_ref: str) -> str:
+    """Resolve the current base SHA, fetching when a remote is configured."""
+
+    try:
+        return fetch_base_ref_sha(repo_path, base_ref)
+    except (subprocess.CalledProcessError, OSError):
+        # If no remote is configured, fall back to a purely local ref so the
+        # wrapper still works in checked-out test fixtures and offline repos.
+        remotes = run_git(repo_path, ["remote"], check=False, timeout=30).stdout.strip()
+        if not remotes:
+            return run_git(
+                repo_path,
+                ["rev-parse", "--verify", f"{base_ref}^{{commit}}"],
+                timeout=30,
+            ).stdout.strip()
+        raise
+
+
+def _resolve_diff(
+    repo_path: Path,
+    pr_number: int,
+    base_ref: str,
+    expected_head_sha: str,
+    max_diff_bytes: int,
+    max_diff_hard_limit_bytes: int,
+) -> tuple[str, tuple[str, ...]]:
+    """Build a bounded diff and changed-files list from exact base/head SHAs."""
+
+    hard_limit = _resolve_diff_hard_limit(max_diff_bytes, max_diff_hard_limit_bytes)
+
+    fetched_head_ref = fetch_pr_head_sha_unless_local_matches(
+        repo_path,
+        pr_number,
+        expected_head_sha=expected_head_sha,
+    )
+    if fetched_head_ref.lower() != expected_head_sha.lower():
+        raise StaleHeadError(
+            f"local checkout head changed before diff: {expected_head_sha} -> {fetched_head_ref}"
+        )
+
+    fetched_base_ref = _resolve_base_ref(repo_path, base_ref)
+    diff_range = f"{fetched_base_ref}...{fetched_head_ref}"
+
+    changed_files_text = run_git(
+        repo_path,
+        ["-c", "core.quotePath=false", "diff", "--name-only", "--find-renames", diff_range],
+        timeout=120,
+    ).stdout
+    changed_files = tuple(
+        line.strip() for line in changed_files_text.splitlines() if line.strip()
+    )
+
+    diff, full_diff_bytes, was_truncated = _run_git_limited(
+        repo_path,
+        ["diff", "--no-ext-diff", "--find-renames", "--unified=80", diff_range],
+        max_bytes=hard_limit,
+        timeout=120,
+    )
+    if was_truncated:
+        raise NoTrustworthyVerdictError(
+            f"PR diff exceeds the configured hard limit ({hard_limit} bytes); "
+            f"measured at least {full_diff_bytes} bytes. "
+            "Increase audit.max_diff_hard_limit_bytes and requeue."
+        )
+
+    return diff, changed_files
 
 
 def _clip_diff(diff: str, max_bytes: int) -> tuple[str, bool, int, int]:
@@ -552,9 +690,8 @@ def _run_devin_cli(
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
-            # The timeout path must not leak the raw prompt or stdout.
             raise NoTrustworthyVerdictError(
-                f"Devin CLI timed out after {timeout}s; last output was truncated"
+                f"Devin CLI timed out after {timeout}s; no trustworthy verdict available"
             ) from exc
         duration = time.monotonic() - started
         return completed.stdout, completed.stderr, completed.returncode, duration
@@ -720,18 +857,14 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
     )
     head_sha_start = verify["local_head_sha"]
 
-    head_after = local_head_sha(repo_path)
-    if head_after.lower() != head_sha_start.lower():
-        raise StaleHeadError(
-            f"local checkout head changed between verification and diff: "
-            f"{head_sha_start} -> {head_after}"
-        )
-
-    diff = run_git(
+    diff, changed_files_tuple = _resolve_diff(
         repo_path,
-        ["diff", "--no-ext-diff", "--find-renames", f"{config.base_ref}...HEAD"],
-        timeout=120,
-    ).stdout
+        config.pr_number,
+        config.base_ref,
+        head_sha_start,
+        config.max_diff_bytes,
+        config.max_diff_hard_limit_bytes,
+    )
 
     prompt, diagnostics = build_prompt(
         repo=config.repo,
@@ -744,7 +877,7 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
         max_diff_bytes=config.max_diff_bytes,
     )
 
-    changed_files = set(_changed_files(repo_path, config.base_ref))
+    changed_files = set(changed_files_tuple)
 
     command = _resolve_command() if config.command == DEFAULT_DEVIN_COMMAND else config.command
     model = config.model or _resolve_model()
@@ -761,16 +894,21 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
         # A non-zero returncode means the Devin CLI did not produce a bounded
         # review. Treat this as UNKNOWN/needs-audit rather than PASS.
         raise NoTrustworthyVerdictError(
-            f"Devin CLI exited with code {returncode}; stderr: {one_line(stderr, 500)}"
+            f"Devin CLI exited with code {returncode}; no trustworthy verdict available"
         )
 
     parsed = _parse_devin_output(stdout, changed_files)
 
-    # Re-verify exact head after the model run.
+    # Re-verify exact head and cleanliness after the model run before any
+    # PASS can be posted.
     head_sha_end = local_head_sha(repo_path)
     if head_sha_end.lower() != head_sha_start.lower():
         raise StaleHeadError(
             f"PR head moved during Devin CLI audit: {head_sha_start} -> {head_sha_end}"
+        )
+    if working_tree_status(repo_path).strip():
+        raise NoTrustworthyVerdictError(
+            "local checkout has uncommitted changes after Devin CLI review"
         )
 
     # Also re-fetch from GitHub to detect a superseding push.
@@ -878,7 +1016,7 @@ def audit_pr(config: AuditConfig) -> AuditResult:
                 actions_run_id=config.actions_run_id,
                 calibration_badge=config.calibration_badge,
             )
-            _write_artifact(
+            artifact_path = _write_artifact(
                 lane_id="devin_cli",
                 repo=config.repo,
                 pr_number=config.pr_number,
@@ -898,6 +1036,7 @@ def audit_pr(config: AuditConfig) -> AuditResult:
             trailer=NEEDS_TRAILER,
             comment_body=comment_body,
             duration_seconds=0.0,
+            verdict_artifact_path=artifact_path,
         )
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -972,76 +1111,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         calibration_badge=args.calibration_badge,
     )
 
-    head_sha = ""
     try:
         result = audit_pr(config)
         if args.dry_run:
             print(result.comment_body)
         return audit_exit_code(result.verdict)
-    except AuthorExcludedError as exc:
-        reason = str(exc)
-        try:
-            # We still have enough context to post a requeue note. The PR
-            # metadata fetch happens before the exception is raised.
-            pass
-        except Exception:
-            pass
-        if head_sha and not args.dry_run:
-            body = _post_requeue_comment(
-                args.repo,
-                args.pr,
-                head_sha,
-                reason,
-                token=token,
-                actions_run_id=args.actions_run_id or None,
-            )
-            _write_artifact(
-                lane_id="devin_cli",
-                repo=args.repo,
-                pr_number=args.pr,
-                head_sha_start=head_sha,
-                head_sha_end=head_sha,
-                verdict="unknown",
-                trailer=NEEDS_TRAILER,
-                comment_body=body,
-                duration_seconds=0.0,
-            )
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    except (StaleHeadError, NoTrustworthyVerdictError, MalformedOutputError) as exc:
-        reason = str(exc)
-        if not head_sha and not args.dry_run:
-            try:
-                pr_meta = fetch_pull_request(args.repo, args.pr, token=token)
-                head_sha = str(pr_meta.get("head", {}).get("sha") or "")
-            except Exception:
-                head_sha = ""
-        if head_sha and not args.dry_run:
-            body = _post_requeue_comment(
-                args.repo,
-                args.pr,
-                head_sha,
-                reason,
-                token=token,
-                actions_run_id=args.actions_run_id or None,
-            )
-            _write_artifact(
-                lane_id="devin_cli",
-                repo=args.repo,
-                pr_number=args.pr,
-                head_sha_start=head_sha,
-                head_sha_end=head_sha,
-                verdict="unknown",
-                trailer=NEEDS_TRAILER,
-                comment_body=body,
-                duration_seconds=0.0,
-            )
-        if not head_sha and args.dry_run:
-            print(f"dry-run: would post UNKNOWN for {args.repo}#{args.pr}: {reason}")
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
     except (
         OSError,
+        RuntimeError,
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
         urllib.error.URLError,

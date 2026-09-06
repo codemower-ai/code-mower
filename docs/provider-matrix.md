@@ -73,7 +73,7 @@ peer audit lanes must gate the PR.
 | `grok_bot` | Cursor Cloud Agents through an `@cursor` dispatch comment | `tier:R` plus `builder:cursor`; `dispatch-lanes.yml` posts the configured `@cursor` mention | Hosted builder identity for the reference Cursor path. `builder:grok-bot` remains accepted as a legacy label during migration. Codex and Claude audits both gate before merge. |
 | `cursor_cloud_agent` | Cursor Cloud Agents | Usually represented by `grok_bot` in Code Mower build-loop config; standalone provenance can still use `builder record` | Hosted async executor. Treat source access, cost, and branch writes as explicit opt-in; never count it as reviewer approval. |
 | `devin` | A Devin session dispatched externally (hosted) | External hosted dispatch or manual handoff, then `builder record` once a PR exists | First-class hosted builder identity; `devin_cloud` remains an accepted alias. Codex and Claude audits gate before merge. |
-| `devin_cli` | Devin CLI on the self-hosted Mac lane runner (dispatch/lane id `devin`), or the local runner via the `code-mower` CLI wrapper | `tier:R` plus `builder:devin`; `lane-mac-runner.yml` opens `devin/...` PRs, then `builder record` records `--provider devin_cli --executor devin_cli` | Local builder identity, separate from hosted Devin: dedicated disposable checkout plus the Devin CLI's own OS sandbox (`--sandbox --permission-mode autonomous`), which is the actual security boundary — the checkout alone is not; the frozen prompt requires shell-only file edits since Devin's write/edit tools are ForceAsk in Autonomous mode; never `--export`/`--continue`/`--resume`, no session continuation or export. Shares the `builder:devin` label/branch-prefix dispatch identity with hosted Devin but is a distinct provenance identity and not merge authority until calibrated. |
+| `devin_cli` | Devin CLI on the self-hosted Mac lane runner (dispatch/lane id `devin`), or the local runner via the `code-mower` CLI wrapper | `tier:R` plus `builder:devin`; `lane-mac-runner.yml` opens `devin/...` PRs, then `builder record` records `--provider devin_cli --executor devin_cli` | Local builder identity, separate from hosted Devin: dedicated disposable checkout plus the Devin CLI's own OS sandbox (`--sandbox --permission-mode auto` for local audits; source-edit tools are not approved), which is the actual security boundary — the checkout alone is not; the builder lane's separate write-capable posture uses `--permission-mode autonomous` and frozen shell-only-edit guidance; never `--export`/`--continue`/`--resume`, no session continuation or export. Shares the `builder:devin` label/branch-prefix dispatch identity with hosted Devin but is a distinct provenance identity and not merge authority until calibrated. |
 
 Example:
 
@@ -252,10 +252,11 @@ and is disabled by default.
 - Calibration: keep `devin_cli` informational until it reliably catches known
   blockers, stays quiet on known-clean controls, and produces stable parseable
   output. Calibrate before any promotion to merge authority.
-- Privacy: audits run with `devin --sandbox --permission-mode autonomous` and
-  never pass `--export`, `--continue`, or `--resume`. The wrapper posts an
-  authoritative `DEVIN_CLI_AUDIT_STATE` trailer and a metadata-only artifact
-  with no raw transcripts, prompts, or secrets. See `docs/privacy-threat-model.md`.
+- Privacy: audits run with `devin --sandbox --permission-mode auto`
+  (source-edit tools are not approved) and never pass `--export`, `--continue`,
+  or `--resume`. The wrapper posts an authoritative `DEVIN_CLI_AUDIT_STATE`
+  trailer and a metadata-only artifact with no raw transcripts, prompts, or
+  secrets. See `docs/privacy-threat-model.md`.
 - Upgrade/generated workflow: `code-mower init` copies
   `tools/run_devin_cli_audit_pr.sh` to the product repo and includes
   `needs-devin-cli-audit` in the generated
