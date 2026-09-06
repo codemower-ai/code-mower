@@ -268,6 +268,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         token_env=("GITAR_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"),
         result_sources=("issue_comment",),
         informational=True,
+        enabled_by_default=False,
         provider_config={
             "bot_authors": ("gitar-ai[bot]", "gitar-bot", "gitar-bot[bot]"),
         },

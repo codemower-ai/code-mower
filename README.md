@@ -10,8 +10,7 @@ gate.
 
 The short version:
 
-- create safe, manual-first reviewer lanes for Codex, Claude, Gitar, and other
-  AI review tools;
+- create safe, manual-first peer-review lanes for Codex and Claude;
 - run setup diagnostics before a lane can surprise you with spend, source
   exposure, or GitHub Actions churn;
 - turn issue text, external docs, and project doctrine into local work orders
@@ -62,7 +61,7 @@ Example, shortened:
 ```text
 $ code-mower doctor --adoption --repo OWNER/REPO
 PASS  config.validate             config validates
-PASS  profile.select              selected profile: codex, claude_audit, gitar
+PASS  profile.select              selected profile: codex, claude_audit
 PASS  runtime.python              Python 3.12 satisfies Code Mower requirements
 PASS  runtime.github_auth         GitHub CLI auth probe succeeded
 PASS  runtime.local_cli codex     codex found
@@ -174,6 +173,12 @@ Choose one path. Each path has one guide and gets to one visible outcome.
 Cold adopters should start with the reviewer gate, then add builders, then
 measure builder experiments; provider experiments come after that base loop is
 observable.
+
+The initial reviewer and builder paths default to Claude + Codex. Other
+participants require an explicit setup selection. `code-mower next-steps --repo
+OWNER/REPO --pr NUMBER` shows setup, peer-audit requests, status, and local
+evidence. Add `--advanced` for calibration, migration, package rehearsal, and
+optional cloud guidance after the initial loop works.
 
 Install first from the [Install And Bootstrap](docs/install.md) matrix: pipx for
 laptops, uv tool installs for hosted agents or CI boxes, and an editable venv
@@ -328,10 +333,11 @@ optional work order, single-writer branch, reviewer lanes, and fix rounds. Code
 Mower's templates now support that loop end to end; humans still own
 credentials, branch protection, calibration, and owner decisions.
 
-The reference adoption shape is Claude Code as orchestrator; Claude Code,
-Codex, and Cursor as builder lanes; Claude Code and Codex as reviewer lanes;
-and Gitar or Antigravity as informational reviewer signal until local
-calibration says otherwise.
+The initial adoption shape uses Claude Code or Codex as orchestrator, builder,
+and peer reviewer. The owning builder remains the only writer, and the other
+provider supplies independent review. Other builders and reviewers are explicit
+later additions; they follow the same lane policy with provider-specific
+execution and authentication where needed.
 
 ## Why Not Just Run Codex Or Claude Yourself?
 
@@ -413,10 +419,10 @@ The first recommended lanes are local/manual:
 | --- | --- | --- |
 | Codex audit | structured local peer audit | merge-gating eligible after setup |
 | Claude audit | structured local peer audit | merge-gating eligible after setup |
-| Gitar | advisory third signal | informational until calibrated |
 
-Everything else starts manual or informational until your own calibration data
-proves it is useful: Antigravity/Gemini, Muse, Hermes, CodeRabbit CLI, Cursor
+Everything else is opt-in after the Claude + Codex loop works and stays manual
+or informational until your own calibration data proves it is useful: Gitar,
+Antigravity/Gemini, Muse, Hermes, CodeRabbit CLI, Cursor
 BugBot, Qodo, Greptile, Devin, local LLMs, and future ACP bridges.
 
 Gemini CLI and Antigravity are distinct lane ids even though both are Google
@@ -490,8 +496,9 @@ first so local work exercises the same package entrypoint users install.
   conservative and team-controlled while automated retention jobs are roadmap
   work.
 - Advanced/provider/operator commands remain available behind
-  `code-mower --help-all`. The default help path stays focused on `init`,
-  `doctor`, calibration, value reports, and optional cloud export/upload.
+  `code-mower --help-all`. The default help path stays focused on setup,
+  `next-steps`, lane status, and local evidence; calibration and cloud commands
+  remain available through `--help-all`.
 
 ## Docs Map
 

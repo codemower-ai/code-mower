@@ -40,8 +40,8 @@ For an existing install, first run `command -v code-mower` and
 [Cold Install Vs Upgrade](install.md#cold-install-vs-upgrade). If you switch
 from pipx to uv, make sure the command on `PATH` is the one you meant to use
 before running `init`.
-When asking Claude Code, Codex, Cursor/Grok Bot, Antigravity, Devin, Muse, or
-another agent to install or upgrade, use the common prompt in
+Start with Claude Code and Codex by default. When asking either agent to install or
+upgrade, use the common prompt in
 [Orchestrator Prompt Pack](orchestrator-prompt-pack.md) so every host reports
 the same version, posture, doctor, lanes, and Board evidence.
 For a repository that already has generated Code Mower support, follow
@@ -224,37 +224,20 @@ You now have a merged PR with Code Mower audit evidence. Keep the audit lanes
 manual until several real known-clean and known-blocked PRs prove that the
 reviewers are useful on your repository.
 
-## 7. Optional: Rehearse The Package Install Path
-
-If you want to prove the public package can run the first-user path from a clean
-virtual environment, run:
+## 7. Inspect The Result
 
 ```bash
-code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.9 \
-  --allow-package-index \
-  --python "$(command -v python3.12)" \
-  --json
+code-mower lanes status --repo "$REPO"
+code-mower productivity report --repo "$REPO"
+code-mower next-steps --repo "$REPO" --pr "$PR_NUMBER"
 ```
 
-Use `--repo-path /path/to/repo` to validate the installed Code Mower CLI
-against a real repository; if `tools/code_mower` exists, the rehearsal also
-runs wrapper parity for mirror-removal, otherwise it detects and dry-runs the
-repo's native checks.
+The default next steps stay focused on the selected peer reviewers. For later
+calibration, existing-repository migration, package rehearsal, or cloud setup,
+use `code-mower next-steps --advanced`. These are not prerequisites for the first
+useful audit. Missing local history or cost data means unknown.
 
-```bash
-code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.9 \
-  --allow-package-index \
-  --repo-path /path/to/repo \
-  --python "$(command -v python3.12)" \
-  --json
-```
-
-See [First-User Install Rehearsal](first-user-install-rehearsal.md) for the
-release-gate checklist and expected artifacts.
-
-## 8. Next: Build Loop
+## 8. Next: Claude + Codex Build Loop
 
 When the reviewer gate is useful, move to the builder-plus-orchestrator path.
 Next: build loop - [Build Loop In 30 Minutes](build-loop-in-30-minutes.md).

@@ -4,17 +4,33 @@ Code Mower has more machinery than a first-time user should need to think
 about. This page separates the launch-safe path from advanced/operator
 commands.
 
-## Launch-Safe Commands
+## Initial Commands
 
-These are the commands early adopters should be able to run in the first
-session. Choose the install path first from
-[Install And Bootstrap](install.md).
+Start with Claude + Codex by default. Choose the install path from
+[Install And Bootstrap](install.md), then follow
+[Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the first peer audits.
+The default `code-mower next-steps` and `code-mower --help` focus on this path.
 
 | Command | Purpose | Writes? | Network? |
 | --- | --- | --- | --- |
 | `code-mower --version` | Confirm install. | no | no |
 | `code-mower init --easy` | Preview generated setup. | no | no |
-| `code-mower init --easy --apply --output-dir .code-mower.generated` | Write reviewable generated setup files. | yes, local only | no |
+| `code-mower init --easy --apply --output-dir .code-mower.generated` | Write reviewable setup for Codex and Claude. | local files; missing GitHub labels when allowed | GitHub labels unless `--skip-github-labels` |
+| `code-mower lanes status --repo OWNER/REPO` | Show active PR lanes, gate/check state, local board/process hints, stale audit requeue guidance, and the next action. | no | GitHub optional |
+| `code-mower productivity report --repo OWNER/REPO` | Summarize local Board history, reviewer spend, provider scorecards, promotion caveats, quality catches, fix rounds, owner actions, and optional cloud aggregate productivity events. | no | no |
+| `code-mower board serve --repo OWNER/REPO` | Serve redacted lane status plus owner queue and local verdict/spend timelines in a local read-only browser board. | no | GitHub optional |
+| `code-mower doctor --adoption --repo OWNER/REPO --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
+| `code-mower next-steps --profile recommended --repo OWNER/REPO` | Print the next recommended setup actions. | no | no |
+
+## Later Workflows
+
+These are optional after the initial peer-review loop works. Use
+`code-mower next-steps --advanced` for calibration, migration, package rehearsal,
+and cloud guidance, or `code-mower --help-all` for the full command inventory.
+Select any additional builder or reviewer explicitly.
+
+| Command | Purpose | Writes? | Network? |
+| --- | --- | --- | --- |
 | `code-mower init code-mower.yml --add-repo OWNER/REPO --apply` | Render the same lane/label/workflow setup for a sibling repo target. | yes, local only | no |
 | `code-mower project-context init --project-name "My Product"` | Create editable local project doctrine docs. | yes, local only | no |
 | `code-mower context add --external path/to/doc.md` | Record external planning context as a metadata-only local manifest. | yes, local only | no |
@@ -23,11 +39,8 @@ session. Choose the install path first from
 | `code-mower work-order draft ...` | Create an implementation contract from a plan or prompt, plus a metadata-only `*.cloud-event.json` sidecar. | yes, local only | no |
 | `code-mower work-order attach-delivery ...` | Attach PR, reviewer-check, and merge identifiers to a work-order sidecar without source, diffs, transcripts, or issue bodies. | yes, local only | no |
 | `code-mower builder record --provider grok_bot --executor cursor_cloud_agent ...` | Record source-free builder provenance after an agent opens a branch or PR. | yes, local only | no |
-| `code-mower lanes status --repo OWNER/REPO` | Show active PR lanes, gate/check state, local board/process hints, stale audit requeue guidance, and the next action. | no | GitHub optional |
 | `code-mower lanes status --repo OWNER/REPO --show-local-paths` | Include local cwd paths in the status snapshot for local debugging. | no | GitHub optional |
-| `code-mower productivity report --repo OWNER/REPO` | Summarize local Board history, reviewer spend, provider scorecards, promotion caveats, quality catches, fix rounds, owner actions, and optional cloud aggregate productivity events. | no | no |
 | `code-mower productivity report --repo OWNER/REPO --cloud-event PATH --json` | Include metadata-only `productivity_summary` aggregate event files and print the stable report JSON. | no | no |
-| `code-mower board serve --repo OWNER/REPO` | Serve redacted lane status plus owner queue and local verdict/spend timelines in a local read-only browser board. | no | GitHub optional |
 | `code-mower board serve --repo OWNER/REPO --record-events` | Serve the board and append throttled metadata-only local history snapshots while it is open. | yes, local only | GitHub optional |
 | `code-mower board serve --repo OWNER/REPO --agent-adapters-path PATH` | Read opt-in local agent cards from a custom metadata-only adapter directory. | no | no |
 | `code-mower board list` | List local Board listeners with repo/version, restart hints, ports, and redacted cwd paths by default. | no | no |
@@ -36,11 +49,9 @@ session. Choose the install path first from
 | `code-mower board events` | Print recent local board-history events without calling GitHub. | no | no |
 | `code-mower board doctor --repo OWNER/REPO` | Diagnose Board inputs, local history, gate alerts, owner queue, and optional agent cards with redacted local paths by default. | no | GitHub optional |
 | `code-mower board reset --repo OWNER/REPO --yes` | Delete only the local Board history file after explicit confirmation. | yes, local only | no |
-| `code-mower doctor --preflight --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
 | `code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json` | Check hosted-builder or orchestrator setup without requiring local Codex/Claude CLIs on this machine. | no | optional GitHub/provider probes |
 | `code-mower doctor --supervised-pilot --repo OWNER/REPO --json` | Summarize v1.0 manual-pilot readiness with blockers, owner actions, warnings, promotion to-dos, cloud token, and Board visibility. | no | optional GitHub/provider probes |
 | `code-mower doctor --promoted-pilot --repo OWNER/REPO --json` | Check the stricter posture needed before green audits may drive auto-merge. | no | optional GitHub/provider probes |
-| `code-mower next-steps --profile recommended --repo OWNER/REPO` | Print the next recommended setup actions. | no | no |
 | `code-mower migration setup-drift --repo-path .` | Classify existing generated setup files before an upgrade PR without printing source or diffs. | no | no |
 | `code-mower migration package-install-rehearsal ...` | Prove install, toy repo, starter report, and cloud dry-run path. | yes, scratch workspace | no uploads |
 | `code-mower calibration auto-discover --repo OWNER/REPO --last-n 20 --output .code-mower/draft-calibration-corpus.json` | Bootstrap a draft corpus from recent merged PRs and review signals. | yes, local output file | GitHub |

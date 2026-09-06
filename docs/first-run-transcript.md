@@ -53,7 +53,7 @@ Shortened example:
 
 ```text
 PASS  config.validate             config validates
-PASS  profile.select              selected profile: codex, claude_audit, gitar
+PASS  profile.select              selected profile: codex, claude_audit
 PASS  runtime.python              Python 3.12 satisfies Code Mower requirements
 PASS  runtime.github_auth         GitHub CLI auth probe succeeded
 PASS  runtime.local_cli codex     codex found

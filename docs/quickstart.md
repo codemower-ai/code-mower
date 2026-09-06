@@ -59,9 +59,9 @@ exec "$SHELL" -l
 ```
 
 For the reference multi-agent adoption loop, use Claude Code as the
-orchestrator convention, Claude Code/Codex/Cursor as builders, Claude
-Code/Codex as reviewer lanes, and Gitar plus Antigravity as informational
-reviewer signal until local calibration supports promotion. On shared machines,
+orchestrator convention, and Claude Code/Codex as builders and peer reviewers.
+Other providers are opt-in selections with their existing calibration and promotion
+requirements. On shared machines,
 read [Multi-Agent Coexistence](install.md#multi-agent-coexistence) before
 running multiple builders against the same repository.
 

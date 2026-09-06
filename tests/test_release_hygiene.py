@@ -423,24 +423,18 @@ class ReleaseHygieneTests(unittest.TestCase):
         help_text = out.getvalue()
         self.assertIn("First-user commands:", help_text)
         self.assertIn("code-mower --help-all", help_text)
-        self.assertIn(
-            (
-                "code-mower migration package-install-rehearsal --package-spec "
-                "code-mower==1.0.9 --allow-package-index --json"
-            ),
-            help_text,
-        )
+        self.assertNotIn("package-install-rehearsal", help_text)
         self.assertIn("  init", help_text)
         self.assertIn("  doctor", help_text)
         self.assertIn("  checks", help_text)
         self.assertIn("  board", help_text)
-        self.assertIn("  calibration", help_text)
-        self.assertIn("  cloud", help_text)
-        self.assertIn("  controller", help_text)
+        self.assertNotIn("  calibration", help_text)
+        self.assertNotIn("  cloud", help_text)
+        self.assertNotIn("  controller", help_text)
         self.assertIn("  lanes", help_text)
-        self.assertIn("  project-context", help_text)
+        self.assertNotIn("  project-context", help_text)
         self.assertIn("code-mower doctor --adoption --repo OWNER/REPO", help_text)
-        self.assertIn("code-mower doctor --supervised-pilot --repo OWNER/REPO", help_text)
+        self.assertIn("code-mower next-steps --repo OWNER/REPO --pr NUMBER", help_text)
         self.assertIn("code-mower lanes status --repo OWNER/REPO", help_text)
         self.assertIn("code-mower board serve --repo OWNER/REPO", help_text)
         self.assertNotIn("trailer-comment-labeler", help_text)
@@ -3483,8 +3477,11 @@ jobs:
 
     def test_init_apply_generates_real_reviewer_workflows(self) -> None:
         config_path = ROOT / "src/code_mower/templates/code-mower.example.yml"
+        config = code_mower_config.load_config(config_path)
+        # This renderer test explicitly opts into the advisory SaaS integration.
+        config["profiles"]["recommended"]["lanes"].append("gitar")
         plan = code_mower_init.render_init_plan(
-            code_mower_config.load_config(config_path),
+            config,
             package_mode=True,
             package_command="code-mower",
         )
@@ -8198,14 +8195,14 @@ def main():
             with self.subTest(link=link):
                 self.assertIn(link, docs_map)
 
-        self.assertIn("Roles: Claude Code as orchestrator", build_loop_30)
+        self.assertIn("Roles: Claude Code or Codex as orchestrator", build_loop_30)
         self.assertIn("builder:codex: codex", build_loop_30)
         self.assertIn("builder:claude: claude", build_loop_30)
-        self.assertIn("builder:cursor: cursor", build_loop_30)
-        self.assertIn("builder:grok-bot: cursor", build_loop_30)
+        self.assertNotIn("builder:cursor: cursor", build_loop_30)
+        self.assertNotIn("builder:grok-bot: cursor", build_loop_30)
         self.assertIn("dispatched:codex", build_loop_30)
         self.assertIn("dispatched:claude", build_loop_30)
-        self.assertIn("dispatched:cursor", build_loop_30)
+        self.assertNotIn("dispatched:cursor", build_loop_30)
 
         repo_path_truth = (
             "Use `--repo-path /path/to/repo` to validate the installed Code Mower "
@@ -8213,7 +8210,8 @@ def main():
             "rehearsal also runs wrapper parity for mirror-removal, otherwise it "
             "detects and dry-runs the repo's native checks."
         )
-        self.assertIn(repo_path_truth, " ".join(try_in_10.split()))
+        self.assertNotIn("migration package-install-rehearsal", try_in_10)
+        self.assertIn("code-mower next-steps --advanced", try_in_10)
         self.assertIn(repo_path_truth, " ".join(quickstart.split()))
         self.assertIn("code-mower board serve --repo OWNER/REPO", readme)
         self.assertIn("code-mower board serve --repo OWNER/REPO", quickstart)
@@ -8476,9 +8474,8 @@ def main():
             self.assertIn("orchestrator-prompt-pack.md", text)
         prompt_pack_flat = " ".join(prompt_pack.split())
         self.assertIn("Claude Code Adoption Orchestrator", prompt_pack)
-        self.assertIn("Claude Code, Codex, and Cursor or Grok Bot", prompt_pack_flat)
-        self.assertIn("Gitar and Antigravity as informational", prompt_pack_flat)
-        self.assertIn("Devin is an explicitly opt-in hosted builder", prompt_pack_flat)
+        self.assertIn("Start with Claude Code and Codex by default", prompt_pack_flat)
+        self.assertIn("Add no unselected providers", prompt_pack_flat)
         self.assertIn("docs/install.md", prompt_pack)
         self.assertIn("docs/upgrade-existing-repo.md", prompt_pack)
         self.assertIn("--orchestrator-only", prompt_pack)
@@ -8520,8 +8517,8 @@ def main():
             readme,
         )
         self.assertIn("Gemini CLI and Antigravity are distinct lane ids", readme)
-        self.assertIn("Claude Code/Codex/Cursor as builders", quickstart)
-        self.assertIn("Gitar plus Antigravity as informational", quickstart)
+        self.assertIn("Claude Code/Codex as builders and peer reviewers", quickstart)
+        self.assertIn("Other providers are opt-in selections", quickstart)
         self.assertIn("CODE_MOWER_GATE_AUTOMERGE_TOKEN", quickstart)
         self.assertIn("Manual Audit Wrapper Fails Before Reviewing", troubleshooting)
         self.assertIn("OWNER/REPO:/absolute/path/to/pr-head-checkout", troubleshooting)
@@ -8675,7 +8672,7 @@ def main():
         self.assertIn('"--code-mower-bin"', rehearsal_text)
         self.assertIn("str(_venv_code_mower(venv_dir))", rehearsal_text)
 
-    def test_next_steps_prefers_antigravity_for_new_google_cli_calibration(self) -> None:
+    def test_advanced_next_steps_calibrates_only_selected_executable_lanes(self) -> None:
         templates = next_steps.code_mower_package.load_provider_templates(
             ROOT / "src/code_mower/templates/providers.yml"
         )
@@ -8684,6 +8681,7 @@ def main():
             repo="owner/repo",
             pr="123",
             profile="third_peer",
+            advanced=True,
         )
         calibration = next(
             item for item in plan["steps"] if item["id"] == "calibration-run"
@@ -8692,9 +8690,11 @@ def main():
             item for item in plan["steps"] if item["id"] == "first-audit"
         )
         self.assertEqual(first_audit["label"], "needs-antigravity-cli-audit")
-        self.assertIn("--lanes antigravity-cli", calibration["command"])
-        self.assertNotIn("--lanes gemini-cli", calibration["command"])
-        self.assertIn("legacy/API-key compatibility", calibration["why"])
+        self.assertEqual(calibration["lanes"], [
+            "antigravity-cli", "gemini-cli", "grok-build", "hermes-cli", "muse-cli",
+        ])
+        self.assertIn("--lanes " + ",".join(calibration["lanes"]), calibration["command"])
+        self.assertIn("selected profile", calibration["why"])
         auto_discover = next(
             item for item in plan["steps"] if item["id"] == "calibration-auto-discover"
         )
@@ -8712,11 +8712,12 @@ def main():
             profile="recommended",
             repo="codemower-ai/code-mower",
             pr="61",
+            advanced=True,
         )
         ids = [step["id"] for step in plan["steps"]]
 
         self.assertIn("calibration-auto-discover", ids)
-        self.assertLess(ids.index("calibration-run"), ids.index("calibration-auto-discover"))
+        self.assertNotIn("calibration-run", ids)
         self.assertLess(ids.index("calibration-auto-discover"), ids.index("value-report"))
         self.assertIn("cloud-export", ids)
         self.assertIn("cloud-setup", ids)

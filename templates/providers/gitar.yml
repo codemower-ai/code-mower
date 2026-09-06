@@ -7,7 +7,7 @@ gitar:
   spend_policy: "included"
   merge_authority: false
   informational: true
-  enabled_by_default: true
+  enabled_by_default: false
   events:
     - "issue_comment"
   token_env:

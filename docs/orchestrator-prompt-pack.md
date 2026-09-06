@@ -87,11 +87,10 @@ Paste this into Claude Code from the repository checkout you want to adopt.
 ```text
 You are my orchestrator for adopting Code Mower on OWNER/REPO.
 
-Use the reference shape: Claude Code as orchestrator; Claude Code, Codex, and
-Cursor or Grok Bot as builder lanes; Claude Code and Codex as reviewer lanes;
-Gitar and Antigravity as informational reviewer signals until local calibration
-supports promotion. Devin is an explicitly opt-in hosted builder or reviewer
-signal, never merge authority by default.
+Start with Claude Code and Codex by default. Either can coordinate work or own a
+builder branch, and the other supplies independent peer review. Keep one writer
+per branch. Add other builders or reviewers only when the owner explicitly
+selects them. Add no unselected providers.
 
 First pick the latest Code Mower release tag and read these docs from that tag:
 docs/install.md, docs/try-in-10-minutes.md,
@@ -122,8 +121,9 @@ normal CI are clean.
 
 After the reviewer gate works, ask whether a self-hosted Mac runner is
 available. If yes, follow docs/self-hosted-mac-runner.md and then add
-Claude/Codex/Cursor builders. If no, start with the hosted Cursor/Grok Bot
-builder path only and explain what the Mac lanes would add later.
+Claude/Codex builders. If no, keep using manual Claude/Codex builder sessions
+and peer audits, and explain what the managed runner would add later. Do not
+introduce a different provider to work around missing runner setup.
 
 Throughout the pilot, report concise progress after each numbered step, record
 metadata-only dogfood uploads only when configured, and preserve the privacy
