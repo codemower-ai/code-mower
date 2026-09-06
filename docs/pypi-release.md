@@ -6,7 +6,7 @@ TestPyPI or production PyPI through trusted publishing.
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.8
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.9
 ```
 
 ## Current Status
@@ -88,7 +88,7 @@ should be the `/releases/latest` result, and exact-version installs should
 resolve from PyPI.
 
 ```bash
-gh release view v1.0.8 \
+gh release view v1.0.9 \
   --repo codemower-ai/code-mower \
   --json tagName,isPrerelease
 gh api repos/codemower-ai/code-mower/releases/latest \
@@ -139,7 +139,7 @@ For pipx:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.0.8
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.0.9
 code-mower --version
 ```
 
@@ -147,7 +147,7 @@ For uv:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.0.8
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.0.9
 code-mower --version
 ```
 
@@ -176,7 +176,7 @@ For production PyPI verification:
 ```bash
 python3.12 -m venv /tmp/code-mower-pypi-smoke
 /tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
-/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==1.0.8
+/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==1.0.9
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
@@ -184,7 +184,7 @@ Then run the release-gate first-user rehearsal against the same package:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.0.8 \
+  --package-spec code-mower==1.0.9 \
   --allow-package-index \
   --upgrade-pip \
   --python "$(command -v python3.12)" \
@@ -206,8 +206,8 @@ on production PyPI -- see
 
 ```bash
 code-mower release qualify \
-  --release-tag v1.0.8 \
-  --package-spec code-mower==1.0.8 \
+  --release-tag v1.0.9 \
+  --package-spec code-mower==1.0.9 \
   --output result.json \
   --package-source testpypi \
   --execute
@@ -250,7 +250,7 @@ an agent, and the release rehearsal all install the same artifact:
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.8
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.9
 ```
 
 An unpinned `pipx install code-mower` may be mentioned as a convenience only

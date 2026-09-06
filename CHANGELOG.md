@@ -7,6 +7,28 @@ later entries are regular releases.
 
 ## Unreleased
 
+No changes yet.
+
+## v1.0.9
+
+This patch makes the release-qualification loop resilient and explicit about
+which provider evidence decides campaign completion. It preserves supervised
+pilot gate semantics, Python 3.12+, and the metadata-only privacy boundary.
+
+### Added
+
+- Package-install qualification records a closed failure phase, reason, and
+  bounded remediation without retaining raw command output (#727).
+- Release campaigns accept an explicit required-provider subset and carry the
+  resulting required or informational posture through status, watch, Board,
+  hosted dispatch markers, and opt-in adoption events (#730).
+
+### Changed
+
+- Informational provider failures remain visible but no longer block a campaign
+  after every required provider has produced passing evidence. Campaigns that
+  omit the new option retain the prior all-required behavior (#730).
+
 ### Fixed
 
 - Prevent Board status cache from remaining stuck in `refresh_in_progress` after
