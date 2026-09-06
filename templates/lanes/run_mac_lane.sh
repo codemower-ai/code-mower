@@ -868,7 +868,7 @@ case "$LANE" in
     provider_stdin="$prompt_file"
     run_provider codex exec --cd "$work" --skip-git-repo-check \
       --sandbox workspace-write -c 'sandbox_workspace_write.network_access=true' \
-      "${codex_extra[@]}" \
+      "${codex_extra[@]+"${codex_extra[@]}"}" \
       --output-last-message "${log%.log}.last.md" \
       -
     rc=$?
@@ -877,7 +877,7 @@ case "$LANE" in
     command -v claude >/dev/null 2>&1 || { echo "claude CLI not on PATH" >&2; exit 1; }
     provider_stdin="$prompt_file"
     run_provider claude -p --permission-mode acceptEdits \
-      --allowedTools "${claude_allow[@]}" "${claude_extra[@]}" \
+      --allowedTools "${claude_allow[@]}" "${claude_extra[@]+"${claude_extra[@]}"}" \
       --output-format text --max-turns 400
     rc=$?
     ;;
@@ -885,7 +885,7 @@ case "$LANE" in
     devin_command="${CODE_MOWER_DEVIN_CLI_COMMAND:-devin}"
     command -v "$devin_command" >/dev/null 2>&1 || { echo "devin CLI not on PATH" >&2; exit 1; }
     if [ "${#devin_extra[@]}" -gt 0 ]; then
-      for devin_extra_flag in "${devin_extra[@]}"; do
+      for devin_extra_flag in "${devin_extra[@]+"${devin_extra[@]}"}"; do
         case "$devin_extra_flag" in
           --export|--export=*|-c|--continue|--continue=*|-r|--resume|--resume=*| \
           --permission-mode|--permission-mode=*|--sandbox|--sandbox=*| \
@@ -902,7 +902,7 @@ case "$LANE" in
     devin_args=(--print --prompt-file "$prompt_file" --respect-workspace-trust false --sandbox --permission-mode autonomous)
     [ -n "$devin_model" ] && devin_args+=(--model "$devin_model")
     if [ "${#devin_extra[@]}" -gt 0 ]; then
-      devin_args+=("${devin_extra[@]}")
+      devin_args+=("${devin_extra[@]+"${devin_extra[@]}"}")
     fi
     # Devin's noninteractive --print mode completes under --sandbox
     # --permission-mode autonomous only because the frozen prompt requires
