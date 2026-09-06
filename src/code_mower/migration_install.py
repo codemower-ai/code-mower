@@ -582,10 +582,10 @@ def _run_pip_install_with_retries(
                 timeout_error=exc if isinstance(exc, subprocess.TimeoutExpired) else None,
             )
             if attempt >= attempts:
+                failure_reason = classify_package_install_failure(
+                    exception=exc, steps=steps[attempt_steps_start:]
+                )
                 if package_index:
-                    failure_reason = classify_package_install_failure(
-                        exception=exc, steps=steps[attempt_steps_start:]
-                    )
                     raise RehearsalError(
                         (
                             f"{command_label} failed after {attempts} attempts. "
@@ -596,7 +596,11 @@ def _run_pip_install_with_retries(
                         steps,
                         failure_reason=failure_reason,
                     ) from exc
-                raise
+                raise RehearsalError(
+                    f"{command_label} failed after {attempts} attempts.",
+                    steps,
+                    failure_reason=failure_reason,
+                ) from exc
             steps[-1]["retry_scheduled_seconds"] = retry_delay_seconds
             if retry_delay_seconds > 0:
                 time.sleep(retry_delay_seconds)

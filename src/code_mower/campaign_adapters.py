@@ -290,6 +290,19 @@ ADOPTION_RESULT_JSON_SCHEMA: dict[str, Any] = {
                         ),
                     },
                 },
+                "if": {
+                    "properties": {
+                        "id": {"const": "package_install"},
+                        "status": {"const": "fail"},
+                    },
+                    "required": ["id", "status"],
+                },
+                "then": {},
+                "else": {
+                    "properties": {
+                        "failure_reason": False,
+                    },
+                },
             },
         },
     },
