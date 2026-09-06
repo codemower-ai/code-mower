@@ -7,7 +7,25 @@ later entries are regular releases.
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- `code-mower lane-delivery` gives the local builder runner a provider-neutral
+  delivery and recovery contract: delivery is classified from a validated
+  issue/PR/head transition or a bounded `no_change`/`owner_action` outcome the
+  runner validates itself, providers run in their own process group that is
+  terminated and reaped on timeout, interruption, and output overflow, and an
+  explicit orchestrator handoff (source lane, destination lane, target PR,
+  expected head) is the only way to write a PR branch owned by another lane.
+- Each local builder run records a metadata-only delivery outcome for Board and
+  productivity reporting: provider exit, delivery transition, handoff, elapsed
+  time, and intervention count.
+
+### Changed
+
+- Provider prompts assembled by the Mac lane runner are scanned and rejected if
+  they would send a provider looking for token files, credential-helper output,
+  or other auth material. The runner brokers the comments and labels the
+  contract needs.
 
 ## v1.0.9
 

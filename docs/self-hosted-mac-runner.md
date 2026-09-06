@@ -138,6 +138,57 @@ and credential-adjacent details stay local.
 signal because login-keychain or inherited-env failures often appear only when
 Claude makes a real non-interactive request.
 
+## Builder Delivery And Recovery
+
+`tools/lanes/run_mac_lane.sh` decides whether a unit of work landed from a
+validated GitHub state transition, not from the provider exit code. It
+snapshots the target issue/PR before the provider runs, snapshots it again
+afterwards, and passes both to `code-mower lane-delivery classify`. A build or
+fix round only passes when a new pull request appears or the lane's PR head
+advances. When the honest answer is that nothing needed to change, the provider
+writes `.code-mower/lane-outcome.json` in the working copy:
+
+```json
+{"outcome": "no_change", "summary": "one line"}
+```
+
+`owner_action` is the other accepted value. The runner — never the provider —
+posts the resulting comment and applies `needs-owner`, so the provider never
+needs credentials of its own. Runs without a validated delivery exit `3` and
+leave a note on the unit. `code-mower lane-delivery scan-prompt` refuses to
+start a provider whose assembled prompt would send it looking for
+authentication material.
+
+Providers run under `code-mower lane-delivery supervise`, which starts them in
+their own process group and terminates plus reaps that whole group on timeout,
+interruption, and output overflow. Cap provider output with `LANE_MAX_LOG_BYTES`
+(default 32 MiB); overflow exits `125`. Install the `code-mower` CLI on the
+runner's `PATH` — without it the runner falls back to the older direct-child
+timeout, which can leave inert provider transports behind.
+
+Each run writes one metadata-only delivery outcome next to the run log for
+Board and productivity reporting: provider exit, delivery transition, handoff,
+elapsed time, and intervention count. No prompts, transcripts, output, paths, or
+secrets are recorded.
+
+### Recovering a PR owned by another lane
+
+Single-writer enforcement is unchanged: a lane writes only branches carrying
+its own prefixes. To hand a stuck PR to a different lane, the orchestrator must
+say so explicitly and pin the head it inspected:
+
+```bash
+tools/lanes/run_mac_lane.sh --lane claude --repo OWNER/REPO \
+  --target pr:750 \
+  --handoff-source-lane codex \
+  --handoff-expected-head <40-char sha>
+```
+
+The runner validates the handoff, refuses it if the expected head is stale or
+the destination lane is not the one running, records it in the pre-push guard
+config, and posts an audit comment on the PR. Without those flags, a foreign
+head branch stays a hard refusal — there is no implicit cross-lane takeover.
+
 ## Keychain And Signing Notes
 
 Use a regular logged-in macOS account for the runner. Do not run local audit

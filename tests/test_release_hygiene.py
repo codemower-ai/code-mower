@@ -389,6 +389,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "grok-build",
                 "hermes-cli",
                 "init",
+                "lane-delivery",
                 "lanes",
                 "local-llm",
                 "migration",

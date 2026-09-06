@@ -1,0 +1,509 @@
+"""Local builder delivery, process cleanup, and recovery handoffs (#751)."""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+from code_mower import lane_delivery
+
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER_TEMPLATE = ROOT / "templates/lanes/run_mac_lane.sh"
+PACKAGED_RUNNER_TEMPLATE = ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh"
+REPO_RUNNER = ROOT / "tools/lanes/run_mac_lane.sh"
+SHA_A = "a" * 40
+SHA_B = "b" * 40
+
+
+def _state(**overrides: object) -> lane_delivery.TargetState:
+    payload: dict[str, object] = {"kind": "issue", "number": "751"}
+    payload.update(overrides)
+    return lane_delivery.TargetState.from_mapping(payload)
+
+
+class DeliveryClassificationTests(unittest.TestCase):
+    def test_exit_zero_without_delivery_is_not_a_delivery(self) -> None:
+        before = _state()
+        after = _state()
+
+        outcome = lane_delivery.classify_delivery(before, after, provider_exit=0)
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.transition, lane_delivery.TRANSITION_NONE)
+        self.assertEqual(outcome.reason, "exit_zero_without_delivery")
+
+    def test_exit_zero_with_unchanged_head_is_not_a_delivery(self) -> None:
+        before = _state(kind="pr", number="900", pr_number="900", head_sha=SHA_A)
+        after = _state(kind="pr", number="900", pr_number="900", head_sha=SHA_A)
+
+        outcome = lane_delivery.classify_delivery(before, after, provider_exit=0)
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.reason, "exit_zero_without_delivery")
+
+    def test_new_pull_request_is_a_delivery(self) -> None:
+        outcome = lane_delivery.classify_delivery(
+            _state(),
+            _state(pr_number="901", head_sha=SHA_A),
+            provider_exit=0,
+        )
+
+        self.assertTrue(outcome.delivered)
+        self.assertEqual(outcome.transition, lane_delivery.TRANSITION_PR_OPENED)
+
+    def test_advanced_head_is_a_delivery(self) -> None:
+        before = _state(kind="pr", number="900", pr_number="900", head_sha=SHA_A)
+        after = _state(kind="pr", number="900", pr_number="900", head_sha=SHA_B)
+
+        outcome = lane_delivery.classify_delivery(before, after, provider_exit=0)
+
+        self.assertTrue(outcome.delivered)
+        self.assertEqual(outcome.transition, lane_delivery.TRANSITION_HEAD_ADVANCED)
+
+    def test_nonzero_provider_exit_never_delivers(self) -> None:
+        outcome = lane_delivery.classify_delivery(
+            _state(),
+            _state(pr_number="901", head_sha=SHA_A),
+            provider_exit=1,
+        )
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.reason, "provider_exit_nonzero")
+
+    def test_declared_no_change_needs_a_runner_owned_comment(self) -> None:
+        unvalidated = lane_delivery.classify_delivery(
+            _state(), _state(), provider_exit=0, declared_outcome="no_change"
+        )
+        validated = lane_delivery.classify_delivery(
+            _state(),
+            _state(runner_comment_id="12345"),
+            provider_exit=0,
+            declared_outcome="no_change",
+        )
+
+        self.assertFalse(unvalidated.delivered)
+        self.assertEqual(unvalidated.reason, "no_change_missing_runner_comment")
+        self.assertTrue(validated.delivered)
+        self.assertEqual(validated.transition, lane_delivery.TRANSITION_NO_CHANGE)
+
+    def test_declared_owner_action_needs_label_and_comment(self) -> None:
+        missing_label = lane_delivery.classify_delivery(
+            _state(),
+            _state(runner_comment_id="1"),
+            provider_exit=0,
+            declared_outcome="owner_action",
+        )
+        missing_comment = lane_delivery.classify_delivery(
+            _state(),
+            _state(labels=["needs-owner"]),
+            provider_exit=0,
+            declared_outcome="owner_action",
+        )
+        validated = lane_delivery.classify_delivery(
+            _state(),
+            _state(labels=["needs-owner"], runner_comment_id="1"),
+            provider_exit=0,
+            declared_outcome="owner_action",
+        )
+
+        self.assertEqual(missing_label.reason, "owner_action_missing_label")
+        self.assertEqual(missing_comment.reason, "owner_action_missing_runner_comment")
+        self.assertTrue(validated.delivered)
+        self.assertEqual(validated.transition, lane_delivery.TRANSITION_OWNER_ACTION)
+
+    def test_unbounded_declared_outcome_is_rejected(self) -> None:
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery.classify_delivery(
+                _state(), _state(), provider_exit=0, declared_outcome="shipped"
+            )
+
+    def test_classify_cli_exits_nonzero_without_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            before = root / "before.json"
+            after = root / "after.json"
+            before.write_text(json.dumps(_state().as_dict()), encoding="utf-8")
+            after.write_text(json.dumps(_state().as_dict()), encoding="utf-8")
+
+            rc = lane_delivery.main(
+                [
+                    "classify",
+                    "--before",
+                    str(before),
+                    "--after",
+                    str(after),
+                    "--provider-exit",
+                    "0",
+                ]
+            )
+
+        self.assertEqual(rc, 3)
+
+
+class ProcessGroupCleanupTests(unittest.TestCase):
+    def test_terminate_escalates_from_term_to_kill(self) -> None:
+        sent: list[int] = []
+
+        def fake_killpg(_pgid: int, sig: int) -> None:
+            sent.append(sig)
+
+        signals = lane_delivery.terminate_process_group(
+            424242,
+            grace_seconds=0.05,
+            poll_interval=0.01,
+            killpg=fake_killpg,
+            is_group_alive=lambda _pgid: True,
+            sleep=lambda _seconds: None,
+        )
+
+        self.assertEqual(signals, ("SIGTERM", "SIGKILL"))
+        self.assertEqual(sent, [signal.SIGTERM, signal.SIGKILL])
+
+    def test_terminate_stops_at_term_when_the_group_drains(self) -> None:
+        signals = lane_delivery.terminate_process_group(
+            424242,
+            grace_seconds=1.0,
+            poll_interval=0.01,
+            killpg=lambda _pgid, _sig: None,
+            is_group_alive=lambda _pgid: False,
+            sleep=lambda _seconds: None,
+        )
+
+        self.assertEqual(signals, ("SIGTERM",))
+
+    def test_terminate_refuses_the_runners_own_process_group(self) -> None:
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery.terminate_process_group(os.getpgrp())
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery.terminate_process_group(0)
+
+    def test_timeout_reaps_the_whole_provider_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            child_pid_file = root / "child.pid"
+            script = (
+                "sleep 120 & echo $! > "
+                + str(child_pid_file)
+                + "; sleep 120"
+            )
+
+            result = lane_delivery.supervise_process(
+                ["bash", "-c", script],
+                log_path=root / "run.log",
+                timeout_seconds=1.0,
+                term_grace_seconds=1.0,
+            )
+
+            self.assertTrue(result.timed_out)
+            self.assertEqual(result.exit_code, lane_delivery.EXIT_TIMEOUT)
+            self.assertIn("SIGTERM", result.signals_sent)
+
+            grandchild = int(child_pid_file.read_text(encoding="utf-8").strip())
+            deadline = time.monotonic() + 5
+            alive = True
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(grandchild, 0)
+                except OSError:
+                    alive = False
+                    break
+                time.sleep(0.05)
+
+        self.assertFalse(alive, "orphaned provider transport survived the timeout")
+
+    def test_output_overflow_terminates_the_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "run.log"
+
+            result = lane_delivery.supervise_process(
+                ["bash", "-c", "while true; do printf 'noise %s\\n' $RANDOM; done"],
+                log_path=log_path,
+                timeout_seconds=30.0,
+                max_log_bytes=4096,
+                term_grace_seconds=1.0,
+            )
+
+            self.assertTrue(result.overflowed)
+            self.assertEqual(result.exit_code, lane_delivery.EXIT_OUTPUT_OVERFLOW)
+            self.assertLessEqual(log_path.stat().st_size, 4096)
+
+    def test_clean_provider_exit_is_reported_verbatim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = lane_delivery.supervise_process(
+                ["bash", "-c", "printf 'done\\n'; exit 7"],
+                log_path=Path(tmp) / "run.log",
+                timeout_seconds=30.0,
+            )
+
+        self.assertEqual(result.exit_code, 7)
+        self.assertFalse(result.timed_out)
+        self.assertEqual(result.reason, "completed")
+
+
+class RecoveryHandoffTests(unittest.TestCase):
+    def _valid(self, **overrides: str) -> lane_delivery.Handoff:
+        kwargs: dict[str, str] = {
+            "source_lane": "codex",
+            "destination_lane": "claude",
+            "target_pr": "owner/repo#750",
+            "expected_head": SHA_A,
+            "running_lane": "claude",
+            "repo": "owner/repo",
+            "observed_head": SHA_A,
+            "target_branch": "codex/750-fix",
+        }
+        kwargs.update(overrides)
+        return lane_delivery.validate_handoff(**kwargs)  # type: ignore[arg-type]
+
+    def test_explicit_handoff_is_accepted(self) -> None:
+        handoff = self._valid()
+
+        self.assertEqual(handoff.source_lane, "codex")
+        self.assertEqual(handoff.destination_lane, "claude")
+        self.assertEqual(handoff.target_pr, "owner/repo#750")
+        self.assertEqual(handoff.expected_head, SHA_A)
+
+    def test_handoff_rejects_same_lane_source_and_destination(self) -> None:
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            self._valid(source_lane="claude")
+
+    def test_handoff_rejects_a_destination_that_is_not_running(self) -> None:
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            self._valid(destination_lane="cursor")
+
+    def test_handoff_rejects_a_pr_from_another_repository(self) -> None:
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            self._valid(target_pr="other/repo#750")
+
+    def test_handoff_rejects_a_stale_expected_head(self) -> None:
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            self._valid(observed_head=SHA_B)
+
+    def test_handoff_requires_every_field(self) -> None:
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            self._valid(source_lane="")
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            self._valid(expected_head="")
+
+    def test_lane_prefix_authority_is_unchanged(self) -> None:
+        authority = lane_delivery.authorize_branch_write(
+            lane="claude",
+            branch="claude/751-thing",
+            lane_branch_prefixes=["claude/"],
+        )
+
+        self.assertEqual(authority, "lane_prefix")
+
+    def test_implicit_cross_lane_takeover_is_rejected(self) -> None:
+        with self.assertRaises(lane_delivery.LaneDeliveryError) as caught:
+            lane_delivery.authorize_branch_write(
+                lane="claude",
+                branch="codex/750-fix",
+                lane_branch_prefixes=["claude/"],
+            )
+
+        self.assertIn("implicit cross-lane takeover", str(caught.exception))
+
+    def test_explicit_handoff_authorizes_exactly_the_named_branch(self) -> None:
+        handoff = self._valid()
+
+        authority = lane_delivery.authorize_branch_write(
+            lane="claude",
+            branch="codex/750-fix",
+            lane_branch_prefixes=["claude/"],
+            handoff=handoff,
+        )
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery.authorize_branch_write(
+                lane="claude",
+                branch="codex/999-other",
+                lane_branch_prefixes=["claude/"],
+                handoff=handoff,
+            )
+
+        self.assertEqual(authority, "explicit_handoff")
+
+
+class AuthMaterialExposureTests(unittest.TestCase):
+    def test_prompt_auth_material_discovery_is_detected(self) -> None:
+        cases = {
+            "gh_auth_token_command": "Run gh auth token to get the value.",
+            "git_credential_command": "Use git credential fill for the password.",
+            "credential_helper_output": "Read the credential.helper output.",
+            "gh_hosts_file": "Look in gh/hosts.yml for the entry.",
+            "netrc_file": "Check ~/.netrc first.",
+            "keychain_lookup": "Try security find-generic-password -s github.",
+            "private_key_file": "Fall back to id_rsa if needed.",
+            "token_file_read": "cat ~/.config/token.json before starting.",
+            "token_env_echo": "echo $GITHUB_TOKEN to confirm it is set.",
+            "token_env_assignment": "Export GH_TOKEN=abc before running gh.",
+        }
+
+        for rule, text in cases.items():
+            with self.subTest(rule=rule):
+                self.assertIn(rule, lane_delivery.scan_auth_material(text))
+
+    def test_clean_prompt_guidance_passes(self) -> None:
+        text = (
+            "The runner brokers the GitHub comments and labels this contract "
+            "needs. Your shell already has authenticated GitHub access; never "
+            "go looking for, read, or print any authentication material."
+        )
+
+        self.assertEqual(lane_delivery.scan_auth_material(text), ())
+        lane_delivery.assert_prompt_free_of_auth_material(text)
+
+    def test_shipped_lane_docs_and_runner_prompt_are_clean(self) -> None:
+        prompt = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((ROOT / "docs/lanes").glob("*.md"))
+        )
+
+        self.assertEqual(lane_delivery.scan_auth_material(prompt), ())
+
+    def test_scan_prompt_cli_rejects_a_dirty_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clean = Path(tmp) / "clean.md"
+            dirty = Path(tmp) / "dirty.md"
+            clean.write_text("Open a PR and report the head SHA.", encoding="utf-8")
+            dirty.write_text("First run gh auth token.", encoding="utf-8")
+
+            self.assertEqual(
+                lane_delivery.main(["scan-prompt", "--prompt-file", str(clean)]), 0
+            )
+            self.assertEqual(
+                lane_delivery.main(["scan-prompt", "--prompt-file", str(dirty)]), 2
+            )
+
+
+class DeliveryOutcomeRecordTests(unittest.TestCase):
+    def _outcome(self) -> lane_delivery.DeliveryOutcome:
+        return lane_delivery.classify_delivery(
+            _state(), _state(pr_number="901", head_sha=SHA_A), provider_exit=0
+        )
+
+    def test_record_carries_only_delivery_metadata(self) -> None:
+        event = lane_delivery.build_delivery_outcome_event(
+            lane="claude",
+            repo="owner/repo",
+            kind="issue",
+            number="751",
+            outcome=self._outcome(),
+            supervision_reason="completed",
+            signals_sent=["SIGTERM"],
+            elapsed_seconds=91.5,
+            user_interventions=0,
+            handoff=lane_delivery.Handoff(
+                source_lane="codex",
+                destination_lane="claude",
+                target_pr="owner/repo#750",
+                expected_head=SHA_A,
+                target_branch="codex/750-fix",
+            ),
+        )
+
+        self.assertEqual(event["schema"], lane_delivery.DELIVERY_OUTCOME_SCHEMA)
+        self.assertEqual(event["provider"]["exit_code"], 0)
+        self.assertEqual(event["provider"]["supervision"], "completed")
+        self.assertEqual(event["delivery"]["transition"], "pr_opened")
+        self.assertEqual(event["handoff"]["source_lane"], "codex")
+        self.assertEqual(event["metrics"]["elapsed_seconds"], 91.5)
+        self.assertEqual(event["metrics"]["user_interventions"], 0)
+        self.assertEqual(
+            set(event),
+            {
+                "schema",
+                "event_id",
+                "created_at",
+                "code_mower_version",
+                "lane",
+                "repo",
+                "target",
+                "provider",
+                "delivery",
+                "handoff",
+                "metrics",
+            },
+        )
+
+    def test_record_rejects_transcripts_paths_and_secrets(self) -> None:
+        cases = (
+            "line one\nline two",
+            "/opt/lane/checkout",
+            "GITHUB_TOKEN=abc",
+            "Bearer abcdef012345",
+            "x" * 400,
+        )
+
+        for value in cases:
+            with self.subTest(value=value[:20]):
+                with self.assertRaises(lane_delivery.LaneDeliveryError):
+                    lane_delivery.build_delivery_outcome_event(
+                        lane="claude",
+                        repo="owner/repo",
+                        kind="issue",
+                        number="751",
+                        outcome=self._outcome(),
+                        supervision_reason=value,
+                    )
+
+    def test_record_round_trips_as_json(self) -> None:
+        event = lane_delivery.build_delivery_outcome_event(
+            lane="claude",
+            repo="owner/repo",
+            kind="issue",
+            number="751",
+            outcome=self._outcome(),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "outcome.json"
+            lane_delivery.write_delivery_outcome_event(event, output)
+            reloaded = json.loads(output.read_text(encoding="utf-8"))
+            with self.assertRaises(lane_delivery.LaneDeliveryError):
+                lane_delivery.write_delivery_outcome_event(event, output)
+
+        self.assertEqual(reloaded["delivery"]["delivered"], True)
+
+
+class RunnerScriptContractTests(unittest.TestCase):
+    def test_template_copies_stay_identical(self) -> None:
+        self.assertEqual(
+            RUNNER_TEMPLATE.read_text(encoding="utf-8"),
+            PACKAGED_RUNNER_TEMPLATE.read_text(encoding="utf-8"),
+        )
+
+    def test_runner_scripts_wire_the_delivery_contract(self) -> None:
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("lane_delivery=(code-mower lane-delivery)", text)
+                self.assertIn("capture_target_state", text)
+                self.assertIn("scan-prompt --prompt-file", text)
+                self.assertIn("run_provider", text)
+                self.assertIn("--handoff-source-lane", text)
+                self.assertIn("--handoff-expected-head", text)
+                self.assertIn("Implicit cross-lane takeover", text)
+                self.assertIn("no validated delivery", text)
+
+    def test_runner_scripts_parse_as_bash(self) -> None:
+        for path in (REPO_RUNNER,):
+            with self.subTest(path=path.name):
+                completed = subprocess.run(
+                    ["bash", "-n", str(path)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()

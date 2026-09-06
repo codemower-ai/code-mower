@@ -1,0 +1,1029 @@
+"""Provider-neutral delivery and recovery contract for local builder lanes.
+
+The local builder runner (``tools/lanes/run_mac_lane.sh``) used to treat a
+provider exit code of ``0`` as a successful unit of work. Dogfooding showed
+three gaps behind that assumption:
+
+1. A provider can exit ``0`` without ever producing the commit, push, or PR
+   head transition the unit was dispatched for.
+2. Interrupting the parent runner can orphan the provider's process group.
+3. An orchestrator recovery handoff had no explicit, auditable way to target a
+   PR branch owned by another lane, so the only safe workaround was a manual
+   commit transplant.
+
+This module holds the provider-neutral pieces of the fix:
+
+* :func:`classify_delivery` decides success from a validated issue/PR/head
+  transition, never from the provider exit code alone.
+* :func:`supervise_process` and :func:`terminate_process_group` run a provider
+  in a dedicated process group and terminate/reap the whole group on timeout,
+  interruption, and output overflow.
+* :func:`validate_handoff` and :func:`authorize_branch_write` implement the
+  explicit recovery handoff and reject implicit cross-lane takeover.
+* :func:`scan_auth_material` keeps provider prompts free of instructions that
+  would make a provider discover or read auth material; GitHub mutations are
+  brokered by the runner instead.
+* :func:`build_delivery_outcome_event` records a metadata-only outcome for
+  Board/productivity reporting. No prompts, transcripts, stdout/stderr, auth
+  output, local paths, or secrets are ever recorded.
+"""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import json
+import os
+import re
+import selectors
+import signal
+import subprocess
+import sys
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping, Sequence
+
+from code_mower import __version__
+
+
+DELIVERY_OUTCOME_SCHEMA = "code_mower.laneDeliveryOutcome.v1"
+DEFAULT_DELIVERY_OUTCOME_DIR = Path(".code-mower/lane-delivery")
+
+#: Transitions the runner can observe or validate for itself.
+TRANSITION_PR_OPENED = "pr_opened"
+TRANSITION_HEAD_ADVANCED = "head_advanced"
+TRANSITION_NO_CHANGE = "no_change"
+TRANSITION_OWNER_ACTION = "owner_action"
+TRANSITION_NONE = "none"
+
+DELIVERING_TRANSITIONS = frozenset(
+    {
+        TRANSITION_PR_OPENED,
+        TRANSITION_HEAD_ADVANCED,
+        TRANSITION_NO_CHANGE,
+        TRANSITION_OWNER_ACTION,
+    }
+)
+
+#: Bounded outcomes a unit may declare when it produced no new PR/head state.
+DECLARED_OUTCOMES = frozenset({"", TRANSITION_NO_CHANGE, TRANSITION_OWNER_ACTION})
+
+OWNER_ACTION_LABEL = "needs-owner"
+
+#: Supervisor exit codes. 124 matches coreutils `timeout` so existing runner
+#: handling for the wall-clock cap keeps working unchanged.
+EXIT_TIMEOUT = 124
+EXIT_OUTPUT_OVERFLOW = 125
+EXIT_INTERRUPTED = 130
+
+DEFAULT_MAX_LOG_BYTES = 32 * 1024 * 1024
+DEFAULT_TERM_GRACE_SECONDS = 10.0
+
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+PR_REF_RE = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>[0-9]+)$")
+LANE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+#: Prompt text that would push a provider into discovering or reading auth
+#: material. Rules are matched by name so a report never echoes the match.
+AUTH_MATERIAL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("gh_auth_token_command", re.compile(r"\bgh\s+auth\s+token\b", re.IGNORECASE)),
+    ("git_credential_command", re.compile(r"\bgit\s+credential\s+(?:fill|approve|get)\b", re.IGNORECASE)),
+    ("credential_helper_output", re.compile(r"credential[._-]?helper", re.IGNORECASE)),
+    ("gh_hosts_file", re.compile(r"gh/hosts\.(?:yml|yaml)", re.IGNORECASE)),
+    ("netrc_file", re.compile(r"(?:^|[\s./~])\.netrc\b", re.IGNORECASE)),
+    ("keychain_lookup", re.compile(r"\bsecurity\s+find-(?:generic|internet)-password\b", re.IGNORECASE)),
+    ("token_env_echo", re.compile(r"\b(?:echo|printf|printenv|env)\b[^\n]{0,40}\$\{?(?:GITHUB_TOKEN|GH_TOKEN|DISPATCH_TOKEN)\b", re.IGNORECASE)),
+    ("token_env_assignment", re.compile(r"\b(?:GITHUB_TOKEN|GH_TOKEN|DISPATCH_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY)\s*=\s*\S", re.IGNORECASE)),
+    ("token_file_read", re.compile(r"\b(?:cat|less|head|tail)\s+[^\n]{0,40}(?:token|credential)", re.IGNORECASE)),
+    ("private_key_file", re.compile(r"\bid_(?:rsa|ecdsa|ed25519)\b", re.IGNORECASE)),
+)
+
+#: Metadata values must never smuggle transcripts, paths, or secrets into a
+#: recorded outcome. Applied to every string leaf of an outcome event.
+_UNSAFE_METADATA_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("newline", re.compile(r"[\r\n]")),
+    ("absolute_path", re.compile(r"(?:^|\s)(?:/|~/|[A-Za-z]:\\)")),
+    ("home_path_segment", re.compile(r"(?:Users|home)/[^/\s]+", re.IGNORECASE)),
+    ("secret_assignment", re.compile(r"\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)\b\s*[:=]\s*\S", re.IGNORECASE)),
+    ("bearer_token", re.compile(r"\b(?:bearer|gh[pousr]_)[A-Za-z0-9_./+=-]{8,}", re.IGNORECASE)),
+)
+
+_MAX_METADATA_VALUE_CHARS = 200
+
+
+class LaneDeliveryError(ValueError):
+    """Raised when a delivery, handoff, or metadata contract is violated."""
+
+
+# ---------------------------------------------------------------------------
+# State snapshots and delivery classification
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TargetState:
+    """Issue/PR state observed by the runner around a provider invocation.
+
+    Only the fields the runner can validate for itself are carried. ``pr_number``
+    and ``head_sha`` are empty strings when no PR exists yet.
+    """
+
+    kind: str
+    number: str
+    pr_number: str = ""
+    head_sha: str = ""
+    pr_state: str = ""
+    labels: tuple[str, ...] = ()
+    runner_comment_id: str = ""
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "TargetState":
+        kind = _text(payload.get("kind"))
+        if kind not in {"issue", "pr"}:
+            raise LaneDeliveryError("state kind must be issue or pr")
+        number = _text(payload.get("number"))
+        if not number.isdigit():
+            raise LaneDeliveryError("state number must be a positive integer")
+        pr_number = _text(payload.get("pr_number"))
+        if pr_number and not pr_number.isdigit():
+            raise LaneDeliveryError("state pr_number must be a positive integer")
+        head_sha = _text(payload.get("head_sha")).lower()
+        if head_sha and not SHA_RE.match(head_sha):
+            raise LaneDeliveryError("state head_sha must be a 40-character sha")
+        labels = tuple(
+            sorted({_text(label) for label in payload.get("labels") or () if _text(label)})
+        )
+        return cls(
+            kind=kind,
+            number=number,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            pr_state=_text(payload.get("pr_state")).upper(),
+            labels=labels,
+            runner_comment_id=_text(payload.get("runner_comment_id")),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "number": self.number,
+            "pr_number": self.pr_number,
+            "head_sha": self.head_sha,
+            "pr_state": self.pr_state,
+            "labels": list(self.labels),
+            "runner_comment_id": self.runner_comment_id,
+        }
+
+
+@dataclass(frozen=True)
+class DeliveryOutcome:
+    delivered: bool
+    transition: str
+    reason: str
+    declared_outcome: str = ""
+    provider_exit: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "delivered": self.delivered,
+            "transition": self.transition,
+            "reason": self.reason,
+            "declared_outcome": self.declared_outcome,
+        }
+
+
+def observed_transition(before: TargetState, after: TargetState) -> str:
+    """Return the PR/head transition the runner observed for itself."""
+
+    if after.pr_number and not before.pr_number:
+        return TRANSITION_PR_OPENED
+    if (
+        after.pr_number
+        and before.pr_number
+        and after.pr_number == before.pr_number
+        and after.head_sha
+        and after.head_sha != before.head_sha
+    ):
+        return TRANSITION_HEAD_ADVANCED
+    return TRANSITION_NONE
+
+
+def classify_delivery(
+    before: TargetState,
+    after: TargetState,
+    *,
+    provider_exit: int,
+    declared_outcome: str = "",
+) -> DeliveryOutcome:
+    """Classify a unit of work from state transition, not exit code alone.
+
+    A build or fix round is delivered when the runner observes a new PR or a
+    new head on the lane's PR. Otherwise the unit may only pass with a bounded
+    declared outcome that the runner can validate from its own GitHub
+    operations: ``no_change`` requires a runner-posted comment, and
+    ``owner_action`` additionally requires the owner-blocking label.
+    """
+
+    declared = _text(declared_outcome)
+    if declared not in DECLARED_OUTCOMES:
+        raise LaneDeliveryError(
+            "declared outcome must be empty, "
+            f"{TRANSITION_NO_CHANGE}, or {TRANSITION_OWNER_ACTION}"
+        )
+    transition = observed_transition(before, after)
+
+    if provider_exit != 0:
+        return DeliveryOutcome(
+            delivered=False,
+            transition=transition,
+            reason="provider_exit_nonzero",
+            declared_outcome=declared,
+            provider_exit=provider_exit,
+        )
+
+    if transition in {TRANSITION_PR_OPENED, TRANSITION_HEAD_ADVANCED}:
+        return DeliveryOutcome(
+            delivered=True,
+            transition=transition,
+            reason="observed_state_transition",
+            declared_outcome=declared,
+            provider_exit=provider_exit,
+        )
+
+    if declared == TRANSITION_NO_CHANGE:
+        if not after.runner_comment_id:
+            return DeliveryOutcome(
+                delivered=False,
+                transition=TRANSITION_NONE,
+                reason="no_change_missing_runner_comment",
+                declared_outcome=declared,
+                provider_exit=provider_exit,
+            )
+        return DeliveryOutcome(
+            delivered=True,
+            transition=TRANSITION_NO_CHANGE,
+            reason="validated_no_change",
+            declared_outcome=declared,
+            provider_exit=provider_exit,
+        )
+
+    if declared == TRANSITION_OWNER_ACTION:
+        if OWNER_ACTION_LABEL not in after.labels:
+            return DeliveryOutcome(
+                delivered=False,
+                transition=TRANSITION_NONE,
+                reason="owner_action_missing_label",
+                declared_outcome=declared,
+                provider_exit=provider_exit,
+            )
+        if not after.runner_comment_id:
+            return DeliveryOutcome(
+                delivered=False,
+                transition=TRANSITION_NONE,
+                reason="owner_action_missing_runner_comment",
+                declared_outcome=declared,
+                provider_exit=provider_exit,
+            )
+        return DeliveryOutcome(
+            delivered=True,
+            transition=TRANSITION_OWNER_ACTION,
+            reason="validated_owner_action",
+            declared_outcome=declared,
+            provider_exit=provider_exit,
+        )
+
+    return DeliveryOutcome(
+        delivered=False,
+        transition=TRANSITION_NONE,
+        reason="exit_zero_without_delivery",
+        declared_outcome=declared,
+        provider_exit=provider_exit,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Process-group supervision
+# ---------------------------------------------------------------------------
+
+
+def _default_is_group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except OSError as exc:  # pragma: no cover - errno branches are trivial
+        if exc.errno == errno.ESRCH:
+            return False
+        if exc.errno == errno.EPERM:
+            return True
+        raise
+    return True
+
+
+def terminate_process_group(
+    pgid: int,
+    *,
+    grace_seconds: float = DEFAULT_TERM_GRACE_SECONDS,
+    poll_interval: float = 0.1,
+    killpg: Callable[[int, int], None] | None = None,
+    is_group_alive: Callable[[int], bool] | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[str, ...]:
+    """Terminate and reap an entire provider process group.
+
+    Sends ``SIGTERM`` to the group, waits up to ``grace_seconds`` for it to
+    drain, then escalates to ``SIGKILL``. Returns the signals actually sent so
+    callers can record a metadata-only cleanup trace. Refuses to signal the
+    caller's own process group.
+    """
+
+    if pgid <= 1:
+        raise LaneDeliveryError("refusing to signal process group id <= 1")
+    if pgid == os.getpgrp():
+        raise LaneDeliveryError("refusing to signal the runner's own process group")
+
+    send = killpg if killpg is not None else os.killpg
+    alive = is_group_alive if is_group_alive is not None else _default_is_group_alive
+    sent: list[str] = []
+
+    def _signal(sig: int, name: str) -> bool:
+        try:
+            send(pgid, sig)
+        except OSError as exc:
+            if exc.errno == errno.ESRCH:
+                return False
+            raise
+        sent.append(name)
+        return True
+
+    if not _signal(signal.SIGTERM, "SIGTERM"):
+        return tuple(sent)
+
+    deadline = monotonic() + max(0.0, grace_seconds)
+    while monotonic() < deadline:
+        if not alive(pgid):
+            return tuple(sent)
+        sleep(poll_interval)
+
+    if alive(pgid):
+        _signal(signal.SIGKILL, "SIGKILL")
+    return tuple(sent)
+
+
+@dataclass
+class SupervisionResult:
+    exit_code: int
+    timed_out: bool = False
+    overflowed: bool = False
+    interrupted: bool = False
+    signals_sent: tuple[str, ...] = ()
+    output_bytes: int = 0
+
+    @property
+    def reason(self) -> str:
+        if self.timed_out:
+            return "timeout"
+        if self.overflowed:
+            return "output_overflow"
+        if self.interrupted:
+            return "interrupted"
+        return "completed"
+
+
+def _reap_group(pgid: int, *, deadline_seconds: float = 5.0) -> None:
+    """Reap any remaining children of this process, bounded by a deadline."""
+
+    end = time.monotonic() + deadline_seconds
+    while time.monotonic() < end:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        except OSError:  # pragma: no cover - defensive
+            return
+        if pid == 0:
+            if not _default_is_group_alive(pgid):
+                return
+            time.sleep(0.05)
+
+
+def supervise_process(
+    argv: Sequence[str],
+    *,
+    log_path: Path,
+    timeout_seconds: float,
+    max_log_bytes: int = DEFAULT_MAX_LOG_BYTES,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    stdin_path: Path | None = None,
+    term_grace_seconds: float = DEFAULT_TERM_GRACE_SECONDS,
+) -> SupervisionResult:
+    """Run a provider CLI in its own process group with bounded output.
+
+    The child is started in a new session, so the provider and everything it
+    spawns share one process group. Timeout, output overflow, and interruption
+    of the runner all terminate and reap that whole group instead of leaving
+    inert transports behind.
+    """
+
+    if timeout_seconds <= 0:
+        raise LaneDeliveryError("timeout_seconds must be greater than zero")
+    if max_log_bytes <= 0:
+        raise LaneDeliveryError("max_log_bytes must be greater than zero")
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    interrupted = {"value": False}
+
+    def _on_signal(_signum: int, _frame: object) -> None:
+        interrupted["value"] = True
+
+    previous_handlers: dict[int, Any] = {}
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        try:
+            previous_handlers[sig] = signal.signal(sig, _on_signal)
+        except (ValueError, OSError):  # pragma: no cover - non-main thread
+            pass
+
+    stdin_handle = None
+    proc: subprocess.Popen[bytes] | None = None
+    timed_out = False
+    overflowed = False
+    written = 0
+    signals_sent: tuple[str, ...] = ()
+    try:
+        stdin_handle = (
+            stdin_path.open("rb") if stdin_path is not None else subprocess.DEVNULL
+        )
+        proc = subprocess.Popen(  # noqa: S603 - argv is runner-owned
+            list(argv),
+            cwd=str(cwd) if cwd is not None else None,
+            env=dict(env) if env is not None else None,
+            stdin=stdin_handle,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        pgid = os.getpgid(proc.pid)
+        deadline = time.monotonic() + timeout_seconds
+        selector = selectors.DefaultSelector()
+        assert proc.stdout is not None
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        with log_path.open("wb") as log_handle:
+            while True:
+                if interrupted["value"]:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                for _key, _events in selector.select(timeout=min(remaining, 0.5)):
+                    chunk = os.read(proc.stdout.fileno(), 65536)
+                    if not chunk:
+                        selector.unregister(proc.stdout)
+                        break
+                    if written + len(chunk) > max_log_bytes:
+                        log_handle.write(chunk[: max(0, max_log_bytes - written)])
+                        written = max_log_bytes
+                        overflowed = True
+                        break
+                    log_handle.write(chunk)
+                    written += len(chunk)
+                if overflowed:
+                    break
+                if proc.poll() is not None and not selector.get_map():
+                    break
+        selector.close()
+
+        if timed_out or overflowed or interrupted["value"]:
+            signals_sent = terminate_process_group(
+                pgid, grace_seconds=term_grace_seconds
+            )
+        try:
+            proc.wait(timeout=term_grace_seconds + 5)
+        except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+            signals_sent = signals_sent + terminate_process_group(
+                pgid, grace_seconds=1.0
+            )
+            proc.wait(timeout=5)
+        # Sweep any grandchildren the provider left behind, even on a clean
+        # exit: an orphaned transport is exactly the failure this closes.
+        if _default_is_group_alive(pgid):
+            signals_sent = signals_sent + terminate_process_group(
+                pgid, grace_seconds=term_grace_seconds
+            )
+        _reap_group(pgid)
+        exit_code = proc.returncode if proc.returncode is not None else 1
+        if exit_code < 0:
+            exit_code = 128 - exit_code
+    finally:
+        if stdin_handle not in (None, subprocess.DEVNULL):
+            stdin_handle.close()  # type: ignore[union-attr]
+        for sig, handler in previous_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):  # pragma: no cover
+                pass
+
+    if timed_out:
+        exit_code = EXIT_TIMEOUT
+    elif overflowed:
+        exit_code = EXIT_OUTPUT_OVERFLOW
+    elif interrupted["value"]:
+        exit_code = EXIT_INTERRUPTED
+
+    return SupervisionResult(
+        exit_code=exit_code,
+        timed_out=timed_out,
+        overflowed=overflowed,
+        interrupted=interrupted["value"],
+        signals_sent=signals_sent,
+        output_bytes=written,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Explicit recovery handoff
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Handoff:
+    source_lane: str
+    destination_lane: str
+    target_pr: str
+    expected_head: str
+    target_branch: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source_lane": self.source_lane,
+            "destination_lane": self.destination_lane,
+            "target_pr": self.target_pr,
+            "expected_head": self.expected_head,
+            "target_branch": self.target_branch,
+        }
+
+
+def validate_handoff(
+    *,
+    source_lane: str,
+    destination_lane: str,
+    target_pr: str,
+    expected_head: str,
+    running_lane: str,
+    repo: str,
+    observed_head: str,
+    target_branch: str = "",
+) -> Handoff:
+    """Validate an explicit orchestrator recovery handoff.
+
+    Every field is required. The handoff must name a different source lane, be
+    addressed to the lane that is actually running, point at a PR in the repo
+    under work, and pin the head the orchestrator inspected. A stale
+    ``expected_head`` is rejected rather than silently retargeted.
+    """
+
+    source = _text(source_lane).lower()
+    destination = _text(destination_lane).lower()
+    running = _text(running_lane).lower()
+    if not LANE_RE.match(source):
+        raise LaneDeliveryError("handoff requires a valid --handoff-source-lane")
+    if not LANE_RE.match(destination):
+        raise LaneDeliveryError("handoff requires a valid --handoff-destination-lane")
+    if source == destination:
+        raise LaneDeliveryError("handoff source and destination lanes must differ")
+    if destination != running:
+        raise LaneDeliveryError(
+            f"handoff destination lane {destination} does not match running lane {running}"
+        )
+
+    match = PR_REF_RE.match(_text(target_pr))
+    if not match:
+        raise LaneDeliveryError("handoff --handoff-target-pr must be owner/repo#number")
+    if not REPO_RE.match(_text(repo)):
+        raise LaneDeliveryError("handoff requires --repo as owner/repo")
+    if match.group("repo").lower() != _text(repo).lower():
+        raise LaneDeliveryError(
+            "handoff target PR repository does not match the repository under work"
+        )
+
+    expected = _text(expected_head).lower()
+    if not SHA_RE.match(expected):
+        raise LaneDeliveryError(
+            "handoff --handoff-expected-head must be a 40-character sha"
+        )
+    observed = _text(observed_head).lower()
+    if not SHA_RE.match(observed):
+        raise LaneDeliveryError("handoff needs an observed 40-character PR head sha")
+    if expected != observed:
+        raise LaneDeliveryError(
+            "handoff expected head does not match the current PR head; "
+            "re-issue the handoff against the current head"
+        )
+
+    return Handoff(
+        source_lane=source,
+        destination_lane=destination,
+        target_pr=f"{match.group('repo')}#{match.group('number')}",
+        expected_head=expected,
+        target_branch=_text(target_branch),
+    )
+
+
+def authorize_branch_write(
+    *,
+    lane: str,
+    branch: str,
+    lane_branch_prefixes: Iterable[str],
+    handoff: Handoff | None = None,
+) -> str:
+    """Return the authority that permits this lane to write ``branch``.
+
+    Normal single-writer enforcement is unchanged: a lane writes branches
+    carrying its own prefixes. The only other authority is a validated explicit
+    handoff naming that exact branch. Anything else is implicit cross-lane
+    takeover and is rejected.
+    """
+
+    branch_name = _text(branch)
+    if not branch_name:
+        raise LaneDeliveryError("branch is required")
+    for prefix in lane_branch_prefixes:
+        prefix_text = _text(prefix)
+        if prefix_text and branch_name.startswith(prefix_text):
+            return "lane_prefix"
+    if handoff is not None and handoff.target_branch == branch_name:
+        return "explicit_handoff"
+    raise LaneDeliveryError(
+        f"refusing implicit cross-lane takeover: lane {_text(lane)} may not write "
+        f"branch {branch_name} without an explicit recovery handoff"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Prompt auth-material hygiene
+# ---------------------------------------------------------------------------
+
+
+def scan_auth_material(text: str) -> tuple[str, ...]:
+    """Return the names of auth-material rules a prompt matches.
+
+    Only rule names are returned. The matched text is never echoed, so a report
+    cannot itself leak a token or a credential path.
+    """
+
+    body = text or ""
+    return tuple(name for name, pattern in AUTH_MATERIAL_RULES if pattern.search(body))
+
+
+def assert_prompt_free_of_auth_material(text: str) -> None:
+    """Raise if a provider prompt would send a provider hunting for secrets."""
+
+    matches = scan_auth_material(text)
+    if matches:
+        raise LaneDeliveryError(
+            "prompt contains auth-material discovery guidance: " + ", ".join(matches)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Metadata-only delivery outcome records
+# ---------------------------------------------------------------------------
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _assert_safe_metadata(value: Any, *, path: str) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _assert_safe_metadata(item, path=f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _assert_safe_metadata(item, path=f"{path}[{index}]")
+        return
+    if isinstance(value, (bool, int, float)) or value is None:
+        return
+    if not isinstance(value, str):
+        raise LaneDeliveryError(f"{path} must be a JSON scalar")
+    if len(value) > _MAX_METADATA_VALUE_CHARS:
+        raise LaneDeliveryError(f"{path} exceeds the metadata value length budget")
+    for name, pattern in _UNSAFE_METADATA_RULES:
+        if pattern.search(value):
+            raise LaneDeliveryError(f"{path} looks like {name}; outcomes are metadata only")
+
+
+def build_delivery_outcome_event(
+    *,
+    lane: str,
+    repo: str,
+    kind: str,
+    number: str,
+    outcome: DeliveryOutcome,
+    supervision_reason: str = "completed",
+    signals_sent: Iterable[str] = (),
+    elapsed_seconds: float | None = None,
+    user_interventions: int | None = None,
+    handoff: Handoff | None = None,
+    created_at: str = "",
+) -> dict[str, Any]:
+    """Build a metadata-only delivery outcome for Board/productivity reporting.
+
+    The event carries provider exit, delivery transition, handoff shape,
+    elapsed time, and intervention count. It never carries prompts,
+    transcripts, stdout/stderr, auth output, local paths, or secrets, and
+    :func:`_assert_safe_metadata` enforces that on every string leaf.
+    """
+
+    lane_text = _text(lane).lower()
+    if not LANE_RE.match(lane_text):
+        raise LaneDeliveryError("lane must be a short lowercase lane id")
+    repo_text = _text(repo)
+    if not REPO_RE.match(repo_text):
+        raise LaneDeliveryError("repo must be owner/repo")
+    if kind not in {"issue", "pr"}:
+        raise LaneDeliveryError("kind must be issue or pr")
+    number_text = _text(number)
+    if not number_text.isdigit():
+        raise LaneDeliveryError("number must be a positive integer")
+    if elapsed_seconds is not None and elapsed_seconds < 0:
+        raise LaneDeliveryError("elapsed_seconds must not be negative")
+    if user_interventions is not None and user_interventions < 0:
+        raise LaneDeliveryError("user_interventions must not be negative")
+
+    event: dict[str, Any] = {
+        "schema": DELIVERY_OUTCOME_SCHEMA,
+        "event_id": f"lane-delivery-{uuid.uuid4().hex[:12]}",
+        "created_at": _text(created_at) or _utc_now(),
+        "code_mower_version": __version__,
+        "lane": lane_text,
+        "repo": repo_text,
+        "target": {"kind": kind, "number": number_text},
+        "provider": {
+            "exit_code": int(outcome.provider_exit),
+            "supervision": _text(supervision_reason) or "completed",
+            "signals_sent": [_text(item) for item in signals_sent if _text(item)],
+        },
+        "delivery": outcome.as_dict(),
+        "handoff": handoff.as_dict() if handoff is not None else None,
+        "metrics": {},
+    }
+    if elapsed_seconds is not None:
+        event["metrics"]["elapsed_seconds"] = round(float(elapsed_seconds), 3)
+    if user_interventions is not None:
+        event["metrics"]["user_interventions"] = int(user_interventions)
+
+    _assert_safe_metadata(event, path="event")
+    return event
+
+
+def write_delivery_outcome_event(
+    event: Mapping[str, Any], output: Path, *, force: bool = False
+) -> Path:
+    if output.exists() and not force:
+        raise LaneDeliveryError(f"{output.name} already exists; pass --force to overwrite")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(dict(event), allow_nan=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return output
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _load_state(path: str) -> TargetState:
+    if path == "-":
+        payload = json.loads(sys.stdin.read() or "{}")
+    else:
+        payload = json.loads(Path(path).read_text(encoding="utf-8") or "{}")
+    if not isinstance(payload, Mapping):
+        raise LaneDeliveryError("state payload must be a JSON object")
+    return TargetState.from_mapping(payload)
+
+
+def _add_classify_parser(subparsers: Any) -> None:
+    classify = subparsers.add_parser(
+        "classify",
+        help="Classify delivery from a validated state transition, not exit code.",
+    )
+    classify.add_argument("--before", required=True, help="Snapshot JSON path or - for stdin.")
+    classify.add_argument("--after", required=True, help="Snapshot JSON path or - for stdin.")
+    classify.add_argument("--provider-exit", type=int, required=True)
+    classify.add_argument("--declared-outcome", default="")
+    classify.add_argument("--lane", default="")
+    classify.add_argument("--repo", default="")
+    classify.add_argument("--supervision", default="completed")
+    classify.add_argument("--signal", action="append", default=[])
+    classify.add_argument("--elapsed-seconds", type=float)
+    classify.add_argument("--user-interventions", type=int)
+    classify.add_argument("--handoff", default="", help="Validated handoff JSON path.")
+    classify.add_argument("--output", type=Path, help="Write the outcome event here.")
+    classify.add_argument("--force", action="store_true")
+    classify.add_argument("--json", action="store_true")
+
+
+def _add_handoff_parser(subparsers: Any) -> None:
+    handoff = subparsers.add_parser(
+        "handoff",
+        help="Validate an explicit orchestrator recovery handoff.",
+    )
+    handoff.add_argument("--lane", required=True, help="Lane actually running.")
+    handoff.add_argument("--repo", required=True)
+    handoff.add_argument("--source-lane", required=True)
+    handoff.add_argument("--destination-lane", required=True)
+    handoff.add_argument("--target-pr", required=True, help="owner/repo#number")
+    handoff.add_argument("--expected-head", required=True)
+    handoff.add_argument("--observed-head", required=True)
+    handoff.add_argument("--target-branch", default="")
+    handoff.add_argument("--output", type=Path)
+    handoff.add_argument("--json", action="store_true")
+
+
+def _add_scan_prompt_parser(subparsers: Any) -> None:
+    scan = subparsers.add_parser(
+        "scan-prompt",
+        help="Reject provider prompts that would discover or read auth material.",
+    )
+    scan.add_argument("--prompt-file", required=True, type=Path)
+    scan.add_argument("--json", action="store_true")
+
+
+def _add_supervise_parser(subparsers: Any) -> None:
+    supervise = subparsers.add_parser(
+        "supervise",
+        help="Run a provider CLI in its own process group with bounded output.",
+    )
+    supervise.add_argument("--log", required=True, type=Path)
+    supervise.add_argument("--timeout-seconds", type=float, required=True)
+    supervise.add_argument("--max-log-bytes", type=int, default=DEFAULT_MAX_LOG_BYTES)
+    supervise.add_argument("--cwd", type=Path)
+    supervise.add_argument("--stdin-file", type=Path)
+    supervise.add_argument("--status-file", type=Path)
+    supervise.add_argument("command", nargs=argparse.REMAINDER)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="code-mower lane-delivery")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_classify_parser(subparsers)
+    _add_handoff_parser(subparsers)
+    _add_scan_prompt_parser(subparsers)
+    _add_supervise_parser(subparsers)
+    args = parser.parse_args(argv)
+
+    try:
+        if args.command == "classify":
+            return _classify_main(args)
+        if args.command == "handoff":
+            return _handoff_main(args)
+        if args.command == "scan-prompt":
+            return _scan_prompt_main(args)
+        if args.command == "supervise":
+            return _supervise_main(args)
+    except LaneDeliveryError as exc:
+        print(f"lane-delivery: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"lane-delivery: {type(exc).__name__}", file=sys.stderr)
+        return 2
+    raise AssertionError(f"unhandled lane-delivery command: {args.command}")
+
+
+def _classify_main(args: argparse.Namespace) -> int:
+    before = _load_state(args.before)
+    after = _load_state(args.after)
+    outcome = classify_delivery(
+        before,
+        after,
+        provider_exit=args.provider_exit,
+        declared_outcome=args.declared_outcome,
+    )
+    handoff = None
+    if args.handoff:
+        payload = json.loads(Path(args.handoff).read_text(encoding="utf-8") or "{}")
+        handoff = Handoff(
+            source_lane=_text(payload.get("source_lane")),
+            destination_lane=_text(payload.get("destination_lane")),
+            target_pr=_text(payload.get("target_pr")),
+            expected_head=_text(payload.get("expected_head")),
+            target_branch=_text(payload.get("target_branch")),
+        )
+
+    event = None
+    if args.lane and args.repo:
+        event = build_delivery_outcome_event(
+            lane=args.lane,
+            repo=args.repo,
+            kind=after.kind,
+            number=after.number,
+            outcome=outcome,
+            supervision_reason=args.supervision,
+            signals_sent=args.signal,
+            elapsed_seconds=args.elapsed_seconds,
+            user_interventions=args.user_interventions,
+            handoff=handoff,
+        )
+        output = args.output or (
+            DEFAULT_DELIVERY_OUTCOME_DIR / f"{event['event_id']}.json"
+        )
+        write_delivery_outcome_event(event, output, force=args.force)
+
+    if args.json:
+        print(json.dumps(event or outcome.as_dict(), indent=2, sort_keys=True))
+    else:
+        print(
+            f"delivery {'ok' if outcome.delivered else 'missing'}: "
+            f"transition={outcome.transition} reason={outcome.reason}"
+        )
+    return 0 if outcome.delivered else 3
+
+
+def _handoff_main(args: argparse.Namespace) -> int:
+    handoff = validate_handoff(
+        source_lane=args.source_lane,
+        destination_lane=args.destination_lane,
+        target_pr=args.target_pr,
+        expected_head=args.expected_head,
+        running_lane=args.lane,
+        repo=args.repo,
+        observed_head=args.observed_head,
+        target_branch=args.target_branch,
+    )
+    payload = handoff.as_dict()
+    _assert_safe_metadata(payload, path="handoff")
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(
+            f"handoff accepted: {handoff.source_lane} -> {handoff.destination_lane} "
+            f"on {handoff.target_pr}"
+        )
+    return 0
+
+
+def _scan_prompt_main(args: argparse.Namespace) -> int:
+    text = args.prompt_file.read_text(encoding="utf-8", errors="replace")
+    matches = scan_auth_material(text)
+    if args.json:
+        print(json.dumps({"clean": not matches, "rules": list(matches)}, sort_keys=True))
+    elif matches:
+        print("prompt auth-material rules matched: " + ", ".join(matches), file=sys.stderr)
+    else:
+        print("prompt clean of auth-material discovery guidance")
+    return 0 if not matches else 2
+
+
+def _supervise_main(args: argparse.Namespace) -> int:
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise LaneDeliveryError("supervise requires a command after --")
+    result = supervise_process(
+        command,
+        log_path=args.log,
+        timeout_seconds=args.timeout_seconds,
+        max_log_bytes=args.max_log_bytes,
+        cwd=args.cwd,
+        stdin_path=args.stdin_file,
+    )
+    if args.status_file is not None:
+        args.status_file.parent.mkdir(parents=True, exist_ok=True)
+        args.status_file.write_text(
+            json.dumps(
+                {
+                    "exit_code": result.exit_code,
+                    "reason": result.reason,
+                    "signals_sent": list(result.signals_sent),
+                    "output_bytes": result.output_bytes,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    return result.exit_code
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
