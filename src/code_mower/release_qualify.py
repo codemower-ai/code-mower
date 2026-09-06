@@ -588,8 +588,11 @@ def validate_adoption_result_payload(
             )
 
         # Validate failure_reason if present
-        failure_reason = step.get("failure_reason")
-        if failure_reason is not None:
+        failure_reason = None
+        if "failure_reason" in step:
+            failure_reason = step["failure_reason"]
+            if failure_reason is None:
+                raise ValueError(f"adoption result step {index} failure_reason cannot be null")
             if not isinstance(failure_reason, str):
                 raise ValueError(f"adoption result step {index} failure_reason must be a string")
             if failure_reason not in PACKAGE_INSTALL_FAILURE_REASONS:

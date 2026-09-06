@@ -247,6 +247,15 @@ class FailureReasonSchemaTests(unittest.TestCase):
                 result, expected_package_identity="code-mower"
             )
 
+    def test_explicit_null_reason_rejected(self) -> None:
+        """Explicit "failure_reason": null must be rejected while omission is valid."""
+        result = _mock_result("fail", "fail", None)
+        result["steps"][0]["failure_reason"] = None
+        with self.assertRaisesRegex(ValueError, "failure_reason cannot be null"):
+            release_qualify.validate_adoption_result_payload(
+                result, expected_package_identity="code-mower"
+            )
+
     def test_qualification_boundary_classifies_final_failed_step(self) -> None:
         error = migration_install.RehearsalError(
             "package verification failed",
