@@ -65,7 +65,7 @@ from scripts import guard_package_workflows, privacy_scan
 
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_current_supervised_pilot_release(self) -> None:
-        self.assertEqual(__version__, "1.0.9")
+        self.assertEqual(__version__, "1.0.10")
 
     def test_dogfood_repo_has_real_root_config(self) -> None:
         config_path = ROOT / "code-mower.yml"
@@ -216,7 +216,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("Cold Install Vs Upgrade", install)
         self.assertIn("Switching Between pipx And uv", install)
         self.assertIn("uv tool install --python 3.12 --reinstall --refresh-package", install)
-        self.assertIn("code-mower==1.0.9", troubleshooting)
+        self.assertIn("code-mower==1.0.10", troubleshooting)
         self.assertNotIn("code-mower==0.8.0b1", troubleshooting)
         self.assertIn("pipx uninstall code-mower", install)
         for env_name in ("PIPX_HOME", "PIPX_BIN_DIR", "PIPX_LOG_DIR"):
@@ -1099,7 +1099,7 @@ exit 1
         )
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("pipx install code-mower==1.0.9", completed.stderr)
+        self.assertIn("pipx install code-mower==1.0.10", completed.stderr)
         self.assertIn("scripts/dev-python -m venv .venv", completed.stderr)
         self.assertIn(".venv/bin/code-mower", completed.stderr)
         self.assertNotIn("PYTHONPATH=src", completed.stderr)
@@ -3237,10 +3237,10 @@ jobs:
 
         cases = (
             (
-                'CODE_MOWER_STANDALONE_REF="v1.0.9"\n',
+                'CODE_MOWER_STANDALONE_REF="v1.0.10"\n',
                 "pass",
                 "matches_running_package",
-                "v1.0.9",
+                "v1.0.10",
             ),
             (
                 'CODE_MOWER_STANDALONE_REF="v0.9.1-beta.1"\n',
@@ -3271,12 +3271,12 @@ jobs:
 
                     payload = migration._standalone_pin_drift_summary(
                         repo,
-                        package_version="1.0.9",
+                        package_version="1.0.10",
                     )
 
             self.assertEqual(payload["status"], status)
             self.assertEqual(payload["reason"], reason)
-            self.assertEqual(payload["expected_ref"], "v1.0.9")
+            self.assertEqual(payload["expected_ref"], "v1.0.10")
             if current_ref is None:
                 self.assertNotIn("current_ref", payload)
             else:
@@ -3297,7 +3297,7 @@ jobs:
 
             payload = migration._standalone_pin_drift_summary(
                 repo,
-                package_version="1.0.9",
+                package_version="1.0.10",
             )
 
         self.assertEqual(payload["status"], "warn")
@@ -3360,7 +3360,7 @@ jobs:
             "standalone_pin": {
                 "status": "skip",
                 "reason": "pin_file_absent",
-                "expected_ref": "v1.0.9",
+                "expected_ref": "v1.0.10",
             },
             "builder_hint": {
                 "status": "skip",
@@ -3372,7 +3372,7 @@ jobs:
 
         rendered = migration.render_setup_drift_text(payload)
 
-        self.assertIn("Standalone pin: SKIP pin_file_absent expected=v1.0.9", rendered)
+        self.assertIn("Standalone pin: SKIP pin_file_absent expected=v1.0.10", rendered)
 
     def test_setup_drift_reports_builder_hint_when_builders_omitted(self) -> None:
         from code_mower import migration
@@ -5552,11 +5552,11 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
                 (output_dir / "src/code_mower/cloud_client/dogfood.py").is_file()
             )
             self.assertIn(
-                'version = "1.0.9"',
+                'version = "1.0.10"',
                 (output_dir / "pyproject.toml").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                '__version__ = "1.0.9"',
+                '__version__ = "1.0.10"',
                 (output_dir / "src/code_mower/__init__.py").read_text(
                     encoding="utf-8"
                 ),
@@ -7561,7 +7561,7 @@ def main():
             "pip",
             "install",
             "--no-cache-dir",
-            "code-mower==1.0.9",
+            "code-mower==1.0.10",
         ]
 
         def fake_run_step(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -7628,7 +7628,7 @@ def main():
         self.assertTrue(code_mower_migration._package_spec_uses_package_index("code-mower"))
         self.assertTrue(
             code_mower_migration._package_spec_uses_package_index(
-                "code-mower==1.0.9"
+                "code-mower==1.0.10"
             )
         )
         self.assertFalse(code_mower_migration._package_spec_uses_package_index("."))
@@ -7637,7 +7637,7 @@ def main():
         )
         self.assertFalse(
             code_mower_migration._package_spec_uses_package_index(
-                "git+https://github.com/codemower-ai/code-mower.git@v1.0.9"
+                "git+https://github.com/codemower-ai/code-mower.git@v1.0.10"
             )
         )
 
@@ -7647,7 +7647,7 @@ def main():
 
             with self.assertRaisesRegex(ValueError, "--allow-package-index"):
                 code_mower_migration.run_package_install_rehearsal(
-                    package_spec="code-mower==1.0.9",
+                    package_spec="code-mower==1.0.10",
                     work_dir=work_dir,
                 )
 
@@ -7675,7 +7675,7 @@ def main():
                 [
                     "package-install-rehearsal",
                     "--package-spec",
-                    "code-mower==1.0.9",
+                    "code-mower==1.0.10",
                     "--allow-package-index",
                     "--upgrade-pip",
                     "--pip-no-cache",
@@ -7731,10 +7731,10 @@ def main():
         payload = release_readiness.render_release_readiness(ROOT)
 
         self.assertEqual(payload["status"], "pass")
-        self.assertEqual(payload["version"], "1.0.9")
-        self.assertEqual(payload["release_tag"], "v1.0.9")
-        self.assertEqual(payload["alpha_tag"], "v1.0.9")
-        self.assertEqual(payload["package_index_spec"], "code-mower==1.0.9")
+        self.assertEqual(payload["version"], "1.0.10")
+        self.assertEqual(payload["release_tag"], "v1.0.10")
+        self.assertEqual(payload["alpha_tag"], "v1.0.10")
+        self.assertEqual(payload["package_index_spec"], "code-mower==1.0.10")
         check_ids = {check["id"]: check for check in payload["checks"]}
         self.assertEqual(check_ids["package-version-consistency"]["status"], "pass")
         self.assertEqual(
@@ -7750,9 +7750,9 @@ def main():
         self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "pass")
         commands = {action["id"]: action["command"] for action in payload["next_actions"]}
         urls = {action["id"]: action.get("url", "") for action in payload["next_actions"]}
-        self.assertIn("--ref v1.0.9", commands["dry-run-release-workflow"])
+        self.assertIn("--ref v1.0.10", commands["dry-run-release-workflow"])
         self.assertNotIn("--ref main", commands["dry-run-release-workflow"])
-        self.assertIn("--ref v1.0.9", commands["publish-testpypi-candidate"])
+        self.assertIn("--ref v1.0.10", commands["publish-testpypi-candidate"])
         self.assertNotIn("--ref main", commands["publish-testpypi-candidate"])
         self.assertIn("publish_testpypi=true", commands["publish-testpypi-candidate"])
         self.assertIn("publish_pypi=false", commands["publish-testpypi-candidate"])
@@ -7789,7 +7789,7 @@ def main():
         check_ids = {check["id"]: check for check in payload["checks"]}
         check = check_ids["materialized-package-version-consistency"]
         self.assertEqual(check["status"], "fail")
-        self.assertEqual(check["detail"]["source_version"], "1.0.9")
+        self.assertEqual(check["detail"]["source_version"], "1.0.10")
         self.assertEqual(check["detail"]["generated_init_version"], "0.0.0")
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
@@ -7893,20 +7893,20 @@ def main():
             "v1.0.0-rc.1",
         )
         self.assertEqual(
-            release_readiness._release_tag_for_version("1.0.9"),
-            "v1.0.9",
+            release_readiness._release_tag_for_version("1.0.10"),
+            "v1.0.10",
         )
         self.assertEqual(
-            code_mower_versioning.release_tag_for_version("1.0.9"),
-            "v1.0.9",
+            code_mower_versioning.release_tag_for_version("1.0.10"),
+            "v1.0.10",
         )
 
     def test_public_release_baseline_helpers_derive_announcement_links(self) -> None:
         self.assertEqual(
             code_mower_versioning.public_baseline_sentence(__version__),
             (
-                "The current package-index release baseline is `v1.0.9`, "
-                "with pinned package install spec `code-mower==1.0.9`. "
+                "The current package-index release baseline is `v1.0.10`, "
+                "with pinned package install spec `code-mower==1.0.10`. "
                 "Release evidence is recorded on the GitHub release and in the "
                 "first-user install rehearsal."
             ),
@@ -7915,7 +7915,7 @@ def main():
             code_mower_versioning.tagged_doc_url(__version__),
             (
                 "https://github.com/codemower-ai/code-mower/blob/"
-                "v1.0.9/docs/try-in-10-minutes.md"
+                "v1.0.10/docs/try-in-10-minutes.md"
             ),
         )
 
@@ -7968,15 +7968,15 @@ def main():
         )
 
         current_status = (
-            "The current package-index release baseline is `v1.0.9`, with "
-            "pinned package install spec `code-mower==1.0.9`. Release "
+            "The current package-index release baseline is `v1.0.10`, with "
+            "pinned package install spec `code-mower==1.0.10`. Release "
             "evidence is recorded on the GitHub release and in the first-user "
             "install rehearsal."
         )
         for text in (readme, current_state, rollout):
             self.assertIn(current_status, " ".join(text.split()))
         self.assertIn(
-            "The current package-index release entrypoint is `code-mower==1.0.9`",
+            "The current package-index release entrypoint is `code-mower==1.0.10`",
             public_release,
         )
         self.assertIn("The v1.0 supervised-pilot release includes", public_release)
@@ -7986,7 +7986,7 @@ def main():
         )
 
         self.assertIn(
-            "The current public-release baseline is `v1.0.9`",
+            "The current public-release baseline is `v1.0.10`",
             oss_checklist,
         )
         self.assertIn(
@@ -8017,7 +8017,7 @@ def main():
             " ".join(first_user.split()),
         )
         self.assertIn("never substitute mutable `main`", first_user)
-        self.assertEqual(first_user.count("  --ref v1.0.9 \\"), 2)
+        self.assertEqual(first_user.count("  --ref v1.0.10 \\"), 2)
         self.assertNotIn("  --ref main \\", first_user)
         self.assertIn("-f publish_testpypi=true", first_user)
         self.assertIn("-f publish_pypi=false", first_user)
@@ -8029,23 +8029,23 @@ def main():
             first_user,
         )
         self.assertNotIn(
-            "The latest public-package rehearsal for `v1.0.9` was run",
+            "The latest public-package rehearsal for `v1.0.10` was run",
             first_user,
         )
-        self.assertNotIn("TestPyPI is not\npublished for `1.0.9`", first_user)
+        self.assertNotIn("TestPyPI is not\npublished for `1.0.10`", first_user)
         for text in (readme, current_state, rollout):
             self.assertNotIn(
-                "published on PyPI as `code-mower==1.0.9`",
+                "published on PyPI as `code-mower==1.0.10`",
                 text,
             )
             self.assertNotIn(
                 "latest 10/10 public-package readiness proof for "
-                "`code-mower==1.0.9`",
+                "`code-mower==1.0.10`",
                 text,
             )
             self.assertNotIn(
                 "public PyPI package-install rehearsal from "
-                "`code-mower==1.0.9`",
+                "`code-mower==1.0.10`",
                 text,
             )
             self.assertNotIn("beta.52: 10/10 first-user readiness", text)
@@ -8345,7 +8345,7 @@ def main():
 
         self.assertIn("Python 3.12 or newer", install)
         self.assertIn('pipx install --python "$CODE_MOWER_PYTHON"', install)
-        self.assertIn("uv tool install --python 3.12 code-mower==1.0.9", install)
+        self.assertIn("uv tool install --python 3.12 code-mower==1.0.10", install)
         self.assertIn(
             'PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON"',
             install,
@@ -8439,7 +8439,7 @@ def main():
             / "v101-effectiveness-assessment.md",
         }
         stale_phrases = (
-            "pipx install --python python3.12 code-mower==1.0.9",
+            "pipx install --python python3.12 code-mower==1.0.10",
             "Use only after TestPyPI passes.",
             "future newest betas until 1.0",
             "during v0.7 adoption",
@@ -8492,7 +8492,7 @@ def main():
         troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(
             encoding="utf-8",
         )
-        release_notes = (ROOT / "docs" / "v109-release-notes.md").read_text(
+        release_notes = (ROOT / "docs" / "v1010-release-notes.md").read_text(
             encoding="utf-8",
         )
 
@@ -8510,6 +8510,7 @@ def main():
         self.assertIn("[v1.0.7 Release Notes](docs/v107-release-notes.md)", readme)
         self.assertIn("[v1.0.8 Release Notes](docs/v108-release-notes.md)", readme)
         self.assertIn("[v1.0.9 Release Notes](docs/v109-release-notes.md)", readme)
+        self.assertIn("[v1.0.10 Release Notes](docs/v1010-release-notes.md)", readme)
         self.assertIn(
             "[v1.0.1 Effectiveness Assessment](docs/v101-effectiveness-assessment.md)",
             readme,
@@ -8521,7 +8522,7 @@ def main():
         self.assertIn("Manual Audit Wrapper Fails Before Reviewing", troubleshooting)
         self.assertIn("OWNER/REPO:/absolute/path/to/pr-head-checkout", troubleshooting)
         self.assertIn("structured output", " ".join(troubleshooting.split()))
-        self.assertIn("Code Mower v1.0.9 Release Notes", release_notes)
+        self.assertIn("Code Mower v1.0.10 Release Notes", release_notes)
         self.assertIn("code-mower release qualify", release_notes)
         self.assertIn("code-mower release campaign", release_notes)
         self.assertIn("code_mower.adoptionResult.v1", release_notes)
@@ -8728,7 +8729,7 @@ def main():
             "doctor --adoption --repo codemower-ai/code-mower",
             doctor_step["command"],
         )
-        self.assertIn("code-mower==1.0.9", package_step["command"])
+        self.assertIn("code-mower==1.0.10", package_step["command"])
         self.assertIn("--allow-package-index", package_step["command"])
         self.assertIn("current published PyPI package", package_step["why"])
         self.assertIn("first_user_readiness", package_step["why"])

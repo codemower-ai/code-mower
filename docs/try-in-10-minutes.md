@@ -21,8 +21,8 @@ Use this install matrix:
 
 | Environment | Command shape |
 | --- | --- |
-| Laptop/workstation | `pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.9` |
-| Hosted agent, CI box, or minimal Linux VM | `uv tool install --python 3.12 code-mower==1.0.9` |
+| Laptop/workstation | `pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.10` |
+| Hosted agent, CI box, or minimal Linux VM | `uv tool install --python 3.12 code-mower==1.0.10` |
 | Code Mower contributor checkout | `scripts/dev-python -m venv .venv` then `.venv/bin/python -m pip install -e ".[test]"` |
 
 For a cold laptop install:
@@ -30,7 +30,7 @@ For a cold laptop install:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.9
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.10
 command -v code-mower
 code-mower --version
 ```
@@ -48,7 +48,7 @@ For a repository that already has generated Code Mower support, follow
 [Upgrade An Existing Repository](upgrade-existing-repo.md) before copying a new
 `.code-mower.generated` tree.
 
-`1.0.9` is the supervised-pilot release. To follow a future prerelease line
+`1.0.10` is the supervised-pilot release. To follow a future prerelease line
 instead of pinning this exact build:
 
 ```bash
