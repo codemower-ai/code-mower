@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import atexit
 import copy
 import io
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +22,62 @@ from code_mower import init as code_mower_init
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "src/code_mower/templates/code-mower.example.yml"
+
+# The runner resolves `lane-delivery` from an explicit pin before it looks at
+# PATH, so a fixture states which implementation it means instead of inheriting
+# whichever code-mower happens to be installed on the machine.
+#
+# The pin is one executable path, never a command line: the running interpreter
+# can live under a directory whose name contains a space, and any argv that came
+# from splitting an environment string on whitespace would be truncated there.
+# A multi-argument invocation therefore ships an executable wrapper and pins the
+# wrapper path.
+_LANE_DELIVERY_WRAPPER = f"""#!/usr/bin/env bash
+exec {shlex.quote(sys.executable)} -m code_mower.lane_delivery "$@"
+"""
+
+
+def _write_lane_delivery_wrapper(directory: Path) -> Path:
+    wrapper = Path(directory) / "lane-delivery"
+    wrapper.write_text(_LANE_DELIVERY_WRAPPER, encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+# The space in the directory name is the regression: a pin whose path contains
+# one used to be truncated at the space, which took out every fixture below.
+_LANE_DELIVERY_DIR = Path(tempfile.mkdtemp(prefix="code mower lane delivery "))
+atexit.register(shutil.rmtree, _LANE_DELIVERY_DIR, ignore_errors=True)
+_LANE_DELIVERY_ENV = {
+    "CODE_MOWER_LANE_DELIVERY_CMD": str(_write_lane_delivery_wrapper(_LANE_DELIVERY_DIR)),
+    "PYTHONPATH": str(ROOT / "src"),
+}
+
+# Delivery is a validated issue/PR transition, so a functional fixture has to
+# answer the before/after snapshot reads. The fake provider drops
+# $HOME/lane-delivered to model "this run opened the lane's PR".
+_FAKE_GH_DELIVERY_HEADER = """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
+  if [ -f "$HOME/lane-delivered" ]; then
+    printf '%s\\n' '[{"number":77,"headRefName":"codex/issue-12","closingIssuesReferences":[{"number":12}]}]'
+  else
+    printf '%s\\n' '[]'
+  fi
+  exit 0
+elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
+  printf '%s\\n' '["tier:R","builder:codex","dispatched:codex"]'
+  exit 0
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefOid,state,labels"* ]]; then
+  printf '%s\\n' '{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"OPEN","labels":[]}'
+  exit 0
+elif [ "$cmd" = "issue comment" ] || [ "$cmd" = "pr comment" ]; then
+  printf 'https://github.com/owner/repo/issues/12#issuecomment-1\\n'
+  exit 0
+fi
+"""
 
 
 def _builders_plan(config: dict | None = None):
@@ -216,7 +275,11 @@ class InitBuildLoopTests(unittest.TestCase):
             self.assertIn(
                 "--json number,labels,updatedAt,headRepository,headRefName", runner_text
             )
-            self.assertIn("--json headRefName,headRepository,labels", runner_text)
+            # headRefOid joins the target-PR read: an explicit recovery handoff
+            # is validated against the head it was authorized for.
+            self.assertIn(
+                "--json headRefName,headRefOid,headRepository,labels", runner_text
+            )
             self.assertNotIn("def has_builder_label", runner_text)
             self.assertIn("def has_lane_prefix", runner_text)
             self.assertIn("def same_head_repo", runner_text)
@@ -752,11 +815,8 @@ fi
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-} ${2:-}"
-args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:codex"},{"name":"dispatched:codex"}],"assignees":[],"author":{"login":"owner"}}]'
@@ -806,6 +866,7 @@ exit 0
                 """#!/usr/bin/env bash
 set -euo pipefail
 cat >/dev/null
+: > "$HOME/lane-delivered"
 printf 'fake codex completed\\n'
 """,
                 encoding="utf-8",
@@ -829,6 +890,7 @@ printf 'fake codex completed\\n'
                     "LANE_CODEX_EXTRA_FLAGS": "--fake-extra",
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    **_LANE_DELIVERY_ENV,
                 },
                 text=True,
                 capture_output=True,
@@ -878,11 +940,8 @@ printf 'fake codex completed\\n'
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-} ${2:-}"
-args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Untrusted title injection","labels":[{"name":"tier:R"},{"name":"builder:codex"},{"name":"dispatched:codex"}],"assignees":[],"author":{"login":"drive-by"}}]'
@@ -928,6 +987,7 @@ exit 0
                 """#!/usr/bin/env bash
 set -euo pipefail
 cat > "$PROMPT_LOG"
+: > "$HOME/lane-delivered"
 printf 'fake codex completed\\n'
 """,
                 encoding="utf-8",
@@ -952,6 +1012,7 @@ printf 'fake codex completed\\n'
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                     "PROMPT_LOG": str(prompt_log),
+                    **_LANE_DELIVERY_ENV,
                 },
                 text=True,
                 capture_output=True,

@@ -7,7 +7,50 @@ later entries are regular releases.
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- `code-mower lane-delivery` gives the local builder runner a provider-neutral
+  delivery and recovery contract: delivery is classified from a validated
+  issue/PR/head transition or a bounded `no_change`/`owner_action` outcome the
+  runner validates itself, the wall-clock cap does not exempt a run from that
+  classification, snapshot lookups fail closed instead of recording an empty
+  value a comparison would read as delivery, providers run in their own process
+  group that is terminated and reaped on timeout, interruption, and overflow,
+  and an explicit orchestrator handoff (source lane, destination lane, target
+  PR, expected head) is the only way to write a PR branch owned by another lane.
+  A handoff only authorizes a branch the named source lane actually owns, and a
+  bounded outcome only counts with a non-empty one-line summary. The cap is a
+  clock, not a verdict: a run the supervisor stopped is judged on the transition
+  it left behind, so work pushed before the cap fired still counts and a cap
+  that produced nothing still does not, and one that produced nothing exits `3`
+  rather than the supervisor's own `124`/`125`/`130`, which would report a cap
+  as a provider failure. Only a provider that ended itself keeps its exit code.
+  A bounded outcome is an alternative to delivery, never an addition to one: the
+  runner reads the transition (`lane-delivery transition`, the comparison
+  `classify` makes) before it writes anything to the target and brokers a
+  declaration only when it observed no new pull request and no advanced head, so
+  a provider that both declared and pushed cannot leave an owner-blocked pull
+  request next to a comment saying nothing changed.
+- Each local builder run records a metadata-only delivery outcome for Board and
+  productivity reporting: provider exit, delivery transition, handoff, elapsed
+  time, and intervention count.
+- `CODE_MOWER_LANE_DELIVERY_CMD` pins which `lane-delivery` the Mac lane runner
+  uses, ahead of this source checkout and any installed `code-mower`. It names
+  one executable path, like the runner's other command overrides, so a pinned
+  path containing a space is not truncated; pin a wrapper script to supply
+  extra arguments.
+
+### Changed
+
+- A supervised provider's own exit ends the run even when a background
+  descendant still holds its stdout open. The supervisor drains what is in
+  flight, then terminates and reaps the group, instead of waiting out the lane
+  timeout behind a lingering transport and reporting a timeout for a provider
+  that finished.
+- Provider prompts assembled by the Mac lane runner are scanned and rejected if
+  they would send a provider looking for token files, credential-helper output,
+  or other auth material. The runner brokers the comments and labels the
+  contract needs.
 
 ## v1.0.9
 
