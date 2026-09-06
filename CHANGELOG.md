@@ -7,6 +7,15 @@ later entries are regular releases.
 
 ## Unreleased
 
+No changes yet.
+
+## v1.0.10
+
+This patch makes local builder lanes deliverable and recoverable, simplifies
+the first run, and publishes the 20-sample provider calibration scorecard. It
+preserves supervised pilot gate semantics, Python 3.12+, and the metadata-only
+privacy boundary.
+
 ### Added
 
 - `code-mower lane-delivery` gives the local builder runner a provider-neutral
@@ -39,6 +48,17 @@ later entries are regular releases.
   one executable path, like the runner's other command overrides, so a pinned
   path containing a space is not truncated; pin a wrapper script to supply
   extra arguments.
+- A first-class local Devin CLI provider contract, a maintained
+  release-qualification adapter, a supervised builder lane with self-hosted
+  runner support, and an informational reviewer lane (#746, PRs #747, #748,
+  #749, #750).
+- `code-mower participants` and host-led session briefs make reviewer and
+  builder selection explicit for a session instead of implied by config
+  (#756).
+- `docs/provider-calibration-scorecard.md` publishes the 20-sample builder
+  corpus: five bounded real issues each for Cursor, Muse, Antigravity, and
+  Devin, with comparable aggregates, limitations, and role recommendations. It
+  promotes no provider to reviewer merge authority (#765).
 
 ### Changed
 
@@ -51,6 +71,24 @@ later entries are regular releases.
   they would send a provider looking for token files, credential-helper output,
   or other auth material. The runner brokers the comments and labels the
   contract needs.
+- First-run defaults and guidance are simpler: `init --easy` and `next-steps`
+  present one recommended path with executable commands instead of a wide
+  provider menu (#755).
+- Mac lane runner builder prompts require issue-linked pull request delivery, so
+  a run is judged from the pull request's GitHub closing-issue reference rather
+  than a bare mention (#763).
+
+### Fixed
+
+- Package-install rehearsal omits empty optional pip flags instead of passing
+  an empty argument to `pip install` (#740).
+- Bounded hosted campaign result rejection reasons are surfaced in status and
+  watch output, so a rejected result is distinguishable from a missing one
+  (#741).
+- The Codex campaign adapter compiles an API-compatible structured-output
+  schema, which the API previously rejected before generation (#739).
+- The Mac lane runner accepts empty optional provider extra flags under
+  `set -u` instead of aborting the run (#753).
 
 ## v1.0.9
 
