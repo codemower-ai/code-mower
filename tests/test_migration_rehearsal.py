@@ -49,15 +49,11 @@ class CandidateCommandBuilderTests(unittest.TestCase):
                 "https://test.pypi.org/simple/",
                 "--dest",
                 "/tmp/candidate",
-                "--extra-index-url",
-                "",
-                "--find-links",
-                "",
                 "code-mower==1.0.0",
             ],
         )
-        # The explicit empty value overrides global and site pip config.
-        self.assertEqual(command[command.index("--extra-index-url") + 1], "")
+        self.assertNotIn("--extra-index-url", command)
+        self.assertNotIn("--find-links", command)
 
     def test_candidate_environment_ignores_ambient_pip_indexes(self) -> None:
         with mock.patch.dict(
@@ -75,7 +71,7 @@ class CandidateCommandBuilderTests(unittest.TestCase):
         self.assertEqual(env["PIP_CONFIG_FILE"], migration_install.os.devnull)
         self.assertEqual(env["PATH"], "/usr/bin")
 
-    def test_candidate_commands_override_global_and_site_source_lists(self) -> None:
+    def test_candidate_commands_omit_empty_optional_flags(self) -> None:
         download = migration_install._pip_download_candidate_command(
             Path("/venv/bin/python"),
             "code-mower==1.0.0",
@@ -88,9 +84,8 @@ class CandidateCommandBuilderTests(unittest.TestCase):
             dependency_index_url="https://pypi.org/simple/",
         )
         for command in (download, install):
-            for flag in ("--extra-index-url", "--find-links"):
-                self.assertIn(flag, command)
-                self.assertEqual(command[command.index(flag) + 1], "")
+            self.assertNotIn("--extra-index-url", command)
+            self.assertNotIn("--find-links", command)
 
     def test_download_command_honors_no_cache(self) -> None:
         command = migration_install._pip_download_candidate_command(
@@ -118,10 +113,6 @@ class CandidateCommandBuilderTests(unittest.TestCase):
                 "install",
                 "--index-url",
                 "https://pypi.org/simple/",
-                "--extra-index-url",
-                "",
-                "--find-links",
-                "",
                 "/tmp/candidate/code_mower-1.0.0-py3-none-any.whl",
             ],
         )
@@ -138,6 +129,70 @@ class CandidateCommandBuilderTests(unittest.TestCase):
             Path("/tmp/candidate/code_mower-1.0.0-py3-none-any.whl"),
         )
         self.assertNotIn("--index-url", command)
+        self.assertNotIn("--extra-index-url", command)
+        self.assertNotIn("--find-links", command)
+
+    def test_install_command_omits_empty_optional_flags(self) -> None:
+        command = migration_install._pip_install_command(
+            Path("/venv/bin/python"),
+            "code-mower==1.0.0",
+            pip_index_url="https://pypi.org/simple/",
+        )
+        self.assertEqual(
+            command,
+            [
+                "/venv/bin/python",
+                "-m",
+                "pip",
+                "--isolated",
+                "install",
+                "--index-url",
+                "https://pypi.org/simple/",
+                "code-mower==1.0.0",
+            ],
+        )
+        self.assertNotIn("--extra-index-url", command)
+        self.assertNotIn("--find-links", command)
+
+    def test_install_command_includes_extra_index_urls(self) -> None:
+        command = migration_install._pip_install_command(
+            Path("/venv/bin/python"),
+            "code-mower==1.0.0",
+            pip_index_url="https://pypi.org/simple/",
+            pip_extra_index_urls=["", "https://extra.invalid/simple/", ""],
+        )
+        self.assertEqual(
+            command,
+            [
+                "/venv/bin/python",
+                "-m",
+                "pip",
+                "--isolated",
+                "install",
+                "--index-url",
+                "https://pypi.org/simple/",
+                "--extra-index-url",
+                "https://extra.invalid/simple/",
+                "code-mower==1.0.0",
+            ],
+        )
+
+    def test_install_command_without_source_overrides_is_not_isolated(self) -> None:
+        command = migration_install._pip_install_command(
+            Path("/venv/bin/python"),
+            "code-mower==1.0.0",
+        )
+        self.assertEqual(
+            command,
+            [
+                "/venv/bin/python",
+                "-m",
+                "pip",
+                "install",
+                "code-mower==1.0.0",
+            ],
+        )
+        self.assertNotIn("--isolated", command)
 
 
 class ParseExactNameVersionSpecTests(unittest.TestCase):
@@ -258,13 +313,13 @@ class TwoStageCandidateInstallTests(unittest.TestCase):
         self.assertIn("download", download_command)
         self.assertIn("--index-url", download_command)
         self.assertIn("https://test.pypi.org/simple/", download_command)
-        self.assertEqual(download_command[download_command.index("--extra-index-url") + 1], "")
+        self.assertNotIn("--extra-index-url", download_command)
         self.assertIn("--no-deps", download_command)
 
         self.assertIn("install", install_command)
         self.assertIn("--index-url", install_command)
         self.assertIn("https://pypi.org/simple/", install_command)
-        self.assertEqual(install_command[install_command.index("--extra-index-url") + 1], "")
+        self.assertNotIn("--extra-index-url", install_command)
         self.assertTrue(install_command[-1].endswith("code_mower-1.0.0-py3-none-any.whl"))
 
     def test_fails_closed_on_zero_artifacts(self) -> None:

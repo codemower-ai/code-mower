@@ -48,12 +48,6 @@ _WHEEL_FILENAME_PATTERN = re.compile(
 _SDIST_FILENAME_PATTERN = re.compile(
     r"^(?P<name>[A-Za-z0-9_.]+)-(?P<version>[A-Za-z0-9_.!+]+)\.(?:tar\.gz|zip)$"
 )
-_PIP_SOURCE_RESET_ARGS = (
-    "--extra-index-url",
-    "",
-    "--find-links",
-    "",
-)
 
 MIRRORED_IMPLEMENTATION_PATTERNS = (
     "tools/code_mower_*.py",
@@ -409,8 +403,6 @@ def _pip_install_command(
         command.append("--no-cache-dir")
     if pip_index_url:
         command.extend(["--index-url", pip_index_url])
-    if source_isolated:
-        command.extend(_PIP_SOURCE_RESET_ARGS)
     for extra_index_url in extra_index_urls:
         command.extend(["--extra-index-url", extra_index_url])
     command.append(package_spec)
@@ -464,18 +456,18 @@ def _pip_download_candidate_command(
 ) -> list[str]:
     """Download the exact candidate artifact with ``index_url`` as the *only* index.
 
-    No ``--extra-index-url`` is ever added here: pip does not prioritize
-    ``--index-url`` over ``--extra-index-url``, so a single combined install
-    command cannot prove which configured index actually supplied a
-    candidate. Passing exactly one index -- and ``--no-deps``, since
-    dependencies are not part of this release candidate -- is what makes the
-    proof possible: nothing but ``index_url`` can satisfy this command.
+    No ``--extra-index-url`` or ``--find-links`` flag is ever added here, empty
+    or otherwise: pip does not prioritize ``--index-url`` over
+    ``--extra-index-url``, so a single combined install command cannot prove
+    which configured index actually supplied a candidate. Passing exactly one
+    index -- and ``--no-deps``, since dependencies are not part of this release
+    candidate -- is what makes the proof possible: nothing but ``index_url`` can
+    satisfy this command.
     """
     command = [str(venv_python), "-m", "pip", "--isolated", "download", "--no-deps"]
     if pip_no_cache:
         command.append("--no-cache-dir")
     command.extend(["--index-url", index_url, "--dest", str(dest_dir)])
-    command.extend(_PIP_SOURCE_RESET_ARGS)
     command.append(package_spec)
     return command
 
@@ -492,14 +484,14 @@ def _pip_install_local_artifact_command(
     The candidate's own distribution comes from the local file, so its
     identity is not subject to index resolution at all here; only its
     dependencies -- which are not part of this release candidate -- resolve
-    against ``dependency_index_url``.
+    against ``dependency_index_url``. Empty optional source flags are omitted
+    entirely.
     """
     command = [str(venv_python), "-m", "pip", "--isolated", "install"]
     if pip_no_cache:
         command.append("--no-cache-dir")
     if dependency_index_url:
         command.extend(["--index-url", dependency_index_url])
-    command.extend(_PIP_SOURCE_RESET_ARGS)
     command.append(str(artifact_path))
     return command
 
