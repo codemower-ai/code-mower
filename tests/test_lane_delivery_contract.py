@@ -141,6 +141,104 @@ class DeliveryClassificationTests(unittest.TestCase):
                 _state(), _state(), provider_exit=0, declared_outcome="shipped"
             )
 
+    def test_failed_before_snapshot_does_not_fabricate_a_pr_opened(self) -> None:
+        # The before lookup failed, so pr_number is empty because it is unknown
+        # and not because no PR exists. The after snapshot sees the PR that was
+        # already open, and the naive comparison reads that as pr_opened.
+        before = _state(snapshot_complete=False)
+        after = _state(pr_number="901", head_sha=SHA_A)
+
+        outcome = lane_delivery.classify_delivery(before, after, provider_exit=0)
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.transition, lane_delivery.TRANSITION_UNKNOWN)
+        self.assertEqual(outcome.reason, "target_snapshot_unavailable")
+
+    def test_failed_before_snapshot_does_not_fabricate_a_head_advance(self) -> None:
+        before = _state(
+            kind="pr", number="900", pr_number="900", snapshot_complete=False
+        )
+        after = _state(kind="pr", number="900", pr_number="900", head_sha=SHA_A)
+
+        outcome = lane_delivery.classify_delivery(before, after, provider_exit=0)
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.transition, lane_delivery.TRANSITION_UNKNOWN)
+        self.assertEqual(outcome.reason, "target_snapshot_unavailable")
+
+    def test_failed_after_snapshot_is_not_a_delivery(self) -> None:
+        before = _state(kind="pr", number="900", pr_number="900", head_sha=SHA_A)
+        after = _state(
+            kind="pr",
+            number="900",
+            pr_number="900",
+            head_sha=SHA_B,
+            snapshot_complete=False,
+        )
+
+        outcome = lane_delivery.classify_delivery(before, after, provider_exit=0)
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.reason, "target_snapshot_unavailable")
+
+    def test_incomplete_snapshot_also_rejects_a_declared_outcome(self) -> None:
+        # A declared outcome is validated against the comment and label in the
+        # after snapshot, which an incomplete snapshot cannot vouch for either.
+        outcome = lane_delivery.classify_delivery(
+            _state(),
+            _state(
+                labels=["needs-owner"],
+                runner_comment_id="1",
+                snapshot_complete=False,
+            ),
+            provider_exit=0,
+            declared_outcome="owner_action",
+        )
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.reason, "target_snapshot_unavailable")
+
+    def test_complete_snapshots_still_classify_normally(self) -> None:
+        outcome = lane_delivery.classify_delivery(
+            _state(snapshot_complete=True),
+            _state(pr_number="901", head_sha=SHA_A, snapshot_complete=True),
+            provider_exit=0,
+        )
+
+        self.assertTrue(outcome.delivered)
+        self.assertEqual(outcome.transition, lane_delivery.TRANSITION_PR_OPENED)
+
+    def test_snapshot_complete_must_be_a_boolean(self) -> None:
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            _state(snapshot_complete="true")
+
+    def test_classify_cli_requires_an_explicit_snapshot_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            before = root / "before.json"
+            after = root / "after.json"
+            silent = _state().as_dict()
+            silent.pop("snapshot_complete")
+            before.write_text(json.dumps(silent), encoding="utf-8")
+            after.write_text(
+                json.dumps(_state(pr_number="901", head_sha=SHA_A).as_dict()),
+                encoding="utf-8",
+            )
+
+            rc = lane_delivery.main(
+                [
+                    "classify",
+                    "--before",
+                    str(before),
+                    "--after",
+                    str(after),
+                    "--provider-exit",
+                    "0",
+                ]
+            )
+
+        self.assertEqual(rc, 2)
+
     def test_classify_cli_exits_nonzero_without_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -669,6 +767,36 @@ class RunnerScriptContractTests(unittest.TestCase):
                 self.assertIn("--handoff-expected-head", text)
                 self.assertIn("Implicit cross-lane takeover", text)
                 self.assertIn("no validated delivery", text)
+
+    def test_runner_scripts_do_not_exempt_the_wall_clock_cap(self) -> None:
+        # A timed-out provider that delivered nothing is an unfinished unit.
+        # The cap branch must not return success before the classification is
+        # consulted, or the caller cannot see the unit is unfinished.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                cap_branch_start = text.index('if [ "$rc" -eq 124 ]; then')
+                cap_branch = text[
+                    cap_branch_start : text.index("\nfi\n", cap_branch_start)
+                ]
+                self.assertNotIn("exit", cap_branch)
+                self.assertLess(
+                    text.index('if [ "$delivery_rc" -ne 0 ]; then'),
+                    text.index('if [ "$timed_out" -eq 1 ]; then'),
+                )
+
+    def test_runner_scripts_fail_closed_on_snapshot_lookups(self) -> None:
+        # A failed GitHub read must be recorded as an incomplete snapshot, not
+        # as an empty value that the classifier reads as real absence.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("snapshot_complete: $complete", text)
+                self.assertIn("complete=false", text)
+                self.assertIn("the pre-run target snapshot is incomplete", text)
+                self.assertNotIn("2>/dev/null || printf '{}'", text)
+                self.assertNotIn("2>/dev/null || printf '[]'", text)
+                self.assertNotIn('lane_pr_for_issue "$num" 2>/dev/null || true', text)
 
     def test_runner_scripts_parse_as_bash(self) -> None:
         for path in (REPO_RUNNER,):

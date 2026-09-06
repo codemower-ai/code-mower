@@ -59,6 +59,11 @@ TRANSITION_NO_CHANGE = "no_change"
 TRANSITION_OWNER_ACTION = "owner_action"
 TRANSITION_NONE = "none"
 
+#: No transition could be observed because a snapshot is missing state the
+#: runner failed to fetch. Distinct from ``none``, which is an observed
+#: not-moved, and never a delivery.
+TRANSITION_UNKNOWN = "unknown"
+
 DELIVERING_TRANSITIONS = frozenset(
     {
         TRANSITION_PR_OPENED,
@@ -162,6 +167,14 @@ class TargetState:
 
     Only the fields the runner can validate for itself are carried. ``pr_number``
     and ``head_sha`` are empty strings when no PR exists yet.
+
+    ``snapshot_complete`` is how the producer says whether every lookup behind
+    this snapshot actually succeeded. An empty ``pr_number`` or ``head_sha``
+    means "observed absent" only when it is true; a failed GitHub read must set
+    it false rather than leave the field empty, because an empty value is
+    otherwise indistinguishable from real absence and would fabricate a
+    transition. Snapshots loaded from a file must state it explicitly; see
+    :func:`_load_state`.
     """
 
     kind: str
@@ -171,6 +184,7 @@ class TargetState:
     pr_state: str = ""
     labels: tuple[str, ...] = ()
     runner_comment_id: str = ""
+    snapshot_complete: bool = True
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> "TargetState":
@@ -189,6 +203,9 @@ class TargetState:
         labels = tuple(
             sorted({_text(label) for label in payload.get("labels") or () if _text(label)})
         )
+        snapshot_complete = payload.get("snapshot_complete", True)
+        if not isinstance(snapshot_complete, bool):
+            raise LaneDeliveryError("state snapshot_complete must be a JSON boolean")
         return cls(
             kind=kind,
             number=number,
@@ -197,6 +214,7 @@ class TargetState:
             pr_state=_text(payload.get("pr_state")).upper(),
             labels=labels,
             runner_comment_id=_text(payload.get("runner_comment_id")),
+            snapshot_complete=snapshot_complete,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -208,6 +226,7 @@ class TargetState:
             "pr_state": self.pr_state,
             "labels": list(self.labels),
             "runner_comment_id": self.runner_comment_id,
+            "snapshot_complete": self.snapshot_complete,
         }
 
 
@@ -229,8 +248,16 @@ class DeliveryOutcome:
 
 
 def observed_transition(before: TargetState, after: TargetState) -> str:
-    """Return the PR/head transition the runner observed for itself."""
+    """Return the PR/head transition the runner observed for itself.
 
+    Returns :data:`TRANSITION_UNKNOWN` when either snapshot is incomplete. A
+    failed lookup leaves ``pr_number``/``head_sha`` empty, and comparing an
+    empty value against a real one would read as ``pr_opened`` or
+    ``head_advanced`` for a target that never moved.
+    """
+
+    if not before.snapshot_complete or not after.snapshot_complete:
+        return TRANSITION_UNKNOWN
     if after.pr_number and not before.pr_number:
         return TRANSITION_PR_OPENED
     if (
@@ -258,6 +285,11 @@ def classify_delivery(
     declared outcome that the runner can validate from its own GitHub
     operations: ``no_change`` requires a runner-posted comment, and
     ``owner_action`` additionally requires the owner-blocking label.
+
+    Classification fails closed on an incomplete snapshot. If a GitHub read
+    behind either snapshot failed, nothing here — not the transition, and not
+    the comment and label a declared outcome is validated against — can be
+    trusted, so the unit is undelivered rather than guessed at.
     """
 
     declared = _text(declared_outcome)
@@ -267,6 +299,15 @@ def classify_delivery(
             f"{TRANSITION_NO_CHANGE}, or {TRANSITION_OWNER_ACTION}"
         )
     transition = observed_transition(before, after)
+
+    if not before.snapshot_complete or not after.snapshot_complete:
+        return DeliveryOutcome(
+            delivered=False,
+            transition=TRANSITION_UNKNOWN,
+            reason="target_snapshot_unavailable",
+            declared_outcome=declared,
+            provider_exit=provider_exit,
+        )
 
     if provider_exit != 0:
         return DeliveryOutcome(
@@ -882,12 +923,22 @@ def _utc_now() -> str:
 
 
 def _load_state(path: str) -> TargetState:
+    """Load a snapshot written by the runner.
+
+    ``snapshot_complete`` is required here rather than defaulted. A snapshot
+    that reaches the CLI without saying whether its lookups succeeded came from
+    a producer that does not know about the fail-closed contract, and silently
+    reading it as complete is the failure mode this guard exists to stop.
+    """
+
     if path == "-":
         payload = json.loads(sys.stdin.read() or "{}")
     else:
         payload = json.loads(Path(path).read_text(encoding="utf-8") or "{}")
     if not isinstance(payload, Mapping):
         raise LaneDeliveryError("state payload must be a JSON object")
+    if "snapshot_complete" not in payload:
+        raise LaneDeliveryError("state must state snapshot_complete explicitly")
     return TargetState.from_mapping(payload)
 
 

@@ -159,6 +159,17 @@ leave a note on the unit. `code-mower lane-delivery scan-prompt` refuses to
 start a provider whose assembled prompt would send it looking for
 authentication material.
 
+Hitting the `--max-minutes` cap does not exempt a run from the contract. A
+timed-out provider that pushed nothing is an unfinished unit and still exits
+`3`; the cap alone only reports success when the classification passed.
+
+Snapshots fail closed. Each GitHub lookup behind a snapshot is retried, and a
+lookup that still fails marks the snapshot incomplete rather than recording an
+empty value — an empty `pr_number` or head would otherwise be indistinguishable
+from "no PR yet" and would read as a delivery the target never made. An
+incomplete snapshot before the run refuses the unit with exit `2`; an incomplete
+one afterwards classifies as `target_snapshot_unavailable` and exits `3`.
+
 Providers run under `code-mower lane-delivery supervise`, which starts them in
 their own process group and terminates plus reaps that whole group on timeout,
 interruption, and output overflow. Cap provider output with `LANE_MAX_LOG_BYTES`

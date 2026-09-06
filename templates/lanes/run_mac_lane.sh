@@ -403,41 +403,85 @@ git -C "$work" reset --quiet --hard "origin/${default_branch}"
 git -C "$work" clean -fdxq -e .build -e node_modules -e .venv
 install_pre_push_guard "$target_pr_branch" "$mode"
 
+# A failed lookup is not an empty result. `gh pr list` piping into jq hides a
+# transport failure behind an exit-0 empty match, so the listing is captured
+# first and a failure is propagated as a nonzero return.
+# shellcheck disable=SC2329  # invoked indirectly through snapshot_lookup
 lane_pr_for_issue() {
   local issue="$1"
-  gh pr list -R "$REPO" --state open --search "\"#${issue}\" in:body" --limit 30 \
-    --json number,closingIssuesReferences,headRefName \
+  local listing=""
+  listing="$(gh pr list -R "$REPO" --state open --search "\"#${issue}\" in:body" --limit 30 \
+    --json number,closingIssuesReferences,headRefName 2>/dev/null)" || return 1
+  printf '%s\n' "$listing" \
     | jq -r --arg issue "$issue" --argjson prefixes "$lane_branch_prefixes_json" '
       def has_lane_prefix: (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
       [.[] | select(has_lane_prefix) | select(any((.closingIssuesReferences // [])[]; ((.number // "") | tostring) == $issue))]
       | sort_by(.number) | last | .number // empty'
 }
 
+# Retry a snapshot lookup a couple of times so an ordinary transient GitHub
+# failure does not abort the unit, then give up rather than report a guess.
+snapshot_lookup() {
+  local attempt=1
+  local out=""
+  while : ; do
+    if out="$("$@")"; then
+      printf '%s' "$out"
+      return 0
+    fi
+    [ "$attempt" -ge 3 ] && return 1
+    attempt=$((attempt + 1))
+    sleep 3
+  done
+}
+
 # Snapshot the issue/PR state the runner can validate for itself. Delivery is
 # decided by comparing two of these, never by the provider exit code alone.
+#
+# Every lookup failure sets snapshot_complete false instead of falling back to
+# an empty value. An empty pr_number or head_sha is otherwise indistinguishable
+# from "no PR yet" or "no head yet", so a transient failure on one side of the
+# comparison would fabricate a pr_opened or head_advanced transition for a
+# target that never moved.
 capture_target_state() {
   local out="$1"
   local runner_comment_id="${2:-}"
   local pr_number=""
   local labels_json='[]'
   local pr_json='{}'
+  local complete=true
   if [ "$kind" = "pr" ]; then
     pr_number="$num"
   else
-    pr_number="$(lane_pr_for_issue "$num" 2>/dev/null || true)"
-    labels_json="$(gh issue view "$num" -R "$REPO" --json labels -q '[.labels[].name]' 2>/dev/null || printf '[]')"
-  fi
-  if [ -n "$pr_number" ]; then
-    pr_json="$(gh pr view "$pr_number" -R "$REPO" --json headRefOid,state,labels 2>/dev/null || printf '{}')"
-    if [ "$kind" = "pr" ]; then
-      labels_json="$(printf '%s\n' "$pr_json" | jq -c '[ (.labels // [])[] | .name ]' 2>/dev/null || printf '[]')"
+    if ! pr_number="$(snapshot_lookup lane_pr_for_issue "$num")"; then
+      pr_number=""
+      complete=false
+    fi
+    if ! labels_json="$(snapshot_lookup gh issue view "$num" -R "$REPO" \
+      --json labels -q '[.labels[].name]' 2>/dev/null)"; then
+      labels_json='[]'
+      complete=false
     fi
   fi
-  [ -n "$labels_json" ] || labels_json='[]'
-  [ -n "$pr_json" ] || pr_json='{}'
+  if [ -n "$pr_number" ]; then
+    if ! pr_json="$(snapshot_lookup gh pr view "$pr_number" -R "$REPO" \
+      --json headRefOid,state,labels 2>/dev/null)"; then
+      pr_json='{}'
+      complete=false
+    fi
+    if [ "$kind" = "pr" ]; then
+      if ! labels_json="$(printf '%s\n' "$pr_json" | jq -c '[ (.labels // [])[] | .name ]' 2>/dev/null)"; then
+        labels_json='[]'
+        complete=false
+      fi
+    fi
+  fi
+  [ -n "$labels_json" ] || { labels_json='[]'; complete=false; }
+  [ -n "$pr_json" ] || { pr_json='{}'; complete=false; }
   printf '%s\n' "$pr_json" \
     | jq --arg kind "$kind" --arg number "$num" --arg pr "$pr_number" \
-         --arg comment "$runner_comment_id" --argjson labels "$labels_json" '
+         --arg comment "$runner_comment_id" --argjson labels "$labels_json" \
+         --argjson complete "$complete" '
       {
         kind: $kind,
         number: $number,
@@ -445,8 +489,13 @@ capture_target_state() {
         head_sha: ((.headRefOid // "") | ascii_downcase),
         pr_state: (.state // ""),
         labels: $labels,
-        runner_comment_id: $comment
+        runner_comment_id: $comment,
+        snapshot_complete: $complete
       }' > "$out"
+}
+
+snapshot_is_complete() {
+  [ "$(jq -r '.snapshot_complete // false' "$1" 2>/dev/null || printf 'false')" = "true" ]
 }
 
 prompt_file="$(mktemp)"
@@ -577,6 +626,15 @@ before_state="${log%.log}.before.json"
 after_state="${log%.log}.after.json"
 status_file="${log%.log}.status.json"
 capture_target_state "$before_state"
+# Delivery is judged by comparing this snapshot with the one taken afterwards.
+# If the before snapshot is already incomplete the comparison can never be
+# trusted, so refuse the unit here instead of spending a provider run that
+# could only be classified as undelivered.
+if [ "${#lane_delivery[@]}" -gt 0 ] && [ "$mode" != "audit" ] \
+  && ! snapshot_is_complete "$before_state"; then
+  echo "${LANE}: refusing to run ${kind} #${num}; the pre-run target snapshot is incomplete" >&2
+  exit 2
+fi
 
 timeout_bin=""
 if command -v gtimeout >/dev/null 2>&1; then
@@ -772,6 +830,8 @@ fi
 capture_target_state "$after_state" "$runner_comment_id"
 
 delivery_rc=0
+observed_transition="unknown"
+delivery_reason="not_classified"
 if [ "${#lane_delivery[@]}" -gt 0 ] && [ "$mode" != "audit" ]; then
   classify_args=(
     classify
@@ -792,6 +852,10 @@ if [ "${#lane_delivery[@]}" -gt 0 ] && [ "$mode" != "audit" ]; then
   "${lane_delivery[@]}" "${classify_args[@]}"
   delivery_rc=$?
   set -e
+  observed_transition="$(jq -r '.delivery.transition // "unknown"' \
+    "${log%.log}.delivery.json" 2>/dev/null || printf 'unknown')"
+  delivery_reason="$(jq -r '.delivery.reason // "unknown"' \
+    "${log%.log}.delivery.json" 2>/dev/null || printf 'unknown')"
 fi
 
 if [ "$LANE" = "devin" ] && [ "$rc" -eq 0 ]; then
@@ -820,31 +884,47 @@ if [ "$LANE" = "devin" ] && [ "$rc" -eq 0 ]; then
     fi
   ) || echo "${LANE}: builder provenance record skipped" >&2
 fi
+subcommand="issue"
+[ "$kind" = "pr" ] && subcommand="pr"
+timed_out=0
+cap_note=""
 if [ "$rc" -eq 124 ]; then
+  timed_out=1
+  cap_note=" (hit the ${MAX_MINUTES}-minute cap)"
   echo "${LANE}: hit the ${MAX_MINUTES}-minute cap on ${kind} #${num}"
-  subcommand="issue"
-  [ "$kind" = "pr" ] && subcommand="pr"
-  body_file="$(mktemp)"
-  printf 'Mac lane runner (%s): hit the %s-minute cap on this %s; pushed work will be picked up again next cycle.\n' \
-    "$LANE" "$MAX_MINUTES" "$kind" > "$body_file"
-  gh "$subcommand" comment "$num" -R "$REPO" \
-    --body-file "$body_file" >/dev/null || true
-  exit 0
 fi
 if [ "$rc" -eq 125 ]; then
   echo "${LANE}: provider output overflowed the ${lane_max_log_bytes}-byte cap on ${kind} #${num}" >&2
 fi
 echo "${LANE}: CLI exit ${rc} for ${kind} #${num}"
+
+# The wall-clock cap does not exempt a run from the delivery contract. A
+# timed-out provider that left no new pull request, no advanced head, and no
+# validated bounded outcome is an unfinished unit, and reporting it as success
+# is exactly what hides that from the caller.
 if [ "$delivery_rc" -ne 0 ]; then
-  echo "${LANE}: no validated delivery for ${kind} #${num}; provider exit ${rc}, supervision ${supervision_reason}" >&2
-  subcommand="issue"
-  [ "$kind" = "pr" ] && subcommand="pr"
+  echo "${LANE}: no validated delivery for ${kind} #${num}; provider exit ${rc}, supervision ${supervision_reason}, transition ${observed_transition}" >&2
   undelivered_body_file="$(mktemp)"
-  printf 'Mac lane runner (%s): this run ended without a validated delivery. Provider exit %s, supervision %s, and no new pull request, head, or bounded outcome was observed. The unit stays open for the next cycle.\n' \
-    "$LANE" "$rc" "$supervision_reason" > "$undelivered_body_file"
+  {
+    printf 'Mac lane runner (%s): this run ended without a validated delivery. The unit stays open for the next cycle.\n\n' "$LANE"
+    printf -- '- provider exit: %s%s\n' "$rc" "$cap_note"
+    printf -- '- supervision: %s\n' "$supervision_reason"
+    printf -- '- observed transition: %s\n' "$observed_transition"
+    printf -- '- classification: %s\n' "$delivery_reason"
+  } > "$undelivered_body_file"
   gh "$subcommand" comment "$num" -R "$REPO" \
     --body-file "$undelivered_body_file" >/dev/null || true
   rm -f "$undelivered_body_file"
   exit 3
+fi
+
+if [ "$timed_out" -eq 1 ]; then
+  body_file="$(mktemp)"
+  printf 'Mac lane runner (%s): hit the %s-minute cap on this %s; pushed work will be picked up again next cycle.\n' \
+    "$LANE" "$MAX_MINUTES" "$kind" > "$body_file"
+  gh "$subcommand" comment "$num" -R "$REPO" \
+    --body-file "$body_file" >/dev/null || true
+  rm -f "$body_file"
+  exit 0
 fi
 exit "$rc"
