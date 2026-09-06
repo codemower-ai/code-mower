@@ -43,6 +43,26 @@ def _summary_contract(path: Path) -> tuple[str, int]:
     return program, int(bound.group(1))
 
 
+def _pre_push_hook(path: Path) -> str:
+    """The pre-push guard the runner installs, read out of the runner itself."""
+
+    text = path.read_text(encoding="utf-8")
+    opened = text.index("<<'HOOK'\n") + len("<<'HOOK'\n")
+    return text[opened : text.index("\nHOOK\n", opened) + 1]
+
+
+def _broker_block(path: Path) -> str:
+    """The runner's bounded-outcome brokering block, read out of the runner.
+
+    Extracted rather than transcribed so the ordering under test is the one the
+    runner performs: comment first, label only behind a confirmed comment.
+    """
+
+    text = path.read_text(encoding="utf-8")
+    start = text.index('if [ -n "$declared_outcome" ]; then\n  outcome_subcommand=')
+    return text[start : text.index("\ndelivery_rc=0", start)]
+
+
 def _wait_for_pid_exit(pid: int, timeout: float = 5.0) -> bool:
     """Return whether ``pid`` is gone within ``timeout`` seconds."""
 
@@ -1742,6 +1762,332 @@ class RunnerScriptContractTests(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(completed.returncode, 0, completed.stderr)
+
+
+PINNED_HEAD = "a" * 40
+HANDED_BRANCH = "codex/751-stuck"
+
+
+class PrePushGuardTests(unittest.TestCase):
+    """The installed pre-push guard, driven the way git drives it.
+
+    git feeds the hook one ``<local ref> <local sha> <remote ref> <remote sha>``
+    line per ref being pushed, so these tests do the same and read the guard's
+    exit status. The hook is extracted from the runner rather than transcribed,
+    so what runs here is what gets installed.
+    """
+
+    def setUp(self) -> None:
+        self.jq = shutil.which("jq")
+        self.git = shutil.which("git")
+        if self.jq is None or self.git is None:  # pragma: no cover - host toolchain
+            self.skipTest("the pre-push guard needs git and jq")
+        self.hook = _pre_push_hook(REPO_RUNNER)
+
+    def _config(self, **overrides: object) -> dict[str, object]:
+        config: dict[str, object] = {
+            "lane": "claude",
+            "mode": "fix",
+            "target_pr_branch": HANDED_BRANCH,
+            "allowed_prefixes": ["claude/"],
+            "handoff": {
+                "source_lane": "codex",
+                "destination_lane": "claude",
+                "target_pr": "owner/repo#750",
+                "expected_head": PINNED_HEAD,
+                "target_branch": HANDED_BRANCH,
+            },
+        }
+        config.update(overrides)
+        return config
+
+    def _repo(self, config: dict[str, object]) -> Path:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        subprocess.run(
+            [str(self.git), "init", "-q", str(tmp)], check=True, capture_output=True
+        )
+        (tmp / ".git" / "code-mower-lane-guard.json").write_text(
+            json.dumps(config), encoding="utf-8"
+        )
+        (tmp / "pre-push").write_text(self.hook, encoding="utf-8")
+        return tmp
+
+    def _push(
+        self,
+        repo: Path,
+        *,
+        branch: str,
+        local: str,
+        remote: str,
+        ref: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        remote_ref = ref if ref is not None else f"refs/heads/{branch}"
+        return subprocess.run(
+            ["bash", str(repo / "pre-push"), "origin", "git@github.com:owner/repo.git"],
+            input=f"{remote_ref} {local} {remote_ref} {remote}\n",
+            cwd=str(repo),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_every_runner_copy_installs_the_same_guard(self) -> None:
+        packaged = _pre_push_hook(PACKAGED_RUNNER_TEMPLATE)
+        self.assertEqual(_pre_push_hook(RUNNER_TEMPLATE), packaged)
+        self.assertEqual(self.hook, packaged)
+
+    def test_a_handoff_push_at_the_pinned_head_is_authorized(self) -> None:
+        repo = self._repo(self._config())
+        pushed = self._push(repo, branch=HANDED_BRANCH, local=SHA_B, remote=PINNED_HEAD)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+
+    def test_a_remote_that_moved_after_the_handoff_is_refused(self) -> None:
+        # The source lane kept writing. Branch name alone still says "yes", which
+        # is what let --force-with-lease overwrite a head the orchestrator never
+        # inspected: the lease is taken against a freshly fetched ref.
+        repo = self._repo(self._config())
+        pushed = self._push(repo, branch=HANDED_BRANCH, local=SHA_B, remote="d" * 40)
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("handed-over branch", pushed.stderr)
+        self.assertIn(PINNED_HEAD, pushed.stderr)
+
+    def test_a_recovery_may_push_more_than_once_onto_its_own_head(self) -> None:
+        # The second push sees the remote this run just advanced. That is the
+        # lane's own write, not the source lane's, so it is not a stale handoff.
+        repo = self._repo(self._config())
+        first = self._push(repo, branch=HANDED_BRANCH, local=SHA_B, remote=PINNED_HEAD)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        second = self._push(repo, branch=HANDED_BRANCH, local="c" * 40, remote=SHA_B)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        # A head this run never wrote is still refused afterwards.
+        foreign = self._push(repo, branch=HANDED_BRANCH, local="c" * 40, remote="e" * 40)
+        self.assertEqual(foreign.returncode, 1)
+        # The ledger only ever holds heads this guard authorized, on the branch
+        # it authorized them for.
+        ledger = (repo / ".git" / "code-mower-lane-guard-pushed").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(
+            ledger.split("\n")[:2],
+            [f"{HANDED_BRANCH} {SHA_B}", f"{HANDED_BRANCH} {'c' * 40}"],
+        )
+
+    def test_an_absent_remote_branch_is_refused(self) -> None:
+        # git reports 40 zeros for a ref that does not exist on the remote. The
+        # handoff pinned a real head, so this is not it.
+        repo = self._repo(self._config())
+        pushed = self._push(repo, branch=HANDED_BRANCH, local=SHA_B, remote="0" * 40)
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("handed-over branch", pushed.stderr)
+
+    def test_a_handoff_authorizes_only_the_branch_it_names(self) -> None:
+        # While a handoff is in force it replaces branch-name authority for the
+        # foreign branch: the target PR branch is not separately writable.
+        repo = self._repo(self._config(target_pr_branch="codex/other"))
+        pushed = self._push(repo, branch="codex/other", local=SHA_B, remote=PINNED_HEAD)
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("refusing claude push to branch codex/other", pushed.stderr)
+
+    def test_a_handoff_with_no_pinned_head_authorizes_nothing(self) -> None:
+        config = self._config()
+        handoff = dict(config["handoff"])  # type: ignore[arg-type]
+        handoff["expected_head"] = ""
+        repo = self._repo(self._config(handoff=handoff))
+        pushed = self._push(repo, branch=HANDED_BRANCH, local=SHA_B, remote=PINNED_HEAD)
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("records no expected head", pushed.stderr)
+
+    def test_the_lanes_own_branches_are_unaffected_by_the_pin(self) -> None:
+        # Normal single-writer enforcement is unchanged. A lane-prefixed branch
+        # carries no pinned head and advances as often as the run needs.
+        repo = self._repo(self._config())
+        pushed = self._push(repo, branch="claude/751-work", local=SHA_B, remote=SHA_A)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+
+    def test_a_foreign_branch_without_a_handoff_stays_refused(self) -> None:
+        repo = self._repo(
+            self._config(handoff=None, target_pr_branch="claude/751-work")
+        )
+        pushed = self._push(repo, branch=HANDED_BRANCH, local=SHA_B, remote=SHA_A)
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("refusing claude push to branch", pushed.stderr)
+
+    def test_the_targeted_pr_branch_stays_writable_without_a_handoff(self) -> None:
+        # The branch-name authority for the targeted PR is untouched when no
+        # handoff is in force, and carries no pinned head to check.
+        repo = self._repo(self._config(handoff=None, target_pr_branch="codex/other"))
+        pushed = self._push(repo, branch="codex/other", local=SHA_B, remote=SHA_A)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+
+    def test_a_non_branch_ref_is_refused(self) -> None:
+        repo = self._repo(self._config())
+        pushed = self._push(
+            repo, branch="v1", local=SHA_B, remote=SHA_A, ref="refs/tags/v1"
+        )
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("non-branch ref", pushed.stderr)
+
+
+BROKER_HARNESS = r"""
+set -euo pipefail
+LANE="claude"
+REPO="owner/repo"
+num="750"
+kind="pr"
+owner_label="needs-owner"
+after_state="${SCRATCH}/after.json"
+declared_summary="nothing needed changing"
+declared_outcome="${DECLARED_OUTCOME}"
+declared_outcome_unbrokered=""
+runner_comment_id=""
+
+gh() {
+  printf 'gh %s\n' "$*" >> "${SCRATCH}/calls.log"
+  if [ "$2" = "comment" ]; then
+    if [ "${COMMENT_RESULT}" = "fail" ]; then
+      return 1
+    fi
+    printf '%s\n' "${COMMENT_RESULT}"
+    return 0
+  fi
+  if [ "${EDIT_RESULT}" = "fail" ]; then
+    return 1
+  fi
+  return 0
+}
+
+capture_target_state() {
+  printf 'capture %s\n' "${2:-none}" >> "${SCRATCH}/calls.log"
+}
+
+__BLOCK__
+
+printf 'declared_outcome=%s\n' "$declared_outcome"
+printf 'unbrokered=%s\n' "$declared_outcome_unbrokered"
+printf 'comment_id=%s\n' "$runner_comment_id"
+"""
+
+COMMENT_URL = "https://github.com/owner/repo/pull/750#issuecomment-4242"
+
+
+class BoundedOutcomeBrokerTests(unittest.TestCase):
+    """The order the runner writes owner-facing state in.
+
+    needs-owner is a block and the runner comment is its only explanation, so
+    the block may never be applied on the strength of a comment the runner only
+    attempted. The block is extracted from the runner so the ordering under test
+    is the one that ships.
+    """
+
+    def _broker(
+        self,
+        path: Path,
+        *,
+        outcome: str,
+        comment: str = COMMENT_URL,
+        edit: str = "ok",
+    ) -> tuple[dict[str, str], list[str]]:
+        harness = BROKER_HARNESS.replace("__BLOCK__", _broker_block(path))
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "broker.sh"
+            script.write_text(harness, encoding="utf-8")
+            completed = subprocess.run(
+                ["bash", str(script)],
+                env={
+                    **os.environ,
+                    "SCRATCH": tmp,
+                    "DECLARED_OUTCOME": outcome,
+                    "COMMENT_RESULT": comment,
+                    "EDIT_RESULT": edit,
+                },
+                cwd=tmp,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            log = Path(tmp) / "calls.log"
+            calls = (
+                log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+            )
+        reported = dict(
+            line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line
+        )
+        return reported, calls
+
+    def test_the_owner_label_follows_a_confirmed_comment(self) -> None:
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                reported, calls = self._broker(path, outcome="owner_action")
+                self.assertEqual(len(calls), 3, calls)
+                self.assertIn("pr comment 750", calls[0])
+                self.assertIn("--add-label needs-owner", calls[1])
+                self.assertEqual(calls[2], "capture 4242")
+                self.assertEqual(reported["declared_outcome"], "owner_action")
+                self.assertEqual(reported["comment_id"], "4242")
+                self.assertEqual(reported["unbrokered"], "")
+
+    def test_a_comment_that_did_not_post_applies_no_label(self) -> None:
+        # The reported failure: the comment fails, the label edit would have
+        # succeeded, and the target is left blocked with nothing explaining it
+        # while classification rejects the declaration for having no comment.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                reported, calls = self._broker(
+                    path, outcome="owner_action", comment="fail"
+                )
+                self.assertEqual(len(calls), 1, calls)
+                self.assertIn("pr comment 750", calls[0])
+                self.assertNotIn("--add-label", "\n".join(calls))
+                self.assertEqual(reported["declared_outcome"], "")
+                self.assertEqual(reported["unbrokered"], "owner_action")
+
+    def test_an_unusable_comment_response_counts_as_no_comment(self) -> None:
+        # Classification identifies the runner's comment by id. A response the
+        # runner cannot take an id from leaves it unable to prove the comment
+        # exists, which is the same position as never having posted one.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                reported, calls = self._broker(
+                    path,
+                    outcome="owner_action",
+                    comment="https://github.com/owner/repo/pull/750",
+                )
+                self.assertNotIn("--add-label", "\n".join(calls))
+                self.assertEqual(reported["declared_outcome"], "")
+                self.assertEqual(reported["unbrokered"], "owner_action")
+
+    def test_a_failed_label_edit_leaves_the_declaration_to_classification(self) -> None:
+        # The comment landed, so the owner has the explanation. Whether the label
+        # landed is read back off GitHub, not assumed: the re-read is what lets
+        # classification answer, and it still has to happen.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                reported, calls = self._broker(
+                    path, outcome="owner_action", edit="fail"
+                )
+                self.assertEqual(calls[-1], "capture 4242")
+                self.assertEqual(reported["declared_outcome"], "owner_action")
+                self.assertEqual(reported["unbrokered"], "")
+
+    def test_no_change_never_touches_labels(self) -> None:
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                reported, calls = self._broker(path, outcome="no_change")
+                self.assertEqual(len(calls), 2, calls)
+                self.assertNotIn("--add-label", "\n".join(calls))
+                self.assertEqual(calls[1], "capture 4242")
+                self.assertEqual(reported["declared_outcome"], "no_change")
+
+    def test_the_undelivered_note_names_an_unbrokered_declaration(self) -> None:
+        # The owner reads the note, so a declaration dropped because its comment
+        # never posted has to say so there, not only in the run log.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("unbrokered declared outcome", text)
+                self.assertIn('"$declared_outcome_unbrokered" "$owner_label"', text)
 
 
 if __name__ == "__main__":  # pragma: no cover

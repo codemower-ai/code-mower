@@ -187,6 +187,14 @@ the target once more afterwards, so classification checks the comment and the
 `needs-owner` label against GitHub rather than against the runner's belief that
 its own edits landed.
 
+Brokering is ordered so the block never arrives without its explanation. The
+comment goes first, and `needs-owner` is applied only after GitHub returns the
+comment it created; if the comment does not land, the declaration is voided,
+no label is applied, and the undelivered note names it. The reverse order would
+leave the owner a blocked unit with nothing saying why, since classification
+rejects a declaration with no runner comment behind it and no later round clears
+a label it did not apply.
+
 Hitting the `--max-minutes` cap does not exempt a run from the contract. A
 timed-out provider that pushed nothing is an unfinished unit and still exits
 `3`; the cap alone only reports success when the classification passed.
@@ -295,6 +303,16 @@ never from the caller, and refuses the handoff if the PR head branch does not
 carry one of them, or if the named source lane has no configured prefixes at
 all. So `--handoff-source-lane codex` recovers a `codex/` branch and nothing
 else: not another builder's branch, and not a bot's.
+
+The pinned head is enforced again at push time, not only when the handoff is
+validated. The pre-push guard compares the sha the remote advertises for the
+handed-over branch against the handoff's expected head, so a source lane that
+kept writing after the handoff was issued makes the push fail instead of being
+overwritten — including by `--force-with-lease`, whose lease is taken against a
+freshly fetched ref and would otherwise permit exactly that. A recovery run may
+still push more than once: the guard also accepts a remote sitting at a head the
+same run already wrote. A refused push means the handoff is stale; re-issue it
+against the current head.
 
 ## Keychain And Signing Notes
 

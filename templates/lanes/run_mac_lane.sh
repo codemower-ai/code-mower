@@ -351,7 +351,13 @@ summary="$(jq -r '
    else "" end)
 ' "$config")"
 
-while read -r _local_ref _local_sha remote_ref _remote_sha; do
+# The heads this guard already authorized for a handed-over branch during
+# this run. A recovery that pushes more than once has to be able to build on
+# its own writes, and without this the second push would read the remote it
+# just advanced as somebody else's.
+ledger="$(git rev-parse --git-path code-mower-lane-guard-pushed)"
+
+while read -r _local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     refs/heads/*) branch="${remote_ref#refs/heads/}" ;;
     *)
@@ -359,16 +365,44 @@ while read -r _local_ref _local_sha remote_ref _remote_sha; do
       exit 1
       ;;
   esac
-  allowed="$(jq -r --arg branch "$branch" '
+  # A handoff replaces branch-name authority for the branch it hands over
+  # rather than adding to it. While one is in force, the lane's own prefixes
+  # and that one branch are the whole allowance, so the target PR branch is
+  # never separately writable by name -- the branch a handoff covers must go
+  # through the handoff's own checks below.
+  authority="$(jq -r --arg branch "$branch" '
     def allowed_prefix: any((.allowed_prefixes // [])[]; . as $prefix | ($branch | startswith($prefix)));
-    if ((.target_pr_branch // "") != "" and $branch == .target_pr_branch) or allowed_prefix
-    then "true"
-    else "false"
+    if allowed_prefix then "lane_prefix"
+    elif (.handoff // null) != null then
+      (if (.handoff.target_branch // "") == $branch then "explicit_handoff" else "none" end)
+    elif (.target_pr_branch // "") != "" and $branch == .target_pr_branch then "target_pr"
+    else "none"
     end
   ' "$config")"
-  if [ "$allowed" != "true" ]; then
+  if [ "$authority" = "none" ]; then
     echo "code-mower lane guard: refusing ${lane} push to branch ${branch}; allowed ${summary}" >&2
     exit 1
+  fi
+  if [ "$authority" = "explicit_handoff" ]; then
+    # A handoff authorizes one branch at one head. The orchestrator pinned the
+    # head it inspected; a remote that has moved since means the source lane is
+    # still writing, the handoff is stale, and a push from here -- including
+    # the permitted --force-with-lease, which leases against a freshly fetched
+    # ref and would happily overwrite it -- destroys work no one handed over.
+    # A branch name cannot see that. Only the sha the remote advertises at push
+    # time can, so the pin is enforced here rather than only at validation.
+    expected_head="$(jq -r '(.handoff.expected_head // "") | ascii_downcase' "$config")"
+    observed_head="$(printf '%s' "$remote_sha" | tr '[:upper:]' '[:lower:]')"
+    if [ -z "$expected_head" ]; then
+      echo "code-mower lane guard: refusing ${lane} push to handed-over branch ${branch}; the handoff records no expected head" >&2
+      exit 1
+    fi
+    if [ "$observed_head" != "$expected_head" ] \
+      && ! grep -qxF "${branch} ${observed_head}" "$ledger" 2>/dev/null; then
+      echo "code-mower lane guard: refusing ${lane} push to handed-over branch ${branch}; remote head ${observed_head} is neither the handoff's expected head ${expected_head} nor a head this run wrote" >&2
+      exit 1
+    fi
+    printf '%s %s\n' "$branch" "$(printf '%s' "$local_sha" | tr '[:upper:]' '[:lower:]')" >> "$ledger"
   fi
 done
 HOOK
@@ -978,6 +1012,7 @@ declared_outcome=""
 declared_summary=""
 declared_outcome_voided=""
 declared_outcome_withheld=""
+declared_outcome_unbrokered=""
 runner_comment_id=""
 lane_outcome_file="${work}/.code-mower/lane-outcome.json"
 if [ "$rc" -eq 0 ] && [ "$supervisor_ended" -eq 0 ] \
@@ -1035,16 +1070,33 @@ if [ -n "$declared_outcome" ]; then
   case "$outcome_comment_url" in
     *issuecomment-*) runner_comment_id="${outcome_comment_url##*issuecomment-}" ;;
   esac
-  if [ "$declared_outcome" = "owner_action" ]; then
-    gh "$outcome_subcommand" edit "$num" -R "$REPO" --add-label "$owner_label" >/dev/null 2>&1 || true
+  # The comment is the explanation; needs-owner is the block. Applying the block
+  # without the explanation is the one ordering the owner cannot recover from:
+  # classification rejects a declaration with no runner comment behind it, so
+  # the run reports undelivered while the target sits owner-blocked with nothing
+  # saying why -- and no later round will clear a label it did not apply.
+  #
+  # So the label follows a comment this runner confirmed on GitHub, never a
+  # comment it merely attempted. A declaration that could not be brokered is
+  # voided the same way a summary-less one is: no label, no half-written
+  # owner-facing state, and the run goes back through the undelivered path that
+  # leaves the unit open for the next cycle.
+  if [ -z "$runner_comment_id" ]; then
+    declared_outcome_unbrokered="$declared_outcome"
+    declared_outcome=""
+    echo "${LANE}: ignoring declared outcome ${declared_outcome_unbrokered} on ${kind} #${num}; the runner-owned comment could not be posted, and a bounded outcome is only ever as good as the comment that explains it" >&2
+  else
+    if [ "$declared_outcome" = "owner_action" ]; then
+      gh "$outcome_subcommand" edit "$num" -R "$REPO" --add-label "$owner_label" >/dev/null 2>&1 || true
+    fi
+    # Re-read the target so classification checks the runner's brokering against
+    # GitHub rather than against the runner's belief that it worked: a
+    # needs-owner edit that failed has to classify as owner_action_missing_label,
+    # not as a delivery. Nothing this run started can push into the window
+    # between the two reads -- the provider's whole process group was terminated
+    # and reaped before either of them.
+    capture_target_state "$after_state" "$runner_comment_id"
   fi
-  # Re-read the target so classification checks the runner's brokering against
-  # GitHub rather than against the runner's belief that it worked: a needs-owner
-  # edit that failed has to classify as owner_action_missing_label, not as a
-  # delivery. Nothing this run started can push into the window between the two
-  # reads -- the provider's whole process group was terminated and reaped before
-  # either of them.
-  capture_target_state "$after_state" "$runner_comment_id"
 fi
 
 delivery_rc=0
@@ -1143,6 +1195,10 @@ if [ "$delivery_rc" -ne 0 ]; then
     if [ -n "$declared_outcome_withheld" ]; then
       printf -- '- withheld declared outcome: the observed transition was %s, and a declaration is brokered only when the run is known to have delivered nothing\n' \
         "$declared_outcome_withheld"
+    fi
+    if [ -n "$declared_outcome_unbrokered" ]; then
+      printf -- '- unbrokered declared outcome: %s carried a valid summary, but the runner-owned comment could not be posted, so no %s label was applied and the declaration was voided rather than left as a block with no explanation\n' \
+        "$declared_outcome_unbrokered" "$owner_label"
     fi
   } > "$undelivered_body_file"
   gh "$subcommand" comment "$num" -R "$REPO" \
