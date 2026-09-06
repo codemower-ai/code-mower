@@ -58,6 +58,23 @@ def _adoption_result(provider: str = "codex", **overrides: Any) -> dict[str, Any
     return result
 
 
+def _schema_keywords(obj: object) -> set[str]:
+    """Recursively collect every string key appearing in a nested JSON-like dict."""
+    seen: set[str] = set()
+
+    def _walk(value: object) -> None:
+        if isinstance(value, dict):
+            for k, v in value.items():
+                seen.add(k)
+                _walk(v)
+        elif isinstance(value, list):
+            for item in value:
+                _walk(item)
+
+    _walk(obj)
+    return seen
+
+
 def _fake_bin(tmp: Path, name: str = "provider-bin") -> str:
     bin_path = tmp / name
     bin_path.write_text(
@@ -633,6 +650,46 @@ class PackageSourceTests(unittest.TestCase):
         self.assertEqual(args.package_source, "pypi")
 
 
+
+class SchemaCompatibilityTests(unittest.TestCase):
+    """Provider response-format schemas stay inside the structured-output keyword subset."""
+
+    def test_codex_response_format_schema_has_no_unsupported_keywords(self) -> None:
+        schema = campaign_adapters.build_codex_response_format_schema()
+        keywords = _schema_keywords(schema)
+        unsupported = {"if", "then", "else", "not", "oneOf"}
+        self.assertFalse(
+            keywords & unsupported,
+            "Codex response schema contains unsupported structured-output keywords: "
+            f"{sorted(keywords & unsupported)}",
+        )
+        step_schema = schema["properties"]["steps"]["items"]
+        step_props = step_schema["properties"]
+        # Structured outputs require every declared property to be required.
+        self.assertEqual(
+            set(step_schema.get("required", [])),
+            set(step_props.keys()),
+        )
+        # The relaxed schema still carries failure_reason as a nullable field so a
+        # failed package_install can communicate the closed reason; local validation
+        # rejects misuse and the authoritative schema keeps the conditional rule.
+        self.assertIn("failure_reason", step_props)
+        self.assertEqual(
+            step_props["failure_reason"]["anyOf"],
+            [
+                {"type": "string", "enum": sorted(campaign_adapters.PACKAGE_INSTALL_FAILURE_REASONS)},
+                {"type": "null"},
+            ],
+        )
+
+    def test_full_schema_retains_conditional_failure_reason_rules(self) -> None:
+        step_schema = campaign_adapters.ADOPTION_RESULT_JSON_SCHEMA["properties"][
+            "steps"
+        ]["items"]
+        self.assertIn("if", step_schema)
+        self.assertIn("then", step_schema)
+        self.assertIn("else", step_schema)
+
 class AdapterTransportTests(unittest.TestCase):
     """End-to-end adapter runs with a mocked provider subprocess."""
 
@@ -763,6 +820,30 @@ class AdapterTransportTests(unittest.TestCase):
         stored = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(stored, _adoption_result("codex"))
         self.assertNotIn("SECRET", output.read_text(encoding="utf-8"))
+
+    def test_codex_writes_api_compatible_schema_without_conditionals(self) -> None:
+        """The schema file passed to Codex must not use structured-output unsupported keywords."""
+        seen: dict[str, Any] = {}
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            schema_path = Path(argv[argv.index("--output-schema") + 1])
+            seen["schema"] = json.loads(schema_path.read_text(encoding="utf-8"))
+            last = Path(argv[argv.index("--output-last-message") + 1])
+            last.write_text(json.dumps(_adoption_result("codex")), encoding="utf-8")
+            return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+        code, output, _tmp = self._run("codex", runner)
+        self.assertEqual(code, 0)
+        keywords = _schema_keywords(seen["schema"])
+        unsupported = {"if", "then", "else", "not", "oneOf"}
+        self.assertFalse(
+            keywords & unsupported,
+            "Schema written for Codex contains unsupported structured-output keywords: "
+            f"{sorted(keywords & unsupported)}",
+        )
+        self.assertTrue(output.is_file())
 
     def test_claude_reads_structured_output_envelope(self) -> None:
         seen: dict[str, Any] = {}
@@ -1146,6 +1227,87 @@ class AdapterFailureTests(unittest.TestCase):
         )
         self.assertNotEqual(code, 0)
         self.assertFalse(output.is_file())
+
+    def test_codex_rejects_failure_reason_outside_failed_package_install(self) -> None:
+        """Local closed validation rejects failure_reason on a non-package_install step."""
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            last = Path(argv[argv.index("--output-last-message") + 1])
+            result = _adoption_result("codex")
+            result["outcome"] = "fail"
+            result["steps"] = [
+                {
+                    "id": "doctor",
+                    "status": "fail",
+                    "elapsed_seconds": 12.34,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                    "failure_reason": "runtime",
+                },
+            ]
+            last.write_text(json.dumps(result), encoding="utf-8")
+            return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+        code, output = self._run_raw("codex", runner)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.is_file())
+
+    def test_codex_accepts_null_failure_reason_and_strips_it(self) -> None:
+        """Codex may emit the required-nullable failure_reason as null; it is stripped before validation."""
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            last = Path(argv[argv.index("--output-last-message") + 1])
+            result = _adoption_result("codex")
+            result["steps"] = [
+                {
+                    "id": "package_install",
+                    "status": "pass",
+                    "elapsed_seconds": 12.34,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                    "failure_reason": None,
+                },
+            ]
+            last.write_text(json.dumps(result), encoding="utf-8")
+            return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+        code, output = self._run_raw("codex", runner)
+        self.assertEqual(code, 0)
+        self.assertTrue(output.is_file())
+        stored = json.loads(output.read_text(encoding="utf-8"))
+        self.assertNotIn("failure_reason", stored["steps"][0])
+
+    def test_codex_accepts_failure_reason_on_failed_package_install(self) -> None:
+        """A failed package_install step may communicate a closed failure_reason."""
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            last = Path(argv[argv.index("--output-last-message") + 1])
+            result = _adoption_result("codex")
+            result["outcome"] = "fail"
+            result["steps"] = [
+                {
+                    "id": "package_install",
+                    "status": "fail",
+                    "elapsed_seconds": 12.34,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                    "failure_reason": "network",
+                },
+            ]
+            last.write_text(json.dumps(result), encoding="utf-8")
+            return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+        code, output = self._run_raw("codex", runner)
+        self.assertEqual(code, 0)
+        self.assertTrue(output.is_file())
+        stored = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(stored["steps"][0]["failure_reason"], "network")
 
     def test_mismatched_provider_is_rejected(self) -> None:
         def runner(
