@@ -75,6 +75,12 @@ export DEFAULT_BRANCH=main
 
 ## 3. Generate Reviewable Setup Output
 
+To choose the initial participants, use `code-mower init --interactive` for a
+checkbox menu, or `code-mower init --with claude,codex,devin` for an explicit
+selection. Add `--apply` to generate files with that selection. The examples
+below use the default Claude + Codex pair; see [Participants And Sessions](sessions.md)
+for customized setup and session startup.
+
 Run this from a clean checkout of the repository you want to pilot:
 
 ```bash

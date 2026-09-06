@@ -22,6 +22,11 @@ and makes the prompt pack safe to copy across repositories.
 
 ## Universal Install Or Upgrade Prompt
 
+For an already installed repository, use the
+[session-start prompt](sessions.md#start-from-any-agent). The agent hosting the
+conversation supplies its own `--host` identity and becomes the default
+orchestrator. The selected participant set is shared with setup.
+
 Use this when asking any capable agent to become an active Code Mower
 participant. It works for Claude Code, Codex, Cursor or Grok Bot,
 Antigravity, Devin, Muse, or a future provider. The agent should report which
@@ -89,8 +94,8 @@ You are my orchestrator for adopting Code Mower on OWNER/REPO.
 
 Start with Claude Code and Codex by default. Either can coordinate work or own a
 builder branch, and the other supplies independent peer review. Keep one writer
-per branch. Add other builders or reviewers only when the owner explicitly
-selects them. Add no unselected providers.
+per branch. If the owner selects other participants, use init --with to preserve
+that choice throughout setup and later sessions. Add no unselected providers.
 
 First pick the latest Code Mower release tag and read these docs from that tag:
 docs/install.md, docs/try-in-10-minutes.md,

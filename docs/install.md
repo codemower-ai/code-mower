@@ -3,6 +3,12 @@
 Code Mower requires Python 3.12 or newer. Use one install path per machine or
 agent, then verify the installed command before touching a repository.
 
+After installation, `code-mower init --interactive` lets you choose the initial
+participants with Claude Code and Codex preselected. Agents and scripts can
+use `code-mower init --with claude,codex,devin`. Both preview the configuration;
+add `--apply` to write reviewable setup files. See
+[Participants And Sessions](sessions.md) for the complete selection flow.
+
 ## Choose An Install Path
 
 | Environment | Recommended install | Use when |
