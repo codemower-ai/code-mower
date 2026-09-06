@@ -114,6 +114,21 @@ class FailureReasonClassificationTests(unittest.TestCase):
         reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
         self.assertEqual(reason, "network")
 
+    def test_classification_preserves_decisive_tail_output(self) -> None:
+        exc = RuntimeError("package install failed")
+        steps = [
+            {
+                "stderr_preview": (
+                    "x" * 3000 + " No matching distribution found"
+                )
+            }
+        ]
+        reason = migration_install.classify_package_install_failure(
+            exception=exc,
+            steps=steps,
+        )
+        self.assertEqual(reason, "package_index")
+
     def test_timeout_with_network_evidence_classified_as_network(self) -> None:
         """Timeout + network evidence = network."""
         exc = RuntimeError("timeout expired")
