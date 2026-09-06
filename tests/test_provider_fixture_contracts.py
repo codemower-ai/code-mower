@@ -88,6 +88,9 @@ def test_verdict_artifact_provider_aliases_match_registry_ids() -> None:
     assert code_mower_telemetry._lane_provider("antigravity-cli-audit") == "antigravity"
     assert code_mower_telemetry._lane_provider("coderabbit-cli-audit") == "coderabbit"
     assert code_mower_telemetry._lane_provider("cursor-bugbot-audit") == "cursor_bugbot"
+    assert code_mower_telemetry._lane_provider("devin-audit") == "devin"
+    assert code_mower_telemetry._lane_provider("devin-cli-audit") == "devin_cli"
+    assert code_mower_telemetry._lane_provider("devin-cloud-audit") == "devin"
     assert code_mower_telemetry._lane_provider("grok-audit") == "grok_build"
     assert code_mower_telemetry._lane_provider("muse-cli-audit") == "muse"
 

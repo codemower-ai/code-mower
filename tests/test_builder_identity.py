@@ -120,12 +120,16 @@ class BuilderIdentityTests(unittest.TestCase):
         self.assertEqual(payload["labels"]["builder:codex"], "codex")
         self.assertEqual(payload["labels"]["builder:claude"], "claude")
         self.assertEqual(payload["labels"]["builder:cursor"], "cursor")
+        self.assertEqual(payload["labels"]["builder:devin"], "devin")
         self.assertEqual(payload["labels"]["builder:grok-bot"], "cursor")
         self.assertEqual(payload["authors"]["claude[bot]"], "claude")
         self.assertEqual(payload["authors"]["cursor[bot]"], "cursor")
+        self.assertEqual(payload["authors"]["devin-ai-integration"], "devin")
+        self.assertEqual(payload["authors"]["devin-ai-integration[bot]"], "devin")
         self.assertEqual(payload["authors"]["grok-bot[bot]"], "cursor")
         self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:claude"], "claude")
         self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:cursor"], "cursor")
+        self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:devin"], "devin")
         self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:grok-bot"], "cursor")
 
     def test_legacy_grok_bot_identity_maps_to_cursor(self) -> None:

@@ -142,6 +142,8 @@ PROVIDER_ALIAS_MAP: dict[str, str] = {
     "grok": "grok_build",
     "grok_build": "grok_build",
     "devin": "devin",
+    "devin_cloud": "devin",
+    "devin_cli": "devin_cli",
 }
 
 VALID_PROVIDER_STATES = {
@@ -2095,6 +2097,18 @@ def initialize_campaign(
                 f"duplicate release campaign provider {canonical_name!r}: it was named "
                 "more than once, directly or through an alias; list each provider "
                 "exactly once"
+            )
+        # Lanes that explicitly opt out of release campaigns fail closed here,
+        # before any participant is constructed. Only an explicit
+        # `campaign_eligible` false is honored; providers that omit the key keep
+        # their current behavior.
+        if lane.provider_config.get("campaign_eligible") is False:
+            raise ValueError(
+                f"release campaign provider {canonical_name!r} is not campaign "
+                f"eligible: {lane.lane_id} declares campaign_eligible=false "
+                "because it has no maintained campaign adapter yet; remove it "
+                "or choose an eligible provider (for example devin, codex, or "
+                "cursor_cloud_agent)"
             )
         # New campaigns may include providers with work_order_execution capability.
         # Lanes marked role:reviewer or capability:code_review must fail before dispatch.

@@ -42,6 +42,7 @@ CAMPAIGN_AUTH_PROBE_ARGS_KEY = "campaign_auth_probe_args"
 CAMPAIGN_AUTH_PROBE_TIMEOUT_KEY = "campaign_auth_probe_timeout_seconds"
 CAMPAIGN_AUTH_LOGGED_OUT_EXIT_CODES_KEY = "campaign_auth_logged_out_exit_codes"
 CAMPAIGN_AUTH_LOGGED_OUT_MARKERS_KEY = "campaign_auth_logged_out_markers"
+CAMPAIGN_AUTH_LOCATION_LABEL_KEY = "campaign_auth_location_label"
 DEFAULT_CAMPAIGN_AUTH_PROBE_TIMEOUT_SECONDS = 20
 
 #: Only this many characters of probe output are inspected for a logged-out
@@ -182,16 +183,39 @@ def campaign_auth_probe_env(provider: str) -> tuple[dict[str, str], str]:
         return {}, AUTH_ERROR_PROBE_UNAVAILABLE
 
 
-def _remediation(canonical: str, state: str) -> str:
+def campaign_auth_location_label(lane: Any) -> str:
+    """Return the bounded location phrase used after ``canonical`` in messages."""
+    provider_config = getattr(lane, "provider_config", None)
+    if not isinstance(provider_config, Mapping):
+        return "isolated campaign home"
+    label = str(
+        provider_config.get(CAMPAIGN_AUTH_LOCATION_LABEL_KEY) or ""
+    ).strip()
+    return label or "isolated campaign home"
+
+
+def _campaign_auth_location_phrase(lane: Any, canonical: str) -> str:
+    """Return the full location phrase used inside remediation text."""
+    provider_config = getattr(lane, "provider_config", None)
+    label = ""
+    if isinstance(provider_config, Mapping):
+        label = str(
+            provider_config.get(CAMPAIGN_AUTH_LOCATION_LABEL_KEY) or ""
+        ).strip()
+    return label or f"isolated {canonical} campaign home"
+
+
+def _remediation(canonical: str, state: str, lane: Any) -> str:
+    auth_phrase = _campaign_auth_location_phrase(lane, canonical)
     if state == AUTH_STATE_UNAUTHENTICATED:
         return (
-            f"Authenticate the isolated {canonical} campaign home once using the "
+            f"Authenticate the {auth_phrase} once using the "
             "provider login command in docs/release-qualification.md "
             "(Provider Adapter Setup), then re-run `code-mower doctor --adoption`."
         )
     return (
         f"Could not verify {canonical} campaign authentication; verify the "
-        f"{canonical} login yourself before dispatching a campaign, or set "
+        f"{auth_phrase} login yourself before dispatching a campaign, or set "
         f"{CAMPAIGN_AUTH_PROBE_ENV}=0 to leave this lane capability-only."
     )
 
@@ -357,6 +381,7 @@ def check_campaign_auth_readiness(
         return None
 
     timeout_seconds = campaign_auth_probe_timeout(lane)
+    location_label = campaign_auth_location_label(lane)
 
     provider = str(getattr(lane, "provider", "") or canonical)
     child_env, env_error = campaign_auth_probe_env(provider)
@@ -389,7 +414,7 @@ def check_campaign_auth_readiness(
             name=CAMPAIGN_AUTH_CHECK_NAME,
             status=STATUS_PASS,
             lane=canonical,
-            message=f"{canonical} isolated campaign home is authenticated",
+            message=f"{canonical} {location_label} is authenticated",
             detail={
                 **_detail(
                     canonical=canonical,
@@ -422,7 +447,7 @@ def check_campaign_auth_readiness(
             lane=canonical,
             message=f"{canonical} campaign authentication could not be verified",
             detail=detail,
-            remediation=_remediation(canonical, AUTH_STATE_UNKNOWN),
+            remediation=_remediation(canonical, AUTH_STATE_UNKNOWN, lane),
         )
 
     detail = _detail(
@@ -442,9 +467,9 @@ def check_campaign_auth_readiness(
         name=CAMPAIGN_AUTH_CHECK_NAME,
         status=STATUS_WARN,
         lane=canonical,
-        message=f"{canonical} isolated campaign home is not authenticated",
+        message=f"{canonical} {location_label} is not authenticated",
         detail=detail,
-        remediation=_remediation(canonical, AUTH_STATE_UNAUTHENTICATED),
+        remediation=_remediation(canonical, AUTH_STATE_UNAUTHENTICATED, lane),
     )
 
 
@@ -457,6 +482,7 @@ __all__ = (
     "AUTH_STATE_UNAUTHENTICATED",
     "AUTH_STATE_UNKNOWN",
     "CAMPAIGN_AUTH_CHECK_NAME",
+    "CAMPAIGN_AUTH_LOCATION_LABEL_KEY",
     "CAMPAIGN_AUTH_LOGGED_OUT_EXIT_CODES_KEY",
     "CAMPAIGN_AUTH_LOGGED_OUT_MARKERS_KEY",
     "CAMPAIGN_AUTH_MARKER_SCAN_LIMIT",
@@ -465,6 +491,7 @@ __all__ = (
     "CAMPAIGN_AUTH_PROBE_TIMEOUT_KEY",
     "DEFAULT_CAMPAIGN_AUTH_PROBE_TIMEOUT_SECONDS",
     "campaign_auth_confirmed_logged_out",
+    "campaign_auth_location_label",
     "campaign_auth_logged_out_exit_codes",
     "campaign_auth_logged_out_markers",
     "campaign_auth_probe_args",

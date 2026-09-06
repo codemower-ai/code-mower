@@ -61,20 +61,25 @@ builder_identity:
     builder:codex: codex
     builder:claude: claude
     builder:cursor: cursor
+    builder:devin: devin
     builder:grok-bot: cursor
   authors:
     chatgpt-codex-connector[bot]: codex
     claude[bot]: claude
     cursor[bot]: cursor
+    devin-ai-integration: devin
+    devin-ai-integration[bot]: devin
     grok-bot[bot]: cursor
   branch_prefixes:
     cursor/: cursor
+    devin/: devin
   fix_round_mentions:
     cursor: "@cursor"
   trailers:
     CODE_MOWER_BUILDER:codex: codex
     CODE_MOWER_BUILDER:claude: claude
     CODE_MOWER_BUILDER:cursor: cursor
+    CODE_MOWER_BUILDER:devin: devin
     CODE_MOWER_BUILDER:grok-bot: cursor
 
 lanes:

@@ -666,6 +666,55 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "status": "protocol research lane; no automatic merge authority",
         },
     ),
+    "devin_cli": ProviderLane(
+        lane_id="devin_cli",
+        lane_type="audit",
+        driver="local_cli",
+        provider="devin_cli",
+        labels=LaneLabels(
+            needs="needs-devin-cli-audit",
+            done="devin-cli-audit-done",
+            blocked="devin-cli-audit-blocked",
+        ),
+        token_env=("GITHUB_TOKEN",),
+        result_sources=("trailer_comment",),
+        informational=True,
+        enabled_by_default=False,
+        trigger_policy="manual",
+        spend_policy="included",
+        provider_config={
+            "command": "devin",
+            "command_env": "CODE_MOWER_DEVIN_CLI_COMMAND",
+            "model_env": "CODE_MOWER_DEVIN_CLI_MODEL",
+            "model_env_any": (
+                "DEVIN_CLI_MODEL",
+                "DEVIN_MODEL",
+            ),
+            "prompt_lenses": ("base-audit",),
+            "doctor_probe_args": ("--version",),
+            "doctor_probe_timeout_seconds": 30,
+            "campaign_auth_probe_args": ("auth", "status"),
+            "campaign_auth_probe_timeout_seconds": 20,
+            "campaign_auth_logged_out_exit_codes": (1,),
+            "campaign_auth_logged_out_markers": (
+                "not authenticated",
+                "not logged in",
+            ),
+            "campaign_auth_location_label": "ambient Devin CLI session",
+            "local_cli_path_basename_only": True,
+            "local_audit_eligible": False,
+            "campaign_eligible": False,
+            "auth": (
+                "run `devin auth login` in a trusted environment; doctor "
+                "only reports bounded auth status and never persists the output"
+            ),
+            "status": (
+                "informational local Devin CLI lane; not merge authority "
+                "until calibrated for blocker catch rate, false positives, "
+                "cost, and latency"
+            ),
+        },
+    ),
 }
 
 

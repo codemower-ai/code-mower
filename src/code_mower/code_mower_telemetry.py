@@ -95,6 +95,8 @@ AUDIT_LANE_PROVIDER_ALIASES = {
     "antigravity-cli-audit": "antigravity",
     "coderabbit-cli-audit": "coderabbit",
     "cursor-bugbot-audit": "cursor_bugbot",
+    "devin-cloud-audit": "devin",
+    "devin-cli-audit": "devin_cli",
     "grok-audit": "grok_build",
     "grok-build-audit": "grok_build",
     "muse-cli-audit": "muse",

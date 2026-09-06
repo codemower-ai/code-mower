@@ -388,6 +388,7 @@ PACKAGE_FILES = (
     ("tools/lane_configs/claude.py", "src/code_mower/lane_configs/claude.py", "lane-config"),
     ("tools/lane_configs/codex.py", "src/code_mower/lane_configs/codex.py", "lane-config"),
     ("tools/lane_configs/devin.py", "src/code_mower/lane_configs/devin.py", "lane-config"),
+    ("src/code_mower/lane_configs/devin_cli.py", "src/code_mower/lane_configs/devin_cli.py", "lane-config"),
     ("tools/lane_configs/local_llm.py", "src/code_mower/lane_configs/local_llm.py", "lane-config"),
     ("tools/lane_configs/aider.py", "src/code_mower/lane_configs/aider.py", "lane-config"),
     ("tools/lane_configs/gemini_cli.py", "src/code_mower/lane_configs/gemini_cli.py", "lane-config"),
