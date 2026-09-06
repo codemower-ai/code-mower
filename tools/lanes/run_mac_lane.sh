@@ -874,6 +874,43 @@ case "$supervision_reason" in
   timeout|output_overflow|interrupted) supervisor_ended=1 ;;
 esac
 
+# Read the target again before the runner writes anything to it. This snapshot
+# is the provider's own work and nothing else, which is the one question that
+# has to be answered before the bounded outcome is brokered: a provider that
+# both wrote lane-outcome.json and pushed has delivered, and posting a
+# no_change comment or applying needs-owner on that run leaves the owner an
+# owner-blocked pull request next to a comment saying nothing changed.
+# Classification runs after the brokering, so it cannot make that call -- by
+# then the comment is posted and the label is on.
+capture_target_state "$after_state"
+
+# The transition comes from the classifier, not from a second implementation
+# here. A rule that decides whether owner-facing GitHub state gets written must
+# be the same rule that later decides whether the unit delivered, or the two
+# can disagree about the same pair of snapshots.
+#
+# Anything the classifier cannot resolve to a transition it names is unknown,
+# and unknown does not broker. That covers an incomplete after snapshot -- the
+# comment and label a declaration is validated against cannot be trusted either
+# -- and a lane-delivery too old to answer at all. Both leave the unit
+# undelivered and open, which is where a run that proved nothing belongs.
+#
+# The two rounds that never classify stay unknown for the same reason. An audit
+# round and a runner without the CLI have no delivery for a declaration to stand
+# in for, so neither may spend the owner's attention on one.
+delivered_transition="unknown"
+if [ "${#lane_delivery[@]}" -gt 0 ] && [ "$mode" != "audit" ]; then
+  delivered_transition="$(
+    "${lane_delivery[@]}" transition \
+      --before "$before_state" --after "$after_state" 2>/dev/null \
+      || printf 'unknown'
+  )"
+  case "$delivered_transition" in
+    none|pr_opened|head_advanced) ;;
+    *) delivered_transition="unknown" ;;
+  esac
+fi
+
 # Broker the bounded declared outcome through runner-owned GitHub operations.
 # The provider only writes an enum plus a one-line summary; the runner posts the
 # comment and applies the owner label itself.
@@ -884,43 +921,58 @@ esac
 # that evidence. Classification refuses a declaration from a supervisor-ended
 # run for the same reason, so gating on the same fact keeps the runner from
 # posting an owner-facing comment that would then be rejected.
+#
+# And only a run that delivered nothing gets to declare one at all. A bounded
+# outcome is what a unit may pass on *instead of* a pull request or an advanced
+# head, never alongside one; classification reads it that way too, and would
+# report the observed transition as the delivery while the runner's own comment
+# and label said the opposite.
 declared_outcome=""
 declared_summary=""
 declared_outcome_voided=""
+declared_outcome_withheld=""
 runner_comment_id=""
 lane_outcome_file="${work}/.code-mower/lane-outcome.json"
 if [ "$rc" -eq 0 ] && [ "$supervisor_ended" -eq 0 ] \
   && [ -f "$lane_outcome_file" ]; then
-  declared_outcome="$(jq -r '.outcome // ""' "$lane_outcome_file" 2>/dev/null || printf '')"
-  case "$declared_outcome" in
-    no_change|owner_action) ;;
-    *) declared_outcome="" ;;
-  esac
-  # The one-line summary is half the declaration, not decoration: it is the only
-  # thing that tells the owner why this unit closed without a change. A missing,
-  # non-string, or blank summary voids the declaration rather than posting a
-  # mostly blank comment that classification would then accept as delivery.
-  #
-  # The declaration is validated, never repaired. Keeping the first line of a
-  # multiline summary, or the first N characters of an over-long one, accepts a
-  # value the provider did not write and hands the owner a truncated half of the
-  # only explanation they get -- while still counting the run as delivered.
-  # Anything that is not already a single line within the bound is voided, and
-  # the run goes back through the undelivered path where it belongs.
-  #
-  # Surrounding whitespace is stripped first because it carries no content: a
-  # summary written with a trailing newline is still one line. What survives the
-  # strip must be one line and nothing but text, so a line break, a carriage
-  # return, or any other control character left inside voids the declaration.
-  if [ -n "$declared_outcome" ]; then
-    declared_summary="$(
-      jq -r --argjson max "$lane_summary_max_chars" "$lane_summary_filter" \
-        "$lane_outcome_file" 2>/dev/null || printf ''
-    )"
-    if [ -z "$declared_summary" ]; then
-      declared_outcome_voided="$declared_outcome"
-      declared_outcome=""
-      echo "${LANE}: ignoring declared outcome ${declared_outcome_voided} on ${kind} #${num}; .summary must be a non-empty one-line string of at most ${lane_summary_max_chars} characters" >&2
+  if [ "$delivered_transition" != "none" ]; then
+    declared_outcome_withheld="$delivered_transition"
+    echo "${LANE}: ignoring the declared outcome on ${kind} #${num}; observed transition ${delivered_transition}, and a declaration is brokered only when the run delivered nothing" >&2
+  else
+    declared_outcome="$(jq -r '.outcome // ""' "$lane_outcome_file" 2>/dev/null || printf '')"
+    case "$declared_outcome" in
+      no_change|owner_action) ;;
+      *) declared_outcome="" ;;
+    esac
+    # The one-line summary is half the declaration, not decoration: it is the
+    # only thing that tells the owner why this unit closed without a change. A
+    # missing, non-string, or blank summary voids the declaration rather than
+    # posting a mostly blank comment that classification would then accept as
+    # delivery.
+    #
+    # The declaration is validated, never repaired. Keeping the first line of a
+    # multiline summary, or the first N characters of an over-long one, accepts
+    # a value the provider did not write and hands the owner a truncated half of
+    # the only explanation they get -- while still counting the run as
+    # delivered. Anything that is not already a single line within the bound is
+    # voided, and the run goes back through the undelivered path where it
+    # belongs.
+    #
+    # Surrounding whitespace is stripped first because it carries no content: a
+    # summary written with a trailing newline is still one line. What survives
+    # the strip must be one line and nothing but text, so a line break, a
+    # carriage return, or any other control character left inside voids the
+    # declaration.
+    if [ -n "$declared_outcome" ]; then
+      declared_summary="$(
+        jq -r --argjson max "$lane_summary_max_chars" "$lane_summary_filter" \
+          "$lane_outcome_file" 2>/dev/null || printf ''
+      )"
+      if [ -z "$declared_summary" ]; then
+        declared_outcome_voided="$declared_outcome"
+        declared_outcome=""
+        echo "${LANE}: ignoring declared outcome ${declared_outcome_voided} on ${kind} #${num}; .summary must be a non-empty one-line string of at most ${lane_summary_max_chars} characters" >&2
+      fi
     fi
   fi
 fi
@@ -939,8 +991,14 @@ if [ -n "$declared_outcome" ]; then
   if [ "$declared_outcome" = "owner_action" ]; then
     gh "$outcome_subcommand" edit "$num" -R "$REPO" --add-label "$owner_label" >/dev/null 2>&1 || true
   fi
+  # Re-read the target so classification checks the runner's brokering against
+  # GitHub rather than against the runner's belief that it worked: a needs-owner
+  # edit that failed has to classify as owner_action_missing_label, not as a
+  # delivery. Nothing this run started can push into the window between the two
+  # reads -- the provider's whole process group was terminated and reaped before
+  # either of them.
+  capture_target_state "$after_state" "$runner_comment_id"
 fi
-capture_target_state "$after_state" "$runner_comment_id"
 
 delivery_rc=0
 observed_transition="unknown"
@@ -1008,6 +1066,10 @@ if [ "$delivery_rc" -ne 0 ]; then
     if [ -n "$declared_outcome_voided" ]; then
       printf -- '- voided declared outcome: %s carried no non-empty one-line summary of at most %s characters, and a bounded outcome without one gives the owner nothing to act on\n' \
         "$declared_outcome_voided" "$lane_summary_max_chars"
+    fi
+    if [ -n "$declared_outcome_withheld" ]; then
+      printf -- '- withheld declared outcome: the observed transition was %s, and a declaration is brokered only when the run is known to have delivered nothing\n' \
+        "$declared_outcome_withheld"
     fi
   } > "$undelivered_body_file"
   gh "$subcommand" comment "$num" -R "$REPO" \

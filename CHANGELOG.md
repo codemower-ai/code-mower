@@ -25,6 +25,12 @@ later entries are regular releases.
   that produced nothing still does not, and one that produced nothing exits `3`
   rather than the supervisor's own `124`/`125`/`130`, which would report a cap
   as a provider failure. Only a provider that ended itself keeps its exit code.
+  A bounded outcome is an alternative to delivery, never an addition to one: the
+  runner reads the transition (`lane-delivery transition`, the comparison
+  `classify` makes) before it writes anything to the target and brokers a
+  declaration only when it observed no new pull request and no advanced head, so
+  a provider that both declared and pushed cannot leave an owner-blocked pull
+  request next to a comment saying nothing changed.
 - Each local builder run records a metadata-only delivery outcome for Board and
   productivity reporting: provider exit, delivery transition, handoff, elapsed
   time, and intervention count.

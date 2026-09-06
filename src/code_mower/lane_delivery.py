@@ -1108,6 +1108,15 @@ def _add_classify_parser(subparsers: Any) -> None:
     classify.add_argument("--json", action="store_true")
 
 
+def _add_transition_parser(subparsers: Any) -> None:
+    transition = subparsers.add_parser(
+        "transition",
+        help="Print the PR/head transition observed between two snapshots.",
+    )
+    transition.add_argument("--before", required=True, help="Snapshot JSON path or - for stdin.")
+    transition.add_argument("--after", required=True, help="Snapshot JSON path or - for stdin.")
+
+
 def _add_handoff_parser(subparsers: Any) -> None:
     handoff = subparsers.add_parser(
         "handoff",
@@ -1171,6 +1180,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower lane-delivery")
     subparsers = parser.add_subparsers(dest="command", required=True)
     _add_classify_parser(subparsers)
+    _add_transition_parser(subparsers)
     _add_handoff_parser(subparsers)
     _add_scan_prompt_parser(subparsers)
     _add_supervise_parser(subparsers)
@@ -1179,6 +1189,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "classify":
             return _classify_main(args)
+        if args.command == "transition":
+            return _transition_main(args)
         if args.command == "handoff":
             return _handoff_main(args)
         if args.command == "scan-prompt":
@@ -1242,6 +1254,29 @@ def _classify_main(args: argparse.Namespace) -> int:
             f"transition={outcome.transition} reason={outcome.reason}"
         )
     return 0 if outcome.delivered else 3
+
+
+def _transition_main(args: argparse.Namespace) -> int:
+    """Report the observed transition on its own, before anything acts on it.
+
+    Classification answers "did this unit deliver" at the end of a run, which
+    is too late for the one decision that has to be made in the middle of it:
+    whether the runner may broker a bounded declared outcome. A provider that
+    both wrote ``lane-outcome.json`` and pushed has delivered, and posting the
+    declaration's comment or applying ``needs-owner`` on that run would leave
+    the owner an owner-blocked pull request alongside a comment saying nothing
+    changed. The runner therefore reads the transition first and brokers only
+    when it observed none.
+
+    The exit status says nothing about delivery -- ``0`` means the comparison
+    was made, whatever it found. Only a pair that cannot be compared at all
+    fails, and it fails the way :func:`observed_transition` does.
+    """
+
+    before = _load_state(args.before)
+    after = _load_state(args.after)
+    print(observed_transition(before, after))
+    return 0
 
 
 def _handoff_main(args: argparse.Namespace) -> int:

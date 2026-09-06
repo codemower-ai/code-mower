@@ -476,6 +476,102 @@ class DeliveryClassificationTests(unittest.TestCase):
         self.assertEqual(rc, 3)
 
 
+class TransitionReadbackTests(unittest.TestCase):
+    """What the runner asks before it writes anything to the target.
+
+    The bounded declared outcome has to be brokered -- an owner-facing comment,
+    and `needs-owner` for owner_action -- before classification runs, so the
+    runner needs the transition on its own, ahead of that decision. It is the
+    same rule classification uses, asked earlier.
+    """
+
+    def _transition(
+        self, before: lane_delivery.TargetState, after: lane_delivery.TargetState
+    ) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            before_path = root / "before.json"
+            after_path = root / "after.json"
+            before_path.write_text(json.dumps(before.as_dict()), encoding="utf-8")
+            after_path.write_text(json.dumps(after.as_dict()), encoding="utf-8")
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                rc = lane_delivery.main(
+                    [
+                        "transition",
+                        "--before",
+                        str(before_path),
+                        "--after",
+                        str(after_path),
+                    ]
+                )
+        return rc, printed.getvalue().strip()
+
+    def test_a_new_pull_request_is_reported_as_a_delivery(self) -> None:
+        rc, printed = self._transition(
+            _state(), _state(pr_number="901", head_sha=SHA_A)
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(printed, lane_delivery.TRANSITION_PR_OPENED)
+
+    def test_an_advanced_head_is_reported_as_a_delivery(self) -> None:
+        rc, printed = self._transition(
+            _state(pr_number="901", head_sha=SHA_A),
+            _state(pr_number="901", head_sha=SHA_B),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(printed, lane_delivery.TRANSITION_HEAD_ADVANCED)
+
+    def test_a_delivered_transition_still_exits_zero(self) -> None:
+        # The exit status reports whether the comparison could be made, never
+        # what it found. The runner reads the printed value and treats a failure
+        # as unknown, so returning nonzero for a real transition would hide the
+        # delivery it exists to report.
+        for before, after in (
+            (_state(), _state(pr_number="901", head_sha=SHA_A)),
+            (
+                _state(pr_number="901", head_sha=SHA_A),
+                _state(pr_number="901", head_sha=SHA_B),
+            ),
+            (_state(), _state()),
+        ):
+            with self.subTest(after=after.head_sha or "no head"):
+                rc, _ = self._transition(before, after)
+                self.assertEqual(rc, 0)
+
+    def test_no_transition_is_reported_as_none(self) -> None:
+        rc, printed = self._transition(
+            _state(pr_number="901", head_sha=SHA_A),
+            _state(pr_number="901", head_sha=SHA_A),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(printed, lane_delivery.TRANSITION_NONE)
+
+    def test_an_incomplete_snapshot_is_reported_as_unknown(self) -> None:
+        # Not `none`: a failed GitHub read cannot be told apart from a target
+        # that did not move, and the runner brokers only on an observed `none`.
+        rc, printed = self._transition(
+            _state(pr_number="901", head_sha=SHA_A),
+            _state(snapshot_complete=False),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(printed, lane_delivery.TRANSITION_UNKNOWN)
+
+    def test_mismatched_targets_fail_instead_of_naming_a_transition(self) -> None:
+        rc, printed = self._transition(
+            _state(), _state(number="999", pr_number="901", head_sha=SHA_A)
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertEqual(printed, "")
+
+
 class ProcessGroupCleanupTests(unittest.TestCase):
     def test_terminate_escalates_from_term_to_kill(self) -> None:
         sent: list[int] = []
@@ -1464,6 +1560,58 @@ class RunnerScriptContractTests(unittest.TestCase):
                     ".summary must be a non-empty one-line string", text
                 )
                 self.assertIn("voided declared outcome", text)
+
+    def test_runner_scripts_read_the_after_state_before_they_broker(self) -> None:
+        # A provider that both wrote lane-outcome.json and pushed has
+        # delivered. Brokering the declaration first posts a comment saying
+        # nothing changed -- and, for owner_action, applies needs-owner -- on a
+        # pull request that classification then reports as a delivery. The
+        # after snapshot has to be taken, and the transition read from it,
+        # before any runner-owned GitHub write.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                capture = text.index('capture_target_state "$after_state"\n')
+                gate = text.index('"${lane_delivery[@]}" transition')
+                broker = text.index('gh "$outcome_subcommand" comment')
+                label = text.index('--add-label "$owner_label"')
+                recapture = text.index(
+                    'capture_target_state "$after_state" "$runner_comment_id"'
+                )
+                classify = text.index('"${lane_delivery[@]}" "${classify_args[@]}"')
+                self.assertLess(capture, gate)
+                self.assertLess(gate, broker)
+                self.assertLess(broker, label)
+                # The re-read is what proves the runner's own brokering landed:
+                # a needs-owner edit that failed must classify as
+                # owner_action_missing_label rather than as a delivery.
+                self.assertLess(label, recapture)
+                self.assertLess(recapture, classify)
+
+    def test_runner_scripts_broker_only_when_nothing_was_delivered(self) -> None:
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                withheld = text.index('declared_outcome_withheld="$delivered_transition"')
+                parsed = text.index("declared_outcome=\"$(jq -r '.outcome")
+                self.assertIn('if [ "$delivered_transition" != "none" ]; then', text)
+                # The declaration is only read at all on the branch where the
+                # runner observed no transition.
+                self.assertLess(withheld, parsed)
+                # A withheld declaration is named in the undelivered note, so
+                # the owner is not left wondering where their outcome went.
+                self.assertIn("withheld declared outcome", text)
+
+    def test_runner_scripts_do_not_broker_on_an_unresolved_transition(self) -> None:
+        # Unknown covers an incomplete after snapshot and a lane-delivery too
+        # old to answer. Neither is evidence that the run delivered nothing, and
+        # only an observed `none` brokers.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn('delivered_transition="unknown"', text)
+                self.assertIn('*) delivered_transition="unknown" ;;', text)
+                self.assertIn("|| printf 'unknown'", text)
 
     def test_runner_scripts_void_a_summary_instead_of_truncating_it(self) -> None:
         # A summary that is not already one line within the bound is discarded

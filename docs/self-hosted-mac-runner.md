@@ -172,6 +172,21 @@ leave a note on the unit. `code-mower lane-delivery scan-prompt` refuses to
 start a provider whose assembled prompt would send it looking for
 authentication material.
 
+A declaration is what a unit may pass on *instead of* a pull request, never
+alongside one. The runner takes the after snapshot and reads the transition —
+`code-mower lane-delivery transition`, the same comparison `classify` makes —
+before it writes anything to the target, and brokers the declaration only when
+it observed no new pull request and no advanced head. A provider that both
+declared and pushed has delivered: the push is the outcome, the declaration is
+dropped and named in the run log, and the owner is not left with an
+owner-blocked pull request sitting next to a comment saying nothing changed. A
+transition the runner cannot resolve is not an observed `none` either — an
+incomplete after snapshot, or a `code-mower` too old to answer, withholds the
+declaration and leaves the unit open. When the runner does broker one it reads
+the target once more afterwards, so classification checks the comment and the
+`needs-owner` label against GitHub rather than against the runner's belief that
+its own edits landed.
+
 Hitting the `--max-minutes` cap does not exempt a run from the contract. A
 timed-out provider that pushed nothing is an unfinished unit and still exits
 `3`; the cap alone only reports success when the classification passed.
