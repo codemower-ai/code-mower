@@ -614,6 +614,10 @@ def supervise_process(
     supervisor exists to clean up, not a reason to stall behind one. Output
     already in flight is drained for ``descendant_drain_seconds`` first, and
     the group is then terminated and reaped as usual.
+
+    The mirror case — a provider that closes its output and keeps working — is
+    waited on rather than polled at speed: with no descriptor left to select
+    on, the loop waits on the child itself.
     """
 
     if timeout_seconds <= 0:
@@ -689,18 +693,31 @@ def supervise_process(
                     # Draining a pipe an exited provider left behind: poll
                     # briefly so the window is the drain, not the select.
                     wait = min(wait, 0.05)
-                for _key, _events in selector.select(timeout=wait):
-                    chunk = os.read(proc.stdout.fileno(), 65536)
-                    if not chunk:
-                        selector.unregister(proc.stdout)
-                        break
-                    if written + len(chunk) > max_log_bytes:
-                        log_handle.write(chunk[: max(0, max_log_bytes - written)])
-                        written = max_log_bytes
-                        overflowed = True
-                        break
-                    log_handle.write(chunk)
-                    written += len(chunk)
+                if selector.get_map():
+                    for _key, _events in selector.select(timeout=wait):
+                        chunk = os.read(proc.stdout.fileno(), 65536)
+                        if not chunk:
+                            selector.unregister(proc.stdout)
+                            break
+                        if written + len(chunk) > max_log_bytes:
+                            log_handle.write(chunk[: max(0, max_log_bytes - written)])
+                            written = max_log_bytes
+                            overflowed = True
+                            break
+                        log_handle.write(chunk)
+                        written += len(chunk)
+                else:
+                    # The provider closed its output and is still running, so
+                    # there is nothing left to select on. Wait on the process
+                    # instead of on an empty selector: how long a selector with
+                    # no registered descriptor waits is the backend's business,
+                    # and a wait that returns at once would spin this loop at
+                    # full CPU for the rest of the provider's run. Waiting on
+                    # the child also wakes as soon as it exits.
+                    try:
+                        proc.wait(timeout=wait)
+                    except subprocess.TimeoutExpired:
+                        pass
                 if overflowed:
                     break
                 if proc.poll() is None:

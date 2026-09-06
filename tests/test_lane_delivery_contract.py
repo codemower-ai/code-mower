@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import resource
 import shutil
 import signal
 import subprocess
@@ -75,6 +76,18 @@ def _wait_for_pid_exit(pid: int, timeout: float = 5.0) -> bool:
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.05)
+
+
+def _self_cpu_seconds() -> float:
+    """CPU seconds this process has burned, children excluded.
+
+    ``supervise_process`` runs in the test process, so a supervision loop that
+    spins shows up here as CPU that tracks wall time. The provider's own CPU is
+    charged to ``RUSAGE_CHILDREN`` and is deliberately not counted.
+    """
+
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return usage.ru_utime + usage.ru_stime
 
 
 def _state(**overrides: object) -> lane_delivery.TargetState:
@@ -865,6 +878,54 @@ class ProcessGroupCleanupTests(unittest.TestCase):
         self.assertTrue(
             _wait_for_pid_exit(grandchild),
             "orphaned provider transport survived the drain",
+        )
+
+    def test_a_provider_that_closes_output_early_is_waited_on_not_spun_on(
+        self,
+    ) -> None:
+        """Closed output must leave the supervisor waiting, not spinning.
+
+        A provider that closes stdout and stderr while it keeps working leaves
+        the loop with nothing to select on. Waiting on an empty selector makes
+        the wait the selector backend's decision, and a backend that returns at
+        once turns the rest of the provider's run into a full-speed loop on the
+        runner's own CPU. The supervisor waits on the child instead, so the run
+        still ends on the provider's exit and with its exit code.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_path = root / "run.log"
+            # Both descriptors: stderr is a dup of the stdout pipe, so closing
+            # stdout alone would not reach EOF.
+            script = "printf 'working\\n'; exec 1>&- 2>&-; sleep 2; exit 6"
+
+            started = time.monotonic()
+            cpu_before = _self_cpu_seconds()
+            result = lane_delivery.supervise_process(
+                ["bash", "-c", script],
+                log_path=log_path,
+                timeout_seconds=30.0,
+                term_grace_seconds=1.0,
+            )
+            cpu_used = _self_cpu_seconds() - cpu_before
+            elapsed = time.monotonic() - started
+
+            log = log_path.read_text(encoding="utf-8")
+
+        # The provider ran to its own end, and its exit ended the run.
+        self.assertEqual(result.exit_code, 6)
+        self.assertFalse(result.timed_out)
+        self.assertFalse(result.overflowed)
+        self.assertFalse(result.descendants_held_output)
+        self.assertEqual(result.reason, lane_delivery.SUPERVISION_COMPLETED)
+        self.assertIn("working", log)
+        self.assertGreater(elapsed, 1.5, "the supervisor did not wait for the provider")
+        self.assertLess(
+            cpu_used,
+            0.5,
+            f"supervision burned {cpu_used:.2f}s of CPU over {elapsed:.2f}s of "
+            "waiting: the loop is spinning on a closed output stream",
         )
 
     def test_supervise_cli_dispatches_to_the_provider(self) -> None:
