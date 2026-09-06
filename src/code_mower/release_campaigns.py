@@ -35,6 +35,7 @@ if __package__ in {None, ""}:
     from code_mower.file_locks import FileLockError, exclusive_file_lock
     from code_mower.provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from code_mower.release_qualify import (
+        ADOPTION_RESULT_FIELDS,
         DEFAULT_PACKAGE_SOURCE,
         PRODUCTION_PYPI_INDEX_URL,
         TESTPYPI_INDEX_URL,
@@ -62,6 +63,7 @@ else:
     from .file_locks import FileLockError, exclusive_file_lock
     from .provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from .release_qualify import (
+        ADOPTION_RESULT_FIELDS,
         DEFAULT_PACKAGE_SOURCE,
         PRODUCTION_PYPI_INDEX_URL,
         TESTPYPI_INDEX_URL,
@@ -202,6 +204,7 @@ SAFE_ERROR_CODES = frozenset(
         "github_dispatch_failed",
         "github_poll_unavailable",
         "hosted_response_timeout",
+        "hosted_result_rejected",
         "hosted_transport_unverified",
         "python_runtime_unavailable",
         "unknown_provider",
@@ -1175,7 +1178,32 @@ def is_bound_adoption_result(
     )
 
 
-def _extract_bound_adoption_result(
+def _adoption_result_rejection_detail(exc: ValueError) -> str:
+    """Return a bounded, field-level reason for a closed adoption result rejection.
+
+    This only consumes the structured ValueError from
+    validate_adoption_result_payload, so it never echoes raw comment text,
+    marker bodies, or unbounded provider values.
+    """
+    message = str(exc)
+    # Match the longest field names first to avoid substring false positives
+    # (e.g., matching "out" before "outcome").
+    known_fields = sorted(ADOPTION_RESULT_FIELDS, key=len, reverse=True)
+    for field in known_fields:
+        if field in message:
+            return f"adoption result field '{field}' rejected"
+    if "unsupported field" in message:
+        return "adoption result has unsupported field"
+    if "missing required field" in message:
+        return "adoption result missing required field"
+    if "schema" in message:
+        return "adoption result schema rejected"
+    if "steps" in message:
+        return "adoption result steps rejected"
+    return "adoption result rejected"
+
+
+def _extract_bound_adoption_result_ex(
     text: str,
     *,
     campaign_id: str,
@@ -1186,7 +1214,7 @@ def _extract_bound_adoption_result(
     starting_version: str,
     package_identity: str,
     package_source: str = DEFAULT_PACKAGE_SOURCE,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, str]:
     """Extract an adoptionResult from a GitHub comment, requiring explicit identity binding.
 
     A bare adoptionResult JSON blob is never accepted: the comment must wrap
@@ -1208,9 +1236,16 @@ def _extract_bound_adoption_result(
     expected source: the closed adoptionResult schema carries no source field
     of its own to cross-check, so this is the one place that binding is
     enforced.
+
+    Returns a ``(result, rejection_detail)`` pair. ``result`` is the validated
+    adoption result, or ``None`` if no valid marker was found. ``rejection_detail``
+    is a bounded, field-level reason when a trusted, correctly bound marker was
+    present but its adoption result failed closed validation, or an empty string
+    when no such marker was present.
     """
     if not package_identity:
-        return None
+        return None, ""
+    last_rejection_detail = ""
     for match in RESULT_MARKER_RE.finditer(text):
         try:
             wrapper = json.loads(match.group(1))
@@ -1228,12 +1263,14 @@ def _extract_bound_adoption_result(
             continue
         adoption_result = wrapper.get("adoption_result")
         if not isinstance(adoption_result, dict):
+            last_rejection_detail = "adoption result missing"
             continue
         try:
             validate_adoption_result_payload(
                 adoption_result, expected_package_identity=package_identity
             )
-        except ValueError:
+        except ValueError as exc:
+            last_rejection_detail = _adoption_result_rejection_detail(exc)
             continue
         if (
             adoption_result.get("provider") != provider
@@ -1242,8 +1279,39 @@ def _extract_bound_adoption_result(
             or str(adoption_result.get("starting_version") or "") != starting_version
         ):
             continue
-        return adoption_result
-    return None
+        return adoption_result, ""
+    return None, last_rejection_detail
+
+
+def _extract_bound_adoption_result(
+    text: str,
+    *,
+    campaign_id: str,
+    provider: str,
+    release_tag: str,
+    idempotency_key: str,
+    qualification_context: str,
+    starting_version: str,
+    package_identity: str,
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
+) -> dict[str, Any] | None:
+    """Return the validated adoption result, or None.
+
+    Backward-compatible wrapper for callers that do not need the rejection
+    reason.
+    """
+    result, _ = _extract_bound_adoption_result_ex(
+        text,
+        campaign_id=campaign_id,
+        provider=provider,
+        release_tag=release_tag,
+        idempotency_key=idempotency_key,
+        qualification_context=qualification_context,
+        starting_version=starting_version,
+        package_identity=package_identity,
+        package_source=package_source,
+    )
+    return result
 
 
 def _dispatch_github_comment(
@@ -2594,7 +2662,7 @@ def dispatch_or_advance_campaign(
                         _comment_author_login(comment), trusted_authors
                     ):
                         continue
-                    found_result = _extract_bound_adoption_result(
+                    found_result, rejection_detail = _extract_bound_adoption_result_ex(
                         str(comment.get("body") or ""),
                         campaign_id=campaign_id,
                         provider=provider,
@@ -2621,6 +2689,7 @@ def dispatch_or_advance_campaign(
                         provider_data["elapsed_seconds"] = float(
                             found_result.get("elapsed_seconds") or 0.0
                         )
+                        provider_data["error"] = ""
                         outcome = found_result.get("outcome")
                         if outcome in {"pass", "pass_with_warnings"}:
                             provider_data["state"] = "complete"
@@ -2633,6 +2702,20 @@ def dispatch_or_advance_campaign(
                             )
                             provider_data["next_detail"] = _extract_failure_detail(found_result)
                         break
+                    if rejection_detail:
+                        provider_data["error"] = _safe_error("hosted_result_rejected")
+                        action, detail = _provider_next_action(
+                            provider,
+                            lane,
+                            "blocked",
+                            command_available=True,
+                            has_credentials=True,
+                            has_issue=True,
+                            dry_run=False,
+                            error=rejection_detail,
+                        )
+                        provider_data["next_action"] = action
+                        provider_data["next_detail"] = detail
             if found_result is not None:
                 continue
 
@@ -2835,16 +2918,23 @@ def dispatch_or_advance_campaign(
                     and not deadline_was_missing
                     and _response_deadline_expired(deadline, now_utc)
                 ):
-                    provider_data["state"] = "unavailable"
-                    provider_data["response_deadline_at"] = deadline
-                    provider_data["error"] = _safe_error("hosted_response_timeout")
-                    provider_data["next_action"] = (
-                        f"record manual result for {provider} or run with --apply "
-                        f"--retry-provider {provider}"
-                    )
-                    provider_data["next_detail"] = (
-                        "hosted provider returned no trusted result before its response deadline"
-                    )
+                    if provider_data.get("error") == _safe_error("hosted_result_rejected"):
+                        # A trusted, correctly bound marker was present but its
+                        # adoption result failed closed validation. The provider
+                        # has responded; the rejection is the terminal state.
+                        provider_data["state"] = "blocked"
+                        provider_data["response_deadline_at"] = deadline
+                    else:
+                        provider_data["state"] = "unavailable"
+                        provider_data["response_deadline_at"] = deadline
+                        provider_data["error"] = _safe_error("hosted_response_timeout")
+                        provider_data["next_action"] = (
+                            f"record manual result for {provider} or run with --apply "
+                            f"--retry-provider {provider}"
+                        )
+                        provider_data["next_detail"] = (
+                            "hosted provider returned no trusted result before its response deadline"
+                        )
                     continue
 
             if not is_explicit_retry:

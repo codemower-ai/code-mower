@@ -7821,6 +7821,8 @@ class ResultMarkerParsingTests(unittest.TestCase):
         campaign.status = "running"
         campaign.providers[0]["state"] = "running"
         campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+        campaign.providers[0]["trigger_posted"] = True
+        campaign.providers[0]["response_deadline_at"] = "2099-01-01T00:00:00Z"
         release_campaigns.save_campaign(campaign, campaigns_dir)
         return campaign
 
@@ -7903,6 +7905,152 @@ class ResultMarkerParsingTests(unittest.TestCase):
             )
             saved = self._poll(campaigns_dir, body)
             self.assertEqual(saved["providers"][0]["state"], "running")
+
+
+class HostedResultRejectionTests(unittest.TestCase):
+    """A trusted, correctly bound marker with an invalid adoption result is surfaced."""
+
+    @staticmethod
+    def _running_campaign(campaigns_dir: Path) -> Any:
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_cloud_agent"],
+            repo_slug="owner/repo",
+        )
+        campaign.status = "running"
+        campaign.providers[0]["state"] = "running"
+        campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
+        campaign.providers[0]["trigger_posted"] = True
+        campaign.providers[0]["response_deadline_at"] = "2099-01-01T00:00:00Z"
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+        return campaign
+
+    @staticmethod
+    def _poll(
+        campaigns_dir: Path, body: str, author_login: str = "cursor[bot]"
+    ) -> dict[str, Any]:
+        def mock_gh_json(args, **kwargs):
+            return {
+                "comments": [{"author": {"login": author_login}, "body": body}],
+            }, ""
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+        saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+        assert saved is not None
+        return saved
+
+    @staticmethod
+    def _poll_comments(
+        campaigns_dir: Path, comments: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        def mock_gh_json(args, **kwargs):
+            return {"comments": comments}, ""
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                repo_slug="owner/repo",
+                gh_json_runner=mock_gh_json,
+            )
+        saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+        assert saved is not None
+        return saved
+
+    @staticmethod
+    def _wrapper(campaign: Any, **extra: Any) -> dict[str, Any]:
+        return {
+            "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+            "campaign_id": campaign.campaign_id,
+            "provider": "cursor_cloud_agent",
+            "release_tag": "v1.0.0",
+            "idempotency_key": campaign.providers[0]["idempotency_key"],
+            "adoption_result": _mock_adoption_result(
+                release_tag="v1.0.0", provider="cursor_cloud_agent", outcome="pass"
+            ),
+            **extra,
+        }
+
+    def test_invalid_host_class_enum_is_rejected_with_field_reason(self) -> None:
+        """An unsupported host_class value surfaces a bounded field-level reason."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._running_campaign(campaigns_dir)
+            wrapper = self._wrapper(campaign)
+            wrapper["adoption_result"]["host_class"] = "linux_x86_64"
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+            saved = self._poll(campaigns_dir, marker)
+            provider = saved["providers"][0]
+            self.assertEqual(provider["state"], "running")
+            self.assertEqual(provider["error"], "hosted_result_rejected")
+            self.assertIn("host_class", provider["next_detail"])
+            # The marker body and raw values are never persisted.
+            self.assertNotIn("linux_x86_64", json.dumps(saved))
+
+    def test_invalid_identity_is_rejected_with_field_reason(self) -> None:
+        """A result for a different package identity is rejected with the field named."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._running_campaign(campaigns_dir)
+            wrapper = self._wrapper(campaign)
+            wrapper["adoption_result"]["package_identity"] = "other-package"
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+            saved = self._poll(campaigns_dir, marker)
+            provider = saved["providers"][0]
+            self.assertEqual(provider["state"], "running")
+            self.assertEqual(provider["error"], "hosted_result_rejected")
+            self.assertIn("package_identity", provider["next_detail"])
+
+    def test_invalid_marker_followed_by_valid_correction(self) -> None:
+        """A later valid trusted marker wins without duplicating dispatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._running_campaign(campaigns_dir)
+            bad = self._wrapper(campaign)
+            bad["adoption_result"]["host_class"] = "linux_x86_64"
+            good = self._wrapper(campaign)
+            comments = [
+                {
+                    "author": {"login": "cursor[bot]"},
+                    "body": f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(bad)} -->",
+                },
+                {
+                    "author": {"login": "cursor[bot]"},
+                    "body": f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(good)} -->",
+                },
+            ]
+            saved = self._poll_comments(campaigns_dir, comments)
+            provider = saved["providers"][0]
+            self.assertEqual(provider["state"], "complete")
+            self.assertEqual(provider.get("error"), "")
+            self.assertEqual(provider["next_action"], "none")
+
+    def test_untrusted_malformed_marker_is_ignored(self) -> None:
+        """A malformed marker from an untrusted author is silently ignored."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            self._running_campaign(campaigns_dir)
+            saved = self._poll(
+                campaigns_dir,
+                "<!-- CODE_MOWER_ADOPTION_RESULT: {not json at all} -->",
+                author_login="untrusted_user",
+            )
+            provider = saved["providers"][0]
+            self.assertEqual(provider["state"], "running")
+            self.assertNotEqual(provider.get("error"), "hosted_result_rejected")
 
 
 class CampaignLockContentionTests(unittest.TestCase):
