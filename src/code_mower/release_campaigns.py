@@ -1183,19 +1183,34 @@ def _adoption_result_rejection_detail(exc: ValueError) -> str:
 
     This only consumes the structured ValueError from
     validate_adoption_result_payload, so it never echoes raw comment text,
-    marker bodies, or unbounded provider values.
+    marker bodies, or unbounded provider values. Field names are matched
+    exactly -- substring matches like "provider" inside "provider_token" are
+    rejected, and structured unsupported/missing field lists are parsed before
+    falling back to message text.
     """
     message = str(exc)
-    # Match the longest field names first to avoid substring false positives
-    # (e.g., matching "out" before "outcome").
+    # Structured unsupported/missing field lists carry the failing names inside
+    # brackets. Parse them first so an unsupported extra like "provider_token"
+    # is not misreported as a rejected "provider" field.
+    list_match = re.search(r"\[([^\]]*)\]", message)
+    if list_match and (
+        "unsupported field" in message or "missing required field" in message
+    ):
+        raw = list_match.group(1)
+        names = [name.strip().strip("\'\"") for name in raw.split(",") if name.strip()]
+        if "missing required field" in message:
+            for field_name in names:
+                if field_name in ADOPTION_RESULT_FIELDS:
+                    return f"adoption result field '{field_name}' rejected"
+            return "adoption result missing required field"
+        return "adoption result has unsupported field"
+    # Otherwise match closed field names by whole word so a name like "out" is
+    # not matched inside "outcome" and "provider" is not matched inside
+    # "provider_token".
     known_fields = sorted(ADOPTION_RESULT_FIELDS, key=len, reverse=True)
     for field_name in known_fields:
-        if field_name in message:
+        if re.search(rf"\b{re.escape(field_name)}\b", message):
             return f"adoption result field '{field_name}' rejected"
-    if "unsupported field" in message:
-        return "adoption result has unsupported field"
-    if "missing required field" in message:
-        return "adoption result missing required field"
     if "schema" in message:
         return "adoption result schema rejected"
     if "steps" in message:

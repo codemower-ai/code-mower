@@ -8111,6 +8111,24 @@ class HostedResultRejectionTests(unittest.TestCase):
             self.assertNotEqual(provider.get("error"), "hosted_result_rejected")
 
 
+    def test_unsupported_field_with_known_substring_is_not_misreported(self) -> None:
+        """An unsupported extra field whose name contains a known field stays generic."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = self._running_campaign(campaigns_dir)
+            wrapper = self._wrapper(campaign)
+            wrapper["adoption_result"]["provider_token"] = "secret"
+            marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+            saved = self._poll(campaigns_dir, marker)
+            provider = saved["providers"][0]
+            self.assertEqual(provider["state"], "running")
+            self.assertEqual(provider["error"], "hosted_result_rejected")
+            self.assertIn("unsupported field", provider["next_detail"])
+            # The raw field name and value are never persisted.
+            self.assertNotIn("provider_token", json.dumps(saved))
+            self.assertNotIn("secret", json.dumps(saved))
+
+
 class CampaignLockContentionTests(unittest.TestCase):
     """Bounded contention from the portable lock backend is a bounded command error.
 
