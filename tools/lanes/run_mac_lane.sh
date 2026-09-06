@@ -152,6 +152,23 @@ ready_label=tier:R
 owner_label=needs-owner
 owner_labels_json='["needs-owner","owner-decision","owner-sitting"]'
 
+# The bounded-outcome summary contract, as one named program so the rule that
+# decides what a one-line summary is lives in exactly one place. It emits the
+# summary when the declaration is valid and an empty string when it is not; the
+# caller voids the declaration on empty. Control characters are found by
+# codepoint rather than by a regex class so the check does not depend on which
+# escapes the host jq understands.
+lane_summary_max_chars=280
+# shellcheck disable=SC2016  # $s and $max are jq variables, not shell expansions
+lane_summary_filter='
+  if (.summary | type) == "string"
+  then ((.summary | gsub("^\\s+|\\s+$"; "")) as $s
+    | if ($s | explode | any(. < 32 or . == 127)) then ""
+      elif ($s | length) > $max then ""
+      else $s end)
+  else "" end
+'
+
 kind=""
 num=""
 mode=""
@@ -883,18 +900,27 @@ if [ "$rc" -eq 0 ] && [ "$supervisor_ended" -eq 0 ] \
   # thing that tells the owner why this unit closed without a change. A missing,
   # non-string, or blank summary voids the declaration rather than posting a
   # mostly blank comment that classification would then accept as delivery.
+  #
+  # The declaration is validated, never repaired. Keeping the first line of a
+  # multiline summary, or the first N characters of an over-long one, accepts a
+  # value the provider did not write and hands the owner a truncated half of the
+  # only explanation they get -- while still counting the run as delivered.
+  # Anything that is not already a single line within the bound is voided, and
+  # the run goes back through the undelivered path where it belongs.
+  #
+  # Surrounding whitespace is stripped first because it carries no content: a
+  # summary written with a trailing newline is still one line. What survives the
+  # strip must be one line and nothing but text, so a line break, a carriage
+  # return, or any other control character left inside voids the declaration.
   if [ -n "$declared_outcome" ]; then
     declared_summary="$(
-      jq -r '
-        if (.summary | type) == "string"
-        then (((.summary | split("\n") | first) // "") | gsub("^\\s+|\\s+$"; ""))
-        else "" end
-      ' "$lane_outcome_file" 2>/dev/null | cut -c1-280
-    )" || declared_summary=""
+      jq -r --argjson max "$lane_summary_max_chars" "$lane_summary_filter" \
+        "$lane_outcome_file" 2>/dev/null || printf ''
+    )"
     if [ -z "$declared_summary" ]; then
       declared_outcome_voided="$declared_outcome"
       declared_outcome=""
-      echo "${LANE}: ignoring declared outcome ${declared_outcome_voided} on ${kind} #${num}; .summary must be a non-empty one-line string" >&2
+      echo "${LANE}: ignoring declared outcome ${declared_outcome_voided} on ${kind} #${num}; .summary must be a non-empty one-line string of at most ${lane_summary_max_chars} characters" >&2
     fi
   fi
 fi
@@ -980,8 +1006,8 @@ if [ "$delivery_rc" -ne 0 ]; then
     printf -- '- observed transition: %s\n' "$observed_transition"
     printf -- '- classification: %s\n' "$delivery_reason"
     if [ -n "$declared_outcome_voided" ]; then
-      printf -- '- voided declared outcome: %s carried no non-empty one-line summary, and a bounded outcome without one gives the owner nothing to act on\n' \
-        "$declared_outcome_voided"
+      printf -- '- voided declared outcome: %s carried no non-empty one-line summary of at most %s characters, and a bounded outcome without one gives the owner nothing to act on\n' \
+        "$declared_outcome_voided" "$lane_summary_max_chars"
     fi
   } > "$undelivered_body_file"
   gh "$subcommand" comment "$num" -R "$REPO" \

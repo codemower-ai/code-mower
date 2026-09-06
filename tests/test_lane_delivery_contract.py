@@ -8,6 +8,8 @@ import gc
 import io
 import json
 import os
+import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -25,6 +27,20 @@ PACKAGED_RUNNER_TEMPLATE = ROOT / "src/code_mower/templates/lanes/run_mac_lane.s
 REPO_RUNNER = ROOT / "tools/lanes/run_mac_lane.sh"
 SHA_A = "a" * 40
 SHA_B = "b" * 40
+
+
+def _summary_contract(path: Path) -> tuple[str, int]:
+    """The runner's bounded-outcome summary program and its length bound.
+
+    Read out of the script itself so the test exercises the rule the runner
+    actually applies, not a copy of it that can drift.
+    """
+    text = path.read_text(encoding="utf-8")
+    opened = text.index("lane_summary_filter='") + len("lane_summary_filter='")
+    program = text[opened : text.index("'", opened)]
+    bound = re.search(r"^lane_summary_max_chars=(\d+)$", text, re.MULTILINE)
+    assert bound is not None, f"{path} defines no lane_summary_max_chars"
+    return program, int(bound.group(1))
 
 
 def _wait_for_pid_exit(pid: int, timeout: float = 5.0) -> bool:
@@ -1381,6 +1397,95 @@ class RunnerScriptContractTests(unittest.TestCase):
                     ".summary must be a non-empty one-line string", text
                 )
                 self.assertIn("voided declared outcome", text)
+
+    def test_runner_scripts_void_a_summary_instead_of_truncating_it(self) -> None:
+        # A summary that is not already one line within the bound is discarded
+        # whole. Keeping its first line, or its first N characters, would post
+        # an owner-facing comment carrying half of the only explanation the
+        # owner gets -- and classification would read that comment as delivery.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn('split("\\n") | first', text)
+                self.assertNotIn("cut -c1-280", text)
+                self.assertIn(
+                    'jq -r --argjson max "$lane_summary_max_chars"'
+                    ' "$lane_summary_filter"',
+                    text,
+                )
+
+    def test_the_summary_program_keeps_only_valid_one_line_summaries(self) -> None:
+        # The rule itself, run the way the runner runs it. `jq` is a hard
+        # dependency of the runner, so its absence is the test being unable to
+        # observe the contract rather than the contract holding.
+        jq = shutil.which("jq")
+        if jq is None:  # pragma: no cover - depends on the host toolchain
+            self.skipTest("jq is not installed")
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            program, bound = _summary_contract(path)
+            cases: list[tuple[object, str]] = [
+                # Accepted, and returned exactly as written once surrounding
+                # whitespace -- which carries no content -- is stripped.
+                ("closed as designed", "closed as designed"),
+                ("trailing newline is still one line\n", "trailing newline is still one line"),
+                ("  padded  ", "padded"),
+                ("x" * bound, "x" * bound),
+                # Voided: more than the one line the contract asks for.
+                ("first line\nsecond line", ""),
+                ("carriage\rreturn", ""),
+                ("tab\tseparated", ""),
+                # Voided: longer than the runner will carry, by one character.
+                ("x" * (bound + 1), ""),
+                # Voided: absent, blank, or not a string at all.
+                ("", ""),
+                ("   ", ""),
+                (42, ""),
+                (None, ""),
+                ({"nested": "object"}, ""),
+            ]
+            for summary, expected in cases:
+                with self.subTest(path=path.name, summary=repr(summary)[:40]):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        outcome = Path(tmp) / "lane-outcome.json"
+                        outcome.write_text(
+                            json.dumps({"outcome": "no_change", "summary": summary}),
+                            encoding="utf-8",
+                        )
+                        completed = subprocess.run(
+                            [
+                                jq,
+                                "-r",
+                                "--argjson",
+                                "max",
+                                str(bound),
+                                program,
+                                str(outcome),
+                            ],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    # `$( ... )` strips the trailing newline jq adds, so this is
+                    # the value the runner assigns to declared_summary.
+                    self.assertEqual(completed.stdout.rstrip("\n"), expected)
+
+    def test_the_summary_program_voids_a_declaration_with_no_summary_key(self) -> None:
+        jq = shutil.which("jq")
+        if jq is None:  # pragma: no cover - depends on the host toolchain
+            self.skipTest("jq is not installed")
+        program, bound = _summary_contract(REPO_RUNNER)
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome = Path(tmp) / "lane-outcome.json"
+            outcome.write_text(json.dumps({"outcome": "no_change"}), encoding="utf-8")
+            completed = subprocess.run(
+                [jq, "-r", "--argjson", "max", str(bound), program, str(outcome)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.rstrip("\n"), "")
 
     def test_runner_scripts_do_not_exempt_the_wall_clock_cap(self) -> None:
         # A timed-out provider that delivered nothing is an unfinished unit.

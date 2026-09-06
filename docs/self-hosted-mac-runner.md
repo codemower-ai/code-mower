@@ -155,7 +155,17 @@ writes `.code-mower/lane-outcome.json` in the working copy:
 `owner_action` is the other accepted value. Both need a `summary` that is a
 non-empty one-line string: it is the only thing that tells the owner why the
 unit closed without a change, so a declaration missing one is discarded and the
-run counts as undelivered. The runner — never the provider —
+run counts as undelivered.
+
+The summary is validated, never repaired. Leading and trailing whitespace is
+stripped — a line written with a trailing newline is still one line — and what
+remains must be a single line of at most 280 characters. A summary that carries
+an embedded line break, a carriage return, any other control character, or more
+characters than that is discarded whole rather than cut down to its first line
+or first 280 characters: keeping part of it would hand the owner a truncated
+half of their only explanation while still counting the run as delivered. A
+discarded declaration is named in the undelivered note. The runner — never the
+provider —
 posts the resulting comment and applies `needs-owner`, so the provider never
 needs credentials of its own. Runs without a validated delivery exit `3` and
 leave a note on the unit. `code-mower lane-delivery scan-prompt` refuses to
