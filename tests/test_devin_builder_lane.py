@@ -90,12 +90,30 @@ class DevinBuilderLaneConfigGenerationTests(unittest.TestCase):
             runner_text,
         )
         self.assertIn("devin_command=", runner_text)
-        self.assertIn('--permission-mode dangerous', runner_text)
+        self.assertIn("--print", runner_text)
+        self.assertIn("--prompt-file", runner_text)
+        self.assertIn("--respect-workspace-trust false", runner_text)
+        self.assertIn("--sandbox", runner_text)
+        self.assertIn('--permission-mode autonomous', runner_text)
+        self.assertNotIn("--permission-mode dangerous", runner_text)
+        devin_args_line = next(
+            line for line in runner_text.splitlines() if line.strip().startswith("devin_args=(")
+        )
+        self.assertNotIn("--output-format", devin_args_line)
+        self.assertNotIn("devin_args=(run ", runner_text)
         self.assertIn(
-            "LANE_DEVIN_EXTRA_FLAGS must not include --export", runner_text
+            "perform every file creation and edit through shell commands only",
+            runner_text.lower(),
+        )
+        self.assertIn(
+            "LANE_DEVIN_EXTRA_FLAGS must not include --export, --continue/-c, "
+            "--resume/-r, --permission-mode, --sandbox, --prompt-file, --print, "
+            "--respect-workspace-trust, or --config",
+            runner_text,
         )
         self.assertIn('chmod 600 "$prompt_file"', runner_text)
         self.assertIn("code-mower builder record", runner_text)
+        self.assertIn("--provider devin_cli --executor devin_cli", runner_text)
 
     def test_devin_repo_dogfood_lane_doc_is_unaffected(self) -> None:
         # The dogfood self-hosted runner script in this repo is not
@@ -112,7 +130,11 @@ class DevinLaneDocTests(unittest.TestCase):
     def test_devin_lane_doc_states_permission_posture_and_privacy_rules(self) -> None:
         text = (ROOT / "docs/lanes/devin.md").read_text(encoding="utf-8")
         self.assertIn("builder:devin", text)
-        self.assertIn("dangerous permission mode", text)
+        self.assertIn("--sandbox", text)
+        self.assertIn("--permission-mode autonomous", text)
+        self.assertNotIn("dangerous permission mode", text)
+        self.assertIn("OS sandbox", text)
+        self.assertIn("shell commands only", text.lower())
         self.assertIn("--export", text)
         self.assertIn("single-writer", text.lower())
         self.assertIn("needs-owner", text)
@@ -139,6 +161,7 @@ class DevinMacLaneRunnerFunctionalTests(unittest.TestCase):
             prompt_log = root / "prompt.md"
             argv_log = root / "argv.log"
             mode_log = root / "mode.log"
+            stdin_log = root / "stdin.log"
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
@@ -182,8 +205,17 @@ if [ "${1:-}" = "--version" ]; then
   exit 0
 fi
 printf '%s\\n' "$*" > "$ARGV_LOG"
-python3 -c "import os,sys; open(sys.argv[1],'w').write(oct(os.fstat(0).st_mode & 0o777))" "$MODE_LOG"
-cat > "$PROMPT_LOG"
+cat <&0 > "$STDIN_LOG" 2>/dev/null || true
+prompt_path=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--prompt-file" ]; then
+    prompt_path="$2"
+    break
+  fi
+  shift
+done
+python3 -c "import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777), end='')" "$prompt_path" > "$MODE_LOG"
+cp "$prompt_path" "$PROMPT_LOG"
 printf 'fake devin completed\\n'
 """,
                 encoding="utf-8",
@@ -209,6 +241,7 @@ printf 'fake devin completed\\n'
                     "PROMPT_LOG": str(prompt_log),
                     "ARGV_LOG": str(argv_log),
                     "MODE_LOG": str(mode_log),
+                    "STDIN_LOG": str(stdin_log),
                     "CODE_MOWER_DEVIN_CLI_MODEL": "swe-1.7",
                 },
                 text=True,
@@ -218,6 +251,7 @@ printf 'fake devin completed\\n'
             prompt = prompt_log.read_text(encoding="utf-8")
             argv = argv_log.read_text(encoding="utf-8")
             mode = mode_log.read_text(encoding="utf-8")
+            stdin_content = stdin_log.read_text(encoding="utf-8") if stdin_log.exists() else ""
 
             hook = work / ".git" / "hooks" / "pre-push"
             good_push = subprocess.run(
@@ -256,12 +290,30 @@ printf 'fake devin completed\\n'
         self.assertNotIn("Untrusted title injection", prompt)
         self.assertNotIn("Untrusted body injection", prompt)
 
-        # The frozen work order goes over stdin, never argv, and never --export.
+        # Devin-specific shell-only-edit guidance is frozen into the prompt.
+        self.assertIn(
+            "perform every file creation and edit through shell commands only",
+            prompt.lower(),
+        )
+        self.assertIn("never call a dedicated write or edit tool", prompt.lower())
+
+        # The frozen work order goes over --prompt-file, never argv content
+        # and never stdin, and never --export/--continue/--resume.
         self.assertNotIn("--export", argv)
+        self.assertNotIn("--continue", argv)
+        self.assertNotIn("--resume", argv)
         self.assertNotIn("Work Order", argv)
         self.assertNotIn(str(root), argv)
-        self.assertIn("--permission-mode dangerous", argv)
+        self.assertIn("--print", argv)
+        self.assertIn("--prompt-file", argv)
+        self.assertIn("--respect-workspace-trust false", argv)
+        self.assertIn("--sandbox", argv)
+        self.assertIn("--permission-mode autonomous", argv)
+        self.assertNotIn("--permission-mode dangerous", argv)
         self.assertIn("--model swe-1.7", argv)
+        self.assertNotIn(" run ", f" {argv} ")
+        self.assertNotIn("--output-format", argv)
+        self.assertEqual(stdin_content, "")
 
         # The prompt file is mode 0600.
         self.assertEqual(mode.strip(), oct(0o600))
@@ -270,6 +322,111 @@ printf 'fake devin completed\\n'
         self.assertEqual(good_push.returncode, 0, good_push.stderr)
         self.assertNotEqual(bad_push.returncode, 0)
         self.assertIn("refusing devin push to branch codex/test", bad_push.stderr)
+
+    def test_devin_lane_records_local_cli_provenance_after_pr_opens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            runner = self._generated_runner(output_dir)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            work_root = root / "work"
+            work = work_root / "devin" / "owner__repo"
+            work.joinpath(".git", "hooks").mkdir(parents=True)
+            record_log = root / "record.log"
+
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "issue list" ]; then
+  printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]] && [[ "$args" == *"closingIssuesReferences,headRefName"* ]]; then
+  printf '%s\\n' '[{"number":34,"headRefName":"devin/issue-12-fix","closingIssuesReferences":[{"number":12}]}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "repo view" ]; then
+  printf 'main\\n'
+elif [ "$cmd" = "issue view" ]; then
+  if [[ "$args" == *"--json comments"* ]]; then
+    printf '%s\\n' '{"comments":[{"author":{"login":"owner"},"createdAt":"2026-01-01T00:00:00Z","body":"# Work Order: Trusted task\\n\\nFix it."}]}'
+  else
+    printf '%s\\n' '{"title":"Issue 12","body":"Body","labels":[{"name":"tier:R"}],"url":"https://github.com/owner/repo/issues/12","author":{"login":"owner"}}'
+  fi
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            fake_git = bin_dir / "git"
+            fake_git.write_text(_FAKE_GIT, encoding="utf-8")
+            fake_git.chmod(0o755)
+
+            fake_devin = bin_dir / "devin"
+            fake_devin.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  printf 'devin 3000.6.14\\n'
+  exit 0
+fi
+printf 'fake devin completed\\n'
+""",
+                encoding="utf-8",
+            )
+            fake_devin.chmod(0o755)
+
+            fake_code_mower = bin_dir / "code-mower"
+            fake_code_mower.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$RECORD_LOG"
+exit 0
+""",
+                encoding="utf-8",
+            )
+            fake_code_mower.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(runner),
+                    "--lane",
+                    "devin",
+                    "--repo",
+                    "owner/repo",
+                    "--max-minutes",
+                    "1",
+                ],
+                cwd=output_dir,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "LANE_WORK_ROOT": str(work_root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "RECORD_LOG": str(record_log),
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+            record_argv = record_log.read_text(encoding="utf-8") if record_log.exists() else ""
+
+        self.assertIn("devin: selected build issue #12", completed.stdout)
+        # Local Devin CLI provenance is a distinct identity from hosted Devin:
+        # it records as devin_cli/devin_cli, never as the hosted devin provider.
+        self.assertIn("--provider devin_cli --executor devin_cli", record_argv)
+        self.assertNotIn("--provider devin --executor", record_argv)
+        self.assertIn("--pr owner/repo#34", record_argv)
 
     def test_devin_lane_reports_nothing_to_do(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -544,19 +701,38 @@ fi
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("devin CLI not on PATH", completed.stderr)
 
-    def test_devin_lane_rejects_export_extra_flag(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            output_dir = root / "generated"
-            runner = self._generated_runner(output_dir)
+    def test_devin_lane_rejects_transport_and_posture_override_extra_flags(self) -> None:
+        for rejected_flag in (
+            "--export",
+            "--continue",
+            "-c",
+            "--resume",
+            "-r",
+            "--resume=abc123",
+            "--permission-mode",
+            "--permission-mode=dangerous",
+            "--sandbox",
+            "--sandbox=false",
+            "--prompt-file",
+            "--prompt-file=/tmp/evil.md",
+            "--print",
+            "--respect-workspace-trust",
+            "--respect-workspace-trust=true",
+            "--config",
+            "--config=/tmp/evil.toml",
+        ):
+            with self.subTest(flag=rejected_flag), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output_dir = root / "generated"
+                runner = self._generated_runner(output_dir)
 
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
-            work_root = root / "work"
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                work_root = root / "work"
 
-            fake_gh = bin_dir / "gh"
-            fake_gh.write_text(
-                """#!/usr/bin/env bash
+                fake_gh = bin_dir / "gh"
+                fake_gh.write_text(
+                    """#!/usr/bin/env bash
 set -euo pipefail
 cmd="${1:-} ${2:-}"
 args=" $* "
@@ -579,17 +755,17 @@ else
   exit 2
 fi
 """,
-                encoding="utf-8",
-            )
-            fake_gh.chmod(0o755)
+                    encoding="utf-8",
+                )
+                fake_gh.chmod(0o755)
 
-            fake_git = bin_dir / "git"
-            fake_git.write_text(_FAKE_GIT, encoding="utf-8")
-            fake_git.chmod(0o755)
+                fake_git = bin_dir / "git"
+                fake_git.write_text(_FAKE_GIT, encoding="utf-8")
+                fake_git.chmod(0o755)
 
-            fake_devin = bin_dir / "devin"
-            fake_devin.write_text(
-                """#!/usr/bin/env bash
+                fake_devin = bin_dir / "devin"
+                fake_devin.write_text(
+                    """#!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "--version" ]; then
   printf 'devin 3000.6.14\\n'
@@ -598,39 +774,42 @@ fi
 echo "fake devin should not run" >&2
 exit 1
 """,
-                encoding="utf-8",
-            )
-            fake_devin.chmod(0o755)
+                    encoding="utf-8",
+                )
+                fake_devin.chmod(0o755)
 
-            completed = subprocess.run(
-                [
-                    str(runner),
-                    "--lane",
-                    "devin",
-                    "--repo",
-                    "owner/repo",
-                    "--max-minutes",
-                    "1",
-                ],
-                cwd=output_dir,
-                env={
-                    **os.environ,
-                    "HOME": str(root),
-                    "LANE_WORK_ROOT": str(work_root),
-                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-                    "LANE_DEVIN_EXTRA_FLAGS": "--export",
-                },
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+                completed = subprocess.run(
+                    [
+                        str(runner),
+                        "--lane",
+                        "devin",
+                        "--repo",
+                        "owner/repo",
+                        "--max-minutes",
+                        "1",
+                    ],
+                    cwd=output_dir,
+                    env={
+                        **os.environ,
+                        "HOME": str(root),
+                        "LANE_WORK_ROOT": str(work_root),
+                        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                        "LANE_DEVIN_EXTRA_FLAGS": rejected_flag,
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
 
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn(
-            "LANE_DEVIN_EXTRA_FLAGS must not include --export", completed.stderr
-        )
-        self.assertNotIn("fake devin should not run", completed.stdout)
-        self.assertNotIn("fake devin should not run", completed.stderr)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn(
+                    "LANE_DEVIN_EXTRA_FLAGS must not include --export, --continue/-c, "
+                    "--resume/-r, --permission-mode, --sandbox, --prompt-file, --print, "
+                    "--respect-workspace-trust, or --config",
+                    completed.stderr,
+                )
+                self.assertNotIn("fake devin should not run", completed.stdout)
+                self.assertNotIn("fake devin should not run", completed.stderr)
 
     def test_devin_lane_surfaces_auth_failure_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -721,7 +900,10 @@ exit 1
 
 
 class DevinBuilderProvenanceInferenceTests(unittest.TestCase):
-    def test_branch_prefix_infers_devin_builder(self) -> None:
+    def test_branch_prefix_infers_local_devin_cli_builder(self) -> None:
+        # A devin/ branch with no hosted-bot author signal is the local Mac
+        # lane runner's own provenance identity: devin_cli/devin_cli, never
+        # the hosted devin/devin_cloud identity.
         metadata = code_mower_builder_runs.PullRequestMetadata(
             repo="owner/repo",
             number="12",
@@ -733,10 +915,13 @@ class DevinBuilderProvenanceInferenceTests(unittest.TestCase):
         inference = code_mower_builder_runs.infer_builder_from_pr(metadata)
         self.assertIsNotNone(inference)
         assert inference is not None
-        self.assertEqual(inference.provider, "devin")
+        self.assertEqual(inference.provider, "devin_cli")
         self.assertEqual(inference.executor, "devin_cli")
 
-    def test_devin_bot_author_infers_devin_builder(self) -> None:
+    def test_devin_bot_author_infers_hosted_devin_builder(self) -> None:
+        # The hosted Devin GitHub bot author is a stronger, high-confidence
+        # signal than any branch prefix and must resolve to hosted Devin
+        # (provider "devin"), never the local devin_cli identity.
         metadata = code_mower_builder_runs.PullRequestMetadata(
             repo="owner/repo",
             number="12",
@@ -749,7 +934,25 @@ class DevinBuilderProvenanceInferenceTests(unittest.TestCase):
         self.assertIsNotNone(inference)
         assert inference is not None
         self.assertEqual(inference.provider, "devin")
-        self.assertEqual(inference.executor, "devin_cli")
+        self.assertEqual(inference.executor, "devin")
+
+    def test_devin_bot_author_wins_over_devin_branch_prefix(self) -> None:
+        # Even when a PR happens to use a devin/ branch name, a hosted bot
+        # author is the stronger marker and must still win: hosted identity,
+        # not the local-CLI default that the branch prefix alone would imply.
+        metadata = code_mower_builder_runs.PullRequestMetadata(
+            repo="owner/repo",
+            number="12",
+            url="https://github.com/owner/repo/pull/12",
+            author="devin-ai-integration[bot]",
+            branch="devin/issue-12-fix",
+            body="",
+        )
+        inference = code_mower_builder_runs.infer_builder_from_pr(metadata)
+        self.assertIsNotNone(inference)
+        assert inference is not None
+        self.assertEqual(inference.provider, "devin")
+        self.assertEqual(inference.executor, "devin")
 
 
 class DevinLaneStatusProcessDiscoveryTests(unittest.TestCase):
@@ -757,8 +960,8 @@ class DevinLaneStatusProcessDiscoveryTests(unittest.TestCase):
         self,
     ) -> None:
         ps_output = (
-            "4242 /usr/local/bin/devin run --permission-mode dangerous "
-            "--output-format text\n"
+            "4242 /usr/local/bin/devin --print --prompt-file /tmp/prompt.tmp "
+            "--respect-workspace-trust false --sandbox --permission-mode autonomous\n"
         )
 
         def fake_command_runner(args):
