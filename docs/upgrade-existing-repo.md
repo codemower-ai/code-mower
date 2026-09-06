@@ -175,9 +175,10 @@ or account identity, and it records only the executable basename for this lane â
 never a local filesystem path, even when `CODE_MOWER_DEVIN_CLI_COMMAND` points at
 an absolute path. Because Devin CLI uses the ambient login state,
 doctor describes the auth probe as the ambient Devin CLI session rather than an
-isolated campaign home. In this PR `devin_cli` is a provider/doctor contract:
-it is not a selectable local audit lane in `init` (it declares
-`local_audit_eligible: false`) and not a campaign participant (it declares
-`campaign_eligible: false`). The #746 PR will register the local audit wrapper
-and flip `local_audit_eligible`; the #744 PR will land the maintained campaign
-adapter and flip `campaign_eligible`.
+isolated campaign home. As of this PR, `devin_cli` participates in release
+campaigns through the maintained `code_mower.campaign_adapters` adapter (it
+declares `campaign_eligible: true`). It is still not a selectable local audit
+lane in `init` (`local_audit_eligible: false`) until #746 lands the local audit
+wrapper. To use it in a campaign, install `devin` on PATH, run `devin auth login`
+in a trusted environment, and set `CODE_MOWER_DEVIN_CLI_MODEL` or
+`DEVIN_CLI_MODEL`.

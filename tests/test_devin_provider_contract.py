@@ -144,7 +144,10 @@ class TestDevinRegistryContract(unittest.TestCase):
         self.assertEqual(config["campaign_auth_location_label"], "ambient Devin CLI session")
         self.assertIs(config["local_cli_path_basename_only"], True)
         self.assertIs(config["local_audit_eligible"], False)
-        self.assertIs(config["campaign_eligible"], False)
+        self.assertIs(config["campaign_eligible"], True)
+        self.assertIn("campaign_adapter_argv", config)
+        self.assertIn("devin_cli", config["campaign_adapter_argv"])
+        self.assertGreater(config["campaign_adapter_timeout_seconds"], 30)
 
     def test_devin_cli_package_manifest_source_exists(self) -> None:
         entry = (
@@ -179,18 +182,18 @@ class TestDevinRegistryContract(unittest.TestCase):
         self.assertEqual(lane.lane_id, "devin")
         self.assertEqual(lane.labels.needs, "needs-devin-audit")
 
-    def test_devin_cli_is_rejected_from_campaign_initialization(self) -> None:
-        # The lane still resolves as an identity (doctor and provenance use it);
-        # only release-campaign participation is fail-closed until #744 lands a
-        # maintained adapter.
+    def test_devin_cli_is_campaign_eligible_with_maintained_adapter(self) -> None:
+        # With the #744 maintained adapter landed, devin_cli is a valid local
+        # campaign participant. It is still informational and disabled by default.
         provider, lane = resolve_provider_lane("devin_cli")
         self.assertEqual(provider, "devin_cli")
-        with self.assertRaisesRegex(ValueError, "not campaign eligible"):
-            initialize_campaign(
-                release_tag="v1.0.0",
-                package_spec="code-mower==1.0.0",
-                providers=["devin_cli"],
-            )
+        self.assertTrue(lane.provider_config["campaign_eligible"])
+        campaign = initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["devin_cli"],
+        )
+        self.assertEqual(campaign.providers[0]["provider"], "devin_cli")
         # Providers that omit the flag keep current behavior.
         provider, lane = resolve_provider_lane("devin_cloud")
         self.assertEqual(provider, "devin")

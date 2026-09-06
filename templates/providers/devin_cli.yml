@@ -37,7 +37,34 @@ devin_cli:
     campaign_auth_location_label: "ambient Devin CLI session"
     local_cli_path_basename_only: true
     local_audit_eligible: false
-    campaign_eligible: false
+    campaign_eligible: true
+    campaign_adapter_argv:
+      - "{python}"
+      - "-m"
+      - "code_mower.campaign_adapters"
+      - "--provider"
+      - "devin_cli"
+      - "--provider-bin"
+      - "{command}"
+      - "--python-bin"
+      - "{target_python}"
+      - "--target-runtime"
+      - "{target_runtime}"
+      - "--release-tag"
+      - "{release_tag}"
+      - "--package-spec"
+      - "{package_spec}"
+      - "--qualification-context"
+      - "{qualification_context}"
+      - "--starting-version"
+      - "{starting_version}"
+      - "--package-source"
+      - "{package_source}"
+      - "--timeout-seconds"
+      - "{adapter_timeout}"
+      - "--output"
+      - "{output}"
+    campaign_adapter_timeout_seconds: 900
     auth: "run `devin auth login` in a trusted environment; doctor only reports bounded auth status and never persists the output"
     status: "informational local Devin CLI lane; not merge authority until calibrated for blocker catch rate, false positives, cost, and latency"
   review_hygiene: {}

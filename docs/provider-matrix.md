@@ -47,7 +47,7 @@ the live catalog is untouched.
 | `qodo` | Qodo | manual opt-in comment/event | paid | GitHub App enabled for repo | informational |
 | `cursor_bugbot` | Cursor BugBot | `bugbot run` or `@cursor review` | paid/Cursor usage | Cursor GitHub App and BugBot repo enablement | informational |
 | `devin` | Devin | hosted bridge | paid | Devin GitHub integration authorized | canonical hosted Devin; `devin_cloud` accepted alias; optional merge-gating only after explicit policy |
-| `devin_cli` | Devin CLI | local runner / doctor contract | included/provider account | local checkout plus local auth | informational; not merge authority until calibrated; not a local audit workflow selection until #746; not selectable for release campaigns until the #744 adapter lands |
+| `devin_cli` | Devin CLI | local runner / doctor contract | included/provider account | local checkout plus local auth | informational; not merge authority until calibrated; not a local audit workflow selection until #746; selectable for release campaigns with the #744 maintained adapter |
 | `local_llm` | OpenAI-compatible endpoint | local runner | local or endpoint cost | endpoint receives selected code context | informational |
 | `aider` | Aider CLI | local runner | local/provider account | local checkout plus model auth | informational |
 | `gemini_cli` | Gemini CLI compatibility | local runner | provider account | local checkout plus API/auth | legacy informational |

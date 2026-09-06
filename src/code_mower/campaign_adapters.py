@@ -40,6 +40,9 @@ provider          verified CLI         invocation surface
                                       ``--add-dir``, ``--print-timeout``
 ``muse``          Muse Code 1.0.3      ``exec`` with ``--json``, ``--prompt-file``,
                                       ``--workspace``
+``devin_cli``     devin 3000.6.14      ``--print`` with a prompt file, ``--sandbox``,
+                                      ``--permission-mode autonomous``,
+                                      ``--respect-workspace-trust false``, ``--model``
 ================= ==================== ====================================================
 
 Auth and home behavior follow each provider's existing wrapper: ambient login
@@ -71,6 +74,7 @@ if __package__ in {None, ""}:
         build_allowlisted_child_env,
     )
     from code_mower.release_qualify import (
+        ADOPTION_RESULT_SCHEMA,
         DEFAULT_PACKAGE_SOURCE,
         PRODUCTION_PYPI_INDEX_URL,
         TESTPYPI_INDEX_URL,
@@ -88,6 +92,7 @@ else:
     from .migration_install import PACKAGE_INSTALL_FAILURE_REASONS
     from .provider_runners import DEFAULT_HOME_ENV_KEYS, build_allowlisted_child_env
     from .release_qualify import (
+        ADOPTION_RESULT_SCHEMA,
         DEFAULT_PACKAGE_SOURCE,
         PRODUCTION_PYPI_INDEX_URL,
         TESTPYPI_INDEX_URL,
@@ -100,7 +105,7 @@ else:
         validate_adoption_result_payload,
     )
 
-SUPPORTED_ADAPTER_PROVIDERS = ("codex", "claude", "antigravity", "muse")
+SUPPORTED_ADAPTER_PROVIDERS = ("codex", "claude", "antigravity", "muse", "devin_cli")
 
 #: CLI versions the argv shapes above were verified against. Newer CLIs keep
 #: working while the flags exist; a removed flag fails closed here.
@@ -108,6 +113,7 @@ VERIFIED_CLI_VERSIONS = {
     "codex": "codex-cli 0.147.0",
     "claude": "Claude Code 2.1.258",
     "muse": "Muse Code 1.0.3",
+    "devin_cli": "devin 3000.6.14",
 }
 
 #: Outer campaign timeout minus this margin is the provider subprocess budget,
@@ -173,6 +179,8 @@ MUSE_MODEL_ENV_NAMES = ("CODE_MOWER_MUSE_MODEL", "MUSE_MODEL", "META_MUSE_MODEL"
 MUSE_REASONING_ENV_NAMES = ("CODE_MOWER_MUSE_REASONING_EFFORT", "MUSE_REASONING_EFFORT")
 MUSE_AMBIENT_HOME_ENV = "MUSE_CLI_USE_AMBIENT_HOME"
 MUSE_DEFAULT_MAX_MODEL_STEPS = 12
+DEVIN_MODEL_ENV_NAMES = ("CODE_MOWER_DEVIN_CLI_MODEL", "DEVIN_CLI_MODEL", "DEVIN_MODEL")
+DEVIN_DEFAULT_MODEL = "swe"
 ADAPTER_ENV_ALLOWLIST = (
     "PATH",
     "TMPDIR",
@@ -660,6 +668,39 @@ def build_muse_argv(
     return argv
 
 
+def build_devin_argv(
+    *,
+    devin_bin: str,
+    prompt_file: str,
+    workspace_dir: str,
+    model: str = "",
+) -> list[str]:
+    """Argv for ``devin --print`` with prompt-file transport and OS sandbox.
+
+    Noninteractive ``--print`` cannot show the workspace-trust prompt, so the
+    adapter passes ``--respect-workspace-trust false``. The least-permissive
+    unattended posture that can still create a venv, install the candidate, and
+    run smoke checks is ``--sandbox`` with ``--permission-mode autonomous``;
+    the OS sandbox bounds filesystem and network access while auto-approving the
+    shell commands the qualification prompt requires. Conversation export is
+    never requested.
+    """
+    argv = [
+        devin_bin,
+        "--print",
+        "--prompt-file",
+        prompt_file,
+        "--respect-workspace-trust",
+        "false",
+        "--model",
+        model or _first_env_value(DEVIN_MODEL_ENV_NAMES) or DEVIN_DEFAULT_MODEL,
+        "--sandbox",
+        "--permission-mode",
+        "autonomous",
+    ]
+    return argv
+
+
 # ----- Transient result extraction (never persisted) -----
 
 
@@ -717,6 +758,26 @@ def _extract_muse_result(stdout: str) -> dict[str, Any] | None:
     return code_mower_gemini_cli.parse_response_json(stdout)
 
 
+def _extract_devin_result(stdout: str) -> dict[str, Any] | None:
+    """Pull the adoption result out of ``devin --print`` output.
+
+    The prompt requires exactly one ``code_mower.adoptionResult.v1`` JSON
+    object. Reject output that contains no such object, more than one, or a
+    non-object payload. Provider stdout is transient parsing input only and is
+    never persisted.
+    """
+    candidate = code_mower_gemini_cli.parse_response_json(stdout)
+    if not isinstance(candidate, Mapping):
+        return None
+    # Detect duplicate results: the unwrapped text must not contain the schema
+    # string more than once, since that would mean two or more top-level result
+    # objects or repeated prose claiming to be results.
+    unwrapped = code_mower_gemini_cli._unwrap_fenced_json(stdout)
+    if unwrapped.count(ADOPTION_RESULT_SCHEMA) != 1:
+        return None
+    return dict(candidate)
+
+
 def check_structured_result_capability(provider: str) -> bool:
     """Validate structured-result extraction and schema compliance using an offline fixture.
 
@@ -764,6 +825,8 @@ def check_structured_result_capability(provider: str) -> bool:
         elif canonical in {"muse", "muse_cli"}:
             muse_event = json.dumps({"payload_type": "run.output.delta", "payload": {"text": payload_str}})
             extracted = _extract_muse_result(muse_event)
+        elif canonical in {"devin", "devin_cli"}:
+            extracted = _extract_devin_result(payload_str)
         else:
             extracted = code_mower_gemini_cli.parse_response_json(payload_str)
         if not isinstance(extracted, Mapping):
@@ -1241,6 +1304,26 @@ def run_campaign_adapter(
                         f"provider CLI exited {completed.returncode}",
                     )
                 candidate = _extract_antigravity_result(completed.stdout)
+            elif provider == "devin_cli":
+                prompt_path = workspace_dir / "campaign.prompt-input.txt"
+                prompt_path.write_text(prompt, encoding="utf-8")
+                prompt_path.chmod(0o600)
+                devin_model = model or _first_env_value(DEVIN_MODEL_ENV_NAMES)
+                argv = build_devin_argv(
+                    devin_bin=resolved_bin,
+                    prompt_file=prompt_path.name,
+                    workspace_dir=str(workspace_dir),
+                    model=devin_model,
+                )
+                completed = provider_runner(
+                    argv, None, timeout_seconds, workspace_dir, child_env
+                )
+                if completed.returncode != 0:
+                    return _fail(
+                        provider,
+                        f"provider CLI exited {completed.returncode}",
+                    )
+                candidate = _extract_devin_result(completed.stdout)
             else:  # provider == "muse"
                 prompt_path = workspace_dir / "campaign.prompt-input.txt"
                 prompt_path.write_text(prompt, encoding="utf-8")

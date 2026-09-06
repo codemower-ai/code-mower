@@ -220,6 +220,58 @@ class ArgvBuilderTests(unittest.TestCase):
         self.assertNotIn("--prompt-interactive", argv)
         self.assertNotIn("-i", argv)
 
+    def test_devin_argv_uses_prompt_file_and_sandbox(self) -> None:
+        argv = campaign_adapters.build_devin_argv(
+            devin_bin="/bin/devin",
+            prompt_file="campaign.prompt-input.txt",
+            workspace_dir="/tmp/work/ws",
+            model="opus",
+        )
+        self.assertEqual(argv[0], "/bin/devin")
+        self.assertIn("--print", argv)
+        self.assertIn("--prompt-file", argv)
+        self.assertIn("campaign.prompt-input.txt", argv)
+        self.assertIn("--respect-workspace-trust", argv)
+        self.assertIn("false", argv)
+        self.assertIn("--model", argv)
+        self.assertIn("opus", argv)
+        self.assertIn("--sandbox", argv)
+        self.assertIn("--permission-mode", argv)
+        self.assertIn("autonomous", argv)
+        # Least-permissive unattended posture; no conversation export, no resume,
+        # no interactive prompt, and no positional prompt argument.
+        self.assertNotIn("--export", argv)
+        self.assertNotIn("--continue", argv)
+        self.assertNotIn("--resume", argv)
+        self.assertNotIn("--", argv)
+
+    def test_devin_argv_defaults_to_swe_when_no_model_is_given(self) -> None:
+        argv = campaign_adapters.build_devin_argv(
+            devin_bin="/bin/devin",
+            prompt_file="campaign.prompt-input.txt",
+            workspace_dir="/tmp/work/ws",
+        )
+        model_idx = argv.index("--model")
+        self.assertEqual(argv[model_idx + 1], "swe")
+
+    def test_devin_argv_prefers_code_mower_model_env(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "CODE_MOWER_DEVIN_CLI_MODEL": "code-mower-devin",
+                "DEVIN_CLI_MODEL": "devin-cli",
+                "DEVIN_MODEL": "devin",
+            },
+            clear=False,
+        ):
+            argv = campaign_adapters.build_devin_argv(
+                devin_bin="/bin/devin",
+                prompt_file="campaign.prompt-input.txt",
+                workspace_dir="/tmp/work/ws",
+            )
+        model_idx = argv.index("--model")
+        self.assertEqual(argv[model_idx + 1], "code-mower-devin")
+
     def test_shared_prompt_pins_virtualenv_interpreter_commands(self) -> None:
         prompt = campaign_adapters.build_qualification_prompt(
             provider="codex",
@@ -573,7 +625,7 @@ class AdapterTransportTests(unittest.TestCase):
         )
 
         with mock.patch.dict(os.environ, ambient, clear=True):
-            for provider in ("codex", "claude", "antigravity", "muse"):
+            for provider in ("codex", "claude", "antigravity", "muse", "devin_cli"):
                 with self.subTest(provider=provider):
                     codex_home = Path("/tmp/code-mower-codex-campaign-home")
                     child_env = campaign_adapters.build_adapter_child_env(
@@ -631,6 +683,7 @@ class AdapterTransportTests(unittest.TestCase):
         *,
         env: dict[str, str] | None = None,
         timeout_seconds: int = 870,
+        model: str = "",
     ) -> tuple[int, Path, Path]:
         tmp = Path(tempfile.mkdtemp())
         output = tmp / "result.json"
@@ -646,6 +699,7 @@ class AdapterTransportTests(unittest.TestCase):
                 timeout_seconds=timeout_seconds,
                 codex_home=tmp / "codex-home",
                 provider_runner=runner,
+                model=model,
             )
         return code, output, tmp
 
@@ -1174,15 +1228,187 @@ class AdapterFailureTests(unittest.TestCase):
         self.assertFalse(output.is_file())
 
 
-class MaintainedRegistryTests(unittest.TestCase):
-    """The registry ships maintained adapters for exactly the four lanes."""
+class DevinAdapterTests(unittest.TestCase):
+    """Focused tests for the Devin CLI maintained campaign adapter."""
 
-    def test_four_lanes_carry_maintained_adapter_argv(self) -> None:
+    def _devin_runner(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> Any:
+        def runner(
+            argv: Any,
+            prompt_input: Any,
+            timeout: int,
+            workdir: Path,
+            child_env: Any,
+        ) -> Any:
+            return subprocess.CompletedProcess(list(argv), returncode, stdout=stdout, stderr=stderr)
+
+        return runner
+
+    def test_devin_cli_success_writes_validated_result(self) -> None:
+        result = _adoption_result("devin_cli")
+
+        def runner(
+            argv: Any,
+            prompt_input: Any,
+            timeout: int,
+            workdir: Path,
+            child_env: Any,
+        ) -> Any:
+            prompt_path = workdir / "campaign.prompt-input.txt"
+            # The prompt file is created with mode 0600 and is in the workspace.
+            self.assertTrue(prompt_path.is_file())
+            self.assertEqual(prompt_path.stat().st_mode & 0o777, 0o600)
+            return subprocess.CompletedProcess(list(argv), 0, stdout=json.dumps(result), stderr="")
+
+        code, output, _tmp = AdapterTransportTests()._run("devin_cli", runner)
+        self.assertEqual(code, 0)
+        self.assertTrue(output.is_file())
+        written = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(written["provider"], "devin_cli")
+        self.assertEqual(written["executor"], "devin_cli")
+
+    def test_devin_cli_warning_result_is_accepted(self) -> None:
+        result = _adoption_result("devin_cli", outcome="pass_with_warnings")
+        result["steps"][0]["status"] = "warn"
+
+        def runner(
+            argv: Any,
+            prompt_input: Any,
+            timeout: int,
+            workdir: Path,
+            child_env: Any,
+        ) -> Any:
+            return subprocess.CompletedProcess(list(argv), 0, stdout=json.dumps(result), stderr="")
+
+        code, output, _tmp = AdapterTransportTests()._run("devin_cli", runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(output.read_text(encoding="utf-8"))["outcome"],
+            "pass_with_warnings",
+        )
+
+    def test_devin_cli_timeout_fails_closed(self) -> None:
+        def runner(
+            argv: Any,
+            prompt_input: Any,
+            timeout: int,
+            workdir: Path,
+            child_env: Any,
+        ) -> Any:
+            raise subprocess.TimeoutExpired(list(argv), timeout)
+
+        code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli", runner, timeout_seconds=60
+        )
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.is_file())
+
+    def test_devin_cli_nonzero_exit_fails_closed(self) -> None:
+        code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli",
+            self._devin_runner(returncode=1, stderr="provider CLI exited 1"),
+            timeout_seconds=60,
+        )
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.is_file())
+
+    def test_devin_cli_auth_failure_fails_closed(self) -> None:
+        code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli",
+            self._devin_runner(
+                returncode=1,
+                stdout="",
+                stderr="Error: not logged in. Run `devin auth login`.\n",
+            ),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.is_file())
+
+    def test_devin_cli_malformed_result_fails_closed(self) -> None:
+        code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli",
+            self._devin_runner(stdout="not a json result"),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.is_file())
+
+    def test_devin_cli_duplicate_result_fails_closed(self) -> None:
+        result = _adoption_result("devin_cli")
+        duplicate = json.dumps(result) + "\n" + json.dumps(result)
+
+        code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli",
+            self._devin_runner(stdout=duplicate),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.is_file())
+
+    def test_devin_cli_wrong_identity_is_rejected(self) -> None:
+        code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli",
+            self._devin_runner(stdout=json.dumps(_adoption_result("devin"))),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.is_file())
+
+    def test_devin_cli_dirty_workspace_fails_closed(self) -> None:
+        # A non-JSON reply with local path leakage must not be accepted as a
+        # result and must not be persisted.
+        code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli",
+            self._devin_runner(
+                stdout="",
+                stderr="workspace trust failed for /redacted/home/work\n",
+            ),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.is_file())
+
+    def test_devin_cli_redacts_raw_output_and_paths(self) -> None:
+        secret = "ghp_leaked_secret_xyz"
+
+        def runner(
+            argv: Any,
+            prompt_input: Any,
+            timeout: int,
+            workdir: Path,
+            child_env: Any,
+        ) -> Any:
+            # The child environment must not receive unrelated secrets.
+            self.assertNotIn("GITHUB_TOKEN", child_env)
+            self.assertNotIn("GH_TOKEN", child_env)
+            # The prompt file must be named relative to the workspace and must
+            # not be an absolute path. No conversation export, no secrets.
+            self.assertNotIn("--export", argv)
+            prompt_idx = argv.index("--prompt-file")
+            prompt_file_arg = argv[prompt_idx + 1]
+            self.assertEqual(prompt_file_arg, "campaign.prompt-input.txt")
+            self.assertFalse(prompt_file_arg.startswith("/"))
+            self.assertNotIn(secret, argv)
+            # Simulate a provider that echoes a secret and a local path. The
+            # adapter must not write raw stdout into the result file.
+            return subprocess.CompletedProcess(
+                list(argv),
+                1,
+                stdout=f"{secret} /redacted/home/work\n{json.dumps(_adoption_result('devin_cli'))}",
+                stderr="",
+            )
+
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": secret, "GH_TOKEN": secret}, clear=False):
+            code, output, _tmp = AdapterTransportTests()._run("devin_cli", runner)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output.is_file())
+
+
+class MaintainedRegistryTests(unittest.TestCase):
+    """The registry ships maintained adapters for the local campaign lanes."""
+
+    def test_five_lanes_carry_maintained_adapter_argv(self) -> None:
         expected = {
             "codex": "codex",
             "claude_audit": "claude",
             "antigravity_cli": "antigravity",
             "muse_cli": "muse",
+            "devin_cli": "devin_cli",
         }
         for lane_id, adapter_provider in expected.items():
             with self.subTest(lane=lane_id):
@@ -1220,6 +1446,7 @@ class StructuredResultCapabilityTests(unittest.TestCase):
             "antigravity",
             "muse_cli",
             "muse",
+            "devin_cli",
         ):
             with self.subTest(provider=prov):
                 self.assertTrue(campaign_adapters.check_structured_result_capability(prov))
