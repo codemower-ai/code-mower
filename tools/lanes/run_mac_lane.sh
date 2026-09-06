@@ -832,14 +832,19 @@ fi
 # 124/125/130 are the supervisor's own codes and a provider is free to return
 # any of them for its own reasons, so the supervision reason decides what
 # happened whenever the supervisor recorded one.
+#
+# The fallback cap has no status file, so the exit code is all there is. Naming
+# the reason here too keeps one answer to "who ended this run": classification
+# reads the exit code as the provider's own verdict only when nothing else
+# stopped it, and that has to hold on both paths.
 timed_out=0
 overflowed=0
 if [ "$supervised" -eq 1 ]; then
   [ "$supervision_reason" = "timeout" ] && timed_out=1
   [ "$supervision_reason" = "output_overflow" ] && overflowed=1
 else
-  [ "$rc" -eq 124 ] && timed_out=1
-  [ "$rc" -eq 125 ] && overflowed=1
+  [ "$rc" -eq 124 ] && { timed_out=1; supervision_reason="timeout"; }
+  [ "$rc" -eq 125 ] && { overflowed=1; supervision_reason="output_overflow"; }
 fi
 
 # Broker the bounded declared outcome through runner-owned GitHub operations.

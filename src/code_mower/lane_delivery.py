@@ -85,8 +85,29 @@ EXIT_TIMEOUT = 124
 EXIT_OUTPUT_OVERFLOW = 125
 EXIT_INTERRUPTED = 130
 
+#: How a supervised run ended. ``completed`` and ``descendants_held_output``
+#: both mean the provider chose its own exit code, so that code is the
+#: provider's own verdict on the run.
+SUPERVISION_COMPLETED = "completed"
+SUPERVISION_DESCENDANTS_HELD_OUTPUT = "descendants_held_output"
+
+#: Reasons where the supervisor, not the provider, ended the run. The exit code
+#: is then the supervisor's own, so it says nothing about whether the provider
+#: delivered before it was stopped, and classification goes by the observed
+#: GitHub transition alone.
+SUPERVISION_CAP_REASONS = frozenset({"timeout", "output_overflow", "interrupted"})
+
+SUPERVISION_REASONS = frozenset(
+    {SUPERVISION_COMPLETED, SUPERVISION_DESCENDANTS_HELD_OUTPUT}
+) | SUPERVISION_CAP_REASONS
+
 DEFAULT_MAX_LOG_BYTES = 32 * 1024 * 1024
 DEFAULT_TERM_GRACE_SECONDS = 10.0
+
+#: How long output may keep arriving after the direct provider exits. A
+#: background descendant that inherited the provider's stdout holds the pipe
+#: open, so waiting for EOF would wait for the full lane timeout.
+DEFAULT_DESCENDANT_DRAIN_SECONDS = 2.0
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PR_REF_RE = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>[0-9]+)$")
@@ -278,6 +299,7 @@ def classify_delivery(
     *,
     provider_exit: int,
     declared_outcome: str = "",
+    supervision_reason: str = SUPERVISION_COMPLETED,
 ) -> DeliveryOutcome:
     """Classify a unit of work from state transition, not exit code alone.
 
@@ -286,6 +308,16 @@ def classify_delivery(
     declared outcome that the runner can validate from its own GitHub
     operations: ``no_change`` requires a runner-posted comment, and
     ``owner_action`` additionally requires the owner-blocking label.
+
+    ``supervision_reason`` says who ended the run, because the exit code alone
+    cannot. When the supervisor stopped the provider — the wall-clock cap,
+    output overflow, or interruption — the exit code is the supervisor's, so it
+    is not evidence either way and the observed transition decides on its own:
+    work that reached GitHub before the cap fired is delivered, and a cap that
+    produced nothing is not. A provider that chose its own nonzero exit is a
+    failed unit whatever the target looks like, and a run the supervisor
+    stopped never gets to declare a bounded outcome, since a half-written
+    declaration is exactly what a killed provider can leave behind.
 
     Classification fails closed on an incomplete snapshot. If a GitHub read
     behind either snapshot failed, nothing here — not the transition, and not
@@ -299,6 +331,12 @@ def classify_delivery(
             "declared outcome must be empty, "
             f"{TRANSITION_NO_CHANGE}, or {TRANSITION_OWNER_ACTION}"
         )
+    supervision = _text(supervision_reason) or SUPERVISION_COMPLETED
+    if supervision not in SUPERVISION_REASONS:
+        raise LaneDeliveryError(
+            "supervision reason must be one of: "
+            + ", ".join(sorted(SUPERVISION_REASONS))
+        )
     transition = observed_transition(before, after)
 
     if not before.snapshot_complete or not after.snapshot_complete:
@@ -306,6 +344,23 @@ def classify_delivery(
             delivered=False,
             transition=TRANSITION_UNKNOWN,
             reason="target_snapshot_unavailable",
+            declared_outcome=declared,
+            provider_exit=provider_exit,
+        )
+
+    if supervision in SUPERVISION_CAP_REASONS:
+        if transition in {TRANSITION_PR_OPENED, TRANSITION_HEAD_ADVANCED}:
+            return DeliveryOutcome(
+                delivered=True,
+                transition=transition,
+                reason="observed_state_transition",
+                declared_outcome=declared,
+                provider_exit=provider_exit,
+            )
+        return DeliveryOutcome(
+            delivered=False,
+            transition=transition,
+            reason="supervision_ended_without_delivery",
             declared_outcome=declared,
             provider_exit=provider_exit,
         )
@@ -480,6 +535,7 @@ class SupervisionResult:
     interrupted: bool = False
     signals_sent: tuple[str, ...] = ()
     output_bytes: int = 0
+    descendants_held_output: bool = False
 
     @property
     def reason(self) -> str:
@@ -489,7 +545,9 @@ class SupervisionResult:
             return "output_overflow"
         if self.interrupted:
             return "interrupted"
-        return "completed"
+        if self.descendants_held_output:
+            return SUPERVISION_DESCENDANTS_HELD_OUTPUT
+        return SUPERVISION_COMPLETED
 
 
 def _wait_for_group_exit(pgid: int, *, deadline_seconds: float = 5.0) -> bool:
@@ -521,6 +579,7 @@ def supervise_process(
     env: Mapping[str, str] | None = None,
     stdin_path: Path | None = None,
     term_grace_seconds: float = DEFAULT_TERM_GRACE_SECONDS,
+    descendant_drain_seconds: float = DEFAULT_DESCENDANT_DRAIN_SECONDS,
 ) -> SupervisionResult:
     """Run a provider CLI in its own process group with bounded output.
 
@@ -528,6 +587,14 @@ def supervise_process(
     spawns share one process group. Timeout, output overflow, and interruption
     of the runner all terminate and reap that whole group instead of leaving
     inert transports behind.
+
+    The provider's own exit ends the run even when its output pipe stays open.
+    A background descendant that inherited stdout holds the write end, so
+    waiting for EOF would wait out the entire lane timeout and then report a
+    timeout for a provider that finished — a lingering transport is what this
+    supervisor exists to clean up, not a reason to stall behind one. Output
+    already in flight is drained for ``descendant_drain_seconds`` first, and
+    the group is then terminated and reaped as usual.
     """
 
     if timeout_seconds <= 0:
@@ -553,6 +620,7 @@ def supervise_process(
     selector: selectors.BaseSelector | None = None
     timed_out = False
     overflowed = False
+    descendants_held_output = False
     written = 0
     exit_code = 1
     signals_sent: tuple[str, ...] = ()
@@ -580,6 +648,7 @@ def supervise_process(
             return _default_is_group_alive(group_id)
 
         deadline = time.monotonic() + timeout_seconds
+        drain_deadline: float | None = None
         selector = selectors.DefaultSelector()
         assert proc.stdout is not None
         selector.register(proc.stdout, selectors.EVENT_READ)
@@ -591,7 +660,12 @@ def supervise_process(
                 if remaining <= 0:
                     timed_out = True
                     break
-                for _key, _events in selector.select(timeout=min(remaining, 0.5)):
+                wait = min(remaining, 0.5)
+                if drain_deadline is not None:
+                    # Draining a pipe an exited provider left behind: poll
+                    # briefly so the window is the drain, not the select.
+                    wait = min(wait, 0.05)
+                for _key, _events in selector.select(timeout=wait):
                     chunk = os.read(proc.stdout.fileno(), 65536)
                     if not chunk:
                         selector.unregister(proc.stdout)
@@ -605,10 +679,21 @@ def supervise_process(
                     written += len(chunk)
                 if overflowed:
                     break
-                if proc.poll() is not None and not selector.get_map():
+                if proc.poll() is None:
+                    continue
+                if not selector.get_map():
+                    break
+                # The provider is gone but its stdout is not: something it
+                # spawned inherited the write end. Drain what is already in
+                # flight, then stop waiting on a pipe only the leftovers hold.
+                now = time.monotonic()
+                if drain_deadline is None:
+                    drain_deadline = now + max(0.0, descendant_drain_seconds)
+                elif now >= drain_deadline:
+                    descendants_held_output = True
                     break
 
-        if timed_out or overflowed or interrupted["value"]:
+        if timed_out or overflowed or interrupted["value"] or descendants_held_output:
             signals_sent = terminate_process_group(
                 pgid, grace_seconds=term_grace_seconds, is_group_alive=_group_alive
             )
@@ -658,6 +743,7 @@ def supervise_process(
         interrupted=interrupted["value"],
         signals_sent=signals_sent,
         output_bytes=written,
+        descendants_held_output=descendants_held_output,
     )
 
 
@@ -983,7 +1069,12 @@ def _add_classify_parser(subparsers: Any) -> None:
     classify.add_argument("--declared-outcome", default="")
     classify.add_argument("--lane", default="")
     classify.add_argument("--repo", default="")
-    classify.add_argument("--supervision", default="completed")
+    classify.add_argument(
+        "--supervision",
+        default=SUPERVISION_COMPLETED,
+        choices=sorted(SUPERVISION_REASONS),
+        help="How the supervised run ended; decides whether the exit code is the provider's.",
+    )
     classify.add_argument("--signal", action="append", default=[])
     classify.add_argument("--elapsed-seconds", type=float)
     classify.add_argument("--user-interventions", type=int)
@@ -1087,6 +1178,7 @@ def _classify_main(args: argparse.Namespace) -> int:
         after,
         provider_exit=args.provider_exit,
         declared_outcome=args.declared_outcome,
+        supervision_reason=args.supervision,
     )
     handoff = None
     if args.handoff:

@@ -166,6 +166,16 @@ Hitting the `--max-minutes` cap does not exempt a run from the contract. A
 timed-out provider that pushed nothing is an unfinished unit and still exits
 `3`; the cap alone only reports success when the classification passed.
 
+The cap is a clock, not a verdict on delivery. When the supervisor stops a run —
+the wall-clock cap, output overflow, or interruption — the exit code is the
+supervisor's own, so classification ignores it and goes by the observed
+transition alone: a PR or head advance the provider pushed before it was stopped
+is still a delivery, and a stopped run that left no transition is still
+undelivered. A run the supervisor stopped may not declare a bounded outcome,
+because a half-written `lane-outcome.json` is exactly what a killed provider
+leaves behind. A provider that chose its own nonzero exit is a failed unit
+whatever the target looks like.
+
 Snapshots fail closed. Each GitHub lookup behind a snapshot is retried, and a
 lookup that still fails marks the snapshot incomplete rather than recording an
 empty value — an empty `pr_number` or head would otherwise be indistinguishable
@@ -179,6 +189,12 @@ interruption, and output overflow. Cap provider output with `LANE_MAX_LOG_BYTES`
 (default 32 MiB); overflow exits `125`. Install the `code-mower` CLI on the
 runner's `PATH` — without it the runner falls back to the older direct-child
 timeout, which can leave inert provider transports behind.
+
+The provider's own exit ends the run, open output pipe or not. A background
+descendant that inherited stdout keeps the pipe from ever reaching EOF, so the
+supervisor drains what is already in flight, then terminates and reaps the
+group. Waiting for EOF instead would burn the whole lane timeout and then report
+a timeout — rejecting the delivery — for a provider that had already finished.
 
 ### Which `lane-delivery` the runner uses
 

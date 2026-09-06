@@ -241,6 +241,135 @@ class DeliveryClassificationTests(unittest.TestCase):
 
         self.assertEqual(rc, 2)
 
+    def test_capped_run_keeps_the_delivery_it_already_made(self) -> None:
+        """A cap fires on the clock, not on whether the work landed.
+
+        The supervisor's own exit code says the run was stopped; it says
+        nothing about the PR the provider pushed before that. Rejecting the
+        observed transition here reported finished work as undelivered and made
+        the runner's timed-out-success path unreachable.
+        """
+
+        for reason in sorted(lane_delivery.SUPERVISION_CAP_REASONS):
+            with self.subTest(supervision=reason):
+                opened = lane_delivery.classify_delivery(
+                    _state(),
+                    _state(pr_number="901", head_sha=SHA_A),
+                    provider_exit=lane_delivery.EXIT_TIMEOUT,
+                    supervision_reason=reason,
+                )
+                advanced = lane_delivery.classify_delivery(
+                    _state(kind="pr", number="900", pr_number="900", head_sha=SHA_A),
+                    _state(kind="pr", number="900", pr_number="900", head_sha=SHA_B),
+                    provider_exit=lane_delivery.EXIT_TIMEOUT,
+                    supervision_reason=reason,
+                )
+
+                self.assertTrue(opened.delivered)
+                self.assertEqual(
+                    opened.transition, lane_delivery.TRANSITION_PR_OPENED
+                )
+                self.assertEqual(opened.reason, "observed_state_transition")
+                self.assertTrue(advanced.delivered)
+                self.assertEqual(
+                    advanced.transition, lane_delivery.TRANSITION_HEAD_ADVANCED
+                )
+
+    def test_capped_run_without_a_transition_is_undelivered(self) -> None:
+        outcome = lane_delivery.classify_delivery(
+            _state(kind="pr", number="900", pr_number="900", head_sha=SHA_A),
+            _state(kind="pr", number="900", pr_number="900", head_sha=SHA_A),
+            provider_exit=lane_delivery.EXIT_TIMEOUT,
+            supervision_reason="timeout",
+        )
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.transition, lane_delivery.TRANSITION_NONE)
+        self.assertEqual(outcome.reason, "supervision_ended_without_delivery")
+
+    def test_capped_run_may_not_declare_a_bounded_outcome(self) -> None:
+        """A killed provider can leave a half-written declaration behind."""
+
+        outcome = lane_delivery.classify_delivery(
+            _state(),
+            _state(runner_comment_id="12345", labels=("needs-owner",)),
+            provider_exit=lane_delivery.EXIT_TIMEOUT,
+            supervision_reason="timeout",
+            declared_outcome="owner_action",
+        )
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.reason, "supervision_ended_without_delivery")
+
+    def test_a_provider_that_failed_on_its_own_still_never_delivers(self) -> None:
+        outcome = lane_delivery.classify_delivery(
+            _state(),
+            _state(pr_number="901", head_sha=SHA_A),
+            provider_exit=1,
+            supervision_reason=lane_delivery.SUPERVISION_COMPLETED,
+        )
+        held = lane_delivery.classify_delivery(
+            _state(),
+            _state(pr_number="901", head_sha=SHA_A),
+            provider_exit=1,
+            supervision_reason=lane_delivery.SUPERVISION_DESCENDANTS_HELD_OUTPUT,
+        )
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.reason, "provider_exit_nonzero")
+        # A descendant holding the pipe open did not end the run; the provider
+        # chose its own exit code, so that code is still its own verdict.
+        self.assertFalse(held.delivered)
+        self.assertEqual(held.reason, "provider_exit_nonzero")
+
+    def test_an_incomplete_snapshot_outranks_a_cap(self) -> None:
+        outcome = lane_delivery.classify_delivery(
+            _state(snapshot_complete=False),
+            _state(pr_number="901", head_sha=SHA_A),
+            provider_exit=lane_delivery.EXIT_TIMEOUT,
+            supervision_reason="timeout",
+        )
+
+        self.assertFalse(outcome.delivered)
+        self.assertEqual(outcome.reason, "target_snapshot_unavailable")
+
+    def test_unknown_supervision_reason_is_rejected(self) -> None:
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery.classify_delivery(
+                _state(),
+                _state(pr_number="901", head_sha=SHA_A),
+                provider_exit=lane_delivery.EXIT_TIMEOUT,
+                supervision_reason="probably_fine",
+            )
+
+    def test_classify_cli_passes_the_supervision_reason_through(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            before = root / "before.json"
+            after = root / "after.json"
+            before.write_text(json.dumps(_state().as_dict()), encoding="utf-8")
+            after.write_text(
+                json.dumps(_state(pr_number="901", head_sha=SHA_A).as_dict()),
+                encoding="utf-8",
+            )
+            argv = [
+                "classify",
+                "--before",
+                str(before),
+                "--after",
+                str(after),
+                "--provider-exit",
+                str(lane_delivery.EXIT_TIMEOUT),
+            ]
+
+            capped = lane_delivery.main([*argv, "--supervision", "timeout"])
+            uncapped = lane_delivery.main(argv)
+
+        self.assertEqual(capped, 0)
+        # Same exit code, but nothing says the supervisor produced it, so it is
+        # the provider's own failure and the PR does not rescue it.
+        self.assertEqual(uncapped, 3)
+
     def test_classify_cli_exits_nonzero_without_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -456,6 +585,54 @@ class ProcessGroupCleanupTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 7)
         self.assertFalse(result.timed_out)
         self.assertEqual(result.reason, "completed")
+
+    def test_a_descendant_holding_stdout_does_not_stall_the_run(self) -> None:
+        """The provider's own exit ends the run, open pipe or not.
+
+        A background descendant inherits the provider's stdout, so the pipe
+        never reaches EOF. Waiting for it burned the whole lane timeout and
+        then reported a timeout — rejecting the delivery — for a provider that
+        had already finished. The lingering transport is what this supervisor
+        cleans up, not something to wait behind.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_path = root / "run.log"
+            child_pid_file = root / "child.pid"
+            script = (
+                "sleep 120 & echo $! > "
+                + str(child_pid_file)
+                + "; printf 'done\\n'; exit 5"
+            )
+
+            started = time.monotonic()
+            result = lane_delivery.supervise_process(
+                ["bash", "-c", script],
+                log_path=log_path,
+                timeout_seconds=30.0,
+                term_grace_seconds=1.0,
+                descendant_drain_seconds=0.2,
+            )
+            elapsed = time.monotonic() - started
+
+            log = log_path.read_text(encoding="utf-8")
+            grandchild = int(child_pid_file.read_text(encoding="utf-8").strip())
+
+        self.assertLess(elapsed, 15.0, "supervisor waited out the lane timeout")
+        self.assertFalse(result.timed_out)
+        self.assertTrue(result.descendants_held_output)
+        self.assertEqual(
+            result.reason, lane_delivery.SUPERVISION_DESCENDANTS_HELD_OUTPUT
+        )
+        # The provider chose 5, and no cap overwrote it.
+        self.assertEqual(result.exit_code, 5)
+        self.assertIn("done", log)
+        self.assertIn("SIGTERM", result.signals_sent)
+        self.assertTrue(
+            _wait_for_pid_exit(grandchild),
+            "orphaned provider transport survived the provider's exit",
+        )
 
     def test_supervise_cli_dispatches_to_the_provider(self) -> None:
         """The remainder must not share the subparsers destination.
@@ -1050,6 +1227,28 @@ class RunnerScriptContractTests(unittest.TestCase):
                 self.assertIn('[ "$supervision_reason" = "timeout" ] && timed_out=1', text)
                 self.assertIn(
                     '[ "$supervision_reason" = "output_overflow" ] && overflowed=1', text
+                )
+
+    def test_runner_scripts_tell_the_classifier_who_ended_the_run(self) -> None:
+        # Classification treats the exit code as the provider's own verdict
+        # only when nothing else stopped the run, so the runner has to name the
+        # supervision reason on both paths -- including the fallback cap, which
+        # writes no status file and would otherwise report "completed" for a
+        # run the cap killed.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn(
+                    '[ "$rc" -eq 124 ] && { timed_out=1; supervision_reason="timeout"; }',
+                    text,
+                )
+                self.assertIn(
+                    '[ "$rc" -eq 125 ] && { overflowed=1; supervision_reason="output_overflow"; }',
+                    text,
+                )
+                self.assertLess(
+                    text.index('supervision_reason="timeout"'),
+                    text.index('--supervision "$supervision_reason"'),
                 )
 
     def test_runner_scripts_wire_the_delivery_contract(self) -> None:

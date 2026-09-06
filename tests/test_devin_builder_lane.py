@@ -1038,6 +1038,118 @@ sleep 120
         self.assertEqual(completed.returncode, 124)
         self.assertIn("no validated delivery for issue #12", completed.stderr)
 
+    def test_devin_lane_cap_keeps_a_delivery_the_provider_already_made(self) -> None:
+        # The mirror of the test above, and the reason classification cannot key
+        # on the exit code alone: the provider opened the pull request and was
+        # then stopped by the cap. The work is on GitHub, so the unit is
+        # finished, and reporting it as unfinished would send the next cycle
+        # back to redo it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            runner = self._generated_runner(output_dir)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            work_root = root / "work"
+
+            short_timeout = bin_dir / "lane-delivery-short-timeout"
+            short_timeout.write_text(
+                f"""#!/usr/bin/env bash
+set -euo pipefail
+forwarded=()
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--timeout-seconds" ]; then
+    forwarded+=(--timeout-seconds 2)
+    shift 2
+    continue
+  fi
+  forwarded+=("$1")
+  shift
+done
+exec {shlex.quote(sys.executable)} -m code_mower.lane_delivery "${{forwarded[@]}}"
+""",
+                encoding="utf-8",
+            )
+            short_timeout.chmod(0o755)
+
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "issue list" ]; then
+  printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "repo view" ]; then
+  printf 'main\\n'
+elif [ "$cmd" = "issue view" ]; then
+  if [[ "$args" == *"--json comments"* ]]; then
+    printf '%s\\n' '{"comments":[]}'
+  else
+    printf '%s\\n' '{"title":"Issue 12","body":"Body","labels":[{"name":"tier:R"}],"url":"https://github.com/owner/repo/issues/12","author":{"login":"owner"}}'
+  fi
+elif [ "$cmd" = "issue comment" ]; then
+  printf 'commented\\n'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            fake_git = bin_dir / "git"
+            fake_git.write_text(_FAKE_GIT, encoding="utf-8")
+            fake_git.chmod(0o755)
+
+            # Opens the pull request, then hangs until the cap stops it.
+            fake_devin = bin_dir / "devin"
+            fake_devin.write_text(
+                f"""#!/usr/bin/env bash
+set -euo pipefail
+if [ "${{1:-}}" = "--version" ]; then
+  printf 'devin 3000.6.14\\n'
+  exit 0
+fi
+: > "$HOME/{_DELIVERY_MARKER_NAME}"
+printf 'fake devin opened the pr\\n'
+sleep 120
+""",
+                encoding="utf-8",
+            )
+            fake_devin.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(runner),
+                    "--lane",
+                    "devin",
+                    "--repo",
+                    "owner/repo",
+                    "--max-minutes",
+                    "1",
+                ],
+                cwd=output_dir,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "LANE_WORK_ROOT": str(work_root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "CODE_MOWER_LANE_DELIVERY_CMD": str(short_timeout),
+                    "PYTHONPATH": str(ROOT / "src"),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertIn("devin: hit the 1-minute cap on issue #12", completed.stdout)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("no validated delivery", completed.stderr)
+
     def test_devin_lane_missing_cli_exits_nonzero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

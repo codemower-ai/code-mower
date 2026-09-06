@@ -19,7 +19,10 @@ later entries are regular releases.
   and an explicit orchestrator handoff (source lane, destination lane, target
   PR, expected head) is the only way to write a PR branch owned by another lane.
   A handoff only authorizes a branch the named source lane actually owns, and a
-  bounded outcome only counts with a non-empty one-line summary.
+  bounded outcome only counts with a non-empty one-line summary. The cap is a
+  clock, not a verdict: a run the supervisor stopped is judged on the transition
+  it left behind, so work pushed before the cap fired still counts and a cap
+  that produced nothing still does not.
 - Each local builder run records a metadata-only delivery outcome for Board and
   productivity reporting: provider exit, delivery transition, handoff, elapsed
   time, and intervention count.
@@ -31,6 +34,11 @@ later entries are regular releases.
 
 ### Changed
 
+- A supervised provider's own exit ends the run even when a background
+  descendant still holds its stdout open. The supervisor drains what is in
+  flight, then terminates and reaps the group, instead of waiting out the lane
+  timeout behind a lingering transport and reporting a timeout for a provider
+  that finished.
 - Provider prompts assembled by the Mac lane runner are scanned and rejected if
   they would send a provider looking for token files, credential-helper output,
   or other auth material. The runner brokers the comments and labels the
