@@ -82,6 +82,7 @@ bounded pip-install retry behavior as any other package-index install (see
   optional `failure_reason` (see below)
 
 No local paths, secrets, commands, or raw output.
+Codex receives an API-compatible subset of the schema (without `if`/`then`/`else` conditionals) because the OpenAI structured-output endpoint rejects those keywords; the full closed local validator remains authoritative.
 
 ### Package Install Failure Classification
 

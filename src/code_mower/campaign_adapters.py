@@ -54,6 +54,7 @@ provider key, exactly like the audit wrappers.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import shlex
@@ -205,9 +206,12 @@ ADAPTER_ENV_ALLOWLIST = (
     "XDG_RUNTIME_DIR",
 )
 
-#: Guidance schema handed to providers with structured-output support (Codex
-#: ``--output-schema``, Claude ``--json-schema``). Best effort only: the
-#: closed validator in :mod:`code_mower.release_qualify` is authoritative.
+#: Full closed validator schema. This is the authoritative shape used by
+#: :func:`code_mower.release_qualify.validate_adoption_result_payload` and by
+#: providers whose structured-output layer accepts JSON Schema conditionals.
+#: Codex uses :func:`build_codex_response_format_schema` instead, because the
+#: OpenAI structured-output endpoint rejects ``if``/``then``/``else`` keywords
+#: inside ``steps.items``.
 ADOPTION_RESULT_JSON_SCHEMA: dict[str, Any] = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "code_mower.adoptionResult.v1",
@@ -317,6 +321,24 @@ ADOPTION_RESULT_JSON_SCHEMA: dict[str, Any] = {
         },
     },
 }
+
+
+def build_codex_response_format_schema() -> dict[str, Any]:
+    """Return an OpenAI structured-output compatible subset of the adoption-result schema.
+
+    The full :data:`ADOPTION_RESULT_JSON_SCHEMA` remains authoritative for
+    local closed validation, including the conditional rule that
+    ``failure_reason`` is only permitted on a failed ``package_install`` step.
+    Codex receives this stripped schema because the OpenAI structured-output
+    endpoint rejects ``if``/``then``/``else`` keywords inside ``steps.items``.
+    The local validator rejects any misuse the provider-relaxed schema allows.
+    """
+    schema = copy.deepcopy(ADOPTION_RESULT_JSON_SCHEMA)
+    step_schema = schema["properties"]["steps"]["items"]
+    step_schema.pop("if", None)
+    step_schema.pop("then", None)
+    step_schema.pop("else", None)
+    return schema
 
 
 def _env_flag_enabled(name: str) -> bool:
@@ -1276,7 +1298,7 @@ def run_campaign_adapter(
             if provider == "codex":
                 schema_path = workdir / "adoption-result.schema.json"
                 schema_path.write_text(
-                    json.dumps(ADOPTION_RESULT_JSON_SCHEMA, indent=2, sort_keys=True) + "\n",
+                    json.dumps(build_codex_response_format_schema(), indent=2, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
                 last_message_path = workdir / "last-message.md"
