@@ -1189,9 +1189,9 @@ def _adoption_result_rejection_detail(exc: ValueError) -> str:
     # Match the longest field names first to avoid substring false positives
     # (e.g., matching "out" before "outcome").
     known_fields = sorted(ADOPTION_RESULT_FIELDS, key=len, reverse=True)
-    for field in known_fields:
-        if field in message:
-            return f"adoption result field '{field}' rejected"
+    for field_name in known_fields:
+        if field_name in message:
+            return f"adoption result field '{field_name}' rejected"
     if "unsupported field" in message:
         return "adoption result has unsupported field"
     if "missing required field" in message:
@@ -2409,7 +2409,7 @@ def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
     """
     if not isinstance(entry, Mapping):
         return None
-    if not any(field in entry for field in ATTEMPT_HISTORY_FIELDS):
+    if not any(field_name in entry for field_name in ATTEMPT_HISTORY_FIELDS):
         return None
 
     state = entry.get("state")
