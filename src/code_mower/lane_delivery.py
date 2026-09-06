@@ -272,12 +272,27 @@ class DeliveryOutcome:
 def observed_transition(before: TargetState, after: TargetState) -> str:
     """Return the PR/head transition the runner observed for itself.
 
+    Both snapshots must describe the same unit. A transition is the difference
+    between two readings of one target; between two different targets the same
+    subtraction is meaningless, and it is meaningless in the direction that
+    invents delivery — one target's open PR against another's absent one reads
+    as ``pr_opened``, and two unrelated heads read as ``head_advanced``. That is
+    a caller wiring its own snapshots up wrong, not an observation about either
+    unit, so it raises rather than resolving to a transition. Fail-closed does
+    not apply: there is no unit here to report as undelivered.
+
     Returns :data:`TRANSITION_UNKNOWN` when either snapshot is incomplete. A
     failed lookup leaves ``pr_number``/``head_sha`` empty, and comparing an
     empty value against a real one would read as ``pr_opened`` or
     ``head_advanced`` for a target that never moved.
     """
 
+    if before.kind != after.kind or before.number != after.number:
+        raise LaneDeliveryError(
+            "before and after snapshots must describe the same target: "
+            f"before is {before.kind} #{before.number}, "
+            f"after is {after.kind} #{after.number}"
+        )
     if not before.snapshot_complete or not after.snapshot_complete:
         return TRANSITION_UNKNOWN
     if after.pr_number and not before.pr_number:
@@ -323,6 +338,10 @@ def classify_delivery(
     behind either snapshot failed, nothing here — not the transition, and not
     the comment and label a declared outcome is validated against — can be
     trusted, so the unit is undelivered rather than guessed at.
+
+    Two snapshots that name different targets raise instead. See
+    :func:`observed_transition`: there is no single unit to classify, so there
+    is no unit to record an undelivered outcome against either.
     """
 
     declared = _text(declared_outcome)

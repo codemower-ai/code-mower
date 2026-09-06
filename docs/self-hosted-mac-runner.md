@@ -200,6 +200,13 @@ from "no PR yet" and would read as a delivery the target never made. An
 incomplete snapshot before the run refuses the unit with exit `2`; an incomplete
 one afterwards classifies as `target_snapshot_unavailable` and exits `3`.
 
+Both snapshots must name the same target. A transition is the difference between
+two readings of one unit; across two units the same subtraction reads one
+target's open PR against another's absent one as `pr_opened`. `classify` exits
+`2` on a `--before` and `--after` that disagree on kind or number, and records no
+outcome — there is no single unit to classify, so there is none to report as
+undelivered either.
+
 Providers run under `code-mower lane-delivery supervise`, which starts them in
 their own process group and terminates plus reaps that whole group on timeout,
 interruption, and output overflow. Cap provider output with `LANE_MAX_LOG_BYTES`

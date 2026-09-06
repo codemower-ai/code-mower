@@ -226,6 +226,73 @@ class DeliveryClassificationTests(unittest.TestCase):
         self.assertTrue(outcome.delivered)
         self.assertEqual(outcome.transition, lane_delivery.TRANSITION_PR_OPENED)
 
+    def test_snapshots_of_different_targets_never_read_as_a_new_pr(self) -> None:
+        # One target's open PR against another target's absent one is the exact
+        # shape of pr_opened, so a caller that mixed up its snapshot files would
+        # have recorded a delivery neither unit made.
+        before = _state()
+        after = _state(number="999", pr_number="901", head_sha=SHA_A)
+
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery.observed_transition(before, after)
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery.classify_delivery(before, after, provider_exit=0)
+
+    def test_snapshots_of_different_kinds_never_read_as_an_advanced_head(self) -> None:
+        # Same number, different kind: issue #900 and PR #900 are two units, and
+        # their unrelated heads subtract to head_advanced.
+        before = _state(kind="issue", number="900", pr_number="900", head_sha=SHA_A)
+        after = _state(kind="pr", number="900", pr_number="900", head_sha=SHA_B)
+
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery.classify_delivery(before, after, provider_exit=0)
+
+    def test_mismatched_targets_outrank_an_incomplete_snapshot(self) -> None:
+        # Fail-closed reports a unit as undelivered, which needs a unit. There
+        # is none here, so the caller error is raised rather than attributed to
+        # whichever target the after snapshot happens to name.
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery.classify_delivery(
+                _state(snapshot_complete=False),
+                _state(number="999", pr_number="901", head_sha=SHA_A),
+                provider_exit=0,
+            )
+
+    def test_classify_cli_refuses_mismatched_targets_without_a_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            before = root / "before.json"
+            after = root / "after.json"
+            record = root / "delivery.json"
+            before.write_text(json.dumps(_state().as_dict()), encoding="utf-8")
+            after.write_text(
+                json.dumps(
+                    _state(number="999", pr_number="901", head_sha=SHA_A).as_dict()
+                ),
+                encoding="utf-8",
+            )
+
+            rc = lane_delivery.main(
+                [
+                    "classify",
+                    "--before",
+                    str(before),
+                    "--after",
+                    str(after),
+                    "--provider-exit",
+                    "0",
+                    "--lane",
+                    "claude",
+                    "--repo",
+                    "codemower-ai/code-mower",
+                    "--output",
+                    str(record),
+                ]
+            )
+
+            self.assertEqual(rc, 2)
+            self.assertFalse(record.exists())
+
     def test_snapshot_complete_must_be_a_boolean(self) -> None:
         with self.assertRaises(lane_delivery.LaneDeliveryError):
             _state(snapshot_complete="true")
