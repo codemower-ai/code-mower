@@ -530,10 +530,225 @@ fi
             "refusing target PR #21; head branch codex/fix is not owned by this lane",
             completed.stderr,
         )
+        self.assertIn("expected branch prefix devin/", completed.stderr)
+        self.assertNotIn("expected label", completed.stderr)
+
+    def test_devin_lane_rejects_explicit_target_hosted_devin_branch_sharing_label(
+        self,
+    ) -> None:
+        # Hosted Devin and the local Devin CLI lane share the builder:devin
+        # label. The label alone must never be accepted as ownership
+        # evidence for an explicit fix-round target: only this lane's own
+        # branch-prefix convention proves the branch is this lane's to push
+        # to.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            runner = self._generated_runner(output_dir)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+if [ "$cmd" = "pr view" ]; then
+  printf '%s\\n' '{"headRefName":"devin-hosted/fix-1","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:devin"}]}'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(runner),
+                    "--lane",
+                    "devin",
+                    "--repo",
+                    "owner/repo",
+                    "--max-minutes",
+                    "1",
+                    "--target",
+                    "pr:21",
+                ],
+                cwd=output_dir,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("devin: selected target pr #21", completed.stdout)
         self.assertIn(
-            "expected label builder:devin or branch prefix devin/",
+            "refusing target PR #21; head branch devin-hosted/fix-1 is not owned by this lane",
             completed.stderr,
         )
+        self.assertIn("expected branch prefix devin/", completed.stderr)
+        self.assertNotIn("expected label", completed.stderr)
+
+    def test_devin_lane_auto_select_skips_hosted_devin_pr_sharing_label(self) -> None:
+        # Automatic fix-round selection must not pick up a same-repo,
+        # audit-blocked PR just because it carries the shared builder:devin
+        # label; the head branch must also match this lane's own prefix.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            runner = self._generated_runner(output_dir)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+  printf '%s\\n' '[{"number":21,"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}],"updatedAt":"2026-01-01T00:00:00Z","headRepository":{"nameWithOwner":"owner/repo"},"headRefName":"devin-hosted/fix-1"}]'
+elif [ "$cmd" = "issue list" ]; then
+  printf '%s\\n' '[]'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(runner),
+                    "--lane",
+                    "devin",
+                    "--repo",
+                    "owner/repo",
+                    "--max-minutes",
+                    "1",
+                ],
+                cwd=output_dir,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+        self.assertIn("devin: nothing to do", completed.stdout)
+        self.assertNotIn("selected fix pr #21", completed.stdout)
+
+    def test_devin_lane_auto_selects_and_targets_correctly_prefixed_local_branch(
+        self,
+    ) -> None:
+        # The mirror-image case: a PR that actually belongs to the local
+        # Devin CLI lane (branch prefix devin/) must still be auto-selected
+        # for a fix round and accepted as an explicit target.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            runner = self._generated_runner(output_dir)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            work_root = root / "work"
+            work = work_root / "devin" / "owner__repo"
+            work.joinpath(".git", "hooks").mkdir(parents=True)
+
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+  printf '%s\\n' '[{"number":21,"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}],"updatedAt":"2026-01-01T00:00:00Z","headRepository":{"nameWithOwner":"owner/repo"},"headRefName":"devin/fix-1"}]'
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRepository,labels"* ]]; then
+  printf '%s\\n' '{"headRefName":"devin/fix-1","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}]}'
+elif [ "$cmd" = "repo view" ]; then
+  printf 'main\\n'
+elif [ "$cmd" = "pr view" ]; then
+  printf '%s\\n' '{"title":"Fix","body":"Body","headRefName":"devin/fix-1","headRefOid":"deadbeef","url":"https://github.com/owner/repo/pull/21","labels":[{"name":"builder:devin"}],"author":{"login":"owner"}}'
+elif [ "$cmd" = "api --paginate" ]; then
+  printf '%s\\n' '[[]]'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            fake_git = bin_dir / "git"
+            fake_git.write_text(_FAKE_GIT, encoding="utf-8")
+            fake_git.chmod(0o755)
+
+            fake_devin = bin_dir / "devin"
+            fake_devin.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  printf 'devin 3000.6.14\\n'
+  exit 0
+fi
+printf 'fake devin completed\\n'
+""",
+                encoding="utf-8",
+            )
+            fake_devin.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(runner),
+                    "--lane",
+                    "devin",
+                    "--repo",
+                    "owner/repo",
+                    "--max-minutes",
+                    "1",
+                ],
+                cwd=output_dir,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "LANE_WORK_ROOT": str(work_root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+            hook = work / ".git" / "hooks" / "pre-push"
+            good_push = subprocess.run(
+                [str(hook)],
+                cwd=work,
+                env={
+                    **os.environ,
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                input=f"refs/heads/devin/fix-1 {'a' * 40} refs/heads/devin/fix-1 {'b' * 40}\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertIn("devin: selected fix pr #21", completed.stdout)
+        self.assertIn("fake devin completed", completed.stdout)
+        self.assertEqual(good_push.returncode, 0, good_push.stderr)
 
     def test_devin_lane_hits_minute_cap_and_comments_without_failing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

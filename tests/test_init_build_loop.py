@@ -213,9 +213,11 @@ class InitBuildLoopTests(unittest.TestCase):
             self.assertNotIn("cursor[bot]", runner_text)
             self.assertIn("remote_repo_slug()", runner_text)
             self.assertIn('install_pre_push_guard "$target_pr_branch" "$mode"', runner_text)
-            self.assertIn("--json number,labels,updatedAt,headRepository", runner_text)
+            self.assertIn(
+                "--json number,labels,updatedAt,headRepository,headRefName", runner_text
+            )
             self.assertIn("--json headRefName,headRepository,labels", runner_text)
-            self.assertIn("def has_builder_label", runner_text)
+            self.assertNotIn("def has_builder_label", runner_text)
             self.assertIn("def has_lane_prefix", runner_text)
             self.assertIn("def same_head_repo", runner_text)
             self.assertIn(
@@ -223,7 +225,7 @@ class InitBuildLoopTests(unittest.TestCase):
                 runner_text,
             )
             self.assertIn(
-                "expected label ${builder_label} or branch prefix ${lane_branch_prefixes_display}",
+                "expected branch prefix ${lane_branch_prefixes_display}",
                 runner_text,
             )
             self.assertIn("[omitted: issue title author is not trusted]", runner_text)
@@ -1170,7 +1172,7 @@ fi
             completed.stderr,
         )
         self.assertIn(
-            "expected label builder:codex or branch prefix codex/",
+            "expected branch prefix codex/",
             completed.stderr,
         )
 
