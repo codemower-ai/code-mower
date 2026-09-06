@@ -11543,7 +11543,39 @@ class CampaignWatchTests(unittest.TestCase):
             self.assertEqual(res, 1)
             self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
 
-        # 3. Assert NO campaign mutation occurred on disk
+        # 3. Read-only actions and legacy status flag reject --required-providers
+        for act in ["status", "watch", "upload"]:
+            err = io.StringIO()
+            res = release_campaigns.campaign_command(
+                action=act,
+                campaign_id="campaign-v1.0.0",
+                release_tag="v1.0.0",
+                campaigns_dir=self.campaigns_dir,
+                required_providers=["claude"],
+                stderr=err,
+            )
+            self.assertEqual(res, 1)
+            self.assertIn(
+                "--required-providers applies only to campaign creation, resume, and dispatch",
+                err.getvalue(),
+            )
+
+        # Legacy status flag rejects --required-providers
+        err = io.StringIO()
+        res = release_campaigns.campaign_command(
+            campaign_id="campaign-v1.0.0",
+            campaigns_dir=self.campaigns_dir,
+            status=True,
+            required_providers=["claude"],
+            stderr=err,
+        )
+        self.assertEqual(res, 1)
+        self.assertIn(
+            "--required-providers applies only to campaign creation, resume, and dispatch",
+            err.getvalue(),
+        )
+
+        # 4. Assert NO campaign mutation occurred on disk
         self.assertEqual(campaign_path.read_text(encoding="utf-8"), initial_content)
         current_stat = campaign_path.stat()
         self.assertEqual(current_stat.st_mtime_ns, initial_stat.st_mtime_ns)
@@ -11702,6 +11734,220 @@ class CampaignWatchTests(unittest.TestCase):
             )
         self.assertEqual(code, 1)
         self.assertIn("--timeout applies only to the 'watch' and 'upload' actions", err.getvalue())
+
+        # --required-providers on status
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "status",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "--required-providers applies only to campaign creation, resume, and dispatch",
+            err.getvalue(),
+        )
+
+        # --required-providers on watch
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "watch",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "--required-providers applies only to campaign creation, resume, and dispatch",
+            err.getvalue(),
+        )
+
+        # --required-providers on upload
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "upload",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "--required-providers applies only to campaign creation, resume, and dispatch",
+            err.getvalue(),
+        )
+
+        # --required-providers on legacy --status flag
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "--status",
+                    "--release-tag",
+                    "v1.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "--required-providers applies only to campaign creation, resume, and dispatch",
+            err.getvalue(),
+        )
+
+    def test_matching_posture_accepted_on_resume_and_dispatch(self) -> None:
+        """Mutating resume and dispatch accept matching --required-providers, rejecting mismatches."""
+        self._seed_campaign(
+            campaign_id="campaign-resume-test",
+            release_tag="v2.0.0",
+            status="running",
+            providers=[
+                {
+                    "provider": "claude",
+                    "lane_id": "claude_code",
+                    "driver": "local_cli",
+                    "state": "complete",
+                    "posture": "required",
+                    "environment": "local",
+                    "elapsed_seconds": 10.0,
+                    "idempotency_key": "idemp-claude",
+                    "dispatch_mode": "applied",
+                    "next_action": "none",
+                    "next_detail": "",
+                },
+                {
+                    "provider": "codex",
+                    "lane_id": "codex_cli",
+                    "driver": "local_cli",
+                    "state": "queued",
+                    "posture": "informational",
+                    "environment": "local",
+                    "elapsed_seconds": 0.0,
+                    "idempotency_key": "idemp-codex",
+                    "dispatch_mode": "dry_run",
+                    "next_action": "run with --apply",
+                    "next_detail": "",
+                },
+            ],
+        )
+
+        # 1. Library resume with matching posture succeeds
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            res = release_campaigns.campaign_command(
+                action="resume",
+                campaign_id="campaign-resume-test",
+                release_tag="v2.0.0",
+                campaigns_dir=self.campaigns_dir,
+                required_providers=["claude"],
+            )
+        self.assertEqual(res, 0)
+
+        # 2. Library dispatch with matching posture succeeds
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            res = release_campaigns.campaign_command(
+                action="dispatch",
+                campaign_id="campaign-resume-test",
+                release_tag="v2.0.0",
+                campaigns_dir=self.campaigns_dir,
+                required_providers=["claude"],
+            )
+        self.assertEqual(res, 0)
+
+        # 3. CLI resume with matching posture succeeds
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "resume",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 0)
+
+        # 4. CLI dispatch with matching posture succeeds
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "dispatch",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "claude",
+                ]
+            )
+        self.assertEqual(code, 0)
+
+        # 5. Mismatched posture on resume is rejected
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "resume",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "codex",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--required-providers does not match existing campaign provider posture", err.getvalue())
+
+        # 6. Mismatched posture on dispatch is rejected
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release_qualify.main(
+                [
+                    "campaign",
+                    "dispatch",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--campaigns-dir",
+                    str(self.campaigns_dir),
+                    "--required-providers",
+                    "codex",
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("--required-providers does not match existing campaign provider posture", err.getvalue())
 
 
 class CheckpointedLocalAdapterBoardProjectionTests(unittest.TestCase):

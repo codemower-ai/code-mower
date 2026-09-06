@@ -175,6 +175,7 @@ Release campaigns support partitioning selected providers into closed **required
 - **Informational providers:** Selected providers outside the `--required-providers` subset provide non-blocking qualification signals. An informational provider failure or unavailable result remains visible evidence across status, watch, Board, and uploads, but does not block campaign completion when required providers pass (`success with informational findings`).
 - **Backward compatibility:** When `--required-providers` is omitted, every selected provider is treated as required, exactly as in previous releases.
 - **Fixed posture:** An existing campaign's provider posture cannot be modified when resuming or dispatching; posture mismatches and invalid required-provider names are rejected.
+- **Option scope:** `--required-providers` is valid for campaign creation (`create` or omitted action) and for mutating resume/dispatch actions (`resume`, `dispatch`) where it verifies stored posture against incoming arguments. It is rejected for read-only actions (`status`, `watch`, `upload`, including legacy `--status`).
 
 Example: Requiring Claude and Codex while running Antigravity, Muse, Cursor Cloud Agent, and Devin as informational:
 

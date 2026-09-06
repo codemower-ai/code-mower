@@ -1117,7 +1117,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Comma-separated subset of providers whose success is required. "
             "Selected providers outside this subset are informational. "
-            "When omitted, all selected providers are required."
+            "When omitted, all selected providers are required. "
+            "Applies to campaign create, resume, and dispatch; rejected for "
+            "read-only status, watch, and upload."
         ),
     )
     campaign.add_argument(

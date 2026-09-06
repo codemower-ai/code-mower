@@ -5274,6 +5274,21 @@ def _watch_intent_conflict(
     return ""
 
 
+def _required_providers_intent_conflict(
+    *,
+    action: str | None,
+    status: bool,
+    required_providers: Any = None,
+) -> str:
+    """Report an option-scope conflict when --required-providers is passed to read-only actions."""
+    if required_providers is not None and (status or action in {"status", "watch", "upload"}):
+        return (
+            "--required-providers applies only to campaign creation, resume, and dispatch; "
+            "re-run as `campaign create`, `campaign resume`, or `campaign dispatch`"
+        )
+    return ""
+
+
 def _command_intent_conflict(
     *,
     action: str | None,
@@ -5285,6 +5300,7 @@ def _command_intent_conflict(
     yes: bool = False,
     interval: float | None = None,
     timeout: float | None = None,
+    required_providers: Any = None,
 ) -> str:
     """Report the one bounded reason this invocation states conflicting intents.
 
@@ -5327,6 +5343,13 @@ def _command_intent_conflict(
         yes=yes,
         interval=interval,
         timeout=timeout,
+    )
+    if conflict:
+        return conflict
+    conflict = _required_providers_intent_conflict(
+        action=action,
+        status=status,
+        required_providers=required_providers,
     )
     if conflict:
         return conflict
@@ -5587,9 +5610,11 @@ def campaign_command(
     to whichever of the two the command body happens to test first.
 
     Option scope is enforced before any locks or lookups: ``--interval`` is
-    valid only for the ``watch`` action, and ``--timeout`` is valid only for
+    valid only for the ``watch`` action, ``--timeout`` is valid only for
     ``watch`` and ``upload`` (which use it for watch duration and request timeout
-    respectively). Supplying either option to an action where it would be
+    respectively), and ``--required-providers`` is valid only for campaign
+    creation, resume, and dispatch (where it configures or verifies stored
+    provider posture). Supplying an option to an action where it would be
     silently ignored is rejected with a bounded error before touching campaign
     state.
 
@@ -5602,6 +5627,31 @@ def campaign_command(
     write_dir = campaigns_dir if explicit_campaigns_dir else default_campaigns_dir(repo_path)
     campaigns_dir = write_dir
     err = stderr if stderr is not None else sys.stderr
+
+    # Command intent is validated as a whole, once, before anything else: a
+    # request that states two conflicting intents is refused here rather than
+    # resolved by whichever branch of the body tests its boolean first. `status`
+    # is read-only unconditionally, so a mutating intent spelled alongside it is
+    # never executed under a read-only spelling nor silently dropped; and an
+    # explicit action is never combined with a legacy flag naming a different
+    # one. Nothing has been locked, read, or written yet, so a rejected request
+    # leaves no trace at all.
+    is_status_request = status or action == "status"
+    conflict = _command_intent_conflict(
+        action=action,
+        record_result=record_result,
+        retry_provider=retry_provider,
+        apply=apply,
+        resume=resume,
+        status=status,
+        yes=yes,
+        interval=interval,
+        timeout=timeout,
+        required_providers=required_providers,
+    )
+    if conflict:
+        print(f"error: {conflict}", file=err)
+        return 1
 
     parsed_required_providers: tuple[str, ...] | None = None
     if isinstance(required_providers, str):
@@ -5628,30 +5678,6 @@ def campaign_command(
         except ValueError as exc:
             print(f"error: {exc}", file=err)
             return 1
-
-    # Command intent is validated as a whole, once, before anything else: a
-    # request that states two conflicting intents is refused here rather than
-    # resolved by whichever branch of the body tests its boolean first. `status`
-    # is read-only unconditionally, so a mutating intent spelled alongside it is
-    # never executed under a read-only spelling nor silently dropped; and an
-    # explicit action is never combined with a legacy flag naming a different
-    # one. Nothing has been locked, read, or written yet, so a rejected request
-    # leaves no trace at all.
-    is_status_request = status or action == "status"
-    conflict = _command_intent_conflict(
-        action=action,
-        record_result=record_result,
-        retry_provider=retry_provider,
-        apply=apply,
-        resume=resume,
-        status=status,
-        yes=yes,
-        interval=interval,
-        timeout=timeout,
-    )
-    if conflict:
-        print(f"error: {conflict}", file=err)
-        return 1
 
     # What remains is exactly the read-only route; every other spelling is
     # potentially mutating and takes the campaign directory lock.
