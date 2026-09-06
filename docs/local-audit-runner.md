@@ -24,6 +24,7 @@ gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready
 codex --version
 claude auth status >/dev/null 2>&1 && echo "claude auth ok" || { echo "claude auth NOT ready"; false; }
 claude -p "Reply with exactly: ok" --output-format json
+devin auth status >/dev/null 2>&1 && echo "devin auth ok" || { echo "devin auth NOT ready"; false; }
 ```
 
 Set `DISPATCH_TOKEN` as a human-owned PAT or GitHub App posting-token secret,
@@ -48,8 +49,9 @@ does not appear in the Python process's initial environment. Direct local runs
 may use `GITHUB_TOKEN` when that exposure is acceptable for the operator's
 machine.
 
-During package-install adoption, `tools/run_codex_audit_pr.sh` and
-`tools/run_claude_audit_pr.sh` use the installed `code-mower` on `PATH` while
+During package-install adoption, `tools/run_codex_audit_pr.sh`,
+`tools/run_claude_audit_pr.sh`, and `tools/run_devin_cli_audit_pr.sh` use the
+installed `code-mower` on `PATH` while
 `tools/code_mower_standalone_pin.env` still has placeholder values. Configure
 the standalone pin file, or set `CODE_MOWER_USE_STANDALONE=1`, when you are
 ready to shadow a reviewed Code Mower source ref through `tools/code_mower`.
@@ -72,7 +74,36 @@ tools/run_claude_audit_pr.sh \
   --repo OWNER/REPO \
   --pr 123 \
   --repo-paths OWNER/REPO:/absolute/path/to/pr-head-checkout
+
+tools/run_devin_cli_audit_pr.sh \
+  --repo OWNER/REPO \
+  --pr 123 \
+  --repo-paths OWNER/REPO:/absolute/path/to/pr-head-checkout
 ```
+
+The Devin CLI lane uses the `needs-devin-cli-audit` label, runs with
+`devin --sandbox --permission-mode auto` (source-edit tools are not approved
+for this reviewer), and never passes `--export`, `--continue`, or `--resume`.
+Its stdout and stderr are streamed under independent byte bounds against a
+wall-clock deadline; a timeout or an overflow on either stream terminates the
+whole spawned process group and fails closed to `needs-devin-cli-audit` with a
+metadata-only reason, never raw provider output.
+
+The lane has no `--allow-dirty` escape hatch (passing it is rejected by the
+argument parser). The checkout must be clean at the exact PR head before the
+provider runs, and clean again afterwards, so a verdict is only ever produced
+for the committed tree it claims to have reviewed. Commit or stash local
+changes before invoking it.
+
+The provider itself never runs in that checkout. It runs in a disposable clone
+of the exact head, made with copied objects (no hardlinks and no shared object
+store) and with its remote removed, so the clone carries no credentials and no
+push target. The clone must also be clean at the exact head before and after
+the run, and it is deleted on every exit path -- success, provider failure,
+timeout, or unexpected exception -- so a persistent write to an ignored file or
+to git metadata, which ordinary `git status` never reports, cannot outlive the
+audit. The reusable checkout is used only for the trusted exact-head and diff
+computation and for the pre/post GitHub head verification.
 
 The path must point at an existing checkout of the pull request head. It must
 not be the Code Mower support checkout or the wrapper's current working

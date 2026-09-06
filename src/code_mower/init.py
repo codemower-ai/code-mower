@@ -85,6 +85,7 @@ LOCAL_AUDIT_RUNNER_LABEL = "code-mower-audit"
 LOCAL_AUDIT_WRAPPERS = {
     "claude": "tools/run_claude_audit_pr.sh",
     "codex": "tools/run_codex_audit_pr.sh",
+    "devin_cli": "tools/run_devin_cli_audit_pr.sh",
 }
 GATE_HEALTH_WORKFLOW_PATH = ".github/workflows/code-mower-gate-health.yml"
 GATE_HEALTH_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-gate-health.yml.j2"
@@ -202,6 +203,12 @@ PRODUCT_SUPPORT_FILES = (
     (
         "tools/run_claude_audit_pr.sh",
         "templates/product-support/run_claude_audit_pr.sh",
+        "product-support-wrapper",
+        "0755",
+    ),
+    (
+        "tools/run_devin_cli_audit_pr.sh",
+        "templates/product-support/run_devin_cli_audit_pr.sh",
         "product-support-wrapper",
         "0755",
     ),
@@ -708,7 +715,7 @@ def _local_audit_entries(
                 "(for example claude or codex), or remove it from the profile."
             )
         trailer_lane = _trailer_lane_name(lane_id, lane)
-        wrapper = LOCAL_AUDIT_WRAPPERS.get(trailer_lane.replace("_", "-"))
+        wrapper = LOCAL_AUDIT_WRAPPERS.get(trailer_lane)
         if wrapper is None:
             continue
         labels = _labels_for(lane)

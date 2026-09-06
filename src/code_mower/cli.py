@@ -49,6 +49,7 @@ from . import claude_cli_bounce
 from . import clear_stale
 from . import cloud as code_mower_cloud
 from . import coderabbit_cli_audit_pr
+from . import devin_cli_audit_pr
 from . import codex_audit_env_preflight
 from . import codex_audit_pr
 from . import codex_audit_schema_smoke
@@ -449,6 +450,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "codex-audit-env-preflight": "Probe Codex audit environment setup.",
     "codex-audit-schema-smoke": "Smoke-test Codex audit schema parsing.",
     "decide": "Render or post a machine-readable audit decision marker.",
+    "devin-cli-audit": "Run a Devin CLI structured audit lane.",
     "doctor": "Check runtime, GitHub, providers, privacy, and cloud setup.",
     "gemini-cli": "Run a Gemini CLI structured audit lane.",
     "gate-health": "Alert when audit gate infrastructure stalls.",
@@ -596,6 +598,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "codex-audit-env-preflight": codex_audit_env_preflight.main,
     "codex-audit-schema-smoke": codex_audit_schema_smoke.main,
     "decide": code_mower_decisions.main,
+    "devin-cli-audit": devin_cli_audit_pr.main,
     "doctor": code_mower_doctor.main,
     "gemini-cli": gemini_cli_audit_pr.main,
     "gate-health": code_mower_gate_health.main,

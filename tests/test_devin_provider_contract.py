@@ -19,7 +19,6 @@ from code_mower import config as code_mower_config
 from code_mower import init as code_mower_init
 from code_mower import package as code_mower_package
 from code_mower import code_mower_telemetry
-from code_mower.config import ConfigError
 from code_mower.doctor_checks import check_lane_runtime, check_adoption_campaign_readiness
 from code_mower.doctor_checks.campaign_auth import (
     campaign_auth_location_label,
@@ -143,7 +142,7 @@ class TestDevinRegistryContract(unittest.TestCase):
         self.assertIn(1, config["campaign_auth_logged_out_exit_codes"])
         self.assertEqual(config["campaign_auth_location_label"], "ambient Devin CLI session")
         self.assertIs(config["local_cli_path_basename_only"], True)
-        self.assertIs(config["local_audit_eligible"], False)
+        self.assertIs(config["local_audit_eligible"], True)
         self.assertIs(config["campaign_eligible"], True)
         self.assertIn("campaign_adapter_argv", config)
         self.assertIn("devin_cli", config["campaign_adapter_argv"])
@@ -657,15 +656,25 @@ class TestDevinInitContract(unittest.TestCase):
         }
         return config
 
-    def test_devin_cli_init_rejects_local_audit_selection(self) -> None:
+    def test_devin_cli_init_generates_local_audit_workflow(self) -> None:
         config = self._devin_cli_profile()
-        with self.assertRaisesRegex(ConfigError, "not available yet"):
-            code_mower_init.render_init_plan(
-                config,
-                profile_id="devin_cli_only",
-                package_mode=True,
-                package_command="code-mower",
-            )
+        plan = code_mower_init.render_init_plan(
+            config,
+            profile_id="devin_cli_only",
+            package_mode=True,
+            package_command="code-mower",
+        )
+
+        audit_files = [
+            entry
+            for entry in plan.data["generated_files"]
+            if entry["path"] == ".github/workflows/local-cli-audit.yml"
+        ]
+        self.assertEqual(len(audit_files), 1)
+        local_audit = audit_files[0]
+        lanes = json.loads(local_audit["local_audit_lanes_json"])
+        lane_names = {lane["lane"] for lane in lanes}
+        self.assertIn("devin_cli", lane_names)
 
     def test_codex_claude_init_still_generates_local_audit_workflow(self) -> None:
         config = copy.deepcopy(
