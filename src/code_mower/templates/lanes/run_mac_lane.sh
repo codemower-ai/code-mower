@@ -592,7 +592,6 @@ if [ "$LANE" = "devin" ] && [ "$rc" -eq 0 ]; then
         --elapsed-seconds "$devin_elapsed_seconds" --user-interventions 0 \
         --lens implementation --force --json >/dev/null 2>&1
     fi
-    exit 0
   ) || echo "${LANE}: builder provenance record skipped" >&2
 fi
 if [ "$rc" -eq 124 ]; then

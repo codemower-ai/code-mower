@@ -428,6 +428,108 @@ exit 0
         self.assertNotIn("--provider devin --executor", record_argv)
         self.assertIn("--pr owner/repo#34", record_argv)
 
+    def test_devin_lane_warns_but_still_succeeds_when_builder_record_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            runner = self._generated_runner(output_dir)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            work_root = root / "work"
+            work = work_root / "devin" / "owner__repo"
+            work.joinpath(".git", "hooks").mkdir(parents=True)
+
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-} ${2:-}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "issue list" ]; then
+  printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]] && [[ "$args" == *"closingIssuesReferences,headRefName"* ]]; then
+  printf '%s\\n' '[{"number":34,"headRefName":"devin/issue-12-fix","closingIssuesReferences":[{"number":12}]}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "repo view" ]; then
+  printf 'main\\n'
+elif [ "$cmd" = "issue view" ]; then
+  if [[ "$args" == *"--json comments"* ]]; then
+    printf '%s\\n' '{"comments":[{"author":{"login":"owner"},"createdAt":"2026-01-01T00:00:00Z","body":"# Work Order: Trusted task\\n\\nFix it."}]}'
+  else
+    printf '%s\\n' '{"title":"Issue 12","body":"Body","labels":[{"name":"tier:R"}],"url":"https://github.com/owner/repo/issues/12","author":{"login":"owner"}}'
+  fi
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            fake_git = bin_dir / "git"
+            fake_git.write_text(_FAKE_GIT, encoding="utf-8")
+            fake_git.chmod(0o755)
+
+            fake_devin = bin_dir / "devin"
+            fake_devin.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  printf 'devin 3000.6.14\\n'
+  exit 0
+fi
+printf 'fake devin completed\\n'
+""",
+                encoding="utf-8",
+            )
+            fake_devin.chmod(0o755)
+
+            fake_code_mower = bin_dir / "code-mower"
+            fake_code_mower.write_text(
+                """#!/usr/bin/env bash
+if [ "${1:-}" = "builder" ] && [ "${2:-}" = "record" ]; then
+  exit 1
+fi
+exit 0
+""",
+                encoding="utf-8",
+            )
+            fake_code_mower.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(runner),
+                    "--lane",
+                    "devin",
+                    "--repo",
+                    "owner/repo",
+                    "--max-minutes",
+                    "1",
+                ],
+                cwd=output_dir,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "LANE_WORK_ROOT": str(work_root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+        # A failing `code-mower builder record` is best-effort provenance,
+        # not a lane failure: the runner must still exit 0 (check=True above
+        # would already raise otherwise), but the failure must not be
+        # silently swallowed either.
+        self.assertIn("devin: selected build issue #12", completed.stdout)
+        self.assertIn("devin: builder provenance record skipped", completed.stderr)
+
     def test_devin_lane_reports_nothing_to_do(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
