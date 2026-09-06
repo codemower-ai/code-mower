@@ -163,6 +163,8 @@ def classify_package_install_failure(*, exception: Exception, steps: list[dict[s
     runtime_indicators = (
         "python version",
         "requires python",
+        "requires-python",
+        "requires a different python",
         "unsupported python",
         "no module named",
         "importerror",

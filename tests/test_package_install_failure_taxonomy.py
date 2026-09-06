@@ -150,6 +150,24 @@ class FailureReasonClassificationTests(unittest.TestCase):
         reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
         self.assertEqual(reason, "runtime")
 
+    def test_python_incompatibility_outranks_generic_index_message(self) -> None:
+        """Pip appends a generic resolution error after decisive Python evidence."""
+        exc = RuntimeError("package install failed")
+        steps = [
+            {
+                "stderr_preview": (
+                    "Package requires a different Python: 3.12.0 not in '>=3.13'\n"
+                    "ERROR: Could not find a version that satisfies the requirement package\n"
+                    "ERROR: No matching distribution found for package"
+                )
+            }
+        ]
+        reason = migration_install.classify_package_install_failure(
+            exception=exc,
+            steps=steps,
+        )
+        self.assertEqual(reason, "runtime")
+
     def test_network_error_without_timeout_classified_as_network(self) -> None:
         """Network error without timeout still classifies as network."""
         exc = RuntimeError("Connection refused")
