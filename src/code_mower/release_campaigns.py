@@ -321,6 +321,7 @@ class ReleaseCampaign:
     next_action: str
     next_detail: str
     providers: list[dict[str, Any]]
+    provider_posture_configured: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -873,6 +874,12 @@ def _aggregate_campaign_status(
             f"all {len(req_complete) + len(info_complete)} provider(s) qualified successfully",
         )
     if req_unavailable:
+        if dry_run:
+            return (
+                "unavailable",
+                f"configure prerequisites for unavailable required provider(s): {', '.join(req_unavailable)}",
+                f"blocked required evidence: {len(req_unavailable)} required provider(s) unavailable ({', '.join(req_unavailable)})",
+            )
         return (
             "blocked",
             f"configure prerequisites for unavailable required provider(s): {', '.join(req_unavailable)}",
@@ -2183,6 +2190,7 @@ def initialize_campaign(
         next_action=next_action,
         next_detail=next_detail,
         providers=campaign_providers,
+        provider_posture_configured=required_providers is not None,
     )
 
 
@@ -3604,6 +3612,12 @@ def build_campaign_upload_events(
             "repo_slug": repo_slug,
         }
 
+    posture_configured = bool(
+        campaign.get("provider_posture_configured")
+        if isinstance(campaign, Mapping)
+        else getattr(campaign, "provider_posture_configured", False)
+    )
+
     for entry in entries:
         if not isinstance(entry, Mapping):
             complete_count += 1
@@ -3679,6 +3693,9 @@ def build_campaign_upload_events(
                 }
             )
             continue
+        provider_posture = (
+            _stored_provider_posture(entry) if posture_configured else None
+        )
         try:
             event = cloud.adoption_result_to_event(
                 dict(result),
@@ -3686,7 +3703,7 @@ def build_campaign_upload_events(
                 team_id=team_id,
                 install_id=install_id,
                 source=source,
-                provider_posture=_stored_provider_posture(entry),
+                provider_posture=provider_posture,
             )
         except cloud.CloudBundleError:
             # The converter's message describes the offending field, but it is

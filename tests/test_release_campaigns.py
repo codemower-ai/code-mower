@@ -9718,26 +9718,31 @@ class CampaignUploadTests(unittest.TestCase):
     def _seed(
         self,
         *,
+        campaigns_dir: Path | None = None,
+        release_tag: str = "v1.0.0",
         providers: tuple[str, ...] = ("claude", "codex"),
+        required_providers: tuple[str, ...] | None = None,
         complete: tuple[str, ...] = ("claude",),
     ) -> dict[str, Any]:
+        target_dir = campaigns_dir or self.campaigns_dir
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             release_campaigns.campaign_command(
-                release_tag="v1.0.0",
+                release_tag=release_tag,
                 package_spec="code-mower==1.0.0",
                 providers=list(providers),
-                campaigns_dir=self.campaigns_dir,
+                required_providers=required_providers,
+                campaigns_dir=target_dir,
             )
             campaign = release_campaigns.load_campaign_by_id(
-                "campaign-v1.0.0", self.campaigns_dir
+                f"campaign-{release_tag}", target_dir
             )
             assert campaign is not None
             for provider in complete:
                 campaign = release_campaigns.record_manual_result(
                     campaign,
                     provider,
-                    _mock_adoption_result(provider=provider),
-                    campaigns_dir=self.campaigns_dir,
+                    _mock_adoption_result(release_tag=release_tag, provider=provider),
+                    campaigns_dir=target_dir,
                 )
         return campaign
 
@@ -10185,8 +10190,10 @@ class CampaignUploadTests(unittest.TestCase):
         """The existing `cloud dogfood --event adoption_run=...` route is unchanged.
 
         Both routes convert one adoption result through the same converter: standalone
-        file export omits posture and preserves the unpostured event identity, while
-        campaign upload attaches the provider's closed posture dimension.
+        file export omits posture and preserves the unpostured event identity. Older
+        campaigns and new campaigns created without posture data preserve the exact
+        standalone dimensions and event id, while campaigns with explicitly configured
+        posture record provider_posture in dimensions and use a posture-specific stable id.
         """
         campaign = self._seed(complete=("claude",))
         cloud = release_campaigns._load_cloud_client()
@@ -10201,18 +10208,39 @@ class CampaignUploadTests(unittest.TestCase):
 
         self.assertEqual(len(file_events), 1)
         self.assertEqual(len(plan["events"]), 1)
+        self.assertFalse(campaign.get("provider_posture_configured"))
         self.assertNotIn("provider_posture", file_events[0]["dimensions"])
-        self.assertEqual(
-            plan["events"][0]["dimensions"]["provider_posture"], "required"
+        self.assertNotIn("provider_posture", plan["events"][0]["dimensions"])
+        self.assertEqual(plan["events"][0]["event_id"], file_events[0]["event_id"])
+        self.assertEqual(plan["events"][0]["dimensions"], file_events[0]["dimensions"])
+
+        # Explicitly configured campaign attaches provider_posture and uses posture-specific event id
+        explicit_dir = self.tmp / "explicit_campaigns"
+        explicit_campaign = self._seed(
+            campaigns_dir=explicit_dir,
+            required_providers=("claude", "codex"),
+            complete=("claude",),
         )
-        expected_campaign_event = cloud.adoption_result_to_event(
+        self.assertTrue(explicit_campaign.get("provider_posture_configured"))
+        with self._cloud_env():
+            explicit_plan = release_campaigns.build_campaign_upload_events(explicit_campaign)
+        self.assertEqual(len(explicit_plan["events"]), 1)
+        self.assertEqual(
+            explicit_plan["events"][0]["dimensions"]["provider_posture"], "required"
+        )
+        expected_explicit_event = cloud.adoption_result_to_event(
             _mock_adoption_result(provider="claude"),
             provider_posture="required",
         )
-        self.assertEqual(plan["events"][0]["event_id"], expected_campaign_event["event_id"])
+        self.assertEqual(
+            explicit_plan["events"][0]["event_id"], expected_explicit_event["event_id"]
+        )
+        self.assertNotEqual(explicit_plan["events"][0]["event_id"], file_events[0]["event_id"])
 
+        # Legacy campaign missing posture metadata preserves unpostured event identity
         legacy_campaign = copy.deepcopy(campaign)
         legacy_campaign["providers"][0].pop("posture", None)
+        legacy_campaign.pop("provider_posture_configured", None)
         with self._cloud_env():
             legacy_plan = release_campaigns.build_campaign_upload_events(legacy_campaign)
         self.assertEqual(len(legacy_plan["events"]), 1)
@@ -13198,6 +13226,7 @@ class ReleaseCampaignPostureTests(unittest.TestCase):
             "repo_slug": "owner/repo",
             "status": "complete",
             "dry_run": False,
+            "provider_posture_configured": True,
             "providers": [
                 {
                     "provider": "claude",
@@ -13292,6 +13321,7 @@ class ReleaseCampaignPostureTests(unittest.TestCase):
             "repo_slug": "owner/repo",
             "status": "complete",
             "dry_run": False,
+            "provider_posture_configured": True,
             "providers": [
                 {
                     "provider": "claude",
@@ -13348,6 +13378,7 @@ class ReleaseCampaignPostureTests(unittest.TestCase):
             "repo_slug": "owner/repo",
             "status": "complete",
             "dry_run": False,
+            "provider_posture_configured": True,
             "providers": [
                 {
                     "provider": "claude",
@@ -13367,6 +13398,221 @@ class ReleaseCampaignPostureTests(unittest.TestCase):
         self.assertNotEqual(info_event["event_id"], expected_req_event["event_id"])
         self.assertEqual(plan["provider_postures"]["claude"], "informational")
         cloud.validate_cloud_event(info_event)
+
+    def test_omitted_posture_default_campaign_upload_matches_standalone(self) -> None:
+        """A new campaign created without posture options omits provider_posture and matches standalone id."""
+        result = _mock_adoption_result(provider="claude")
+        cloud = release_campaigns._load_cloud_client()
+        standalone_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+        )
+        campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": "complete",
+            "dry_run": False,
+            "provider_posture_configured": False,
+            "providers": [
+                {
+                    "provider": "claude",
+                    "posture": "required",
+                    "state": "complete",
+                    "adoption_result": result,
+                },
+            ],
+        }
+        plan = release_campaigns.build_campaign_upload_events(campaign)
+        self.assertEqual(len(plan["events"]), 1)
+        event = plan["events"][0]
+        self.assertNotIn("provider_posture", event["dimensions"])
+        self.assertNotIn("posture", event)
+        self.assertEqual(event["event_id"], standalone_event["event_id"])
+        self.assertEqual(event["dimensions"], standalone_event["dimensions"])
+        self.assertEqual(plan["provider_postures"]["claude"], "required")
+
+    def test_posture_aware_dry_run_partial_complete_and_unavailable(self) -> None:
+        """In dry-run, required-provider unavailability never blocks; partial complete and unavailable returns unavailable."""
+        providers = [
+            {"provider": "claude", "posture": "required", "state": "complete"},
+            {"provider": "codex", "posture": "required", "state": "unavailable"},
+            {"provider": "antigravity", "posture": "informational", "state": "complete"},
+        ]
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            providers, dry_run=True
+        )
+        self.assertEqual(status, "unavailable")
+        self.assertEqual(
+            action,
+            "configure prerequisites for unavailable required provider(s): codex",
+        )
+        self.assertEqual(
+            detail,
+            "blocked required evidence: 1 required provider(s) unavailable (codex)",
+        )
+
+        # Applied run blocks on the unavailable required provider
+        applied_status, applied_action, applied_detail = release_campaigns._aggregate_campaign_status(
+            providers, dry_run=False
+        )
+        self.assertEqual(applied_status, "blocked")
+        self.assertEqual(
+            applied_action,
+            "configure prerequisites for unavailable required provider(s): codex",
+        )
+        self.assertEqual(
+            applied_detail,
+            "blocked required evidence: 1 required provider(s) unavailable (codex)",
+        )
+
+    def test_campaign_upload_posture_table_driven_cases(self) -> None:
+        """Table-driven verification of upload events across legacy, default, and explicit configurations."""
+        cloud = release_campaigns._load_cloud_client()
+        result_claude = _mock_adoption_result(provider="claude")
+        result_anti = _mock_adoption_result(provider="antigravity")
+        standalone_claude = cloud.adoption_result_to_event(result_claude, repo_slug="owner/repo")
+        req_claude = cloud.adoption_result_to_event(
+            result_claude, repo_slug="owner/repo", provider_posture="required"
+        )
+        info_anti = cloud.adoption_result_to_event(
+            result_anti, repo_slug="owner/repo", provider_posture="informational"
+        )
+
+        cases = [
+            (
+                "legacy_omitted_posture",
+                {
+                    "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                    "campaign_id": "c-leg",
+                    "release_tag": "v1.0.0",
+                    "package_spec": "code-mower==1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "repo_slug": "owner/repo",
+                    "providers": [
+                        {"provider": "claude", "state": "complete", "adoption_result": result_claude}
+                    ],
+                },
+                {"claude": None},
+                {"claude": standalone_claude["event_id"]},
+            ),
+            (
+                "new_omitted_option_default",
+                {
+                    "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                    "campaign_id": "c-def",
+                    "release_tag": "v1.0.0",
+                    "package_spec": "code-mower==1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "repo_slug": "owner/repo",
+                    "provider_posture_configured": False,
+                    "providers": [
+                        {
+                            "provider": "claude",
+                            "posture": "required",
+                            "state": "complete",
+                            "adoption_result": result_claude,
+                        }
+                    ],
+                },
+                {"claude": None},
+                {"claude": standalone_claude["event_id"]},
+            ),
+            (
+                "explicit_all_required",
+                {
+                    "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                    "campaign_id": "c-exp-all",
+                    "release_tag": "v1.0.0",
+                    "package_spec": "code-mower==1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "repo_slug": "owner/repo",
+                    "provider_posture_configured": True,
+                    "providers": [
+                        {
+                            "provider": "claude",
+                            "posture": "required",
+                            "state": "complete",
+                            "adoption_result": result_claude,
+                        }
+                    ],
+                },
+                {"claude": "required"},
+                {"claude": req_claude["event_id"]},
+            ),
+            (
+                "explicit_partitioned",
+                {
+                    "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                    "campaign_id": "c-exp-part",
+                    "release_tag": "v1.0.0",
+                    "package_spec": "code-mower==1.0.0",
+                    "qualification_context": "cold_install",
+                    "starting_version": "",
+                    "repo_slug": "owner/repo",
+                    "provider_posture_configured": True,
+                    "providers": [
+                        {
+                            "provider": "claude",
+                            "posture": "required",
+                            "state": "complete",
+                            "adoption_result": result_claude,
+                        },
+                        {
+                            "provider": "antigravity",
+                            "posture": "informational",
+                            "state": "complete",
+                            "adoption_result": result_anti,
+                        },
+                    ],
+                },
+                {"claude": "required", "antigravity": "informational"},
+                {"claude": req_claude["event_id"], "antigravity": info_anti["event_id"]},
+            ),
+        ]
+
+        for case_name, campaign_dict, expected_postures, expected_ids in cases:
+            with self.subTest(case=case_name):
+                plan = release_campaigns.build_campaign_upload_events(campaign_dict)
+                events_by_prov = {e["dimensions"]["provider"]: e for e in plan["events"]}
+                for prov, exp_posture in expected_postures.items():
+                    event = events_by_prov[prov]
+                    if exp_posture is None:
+                        self.assertNotIn("provider_posture", event["dimensions"])
+                    else:
+                        self.assertEqual(event["dimensions"]["provider_posture"], exp_posture)
+                    self.assertEqual(event["event_id"], expected_ids[prov])
+
+    def test_initialize_campaign_sets_provider_posture_configured(self) -> None:
+        """initialize_campaign sets provider_posture_configured based on required_providers presence."""
+        c_default = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["claude", "codex"],
+            required_providers=None,
+        )
+        self.assertFalse(c_default.provider_posture_configured)
+        self.assertFalse(c_default.to_dict()["provider_posture_configured"])
+
+        c_explicit = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["claude", "codex"],
+            required_providers=["claude"],
+        )
+        self.assertTrue(c_explicit.provider_posture_configured)
+        self.assertTrue(c_explicit.to_dict()["provider_posture_configured"])
 
 
 if __name__ == "__main__":

@@ -269,14 +269,19 @@ idempotent. Newer observations of the same campaign use another event id, and
 consumers select the latest `created_at` observation per release before
 aggregating.
 
-Two local routes produce these events, and both go through one converter, so
-the same result always yields the same event id: `code-mower cloud dogfood
---event adoption_run=path/to/result.json` (and `cloud export`) converts one
-result file at a time, while `code-mower release campaign upload` converts every
-terminal (`complete` or `blocked`) provider result a campaign holds -- passing
-and failing evidence alike. The campaign route previews by
-default and posts only with `--yes`, using the identical event set both times;
-providers without terminal evidence are counted as skipped, and a terminal provider
+Two local routes produce these events, and both go through one converter:
+`code-mower cloud dogfood --event adoption_run=path/to/result.json` (and `cloud
+export`) converts one result file at a time, while `code-mower release campaign
+upload` converts every terminal (`complete` or `blocked`) provider result a
+campaign holds -- passing and failing evidence alike. When a campaign uses
+compatibility-default posture (older campaigns and campaigns created without
+`--required-providers`), both routes omit `provider_posture` so the same result
+yields the identical event shape and event id across routes. When a campaign
+explicitly configures posture via `--required-providers`, the campaign route
+records that posture in the optional dimension, intentionally yielding a
+posture-specific stable event id. The campaign route previews by default and
+posts only with `--yes`, using the identical event set both times; providers
+without terminal evidence are counted as skipped, and a terminal provider
 whose stored result no longer validates stops the upload with a bounded error
 instead of publishing a partial set. A terminal state that contradicts its
 bound result outcome (`complete` with a failing/incomplete outcome, or
@@ -294,10 +299,12 @@ or `incomplete`), `result_timestamp` (ISO 8601 with a UTC offset), and
 `provenance_coverage` (`complete`, `partial`, or `unknown`). Optional
 dimensions are `starting_version` and `ending_version` (which must be empty or
 normalized versions), and `provider_posture` (whose only accepted values are
-`required` and `informational`). Calls that omit posture and older events that
-omit the dimension keep the exact existing event shape and event id; supplying
-`provider_posture` incorporates it into deterministic event identity so the same
-result used under different postures cannot collide. Tag and spec versions must
+`required` and `informational`). Standalone/file-export conversion, older
+campaigns, and campaigns created without `--required-providers` omit
+`provider_posture` and preserve the exact existing event shape and event id.
+Campaigns with explicitly configured posture supply `provider_posture`,
+incorporating it into deterministic event identity so the same result used under
+different postures cannot collide. Tag and spec versions must
 agree: the tag-derived normalized version must equal `normalized_version`.
 Upgrade context requires a `starting_version` lower than the target; other
 contexts must leave it empty. Executed runs must not report `incomplete`, and
