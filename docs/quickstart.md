@@ -60,8 +60,8 @@ exec "$SHELL" -l
 
 For the reference multi-agent adoption loop, use Claude Code as the
 orchestrator convention, and Claude Code/Codex as builders and peer reviewers.
-Other providers are opt-in selections with their existing calibration and promotion
-requirements. On shared machines,
+Other providers are opt-in selections through `init --interactive` or `init --with`.
+They retain their existing calibration and promotion requirements. On shared machines,
 read [Multi-Agent Coexistence](install.md#multi-agent-coexistence) before
 running multiple builders against the same repository.
 

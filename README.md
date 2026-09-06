@@ -42,6 +42,18 @@ Code Mower should feel like an engineering tool, not a demo harness:
 
 ## What It Looks Like
 
+Start with Claude Code and Codex, or choose your participants during setup with
+`code-mower init --interactive`. For example, `code-mower init --with
+claude,codex,devin` previews that selection. The generated configuration remembers
+your choices for later sessions.
+
+Ask the agent you are using to start a Code Mower session; that agent is the
+default orchestrator. `code-mower session start --repo OWNER/REPO --with
+claude,codex,devin --host codex` prepares the operating brief when invoked from
+Codex. The host agent drives the work using available execution paths.
+See [Participants And Sessions](docs/sessions.md) for setup, host identity,
+and product-specific capabilities.
+
 `code-mower doctor --adoption --repo OWNER/REPO` is the first useful command
 for a real repository. It checks your runtime, GitHub setup, provider CLIs,
 token posture, optional cloud setup, private-repo Actions cost traps, and

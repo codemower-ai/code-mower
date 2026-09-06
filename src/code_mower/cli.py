@@ -80,6 +80,7 @@ from . import productivity_report as code_mower_productivity_report
 from . import prompts as code_mower_prompts
 from . import release_qualify as code_mower_release_qualify
 from . import reviewer_metrics
+from . import session as code_mower_session
 from . import saas_reviewer_labeler
 from . import trailer_comment_labeler
 from . import work_orders as code_mower_work_orders
@@ -430,6 +431,7 @@ CommandHandler = Callable[[list[str]], int]
 
 
 COMMAND_DESCRIPTIONS: dict[str, str] = {
+    "session": "Prepare a session for the current agent and selected participants.",
     "antigravity-cli": "Run an Antigravity/Gemini CLI structured audit lane.",
     "blind-review": "Coordinate hidden/blind review artifacts.",
     "board": "Serve or record local lane visibility board data.",
@@ -482,6 +484,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
 
 FIRST_USER_COMMANDS = (
     "init",
+    "session",
     "doctor",
     "checks",
     "board",
@@ -495,12 +498,19 @@ FIRST_USER_COMMANDS = (
 def _init_main(argv: list[str]) -> int:
     if argv[:1] == ["project-context"]:
         return code_mower_work_orders.project_context_main(["init", *argv[1:]])
-    options_with_values = {"--profile", "--output-dir"}
+    options_with_values = {
+        "--profile", "--output-dir", "--with", "--builders", "--repo", "--add-repo",
+        "--actionlint-bin",
+    }
     if (
         argv[:1] == ["auth"]
         or _has_flag(argv, "--easy")
         or _has_positional_config(argv, options_with_values)
     ):
+        return code_mower_init.main(argv)
+    if (
+        _has_flag(argv, "--interactive") or any(arg.split("=", 1)[0] == "--with" for arg in argv)
+    ) and not Path("code-mower.yml").is_file():
         return code_mower_init.main(argv)
     return code_mower_init.main(
         _default_config_args(
@@ -613,6 +623,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "release": code_mower_release_qualify.main,
     "reviewer-metrics": reviewer_metrics.main,
     "saas-reviewer-labeler": saas_reviewer_labeler.main,
+    "session": code_mower_session.main,
     "telemetry": code_mower_telemetry.main,
     "trailer-comment-labeler": trailer_comment_labeler.main,
     "work-order": code_mower_work_orders.work_order_main,

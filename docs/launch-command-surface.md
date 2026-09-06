@@ -15,6 +15,9 @@ The default `code-mower next-steps` and `code-mower --help` focus on this path.
 | --- | --- | --- | --- |
 | `code-mower --version` | Confirm install. | no | no |
 | `code-mower init --easy` | Preview generated setup. | no | no |
+| `code-mower init --interactive` | Choose participants with a checkbox menu and preview their setup. | no | no |
+| `code-mower init --with claude,codex,devin` | Preview an explicit participant selection without a terminal menu. | no | no |
+| `code-mower session start --repo OWNER/REPO --host codex` | Save an operating brief for the current agent and saved participants. | local session file | no |
 | `code-mower init --easy --apply --output-dir .code-mower.generated` | Write reviewable setup for Codex and Claude. | local files; missing GitHub labels when allowed | GitHub labels unless `--skip-github-labels` |
 | `code-mower lanes status --repo OWNER/REPO` | Show active PR lanes, gate/check state, local board/process hints, stale audit requeue guidance, and the next action. | no | GitHub optional |
 | `code-mower productivity report --repo OWNER/REPO` | Summarize local Board history, reviewer spend, provider scorecards, promotion caveats, quality catches, fix rounds, owner actions, and optional cloud aggregate productivity events. | no | no |

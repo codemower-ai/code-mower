@@ -405,6 +405,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "release",
                 "reviewer-metrics",
                 "saas-reviewer-labeler",
+                "session",
                 "telemetry",
                 "trailer-comment-labeler",
                 "work-order",
@@ -8475,6 +8476,7 @@ def main():
         prompt_pack_flat = " ".join(prompt_pack.split())
         self.assertIn("Claude Code Adoption Orchestrator", prompt_pack)
         self.assertIn("Start with Claude Code and Codex by default", prompt_pack_flat)
+        self.assertIn("use init --with to preserve that choice", prompt_pack_flat)
         self.assertIn("Add no unselected providers", prompt_pack_flat)
         self.assertIn("docs/install.md", prompt_pack)
         self.assertIn("docs/upgrade-existing-repo.md", prompt_pack)

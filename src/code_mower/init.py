@@ -18,6 +18,9 @@ from typing import Any, Mapping, Sequence
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from code_mower import participants as code_mower_participants
+from code_mower.package_rendering import _render_provider_catalog
+
 if __package__ in {None, "", "tools"}:
     from tools import audit_limits as code_mower_audit_limits
     from tools import decisions as code_mower_decisions
@@ -2051,6 +2054,11 @@ def _materialize_generated_file(
     *,
     source_root: Path,
 ) -> MaterializedGeneratedFile:
+    if entry.get("source") == "editable-adoption-config" and "config_data" in entry:
+        return MaterializedGeneratedFile(
+            entry=entry, path=path, destination=destination,
+            text=_render_provider_catalog(entry["config_data"]), placeholder=False,
+        )
     source = next(
         (candidate for candidate in _copy_source_candidates(source_root, entry, path) if candidate.is_file()),
         None,
@@ -2391,7 +2399,12 @@ def render_init_plan(
     builders: tuple[str, ...] = (),
     repo_root: str | Path | None = None,
     source_kind: str | None = None,
+    participants: tuple[str, ...] | None = None,
 ) -> RenderedPlan:
+    if participants is not None:
+        config = code_mower_participants.config_with_participants(
+            config, participants, profile=profile_id,
+        )
     issues = validate_config(config)
     if issues:
         raise ConfigError(f"invalid Code Mower config:\n{_format_issues(issues)}")
@@ -2469,6 +2482,8 @@ def render_init_plan(
         }
         if Path(config_path).name == "code-mower.example.yml":
             adoption_config_entry["package_copy_from"] = "templates/code-mower.example.yml"
+        if participants is not None:
+            adoption_config_entry["config_data"] = config
         generated_files.append(adoption_config_entry)
 
     for lane_id, lane in selected_lanes.items():
@@ -3059,6 +3074,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("config", nargs="?", default="code-mower.example.yml")
     parser.add_argument("--profile", default="recommended")
     parser.add_argument(
+        "--with", dest="participants", metavar="PARTICIPANTS",
+        help="select participants, for example claude,codex,devin; saves session defaults",
+    )
+    parser.add_argument(
+        "--interactive", action="store_true",
+        help="choose participants with a checkbox menu; previews setup unless --apply is set",
+    )
+    parser.add_argument(
         "--builders",
         metavar="LANES",
         help=(
@@ -3126,6 +3149,8 @@ def main(argv: list[str] | None = None) -> int:
             args.dry_run = True
     if args.builders and not args.dry_run and not args.apply:
         args.dry_run = True
+    if (args.interactive or args.participants is not None) and not args.dry_run and not args.apply:
+        args.dry_run = True
     if args.apply and args.dry_run:
         print("error: choose either --dry-run or --apply", file=sys.stderr)
         return 1
@@ -3150,6 +3175,14 @@ def main(argv: list[str] | None = None) -> int:
             load_config(config_source),
             tuple(args.add_repo),
         )
+        selected_participants = (
+            code_mower_participants.parse_participants(args.participants)
+            if args.participants is not None else None
+        )
+        if args.interactive:
+            selected_participants = code_mower_participants.pick_participants(
+                selected_participants or code_mower_participants.configured_participants(config),
+            )
         plan = render_init_plan(
             config,
             profile_id=args.profile,
@@ -3158,6 +3191,7 @@ def main(argv: list[str] | None = None) -> int:
             builders=builder_lanes,
             repo_root=Path.cwd(),
             source_kind="packaged_starter" if packaged_fallback else "explicit_repository_config",
+            participants=selected_participants,
         )
         label_repo = ""
         should_ensure_github_labels = bool(

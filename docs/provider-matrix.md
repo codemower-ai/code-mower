@@ -11,9 +11,10 @@ authority clear before it runs.
 | Codex audit | `local_cli` | structured peer audit | eligible | Requires local Codex auth and GitHub label/comment access. |
 | Claude audit | `local_cli` | structured peer audit | eligible | Normal Claude lane is `*-audit`; prose `*-review` is manual. |
 
-The initial builder loop also defaults to Codex and Claude. Other participants,
-including Gitar, require explicit selection and calibration before promotion.
-Gitar remains available in `saas_research`.
+The initial builder loop also defaults to Codex and Claude. Choose additional
+participants explicitly with `init --interactive` or `init --with`; selecting
+them does not promote their review authority. Gitar remains available in
+`saas_research` and the optional reviewer selections. See [sessions](sessions.md).
 
 ## Provider Classes
 
