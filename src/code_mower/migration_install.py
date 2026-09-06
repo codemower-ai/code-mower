@@ -115,11 +115,13 @@ def classify_package_install_failure(*, exception: Exception, steps: list[dict[s
     or authentication details.
     """
     # Collect stderr/stdout previews from the provided step slice
+    # Previews are already bounded to 4000 chars; use the full preview to
+    # preserve pip's end-of-output diagnostics (dependency conflicts, 404, etc.)
     error_text = str(exception).lower()
     for step in steps:
         if isinstance(step, dict):
-            error_text += " " + step.get("stderr_preview", "").lower()[:2000]
-            error_text += " " + step.get("stdout_preview", "").lower()[:2000]
+            error_text += " " + step.get("stderr_preview", "").lower()
+            error_text += " " + step.get("stdout_preview", "").lower()
 
     # Network errors: DNS, connection refused, timeouts, SSL, proxy
     # Note: Generic timeouts are NOT included here; classify them as network
