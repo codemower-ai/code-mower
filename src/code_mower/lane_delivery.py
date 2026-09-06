@@ -1116,7 +1116,9 @@ def _scan_prompt_main(args: argparse.Namespace) -> int:
         print("prompt auth-material rules matched: " + ", ".join(matches), file=sys.stderr)
     else:
         print("prompt clean of auth-material discovery guidance")
-    return 0 if not matches else 2
+    # 1 is a rule match; 2 stays reserved for a usage or execution failure, so a
+    # caller can tell "this prompt is dirty" from "the scanner did not run".
+    return 0 if not matches else 1
 
 
 def _supervise_main(args: argparse.Namespace) -> int:

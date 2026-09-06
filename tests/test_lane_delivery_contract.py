@@ -587,8 +587,14 @@ class AuthMaterialExposureTests(unittest.TestCase):
             self.assertEqual(
                 lane_delivery.main(["scan-prompt", "--prompt-file", str(clean)]), 0
             )
+            # 1 is a rule match. 2 means the scanner itself did not run, and the
+            # runner must not report that as "the prompt was dirty".
             self.assertEqual(
-                lane_delivery.main(["scan-prompt", "--prompt-file", str(dirty)]), 2
+                lane_delivery.main(["scan-prompt", "--prompt-file", str(dirty)]), 1
+            )
+            missing = Path(tmp) / "missing.md"
+            self.assertEqual(
+                lane_delivery.main(["scan-prompt", "--prompt-file", str(missing)]), 2
             )
 
 
@@ -755,6 +761,48 @@ class RunnerScriptContractTests(unittest.TestCase):
             PACKAGED_RUNNER_TEMPLATE.read_text(encoding="utf-8"),
         )
 
+    def test_runner_scripts_resolve_lane_delivery_explicitly(self) -> None:
+        # Ambient PATH resolution is the whole problem: a consumer repo can
+        # have an older installed code-mower, and a source checkout must run
+        # the tree it ships in. The order is pin, then source checkout, then an
+        # installed CLI that actually implements the command.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                pin = text.index('${CODE_MOWER_LANE_DELIVERY_CMD:-}')
+                source = text.index('${repo_root}/src/code_mower/lane_delivery.py')
+                installed = text.index("code-mower lane-delivery --help")
+                self.assertLess(pin, source)
+                self.assertLess(source, installed)
+                # An installed CLI that predates the command disables the
+                # contract for that run instead of failing every unit.
+                self.assertIn("installed-cli-too-old", text)
+                self.assertIn("lane-delivery contract inactive", text)
+
+    def test_runner_scripts_separate_scan_failure_from_a_rule_match(self) -> None:
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("the auth-material scanner failed to run", text)
+                self.assertIn(
+                    "the runner guidance carries auth-material discovery guidance", text
+                )
+
+    def test_runner_scripts_keep_the_provider_exit_code(self) -> None:
+        # 3 means "exited zero and delivered nothing". A provider that failed
+        # on its own keeps its own code so the caller can still diagnose it.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                keep = text.index('[ "$rc" -ne 0 ] && exit "$rc"')
+                self.assertLess(keep, text.index("exit 3", keep - 200))
+                # Timeout and overflow come from the supervision reason, not
+                # from raw 124/125, which a provider may also return.
+                self.assertIn('[ "$supervision_reason" = "timeout" ] && timed_out=1', text)
+                self.assertIn(
+                    '[ "$supervision_reason" = "output_overflow" ] && overflowed=1', text
+                )
+
     def test_runner_scripts_wire_the_delivery_contract(self) -> None:
         for path in (RUNNER_TEMPLATE, REPO_RUNNER):
             with self.subTest(path=path.name):
@@ -775,14 +823,14 @@ class RunnerScriptContractTests(unittest.TestCase):
         for path in (RUNNER_TEMPLATE, REPO_RUNNER):
             with self.subTest(path=path.name):
                 text = path.read_text(encoding="utf-8")
-                cap_branch_start = text.index('if [ "$rc" -eq 124 ]; then')
+                cap_branch_start = text.index('if [ "$timed_out" -eq 1 ]; then\n  cap_note=')
                 cap_branch = text[
                     cap_branch_start : text.index("\nfi\n", cap_branch_start)
                 ]
                 self.assertNotIn("exit", cap_branch)
                 self.assertLess(
                     text.index('if [ "$delivery_rc" -ne 0 ]; then'),
-                    text.index('if [ "$timed_out" -eq 1 ]; then'),
+                    text.rindex('if [ "$timed_out" -eq 1 ]; then'),
                 )
 
     def test_runner_scripts_fail_closed_on_snapshot_lookups(self) -> None:

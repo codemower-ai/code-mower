@@ -50,9 +50,37 @@ repo_root="$(CDPATH=; cd -- "${here}/../.." && pwd -P)"
 
 # Runner-owned delivery/recovery contract. The runner brokers every GitHub
 # mutation it needs here; provider prompts never discover or read auth material.
+#
+# Command resolution is explicit, in this order, so the contract never runs
+# against whichever code-mower happens to be first on PATH:
+#   1. CODE_MOWER_LANE_DELIVERY_CMD, when the runner owner pins one.
+#   2. this source checkout, when the runner ships beside src/code_mower.
+#   3. an installed code-mower that actually implements lane-delivery.
+# An installed CLI that predates the command leaves the contract inactive
+# instead of failing every unit; the runner says so once and keeps the older
+# behavior for that run.
 lane_delivery=()
-if command -v code-mower >/dev/null 2>&1; then
-  lane_delivery=(code-mower lane-delivery)
+lane_delivery_source="unavailable"
+if [ -n "${CODE_MOWER_LANE_DELIVERY_CMD:-}" ]; then
+  # shellcheck disable=SC2206  # deliberate word splitting: the pin is a command line
+  lane_delivery=( ${CODE_MOWER_LANE_DELIVERY_CMD} )
+  lane_delivery_source="pinned"
+elif [ -f "${repo_root}/src/code_mower/lane_delivery.py" ]; then
+  lane_delivery=(
+    env "PYTHONPATH=${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
+    "${LANE_PYTHON:-python3}" -m code_mower.lane_delivery
+  )
+  lane_delivery_source="source-checkout"
+elif command -v code-mower >/dev/null 2>&1; then
+  if code-mower lane-delivery --help >/dev/null 2>&1; then
+    lane_delivery=(code-mower lane-delivery)
+    lane_delivery_source="installed-cli"
+  else
+    lane_delivery_source="installed-cli-too-old"
+  fi
+fi
+if [ "${#lane_delivery[@]}" -eq 0 ]; then
+  echo "${LANE}: lane-delivery contract inactive (${lane_delivery_source})" >&2
 fi
 if [ -n "$HANDOFF_SOURCE_LANE" ] || [ -n "$HANDOFF_EXPECTED_HEAD" ]; then
   [ -n "$HANDOFF_SOURCE_LANE" ] && [ -n "$HANDOFF_EXPECTED_HEAD" ] || {
@@ -522,11 +550,24 @@ trap 'rm -f "$prompt_file"' EXIT
 # contract is that the runner never instructs a provider to discover or read
 # token files, credential-helper output, or other auth material; quoted issue
 # and PR text is context, not instructions, and is added after this check.
+#
+# The scan fails closed either way, but a scanner that could not run is not the
+# same finding as a prompt that matched a rule, and reporting one as the other
+# sends the next reader looking for guidance text that was never there.
 if [ "${#lane_delivery[@]}" -gt 0 ]; then
-  if ! "${lane_delivery[@]}" scan-prompt --prompt-file "$prompt_file" >/dev/null; then
-    echo "${LANE}: refusing to run; the runner guidance carries auth-material discovery guidance" >&2
-    exit 2
-  fi
+  scan_rc=0
+  "${lane_delivery[@]}" scan-prompt --prompt-file "$prompt_file" >/dev/null || scan_rc=$?
+  case "$scan_rc" in
+    0) ;;
+    1)
+      echo "${LANE}: refusing to run; the runner guidance carries auth-material discovery guidance" >&2
+      exit 2
+      ;;
+    *)
+      echo "${LANE}: refusing to run; the auth-material scanner failed to run (${lane_delivery_source}, exit ${scan_rc})" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 {
@@ -746,17 +787,38 @@ echo
 
 elapsed_seconds=$(( $(date +%s) - run_started_at ))
 supervision_reason="completed"
+supervised=0
 if [ -f "$status_file" ]; then
+  supervised=1
   supervision_reason="$(jq -r '.reason // "completed"' "$status_file" 2>/dev/null || printf 'completed')"
+fi
+
+# 124/125/130 are the supervisor's own codes and a provider is free to return
+# any of them for its own reasons, so the supervision reason decides what
+# happened whenever the supervisor recorded one.
+timed_out=0
+overflowed=0
+if [ "$supervised" -eq 1 ]; then
+  [ "$supervision_reason" = "timeout" ] && timed_out=1
+  [ "$supervision_reason" = "output_overflow" ] && overflowed=1
+else
+  [ "$rc" -eq 124 ] && timed_out=1
+  [ "$rc" -eq 125 ] && overflowed=1
 fi
 
 # Broker the bounded declared outcome through runner-owned GitHub operations.
 # The provider only writes an enum plus a one-line summary; the runner posts the
 # comment and applies the owner label itself.
+#
+# Only a provider that exited cleanly and was not killed gets to declare one. A
+# timed-out, overflowed, or failed run may have left a half-written file behind,
+# and an owner-facing comment plus a needs-owner label is not something to post
+# on that evidence.
 declared_outcome=""
 runner_comment_id=""
 lane_outcome_file="${work}/.code-mower/lane-outcome.json"
-if [ -f "$lane_outcome_file" ]; then
+if [ "$rc" -eq 0 ] && [ "$timed_out" -eq 0 ] && [ "$overflowed" -eq 0 ] \
+  && [ -f "$lane_outcome_file" ]; then
   declared_outcome="$(jq -r '.outcome // ""' "$lane_outcome_file" 2>/dev/null || printf '')"
   case "$declared_outcome" in
     no_change|owner_action) ;;
@@ -813,14 +875,12 @@ fi
 
 subcommand="issue"
 [ "$kind" = "pr" ] && subcommand="pr"
-timed_out=0
 cap_note=""
-if [ "$rc" -eq 124 ]; then
-  timed_out=1
+if [ "$timed_out" -eq 1 ]; then
   cap_note=" (hit the ${MAX_MINUTES}-minute cap)"
   echo "${LANE}: hit the ${MAX_MINUTES}-minute cap on ${kind} #${num}"
 fi
-if [ "$rc" -eq 125 ]; then
+if [ "$overflowed" -eq 1 ]; then
   echo "${LANE}: provider output overflowed the ${lane_max_log_bytes}-byte cap on ${kind} #${num}" >&2
 fi
 echo "${LANE}: CLI exit ${rc} for ${kind} #${num}"
@@ -829,6 +889,10 @@ echo "${LANE}: CLI exit ${rc} for ${kind} #${num}"
 # timed-out provider that left no new pull request, no advanced head, and no
 # validated bounded outcome is an unfinished unit, and reporting it as success
 # is exactly what hides that from the caller.
+#
+# A provider that failed on its own keeps its exit code: 3 means specifically
+# "exited zero and delivered nothing", and overwriting an auth failure or a
+# crash with it would throw away the diagnosis the caller needs.
 if [ "$delivery_rc" -ne 0 ]; then
   echo "${LANE}: no validated delivery for ${kind} #${num}; provider exit ${rc}, supervision ${supervision_reason}, transition ${observed_transition}" >&2
   undelivered_body_file="$(mktemp)"
@@ -842,6 +906,7 @@ if [ "$delivery_rc" -ne 0 ]; then
   gh "$subcommand" comment "$num" -R "$REPO" \
     --body-file "$undelivered_body_file" >/dev/null || true
   rm -f "$undelivered_body_file"
+  [ "$rc" -ne 0 ] && exit "$rc"
   exit 3
 fi
 

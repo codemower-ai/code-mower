@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -44,6 +45,65 @@ if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--git-path" ]; then
   exit 0
 fi
 exit 0
+"""
+
+# The generated runner resolves `lane-delivery` from an explicit pin before it
+# looks at PATH, so a fixture states which implementation it means instead of
+# inheriting whichever code-mower happens to be installed on the machine.
+_LANE_DELIVERY_CMD = f"{sys.executable} -m code_mower.lane_delivery"
+
+
+def _lane_delivery_env() -> dict[str, str]:
+    return {
+        "CODE_MOWER_LANE_DELIVERY_CMD": _LANE_DELIVERY_CMD,
+        "PYTHONPATH": str(ROOT / "src"),
+    }
+
+
+# Delivery is a validated issue/PR transition, so every functional fixture has
+# to answer the before/after snapshot reads. A fake provider drops
+# $HOME/lane-delivered to model "this run opened or advanced the lane's PR";
+# a fixture whose provider does not drop it models a run that delivered nothing.
+_DELIVERY_MARKER_NAME = "lane-delivered"
+_HEAD_BEFORE = "a" * 40
+_HEAD_AFTER = "b" * 40
+_FAKE_GH_DELIVERY_HEADER = f"""#!/usr/bin/env bash
+set -euo pipefail
+cmd="${{1:-}} ${{2:-}}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
+  if [ -f "$HOME/{_DELIVERY_MARKER_NAME}" ]; then
+    printf '%s\\n' '[{{"number":77,"headRefName":"devin/issue-12","closingIssuesReferences":[{{"number":12}}]}}]'
+  else
+    printf '%s\\n' '[]'
+  fi
+  exit 0
+elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
+  printf '%s\\n' '["tier:R","builder:devin","dispatched:devin"]'
+  exit 0
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefOid,state,labels"* ]]; then
+  if [ -f "$HOME/{_DELIVERY_MARKER_NAME}" ]; then
+    printf '%s\\n' '{{"headRefOid":"{_HEAD_AFTER}","state":"OPEN","labels":[]}}'
+  else
+    printf '%s\\n' '{{"headRefOid":"{_HEAD_BEFORE}","state":"OPEN","labels":[]}}'
+  fi
+  exit 0
+elif [ "$cmd" = "issue comment" ] || [ "$cmd" = "pr comment" ]; then
+  printf 'https://github.com/owner/repo/issues/12#issuecomment-1\\n'
+  exit 0
+fi
+"""
+
+# A fake provider that delivers: it drops the marker the fake `gh` reads back as
+# a new pull request or an advanced head.
+_FAKE_DEVIN_DELIVERS = f"""#!/usr/bin/env bash
+set -euo pipefail
+if [ "${{1:-}}" = "--version" ]; then
+  printf 'devin 3000.6.14\\n'
+  exit 0
+fi
+: > "$HOME/{_DELIVERY_MARKER_NAME}"
+printf 'fake devin completed\\n'
 """
 
 
@@ -165,11 +225,8 @@ class DevinMacLaneRunnerFunctionalTests(unittest.TestCase):
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-} ${2:-}"
-args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Untrusted title injection","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"drive-by"}}]'
@@ -204,6 +261,7 @@ if [ "${1:-}" = "--version" ]; then
   printf 'devin 3000.6.14\\n'
   exit 0
 fi
+: > "$HOME/lane-delivered"
 printf '%s\\n' "$*" > "$ARGV_LOG"
 cat <&0 > "$STDIN_LOG" 2>/dev/null || true
 prompt_path=""
@@ -243,6 +301,7 @@ printf 'fake devin completed\\n'
                     "MODE_LOG": str(mode_log),
                     "STDIN_LOG": str(stdin_log),
                     "CODE_MOWER_DEVIN_CLI_MODEL": "swe-1.7",
+                    **_lane_delivery_env(),
                 },
                 text=True,
                 capture_output=True,
@@ -338,11 +397,8 @@ printf 'fake devin completed\\n'
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-} ${2:-}"
-args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
@@ -373,14 +429,7 @@ fi
 
             fake_devin = bin_dir / "devin"
             fake_devin.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-if [ "${1:-}" = "--version" ]; then
-  printf 'devin 3000.6.14\\n'
-  exit 0
-fi
-printf 'fake devin completed\\n'
-""",
+                _FAKE_DEVIN_DELIVERS,
                 encoding="utf-8",
             )
             fake_devin.chmod(0o755)
@@ -413,6 +462,7 @@ exit 0
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                     "RECORD_LOG": str(record_log),
+                    **_lane_delivery_env(),
                 },
                 text=True,
                 capture_output=True,
@@ -442,11 +492,8 @@ exit 0
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-} ${2:-}"
-args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
@@ -477,14 +524,7 @@ fi
 
             fake_devin = bin_dir / "devin"
             fake_devin.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-if [ "${1:-}" = "--version" ]; then
-  printf 'devin 3000.6.14\\n'
-  exit 0
-fi
-printf 'fake devin completed\\n'
-""",
+                _FAKE_DEVIN_DELIVERS,
                 encoding="utf-8",
             )
             fake_devin.chmod(0o755)
@@ -517,6 +557,7 @@ exit 0
                     "HOME": str(root),
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    **_lane_delivery_env(),
                 },
                 text=True,
                 capture_output=True,
@@ -771,14 +812,11 @@ fi
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-} ${2:-}"
-args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '[{"number":21,"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}],"updatedAt":"2026-01-01T00:00:00Z","headRepository":{"nameWithOwner":"owner/repo"},"headRefName":"devin/fix-1"}]'
-elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRepository,labels"* ]]; then
-  printf '%s\\n' '{"headRefName":"devin/fix-1","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}]}'
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRefOid,headRepository,labels"* ]]; then
+  printf '%s\\n' '{"headRefName":"devin/fix-1","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}]}'
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\\n'
 elif [ "$cmd" = "pr view" ]; then
@@ -800,14 +838,7 @@ fi
 
             fake_devin = bin_dir / "devin"
             fake_devin.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-if [ "${1:-}" = "--version" ]; then
-  printf 'devin 3000.6.14\\n'
-  exit 0
-fi
-printf 'fake devin completed\\n'
-""",
+                _FAKE_DEVIN_DELIVERS,
                 encoding="utf-8",
             )
             fake_devin.chmod(0o755)
@@ -828,6 +859,7 @@ printf 'fake devin completed\\n'
                     "HOME": str(root),
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    **_lane_delivery_env(),
                 },
                 text=True,
                 capture_output=True,
@@ -852,7 +884,11 @@ printf 'fake devin completed\\n'
         self.assertIn("fake devin completed", completed.stdout)
         self.assertEqual(good_push.returncode, 0, good_push.stderr)
 
-    def test_devin_lane_hits_minute_cap_and_comments_without_failing(self) -> None:
+    def test_devin_lane_hits_cap_comments_and_reports_the_unfinished_unit(self) -> None:
+        # The cap is enforced by the supervisor, so the fixture shortens the
+        # supervisor's own timeout rather than emulating one with exit 124: a
+        # provider is free to return 124 for its own reasons, and the runner
+        # decides from the recorded supervision reason, not the raw code.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             output_dir = root / "generated"
@@ -862,13 +898,30 @@ printf 'fake devin completed\\n'
             bin_dir.mkdir()
             work_root = root / "work"
 
+            short_timeout = bin_dir / "lane-delivery-short-timeout"
+            short_timeout.write_text(
+                f"""#!/usr/bin/env bash
+set -euo pipefail
+forwarded=()
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--timeout-seconds" ]; then
+    forwarded+=(--timeout-seconds 2)
+    shift 2
+    continue
+  fi
+  forwarded+=("$1")
+  shift
+done
+exec {sys.executable} -m code_mower.lane_delivery "${{forwarded[@]}}"
+""",
+                encoding="utf-8",
+            )
+            short_timeout.chmod(0o755)
+
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-} ${2:-}"
-args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
@@ -906,7 +959,7 @@ if [ "${1:-}" = "--version" ]; then
   exit 0
 fi
 cat >/dev/null
-exit 124
+sleep 120
 """,
                 encoding="utf-8",
             )
@@ -928,13 +981,20 @@ exit 124
                     "HOME": str(root),
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "CODE_MOWER_LANE_DELIVERY_CMD": str(short_timeout),
+                    "PYTHONPATH": str(ROOT / "src"),
                 },
                 text=True,
                 capture_output=True,
-                check=True,
+                check=False,
             )
 
+        # The cap comment still names the unit, and the capped run is reported
+        # as unfinished rather than as a success: it opened no pull request,
+        # advanced no head, and declared no bounded outcome.
         self.assertIn("devin: hit the 1-minute cap on issue #12", completed.stdout)
+        self.assertEqual(completed.returncode, 124)
+        self.assertIn("no validated delivery for issue #12", completed.stderr)
 
     def test_devin_lane_missing_cli_exits_nonzero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -950,11 +1010,8 @@ exit 124
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-} ${2:-}"
-args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
@@ -1059,11 +1116,8 @@ fi
 
                 fake_gh = bin_dir / "gh"
                 fake_gh.write_text(
-                    """#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-} ${2:-}"
-args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+                    _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
@@ -1157,11 +1211,8 @@ exit 1
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
-                """#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-} ${2:-}"
-args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:devin"},{"name":"dispatched:devin"}],"assignees":[],"author":{"login":"owner"}}]'
@@ -1220,6 +1271,7 @@ exit 1
                     "HOME": str(root),
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    **_lane_delivery_env(),
                 },
                 text=True,
                 capture_output=True,
