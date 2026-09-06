@@ -382,6 +382,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "codex-audit-env-preflight",
                 "codex-audit-schema-smoke",
                 "decide",
+                "devin-cli-audit",
                 "doctor",
                 "gemini-cli",
                 "gate-health",

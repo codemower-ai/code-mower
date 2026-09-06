@@ -237,6 +237,30 @@ workflows. The v1.0 posture is:
   GitHub does not fire `issue_comment` labeler workflows for comments created
   by the built-in `GITHUB_TOKEN`
 
+## Devin CLI Policy
+
+`devin_cli` is the local Devin CLI informational lane. It is not merge authority
+and is disabled by default.
+
+- Setup: install `devin`, authenticate with `devin auth status`, and make it
+  available on the self-hosted runner `PATH`. Optional: override the binary with
+  `CODE_MOWER_DEVIN_CLI_COMMAND` and set `CODE_MOWER_DEVIN_CLI_MODEL` (or
+  `DEVIN_CLI_MODEL`/`DEVIN_MODEL`) for provenance.
+- Invocation: `code-mower devin-cli-audit --repo OWNER/REPO --pr NUMBER`, or
+  `tools/run_devin_cli_audit_pr.sh --repo OWNER/REPO --pr NUMBER` from a
+  support checkout.
+- Calibration: keep `devin_cli` informational until it reliably catches known
+  blockers, stays quiet on known-clean controls, and produces stable parseable
+  output. Calibrate before any promotion to merge authority.
+- Privacy: audits run with `devin --sandbox --permission-mode autonomous` and
+  never pass `--export`, `--continue`, or `--resume`. The wrapper posts an
+  authoritative `DEVIN_CLI_AUDIT_STATE` trailer and a metadata-only artifact
+  with no raw transcripts, prompts, or secrets. See `docs/privacy-threat-model.md`.
+- Upgrade/generated workflow: `code-mower init` copies
+  `tools/run_devin_cli_audit_pr.sh` to the product repo and includes
+  `needs-devin-cli-audit` in the generated
+  `.github/workflows/local-cli-audit.yml` matrix when `devin_cli` is selected.
+
 ## Promotion Policy
 
 A lane can move from informational to selective trigger or merge authority only

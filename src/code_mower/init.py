@@ -207,6 +207,12 @@ PRODUCT_SUPPORT_FILES = (
         "0755",
     ),
     (
+        "tools/run_devin_cli_audit_pr.sh",
+        "templates/product-support/run_devin_cli_audit_pr.sh",
+        "product-support-wrapper",
+        "0755",
+    ),
+    (
         # Copy the packaged helper module so product-repo gate workflows can
         # import tools.audit_labeler_lib without a separate package install.
         "tools/audit_labeler_lib.py",

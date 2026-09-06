@@ -72,7 +72,16 @@ tools/run_claude_audit_pr.sh \
   --repo OWNER/REPO \
   --pr 123 \
   --repo-paths OWNER/REPO:/absolute/path/to/pr-head-checkout
+
+tools/run_devin_cli_audit_pr.sh \
+  --repo OWNER/REPO \
+  --pr 123 \
+  --repo-paths OWNER/REPO:/absolute/path/to/pr-head-checkout
 ```
+
+The Devin CLI lane uses the `needs-devin-cli-audit` label, runs with
+`devin --sandbox --permission-mode autonomous`, and never passes
+`--export`, `--continue`, or `--resume`.
 
 The path must point at an existing checkout of the pull request head. It must
 not be the Code Mower support checkout or the wrapper's current working

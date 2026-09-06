@@ -19,7 +19,6 @@ from code_mower import config as code_mower_config
 from code_mower import init as code_mower_init
 from code_mower import package as code_mower_package
 from code_mower import code_mower_telemetry
-from code_mower.config import ConfigError
 from code_mower.doctor_checks import check_lane_runtime, check_adoption_campaign_readiness
 from code_mower.doctor_checks.campaign_auth import (
     campaign_auth_location_label,
