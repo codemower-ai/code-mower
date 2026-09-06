@@ -73,6 +73,7 @@ class FailureReasonClassificationTests(unittest.TestCase):
         cases = [
             # (error_text, stderr_preview, expected_reason)
             ("connection refused", "connection timed out", "network"),
+            ("ReadTimeoutError", "HTTPSConnectionPool: Read timed out", "network"),
             ("temporary failure in name resolution", "Could not resolve host", "network"),
             ("SSL certificate verify failed", "ssl: validation failed", "network"),
             ("timeout expired", "connection refused", "network"),  # timeout + network evidence
@@ -80,6 +81,7 @@ class FailureReasonClassificationTests(unittest.TestCase):
             ("No matching distribution found", "", "package_index"),
             ("Requires Python >=3.13", "requires python_version", "runtime"),
             ("ModuleNotFoundError", "No module named", "runtime"),
+            ("ModuleNotFoundError: No module named '_ssl'", "", "runtime"),
             ("incompatible version", "requires a different version", "runtime"),
             ("Permission denied", "permission denied", "sandbox_permission"),
             ("No space left on device", "no space left", "sandbox_permission"),
