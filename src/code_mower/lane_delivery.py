@@ -1000,7 +1000,14 @@ def _add_supervise_parser(subparsers: Any) -> None:
     supervise.add_argument("--cwd", type=Path)
     supervise.add_argument("--stdin-file", type=Path)
     supervise.add_argument("--status-file", type=Path)
-    supervise.add_argument("command", nargs=argparse.REMAINDER)
+    # The remainder must not be named "command": that is the subparsers dest, and
+    # argparse would overwrite the selected subcommand with the provider argv.
+    supervise.add_argument(
+        "provider_command",
+        metavar="command",
+        nargs=argparse.REMAINDER,
+        help="Provider argv, after --.",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1122,7 +1129,7 @@ def _scan_prompt_main(args: argparse.Namespace) -> int:
 
 
 def _supervise_main(args: argparse.Namespace) -> int:
-    command = list(args.command)
+    command = list(args.provider_command)
     if command and command[0] == "--":
         command = command[1:]
     if not command:

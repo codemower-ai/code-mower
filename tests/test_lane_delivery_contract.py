@@ -455,6 +455,117 @@ class ProcessGroupCleanupTests(unittest.TestCase):
         self.assertFalse(result.timed_out)
         self.assertEqual(result.reason, "completed")
 
+    def test_supervise_cli_dispatches_to_the_provider(self) -> None:
+        """The remainder must not share the subparsers destination.
+
+        Naming it ``command`` made argparse overwrite the selected subcommand
+        with the provider argv, so ``main`` never reached ``_supervise_main``
+        and every supervised run raised instead of running the provider. The
+        rest of this class calls ``supervise_process`` directly, so nothing
+        covered the argv the runner actually passes.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_path = root / "run.log"
+            status_path = root / "status.json"
+
+            rc = lane_delivery.main(
+                [
+                    "supervise",
+                    "--log",
+                    str(log_path),
+                    "--timeout-seconds",
+                    "30",
+                    "--status-file",
+                    str(status_path),
+                    "--",
+                    "bash",
+                    "-c",
+                    "printf 'done\\n'; exit 7",
+                ]
+            )
+
+            log = log_path.read_text(encoding="utf-8")
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 7)
+        self.assertIn("done", log)
+        self.assertEqual(status["exit_code"], 7)
+        self.assertEqual(status["reason"], "completed")
+
+    def test_supervise_cli_keeps_provider_flags_out_of_its_own_options(self) -> None:
+        """Provider argv reusing a supervisor flag name reaches the provider."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_path = root / "run.log"
+
+            rc = lane_delivery.main(
+                [
+                    "supervise",
+                    "--log",
+                    str(log_path),
+                    "--timeout-seconds",
+                    "30",
+                    "--",
+                    "bash",
+                    "-c",
+                    'printf "%s\\n" "$@"',
+                    "provider",
+                    "--log",
+                    "/provider/owned/path",
+                ]
+            )
+
+            log = log_path.read_text(encoding="utf-8")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(log.split(), ["--log", "/provider/owned/path"])
+
+    def test_supervise_cli_reports_a_timeout_as_the_timeout_code(self) -> None:
+        """A capped run must not flatten into a generic nonzero provider exit."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status_path = root / "status.json"
+
+            rc = lane_delivery.main(
+                [
+                    "supervise",
+                    "--log",
+                    str(root / "run.log"),
+                    "--timeout-seconds",
+                    "1",
+                    "--status-file",
+                    str(status_path),
+                    "--",
+                    "bash",
+                    "-c",
+                    "sleep 120",
+                ]
+            )
+
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, lane_delivery.EXIT_TIMEOUT)
+        self.assertEqual(status["reason"], "timeout")
+
+    def test_supervise_cli_rejects_an_empty_provider_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = lane_delivery.main(
+                [
+                    "supervise",
+                    "--log",
+                    str(Path(tmp) / "run.log"),
+                    "--timeout-seconds",
+                    "30",
+                    "--",
+                ]
+            )
+
+        self.assertEqual(rc, 2)
+
 
 class RecoveryHandoffTests(unittest.TestCase):
     def _valid(self, **overrides: str) -> lane_delivery.Handoff:
