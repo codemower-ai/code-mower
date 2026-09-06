@@ -327,6 +327,7 @@ git -C "$work" clean -fdxq -e .build -e node_modules -e .venv
 install_pre_push_guard "$target_pr_branch" "$mode"
 
 prompt_file="$(mktemp)"
+trap 'rm -f "$prompt_file"' EXIT
 {
   echo "You are the ${LANE} builder lane for ${REPO}, running non-interactively on the owner's Mac. Nobody will answer questions: decide, act, and leave the state on GitHub. Wall-clock budget: ${MAX_MINUTES} minutes; push and report before it runs out."
   echo
@@ -514,6 +515,7 @@ case "$LANE" in
 esac
 set -e
 rm -f "$prompt_file"
+trap - EXIT
 tail -c 4000 "$log" || true
 echo
 if [ "$rc" -eq 124 ]; then

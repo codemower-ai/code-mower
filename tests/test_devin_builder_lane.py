@@ -945,6 +945,8 @@ exit 124
             bin_dir = root / "bin"
             bin_dir.mkdir()
             work_root = root / "work"
+            scratch_tmp = root / "scratch-tmp"
+            scratch_tmp.mkdir()
 
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
@@ -1009,14 +1011,20 @@ fi
                     "HOME": str(root),
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": minimal_path,
+                    "TMPDIR": str(scratch_tmp),
                 },
                 text=True,
                 capture_output=True,
                 check=False,
             )
 
+            leftover = list(scratch_tmp.iterdir())
+
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("devin CLI not on PATH", completed.stderr)
+        # The prompt file (issue/PR context) must not survive a missing-CLI
+        # exit: it is created and secured before the CLI is even probed.
+        self.assertEqual(leftover, [])
 
     def test_devin_lane_rejects_transport_and_posture_override_extra_flags(self) -> None:
         for rejected_flag in (
@@ -1046,6 +1054,8 @@ fi
                 bin_dir = root / "bin"
                 bin_dir.mkdir()
                 work_root = root / "work"
+                scratch_tmp = root / "scratch-tmp"
+                scratch_tmp.mkdir()
 
                 fake_gh = bin_dir / "gh"
                 fake_gh.write_text(
@@ -1112,11 +1122,14 @@ exit 1
                         "LANE_WORK_ROOT": str(work_root),
                         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                         "LANE_DEVIN_EXTRA_FLAGS": rejected_flag,
+                        "TMPDIR": str(scratch_tmp),
                     },
                     text=True,
                     capture_output=True,
                     check=False,
                 )
+
+                leftover = list(scratch_tmp.iterdir())
 
                 self.assertNotEqual(completed.returncode, 0)
                 self.assertIn(
@@ -1127,6 +1140,10 @@ exit 1
                 )
                 self.assertNotIn("fake devin should not run", completed.stdout)
                 self.assertNotIn("fake devin should not run", completed.stderr)
+                # A prohibited extra flag aborts before the CLI ever runs,
+                # but the prompt file (issue/PR context) was already
+                # created and secured; it must not be left behind.
+                self.assertEqual(leftover, [])
 
     def test_devin_lane_surfaces_auth_failure_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

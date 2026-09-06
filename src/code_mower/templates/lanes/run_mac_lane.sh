@@ -336,6 +336,7 @@ install_pre_push_guard "$target_pr_branch" "$mode"
 
 prompt_file="$(mktemp)"
 chmod 600 "$prompt_file"
+trap 'rm -f "$prompt_file"' EXIT
 {
   echo "You are the ${LANE} builder lane for ${REPO}, running non-interactively on the owner's Mac. Nobody will answer questions: decide, act, and leave the state on GitHub. Wall-clock budget: ${MAX_MINUTES} minutes; push and report before it runs out."
   echo
@@ -561,6 +562,7 @@ case "$LANE" in
 esac
 set -e
 rm -f "$prompt_file"
+trap - EXIT
 tail -c 4000 "$log" || true
 echo
 if [ "$LANE" = "devin" ] && [ "$rc" -eq 0 ]; then
