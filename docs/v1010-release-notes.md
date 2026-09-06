@@ -137,6 +137,10 @@ uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mowe
 code-mower --version
 ```
 
+`--refresh-package` takes a package name as its value, so the first
+`code-mower` is the cache-refresh target and `code-mower==1.0.10` is the single
+package argument.
+
 Restart a Board that still serves an older package. For existing repositories,
 review `migration setup-drift` output in a pull request before applying any
 generated changes.
