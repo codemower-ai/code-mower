@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -230,6 +231,56 @@ class FailureReasonSchemaTests(unittest.TestCase):
             release_qualify.validate_adoption_result_payload(
                 result, expected_package_identity="code-mower"
             )
+
+    def test_qualification_boundary_classifies_final_failed_step(self) -> None:
+        error = migration_install.RehearsalError(
+            "package verification failed",
+            [
+                {"stderr_preview": "SSL certificate verify failed"},
+                {"stderr_preview": "Requires Python >=3.13"},
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.object(
+                    release_qualify,
+                    "_run_doctor_check",
+                    return_value=release_qualify.StepResult(
+                        id="doctor",
+                        status="pass",
+                        elapsed_seconds=0.0,
+                        warning_count=0,
+                        owner_action_count=0,
+                    ),
+                ),
+                patch.object(
+                    release_qualify,
+                    "run_package_install_rehearsal",
+                    side_effect=error,
+                ),
+            ):
+                result = release_qualify.run_release_qualification(
+                    release_tag="v1.0.8",
+                    package_spec="code-mower==1.0.8",
+                    output_path=Path(tmpdir) / "result.json",
+                    repo_path=Path(tmpdir),
+                    dry_run=False,
+                )
+        install_step = next(
+            step for step in result["steps"] if step["id"] == "package_install"
+        )
+        self.assertEqual(install_step["failure_reason"], "runtime")
+
+    def test_qualification_boundary_preserves_existing_reason(self) -> None:
+        error = migration_install.RehearsalError(
+            "package install failed",
+            [{"stderr_preview": "unrelated"}],
+            failure_reason="package_index",
+        )
+        self.assertEqual(
+            release_qualify._package_install_failure_reason(error),
+            "package_index",
+        )
 
 
 class NoSecretPersistenceTests(unittest.TestCase):

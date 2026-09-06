@@ -21,7 +21,10 @@ if __package__ in {None, ""}:
     from code_mower import board as code_mower_board
     from code_mower import doctor_checks
     from code_mower import lane_status
-    from code_mower.migration_install import PACKAGE_INSTALL_FAILURE_REASONS
+    from code_mower.migration_install import (
+        PACKAGE_INSTALL_FAILURE_REASONS,
+        classify_package_install_failure,
+    )
     from code_mower.migration_rehearsal import (
         _package_spec_uses_package_index,
         run_package_install_rehearsal,
@@ -31,7 +34,10 @@ else:
     from . import board as code_mower_board
     from . import doctor_checks
     from . import lane_status
-    from .migration_install import PACKAGE_INSTALL_FAILURE_REASONS
+    from .migration_install import (
+        PACKAGE_INSTALL_FAILURE_REASONS,
+        classify_package_install_failure,
+    )
     from .migration_rehearsal import (
         _package_spec_uses_package_index,
         run_package_install_rehearsal,
@@ -367,6 +373,20 @@ def _aggregate_outcome(steps: list[StepResult], *, execution_state: str = "execu
     if has_warn or has_unavailable:
         return "pass_with_warnings"
     return "pass"
+
+
+def _package_install_failure_reason(exception: Exception) -> str:
+    """Return an existing reason or classify only the final failed step."""
+
+    existing = getattr(exception, "failure_reason", None)
+    if isinstance(existing, str) and existing in PACKAGE_INSTALL_FAILURE_REASONS:
+        return existing
+    exception_steps = getattr(exception, "steps", [])
+    relevant_steps = exception_steps[-1:] if isinstance(exception_steps, list) else []
+    return classify_package_install_failure(
+        exception=exception,
+        steps=relevant_steps,
+    )
 
 
 def _finite_non_negative(value: object, field: str) -> None:
@@ -871,11 +891,7 @@ def run_release_qualification(
                 rehearsal_status = "pass"
         except Exception as exc:
             rehearsal_status = "fail"
-            # Extract failure_reason from RehearsalError if present
-            if hasattr(exc, "failure_reason") and isinstance(
-                getattr(exc, "failure_reason", None), str
-            ):
-                failure_reason = exc.failure_reason
+            failure_reason = _package_install_failure_reason(exc)
 
         steps.append(
             StepResult(

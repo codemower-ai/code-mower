@@ -317,6 +317,25 @@ class ArgvBuilderTests(unittest.TestCase):
         ):
             self.assertFalse(pattern.match(step_id), step_id)
 
+    def test_guidance_schema_matches_failure_reason_conditions(self) -> None:
+        step_schema = campaign_adapters.ADOPTION_RESULT_JSON_SCHEMA["properties"][
+            "steps"
+        ]["items"]
+        self.assertEqual(
+            step_schema["if"],
+            {
+                "properties": {
+                    "id": {"const": "package_install"},
+                    "status": {"const": "fail"},
+                },
+                "required": ["id", "status"],
+            },
+        )
+        self.assertEqual(
+            step_schema["else"],
+            {"properties": {"failure_reason": False}},
+        )
+
     def test_prompt_schema_taxonomy_matches_validator(self) -> None:
         taught = [
             "board",
