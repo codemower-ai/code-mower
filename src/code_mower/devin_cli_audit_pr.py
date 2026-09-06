@@ -20,10 +20,12 @@ Trailer protocol:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import selectors
+import shutil
 import signal
 import subprocess
 import sys
@@ -32,7 +34,7 @@ import time
 import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 if __package__ in {None, ""}:
     module_dir = Path(__file__).resolve().parent
@@ -138,6 +140,11 @@ _MAX_GIT_STDERR_BYTES = 64 * 1024
 # either stream fails closed; raw bytes never leave this module.
 MAX_DEVIN_STDOUT_BYTES = 4 * 1024 * 1024
 MAX_DEVIN_STDERR_BYTES = 1 * 1024 * 1024
+# Explicit bound for the NUL-delimited changed-file name list. Overflow fails
+# closed: a partial list would silently narrow the set of paths a blocker
+# finding is allowed to name.
+MAX_CHANGED_FILE_NAMES_BYTES = 1 * 1024 * 1024
+_DISPOSABLE_CLONE_TIMEOUT_SECONDS = 300
 _READ_CHUNK_BYTES = 64 * 1024
 _GROUP_TERM_GRACE_SECONDS = 0.2
 _REAP_TIMEOUT_SECONDS = 10
@@ -487,14 +494,25 @@ def _resolve_diff(
     fetched_base_ref = _resolve_base_ref(repo_path, base_ref)
     diff_range = f"{fetched_base_ref}...{fetched_head_ref}"
 
-    changed_files_text = run_git(
+    # The changed-file list goes through the same bounded primitive as the diff
+    # itself and fails closed on overflow: a silently truncated list would
+    # narrow the set of paths a blocker finding is allowed to name. ``-z`` keeps
+    # the names NUL-delimited, so paths containing newlines, quotes, or
+    # non-ASCII bytes survive parsing without git's path quoting.
+    max_name_bytes = MAX_CHANGED_FILE_NAMES_BYTES
+    names_text, names_bytes, names_truncated = _run_git_limited(
         repo_path,
-        ["-c", "core.quotePath=false", "diff", "--name-only", "--find-renames", diff_range],
+        ["diff", "--name-only", "-z", "--no-ext-diff", "--find-renames", diff_range],
+        max_bytes=max_name_bytes,
         timeout=120,
-    ).stdout
-    changed_files = tuple(
-        line.strip() for line in changed_files_text.splitlines() if line.strip()
     )
+    if names_truncated:
+        raise NoTrustworthyVerdictError(
+            f"PR changed-file list exceeds the {max_name_bytes} byte limit; "
+            f"measured at least {names_bytes} bytes; "
+            "no trustworthy verdict available"
+        )
+    changed_files = tuple(name for name in names_text.split("\0") if name)
 
     diff, full_diff_bytes, was_truncated = _run_git_limited(
         repo_path,
@@ -844,6 +862,105 @@ def _render_unknown_prose(reason: str) -> str:
     )
 
 
+def _verify_disposable_checkout(clone_path: Path, head_sha: str, when: str) -> None:
+    """Fail closed unless the disposable clone is clean at the exact head.
+
+    Failure text is metadata only: the disposable path is never named.
+    """
+
+    try:
+        cloned_head = local_head_sha(clone_path)
+        status = working_tree_status(clone_path)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise NoTrustworthyVerdictError(
+            f"could not verify the disposable Devin CLI checkout {when} the "
+            "review; no trustworthy verdict available"
+        ) from exc
+    if cloned_head.lower() != head_sha.lower():
+        raise NoTrustworthyVerdictError(
+            f"disposable Devin CLI checkout is not at the reviewed head {when} "
+            f"the review: {head_sha} -> {cloned_head}"
+        )
+    if status.strip():
+        raise NoTrustworthyVerdictError(
+            f"disposable Devin CLI checkout has uncommitted changes {when} the "
+            "review; no trustworthy verdict available"
+        )
+
+
+@contextlib.contextmanager
+def _disposable_head_checkout(repo_path: Path, head_sha: str) -> Iterator[Path]:
+    """Yield a credential-free throwaway clone detached at ``head_sha``.
+
+    The reusable audit checkout is trusted state: it is where the exact head and
+    diff are computed and where cleanliness is re-verified afterwards. Running
+    the provider there would let a persistent write to an ignored file or to git
+    metadata survive the audit unnoticed by ``git status``. Devin therefore runs
+    against a disposable copy that is deleted unconditionally, whatever the run
+    does. Objects are copied rather than hardlinked or borrowed through
+    alternates, so the copy shares no storage with the trusted checkout, and the
+    clone keeps no remote, so it carries no credentials or push target.
+    """
+
+    root = Path(tempfile.mkdtemp(prefix="code-mower-devin-cli-head-"))
+    try:
+        # An empty template keeps any ambient init.templateDir hooks out of the
+        # tree the provider runs in.
+        template_dir = root / "empty-template"
+        template_dir.mkdir()
+        clone_path = root / "head"
+        try:
+            run_git(
+                root,
+                [
+                    "-c",
+                    "credential.helper=",
+                    "clone",
+                    "--quiet",
+                    "--no-hardlinks",
+                    "--no-checkout",
+                    f"--template={template_dir}",
+                    str(repo_path),
+                    str(clone_path),
+                ],
+                timeout=_DISPOSABLE_CLONE_TIMEOUT_SECONDS,
+            )
+            run_git(clone_path, ["remote", "remove", "origin"], timeout=30)
+            run_git(
+                clone_path,
+                ["checkout", "--quiet", "--detach", head_sha],
+                timeout=120,
+            )
+            remotes = run_git(clone_path, ["remote"], timeout=30).stdout.strip()
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            OSError,
+        ) as exc:
+            # Metadata only: neither git's output nor the local paths involved
+            # may reach exceptions, comments, or artifacts.
+            raise NoTrustworthyVerdictError(
+                "could not prepare a disposable exact-head checkout for the "
+                "Devin CLI review; no trustworthy verdict available"
+            ) from exc
+        if remotes:
+            raise NoTrustworthyVerdictError(
+                "disposable Devin CLI checkout still has a remote configured; "
+                "no trustworthy verdict available"
+            )
+        if (clone_path / ".git" / "objects" / "info" / "alternates").exists():
+            raise NoTrustworthyVerdictError(
+                "disposable Devin CLI checkout borrows objects from the audit "
+                "checkout; no trustworthy verdict available"
+            )
+        # Checked here rather than through verify_checkout_at_head so the
+        # failure text stays metadata-only and never names a local path.
+        _verify_disposable_checkout(clone_path, head_sha, "before")
+        yield clone_path
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def _run_devin_cli(
     *,
     command: str,
@@ -1090,25 +1207,34 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
     command = _resolve_command() if config.command == DEFAULT_DEVIN_COMMAND else config.command
     model = config.model or _resolve_model()
 
-    stdout, returncode, duration = _run_devin_cli(
-        command=command,
-        prompt=prompt,
-        model=model,
-        cwd=repo_path,
-        timeout=config.timeout,
-    )
-
-    if returncode != 0:
-        # A non-zero returncode means the Devin CLI did not produce a bounded
-        # review. Treat this as UNKNOWN/needs-audit rather than PASS.
-        raise NoTrustworthyVerdictError(
-            f"Devin CLI exited with code {returncode}; no trustworthy verdict available"
+    # Devin never runs in the reusable audit checkout: it reviews a disposable
+    # copy of the exact head that is discarded on every path out of this block.
+    with _disposable_head_checkout(repo_path, head_sha_start) as review_path:
+        stdout, returncode, duration = _run_devin_cli(
+            command=command,
+            prompt=prompt,
+            model=model,
+            cwd=review_path,
+            timeout=config.timeout,
         )
 
-    parsed = _parse_devin_output(stdout, changed_files)
+        if returncode != 0:
+            # A non-zero returncode means the Devin CLI did not produce a
+            # bounded review. Treat this as UNKNOWN/needs-audit rather than
+            # PASS.
+            raise NoTrustworthyVerdictError(
+                f"Devin CLI exited with code {returncode}; no trustworthy verdict available"
+            )
 
-    # Re-verify exact head and cleanliness after the model run before any
-    # PASS can be posted.
+        parsed = _parse_devin_output(stdout, changed_files)
+
+        # The disposable copy is the tree Devin actually reviewed, so it is
+        # what must still be pristine at the exact head for a PASS to mean
+        # anything.
+        _verify_disposable_checkout(review_path, head_sha_start, "after")
+
+    # Re-verify exact head and cleanliness of the trusted audit checkout after
+    # the model run before any PASS can be posted.
     head_sha_end = local_head_sha(repo_path)
     if head_sha_end.lower() != head_sha_start.lower():
         raise StaleHeadError(
@@ -1149,7 +1275,10 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
             f"({diagnostics['max_diff_bytes']} bytes) within the hard limit "
             f"({diagnostics['max_diff_hard_limit_bytes']} bytes)"
         )
-    context_notice = "read-only review; prompt file with mode 0600, empty stdin, no source-edit tools"
+    context_notice = (
+        "read-only review in a disposable exact-head checkout; prompt file with "
+        "mode 0600, empty stdin, no source-edit tools"
+    )
 
     comment_body = _build_comment(
         provider_name="Devin CLI",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -741,6 +742,232 @@ class TestDevinCliProcessBounds(_DevinCliAuditTestCase):
         self.assertIsNotNone(result.verdict_artifact_path)
         payload = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
         self.assertNotIn(self.SENTINEL, json.dumps(payload))
+
+
+class TestChangedFileNameCollection(_DevinCliAuditTestCase):
+    """Changed-file names are bounded, fail closed, and survive odd paths."""
+
+    WEIRD_NAME = 'odd dir/weird\nname "quoted" ünicode.py'
+
+    def _commit_weird_named_file(self) -> str:
+        target = self.repo / self.WEIRD_NAME
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("weird\n", encoding="utf-8")
+        self._run_git(["add", "--", self.WEIRD_NAME])
+        self._run_git(["commit", "-m", "weird name"])
+        self.head_sha = self._run_git_text(["rev-parse", "HEAD"])
+        return self.WEIRD_NAME
+
+    def _resolve_diff(self, **overrides: object):
+        return devin_cli_audit._resolve_diff(
+            self.repo,
+            1,
+            "main",
+            self.head_sha,
+            int(overrides.get("max_diff_bytes", devin_cli_audit.DEFAULT_MAX_DIFF_BYTES)),
+            int(
+                overrides.get(
+                    "max_diff_hard_limit_bytes",
+                    devin_cli_audit.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES,
+                )
+            ),
+        )
+
+    def test_names_are_collected_nul_delimited_through_the_bounded_primitive(self) -> None:
+        name = self._commit_weird_named_file()
+        real_run_git_limited = devin_cli_audit._run_git_limited
+        limited_calls: list[tuple[list[str], dict]] = []
+
+        def _spy(cwd, args, **kwargs):
+            limited_calls.append((list(args), dict(kwargs)))
+            return real_run_git_limited(cwd, args, **kwargs)
+
+        with mock.patch.object(
+            devin_cli_audit, "_run_git_limited", side_effect=_spy
+        ), mock.patch.object(
+            devin_cli_audit, "run_git", wraps=devin_cli_audit.run_git
+        ) as run_git_spy:
+            _diff, changed_files = self._resolve_diff()
+
+        # A newline in a path is exactly what line-splitting gets wrong: the
+        # weird name must arrive as one entry, not two fragments.
+        self.assertEqual(sorted(changed_files), sorted(("file.py", name)))
+
+        name_only_calls = [
+            (args, kwargs) for args, kwargs in limited_calls if "--name-only" in args
+        ]
+        self.assertEqual(len(name_only_calls), 1)
+        args, kwargs = name_only_calls[0]
+        self.assertIn("-z", args)
+        self.assertEqual(
+            kwargs["max_bytes"], devin_cli_audit.MAX_CHANGED_FILE_NAMES_BYTES
+        )
+        # Unbounded run_git must never be the path that collects the names.
+        for call in run_git_spy.call_args_list:
+            self.assertNotIn("--name-only", list(call.args[1]))
+
+    def test_name_list_overflow_fails_closed_without_leaking_names(self) -> None:
+        self._commit_weird_named_file()
+        with mock.patch.object(devin_cli_audit, "MAX_CHANGED_FILE_NAMES_BYTES", 4):
+            with self.assertRaises(devin_cli_audit.NoTrustworthyVerdictError) as ctx:
+                self._resolve_diff()
+
+        message = str(ctx.exception)
+        self.assertIn("changed-file list", message)
+        self.assertIn("no trustworthy verdict available", message)
+        self.assertNotIn("file.py", message)
+        self.assertNotIn("odd dir", message)
+
+    def test_name_list_overflow_yields_unknown_verdict(self) -> None:
+        self._commit_weird_named_file()
+        self._write_fake(json.dumps({"verdict": "pass", "summary": "OK", "findings": []}))
+        with mock.patch.object(devin_cli_audit, "MAX_CHANGED_FILE_NAMES_BYTES", 4):
+            result = self._run_with_fake(self.command)
+
+        self.assertEqual(result.verdict, "UNKNOWN")
+        self.assertIn("needs-devin-cli-audit", result.comment_body)
+        self.assertNotIn("devin-cli-audit-done", result.comment_body)
+        payload = json.loads(result.verdict_artifact_path.read_text(encoding="utf-8"))
+        self.assertNotIn("odd dir", json.dumps(payload))
+
+
+class TestDisposableHeadCheckout(_DevinCliAuditTestCase):
+    """Devin reviews a throwaway exact-head clone, never the audit checkout."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.observed: list[Path] = []
+
+    def _spy_disposable_checkout(self):
+        real = devin_cli_audit._disposable_head_checkout
+        observed = self.observed
+
+        @contextlib.contextmanager
+        def _spy(repo_path, head_sha):
+            with real(repo_path, head_sha) as review_path:
+                observed.append(Path(review_path))
+                yield review_path
+
+        return mock.patch.object(devin_cli_audit, "_disposable_head_checkout", _spy)
+
+    def _assert_discarded(self) -> None:
+        self.assertEqual(len(self.observed), 1)
+        review_path = self.observed[0]
+        self.assertFalse(review_path.exists())
+        self.assertFalse(review_path.parent.exists())
+
+    def _assert_no_path_leak(self, result) -> None:
+        review_path = self.observed[0]
+        for text in (str(review_path), str(review_path.parent)):
+            self.assertNotIn(text, result.comment_body)
+        if result.verdict_artifact_path is not None:
+            payload = result.verdict_artifact_path.read_text(encoding="utf-8")
+            self.assertNotIn(str(review_path), payload)
+            self.assertNotIn(str(review_path.parent), payload)
+
+    def _fake(self, name: str, body: str) -> Path:
+        fake = self.tmp / f"fake-devin-{name}"
+        fake.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        fake.chmod(0o755)
+        return fake
+
+    def test_devin_cwd_is_a_disposable_exact_head_clone_without_origin(self) -> None:
+        logs = {name: self.tmp / f"{name}.log" for name in ("cwd", "head", "remote", "config", "alternates")}
+        fake = self._fake(
+            "inspect",
+            f"pwd > {logs['cwd']}\n"
+            f"git rev-parse HEAD > {logs['head']}\n"
+            f"git remote > {logs['remote']}\n"
+            f"git config --local --get-regexp 'remote|credential' > {logs['config']} 2>/dev/null\n"
+            f"ls .git/objects/info/alternates > {logs['alternates']} 2>&1\n"
+            "echo '{\"verdict\": \"pass\", \"summary\": \"OK\", \"findings\": []}'\n",
+        )
+        with self._spy_disposable_checkout():
+            result = self._run_with_fake(fake)
+
+        self.assertEqual(result.verdict, "PASS")
+        review_path = self.observed[0]
+        observed_cwd = Path(logs["cwd"].read_text(encoding="utf-8").strip())
+        self.assertEqual(observed_cwd.resolve(), review_path.resolve())
+        self.assertNotEqual(observed_cwd.resolve(), self.repo.resolve())
+        self.assertEqual(logs["head"].read_text(encoding="utf-8").strip(), self.head_sha)
+        self.assertEqual(logs["remote"].read_text(encoding="utf-8").strip(), "")
+        self.assertEqual(logs["config"].read_text(encoding="utf-8").strip(), "")
+        # No alternates file: the copy borrows no objects from the audit checkout.
+        self.assertNotIn("alternates\n", logs["alternates"].read_text(encoding="utf-8"))
+
+        self._assert_discarded()
+        self._assert_no_path_leak(result)
+        # The trusted checkout is untouched.
+        self.assertEqual(self._run_git_text(["rev-parse", "HEAD"]), self.head_sha)
+        self.assertEqual(self._run_git_text(["status", "--porcelain"]), "")
+
+    def test_disposable_checkout_is_discarded_on_every_exit_path(self) -> None:
+        verdict = '{"verdict": "pass", "summary": "OK", "findings": []}'
+        cases = (
+            ("success", f"echo '{verdict}'", {}, "PASS"),
+            ("provider-failure", f"echo '{verdict}'\nexit 1", {}, "UNKNOWN"),
+            ("timeout", f"sleep 5\necho '{verdict}'", {"timeout": 1}, "UNKNOWN"),
+        )
+        for name, body, overrides, expected in cases:
+            with self.subTest(case=name):
+                self.observed.clear()
+                fake = self._fake(name, body)
+                with self._spy_disposable_checkout():
+                    result = self._run_with_fake(fake, **overrides)
+
+                self.assertEqual(result.verdict, expected)
+                self._assert_discarded()
+                self._assert_no_path_leak(result)
+
+        with self.subTest(case="exception"):
+            self.observed.clear()
+            fake = self._fake("boom", f"echo '{verdict}'")
+            with self._spy_disposable_checkout(), mock.patch.object(
+                devin_cli_audit,
+                "_run_devin_cli",
+                side_effect=RuntimeError("unexpected failure"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    self._run_with_fake(fake)
+
+            self._assert_discarded()
+
+    def test_provider_writes_to_ignored_files_and_git_metadata_do_not_persist(self) -> None:
+        (self.repo / ".gitignore").write_text("scratch/\n", encoding="utf-8")
+        self._run_git(["add", ".gitignore"])
+        self._run_git(["commit", "-m", "ignore scratch"])
+        self.head_sha = self._run_git_text(["rev-parse", "HEAD"])
+
+        fake = self._fake(
+            "ignored-writes",
+            "mkdir -p scratch\n"
+            "echo pwned > scratch/ignored.txt\n"
+            "echo pwned > .git/PWNED\n"
+            "git config --local devin.pwned true\n"
+            "echo '{\"verdict\": \"pass\", \"summary\": \"OK\", \"findings\": []}'\n",
+        )
+        with self._spy_disposable_checkout():
+            result = self._run_with_fake(fake)
+
+        # Ordinary status never reports these writes, which is exactly why the
+        # provider must not run in the reusable audit checkout.
+        self.assertEqual(result.verdict, "PASS")
+        self._assert_discarded()
+        self._assert_no_path_leak(result)
+        self.assertFalse((self.repo / "scratch").exists())
+        self.assertFalse((self.repo / ".git" / "PWNED").exists())
+        self.assertEqual(
+            subprocess.run(
+                ["git", "config", "--local", "--get", "devin.pwned"],
+                cwd=self.repo,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+            "",
+        )
+        self.assertEqual(self._run_git_text(["status", "--porcelain"]), "")
+        self.assertEqual(self._run_git_text(["rev-parse", "HEAD"]), self.head_sha)
 
 
 if __name__ == "__main__":

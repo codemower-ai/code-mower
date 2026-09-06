@@ -95,6 +95,16 @@ provider runs, and clean again afterwards, so a verdict is only ever produced
 for the committed tree it claims to have reviewed. Commit or stash local
 changes before invoking it.
 
+The provider itself never runs in that checkout. It runs in a disposable clone
+of the exact head, made with copied objects (no hardlinks and no shared object
+store) and with its remote removed, so the clone carries no credentials and no
+push target. The clone must also be clean at the exact head before and after
+the run, and it is deleted on every exit path -- success, provider failure,
+timeout, or unexpected exception -- so a persistent write to an ignored file or
+to git metadata, which ordinary `git status` never reports, cannot outlive the
+audit. The reusable checkout is used only for the trusted exact-head and diff
+computation and for the pre/post GitHub head verification.
+
 The path must point at an existing checkout of the pull request head. It must
 not be the Code Mower support checkout or the wrapper's current working
 directory. This separation keeps product PR code out of the support checkout
