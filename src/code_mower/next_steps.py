@@ -245,8 +245,8 @@ def build_next_steps(
     if not audit_lanes:
         steps[3] = {
             "id": "choose-reviewers",
-            "title": "Choose an independent review path",
-            "command": "code-mower init " + (shlex.quote(config_path) + " " if config_path else "") + "--interactive",
+            "title": "Inspect available independent reviewers",
+            "command": "code-mower providers list",
             "why": "This selection has no configured reviewer lanes. Select reviewers or establish a manual independent review process before merging.",
         }
 

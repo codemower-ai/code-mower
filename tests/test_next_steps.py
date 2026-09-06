@@ -4,13 +4,14 @@ import copy
 import io
 import json
 import shlex
+import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import yaml
 
-from code_mower import config, init, next_steps, package
+from code_mower import cli, config, init, next_steps, package
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 
 
@@ -95,6 +96,51 @@ class NextStepsTests(unittest.TestCase):
             self.assertEqual("migration wrapper-rehearsal" in text, advanced)
             self.assertIn("needs-codex-audit", text)
             self.assertIn("needs-claude-audit", text)
+
+    def test_cli_auto_detects_saved_repository_profile(self) -> None:
+        saved = STARTER.read_text().replace(
+            "      - codex\n      - claude_audit", "      - claude_audit", 1,
+        )
+        with tempfile.TemporaryDirectory() as tmp, chdir(tmp):
+            Path("code-mower.yml").write_text(saved)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(next_steps.main(["--json"]), 0)
+            plan = json.loads(output.getvalue())
+            self.assertEqual(plan["lanes"], ["claude_audit"])
+            self.assertIn("init code-mower.yml --profile recommended", plan["steps"][0]["command"])
+            self.assertNotIn("needs-codex-audit", json.dumps(plan))
+
+    def test_explicit_config_wins_over_current_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, chdir(tmp):
+            Path("code-mower.yml").write_text("profiles: {}\nlanes: {}\n")
+            path = Path("selected peers.yml")
+            path.write_text(STARTER.read_text())
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(next_steps.main(["--config", str(path), "--json"]), 0)
+            plan = json.loads(output.getvalue())
+            self.assertEqual(plan["lanes"], ["codex", "claude_audit"])
+            self.assertEqual(shlex.split(plan["steps"][0]["command"])[2], str(path))
+
+    def test_invalid_saved_profile_is_reported_without_substituting_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, chdir(tmp):
+            Path("code-mower.yml").write_text("lanes: {}\n")
+            output, error = io.StringIO(), io.StringIO()
+            with redirect_stdout(output), redirect_stderr(error):
+                self.assertEqual(next_steps.main(["--json"]), 1)
+            self.assertIn("profiles must be a mapping", error.getvalue())
+            self.assertEqual(output.getvalue(), "")
+
+    def test_empty_profile_suggests_an_available_non_mutating_command(self) -> None:
+        templates = copy.deepcopy(self.templates)
+        templates["profiles"]["recommended"]["lanes"] = []
+        plan = next_steps.build_next_steps(templates)
+        step = plan["steps"][3]
+        self.assertEqual(step["id"], "choose-reviewers")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(shlex.split(step["command"])[1:]), 0)
+        self.assertNotIn("--interactive", step["command"])
 
 
 if __name__ == "__main__":
