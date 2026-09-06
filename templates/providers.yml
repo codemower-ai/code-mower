@@ -394,7 +394,7 @@ provider_templates:
     spend_policy: "included"
     merge_authority: false
     informational: true
-    enabled_by_default: true
+    enabled_by_default: false
     events:
       - "issue_comment"
     token_env:
@@ -613,18 +613,16 @@ provider_templates:
     review_hygiene: {}
 profiles:
   recommended:
-    description: "Fast path for most teams; two local CLI peers plus an always-on advisory SaaS reviewer."
+    description: "Start with Codex and Claude as local peer reviewers."
     lanes:
       - "codex"
       - "claude_audit"
-      - "gitar"
     source: "repo"
   public_oss:
-    description: "Public repository starter; use recommended today, swap Gitar for CodeRabbit once the CodeRabbit adapter lands."
+    description: "Public repository starter with Codex and Claude local peer reviewers."
     lanes:
       - "codex"
       - "claude_audit"
-      - "gitar"
     source: "repo"
   deep_review:
     description: "Higher-scrutiny private repository profile; Greptile remains opt-in and informational to avoid surprise spend."
@@ -666,6 +664,7 @@ profiles:
   saas_research:
     description: "Optional manually triggered SaaS reviewer calibration profile; use for capture and value reports, not merge gates."
     lanes:
+      - "gitar"
       - "cursor_bugbot"
       - "qodo"
     source: "repo"

@@ -3,9 +3,9 @@
 This is path B from the README: start from the reviewer gate, then enable a
 builder dispatch loop.
 
-Roles: Claude Code as orchestrator (workflow pattern, see
-[Build Loop Operations](build-loop.md)); Claude Code, Codex, and Cursor as
-builders; Claude Code and Codex as gating reviewers; Gitar informational.
+Roles: Claude Code or Codex as orchestrator (workflow pattern, see
+[Build Loop Operations](build-loop.md)); Claude Code and Codex as builders and
+peer reviewers. Start with these two providers only.
 
 Code Mower's templates support the orchestrator pattern end to end: GitHub issue
 plus optional work order, ready labels, one owning builder lane, single-writer
@@ -68,7 +68,7 @@ code-mower doctor --adoption --repo "$REPO" --json
 
 git switch -c chore/code-mower-reviewer-gate
 cp -R .code-mower.generated/. .
-git add .github tools calibration-corpus.json context-packs.json \
+git add code-mower.yml .github tools calibration-corpus.json context-packs.json \
   reviewer-spend.json reviewer-value-report.example.md
 git commit -m "chore: add code mower reviewer gate"
 git push -u origin HEAD
@@ -243,9 +243,8 @@ readiness.
 
 ## 4. Configure The Reference Build Loop
 
-The worked example uses Claude Code as orchestrator convention; Claude Code,
-Codex, and Cursor as builders; Claude Code and Codex as gating reviewers; and
-Gitar as informational signal.
+The worked example uses Claude Code as orchestrator convention, with Claude
+Code and Codex as builders and independent peer reviewers.
 
 The important `code-mower.yml` stanza is:
 
@@ -268,22 +267,12 @@ builder_identity:
   labels:
     builder:codex: codex
     builder:claude: claude
-    builder:cursor: cursor
-    builder:grok-bot: cursor
   authors:
     chatgpt-codex-connector[bot]: codex
     claude[bot]: claude
-    cursor[bot]: cursor
-    grok-bot[bot]: cursor
-  branch_prefixes:
-    cursor/: cursor
-  fix_round_mentions:
-    cursor: "@cursor"
   trailers:
     CODE_MOWER_BUILDER:codex: codex
     CODE_MOWER_BUILDER:claude: claude
-    CODE_MOWER_BUILDER:cursor: cursor
-    CODE_MOWER_BUILDER:grok-bot: cursor
 
 lanes:
   codex:
@@ -307,16 +296,6 @@ lanes:
       done: claude-audit-done
       blocked: claude-audit-blocked
 
-  gitar:
-    type: audit
-    driver: saas_event
-    provider: gitar
-    adapter: gitar
-    informational: true
-    labels:
-      needs: needs-gitar-audit
-      done: gitar-audit-done
-      blocked: gitar-audit-blocked
 ```
 
 Render the generated build-loop support:
@@ -324,30 +303,22 @@ Render the generated build-loop support:
 ```bash
 git switch "$DEFAULT_BRANCH"
 git pull --ff-only
-code-mower init --builders codex,claude,cursor
-code-mower init --builders codex,claude,cursor --apply --output-dir .code-mower.generated
+code-mower init --builders codex,claude
+code-mower init --builders codex,claude --apply --output-dir .code-mower.generated
 ```
-
-The `cursor` input uses the hosted Cursor lane identity, so the generated lane
-docs use `docs/lanes/cursor.md` and dispatch comments mention `@cursor`.
-Legacy `grok` and `grok-bot` builder inputs still normalize to `cursor`, and
-existing `builder:grok-bot` / `dispatched:grok-bot` labels are accepted during
-the migration window.
 
 The generated labels for this reference route include:
 
 - ready and owner labels: `tier:R`, `needs-owner`, `owner-decision`,
   `owner-sitting`, `gate:override`;
-- builder labels: `builder:codex`, `builder:claude`, `builder:cursor`;
-- dispatch labels: `dispatched:codex`, `dispatched:claude`,
-  `dispatched:cursor`;
+- builder labels: `builder:codex`, `builder:claude`;
+- dispatch labels: `dispatched:codex`, `dispatched:claude`;
 - audit labels: `needs-codex-audit`, `codex-audit-done`,
   `codex-audit-blocked`, `needs-claude-audit`, `claude-audit-done`,
-  `claude-audit-blocked`, `needs-gitar-audit`, `gitar-audit-done`,
-  `gitar-audit-blocked`.
+  `claude-audit-blocked`.
 
-The easy profile may also create `builder:gitar` for provenance visibility, but
-Gitar remains informational and is not a builder lane in this reference loop.
+Gitar and other providers remain available as explicit later additions; they
+are not part of this initial build loop.
 
 Review and land the generated files on the default branch:
 
@@ -355,7 +326,7 @@ Review and land the generated files on the default branch:
 git switch -c chore/code-mower-build-loop
 cp -R .code-mower.generated/. .
 git status --short
-git add .github tools docs/lanes calibration-corpus.json context-packs.json \
+git add code-mower.yml .github tools docs/lanes calibration-corpus.json context-packs.json \
   reviewer-spend.json reviewer-value-report.example.md
 git commit -m "chore: add code mower build loop"
 git push -u origin HEAD
@@ -543,9 +514,8 @@ steps that cannot safely run unattended.
 ## 8. Orchestrator Prompt (Copy-Paste)
 
 Use [Orchestrator Prompt Pack](orchestrator-prompt-pack.md) for copy-pasteable
-prompts for Claude Code as orchestrator, Claude Code/Codex/Cursor or Grok Bot
-as builders, Claude Code/Codex as reviewer lanes, and Gitar, Antigravity, or
-Devin as informational or opt-in signals.
+prompts for Claude Code or Codex as orchestrator, builder, and peer reviewer.
+The same role boundaries apply to optional providers when you add them later.
 
 The short bootstrap prompt is:
 

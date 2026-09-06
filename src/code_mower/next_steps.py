@@ -16,16 +16,18 @@ if __package__ in {None, ""}:
 
 if __package__ in {None, "", "tools"}:
     from code_mower import __version__ as CODE_MOWER_VERSION
+    from code_mower.calibration.arms import DEFAULT_CLI_LANES
     from tools import code_mower_package
-    from tools.code_mower_config import ConfigError
+    from tools.code_mower_config import ConfigError, load_config
     try:
         from tools import code_mower_versioning
     except ImportError:  # pragma: no cover - package-installed fallback.
         from code_mower import versioning as code_mower_versioning
 else:  # pragma: no cover - exercised after package extraction.
     from . import __version__ as CODE_MOWER_VERSION
+    from .calibration.arms import DEFAULT_CLI_LANES
     from . import package as code_mower_package
-    from .config import ConfigError
+    from .config import ConfigError, load_config
     from . import versioning as code_mower_versioning
 
 
@@ -91,6 +93,12 @@ def _lane_classes(
 
 
 def _request_label(lane_id: str, lane: Mapping[str, Any]) -> str:
+    labels = lane.get("labels", {})
+    if isinstance(labels, Mapping) and labels.get("needs"):
+        label = str(labels["needs"])
+        if not REQUEST_LABEL_RE.fullmatch(label):
+            raise ConfigError(f"request label is not shell-safe: {label!r}")
+        return label
     lane_type = str(lane.get("type") or "audit")
     stem = lane_id
     if stem.endswith("_audit"):
@@ -132,18 +140,32 @@ def build_next_steps(
     profile: str = DEFAULT_PROFILE,
     repo: str = "owner/repo",
     pr: str = "123",
+    advanced: bool = False,
+    config_path: str | None = None,
 ) -> Mapping[str, Any]:
     _validate_repo_and_pr(repo, pr)
     quoted_repo = shlex.quote(repo)
     lanes = _profile_lanes(templates, profile)
     catalog = _lane_catalog(templates)
+    if any(lane not in catalog for lane in lanes):
+        raise ConfigError("selected profile contains an unknown reviewer lane")
     classes = _lane_classes(lanes, catalog)
-    audit_lanes = classes["merge_gating"] or lanes[:1]
-    first_audit_lane = audit_lanes[0] if audit_lanes else "codex"
-    first_audit_label = _request_label(first_audit_lane, catalog.get(first_audit_lane, {}))
+    audit_lanes = lanes
+    audit_labels = [_request_label(lane, catalog.get(lane, {})) for lane in audit_lanes]
+    first_audit_label = audit_labels[0] if audit_labels else None
+    calibration_lanes = [
+        lane.replace("_", "-")
+        for lane in lanes
+        if lane in (*DEFAULT_CLI_LANES, "local_llm")
+    ]
     alpha_package_spec = shlex.quote(current_alpha_package_spec())
     quoted_profile = shlex.quote(profile)
-    if profile == DEFAULT_PROFILE:
+    if config_path:
+        config_arg = shlex.quote(config_path)
+        init_plan_command = f"code-mower init {config_arg} --profile {quoted_profile} --dry-run"
+        init_apply_command = f"code-mower init {config_arg} --profile {quoted_profile} --apply --output-dir .code-mower.generated"
+        doctor_command = f"code-mower doctor {config_arg} --easy --profile {quoted_profile} --probe-runtime --json"
+    elif profile == DEFAULT_PROFILE:
         init_plan_command = "code-mower init --easy"
         init_apply_command = "code-mower init --easy --apply --output-dir .code-mower.generated"
         doctor_command = f"code-mower doctor --adoption --repo {quoted_repo} --json"
@@ -185,6 +207,85 @@ def build_next_steps(
             ),
         },
         {
+            "id": "first-audit",
+            "title": "Request the selected peer audits on your setup PR",
+            "command": (
+                f"gh pr edit {pr} --repo {repo} "
+                + " ".join(f"--add-label {label}" for label in audit_labels)
+            ),
+            "why": (
+                "After reviewing and installing the generated files, request the selected "
+                "reviewers. For the first setup PR, follow the first-audit guide to run "
+                "the local wrappers against a separate PR-head checkout; labels alone "
+                "cannot start workflows that have not landed yet. Merge manually only "
+                "after current-head peer audits and normal CI are clean."
+            ),
+            "guide": f"{PUBLIC_REPO_URL}/blob/{current_public_tag()}/docs/try-in-10-minutes.md",
+            "lanes": list(audit_lanes),
+            "label": first_audit_label,
+            "labels": audit_labels,
+        },
+        {
+            "id": "lanes-status",
+            "title": "Inspect the PR audit and gate state",
+            "command": f"code-mower lanes status --repo {repo}",
+            "why": "Shows reviewer evidence, pending checks, and the next operator action.",
+        },
+        {
+            "id": "productivity-report",
+            "title": "Inspect the available local review evidence",
+            "command": f"code-mower productivity report --repo {repo}",
+            "why": (
+                "Summarizes local review activity and known spend. A fresh repository "
+                "may have no recorded history yet; missing data remains unknown."
+            ),
+        },
+    ]
+
+    if not audit_lanes:
+        steps[3] = {
+            "id": "choose-reviewers",
+            "title": "Inspect available independent reviewers",
+            "command": "code-mower providers list",
+            "why": "This selection has no configured reviewer lanes. Select reviewers or establish a manual independent review process before merging.",
+        }
+
+    if advanced:
+        steps.extend(
+            _advanced_steps(
+                repo=repo,
+                quoted_repo=quoted_repo,
+                package_spec=alpha_package_spec,
+                calibration_lanes=calibration_lanes,
+                informational_lanes=list(classes["informational"]),
+            )
+        )
+
+    return {
+        "schema": "code_mower.nextSteps.v1",
+        "profile": profile,
+        "lanes": list(lanes),
+        "lane_classes": {key: list(value) for key, value in classes.items()},
+        "advanced": advanced,
+        "advanced_command": (
+            f"code-mower next-steps --profile {quoted_profile} --repo {quoted_repo} "
+            f"--pr {pr} --advanced"
+            + (f" --config {shlex.quote(config_path)}" if config_path else "")
+        ),
+        "steps": steps,
+    }
+
+
+def _advanced_steps(
+    *,
+    repo: str,
+    quoted_repo: str,
+    package_spec: str,
+    calibration_lanes: list[str],
+    informational_lanes: list[str],
+) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = [
+        {
             "id": "wrapper-rehearsal",
             "title": "Compare standalone package behavior with any repo-local Code Mower tools",
             "command": "code-mower migration wrapper-rehearsal --repo-path . --json",
@@ -198,7 +299,7 @@ def build_next_steps(
             "title": "Prove the package-installed path in a fresh toy repo",
             "command": (
                 "code-mower migration package-install-rehearsal "
-                f"--package-spec {alpha_package_spec} --allow-package-index --json"
+                f"--package-spec {package_spec} --allow-package-index --json"
             ),
             "why": (
                 "Installs Code Mower into a clean venv, verifies the easy-mode "
@@ -217,27 +318,6 @@ def build_next_steps(
             ],
         },
         {
-            "id": "first-audit",
-            "title": "Run the first head-bound audit on a real PR",
-            "command": f"gh pr edit {pr} --repo {repo} --add-label {first_audit_label}",
-            "why": "Gets a structured reviewer result against the user's actual codebase.",
-            "lanes": list(audit_lanes),
-            "label": first_audit_label,
-        },
-        {
-            "id": "calibration-run",
-            "title": "Run a starter calibration corpus",
-            "command": (
-                "code-mower calibration run .code-mower.generated/calibration-corpus.json "
-                "--lanes antigravity-cli --results-dir .code-mower/calibration-results --json"
-            ),
-            "why": (
-                "Persists raw reviewer results for quality, latency, and cost analysis. "
-                "Antigravity is the forward Google CLI lane; use gemini-cli only for "
-                "legacy/API-key compatibility or historical comparisons."
-            ),
-        },
-        {
             "id": "calibration-auto-discover",
             "title": "Bootstrap a project-specific draft corpus from recent PRs",
             "command": (
@@ -254,9 +334,12 @@ def build_next_steps(
             "id": "value-report",
             "title": "Generate the first reviewer value report",
             "command": (
-                "code-mower calibration value-report .code-mower.generated/calibration-corpus.json "
-                "--runs .code-mower/calibration-results/calibration-run-results.json "
-                "--spend .code-mower.generated/reviewer-spend.json "
+                "code-mower calibration value-report .code-mower/draft-calibration-corpus.json "
+                + (
+                    "--runs .code-mower/calibration-results/calibration-run-results.json "
+                    if calibration_lanes else ""
+                )
+                + "--spend .code-mower.generated/reviewer-spend.json "
                 "--output reviewer-value-report.md"
             ),
             "why": "Converts reviewer outcomes into useful-rate, precision, latency, and spend evidence.",
@@ -265,7 +348,7 @@ def build_next_steps(
             "id": "calibration-evidence",
             "title": "Write adjudicated calibration evidence for metrics",
             "command": (
-                "code-mower calibration evidence .code-mower.generated/calibration-corpus.json "
+                "code-mower calibration evidence .code-mower/draft-calibration-corpus.json "
                 "--json > calibration-evidence.json"
             ),
             "why": "Creates the reviewer evidence input consumed by metrics and lane policy.",
@@ -280,7 +363,7 @@ def build_next_steps(
                 "code-mower calibration policy reviewer-metrics.json --json > lane-policy.json"
             ),
             "why": "Keeps new reviewers informational until measured on the real codebase.",
-            "informational_lanes": list(classes["informational"]),
+            "informational_lanes": informational_lanes,
         },
         {
             "id": "context-packs",
@@ -380,13 +463,23 @@ def build_next_steps(
         },
     ]
 
-    return {
-        "schema": "code_mower.nextSteps.v1",
-        "profile": profile,
-        "lanes": list(lanes),
-        "lane_classes": {key: list(value) for key, value in classes.items()},
-        "steps": steps,
-    }
+    if calibration_lanes:
+        value_report_index = next(i for i, step in enumerate(steps) if step["id"] == "value-report")
+        steps.insert(value_report_index, {
+            "id": "calibration-run",
+            "title": "Run calibration for the selected executable lanes",
+            "command": (
+                "code-mower calibration run .code-mower/draft-calibration-corpus.json "
+                f"--lanes {shlex.quote(','.join(calibration_lanes))} "
+                "--results-dir .code-mower/calibration-results --json"
+            ),
+            "why": (
+                "After confirming the draft corpus dispositions, run only executable "
+                "calibration lanes in the selected profile. Keep raw results local."
+            ),
+            "lanes": calibration_lanes,
+        })
+    return steps
 
 
 def render_next_steps_text(payload: Mapping[str, Any]) -> str:
@@ -400,6 +493,14 @@ def render_next_steps_text(payload: Mapping[str, Any]) -> str:
         lines.append(f"{index}. {step['title']}")
         lines.append(f"   command: {step['command']}")
         lines.append(f"   why: {step['why']}")
+        if step.get("guide"):
+            lines.append(f"   guide: {step['guide']}")
+    if not payload.get("advanced"):
+        lines.extend([
+            "",
+            "Later: calibration, migration, and optional cloud guidance:",
+            "  " + str(payload.get("advanced_command", "code-mower next-steps --advanced")),
+        ])
     return "\n".join(lines) + "\n"
 
 
@@ -414,19 +515,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", default=DEFAULT_PROFILE)
     parser.add_argument("--repo", default="owner/repo")
     parser.add_argument("--pr", default="123")
-    parser.add_argument("--provider-templates", default=None)
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--provider-templates", default=None)
+    source.add_argument("--config", help="use repository selections; defaults to code-mower.yml when present")
+    parser.add_argument(
+        "--advanced",
+        action="store_true",
+        help="Include calibration, migration, package rehearsal, and optional cloud guidance.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        templates = code_mower_package.load_provider_templates(
-            _resolve_provider_templates(args.provider_templates)
-        )
+        config_path = args.config
+        if not config_path and not args.provider_templates and Path("code-mower.yml").is_file():
+            config_path = "code-mower.yml"
+        if config_path:
+            config = load_config(Path(config_path))
+            templates = {"profiles": config.get("profiles"), "provider_templates": config.get("lanes")}
+        else:
+            templates = code_mower_package.load_provider_templates(
+                _resolve_provider_templates(args.provider_templates)
+            )
         payload = build_next_steps(
             templates,
             profile=args.profile,
             repo=args.repo,
             pr=args.pr,
+            advanced=args.advanced,
+            config_path=config_path,
         )
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)

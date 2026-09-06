@@ -10,9 +10,10 @@ authority clear before it runs.
 |---|---|---|---|---|
 | Codex audit | `local_cli` | structured peer audit | eligible | Requires local Codex auth and GitHub label/comment access. |
 | Claude audit | `local_cli` | structured peer audit | eligible | Normal Claude lane is `*-audit`; prose `*-review` is manual. |
-| Gitar audit | `saas_event` | advisory third signal | no | Useful informational SaaS signal in the reference repos. |
 
-Everything else is opt-in until calibrated on the user's codebase.
+The initial builder loop also defaults to Codex and Claude. Other participants,
+including Gitar, require explicit selection and calibration before promotion.
+Gitar remains available in `saas_research`.
 
 ## Provider Classes
 

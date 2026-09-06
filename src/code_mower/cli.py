@@ -486,13 +486,8 @@ FIRST_USER_COMMANDS = (
     "checks",
     "board",
     "next-steps",
-    "calibration",
-    "reviewer-metrics",
-    "cloud",
     "config",
-    "controller",
     "lanes",
-    "project-context",
     "productivity",
 )
 
@@ -564,15 +559,10 @@ def _top_level_help(show_all: bool) -> str:
             "Common first run:",
             "  code-mower init --easy",
             "  code-mower doctor --adoption --repo OWNER/REPO",
-            "  code-mower doctor --supervised-pilot --repo OWNER/REPO",
+            "  code-mower next-steps --repo OWNER/REPO --pr NUMBER",
             "  code-mower lanes status --repo OWNER/REPO",
             "  code-mower productivity report --repo OWNER/REPO",
             "  code-mower board serve --repo OWNER/REPO",
-            (
-                "  code-mower migration package-install-rehearsal "
-                f"--package-spec {code_mower_next_steps.current_alpha_package_spec()} "
-                "--allow-package-index --json"
-            ),
         ]
     )
     return "\n".join(lines) + "\n"

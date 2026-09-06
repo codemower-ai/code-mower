@@ -19,13 +19,13 @@ Config: /path/to/code-mower.example.yml
 Provider templates: /path/to/providers.yml
 Profile: recommended
 Run plan: load-inputs (runtime), select-profile (runtime), runtime (runtime), providers (providers), github (github optional), cloud (cloud optional)
-Checks: 21 total, 5 warnings, 1 skipped
+Checks: 18 total, 3 warnings, 0 skipped
 
 Setup
 - PASS config.validate: config validates
 - PASS provider_templates.load: provider templates load
 - PASS doctor.plan: doctor run plan: load-inputs, select-profile, runtime, providers, github, cloud
-- PASS profile.select: selected profile recommended: codex, claude_audit, gitar
+- PASS profile.select: selected profile recommended: codex, claude_audit
 - PASS provider_templates.coverage: provider templates cover selected lanes
 
 Runtime
@@ -34,7 +34,7 @@ Runtime
 - PASS runtime.github_auth: GitHub CLI auth probe succeeded
 - PASS runtime.ripgrep: rg found
 
-Provider lanes (3 warnings)
+Provider lanes (2 warnings)
 - WARN env.tokens [codex]: missing token env vars: DISPATCH_TOKEN, GITHUB_TOKEN
   remediation: set DISPATCH_TOKEN, GITHUB_TOKEN in your shell or GitHub secret store before enabling this lane.
 - PASS runtime.local_cli [codex]: codex found
@@ -43,16 +43,11 @@ Provider lanes (3 warnings)
   remediation: set DISPATCH_TOKEN, GITHUB_TOKEN in your shell or GitHub secret store before enabling this lane.
 - PASS runtime.local_cli [claude_audit]: claude found
 - PASS runtime.local_cli.probe [claude_audit]: claude auth smoke probe succeeded
-- WARN env.tokens [gitar]: missing token env vars: GITAR_AUDIT_LABEL_TOKEN, GITHUB_TOKEN
-  remediation: set GITAR_AUDIT_LABEL_TOKEN, GITHUB_TOKEN in your shell or GitHub secret store before enabling this lane.
-- SKIP runtime.probe [gitar]: SaaS event lanes do not have a local runtime probe yet
 
-GitHub (2 warnings)
+GitHub (1 warning)
 - PASS github.cli: gh found for GitHub setup checks
 - WARN github.repo.metadata: could not read GitHub repository metadata for owner/repo
   remediation: Verify gh auth can read this repo. Private repos need a token or GitHub App installation with repository access.
-- WARN github.provider.private_repo: could not determine repository visibility for SaaS/hosted lanes: gitar
-  remediation: Verify gh auth can read repository metadata before deciding whether hosted provider apps need private-repo access.
 
 Code Mower Cloud
 - PASS cloud.token: optional Code Mower Cloud token file is configured
