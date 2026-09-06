@@ -157,6 +157,20 @@ class FailureReasonClassificationTests(unittest.TestCase):
         reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
         self.assertEqual(reason, "network")
 
+    def test_python_incompatibility_prioritized_over_generic_index_message(self) -> None:
+        """Python incompatibility takes precedence over generic resolution messages."""
+        exc = RuntimeError("Installation failed")
+        # Simulate pip output with both runtime constraint and generic resolution failure
+        steps = [{
+            "stderr_preview": (
+                "ERROR: Could not find a version that satisfies the requirement test-package\n"
+                "ERROR: Requires Python >=3.13, but you have Python 3.12"
+            )
+        }]
+        reason = migration_install.classify_package_install_failure(exception=exc, steps=steps)
+        # Should classify as runtime (Python version), not package_index
+        self.assertEqual(reason, "runtime")
+
     def test_separate_retry_groups_isolated(self) -> None:
         """Verify earlier pip retry groups don't contaminate current classification."""
         # Shared steps list with earlier pip-upgrade attempt that failed with SSL

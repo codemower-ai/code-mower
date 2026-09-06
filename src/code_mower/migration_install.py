@@ -206,11 +206,14 @@ def classify_package_install_failure(*, exception: Exception, steps: list[dict[s
     if has_network_evidence:
         return "network"
 
-    if any(indicator in error_text for indicator in package_index_indicators):
-        return "package_index"
-
+    # Check runtime before package_index: Python incompatibility often includes
+    # both specific runtime evidence ("Requires Python") and generic resolution
+    # messages ("No matching distribution"). Runtime is the root cause.
     if any(indicator in error_text for indicator in runtime_indicators):
         return "runtime"
+
+    if any(indicator in error_text for indicator in package_index_indicators):
+        return "package_index"
 
     return "unknown"
 
