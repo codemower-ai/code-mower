@@ -24,6 +24,7 @@ gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready
 codex --version
 claude auth status >/dev/null 2>&1 && echo "claude auth ok" || { echo "claude auth NOT ready"; false; }
 claude -p "Reply with exactly: ok" --output-format json
+devin auth status >/dev/null 2>&1 && echo "devin auth ok" || { echo "devin auth NOT ready"; false; }
 ```
 
 Set `DISPATCH_TOKEN` as a human-owned PAT or GitHub App posting-token secret,

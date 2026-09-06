@@ -11,7 +11,6 @@ from pathlib import Path
 from unittest import mock
 
 import code_mower.devin_cli_audit_pr as devin_cli_audit
-from code_mower.provider_runners.workspace import ProviderWorkspaceError
 
 
 class _DevinCliAuditTestCase(unittest.TestCase):
@@ -88,7 +87,6 @@ class _DevinCliAuditTestCase(unittest.TestCase):
             repo_paths={"owner/repo": self.repo},
             command=str(self.command),
             base_ref="main",
-                    dry_run=False,
             **overrides,
         )
 
@@ -185,9 +183,17 @@ class TestDevinCliAuditPass(_DevinCliAuditTestCase):
         with mock.patch(
             "code_mower.devin_cli_audit_pr.fetch_pull_request",
             return_value=self._pr_meta(),
-        ):
-            with self.assertRaises(ProviderWorkspaceError):
-                devin_cli_audit.audit_pr(self._config(allow_dirty=False))
+        ), mock.patch(
+            "code_mower.devin_cli_audit_pr.post_pr_comment",
+            return_value={"id": 123},
+        ) as post:
+            result = devin_cli_audit.audit_pr(self._config(allow_dirty=False))
+
+        self.assertEqual(result.verdict, "UNKNOWN")
+        self.assertIn("needs-devin-cli-audit", result.comment_body)
+        self.assertIn("INCOMPLETE", result.comment_body)
+        self.assertNotIn("PASS", result.comment_body)
+        self.assertTrue(post.called)
 
     def test_timeout_fails_closed(self) -> None:
         self._write_fake(
@@ -342,6 +348,149 @@ exit 1
         self.assertIn("hard limit", result.comment_body.lower())
         self.assertNotIn("PASS", result.comment_body)
 
+    def test_dry_run_unknown_renders_bounded_comment(self) -> None:
+        # A stale head in dry-run mode must still render a bounded UNKNOWN
+        # comment body without posting or crashing on an unbound artifact.
+        def _fetch(*args, **kwargs):
+            return self._pr_meta(moved=True)
+
+        self._write_fake(json.dumps({"verdict": "pass", "summary": "OK", "findings": []}))
+        with mock.patch(
+            "code_mower.devin_cli_audit_pr.fetch_pull_request",
+            side_effect=_fetch,
+        ), mock.patch(
+            "code_mower.devin_cli_audit_pr.post_pr_comment",
+            return_value={"id": 123},
+        ) as post:
+            result = devin_cli_audit.audit_pr(self._config(dry_run=True))
+
+        self.assertEqual(result.verdict, "UNKNOWN")
+        self.assertIn("needs-devin-cli-audit", result.comment_body)
+        self.assertIn("INCOMPLETE", result.comment_body)
+        self.assertFalse(post.called)
+        self.assertIsNone(result.verdict_artifact_path)
+
+    def test_adaptive_diff_expansion_is_trustworthy(self) -> None:
+        # target < diff <= hard limit: the complete diff tail must reach the
+        # prompt and a PASS remains trustworthy.
+        prompt_log = self.tmp / "prompt.log"
+        fake = self.tmp / "fake-devin-prompt"
+        script = """#!/bin/sh
+prev=""
+prompt_path=""
+for a in "$@"; do
+  if [ "$prev" = "--prompt-file" ]; then prompt_path="$a"; fi
+  prev="$a"
+done
+cp "$prompt_path" PROMPT_LOG
+echo '{"verdict": "pass", "summary": "Reviewed the complete diff.", "findings": []}'
+"""
+        fake.write_text(script.replace("PROMPT_LOG", str(prompt_log)), encoding="utf-8")
+        fake.chmod(0o755)
+        with mock.patch(
+            "code_mower.devin_cli_audit_pr.fetch_pull_request",
+            return_value=self._pr_meta(),
+        ), mock.patch(
+            "code_mower.devin_cli_audit_pr.post_pr_comment",
+            return_value={"id": 123},
+        ):
+            config = self._config(max_diff_bytes=50, max_diff_hard_limit_bytes=1_000_000)
+            config.command = str(fake)
+            result = devin_cli_audit.audit_pr(config)
+
+        self.assertEqual(result.verdict, "PASS")
+        self.assertIn("devin-cli-audit-done", result.comment_body)
+        self.assertIn("expanded above the normal target", result.comment_body)
+        prompt_text = prompt_log.read_text(encoding="utf-8")
+        # The complete diff tail (the PR change itself) must be present.
+        self.assertIn("+b", prompt_text)
+        self.assertNotIn("truncated this PR diff", prompt_text)
+
+    def test_provider_write_fails_closed(self) -> None:
+        # A fake Devin process that creates a file and emits PASS must never
+        # persist a claimed PASS.
+        fake = self.tmp / "fake-devin-write"
+        fake.write_text(
+            """#!/bin/sh
+echo pwned > provider-created-file.txt
+echo '{"verdict": "pass", "summary": "OK", "findings": []}'
+""",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        with mock.patch(
+            "code_mower.devin_cli_audit_pr.fetch_pull_request",
+            return_value=self._pr_meta(),
+        ), mock.patch(
+            "code_mower.devin_cli_audit_pr.post_pr_comment",
+            return_value={"id": 123},
+        ):
+            config = self._config()
+            config.command = str(fake)
+            result = devin_cli_audit.audit_pr(config)
+
+        self.assertEqual(result.verdict, "UNKNOWN")
+        self.assertIn("needs-devin-cli-audit", result.comment_body)
+        self.assertNotIn("devin-cli-audit-done", result.comment_body)
+
+    def _write_prompt_observer(self, name: str, *, sleep: int = 0, exit_code: int = 0) -> tuple:
+        mode_log = self.tmp / f"{name}.mode"
+        path_log = self.tmp / f"{name}.path"
+        fake = self.tmp / f"fake-devin-{name}"
+        script = """#!/bin/sh
+prev=""
+prompt_path=""
+for a in "$@"; do
+  if [ "$prev" = "--prompt-file" ]; then prompt_path="$a"; fi
+  prev="$a"
+done
+stat -f %Lp "$prompt_path" > MODE_LOG 2>/dev/null || stat -c %a "$prompt_path" > MODE_LOG
+printf '%s' "$prompt_path" > PATH_LOG
+sleep SLEEP
+echo '{"verdict": "pass", "summary": "OK", "findings": []}'
+exit EXIT_CODE
+"""
+        script = (
+            script.replace("MODE_LOG", str(mode_log))
+            .replace("PATH_LOG", str(path_log))
+            .replace("SLEEP", str(sleep))
+            .replace("EXIT_CODE", str(exit_code))
+        )
+        fake.write_text(script, encoding="utf-8")
+        fake.chmod(0o755)
+        return fake, mode_log, path_log
+
+    def _run_with_fake(self, fake: Path, **overrides: object):
+        with mock.patch(
+            "code_mower.devin_cli_audit_pr.fetch_pull_request",
+            return_value=self._pr_meta(),
+        ), mock.patch(
+            "code_mower.devin_cli_audit_pr.post_pr_comment",
+            return_value={"id": 123},
+        ):
+            config = self._config(**overrides)
+            config.command = str(fake)
+            return devin_cli_audit.audit_pr(config)
+
+    def test_prompt_file_mode_and_cleanup_on_success(self) -> None:
+        fake, mode_log, path_log = self._write_prompt_observer("ok")
+        result = self._run_with_fake(fake)
+        self.assertEqual(result.verdict, "PASS")
+        self.assertEqual(mode_log.read_text(encoding="utf-8").strip(), "600")
+        self.assertFalse(Path(path_log.read_text(encoding="utf-8")).exists())
+
+    def test_prompt_file_removed_on_nonzero_exit(self) -> None:
+        fake, mode_log, path_log = self._write_prompt_observer("fail", exit_code=1)
+        result = self._run_with_fake(fake)
+        self.assertEqual(result.verdict, "UNKNOWN")
+        self.assertEqual(mode_log.read_text(encoding="utf-8").strip(), "600")
+        self.assertFalse(Path(path_log.read_text(encoding="utf-8")).exists())
+
+    def test_prompt_file_removed_on_timeout(self) -> None:
+        fake, mode_log, path_log = self._write_prompt_observer("slow", sleep=3)
+        result = self._run_with_fake(fake, timeout=1)
+        self.assertEqual(result.verdict, "UNKNOWN")
+        self.assertFalse(Path(path_log.read_text(encoding="utf-8")).exists())
 
 
 if __name__ == "__main__":

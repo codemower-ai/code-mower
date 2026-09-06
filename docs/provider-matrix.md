@@ -242,8 +242,10 @@ workflows. The v1.0 posture is:
 `devin_cli` is the local Devin CLI informational lane. It is not merge authority
 and is disabled by default.
 
-- Setup: install `devin`, authenticate with `devin auth status`, and make it
-  available on the self-hosted runner `PATH`. Optional: override the binary with
+- Setup: install `devin` and make it available on the self-hosted runner
+  `PATH`. Verify readiness with a quiet probe that prints only a generic
+  ready/not-ready result and never exposes account identity or auth details:
+  `devin auth status >/dev/null 2>&1 && echo "devin auth ok" || echo "devin auth NOT ready"`. Optional: override the binary with
   `CODE_MOWER_DEVIN_CLI_COMMAND` and set `CODE_MOWER_DEVIN_CLI_MODEL` (or
   `DEVIN_CLI_MODEL`/`DEVIN_MODEL`) for provenance.
 - Invocation: `code-mower devin-cli-audit --repo OWNER/REPO --pr NUMBER`, or

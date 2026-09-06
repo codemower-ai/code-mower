@@ -51,6 +51,7 @@ if __package__ in {None, ""}:
         one_line,
         parse_repo_paths,
         post_pr_comment,
+        ProviderWorkspaceError,
         require_exact_keys,
         resolve_github_token_from_stdin_or_env,
         run_git,
@@ -76,6 +77,7 @@ elif __package__ == "tools":  # pragma: no cover - direct helper execution
         one_line,
         parse_repo_paths,
         post_pr_comment,
+        ProviderWorkspaceError,
         require_exact_keys,
         resolve_github_token_from_stdin_or_env,
         run_git,
@@ -101,6 +103,7 @@ else:  # pragma: no cover - exercised after package extraction
         one_line,
         parse_repo_paths,
         post_pr_comment,
+        ProviderWorkspaceError,
         require_exact_keys,
         resolve_github_token_from_stdin_or_env,
         run_git,
@@ -316,20 +319,6 @@ def _resolve_diff(
     return diff, changed_files
 
 
-def _clip_diff(diff: str, max_bytes: int) -> tuple[str, bool, int, int]:
-    raw = diff.encode("utf-8", errors="replace")
-    full_bytes = len(raw)
-    if full_bytes <= max_bytes:
-        return diff, False, full_bytes, full_bytes
-    clipped = raw[:max_bytes].decode("utf-8", errors="replace")
-    clipped += (
-        "\n\n[Code Mower truncated this PR diff for the Devin CLI audit: "
-        f"included {max_bytes} of {full_bytes} bytes. Treat missing context as a "
-        "review limitation, not permission to guess.]\n"
-    )
-    return clipped, True, full_bytes, len(clipped.encode("utf-8"))
-
-
 def _resolve_command() -> str:
     return os.environ.get("CODE_MOWER_DEVIN_CLI_COMMAND", DEFAULT_DEVIN_COMMAND).strip() or DEFAULT_DEVIN_COMMAND
 
@@ -395,13 +384,28 @@ def build_prompt(
     prompt_lenses: Tuple[str, ...],
     prompt_dir: Optional[Path] = None,
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES,
+    max_diff_hard_limit_bytes: int = DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES,
     display_name: str = "Devin CLI",
 ) -> tuple[str, Dict[str, Any]]:
     review_prompt = code_mower_prompts.load_review_prompt(
         prompt_lenses,
         prompt_dir=prompt_dir,
     )
-    clipped_diff, truncated, full_bytes, included_bytes = _clip_diff(diff, max_diff_bytes)
+    # The diff was already bounded at the hard limit by _resolve_diff. Include
+    # the complete diff whenever it fits within the hard limit, even when it
+    # exceeds the normal target, so a partial review can never become a
+    # trustworthy PASS. Fail closed only when the hard limit is exceeded.
+    full_bytes = len(diff.encode("utf-8", errors="replace"))
+    if full_bytes > max_diff_hard_limit_bytes:
+        raise NoTrustworthyVerdictError(
+            "PR diff exceeds the configured hard limit "
+            f"({max_diff_hard_limit_bytes} bytes); measured {full_bytes} bytes. "
+            "Increase audit.max_diff_hard_limit_bytes and requeue."
+        )
+    clipped_diff = diff
+    truncated = False
+    included_bytes = full_bytes
+    adaptive_expanded = full_bytes > max_diff_bytes
     body = str(pr_meta.get("body") or "").strip() or "(empty)"
     title = str(pr_meta.get("title") or "").strip() or "(untitled)"
 
@@ -459,7 +463,9 @@ Body:
         "full_diff_bytes": full_bytes,
         "included_diff_bytes": included_bytes,
         "max_diff_bytes": max_diff_bytes,
+        "max_diff_hard_limit_bytes": max_diff_hard_limit_bytes,
         "diff_truncated": truncated,
+        "adaptive_expanded": adaptive_expanded,
         "prompt_lenses": list(prompt_lenses),
         "prompt_bytes": len(prompt.encode("utf-8")),
     }
@@ -652,7 +658,7 @@ def _run_devin_cli(
     model: str,
     cwd: Path,
     timeout: int,
-) -> tuple[str, str, int, float]:
+) -> tuple[str, int, float]:
     with tempfile.TemporaryDirectory(prefix="code-mower-devin-cli-") as tmp:
         prompt_path = Path(tmp) / "audit.prompt"
         prompt_path.write_text(prompt, encoding="utf-8")
@@ -694,7 +700,9 @@ def _run_devin_cli(
                 f"Devin CLI timed out after {timeout}s; no trustworthy verdict available"
             ) from exc
         duration = time.monotonic() - started
-        return completed.stdout, completed.stderr, completed.returncode, duration
+        # Raw stderr is captured only for subprocess plumbing; it is never
+        # returned to callers so it cannot reach comments or artifacts.
+        return completed.stdout, completed.returncode, duration
 
 
 def _parse_devin_output(
@@ -783,28 +791,6 @@ def _post_audit_comment(
     return posted, bound_body
 
 
-def _post_requeue_comment(
-    repo: str,
-    pr_number: int,
-    head_sha: str,
-    reason: str,
-    *,
-    token: str,
-    actions_run_id: Optional[str],
-    calibration_badge: str = "",
-) -> str:
-    comment = _build_comment(
-        provider_name="Devin CLI",
-        head_sha=head_sha,
-        verdict_text=_render_unknown_prose(reason),
-        trailer=NEEDS_TRAILER,
-        actions_run_id=actions_run_id,
-        calibration_badge=calibration_badge,
-    )
-    _, bound = _post_audit_comment(repo, pr_number, comment, token=token, actions_run_id=actions_run_id)
-    return bound
-
-
 def _write_artifact(
     lane_id: str,
     repo: str,
@@ -875,6 +861,7 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
         prompt_lenses=config.prompt_lenses,
         prompt_dir=config.prompt_dir,
         max_diff_bytes=config.max_diff_bytes,
+        max_diff_hard_limit_bytes=config.max_diff_hard_limit_bytes,
     )
 
     changed_files = set(changed_files_tuple)
@@ -882,7 +869,7 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
     command = _resolve_command() if config.command == DEFAULT_DEVIN_COMMAND else config.command
     model = config.model or _resolve_model()
 
-    stdout, stderr, returncode, duration = _run_devin_cli(
+    stdout, returncode, duration = _run_devin_cli(
         command=command,
         prompt=prompt,
         model=model,
@@ -931,7 +918,16 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
             parsed.mismatch_note or "Devin CLI returned an unusable verdict"
         )
 
-    diff_notice = f"local checkout diff; {diagnostics['included_diff_bytes']} of {diagnostics['full_diff_bytes']} bytes"
+    diff_notice = (
+        f"local checkout diff; {diagnostics['included_diff_bytes']} of "
+        f"{diagnostics['full_diff_bytes']} bytes"
+    )
+    if diagnostics.get("adaptive_expanded"):
+        diff_notice += (
+            "; expanded above the normal target "
+            f"({diagnostics['max_diff_bytes']} bytes) within the hard limit "
+            f"({diagnostics['max_diff_hard_limit_bytes']} bytes)"
+        )
     context_notice = "read-only review; prompt file with mode 0600, empty stdin, no source-edit tools"
 
     comment_body = _build_comment(
@@ -986,7 +982,13 @@ def audit_pr(config: AuditConfig) -> AuditResult:
     """Run a non-interactive Devin CLI audit and post the verdict."""
     try:
         return _do_audit_pr(config)
-    except (AuthorExcludedError, StaleHeadError, NoTrustworthyVerdictError, MalformedOutputError) as exc:
+    except (
+        AuthorExcludedError,
+        StaleHeadError,
+        NoTrustworthyVerdictError,
+        MalformedOutputError,
+        ProviderWorkspaceError,
+    ) as exc:
         reason = str(exc)
         head_sha = ""
         try:
@@ -995,26 +997,27 @@ def audit_pr(config: AuditConfig) -> AuditResult:
         except Exception:
             head_sha = ""
         if not head_sha:
-            return AuditResult(
-                repo=config.repo,
-                pr_number=config.pr_number,
-                head_sha_start="",
-                head_sha_end="",
-                verdict="UNKNOWN",
-                trailer=NEEDS_TRAILER,
-                comment_body="",
-                duration_seconds=0.0,
-            )
-        comment_body = ""
+            # Without a trusted PR-head context no comment can be posted
+            # safely; surface a hard configuration error instead.
+            raise
+        # Always render a bounded UNKNOWN comment body, even in dry-run mode,
+        # so the needs-audit trailer is observable without posting.
+        comment_body = _build_comment(
+            provider_name="Devin CLI",
+            head_sha=head_sha,
+            verdict_text=_render_unknown_prose(reason),
+            trailer=NEEDS_TRAILER,
+            actions_run_id=config.actions_run_id,
+            calibration_badge=config.calibration_badge,
+        )
+        artifact_path: Optional[Path] = None
         if not config.dry_run:
-            comment_body = _post_requeue_comment(
+            _, comment_body = _post_audit_comment(
                 config.repo,
                 config.pr_number,
-                head_sha,
-                reason,
+                comment_body,
                 token=config.github_token,
                 actions_run_id=config.actions_run_id,
-                calibration_badge=config.calibration_badge,
             )
             artifact_path = _write_artifact(
                 lane_id="devin_cli",
