@@ -364,6 +364,7 @@ PACKAGE_FILES = (
         "reviewer",
     ),
     ("tools/claude_audit_pr.py", "src/code_mower/claude_audit_pr.py", "reviewer"),
+    ("src/code_mower/devin_cli_audit_pr.py", "src/code_mower/devin_cli_audit_pr.py", "reviewer"),
     ("src/code_mower/claude_cli_bounce.py", "src/code_mower/claude_cli_bounce.py", "reviewer"),
     (
         "src/code_mower/claude_cli_environment.py",
@@ -470,6 +471,11 @@ PACKAGE_FILES = (
     (
         "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
         "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
+        "template",
+    ),
+    (
+        "src/code_mower/templates/product-support/run_devin_cli_audit_pr.sh",
+        "src/code_mower/templates/product-support/run_devin_cli_audit_pr.sh",
         "template",
     ),
     (

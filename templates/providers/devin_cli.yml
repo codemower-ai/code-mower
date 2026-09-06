@@ -36,7 +36,7 @@ devin_cli:
       - "not logged in"
     campaign_auth_location_label: "ambient Devin CLI session"
     local_cli_path_basename_only: true
-    local_audit_eligible: false
+    local_audit_eligible: true
     campaign_eligible: true
     campaign_adapter_argv:
       - "{python}"

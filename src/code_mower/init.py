@@ -85,6 +85,7 @@ LOCAL_AUDIT_RUNNER_LABEL = "code-mower-audit"
 LOCAL_AUDIT_WRAPPERS = {
     "claude": "tools/run_claude_audit_pr.sh",
     "codex": "tools/run_codex_audit_pr.sh",
+    "devin-cli": "tools/run_devin_cli_audit_pr.sh",
 }
 GATE_HEALTH_WORKFLOW_PATH = ".github/workflows/code-mower-gate-health.yml"
 GATE_HEALTH_WORKFLOW_TEMPLATE = "templates/workflows/code-mower-gate-health.yml.j2"
