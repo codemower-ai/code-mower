@@ -1,0 +1,43 @@
+devin_cli:
+  provider: "devin_cli"
+  driver: "local_cli"
+  type: "audit"
+  adapter: null
+  trailer_lane: null
+  spend_policy: "included"
+  merge_authority: false
+  informational: true
+  enabled_by_default: false
+  events: []
+  token_env:
+    - "GITHUB_TOKEN"
+  token_env_any: []
+  trigger_policy: "manual"
+  provider_config:
+    command: "devin"
+    command_env: "CODE_MOWER_DEVIN_CLI_COMMAND"
+    model_env: "CODE_MOWER_DEVIN_CLI_MODEL"
+    model_env_any:
+      - "DEVIN_CLI_MODEL"
+      - "DEVIN_MODEL"
+    prompt_lenses:
+      - "base-audit"
+    doctor_probe_args:
+      - "--version"
+    doctor_probe_timeout_seconds: 30
+    campaign_auth_probe_args:
+      - "auth"
+      - "status"
+    campaign_auth_probe_timeout_seconds: 20
+    campaign_auth_logged_out_exit_codes:
+      - 1
+    campaign_auth_logged_out_markers:
+      - "not authenticated"
+      - "not logged in"
+    campaign_auth_location_label: "ambient Devin CLI session"
+    local_cli_path_basename_only: true
+    local_audit_eligible: false
+    campaign_eligible: false
+    auth: "run `devin auth login` in a trusted environment; doctor only reports bounded auth status and never persists the output"
+    status: "informational local Devin CLI lane; not merge authority until calibrated for blocker catch rate, false positives, cost, and latency"
+  review_hygiene: {}

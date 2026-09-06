@@ -46,7 +46,8 @@ the live catalog is untouched.
 | `greptile` | Greptile | GitHub review/check | paid | GitHub App enabled for repo | informational |
 | `qodo` | Qodo | manual opt-in comment/event | paid | GitHub App enabled for repo | informational |
 | `cursor_bugbot` | Cursor BugBot | `bugbot run` or `@cursor review` | paid/Cursor usage | Cursor GitHub App and BugBot repo enablement | informational |
-| `devin` | Devin | hosted bridge | paid | Devin GitHub integration authorized | optional merge-gating only after explicit policy |
+| `devin` | Devin | hosted bridge | paid | Devin GitHub integration authorized | canonical hosted Devin; `devin_cloud` accepted alias; optional merge-gating only after explicit policy |
+| `devin_cli` | Devin CLI | local runner / doctor contract | included/provider account | local checkout plus local auth | informational; not merge authority until calibrated; not a local audit workflow selection until #746; not selectable for release campaigns until the #744 adapter lands |
 | `local_llm` | OpenAI-compatible endpoint | local runner | local or endpoint cost | endpoint receives selected code context | informational |
 | `aider` | Aider CLI | local runner | local/provider account | local checkout plus model auth | informational |
 | `gemini_cli` | Gemini CLI compatibility | local runner | provider account | local checkout plus API/auth | legacy informational |
@@ -71,7 +72,8 @@ peer audit lanes must gate the PR.
 | `claude` | Claude Code CLI on the self-hosted Mac lane runner | `tier:R` plus `builder:claude`; `lane-mac-runner.yml` opens `claude/...` PRs | First-class local builder identity. The owning Claude branch is single-writer; Codex audit gates Claude-authored PRs. |
 | `grok_bot` | Cursor Cloud Agents through an `@cursor` dispatch comment | `tier:R` plus `builder:cursor`; `dispatch-lanes.yml` posts the configured `@cursor` mention | Hosted builder identity for the reference Cursor path. `builder:grok-bot` remains accepted as a legacy label during migration. Codex and Claude audits both gate before merge. |
 | `cursor_cloud_agent` | Cursor Cloud Agents | Usually represented by `grok_bot` in Code Mower build-loop config; standalone provenance can still use `builder record` | Hosted async executor. Treat source access, cost, and branch writes as explicit opt-in; never count it as reviewer approval. |
-| `devin` | Devin session | External hosted dispatch or manual handoff, then `builder record` once a PR exists | Explicit opt-in. Use separate reviewer evidence for merge policy; do not rely on Devin builder output as gate evidence. |
+| `devin` | Devin session | External hosted dispatch or manual handoff, then `builder record` once a PR exists | Canonical hosted Devin builder; `devin_cloud` is an accepted alias. `builder:devin` remains the builder provenance identity. Use separate reviewer evidence for merge policy. |
+| `devin_cli` | Devin CLI on the local runner | `code-mower` local CLI wrapper, then `builder record` once a PR exists | Informational local builder. Not merge authority until calibrated; `builder:devin` provenance is preserved. |
 
 Example:
 
@@ -118,6 +120,7 @@ one lane from accidentally inheriting another lane's model label.
 | Aider | `CODE_MOWER_AIDER_MODEL` | `AIDER_MODEL`, `AIDER_CHAT_MODEL` | Informational until calibrated. |
 | CodeRabbit CLI | `CODE_MOWER_CODERABBIT_MODEL` | `CODERABBIT_MODEL` | Informational/manual lane. |
 | ACP bridge | `CODE_MOWER_ACP_MODEL` | none | Research lane until runtimes stabilize. |
+| Devin CLI | `CODE_MOWER_DEVIN_CLI_MODEL` | `DEVIN_CLI_MODEL`, `DEVIN_MODEL` | Informational local lane; not merge authority until calibrated. |
 | Local LLM | `CODE_MOWER_LOCAL_LLM_MODEL` | `LOCAL_LLM_MODEL` | Use the local endpoint/model id you configured. |
 
 These values are metadata, not secrets. Never store API keys, prompts, raw

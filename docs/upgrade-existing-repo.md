@@ -146,3 +146,38 @@ After merge, record the installed path/version again:
 command -v code-mower
 code-mower --version
 ```
+
+## Devin Provider Identity And Compatibility
+
+Code Mower now distinguishes these Devin identities:
+
+- `devin` — the canonical hosted Devin lane.
+- `devin_cloud` — an accepted alias that resolves to the existing `devin` hosted
+  lane. It has the same labels, token env names, trusted authors, trigger text,
+  response timeout, and merge posture as `devin`.
+- `devin_cli` — the local Devin CLI lane, informational and not merge authority.
+
+Existing `code-mower.yml` files that select `devin` continue to work unchanged.
+The builder provenance identity stays `builder:devin` for all three identities, so
+branch ownership, trailer prefixes, and dispatch label logic keep working.
+
+To adopt the new identities:
+
+| Goal | Action |
+|---|---|
+| Keep using hosted Devin unchanged | Leave `devin` in `code-mower.yml` as-is. |
+| Make hosted Devin explicit | Select `devin` in your profile and set `DEVIN_AUDIT_LABEL_TOKEN` and `GITHUB_TOKEN`. The `devin_cloud` alias resolves to the same lane in campaigns and telemetry. |
+| Try local Devin CLI | Select `devin_cli` in your profile, install `devin` on PATH, and set `CODE_MOWER_DEVIN_CLI_MODEL` or `DEVIN_CLI_MODEL`. |
+
+`devin_cli` is disabled by default and reports version and auth status with
+bounded, privacy-safe output. Doctor never persists raw `devin auth status` output
+or account identity, and it records only the executable basename for this lane —
+never a local filesystem path, even when `CODE_MOWER_DEVIN_CLI_COMMAND` points at
+an absolute path. Because Devin CLI uses the ambient login state,
+doctor describes the auth probe as the ambient Devin CLI session rather than an
+isolated campaign home. In this PR `devin_cli` is a provider/doctor contract:
+it is not a selectable local audit lane in `init` (it declares
+`local_audit_eligible: false`) and not a campaign participant (it declares
+`campaign_eligible: false`). The #746 PR will register the local audit wrapper
+and flip `local_audit_eligible`; the #744 PR will land the maintained campaign
+adapter and flip `campaign_eligible`.

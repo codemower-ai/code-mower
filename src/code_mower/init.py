@@ -103,6 +103,8 @@ LANE_STANDING_README_TEMPLATE = "templates/lanes/README.md"
 BUILDER_LANE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 BUILDER_ALIAS_TO_LANE = {
     "cursor": "cursor",
+    "devin-cli": "devin",
+    "devin-cloud": "devin",
     "grok": "cursor",
     "grok-bot": "cursor",
 }
@@ -696,6 +698,14 @@ def _local_audit_entries(
     for lane_id, lane in selected_lanes.items():
         if lane.get("driver") != "local_cli":
             continue
+        provider_config = lane.get("provider_config", {})
+        if provider_config.get("local_audit_eligible") is False:
+            raise ConfigError(
+                f"local audit lane {lane_id!r} is not available yet: it declares "
+                "local_audit_eligible=false because the executable wrapper is not "
+                "registered until #746. Choose an available local audit provider "
+                "(for example claude or codex), or remove it from the profile."
+            )
         trailer_lane = _trailer_lane_name(lane_id, lane)
         wrapper = LOCAL_AUDIT_WRAPPERS.get(trailer_lane.replace("_", "-"))
         if wrapper is None:

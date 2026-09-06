@@ -549,16 +549,20 @@ class CampaignAuthProbeTests(unittest.TestCase):
                     self.assertNotIn(str(valid_file), str(auth_valid.detail))
                     self.assertNotIn(str(valid_file), str(readiness_valid.detail))
 
-    def test_only_codex_declares_a_campaign_auth_probe(self) -> None:
+    def test_only_codex_and_devin_cli_declare_a_campaign_auth_probe(self) -> None:
         probing = sorted(
             lane_id
             for lane_id, lane in REFERENCE_PROVIDERS.items()
             if campaign_auth_probe_args(lane)
         )
-        self.assertEqual(probing, ["codex"])
+        self.assertEqual(probing, ["codex", "devin_cli"])
         self.assertEqual(
             campaign_auth_probe_args(REFERENCE_PROVIDERS["codex"]),
             ("login", "status"),
+        )
+        self.assertEqual(
+            campaign_auth_probe_args(REFERENCE_PROVIDERS["devin_cli"]),
+            ("auth", "status"),
         )
 
     def test_confirmed_logged_out_signature_is_the_only_owner_action(self) -> None:
