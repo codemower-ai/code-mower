@@ -75,6 +75,19 @@ def configured_participants(config: Mapping[str, Any]) -> tuple[str, ...]:
     return parse_participants(",".join(selected))
 
 
+def picker_initial_participants(config: Mapping[str, Any], *, profile: str) -> tuple[str, ...]:
+    """Include active known reviewers when editing an existing setup."""
+    selected = set(configured_participants(config)) if "session_defaults" in config else set()
+    profiles = config.get("profiles", {})
+    if not isinstance(profiles, Mapping) or not isinstance(profiles.get(profile), Mapping):
+        raise ConfigError(f"unknown or invalid profile {profile!r}")
+    active_lanes = profiles[profile].get("lanes", [])
+    if not isinstance(active_lanes, list):
+        raise ConfigError(f"profile {profile!r} lanes must be a list")
+    selected.update(name for name, item in PARTICIPANTS.items() if item.review_lane in active_lanes)
+    return tuple(name for name in PARTICIPANTS if name in selected)
+
+
 def _plain(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {key: _plain(item) for key, item in value.items()}

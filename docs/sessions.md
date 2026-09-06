@@ -36,8 +36,14 @@ code-mower next-steps --config .code-mower.generated/code-mower.yml
 
 Participant selection configures review lanes and remembers session defaults.
 Builder automation is enabled separately with the existing `init --builders`
-flow after the first review works. Existing repository settings and reviewer
-promotion decisions are preserved.
+flow after the first review works. Existing lane definitions and their promotion
+flags are retained. The selected profile's active reviewer list changes to match
+your selection: the preview explicitly lists removed reviewers and flags any
+that currently have merge authority. Review those removals before installing the
+generated files, since they change which reviewers the generated gate requires.
+When editing interactively, known reviewers already active in the profile are
+preselected alongside saved participants. Custom lanes absent from the picker
+are still reported if the selection would remove them.
 
 ## Start From Any Agent
 

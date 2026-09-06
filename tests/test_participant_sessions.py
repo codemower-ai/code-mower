@@ -49,6 +49,43 @@ class ParticipantTests(unittest.TestCase):
         self.assertTrue(updated["lanes"]["devin_cli"]["merge_authority"])
         self.assertEqual(config.validate_config(updated), [])
 
+    def test_narrowing_selection_reports_removal_of_promoted_and_custom_reviewers(self):
+        for lane_id in ("greptile", "custom_security"):
+            with self.subTest(lane=lane_id):
+                source = copy.deepcopy(self.config)
+                source["lanes"][lane_id] = copy.deepcopy(source["lanes"]["greptile"])
+                source["lanes"][lane_id]["merge_authority"] = True
+                source["lanes"][lane_id]["informational"] = False
+                if lane_id == "custom_security":
+                    source["lanes"][lane_id]["labels"] = {
+                        "needs": "needs-custom-security-audit", "done": "custom-security-audit-done",
+                        "blocked": "custom-security-audit-blocked",
+                    }
+                source["profiles"]["recommended"]["lanes"].append(lane_id)
+                plan = init.render_init_plan(source, participants=("claude", "codex", "devin"))
+                self.assertEqual(plan.data["participant_selection"]["review_lanes_removed"], [lane_id])
+                self.assertEqual(plan.data["participant_selection"]["merge_authority_lanes_removed"], [lane_id])
+                self.assertIn(f"removes merge-authority reviewer {lane_id}", plan.text)
+                self.assertIn("gate requirements will no longer include it", plan.text)
+                self.assertNotIn(lane_id, plan.data["profile"]["lanes"])
+                saved = next(item for item in plan.data["generated_files"] if item["path"] == "code-mower.yml")["config_data"]
+                self.assertTrue(saved["lanes"][lane_id]["merge_authority"])
+                self.assertIn(lane_id, source["profiles"]["recommended"]["lanes"])
+
+    def test_picker_addition_keeps_an_existing_promoted_reviewer_selected(self):
+        source = participants.config_with_participants(self.config, ("claude", "codex"))
+        source["profiles"]["recommended"]["lanes"].append("greptile")
+        source["lanes"]["greptile"]["merge_authority"] = True
+        source["lanes"]["greptile"]["informational"] = False
+        initial = participants.picker_initial_participants(source, profile="recommended")
+        self.assertIn("greptile", initial)
+        with mock.patch("sys.stdin.isatty", return_value=True), mock.patch("builtins.input", side_effect=["3", ""]), redirect_stderr(io.StringIO()):
+            selected = participants.pick_participants(initial)
+        plan = init.render_init_plan(source, participants=selected)
+        self.assertIn("devin_cli", plan.data["profile"]["lanes"])
+        self.assertIn("greptile", plan.data["profile"]["lanes"])
+        self.assertEqual(plan.data["participant_selection"]["review_lanes_removed"], [])
+
     def test_cursor_selection_does_not_enable_bugbot_or_a_review_gate(self):
         result = participants.config_with_participants(self.config, ("claude", "codex", "cursor", "grok-bot"))
         self.assertEqual(result["profiles"]["recommended"]["lanes"], ["claude_audit", "codex"])

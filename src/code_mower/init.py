@@ -2401,7 +2401,9 @@ def render_init_plan(
     source_kind: str | None = None,
     participants: tuple[str, ...] | None = None,
 ) -> RenderedPlan:
+    previous_profile_lanes: tuple[str, ...] = ()
     if participants is not None:
+        previous_profile_lanes = _profile(config, profile_id).lanes
         config = code_mower_participants.config_with_participants(
             config, participants, profile=profile_id,
         )
@@ -2450,6 +2452,23 @@ def render_init_plan(
         ),
     ]
     warnings: list[str] = []
+    selection_changes: dict[str, Any] | None = None
+    if participants is not None:
+        removed_lanes = [lane for lane in previous_profile_lanes if lane not in profile.lanes]
+        removed_authorities = [lane for lane in removed_lanes if lanes[lane].get("merge_authority")]
+        selection_changes = {
+            "participants": list(participants),
+            "review_lanes_added": [lane for lane in profile.lanes if lane not in previous_profile_lanes],
+            "review_lanes_removed": removed_lanes,
+            "merge_authority_lanes_removed": removed_authorities,
+        }
+        for lane in removed_lanes:
+            role = "merge-authority reviewer" if lane in removed_authorities else "reviewer"
+            warnings.append(
+                f"Participant selection removes {role} {lane} from profile {profile_id}. "
+                "Its lane settings are retained, but generated workflows and gate requirements "
+                "will no longer include it. Review this removal before installing generated files."
+            )
     merge_authority_lanes: list[str] = []
     informational_lanes: list[str] = []
     owner_surface = _owner_surface_config(config)
@@ -2848,6 +2867,7 @@ def render_init_plan(
             "root_config_present": has_root_config,
         },
         "setup_drift_hint": drift_hint,
+        "participant_selection": selection_changes,
         "labels": sorted(set(labels)),
         "workflows": workflows,
         "generated_files": generated_files,
@@ -3181,7 +3201,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.interactive:
             selected_participants = code_mower_participants.pick_participants(
-                selected_participants or code_mower_participants.configured_participants(config),
+                selected_participants or code_mower_participants.picker_initial_participants(
+                    config, profile=args.profile,
+                ),
             )
         plan = render_init_plan(
             config,
