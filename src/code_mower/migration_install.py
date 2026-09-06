@@ -552,9 +552,6 @@ def _run_pip_install_with_retries(
     if retry_delay_seconds < 0:
         raise ValueError("--pip-retry-delay must be zero or greater")
 
-    # Capture boundary before this retry group to isolate classification
-    attempt_steps_start = len(steps)
-
     for attempt in range(1, attempts + 1):
         try:
             completed = _run_rehearsal_step(
@@ -584,8 +581,11 @@ def _run_pip_install_with_retries(
                 timeout_error=exc if isinstance(exc, subprocess.TimeoutExpired) else None,
             )
             if attempt >= attempts:
+                # Classify from only the final attempt to avoid contamination from
+                # earlier transient failures (e.g., network blip on attempt 1,
+                # decisive 404 on final attempt)
                 failure_reason = classify_package_install_failure(
-                    exception=exc, steps=steps[attempt_steps_start:]
+                    exception=exc, steps=steps[-1:]
                 )
                 if package_index:
                     raise RehearsalError(

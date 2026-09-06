@@ -198,6 +198,47 @@ class FailureReasonClassificationTests(unittest.TestCase):
         # Assert failure_reason is package_index (404) not network (SSL from earlier)
         self.assertEqual(ctx.exception.failure_reason, "package_index")
 
+    def test_multiple_retries_classify_from_final_attempt_only(self) -> None:
+        """Classification uses only the final attempt, not earlier transient failures."""
+        steps: list[dict[str, Any]] = []
+
+        # Mock to simulate: attempt 1 = network error, attempt 2 = network error,
+        # attempt 3 (final) = decisive 404
+        call_count = 0
+        def mock_rehearsal_step(command, *, cwd, env, steps, timeout):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                steps.append({"stderr_preview": "connection refused", "stdout_preview": ""})
+                raise migration_install.RehearsalError("connection refused", steps)
+            elif call_count == 2:
+                steps.append({"stderr_preview": "network is unreachable", "stdout_preview": ""})
+                raise migration_install.RehearsalError("network unreachable", steps)
+            else:  # call_count == 3 (final attempt)
+                steps.append({"stderr_preview": "HTTP Error 404: Not Found", "stdout_preview": ""})
+                raise migration_install.RehearsalError("HTTP Error 404", steps)
+
+        with patch.object(
+            migration_install, "_run_rehearsal_step", side_effect=mock_rehearsal_step
+        ):
+            with self.assertRaises(migration_install.RehearsalError) as ctx:
+                migration_install._run_pip_install_with_retries(
+                    command=["pip", "install", "test-package"],
+                    cwd=Path("/tmp"),
+                    env=None,
+                    steps=steps,
+                    timeout=60,
+                    attempts=3,
+                    retry_delay_seconds=0,
+                    package_index=True,
+                )
+
+        # Should classify as package_index (404 from final attempt),
+        # not network (from earlier attempts)
+        self.assertEqual(ctx.exception.failure_reason, "package_index")
+        # Verify all 3 attempts were recorded
+        self.assertEqual(len(steps), 3)
+
 
 class FailureReasonSchemaTests(unittest.TestCase):
     """The adoption result schema accepts and validates failure_reason."""
