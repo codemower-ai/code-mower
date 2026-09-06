@@ -1076,7 +1076,8 @@ def validate_bound_result(
     """
     if not isinstance(candidate, dict):
         raise ValueError("provider did not emit a JSON result object")
-    _strip_null_optional_step_fields(candidate)
+    if provider == "codex":
+        _strip_null_optional_step_fields(candidate)
     validate_adoption_result_payload(candidate, expected_package_identity=package_identity)
     if candidate.get("provider") != provider:
         raise ValueError("provider result identity mismatch")
