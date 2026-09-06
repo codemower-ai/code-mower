@@ -473,6 +473,10 @@ participant. It is not merge authority until calibrated.
 - It uses `--sandbox --permission-mode autonomous`, the least-permissive
   posture that still allows the disposable qualification workspace to create a
   venv, install the candidate, and run smoke checks.
+- In this posture Devin's `edit`/`write` file tools are force-asked and cannot
+  be approved non-interactively, so the prompt requires all file changes to go
+  through sandboxed shell commands; a run that still calls them ends without a
+  result and the adapter fails closed.
 - The prompt file is created inside the disposable workspace with mode `0600`
   and is never persisted after the run.
 - Raw stdout/stderr are transient parsing input only. No prompt, transcript,

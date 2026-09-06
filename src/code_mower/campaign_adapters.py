@@ -420,6 +420,9 @@ def build_qualification_prompt(
         "any existing checkout, home directory, credential file, or environment",
         "variable holding a secret. Never print secrets, tokens, file paths,",
         "commands you ran, or raw logs in your final answer.",
+        "Perform every file creation and edit through shell commands only;",
+        "dedicated file write/edit tools cannot be approved in this unattended",
+        "run and any call to them ends the session without a result.",
         "",
         "Binding (echo these values back exactly in your result):",
         f"- provider: {provider}",
@@ -758,24 +761,52 @@ def _extract_muse_result(stdout: str) -> dict[str, Any] | None:
     return code_mower_gemini_cli.parse_response_json(stdout)
 
 
+def _scan_json_objects(text: str) -> list[Mapping[str, Any]]:
+    """Decode every balanced JSON object in *text*, tolerating chatty output.
+
+    Scans for ``{`` and attempts ``raw_decode`` at each position. Prose,
+    progress lines, and unrelated JSON are skipped; nested objects are decoded
+    at their own ``{`` so an embedded result object is still found. A ``{`` that
+    appears inside a JSON string value cannot decode (its keys are escaped), so
+    serialized-JSON string fields never produce phantom objects. Provider output
+    is transient parsing input only and is never persisted.
+    """
+    decoder = json.JSONDecoder()
+    objects: list[Mapping[str, Any]] = []
+    index = 0
+    while True:
+        brace = text.find("{", index)
+        if brace < 0:
+            break
+        # Advance one char past this ``{`` so a nested object is decoded at its
+        # own position rather than being skipped inside an outer decode.
+        index = brace + 1
+        try:
+            payload, _end = decoder.raw_decode(text[brace:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, Mapping):
+            objects.append(payload)
+    return objects
+
+
 def _extract_devin_result(stdout: str) -> dict[str, Any] | None:
     """Pull the adoption result out of ``devin --print`` output.
 
-    The prompt requires exactly one ``code_mower.adoptionResult.v1`` JSON
-    object. Reject output that contains no such object, more than one, or a
-    non-object payload. Provider stdout is transient parsing input only and is
-    never persisted.
+    ``devin --print`` may stream tool and progress JSON to stdout before the
+    final response, so first-brace/last-brace slicing cannot isolate the result.
+    Every balanced JSON object in the output is decoded instead, and exactly one
+    must be a mapping whose ``schema`` is ``code_mower.adoptionResult.v1``.
+    Zero or multiple adoption-result candidates fail closed.
     """
-    candidate = code_mower_gemini_cli.parse_response_json(stdout)
-    if not isinstance(candidate, Mapping):
+    candidates = [
+        dict(obj)
+        for obj in _scan_json_objects(stdout)
+        if obj.get("schema") == ADOPTION_RESULT_SCHEMA
+    ]
+    if len(candidates) != 1:
         return None
-    # Detect duplicate results: the unwrapped text must not contain the schema
-    # string more than once, since that would mean two or more top-level result
-    # objects or repeated prose claiming to be results.
-    unwrapped = code_mower_gemini_cli._unwrap_fenced_json(stdout)
-    if unwrapped.count(ADOPTION_RESULT_SCHEMA) != 1:
-        return None
-    return dict(candidate)
+    return candidates[0]
 
 
 def check_structured_result_capability(provider: str) -> bool:

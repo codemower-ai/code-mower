@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1257,6 +1258,12 @@ class DevinAdapterTests(unittest.TestCase):
             # The prompt file is created with mode 0600 and is in the workspace.
             self.assertTrue(prompt_path.is_file())
             self.assertEqual(prompt_path.stat().st_mode & 0o777, 0o600)
+            # Autonomous+sandbox cannot approve write/edit tool calls
+            # non-interactively; the prompt must require shell-only changes.
+            self.assertIn(
+                "shell commands only",
+                prompt_path.read_text(encoding="utf-8"),
+            )
             return subprocess.CompletedProcess(list(argv), 0, stdout=json.dumps(result), stderr="")
 
         code, output, _tmp = AdapterTransportTests()._run("devin_cli", runner)
@@ -1350,18 +1357,181 @@ class DevinAdapterTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertFalse(output.is_file())
 
-    def test_devin_cli_dirty_workspace_fails_closed(self) -> None:
-        # A non-JSON reply with local path leakage must not be accepted as a
-        # result and must not be persisted.
+    def test_devin_cli_workspace_is_disposable_and_clean(self) -> None:
+        """The adapter hands Devin a fresh empty workspace, so a dirty or
+        pre-populated workspace cannot occur: the only file present when the
+        provider starts is the mode-0600 prompt file. ``--respect-workspace-
+        trust false`` bypasses the trust prompt for that disposable directory.
+        """
+        result = _adoption_result("devin_cli")
+
+        def runner(
+            argv: Any,
+            prompt_input: Any,
+            timeout: int,
+            workdir: Path,
+            child_env: Any,
+        ) -> Any:
+            entries = [p.name for p in workdir.iterdir()]
+            self.assertEqual(sorted(entries), ["campaign.prompt-input.txt"])
+            self.assertNotIn("--export", argv)
+            return subprocess.CompletedProcess(
+                list(argv), 0, stdout=json.dumps(result), stderr=""
+            )
+
+        code, output, _tmp = AdapterTransportTests()._run("devin_cli", runner)
+        self.assertEqual(code, 0)
+        self.assertTrue(output.is_file())
+
+    def test_devin_cli_chatty_output_with_unrelated_json_is_accepted(self) -> None:
+        """Tool/progress JSON before the result must not hide the one result."""
+        result = _adoption_result("devin_cli")
+        chatty = (
+            '{"type":"progress","message":"running exec"}\n'
+            'prose line with {braces} that is not JSON\n'
+            '{"type":"tool","name":"exec","status":"done"}\n'
+            + json.dumps(result)
+            + "\n"
+        )
         code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli", self._devin_runner(stdout=chatty)
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(output.read_text(encoding="utf-8"))["provider"],
             "devin_cli",
-            self._devin_runner(
-                stdout="",
-                stderr="workspace trust failed for /redacted/home/work\n",
-            ),
+        )
+
+    def test_devin_cli_nested_prose_and_trailing_json_are_tolerated(self) -> None:
+        """Braced prose and trailing tool events do not disturb extraction."""
+        result = _adoption_result("devin_cli")
+        chatty = (
+            "done { step: ok } and {unbalanced\n"
+            + json.dumps(result)
+            + '\n{"type":"summary","turns":2}\n'
+        )
+        code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli", self._devin_runner(stdout=chatty)
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(output.is_file())
+
+    def test_devin_cli_zero_candidates_fails_closed(self) -> None:
+        """Well-formed but schema-mismatched JSON is not an adoption result."""
+        chatty = (
+            '{"type":"progress","message":"ok"}\n'
+            '{"schema":"other.schema.v1","result":"pass"}\n'
+        )
+        code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli", self._devin_runner(stdout=chatty)
         )
         self.assertNotEqual(code, 0)
         self.assertFalse(output.is_file())
+
+    def test_devin_cli_embedded_result_object_is_found(self) -> None:
+        """A result nested inside a final-event object is still a candidate."""
+        result = _adoption_result("devin_cli")
+        wrapped = '{"type":"final","response":' + json.dumps(result) + "}\n"
+        code, output, _tmp = AdapterTransportTests()._run(
+            "devin_cli", self._devin_runner(stdout=wrapped)
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(output.is_file())
+
+    def test_devin_cli_fixture_exercises_real_subprocess_argv(self) -> None:
+        """A content-free fixture CLI validates the real argv over a real
+        subprocess (``run_provider_command``), reads the mode-0600 prompt file,
+        and emits chatty output plus one schema-bound result."""
+        result_fixture = (
+            "import json, sys\n"
+            "argv = sys.argv[1:]\n"
+            "required = ('--print', '--prompt-file', '--respect-workspace-trust', '--model', '--sandbox', '--permission-mode')\n"
+            "forbidden = ('--export', '--continue', '--resume')\n"
+            "missing = [f for f in required if f not in argv]\n"
+            "present = [f for f in forbidden if f in argv]\n"
+            "if missing or present:\n"
+            "    sys.stderr.write('argv-contract-violation missing=' + ','.join(missing) + ' present=' + ','.join(present))\n"
+            "    sys.exit(3)\n"
+            "if argv[argv.index('--respect-workspace-trust') + 1] != 'false':\n"
+            "    sys.stderr.write('argv-contract-violation trust')\n"
+            "    sys.exit(3)\n"
+            "if argv[argv.index('--permission-mode') + 1] != 'autonomous':\n"
+            "    sys.stderr.write('argv-contract-violation permission')\n"
+            "    sys.exit(3)\n"
+            "prompt_path = argv[argv.index('--prompt-file') + 1]\n"
+            "import os, time\n"
+            "assert (os.stat(prompt_path).st_mode & 0o777) == 0o600\n"
+            "prompt = open(prompt_path, encoding='utf-8').read()\n"
+            "assert 'code_mower.adoptionResult.v1' in prompt\n"
+            "result = {\n"
+            "    'schema': 'code_mower.adoptionResult.v1',\n"
+            "    'timestamp_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),\n"
+            "    'release_tag': 'v1.0.0',\n"
+            "    'package_identity': 'code-mower',\n"
+            "    'normalized_version': '1.0.0',\n"
+            "    'qualification_context': 'cold_install',\n"
+            "    'starting_version': '',\n"
+            "    'ending_version': '1.0.0',\n"
+            "    'provider': 'devin_cli',\n"
+            "    'executor': 'devin_cli',\n"
+            "    'host_class': 'local',\n"
+            "    'runtime_class': 'python_%d.%d' % sys.version_info[:2],\n"
+            "    'execution_state': 'executed',\n"
+            "    'elapsed_seconds': 0.5,\n"
+            "    'outcome': 'pass',\n"
+            "    'steps': [{'id': 'doctor', 'status': 'pass', 'elapsed_seconds': 0.5, 'warning_count': 0, 'owner_action_count': 0}],\n"
+            "}\n"
+            "print(json.dumps({'type': 'progress', 'message': 'exec done'}))\n"
+            "print(json.dumps(result))\n"
+        )
+        tmp = Path(tempfile.mkdtemp())
+        script = tmp / "devin_fixture.py"
+        script.write_text(result_fixture, encoding="utf-8")
+        # The venv interpreter path may contain spaces, which cannot sit in a
+        # shebang; launch through /bin/sh instead.
+        fixture = tmp / "devin-fixture"
+        fixture.write_text(
+            '#!/bin/sh\nexec "{}" "{}" "$@"\n'.format(sys.executable, script),
+            encoding="utf-8",
+        )
+        fixture.chmod(0o755)
+        output = tmp / "result.json"
+        code = campaign_adapters.run_campaign_adapter(
+            provider="devin_cli",
+            provider_bin=str(fixture),
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+            output_path=output,
+            timeout_seconds=60,
+            provider_runner=campaign_adapters.run_provider_command,
+        )
+        self.assertEqual(code, 0)
+        written = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(written["provider"], "devin_cli")
+        self.assertEqual(written["outcome"], "pass")
+
+    @unittest.skipUnless(shutil.which("devin"), "installed devin CLI not on PATH")
+    def test_installed_devin_cli_advertises_required_flags(self) -> None:
+        """The installed CLI exposes the noninteractive flags the adapter uses."""
+        completed = subprocess.run(
+            ["devin", "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(completed.returncode, 0)
+        for flag in (
+            "--print",
+            "--prompt-file",
+            "--respect-workspace-trust",
+            "--model",
+            "--sandbox",
+            "--permission-mode",
+        ):
+            self.assertIn(flag, completed.stdout)
 
     def test_devin_cli_redacts_raw_output_and_paths(self) -> None:
         secret = "ghp_leaked_secret_xyz"
