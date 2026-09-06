@@ -634,6 +634,40 @@ class ProcessGroupCleanupTests(unittest.TestCase):
             "orphaned provider transport survived the provider's exit",
         )
 
+    def test_a_finished_provider_is_not_a_timeout_at_the_cap(self) -> None:
+        """The drain must not turn a finished provider into a timed-out one.
+
+        The cap can fall inside the drain window. The provider had already
+        exited, so the run is not a timeout, and calling it one would replace
+        its exit code and hand classification a cap that never happened.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            child_pid_file = root / "child.pid"
+            script = (
+                "sleep 120 & echo $! > " + str(child_pid_file) + "; exit 5"
+            )
+
+            result = lane_delivery.supervise_process(
+                ["bash", "-c", script],
+                log_path=root / "run.log",
+                timeout_seconds=1.0,
+                term_grace_seconds=1.0,
+                # Outlives the cap, so the cap lands mid-drain.
+                descendant_drain_seconds=30.0,
+            )
+
+            grandchild = int(child_pid_file.read_text(encoding="utf-8").strip())
+
+        self.assertFalse(result.timed_out)
+        self.assertTrue(result.descendants_held_output)
+        self.assertEqual(result.exit_code, 5)
+        self.assertTrue(
+            _wait_for_pid_exit(grandchild),
+            "orphaned provider transport survived the drain",
+        )
+
     def test_supervise_cli_dispatches_to_the_provider(self) -> None:
         """The remainder must not share the subparsers destination.
 

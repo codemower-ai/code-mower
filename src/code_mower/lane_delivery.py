@@ -658,7 +658,12 @@ def supervise_process(
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    timed_out = True
+                    # A provider that already exited did not time out, however
+                    # close to the cap its leftovers kept the pipe open.
+                    if drain_deadline is not None:
+                        descendants_held_output = True
+                    else:
+                        timed_out = True
                     break
                 wait = min(remaining, 0.5)
                 if drain_deadline is not None:
