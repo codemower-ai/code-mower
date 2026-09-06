@@ -22,7 +22,9 @@ later entries are regular releases.
   bounded outcome only counts with a non-empty one-line summary. The cap is a
   clock, not a verdict: a run the supervisor stopped is judged on the transition
   it left behind, so work pushed before the cap fired still counts and a cap
-  that produced nothing still does not.
+  that produced nothing still does not, and one that produced nothing exits `3`
+  rather than the supervisor's own `124`/`125`/`130`, which would report a cap
+  as a provider failure. Only a provider that ended itself keeps its exit code.
 - Each local builder run records a metadata-only delivery outcome for Board and
   productivity reporting: provider exit, delivery transition, handoff, elapsed
   time, and intervention count.

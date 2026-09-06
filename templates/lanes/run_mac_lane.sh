@@ -894,20 +894,32 @@ else
   [ "$rc" -eq 125 ] && { overflowed=1; supervision_reason="output_overflow"; }
 fi
 
+# Whose verdict $rc is. When the supervisor ended the run -- the wall-clock cap,
+# the output cap, or an interrupt -- the code is the supervisor's own and says
+# nothing about how the provider was doing when it was stopped, so it must not
+# be reported to the caller as the provider's own failure. Only a provider that
+# ended itself owns its exit code.
+supervisor_ended=0
+case "$supervision_reason" in
+  timeout|output_overflow|interrupted) supervisor_ended=1 ;;
+esac
+
 # Broker the bounded declared outcome through runner-owned GitHub operations.
 # The provider only writes an enum plus a one-line summary; the runner posts the
 # comment and applies the owner label itself.
 #
 # Only a provider that exited cleanly and was not killed gets to declare one. A
-# timed-out, overflowed, or failed run may have left a half-written file behind,
-# and an owner-facing comment plus a needs-owner label is not something to post
-# on that evidence.
+# supervisor-ended or failed run may have left a half-written file behind, and
+# an owner-facing comment plus a needs-owner label is not something to post on
+# that evidence. Classification refuses a declaration from a supervisor-ended
+# run for the same reason, so gating on the same fact keeps the runner from
+# posting an owner-facing comment that would then be rejected.
 declared_outcome=""
 declared_summary=""
 declared_outcome_voided=""
 runner_comment_id=""
 lane_outcome_file="${work}/.code-mower/lane-outcome.json"
-if [ "$rc" -eq 0 ] && [ "$timed_out" -eq 0 ] && [ "$overflowed" -eq 0 ] \
+if [ "$rc" -eq 0 ] && [ "$supervisor_ended" -eq 0 ] \
   && [ -f "$lane_outcome_file" ]; then
   declared_outcome="$(jq -r '.outcome // ""' "$lane_outcome_file" 2>/dev/null || printf '')"
   case "$declared_outcome" in
@@ -1024,8 +1036,13 @@ echo "${LANE}: CLI exit ${rc} for ${kind} #${num}"
 # is exactly what hides that from the caller.
 #
 # A provider that failed on its own keeps its exit code: 3 means specifically
-# "exited zero and delivered nothing", and overwriting an auth failure or a
-# crash with it would throw away the diagnosis the caller needs.
+# "the run delivered nothing", and overwriting an auth failure or a crash with
+# it would throw away the diagnosis the caller needs.
+#
+# A supervisor-ended run has no such code to keep. 124, 125, and 130 are the
+# supervisor's, so returning one would report a cap as a provider failure and
+# would hide the undelivered classification behind it. Nondelivery under the
+# cap is exactly what 3 names, so the cap returns 3.
 if [ "$delivery_rc" -ne 0 ]; then
   echo "${LANE}: no validated delivery for ${kind} #${num}; provider exit ${rc}, supervision ${supervision_reason}, transition ${observed_transition}" >&2
   undelivered_body_file="$(mktemp)"
@@ -1043,7 +1060,7 @@ if [ "$delivery_rc" -ne 0 ]; then
   gh "$subcommand" comment "$num" -R "$REPO" \
     --body-file "$undelivered_body_file" >/dev/null || true
   rm -f "$undelivered_body_file"
-  [ "$rc" -ne 0 ] && exit "$rc"
+  [ "$supervisor_ended" -eq 0 ] && [ "$rc" -ne 0 ] && exit "$rc"
   exit 3
 fi
 
@@ -1054,6 +1071,15 @@ if [ "$timed_out" -eq 1 ]; then
   gh "$subcommand" comment "$num" -R "$REPO" \
     --body-file "$body_file" >/dev/null || true
   rm -f "$body_file"
+  exit 0
+fi
+
+# Overflow and interruption reach here the same way the cap does: classification
+# ran and passed, so the work is on GitHub. Returning the supervisor's 125 or
+# 130 would report that finished unit as a provider failure. Only a run that was
+# actually classified may be forgiven its supervision code -- an audit round and
+# a runner without the CLI never classify, so their exit code is all there is.
+if [ "$supervisor_ended" -eq 1 ] && [ "$delivery_reason" != "not_classified" ]; then
   exit 0
 fi
 exit "$rc"

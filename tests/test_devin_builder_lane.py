@@ -1034,8 +1034,12 @@ sleep 120
         # The cap comment still names the unit, and the capped run is reported
         # as unfinished rather than as a success: it opened no pull request,
         # advanced no head, and declared no bounded outcome.
+        #
+        # 3 is the undelivered code. 124 is the supervisor's own, and returning
+        # it here would report the cap as a provider failure and hide the
+        # classification the caller acts on.
         self.assertIn("devin: hit the 1-minute cap on issue #12", completed.stdout)
-        self.assertEqual(completed.returncode, 124)
+        self.assertEqual(completed.returncode, 3)
         self.assertIn("no validated delivery for issue #12", completed.stderr)
 
     def test_devin_lane_cap_keeps_a_delivery_the_provider_already_made(self) -> None:

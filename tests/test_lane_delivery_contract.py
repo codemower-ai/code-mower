@@ -1249,18 +1249,65 @@ class RunnerScriptContractTests(unittest.TestCase):
                 )
 
     def test_runner_scripts_keep_the_provider_exit_code(self) -> None:
-        # 3 means "exited zero and delivered nothing". A provider that failed
-        # on its own keeps its own code so the caller can still diagnose it.
+        # 3 means "the run delivered nothing". A provider that failed on its
+        # own keeps its own code so the caller can still diagnose it.
         for path in (RUNNER_TEMPLATE, REPO_RUNNER):
             with self.subTest(path=path.name):
                 text = path.read_text(encoding="utf-8")
-                keep = text.index('[ "$rc" -ne 0 ] && exit "$rc"')
+                keep = text.index(
+                    '[ "$supervisor_ended" -eq 0 ] && [ "$rc" -ne 0 ] && exit "$rc"'
+                )
                 self.assertLess(keep, text.index("exit 3", keep - 200))
+                # The ungated form returned the supervisor's own code for a run
+                # the provider never ended.
+                self.assertNotIn('\n  [ "$rc" -ne 0 ] && exit "$rc"', text)
                 # Timeout and overflow come from the supervision reason, not
                 # from raw 124/125, which a provider may also return.
                 self.assertIn('[ "$supervision_reason" = "timeout" ] && timed_out=1', text)
                 self.assertIn(
                     '[ "$supervision_reason" = "output_overflow" ] && overflowed=1', text
+                )
+
+    def test_runner_scripts_do_not_return_the_supervisors_exit_code(self) -> None:
+        # 124, 125, and 130 belong to the supervisor, not to the provider. A
+        # capped, overflowed, or interrupted run that delivered nothing exits 3
+        # -- the undelivered code -- rather than reporting the supervisor's
+        # code as the provider's own failure and hiding the classification the
+        # caller acts on.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                derive = text.index("supervisor_ended=0")
+                self.assertIn(
+                    "  timeout|output_overflow|interrupted) supervisor_ended=1 ;;",
+                    text,
+                )
+                # Derived from the recorded supervision reason, and only after
+                # the fallback cap has named its own, so both paths agree on
+                # who ended the run.
+                self.assertLess(text.index('supervision_reason="timeout"'), derive)
+                self.assertLess(
+                    derive,
+                    text.index(
+                        '[ "$supervisor_ended" -eq 0 ] && [ "$rc" -ne 0 ] && exit "$rc"'
+                    ),
+                )
+                # A provider the supervisor stopped does not get to declare a
+                # bounded outcome either: classification refuses one, so the
+                # runner must not post the owner-facing comment for it.
+                self.assertIn(
+                    'if [ "$rc" -eq 0 ] && [ "$supervisor_ended" -eq 0 ] \\', text
+                )
+                # The mirror case: overflow and interruption that still
+                # delivered are finished units, so they do not return 125 or
+                # 130 either -- but only a run that was actually classified may
+                # be forgiven the supervisor's code. An audit round and a runner
+                # without the CLI never classify, and keep their exit code.
+                self.assertIn('delivery_reason="not_classified"', text)
+                self.assertIn(
+                    'if [ "$supervisor_ended" -eq 1 ] '
+                    '&& [ "$delivery_reason" != "not_classified" ]; then',
+                    text,
                 )
 
     def test_runner_scripts_tell_the_classifier_who_ended_the_run(self) -> None:

@@ -176,6 +176,13 @@ because a half-written `lane-outcome.json` is exactly what a killed provider
 leaves behind. A provider that chose its own nonzero exit is a failed unit
 whatever the target looks like.
 
+The runner reports the same way. An undelivered run that the supervisor stopped
+exits `3`, never the supervisor's own `124`, `125`, or `130`: those are not the
+provider's verdict, and returning one would report a cap as a provider failure
+and bury the classification the caller acts on. Only a provider that ended
+itself has its exit code passed through, so an auth failure or a crash still
+reaches the caller intact.
+
 Snapshots fail closed. Each GitHub lookup behind a snapshot is retried, and a
 lookup that still fails marks the snapshot incomplete rather than recording an
 empty value — an empty `pr_number` or head would otherwise be indistinguishable
@@ -186,9 +193,10 @@ one afterwards classifies as `target_snapshot_unavailable` and exits `3`.
 Providers run under `code-mower lane-delivery supervise`, which starts them in
 their own process group and terminates plus reaps that whole group on timeout,
 interruption, and output overflow. Cap provider output with `LANE_MAX_LOG_BYTES`
-(default 32 MiB); overflow exits `125`. Install the `code-mower` CLI on the
-runner's `PATH` — without it the runner falls back to the older direct-child
-timeout, which can leave inert provider transports behind.
+(default 32 MiB); the supervisor exits `125` on overflow, and the runner turns
+that into `3` or `0` from the classification. Install the `code-mower` CLI on
+the runner's `PATH` — without it the runner falls back to the older
+direct-child timeout, which can leave inert provider transports behind.
 
 The provider's own exit ends the run, open output pipe or not. A background
 descendant that inherited stdout keeps the pipe from ever reaching EOF, so the
