@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import json
 import math
@@ -10210,6 +10211,15 @@ class CampaignUploadTests(unittest.TestCase):
         )
         self.assertEqual(plan["events"][0]["event_id"], expected_campaign_event["event_id"])
 
+        legacy_campaign = copy.deepcopy(campaign)
+        legacy_campaign["providers"][0].pop("posture", None)
+        with self._cloud_env():
+            legacy_plan = release_campaigns.build_campaign_upload_events(legacy_campaign)
+        self.assertEqual(len(legacy_plan["events"]), 1)
+        self.assertEqual(legacy_plan["events"][0]["event_id"], file_events[0]["event_id"])
+        self.assertEqual(legacy_plan["events"][0]["dimensions"], file_events[0]["dimensions"])
+        self.assertNotIn("provider_posture", legacy_plan["events"][0]["dimensions"])
+
 
 class FakeClock:
     """Monotonic fake clock for deterministic time and sleep control."""
@@ -12966,6 +12976,151 @@ class ReleaseCampaignPostureTests(unittest.TestCase):
         self.assertEqual(plan["skipped_providers"][0]["posture"], "informational")
         self.assertEqual(plan["provider_postures"]["claude"], "required")
         self.assertEqual(plan["provider_postures"]["antigravity"], "informational")
+
+    def test_legacy_missing_posture_campaign_upload_matches_standalone_conversion(self) -> None:
+        """A legacy missing-posture campaign upload has the same event id and dimensions as standalone conversion."""
+        result = _mock_adoption_result(provider="claude")
+        cloud = release_campaigns._load_cloud_client()
+        standalone_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+        )
+        legacy_campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": "complete",
+            "dry_run": False,
+            "providers": [
+                {
+                    "provider": "claude",
+                    "state": "complete",
+                    "adoption_result": result,
+                },
+            ],
+        }
+        plan = release_campaigns.build_campaign_upload_events(legacy_campaign)
+        self.assertEqual(len(plan["events"]), 1)
+        campaign_event = plan["events"][0]
+        self.assertEqual(campaign_event["event_id"], standalone_event["event_id"])
+        self.assertEqual(campaign_event["dimensions"], standalone_event["dimensions"])
+        self.assertNotIn("provider_posture", campaign_event["dimensions"])
+        self.assertNotIn("posture", campaign_event)
+        self.assertEqual(plan["provider_postures"]["claude"], "required")
+
+    def test_explicit_required_campaign_upload_has_posture_and_stable_id(self) -> None:
+        """A new explicitly-required campaign includes provider_posture=required and has a posture-specific stable id."""
+        result = _mock_adoption_result(provider="claude")
+        cloud = release_campaigns._load_cloud_client()
+        standalone_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+        )
+        expected_req_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+            provider_posture="required",
+        )
+        campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": "complete",
+            "dry_run": False,
+            "providers": [
+                {
+                    "provider": "claude",
+                    "posture": "required",
+                    "state": "complete",
+                    "adoption_result": result,
+                },
+            ],
+        }
+        plan = release_campaigns.build_campaign_upload_events(campaign)
+        self.assertEqual(len(plan["events"]), 1)
+        req_event = plan["events"][0]
+        self.assertEqual(req_event["dimensions"]["provider_posture"], "required")
+        self.assertNotIn("posture", req_event)
+        self.assertEqual(req_event["event_id"], expected_req_event["event_id"])
+        self.assertNotEqual(req_event["event_id"], standalone_event["event_id"])
+        self.assertEqual(plan["provider_postures"]["claude"], "required")
+
+    def test_explicit_informational_campaign_upload_distinct_and_validated(self) -> None:
+        """Informational remains distinct, validated, and non-colliding."""
+        result = _mock_adoption_result(provider="claude")
+        cloud = release_campaigns._load_cloud_client()
+        standalone_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+        )
+        expected_req_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+            provider_posture="required",
+        )
+        expected_info_event = cloud.adoption_result_to_event(
+            result,
+            repo_slug="owner/repo",
+            team_id="",
+            install_id="",
+            source="code-mower-release-campaign",
+            provider_posture="informational",
+        )
+        campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": "complete",
+            "dry_run": False,
+            "providers": [
+                {
+                    "provider": "claude",
+                    "posture": "informational",
+                    "state": "complete",
+                    "adoption_result": result,
+                },
+            ],
+        }
+        plan = release_campaigns.build_campaign_upload_events(campaign)
+        self.assertEqual(len(plan["events"]), 1)
+        info_event = plan["events"][0]
+        self.assertEqual(info_event["dimensions"]["provider_posture"], "informational")
+        self.assertNotIn("posture", info_event)
+        self.assertEqual(info_event["event_id"], expected_info_event["event_id"])
+        self.assertNotEqual(info_event["event_id"], standalone_event["event_id"])
+        self.assertNotEqual(info_event["event_id"], expected_req_event["event_id"])
+        self.assertEqual(plan["provider_postures"]["claude"], "informational")
+        cloud.validate_cloud_event(info_event)
 
 
 if __name__ == "__main__":

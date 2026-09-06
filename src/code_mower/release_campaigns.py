@@ -167,6 +167,19 @@ def _provider_posture(provider_data: Mapping[str, Any]) -> str:
         return posture
     return DEFAULT_PROVIDER_POSTURE
 
+
+def _stored_provider_posture(provider_data: Mapping[str, Any]) -> str | None:
+    """Return stored provider posture if explicitly present and valid, else None.
+
+    Legacy campaign provider entries predating posture storage return None so
+    their upload events preserve the exact pre-v1.0.9 event shape and
+    deterministic event id.
+    """
+    posture = provider_data.get("posture")
+    if isinstance(posture, str) and posture in VALID_PROVIDER_POSTURES:
+        return posture
+    return None
+
 # Bounded, safe error codes. Persisted campaign state may only ever carry one
 # of these values in the `error` field -- never a raw exception message, gh
 # stdout/stderr, or adapter output. `_safe_error` enforces this at the source.
@@ -3673,7 +3686,7 @@ def build_campaign_upload_events(
                 team_id=team_id,
                 install_id=install_id,
                 source=source,
-                provider_posture=_provider_posture(entry),
+                provider_posture=_stored_provider_posture(entry),
             )
         except cloud.CloudBundleError:
             # The converter's message describes the offending field, but it is
