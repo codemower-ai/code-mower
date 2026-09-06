@@ -14,6 +14,7 @@ from unittest import mock
 
 from code_mower import cloud as cloud_cli
 from code_mower.cloud_client import (
+    ADOPTION_PROVIDER_POSTURES,
     ADOPTION_RESULT_SCHEMA,
     ADOPTION_RUN_EVENT_TYPE,
     ADOPTION_RUN_SCHEMA,
@@ -441,6 +442,33 @@ class AdoptionRunContractTests(unittest.TestCase):
         with self.assertRaisesRegex(CloudBundleError, "disagrees with step statuses"):
             adoption_result_to_event(planned_fail_without_failure)
 
+    def test_adoption_result_with_provider_posture(self) -> None:
+        for posture in ADOPTION_PROVIDER_POSTURES:
+            with self.subTest(posture=posture):
+                event = adoption_result_to_event(_result(), provider_posture=posture)
+                self.assertEqual(event["dimensions"]["provider_posture"], posture)
+                self.assertNotIn("posture", event)
+                validate_cloud_event(event)
+
+    def test_adoption_result_with_invalid_provider_posture_rejected(self) -> None:
+        for bad_posture in ("", "invalid", "optional", "Required"):
+            with self.subTest(bad_posture=bad_posture):
+                with self.assertRaisesRegex(CloudBundleError, "unsupported adoption_run provider_posture"):
+                    adoption_result_to_event(_result(), provider_posture=bad_posture)
+
+    def test_omitted_provider_posture_preserves_legacy_event_shape(self) -> None:
+        event = adoption_result_to_event(_result())
+        self.assertNotIn("provider_posture", event["dimensions"])
+        self.assertNotIn("posture", event)
+        validate_cloud_event(event)
+
+    def test_validation_rejects_invalid_provider_posture_dimension(self) -> None:
+        base = adoption_result_to_event(_result())
+        bad_dim = copy.deepcopy(base)
+        bad_dim["dimensions"]["provider_posture"] = "custom"
+        with self.assertRaisesRegex(CloudBundleError, "unsupported adoption_run provider_posture"):
+            validate_cloud_event(bad_dim)
+
     def test_serialized_event_stays_metadata_only(self) -> None:
         serialized = json.dumps(adoption_result_to_event(_result())).lower()
         for phrase in (
@@ -489,6 +517,22 @@ class AdoptionRunExportTests(unittest.TestCase):
             first_upload["events"][0]["event_id"],
             second_upload["events"][0]["event_id"],
         )
+
+    def test_provider_posture_deterministic_event_id_collision_prevention(self) -> None:
+        omitted = adoption_result_to_event(_result())
+        req = adoption_result_to_event(_result(), provider_posture="required")
+        info = adoption_result_to_event(_result(), provider_posture="informational")
+
+        # Distinct postures produce distinct event ids for identical underlying result
+        self.assertNotEqual(omitted["event_id"], req["event_id"])
+        self.assertNotEqual(omitted["event_id"], info["event_id"])
+        self.assertNotEqual(req["event_id"], info["event_id"])
+
+        # Retries with same posture produce identical event ids
+        req_retry = adoption_result_to_event(_result(), provider_posture="required")
+        info_retry = adoption_result_to_event(_result(), provider_posture="informational")
+        self.assertEqual(req["event_id"], req_retry["event_id"])
+        self.assertEqual(info["event_id"], info_retry["event_id"])
 
     def test_export_upload_round_trip_stays_metadata_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

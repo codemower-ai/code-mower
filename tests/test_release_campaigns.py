@@ -10183,10 +10183,9 @@ class CampaignUploadTests(unittest.TestCase):
     def test_cloud_dogfood_adoption_run_event_path_stays_compatible(self) -> None:
         """The existing `cloud dogfood --event adoption_run=...` route is unchanged.
 
-        Both routes convert one adoption result through the same converter, so
-        an operator who already uploads results file-by-file and one who uploads
-        a whole campaign publish the same idempotent event id for the same
-        evidence.
+        Both routes convert one adoption result through the same converter: standalone
+        file export omits posture and preserves the unpostured event identity, while
+        campaign upload attaches the provider's closed posture dimension.
         """
         campaign = self._seed(complete=("claude",))
         cloud = release_campaigns._load_cloud_client()
@@ -10201,10 +10200,15 @@ class CampaignUploadTests(unittest.TestCase):
 
         self.assertEqual(len(file_events), 1)
         self.assertEqual(len(plan["events"]), 1)
-        self.assertEqual(file_events[0]["event_id"], plan["events"][0]["event_id"])
+        self.assertNotIn("provider_posture", file_events[0]["dimensions"])
         self.assertEqual(
-            file_events[0]["dimensions"], plan["events"][0]["dimensions"]
+            plan["events"][0]["dimensions"]["provider_posture"], "required"
         )
+        expected_campaign_event = cloud.adoption_result_to_event(
+            _mock_adoption_result(provider="claude"),
+            provider_posture="required",
+        )
+        self.assertEqual(plan["events"][0]["event_id"], expected_campaign_event["event_id"])
 
 
 class FakeClock:
@@ -12654,6 +12658,64 @@ class ReleaseCampaignPostureTests(unittest.TestCase):
         self.assertEqual(status, "queued")
         self.assertTrue(detail.startswith("waiting required evidence"))
 
+    def test_posture_aware_dry_run_mixed_required_providers(self) -> None:
+        """In posture-aware dry-run aggregation, mixed required providers retain queued and unavailable counts/names."""
+        providers = [
+            {"provider": "claude", "posture": "required", "state": "queued"},
+            {"provider": "codex", "posture": "required", "state": "unavailable"},
+            {"provider": "antigravity", "posture": "informational", "state": "queued"},
+        ]
+        status, action, detail = release_campaigns._aggregate_campaign_status(
+            providers, dry_run=True
+        )
+        self.assertEqual(status, "queued")
+        self.assertEqual(action, "run with --apply to dispatch providers")
+        self.assertEqual(
+            detail,
+            "waiting required evidence: dry-run preview with 1 queued and 1 unavailable required provider(s)",
+        )
+
+        # Applied run blocks on the unavailable required provider naming it
+        applied_status, applied_action, applied_detail = release_campaigns._aggregate_campaign_status(
+            providers, dry_run=False
+        )
+        self.assertEqual(applied_status, "blocked")
+        self.assertEqual(
+            applied_action,
+            "configure prerequisites for unavailable required provider(s): codex",
+        )
+        self.assertEqual(
+            applied_detail,
+            "blocked required evidence: 1 required provider(s) unavailable (codex)",
+        )
+
+        # Full rendered campaign preserves provider names, postures, states, and the mixed count detail
+        campaign = {
+            "schema": release_campaigns.CAMPAIGN_SCHEMA,
+            "campaign_id": "campaign-v1.0.0",
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "package_source": "pypi",
+            "repo_slug": "owner/repo",
+            "status": status,
+            "dry_run": True,
+            "next_action": action,
+            "next_detail": detail,
+            "providers": providers,
+        }
+        rendered = release_campaigns.render_campaign_text(campaign)
+        self.assertIn("Status: queued (dry-run)", rendered)
+        self.assertIn("Next: run with --apply to dispatch providers", rendered)
+        self.assertIn(
+            "Detail: waiting required evidence: dry-run preview with 1 queued and 1 unavailable required provider(s)",
+            rendered,
+        )
+        self.assertIn("- claude: queued (required,", rendered)
+        self.assertIn("- codex: unavailable (required,", rendered)
+        self.assertIn("- antigravity: queued (informational,", rendered)
+
     def test_backward_compatible_campaign_without_posture(self) -> None:
         """Campaigns created without posture treat all providers as required."""
         legacy_providers = [
@@ -12896,7 +12958,10 @@ class ReleaseCampaignPostureTests(unittest.TestCase):
         }
         plan = release_campaigns.build_campaign_upload_events(campaign)
         self.assertEqual(len(plan["events"]), 1)
-        self.assertEqual(plan["events"][0]["posture"], "required")
+        self.assertEqual(
+            plan["events"][0]["dimensions"]["provider_posture"], "required"
+        )
+        self.assertNotIn("posture", plan["events"][0])
         self.assertEqual(len(plan["skipped_providers"]), 1)
         self.assertEqual(plan["skipped_providers"][0]["posture"], "informational")
         self.assertEqual(plan["provider_postures"]["claude"], "required")

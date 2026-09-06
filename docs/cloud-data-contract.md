@@ -292,13 +292,17 @@ Required dimensions are `adoption_run_schema`, `release_tag`
 (`planned` or `executed`), `outcome` (`pass`, `pass_with_warnings`, `fail`,
 or `incomplete`), `result_timestamp` (ISO 8601 with a UTC offset), and
 `provenance_coverage` (`complete`, `partial`, or `unknown`). Optional
-dimensions are `starting_version` and `ending_version`, which must be empty or
-normalized versions. Tag and spec versions must agree: the tag-derived
-normalized version must equal `normalized_version`. Upgrade context requires a
-`starting_version` lower than the target; other contexts must leave it empty.
-Executed runs must not report `incomplete`, and planned runs must report
-`incomplete` or `fail`. Complete provenance coverage requires a known
-provider, executor, host class, and runtime class.
+dimensions are `starting_version` and `ending_version` (which must be empty or
+normalized versions), and `provider_posture` (whose only accepted values are
+`required` and `informational`). Calls that omit posture and older events that
+omit the dimension keep the exact existing event shape and event id; supplying
+`provider_posture` incorporates it into deterministic event identity so the same
+result used under different postures cannot collide. Tag and spec versions must
+agree: the tag-derived normalized version must equal `normalized_version`.
+Upgrade context requires a `starting_version` lower than the target; other
+contexts must leave it empty. Executed runs must not report `incomplete`, and
+planned runs must report `incomplete` or `fail`. Complete provenance coverage
+requires a known provider, executor, host class, and runtime class.
 
 Metrics are atomic values, never precomputed dashboard rates:
 

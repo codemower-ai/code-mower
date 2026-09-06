@@ -27,6 +27,7 @@ ADOPTION_OUTCOMES = ("pass", "pass_with_warnings", "fail", "incomplete")
 ADOPTION_HOST_CLASSES = ("local", "ci", "github_actions", "unknown")
 ADOPTION_COVERAGE_VALUES = ("complete", "partial", "unknown")
 ADOPTION_STEP_STATUSES = ("pass", "fail", "warn", "unavailable", "planned")
+ADOPTION_PROVIDER_POSTURES = ("required", "informational")
 
 ADOPTION_RUN_DIMENSIONS = (
     "adoption_run_schema",
@@ -44,6 +45,7 @@ ADOPTION_RUN_DIMENSIONS = (
     "outcome",
     "result_timestamp",
     "provenance_coverage",
+    "provider_posture",
 )
 
 ADOPTION_RUN_COUNT_METRICS = (
@@ -306,6 +308,13 @@ def validate_adoption_run_payload(event: Mapping[str, Any]) -> None:
             "provider, executor, host_class, and runtime_class"
         )
 
+    if "provider_posture" in dimensions:
+        posture = dimensions.get("provider_posture")
+        if posture not in ADOPTION_PROVIDER_POSTURES:
+            raise CloudBundleError(
+                f"unsupported adoption_run provider_posture {posture!r}"
+            )
+
     allowed_metrics = set(ADOPTION_RUN_COUNT_METRICS + ADOPTION_RUN_TIME_METRICS)
     unknown_metrics = [str(key) for key in metrics if key not in allowed_metrics]
     if unknown_metrics:
@@ -427,9 +436,17 @@ def _validate_executed_timestamp_bounds(value: object) -> None:
         )
 
 
-def _adoption_event_id(result: Mapping[str, Any]) -> str:
+def _adoption_event_id(
+    result: Mapping[str, Any],
+    *,
+    provider_posture: str | None = None,
+) -> str:
     canonical = json.dumps(result, sort_keys=True, separators=(",", ":"))
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"adoption-run:{canonical}"))
+    if provider_posture is not None:
+        seed = f"adoption-run:{canonical}:{provider_posture}"
+    else:
+        seed = f"adoption-run:{canonical}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
 def adoption_result_to_event(
@@ -439,6 +456,7 @@ def adoption_result_to_event(
     team_id: str = "",
     install_id: str = "",
     source: str = ADOPTION_CONVERTER_SOURCE,
+    provider_posture: str | None = None,
 ) -> dict[str, Any]:
     """Convert a local adoptionResult payload into a closed adoption_run event.
 
@@ -452,6 +470,10 @@ def adoption_result_to_event(
 
     if not isinstance(result, Mapping):
         raise CloudBundleError("adoption result must be a JSON object")
+    if provider_posture is not None and provider_posture not in ADOPTION_PROVIDER_POSTURES:
+        raise CloudBundleError(
+            f"unsupported adoption_run provider_posture {provider_posture!r}"
+        )
     validate_metadata_payload(result)
     if result.get("schema") != ADOPTION_RESULT_SCHEMA:
         raise CloudBundleError(
@@ -582,9 +604,29 @@ def adoption_result_to_event(
         for part in (provider, executor, host_class, runtime_class)
     )
 
+    dimensions: dict[str, Any] = {
+        "adoption_run_schema": ADOPTION_RUN_SCHEMA,
+        "release_tag": str(result.get("release_tag") or ""),
+        "package_identity": str(result.get("package_identity") or ""),
+        "normalized_version": str(result.get("normalized_version") or ""),
+        "qualification_context": str(result.get("qualification_context") or ""),
+        "starting_version": str(result.get("starting_version") or ""),
+        "ending_version": str(result.get("ending_version") or ""),
+        "provider": provider,
+        "executor": executor,
+        "host_class": host_class,
+        "runtime_class": runtime_class,
+        "execution_state": str(result.get("execution_state") or ""),
+        "outcome": str(result.get("outcome") or ""),
+        "result_timestamp": str(result.get("timestamp_utc") or ""),
+        "provenance_coverage": "complete" if known_identity else "partial",
+    }
+    if provider_posture is not None:
+        dimensions["provider_posture"] = provider_posture
+
     event = {
         "schema": "code_mower.benchmarkEvent.v1",
-        "event_id": _adoption_event_id(dict(result)),
+        "event_id": _adoption_event_id(dict(result), provider_posture=provider_posture),
         "event_type": ADOPTION_RUN_EVENT_TYPE,
         "created_at": str(result.get("timestamp_utc") or ""),
         "repo_slug": repo_slug,
@@ -607,23 +649,7 @@ def adoption_result_to_event(
             "warning_count": warning_count,
             "owner_action_count": owner_action_count,
         },
-        "dimensions": {
-            "adoption_run_schema": ADOPTION_RUN_SCHEMA,
-            "release_tag": str(result.get("release_tag") or ""),
-            "package_identity": str(result.get("package_identity") or ""),
-            "normalized_version": str(result.get("normalized_version") or ""),
-            "qualification_context": str(result.get("qualification_context") or ""),
-            "starting_version": str(result.get("starting_version") or ""),
-            "ending_version": str(result.get("ending_version") or ""),
-            "provider": provider,
-            "executor": executor,
-            "host_class": host_class,
-            "runtime_class": runtime_class,
-            "execution_state": str(result.get("execution_state") or ""),
-            "outcome": str(result.get("outcome") or ""),
-            "result_timestamp": str(result.get("timestamp_utc") or ""),
-            "provenance_coverage": "complete" if known_identity else "partial",
-        },
+        "dimensions": dimensions,
     }
     validate_metadata_payload(event)
     validate_adoption_run_payload(event)

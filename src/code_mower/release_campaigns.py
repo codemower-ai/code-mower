@@ -819,7 +819,7 @@ def _aggregate_campaign_status(
             return (
                 "queued",
                 "run with --apply to dispatch providers",
-                f"waiting required evidence: dry-run preview with {len(req_queued)} queued required provider(s)",
+                f"waiting required evidence: dry-run preview with {len(req_queued)} queued and {len(req_unavailable)} unavailable required provider(s)",
             )
         queued_names = req_queued + info_queued
         return (
@@ -839,7 +839,7 @@ def _aggregate_campaign_status(
                 return (
                     "queued",
                     "run with --apply to dispatch providers",
-                    f"required providers passed; dry-run preview with {len(info_queued)} queued informational provider(s)",
+                    f"required providers passed; dry-run preview with {len(info_queued)} queued and {len(info_unavailable)} unavailable informational provider(s)",
                 )
             return (
                 "queued",
@@ -3673,8 +3673,8 @@ def build_campaign_upload_events(
                 team_id=team_id,
                 install_id=install_id,
                 source=source,
+                provider_posture=_provider_posture(entry),
             )
-            event["posture"] = _provider_posture(entry)
         except cloud.CloudBundleError:
             # The converter's message describes the offending field, but it is
             # derived from stored campaign content; only the bounded code
