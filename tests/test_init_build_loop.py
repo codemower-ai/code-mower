@@ -928,6 +928,116 @@ printf 'fake codex completed\\n'
         self.assertNotEqual(bad_push.returncode, 0)
         self.assertIn("refusing codex push to branch claude/test", bad_push.stderr)
 
+    def test_mac_lane_runner_mention_only_pr_is_not_a_delivery(self) -> None:
+        # A pull request that mentions the issue without a closing keyword
+        # produces no closingIssuesReferences edge for it, so the observed
+        # transition stays "none" and the run is undelivered rather than
+        # repaired by orchestrator metadata. The wrong-issue variant closes a
+        # different issue and fails the same way.
+        for refs in ('[]', '[{"number":123}]'):
+            with self.subTest(closing_refs=refs):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    bin_dir = root / "bin"
+                    bin_dir.mkdir()
+                    work_root = root / "work"
+                    work = work_root / "codex" / "owner__repo"
+                    work.joinpath(".git", "hooks").mkdir(parents=True)
+
+                    fake_gh = bin_dir / "gh"
+                    fake_gh.write_text(
+                        f"""#!/usr/bin/env bash
+set -euo pipefail
+cmd="${{1:-}} ${{2:-}}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
+  printf '%s\n' '[{{"number":77,"headRefName":"codex/issue-12","closingIssuesReferences":{refs}}}]'
+  exit 0
+elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
+  printf '%s\n' '["tier:R","builder:codex","dispatched:codex"]'
+  exit 0
+elif [ "$cmd" = "issue comment" ] || [ "$cmd" = "pr comment" ]; then
+  printf 'https://github.com/owner/repo/issues/12#issuecomment-1\n'
+  exit 0
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
+  printf '%s\n' '[]'
+elif [ "$cmd" = "issue list" ]; then
+  printf '%s\n' '[{{"number":12,"title":"Issue 12","labels":[{{"name":"tier:R"}},{{"name":"builder:codex"}},{{"name":"dispatched:codex"}}],"assignees":[],"author":{{"login":"owner"}}}}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
+  printf '%s\n' '[{{"number":77,"closingIssuesReferences":{refs}}}]'
+elif [ "$cmd" = "repo view" ]; then
+  printf 'main\n'
+elif [ "$cmd" = "issue view" ]; then
+  printf '%s\n' '{{"author":{{"login":"owner"}},"comments":[],"title":"Issue 12","body":"Body","labels":[{{"name":"tier:R"}}],"url":"https://github.com/owner/repo/issues/12"}}'
+else
+  printf 'unexpected gh invocation: %s\n' "$*" >&2
+  exit 2
+fi
+""",
+                        encoding="utf-8",
+                    )
+                    fake_gh.chmod(0o755)
+
+                    fake_git = bin_dir / "git"
+                    fake_git.write_text(
+                        """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "config" ]; then
+  printf '%s\n' 'https://github.com/owner/repo.git'
+  exit 0
+fi
+if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--git-path" ]; then
+  printf '%s\n' ".git/${3}"
+  exit 0
+fi
+exit 0
+""",
+                        encoding="utf-8",
+                    )
+                    fake_git.chmod(0o755)
+
+                    fake_codex = bin_dir / "codex"
+                    fake_codex.write_text(
+                        """#!/usr/bin/env bash
+set -euo pipefail
+cat >/dev/null
+printf 'fake codex completed\n'
+""",
+                        encoding="utf-8",
+                    )
+                    fake_codex.chmod(0o755)
+
+                    completed = subprocess.run(
+                        [
+                            str(ROOT / "tools/lanes/run_mac_lane.sh"),
+                            "--lane",
+                            "codex",
+                            "--repo",
+                            "owner/repo",
+                            "--max-minutes",
+                            "1",
+                        ],
+                        cwd=ROOT,
+                        env={
+                            **os.environ,
+                            "HOME": str(root),
+                            "LANE_WORK_ROOT": str(work_root),
+                            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                            **_LANE_DELIVERY_ENV,
+                        },
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+
+                self.assertIn("codex: selected build issue #12", completed.stdout)
+                self.assertIn("fake codex completed", completed.stdout)
+                self.assertEqual(completed.returncode, 3, completed.stderr)
+                self.assertIn(
+                    "no validated delivery for issue #12", completed.stderr
+                )
+                self.assertIn("transition none", completed.stderr)
+
     def test_mac_lane_runner_uses_trusted_work_order_for_untrusted_issue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

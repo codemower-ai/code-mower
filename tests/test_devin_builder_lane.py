@@ -398,6 +398,12 @@ printf 'fake devin completed\\n'
         )
         self.assertIn("never call a dedicated write or edit tool", prompt.lower())
 
+        # Issue-linked delivery is part of the frozen contract: the prompt
+        # names the exact closing reference the pull request body must carry,
+        # so a correctly linked pull request needs no metadata repair.
+        self.assertIn("Closes #12", prompt)
+        self.assertIn("closing-issue references", prompt)
+
         # The frozen work order goes over --prompt-file, never argv content
         # and never stdin, and never --export/--continue/--resume.
         self.assertNotIn("--export", argv)
