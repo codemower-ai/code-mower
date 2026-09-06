@@ -4642,6 +4642,7 @@ fi
                 "tools/code_mower_standalone_pin.env",
                 "tools/run_codex_audit_pr.sh",
                 "tools/run_claude_audit_pr.sh",
+                "tools/run_devin_cli_audit_pr.sh",
                 "tools/audit_labeler_lib.py",
                 "tools/decisions.py",
                 "tools/safe_gh_comment.py",
@@ -4921,7 +4922,15 @@ printf '%s\\n' "${lane}"
             for wrapper, lane in (
                 ("tools/run_codex_audit_pr.sh", "codex-audit"),
                 ("tools/run_claude_audit_pr.sh", "claude-audit"),
+                ("tools/run_devin_cli_audit_pr.sh", "devin-cli-audit"),
             ):
+                wrapper_text = output_dir.joinpath(wrapper).read_text(
+                    encoding="utf-8"
+                )
+                # Generated wrappers run inside consumer repositories, which do
+                # not ship the source checkout's scripts/dev-python helper.
+                self.assertNotIn("scripts/dev-python", wrapper_text)
+                self.assertIn("${script_dir}/code_mower", wrapper_text)
                 completed = subprocess.run(
                     [str(output_dir / wrapper), "--repo", "owner/repo"],
                     cwd=output_dir,
@@ -4980,6 +4989,7 @@ printf 'installed:%s\\n' "${lane}"
             for wrapper, lane in (
                 ("tools/run_codex_audit_pr.sh", "codex-audit"),
                 ("tools/run_claude_audit_pr.sh", "claude-audit"),
+                ("tools/run_devin_cli_audit_pr.sh", "devin-cli-audit"),
             ):
                 with self.subTest(wrapper=wrapper):
                     completed = subprocess.run(
@@ -5274,6 +5284,7 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
             "src/code_mower/templates/product-support/code_mower_standalone_shadow.sh",
             "src/code_mower/templates/product-support/run_claude_audit_pr.sh",
             "src/code_mower/templates/product-support/run_codex_audit_pr.sh",
+            "src/code_mower/templates/product-support/run_devin_cli_audit_pr.sh",
             "src/code_mower/audit_labeler_lib.py",
             "src/code_mower/decisions.py",
             "src/code_mower/templates/product-support/safe_gh_comment.py",

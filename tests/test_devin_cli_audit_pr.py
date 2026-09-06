@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -491,6 +492,74 @@ exit EXIT_CODE
         result = self._run_with_fake(fake, timeout=1)
         self.assertEqual(result.verdict, "UNKNOWN")
         self.assertFalse(Path(path_log.read_text(encoding="utf-8")).exists())
+
+
+class TestGitLimitedDeadline(_DevinCliAuditTestCase):
+    """A stalled git subprocess must not hold the lane past its deadline."""
+
+    def _fake_git(self, body: str) -> Path:
+        bin_dir = self.tmp / "fake-bin"
+        bin_dir.mkdir(exist_ok=True)
+        fake_git = bin_dir / "git"
+        fake_git.write_text(body, encoding="utf-8")
+        fake_git.chmod(0o755)
+        return bin_dir
+
+    def _run_with_path(self, bin_dir: Path, **kwargs: object):
+        with mock.patch.dict(
+            os.environ,
+            {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+        ):
+            return devin_cli_audit._run_git_limited(self.repo, ["diff"], **kwargs)
+
+    def test_stalled_git_times_out_without_leaking_output(self) -> None:
+        bin_dir = self._fake_git(
+            "#!/bin/sh\n"
+            "printf '%s\\n' 'SENTINEL_STDOUT_SHOULD_NOT_LEAK'\n"
+            "printf '%s\\n' 'SENTINEL_STDERR_SHOULD_NOT_LEAK' >&2\n"
+            "sleep 60\n"
+        )
+        started = time.monotonic()
+        with self.assertRaises(devin_cli_audit.NoTrustworthyVerdictError) as ctx:
+            self._run_with_path(bin_dir, max_bytes=1024, timeout=1)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 30)
+        message = str(ctx.exception)
+        self.assertIn("deadline", message)
+        self.assertNotIn("SENTINEL_STDOUT_SHOULD_NOT_LEAK", message)
+        self.assertNotIn("SENTINEL_STDERR_SHOULD_NOT_LEAK", message)
+
+    def test_silent_stalled_git_times_out(self) -> None:
+        bin_dir = self._fake_git("#!/bin/sh\nsleep 60\n")
+        started = time.monotonic()
+        with self.assertRaises(devin_cli_audit.NoTrustworthyVerdictError):
+            self._run_with_path(bin_dir, max_bytes=1024, timeout=1)
+        self.assertLess(time.monotonic() - started, 30)
+
+    def test_bounded_output_still_collected_within_deadline(self) -> None:
+        bin_dir = self._fake_git(
+            "#!/bin/sh\nprintf '%s\\n' 'fake diff output'\n"
+        )
+        text, observed, truncated = self._run_with_path(
+            bin_dir, max_bytes=1024, timeout=30
+        )
+        self.assertIn("fake diff output", text)
+        self.assertGreater(observed, 0)
+        self.assertFalse(truncated)
+
+    def test_over_limit_output_is_bounded_and_killed(self) -> None:
+        bin_dir = self._fake_git(
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 4096 ]; do\n"
+            "  printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n'\n"
+            "  i=$((i + 1))\ndone\nsleep 60\n"
+        )
+        started = time.monotonic()
+        text, observed, truncated = self._run_with_path(
+            bin_dir, max_bytes=4096, timeout=30
+        )
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertTrue(truncated)
+        self.assertIn("diff truncated by devin-cli-audit wrapper", text)
 
 
 if __name__ == "__main__":

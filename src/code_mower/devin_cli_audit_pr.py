@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import selectors
 import subprocess
 import sys
 import tempfile
@@ -131,6 +132,7 @@ TRAILER_PREFIX = "DEVIN_CLI_AUDIT_STATE"
 PASS_TRAILER = f"<!-- {TRAILER_PREFIX}: devin-cli-audit-done -->"
 BLOCKED_TRAILER = f"<!-- {TRAILER_PREFIX}: devin-cli-audit-blocked -->"
 NEEDS_TRAILER = f"<!-- {TRAILER_PREFIX}: needs-devin-cli-audit -->"
+_MAX_GIT_STDERR_BYTES = 64 * 1024
 VERDICT_JSON_KEYS = {"verdict", "summary", "findings"}
 FINDING_KEYS = {"severity", "title", "file", "line", "detail"}
 BLOCKER_SEVERITIES = {"P0", "P1", "P2"}
@@ -198,49 +200,105 @@ def _run_git_limited(
     max_bytes: int,
     timeout: int = 120,
 ) -> tuple[str, int, bool]:
-    """Run a git command while bounding captured stdout bytes."""
+    """Run a git command while bounding captured stdout bytes and wall time.
+
+    Both pipes are drained through a deadline-aware selector loop so a stalled
+    git process or filter cannot block the lane indefinitely, and stdout is
+    never buffered beyond ``max_bytes``.
+    """
 
     if max_bytes <= 0:
         raise ValueError("max_bytes must be greater than zero")
+    if timeout <= 0:
+        raise ValueError("timeout must be greater than zero")
     process = subprocess.Popen(
         ["git", *args],
         cwd=str(cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    assert process.stdout is not None
+    assert process.stdout is not None and process.stderr is not None
     chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
     observed_bytes = 0
+    stderr_bytes = 0
     truncated = False
+    timed_out = False
+    deadline = time.monotonic() + timeout
+    selector = selectors.DefaultSelector()
     try:
-        while True:
-            chunk = process.stdout.read(64 * 1024)
-            if not chunk:
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
                 break
-            previous_bytes = observed_bytes
-            observed_bytes += len(chunk)
-            if observed_bytes <= max_bytes:
-                chunks.append(chunk)
-                continue
-
-            remaining = max(0, max_bytes - previous_bytes)
-            if remaining:
-                chunks.append(chunk[:remaining])
-            truncated = True
+            events = selector.select(timeout=remaining)
+            if not events:
+                timed_out = True
+                break
+            for key, _mask in events:
+                try:
+                    chunk = os.read(key.fileobj.fileno(), 64 * 1024)
+                except OSError:
+                    selector.unregister(key.fileobj)
+                    continue
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if key.data == "stderr":
+                    stderr_bytes += len(chunk)
+                    if stderr_bytes <= _MAX_GIT_STDERR_BYTES:
+                        stderr_chunks.append(chunk)
+                    continue
+                previous_bytes = observed_bytes
+                observed_bytes += len(chunk)
+                if observed_bytes <= max_bytes:
+                    chunks.append(chunk)
+                    continue
+                keep = max(0, max_bytes - previous_bytes)
+                if keep:
+                    chunks.append(chunk[:keep])
+                truncated = True
+            if truncated:
+                break
+        if timed_out or truncated:
             process.kill()
-            break
-        _, stderr = process.communicate(timeout=10)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
     except Exception:
         process.kill()
-        process.wait(timeout=10)
+        try:
+            process.wait(timeout=10)
+        except Exception:
+            pass
         raise
+    finally:
+        selector.close()
+        for pipe in (process.stdout, process.stderr):
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+    if timed_out:
+        # Metadata-only failure reason: no raw process output may reach
+        # exceptions, comments, or artifacts.
+        raise NoTrustworthyVerdictError(
+            f"git diff collection exceeded the {timeout}s deadline; "
+            "no trustworthy verdict available"
+        )
 
     if not truncated and process.returncode != 0:
         raise subprocess.CalledProcessError(
             process.returncode,
             ["git", *args],
             output=b"".join(chunks),
-            stderr=stderr,
+            stderr=b"".join(stderr_chunks),
         )
     text = b"".join(chunks).decode("utf-8", errors="ignore")
     if truncated:
