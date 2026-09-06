@@ -65,6 +65,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from code_mower import gemini_cli_audit_pr as code_mower_gemini_cli
     from code_mower import muse_cli_audit_pr as code_mower_muse_cli
+    from code_mower.migration_install import PACKAGE_INSTALL_FAILURE_REASONS
     from code_mower.provider_runners import (
         DEFAULT_HOME_ENV_KEYS,
         build_allowlisted_child_env,
@@ -84,6 +85,7 @@ if __package__ in {None, ""}:
 else:
     from . import gemini_cli_audit_pr as code_mower_gemini_cli
     from . import muse_cli_audit_pr as code_mower_muse_cli
+    from .migration_install import PACKAGE_INSTALL_FAILURE_REASONS
     from .provider_runners import DEFAULT_HOME_ENV_KEYS, build_allowlisted_child_env
     from .release_qualify import (
         DEFAULT_PACKAGE_SOURCE,
@@ -282,7 +284,7 @@ ADOPTION_RESULT_JSON_SCHEMA: dict[str, Any] = {
                     "owner_action_count": {"type": "integer", "minimum": 0},
                     "failure_reason": {
                         "type": "string",
-                        "enum": ["network", "package_index", "runtime", "sandbox_permission", "unknown"],
+                        "enum": sorted(PACKAGE_INSTALL_FAILURE_REASONS),
                         "description": (
                             "Optional closed failure classification for failed package_install steps. "
                             "One of: network, package_index, runtime, sandbox_permission, unknown. "

@@ -205,6 +205,7 @@ class FailureReasonClassificationTests(unittest.TestCase):
         # Mock to simulate: attempt 1 = network error, attempt 2 = network error,
         # attempt 3 (final) = decisive 404
         call_count = 0
+
         def mock_rehearsal_step(command, *, cwd, env, steps, timeout):
             nonlocal call_count
             call_count += 1
@@ -238,6 +239,38 @@ class FailureReasonClassificationTests(unittest.TestCase):
         self.assertEqual(ctx.exception.failure_reason, "package_index")
         # Verify all 3 attempts were recorded
         self.assertEqual(len(steps), 3)
+
+    def test_non_index_retry_failure_carries_reason(self) -> None:
+        steps: list[dict[str, Any]] = []
+
+        def mock_rehearsal_step(command, *, cwd, env, steps, timeout):
+            steps.append(
+                {
+                    "stderr_preview": "Requires Python >=3.13",
+                    "stdout_preview": "",
+                    "returncode": 1,
+                }
+            )
+            raise migration_install.RehearsalError("install failed", steps)
+
+        with patch.object(
+            migration_install,
+            "_run_rehearsal_step",
+            side_effect=mock_rehearsal_step,
+        ):
+            with self.assertRaises(migration_install.RehearsalError) as ctx:
+                migration_install._run_pip_install_with_retries(
+                    command=["pip", "install", "."],
+                    cwd=Path("/tmp"),
+                    env=None,
+                    steps=steps,
+                    timeout=60,
+                    attempts=1,
+                    retry_delay_seconds=0,
+                    package_index=False,
+                )
+
+        self.assertEqual(ctx.exception.failure_reason, "runtime")
 
 
 class FailureReasonSchemaTests(unittest.TestCase):
