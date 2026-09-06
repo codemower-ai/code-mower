@@ -177,6 +177,36 @@ interruption, and output overflow. Cap provider output with `LANE_MAX_LOG_BYTES`
 runner's `PATH` — without it the runner falls back to the older direct-child
 timeout, which can leave inert provider transports behind.
 
+### Which `lane-delivery` the runner uses
+
+Resolution is explicit, so the contract never runs against whichever
+`code-mower` happens to be first on `PATH`:
+
+1. `CODE_MOWER_LANE_DELIVERY_CMD`, when the runner owner pins one.
+2. this source checkout, when the runner ships beside `src/code_mower`.
+3. an installed `code-mower` that actually implements `lane-delivery`.
+
+An installed CLI that predates the command leaves the contract inactive for that
+run and says so on stderr, rather than failing every unit.
+
+Like every other command override in the runner, the pin is **one executable
+path or name, not a command line**. Paths on a Mac routinely contain spaces, and
+splitting an environment string into argv truncates the executable at the first
+one. To pin a multi-argument invocation, ship an executable wrapper and pin the
+wrapper:
+
+```bash
+cat > /usr/local/bin/lane-delivery <<'SH'
+#!/usr/bin/env bash
+exec /opt/code-mower/bin/python3 -m code_mower.lane_delivery "$@"
+SH
+chmod 755 /usr/local/bin/lane-delivery
+export CODE_MOWER_LANE_DELIVERY_CMD=/usr/local/bin/lane-delivery
+```
+
+A pin that does not resolve to an executable stops the run with exit `2` instead
+of quietly disabling the contract.
+
 Each run writes one metadata-only delivery outcome next to the run log for
 Board and productivity reporting: provider exit, delivery transition, handoff,
 elapsed time, and intervention count. No prompts, transcripts, output, paths, or

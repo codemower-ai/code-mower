@@ -779,6 +779,69 @@ class RunnerScriptContractTests(unittest.TestCase):
                 self.assertIn("installed-cli-too-old", text)
                 self.assertIn("lane-delivery contract inactive", text)
 
+    def test_runner_scripts_treat_the_pin_as_one_executable(self) -> None:
+        # The pin is an executable path or name, like every other command
+        # override. Splitting an environment string into argv truncates any
+        # executable whose path contains a space, so the expansion stays quoted
+        # and the pin is resolved before the contract uses it.
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn(
+                    'lane_delivery=( "${CODE_MOWER_LANE_DELIVERY_CMD}" )', text
+                )
+                self.assertNotIn("lane_delivery=( ${CODE_MOWER_LANE_DELIVERY_CMD} )", text)
+                self.assertIn(
+                    'command -v "${CODE_MOWER_LANE_DELIVERY_CMD}"', text
+                )
+                self.assertIn(
+                    "CODE_MOWER_LANE_DELIVERY_CMD must name one executable, "
+                    "not a command line",
+                    text,
+                )
+
+    def test_repo_runner_accepts_a_pinned_path_containing_spaces(self) -> None:
+        # A pinned wrapper under a directory with a space in its name resolves;
+        # a command line pinned in the same variable does not, and says so
+        # rather than failing later as a missing scanner or a matched rule.
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced = Path(tmp) / "Code Mower bin"
+            spaced.mkdir()
+            wrapper = spaced / "lane-delivery"
+            wrapper.write_text(
+                "#!/usr/bin/env bash\nexit 0\n",
+                encoding="utf-8",
+            )
+            wrapper.chmod(0o755)
+
+            def run(pin: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [
+                        str(REPO_RUNNER),
+                        "--lane",
+                        "claude",
+                        "--repo",
+                        "owner",
+                        "--max-minutes",
+                        "1",
+                    ],
+                    env={**os.environ, "CODE_MOWER_LANE_DELIVERY_CMD": pin},
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+            # `--repo owner` is rejected after command resolution, so reaching
+            # that refusal proves the pin resolved without being truncated.
+            accepted = run(str(wrapper))
+            self.assertNotIn("must name one executable", accepted.stderr)
+            self.assertIn("--repo must be OWNER/REPO", accepted.stderr)
+
+            rejected = run(f"{wrapper} -m code_mower.lane_delivery")
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("must name one executable", rejected.stderr)
+            self.assertNotIn("--repo must be OWNER/REPO", rejected.stderr)
+
     def test_runner_scripts_separate_scan_failure_from_a_rule_match(self) -> None:
         for path in (RUNNER_TEMPLATE, REPO_RUNNER):
             with self.subTest(path=path.name):

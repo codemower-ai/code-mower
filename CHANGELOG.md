@@ -21,6 +21,11 @@ later entries are regular releases.
 - Each local builder run records a metadata-only delivery outcome for Board and
   productivity reporting: provider exit, delivery transition, handoff, elapsed
   time, and intervention count.
+- `CODE_MOWER_LANE_DELIVERY_CMD` pins which `lane-delivery` the Mac lane runner
+  uses, ahead of this source checkout and any installed `code-mower`. It names
+  one executable path, like the runner's other command overrides, so a pinned
+  path containing a space is not truncated; pin a wrapper script to supply
+  extra arguments.
 
 ### Changed
 

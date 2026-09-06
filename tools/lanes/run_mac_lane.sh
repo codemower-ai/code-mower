@@ -59,11 +59,22 @@ repo_root="$(CDPATH=; cd -- "${here}/../.." && pwd -P)"
 # An installed CLI that predates the command leaves the contract inactive
 # instead of failing every unit; the runner says so once and keeps the older
 # behavior for that run.
+#
+# The pin is one executable path or name, like every other command override in
+# this runner -- never a command line. Splitting an environment string into argv
+# truncates any executable whose path contains a space, so a multi-argument
+# invocation ships an executable wrapper and pins the wrapper. A pin that does
+# not resolve is an owner mistake rather than a missing feature, so it stops the
+# run instead of quietly disabling the contract.
 lane_delivery=()
 lane_delivery_source="unavailable"
 if [ -n "${CODE_MOWER_LANE_DELIVERY_CMD:-}" ]; then
-  # shellcheck disable=SC2206  # deliberate word splitting: the pin is a command line
-  lane_delivery=( ${CODE_MOWER_LANE_DELIVERY_CMD} )
+  command -v "${CODE_MOWER_LANE_DELIVERY_CMD}" >/dev/null 2>&1 || {
+    echo "CODE_MOWER_LANE_DELIVERY_CMD must name one executable, not a command line" >&2
+    echo "  pinned: ${CODE_MOWER_LANE_DELIVERY_CMD}" >&2
+    exit 2
+  }
+  lane_delivery=( "${CODE_MOWER_LANE_DELIVERY_CMD}" )
   lane_delivery_source="pinned"
 elif [ -f "${repo_root}/src/code_mower/lane_delivery.py" ]; then
   lane_delivery=(
@@ -561,6 +572,10 @@ if [ "${#lane_delivery[@]}" -gt 0 ]; then
     0) ;;
     1)
       echo "${LANE}: refusing to run; the runner guidance carries auth-material discovery guidance" >&2
+      exit 2
+      ;;
+    126|127)
+      echo "${LANE}: refusing to run; the auth-material scanner could not be executed (${lane_delivery_source}: ${lane_delivery[0]}, exit ${scan_rc})" >&2
       exit 2
       ;;
     *)

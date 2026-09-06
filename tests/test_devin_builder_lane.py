@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import atexit
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,7 +53,29 @@ exit 0
 # The generated runner resolves `lane-delivery` from an explicit pin before it
 # looks at PATH, so a fixture states which implementation it means instead of
 # inheriting whichever code-mower happens to be installed on the machine.
-_LANE_DELIVERY_CMD = f"{sys.executable} -m code_mower.lane_delivery"
+#
+# The pin is one executable path, never a command line: the running interpreter
+# can live under a directory whose name contains a space, and any argv that came
+# from splitting an environment string on whitespace would be truncated there.
+# A multi-argument invocation therefore ships an executable wrapper and pins the
+# wrapper path.
+_LANE_DELIVERY_WRAPPER = f"""#!/usr/bin/env bash
+exec {shlex.quote(sys.executable)} -m code_mower.lane_delivery "$@"
+"""
+
+
+def _write_lane_delivery_wrapper(directory: Path) -> Path:
+    wrapper = Path(directory) / "lane-delivery"
+    wrapper.write_text(_LANE_DELIVERY_WRAPPER, encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+# The space in the directory name is the regression: a pin whose path contains
+# one used to be truncated at the space, which took out every fixture below.
+_LANE_DELIVERY_DIR = Path(tempfile.mkdtemp(prefix="code mower lane delivery "))
+atexit.register(shutil.rmtree, _LANE_DELIVERY_DIR, ignore_errors=True)
+_LANE_DELIVERY_CMD = str(_write_lane_delivery_wrapper(_LANE_DELIVERY_DIR))
 
 
 def _lane_delivery_env() -> dict[str, str]:
@@ -174,6 +199,23 @@ class DevinBuilderLaneConfigGenerationTests(unittest.TestCase):
         self.assertIn('chmod 600 "$prompt_file"', runner_text)
         self.assertIn("code-mower builder record", runner_text)
         self.assertIn("--provider devin_cli --executor devin_cli", runner_text)
+
+    def test_lane_delivery_pin_is_one_executable_path_containing_a_space(self) -> None:
+        # Regression for the pin being word-split into argv: the wrapper below
+        # lives under a directory whose name contains a space, and every
+        # functional fixture in this module runs the generated runner against
+        # it, so a runner that splits the pin fails those fixtures outright.
+        self.assertIn(" ", _LANE_DELIVERY_CMD)
+        self.assertTrue(os.access(_LANE_DELIVERY_CMD, os.X_OK))
+        completed = subprocess.run(
+            [_LANE_DELIVERY_CMD, "--help"],
+            env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("scan-prompt", completed.stdout)
 
     def test_devin_repo_dogfood_lane_doc_is_unaffected(self) -> None:
         # The dogfood self-hosted runner script in this repo is not
@@ -912,7 +954,7 @@ while [ "$#" -gt 0 ]; do
   forwarded+=("$1")
   shift
 done
-exec {sys.executable} -m code_mower.lane_delivery "${{forwarded[@]}}"
+exec {shlex.quote(sys.executable)} -m code_mower.lane_delivery "${{forwarded[@]}}"
 """,
                 encoding="utf-8",
             )

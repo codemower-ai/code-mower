@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import atexit
 import copy
 import io
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,8 +26,30 @@ CONFIG_PATH = ROOT / "src/code_mower/templates/code-mower.example.yml"
 # The runner resolves `lane-delivery` from an explicit pin before it looks at
 # PATH, so a fixture states which implementation it means instead of inheriting
 # whichever code-mower happens to be installed on the machine.
+#
+# The pin is one executable path, never a command line: the running interpreter
+# can live under a directory whose name contains a space, and any argv that came
+# from splitting an environment string on whitespace would be truncated there.
+# A multi-argument invocation therefore ships an executable wrapper and pins the
+# wrapper path.
+_LANE_DELIVERY_WRAPPER = f"""#!/usr/bin/env bash
+exec {shlex.quote(sys.executable)} -m code_mower.lane_delivery "$@"
+"""
+
+
+def _write_lane_delivery_wrapper(directory: Path) -> Path:
+    wrapper = Path(directory) / "lane-delivery"
+    wrapper.write_text(_LANE_DELIVERY_WRAPPER, encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+# The space in the directory name is the regression: a pin whose path contains
+# one used to be truncated at the space, which took out every fixture below.
+_LANE_DELIVERY_DIR = Path(tempfile.mkdtemp(prefix="code mower lane delivery "))
+atexit.register(shutil.rmtree, _LANE_DELIVERY_DIR, ignore_errors=True)
 _LANE_DELIVERY_ENV = {
-    "CODE_MOWER_LANE_DELIVERY_CMD": f"{sys.executable} -m code_mower.lane_delivery",
+    "CODE_MOWER_LANE_DELIVERY_CMD": str(_write_lane_delivery_wrapper(_LANE_DELIVERY_DIR)),
     "PYTHONPATH": str(ROOT / "src"),
 }
 
