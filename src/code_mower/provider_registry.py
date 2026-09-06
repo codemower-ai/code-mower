@@ -703,7 +703,9 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "campaign_auth_location_label": "ambient Devin CLI session",
             "local_cli_path_basename_only": True,
             "local_audit_eligible": False,
-            "campaign_eligible": False,
+            "campaign_eligible": True,
+            "campaign_adapter_argv": _maintained_campaign_adapter_argv("devin_cli"),
+            "campaign_adapter_timeout_seconds": 900,
             "auth": (
                 "run `devin auth login` in a trusted environment; doctor "
                 "only reports bounded auth status and never persists the output"

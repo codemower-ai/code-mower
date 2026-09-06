@@ -40,6 +40,9 @@ provider          verified CLI         invocation surface
                                       ``--add-dir``, ``--print-timeout``
 ``muse``          Muse Code 1.0.3      ``exec`` with ``--json``, ``--prompt-file``,
                                       ``--workspace``
+``devin_cli``     devin 3000.6.14      ``--print`` with a prompt file, ``--sandbox``,
+                                      ``--permission-mode autonomous``,
+                                      ``--respect-workspace-trust false``, ``--model``
 ================= ==================== ====================================================
 
 Auth and home behavior follow each provider's existing wrapper: ambient login
@@ -71,6 +74,7 @@ if __package__ in {None, ""}:
         build_allowlisted_child_env,
     )
     from code_mower.release_qualify import (
+        ADOPTION_RESULT_SCHEMA,
         DEFAULT_PACKAGE_SOURCE,
         PRODUCTION_PYPI_INDEX_URL,
         TESTPYPI_INDEX_URL,
@@ -88,6 +92,7 @@ else:
     from .migration_install import PACKAGE_INSTALL_FAILURE_REASONS
     from .provider_runners import DEFAULT_HOME_ENV_KEYS, build_allowlisted_child_env
     from .release_qualify import (
+        ADOPTION_RESULT_SCHEMA,
         DEFAULT_PACKAGE_SOURCE,
         PRODUCTION_PYPI_INDEX_URL,
         TESTPYPI_INDEX_URL,
@@ -100,7 +105,7 @@ else:
         validate_adoption_result_payload,
     )
 
-SUPPORTED_ADAPTER_PROVIDERS = ("codex", "claude", "antigravity", "muse")
+SUPPORTED_ADAPTER_PROVIDERS = ("codex", "claude", "antigravity", "muse", "devin_cli")
 
 #: CLI versions the argv shapes above were verified against. Newer CLIs keep
 #: working while the flags exist; a removed flag fails closed here.
@@ -108,6 +113,7 @@ VERIFIED_CLI_VERSIONS = {
     "codex": "codex-cli 0.147.0",
     "claude": "Claude Code 2.1.258",
     "muse": "Muse Code 1.0.3",
+    "devin_cli": "devin 3000.6.14",
 }
 
 #: Outer campaign timeout minus this margin is the provider subprocess budget,
@@ -173,6 +179,8 @@ MUSE_MODEL_ENV_NAMES = ("CODE_MOWER_MUSE_MODEL", "MUSE_MODEL", "META_MUSE_MODEL"
 MUSE_REASONING_ENV_NAMES = ("CODE_MOWER_MUSE_REASONING_EFFORT", "MUSE_REASONING_EFFORT")
 MUSE_AMBIENT_HOME_ENV = "MUSE_CLI_USE_AMBIENT_HOME"
 MUSE_DEFAULT_MAX_MODEL_STEPS = 12
+DEVIN_MODEL_ENV_NAMES = ("CODE_MOWER_DEVIN_CLI_MODEL", "DEVIN_CLI_MODEL", "DEVIN_MODEL")
+DEVIN_DEFAULT_MODEL = "swe"
 ADAPTER_ENV_ALLOWLIST = (
     "PATH",
     "TMPDIR",
@@ -412,18 +420,32 @@ def build_qualification_prompt(
         "any existing checkout, home directory, credential file, or environment",
         "variable holding a secret. Never print secrets, tokens, file paths,",
         "commands you ran, or raw logs in your final answer.",
-        "",
-        "Binding (echo these values back exactly in your result):",
-        f"- provider: {provider}",
-        f"- executor: {provider}",
-        f"- release_tag: {release_tag}",
-        f"- package_identity: {package_identity}",
-        f"- normalized_version: {normalized_version}",
-        f"- package_spec: {package_spec}",
-        f"- qualification_context: {qualification_context}",
-        f"- starting_version: {starting_version if starting_version else '(empty)'}",
-        f"- package_source: {package_source}",
     ]
+    if provider == "devin_cli":
+        # Devin Autonomous+sandbox cannot approve dedicated file write/edit tool
+        # calls non-interactively; the shell is the only available file surface.
+        lines.extend(
+            [
+                "Perform every file creation and edit through shell commands only;",
+                "dedicated file write/edit tools cannot be approved in this unattended",
+                "run and any call to them ends the session without a result.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "Binding (echo these values back exactly in your result):",
+            f"- provider: {provider}",
+            f"- executor: {provider}",
+            f"- release_tag: {release_tag}",
+            f"- package_identity: {package_identity}",
+            f"- normalized_version: {normalized_version}",
+            f"- package_spec: {package_spec}",
+            f"- qualification_context: {qualification_context}",
+            f"- starting_version: {starting_version if starting_version else '(empty)'}",
+            f"- package_source: {package_source}",
+        ]
+    )
     if target_runtime:
         lines.append(f"- target_runtime: {target_runtime}")
     lines.extend(
@@ -660,6 +682,41 @@ def build_muse_argv(
     return argv
 
 
+def build_devin_argv(
+    *,
+    devin_bin: str,
+    prompt_file: str,
+    model: str = "",
+) -> list[str]:
+    """Argv for ``devin --print`` with prompt-file transport and OS sandbox.
+
+    The workspace is scoped by the caller through ``subprocess.run(cwd=...)``;
+    ``prompt_file`` is passed relative to that cwd. The real Devin CLI has no
+    separate workspace flag, so none is emitted. Noninteractive ``--print``
+    cannot show the workspace-trust prompt, so the adapter passes
+    ``--respect-workspace-trust false``. The least-permissive unattended
+    posture that can still create a venv, install the candidate, and run smoke
+    checks is ``--sandbox`` with ``--permission-mode autonomous``; the OS
+    sandbox bounds filesystem and network access while auto-approving the shell
+    commands the qualification prompt requires. Conversation export is never
+    requested.
+    """
+    argv = [
+        devin_bin,
+        "--print",
+        "--prompt-file",
+        prompt_file,
+        "--respect-workspace-trust",
+        "false",
+        "--model",
+        model or _first_env_value(DEVIN_MODEL_ENV_NAMES) or DEVIN_DEFAULT_MODEL,
+        "--sandbox",
+        "--permission-mode",
+        "autonomous",
+    ]
+    return argv
+
+
 # ----- Transient result extraction (never persisted) -----
 
 
@@ -717,6 +774,54 @@ def _extract_muse_result(stdout: str) -> dict[str, Any] | None:
     return code_mower_gemini_cli.parse_response_json(stdout)
 
 
+def _scan_json_objects(text: str) -> list[Mapping[str, Any]]:
+    """Decode every balanced JSON object in *text*, tolerating chatty output.
+
+    Scans for ``{`` and attempts ``raw_decode`` at each position. Prose,
+    progress lines, and unrelated JSON are skipped; nested objects are decoded
+    at their own ``{`` so an embedded result object is still found. A ``{`` that
+    appears inside a JSON string value cannot decode (its keys are escaped), so
+    serialized-JSON string fields never produce phantom objects. Provider output
+    is transient parsing input only and is never persisted.
+    """
+    decoder = json.JSONDecoder()
+    objects: list[Mapping[str, Any]] = []
+    index = 0
+    while True:
+        brace = text.find("{", index)
+        if brace < 0:
+            break
+        # Advance one char past this ``{`` so a nested object is decoded at its
+        # own position rather than being skipped inside an outer decode.
+        index = brace + 1
+        try:
+            payload, _end = decoder.raw_decode(text[brace:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, Mapping):
+            objects.append(payload)
+    return objects
+
+
+def _extract_devin_result(stdout: str) -> dict[str, Any] | None:
+    """Pull the adoption result out of ``devin --print`` output.
+
+    ``devin --print`` may stream tool and progress JSON to stdout before the
+    final response, so first-brace/last-brace slicing cannot isolate the result.
+    Every balanced JSON object in the output is decoded instead, and exactly one
+    must be a mapping whose ``schema`` is ``code_mower.adoptionResult.v1``.
+    Zero or multiple adoption-result candidates fail closed.
+    """
+    candidates = [
+        dict(obj)
+        for obj in _scan_json_objects(stdout)
+        if obj.get("schema") == ADOPTION_RESULT_SCHEMA
+    ]
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
 def check_structured_result_capability(provider: str) -> bool:
     """Validate structured-result extraction and schema compliance using an offline fixture.
 
@@ -764,6 +869,8 @@ def check_structured_result_capability(provider: str) -> bool:
         elif canonical in {"muse", "muse_cli"}:
             muse_event = json.dumps({"payload_type": "run.output.delta", "payload": {"text": payload_str}})
             extracted = _extract_muse_result(muse_event)
+        elif canonical in {"devin", "devin_cli"}:
+            extracted = _extract_devin_result(payload_str)
         else:
             extracted = code_mower_gemini_cli.parse_response_json(payload_str)
         if not isinstance(extracted, Mapping):
@@ -1241,6 +1348,25 @@ def run_campaign_adapter(
                         f"provider CLI exited {completed.returncode}",
                     )
                 candidate = _extract_antigravity_result(completed.stdout)
+            elif provider == "devin_cli":
+                prompt_path = workspace_dir / "campaign.prompt-input.txt"
+                prompt_path.write_text(prompt, encoding="utf-8")
+                prompt_path.chmod(0o600)
+                devin_model = model or _first_env_value(DEVIN_MODEL_ENV_NAMES)
+                argv = build_devin_argv(
+                    devin_bin=resolved_bin,
+                    prompt_file=prompt_path.name,
+                    model=devin_model,
+                )
+                completed = provider_runner(
+                    argv, None, timeout_seconds, workspace_dir, child_env
+                )
+                if completed.returncode != 0:
+                    return _fail(
+                        provider,
+                        f"provider CLI exited {completed.returncode}",
+                    )
+                candidate = _extract_devin_result(completed.stdout)
             else:  # provider == "muse"
                 prompt_path = workspace_dir / "campaign.prompt-input.txt"
                 prompt_path.write_text(prompt, encoding="utf-8")

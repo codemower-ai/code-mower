@@ -158,7 +158,7 @@ as unclassified failures.
 
 ## Release Campaigns
 
-The `code-mower release campaign` command coordinates multi-provider qualification across Claude, Codex, Antigravity, Muse, Cursor Cloud Agent, and Devin:
+The `code-mower release campaign` command coordinates multi-provider qualification across Claude, Codex, Antigravity, Muse, Cursor Cloud Agent, Devin, and Devin CLI:
 
 ```bash
 code-mower release campaign \
@@ -177,13 +177,13 @@ Release campaigns support partitioning selected providers into closed **required
 - **Fixed posture:** An existing campaign's provider posture cannot be modified when resuming or dispatching; posture mismatches and invalid required-provider names are rejected.
 - **Option scope:** `--required-providers` is valid for campaign creation (`create` or omitted action) and for mutating resume/dispatch actions (`resume`, `dispatch`) where it verifies stored posture against incoming arguments. It is rejected for read-only actions (`status`, `watch`, `upload`, including legacy `--status`).
 
-Example: Requiring Claude and Codex while running Antigravity, Muse, Cursor Cloud Agent, and Devin as informational:
+Example: Requiring Claude and Codex while running Antigravity, Muse, Cursor Cloud Agent, Devin, and Devin CLI as informational:
 
 ```bash
 code-mower release campaign \
   --release-tag v1.0.0 \
   --package-spec code-mower==1.0.0 \
-  --providers claude,codex,antigravity,muse,cursor_cloud_agent,devin \
+  --providers claude,codex,antigravity,muse,cursor_cloud_agent,devin,devin_cli \
   --required-providers claude,codex \
   --apply
 ```
@@ -228,7 +228,7 @@ other package-index install; see
 [Cache Bypass And Propagation Triage](pypi-release.md#cache-bypass-and-propagation-triage).
 
 - **Dry-run by default, applied once and for all:** Omit `--apply` for a safe preview. Add `--apply` for live local execution, GitHub comment dispatch, or paid runs. `applied` is a *monotonic* transition: a dry-run campaign becomes applied the first time it is dispatched with `--apply`, and nothing moves it back. A later `resume` or `--status` poll that simply omits `--apply` is not a claim that the dispatches and attempts already made never happened, so it leaves the campaign (and each dispatched provider's `dispatch_mode`) applied -- in stored state, in the rendered text, and on the Board. Previously such a poll relabelled real evidence as a dry-run preview and regressed the aggregate status to "run with --apply to dispatch providers" for providers that had already been dispatched. A poll still never dispatches anything: only `--apply` does that. The aggregate headline of a preview is held to the same standard as the individual providers it summarizes: `queued` / "run with --apply to dispatch providers" is only reported while at least one provider is genuinely dispatchable. When every provider that is not already complete is `unavailable` -- for a missing `--issue`, a missing `--repo-slug`, missing credentials, or an unconfigured adapter alike -- the campaign reports `unavailable` and the actionable "configure prerequisites for unavailable providers: ..." next action instead of pointing at an `--apply` run that could dispatch nothing. A mixed preview stays `queued`, and its detail line still counts the queued and unavailable providers separately.
-- **Provider diversity:** Tracks Claude, Codex, Antigravity, Muse, Cursor Cloud Agent, and Devin. Missing tools, tokens, or adapters -- and a `code-mower.yml` that configures one lane under two spellings -- degrade gracefully to `unavailable` without failing the campaign. Each provider may appear at most once: `--providers` is canonicalized before any participant is built, so naming the same provider twice -- directly, or through two aliases of one lane such as `cursor` and `cursor_cloud_agent` -- is rejected with an explicit error instead of creating two participants that share a single idempotency key and result path (which would let one provider's evidence count twice).
+- **Provider diversity:** Tracks Claude, Codex, Antigravity, Muse, Cursor Cloud Agent, Devin, and Devin CLI. Missing tools, tokens, or adapters -- and a `code-mower.yml` that configures one lane under two spellings -- degrade gracefully to `unavailable` without failing the campaign. Each provider may appear at most once: `--providers` is canonicalized before any participant is built, so naming the same provider twice -- directly, or through two aliases of one lane such as `cursor` and `cursor_cloud_agent` -- is rejected with an explicit error instead of creating two participants that share a single idempotency key and result path (which would let one provider's evidence count twice).
 - **Idempotent resume:** Pass `--resume` to re-poll running providers or advance queued participants without duplicating dispatch or re-invoking an adapter that already completed. Once a provider's applied dispatch/adapter has been attempted (even if it failed or its outcome was uncertain), ordinary resume never repeats it automatically -- pass `--retry-provider <provider>` to explicitly retry that one provider. `--retry-provider` is rejected unless the named provider is already part of the campaign.
 - **A hosted dispatch is checkpointed as pollable before it is posted:** Posting the dispatch comment is an external side effect that the campaign cannot undo and cannot re-observe, so everything a later resume needs is persisted *first*: the attempt (`attempted_at`), the `running` state, the issue the comment is addressed to (in `dispatch_ref`), the applied dispatch mode, and the matching campaign status and next action. A process killed anywhere around the post therefore leaves a campaign that an ordinary `--resume` polls to a conclusion against the original issue -- accepting the trusted, identity-bound result if the comment did get posted and answered -- and that never reposts on its own. Previously the campaign recorded only `attempted_at` and stayed `queued` until the post returned, which resume neither polled (not running) nor redispatched (already attempted): the provider stalled until an explicit retry posted a second comment for a dispatch that may well have succeeded. The checkpoint never claims the post succeeded -- `dispatched_at` is stamped and `dispatch_ref` is replaced with the returned dispatch metadata only when the post returns successfully; a dispatch that fails in-process records the usual `github_dispatch_failed` unavailable result. If nothing was ever posted, resume simply keeps polling and finds nothing, and dispatching again still requires an explicit `--retry-provider` (which, being explicit, may post a second comment). A retry that cannot dispatch for a prerequisite reason -- no `--issue`, missing credentials -- leaves an outstanding dispatch `running` and pollable rather than demoting it to `unavailable`, since refusing to dispatch reveals nothing about the comment already posted.
 - **Never reinitialized:** An existing campaign is never replaced by a fresh queued one. Repeating the same invocation (same `--release-tag` or `--campaign-id`, with or without `--resume`) advances the stored campaign under resume semantics, so a repeated `--apply` never reruns a local adapter, reposts a hosted dispatch, or discards recorded provider state and evidence. The explicit `create` action fails when that campaign already exists, and `resume`/`dispatch` fail when it does not -- neither falls through to creating one. A request that asks for two actions at once is refused rather than resolved to one of them: an action may be spelled with the equivalent legacy flag (`status` with `--status`, `resume`/`dispatch` with `--resume`), but combining an action with a flag naming a *different* action -- `create --resume` above all -- exits non-zero with a bounded conflict message before any campaign lookup, directory creation, lock, state write, adapter run, dispatch, or poll, so the rejected request leaves nothing behind. Previously `create --resume` reached the command body with both intents live and was answered by whichever branch tested its flag first, reporting "no existing campaign to resume" for an explicit `create`. Creation arguments that describe a different campaign (`--package-spec`, `--providers`, `--qualification-context`, `--starting-version`, `--package-source`, or a `--campaign-id`/`--release-tag` pair that disagree) are rejected explicitly rather than silently ignored. `--qualification-context` and `--package-source` are each compared whenever supplied, including an explicit `--qualification-context cold_install` or `--package-source pypi` against a stored campaign with the same value: neither flag has a default value of its own, so an omitted flag (which advances the stored campaign under its own context/source, and creates a `cold_install`/`pypi` campaign when there is none) is distinguishable from an explicitly requested default, and an explicit default is never silently ignored. A campaign created without `--package-source` (or an explicit `pypi`) stays `pypi`; resuming it with `--package-source testpypi` is rejected as an identity conflict, not a resume, exactly like a conflicting `--qualification-context`. A campaign stored before this field existed reads back as `pypi`, its documented default. `--repo-slug` is the one field an existing campaign can still be *completed* with: a campaign created without a repository slug has nowhere to dispatch, so supplying `--repo-slug` on a later `resume`/`dispatch` fills the empty stored value and persists it before any hosted dispatch uses it. A `--repo-slug` that disagrees with a non-empty stored slug is rejected like any other identity change -- an in-flight campaign is never repointed at a different repository.
@@ -452,6 +452,51 @@ code-mower release campaign \
 ```
 
 **Note:** Devin is an opt-in paid provider (`enabled_by_default: false`, `trigger_policy: manual`, `spend_policy: paid`). It must be explicitly requested via `--providers devin` and is not included in the default provider set.
+
+#### Devin CLI Setup
+
+`devin_cli` runs the local Devin CLI as an informational release-campaign
+participant. It is not merge authority until calibrated.
+
+**Prerequisites:**
+- Install `devin` on PATH and authenticate with `devin auth login` in a trusted
+  environment.
+- Set `CODE_MOWER_DEVIN_CLI_MODEL` (preferred) or `DEVIN_CLI_MODEL` to choose
+  the model for qualification runs.
+- Optional: override the binary with `CODE_MOWER_DEVIN_CLI_COMMAND`.
+
+**Adapter behavior:**
+- The adapter invokes `devin --print --prompt-file <file>` with
+  `shell=False`.
+- It passes `--respect-workspace-trust false` so non-interactive runs do not
+  prompt for workspace trust.
+- It uses `--sandbox --permission-mode autonomous`, the least-permissive
+  posture that still allows the disposable qualification workspace to create a
+  venv, install the candidate, and run smoke checks.
+- In this posture Devin's `edit`/`write` file tools are force-asked and cannot
+  be approved non-interactively, so the prompt requires all file changes to go
+  through sandboxed shell commands; a run that still calls them ends without a
+  result and the adapter fails closed.
+- The prompt file is created inside the disposable workspace with mode `0600`
+  and is never persisted after the run.
+- Raw stdout/stderr are transient parsing input only. No prompt, transcript,
+  conversation export, source, diff, local path, or secret is persisted or
+  uploaded.
+- The result must be exactly one closed `code_mower.adoptionResult.v1` object
+  bound to `provider: devin_cli`, `executor: devin_cli`, the release tag,
+  package identity, qualification context, and starting version.
+
+**Example dispatch:**
+```bash
+code-mower release campaign \
+  --release-tag v1.0.0 \
+  --package-spec code-mower==1.0.0 \
+  --providers devin_cli \
+  --apply
+```
+
+**Note:** `devin_cli` is informational and disabled by default. It must be
+explicitly requested via `--providers devin_cli`.
 
 ### Per-Release Operation
 
