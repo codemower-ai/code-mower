@@ -7,7 +7,22 @@ later entries are regular releases.
 
 ## Unreleased
 
-No changes yet.
+### Fixed
+
+- macOS Claude release campaigns can cold-install an exact PyPI release again
+  inside the maintained strict sandbox. Claude Code's macOS sandbox denies the
+  Security.framework call pip's default platform trust store makes
+  (`OSStatus -26276`), so a macOS Claude qualification prompt now runs pip with
+  its TLS-verifying legacy (certifi) certificate path and no inherited pip
+  configuration. Certificate verification stays enabled -- no trusted-host
+  option, no disabled TLS, no unsandboxed command -- and the sandbox, domain
+  allowlist, home denials, and disabled escape hatch are unchanged. Linux
+  Claude runs and every other provider keep pip's default certificate path. A
+  certificate failure that survives this path always classifies as a `network`
+  package-install failure, never `sandbox_permission` and never
+  `package_index`; a non-certificate index response such as a 404 still
+  classifies as `package_index`. See
+  [macOS Claude sandbox certificate path](docs/release-qualification.md#macos-claude-sandbox-certificate-path).
 
 ## v1.0.10
 
