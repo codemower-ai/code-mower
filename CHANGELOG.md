@@ -7,7 +7,14 @@ later entries are regular releases.
 
 ## Unreleased
 
-No changes yet.
+### Fixed
+
+- Release qualification now prefers a supported versioned Python on `PATH`
+  outside the user home before falling back to Code Mower's running
+  interpreter. A pipx- or uv-installed CLI can therefore select an available
+  Homebrew/system runtime that remains readable inside Claude's strict macOS
+  sandbox. Explicit `CODE_MOWER_PYTHON` overrides remain authoritative, and a
+  home-contained runtime remains a supported fallback (#778).
 
 ## v1.0.12
 

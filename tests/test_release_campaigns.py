@@ -12756,6 +12756,78 @@ class RuntimeReadinessCampaignTests(unittest.TestCase):
 
         self.assertEqual(res, (str(python315), "python_3.15"))
 
+    def test_resolve_supported_runtime_prefers_path_runtime_outside_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            home_python = home / "pipx" / "python3.14"
+            external_bin = root / "toolchain" / "bin"
+            external_python = external_bin / "python3.12"
+            home_python.parent.mkdir(parents=True)
+            external_bin.mkdir(parents=True)
+            home_python.touch()
+            external_python.touch()
+
+            def fake_which(command: str) -> str | None:
+                return str(external_python) if command == "python3.12" else None
+
+            def fake_runner(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                version = "3.12.9\n" if command[0] == str(external_python) else "3.14.1\n"
+                return subprocess.CompletedProcess(command, 0, stdout=version, stderr="")
+
+            with mock.patch.object(release_campaigns.sys, "executable", str(home_python)):
+                result = release_campaigns.resolve_supported_runtime(
+                    environ={"HOME": str(home), "PATH": str(external_bin)},
+                    which_fn=fake_which,
+                    runner=fake_runner,
+                )
+
+        self.assertEqual(result, (str(external_python), "python_3.12"))
+
+    def test_resolve_supported_runtime_falls_back_to_running_interpreter_in_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home_python = home / "pipx" / "python3.14"
+            home_python.parent.mkdir(parents=True)
+            home_python.touch()
+
+            def fake_runner(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(command, 0, stdout="3.14.1\n", stderr="")
+
+            with mock.patch.object(release_campaigns.sys, "executable", str(home_python)):
+                result = release_campaigns.resolve_supported_runtime(
+                    environ={"HOME": str(home), "PATH": ""},
+                    which_fn=lambda _: None,
+                    runner=fake_runner,
+                )
+
+        self.assertEqual(result, (str(home_python), "python_3.14"))
+
+    def test_resolve_supported_runtime_keeps_explicit_home_override_authoritative(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            explicit_python = home / "python3.12"
+            external_python = Path(tmp) / "external" / "python3.14"
+            explicit_python.parent.mkdir(parents=True)
+            external_python.parent.mkdir(parents=True)
+            explicit_python.touch()
+            external_python.touch()
+
+            def fake_runner(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(command, 0, stdout="3.12.9\n", stderr="")
+
+            result = release_campaigns.resolve_supported_runtime(
+                environ={
+                    "CODE_MOWER_PYTHON": str(explicit_python),
+                    "HOME": str(home),
+                    "PATH": str(external_python.parent),
+                },
+                which_fn=lambda _: str(external_python),
+                runner=fake_runner,
+            )
+
+        self.assertEqual(result, (str(explicit_python), "python_3.12"))
+
     def test_invoke_local_adapter_fails_closed_when_runtime_unavailable(self) -> None:
         invoked: list[str] = []
 
