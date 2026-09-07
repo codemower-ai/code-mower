@@ -545,8 +545,11 @@ def build_qualification_prompt(
                 "`--trusted-host`, never disable or skip TLS verification, and never",
                 "run any command outside the sandbox. If an install still fails",
                 "certificate verification, report the `package_install` step with",
-                "`failure_reason` `network` (or `package_index` when the index itself",
-                "served the error) -- never `sandbox_permission`.",
+                "`failure_reason` `network`: a certificate-validation failure is",
+                "always `network`, never `sandbox_permission` and never",
+                "`package_index`. Use `package_index` only for an index response",
+                "that is not a certificate failure, such as a 404 or a missing",
+                "version.",
             ]
         )
     lines.extend(

@@ -18,8 +18,10 @@ later entries are regular releases.
   option, no disabled TLS, no unsandboxed command -- and the sandbox, domain
   allowlist, home denials, and disabled escape hatch are unchanged. Linux
   Claude runs and every other provider keep pip's default certificate path. A
-  certificate failure that survives this path classifies as a `network`
-  package-install failure rather than `sandbox_permission`. See
+  certificate failure that survives this path always classifies as a `network`
+  package-install failure, never `sandbox_permission` and never
+  `package_index`; a non-certificate index response such as a 404 still
+  classifies as `package_index`. See
   [macOS Claude sandbox certificate path](docs/release-qualification.md#macos-claude-sandbox-certificate-path).
 
 ## v1.0.10

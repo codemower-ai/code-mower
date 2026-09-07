@@ -1958,8 +1958,21 @@ class ClaudeMacosCertificatePathTests(unittest.TestCase):
 
     def test_macos_claude_prompt_classifies_remaining_certificate_failure_as_network(self) -> None:
         prompt = self._prompt("claude", "Darwin")
-        self.assertIn("`failure_reason` `network`", prompt)
-        self.assertIn("never `sandbox_permission`", prompt)
+        # The rule wraps across prompt lines; compare it as flowing text.
+        reporting_rule = " ".join(prompt.split())
+        self.assertIn("`failure_reason` `network`", reporting_rule)
+        self.assertIn(
+            "a certificate-validation failure is always `network`, never "
+            "`sandbox_permission` and never `package_index`",
+            reporting_rule,
+        )
+        # `package_index` still names its own, different failure, matching
+        # classify_package_install_failure's order.
+        self.assertIn(
+            "Use `package_index` only for an index response that is not a "
+            "certificate failure",
+            reporting_rule,
+        )
 
     def test_linux_claude_and_other_providers_keep_the_default_certificate_path(self) -> None:
         for provider, platform_system in (

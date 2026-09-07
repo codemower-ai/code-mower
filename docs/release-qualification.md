@@ -99,11 +99,15 @@ field classifying the failure into one of these closed categories:
   OS-level sandbox restrictions
 - **unknown**: Unclassifiable failures
 
-Certificate-validation failures classify as `network`, ahead of the
-permission indicators, even when the platform reports them with
-permission-shaped wording (macOS trust-store evaluation inside a strict OS
-sandbox returns `OSStatus -26276`): the failure is in the package-index
-connection, not the filesystem. See
+Certificate-validation failures always classify as `network` -- never
+`sandbox_permission`, never `package_index`. The certificate indicators are
+checked ahead of every other category, so the reason stays `network` even when
+the platform reports the failure with permission-shaped wording (macOS
+trust-store evaluation inside a strict OS sandbox returns `OSStatus -26276`) or
+alongside index wording: trust could not be established for the connection.
+`package_index` remains the reason for an index response that is not a
+certificate failure (404, missing version, propagation delay, malformed
+response). See
 [macOS Claude sandbox certificate path](#macos-claude-sandbox-certificate-path).
 
 The reason is derived from error messages and exception types during the install
@@ -305,7 +309,7 @@ Every pip command in a **macOS Claude** qualification prompt therefore runs as `
 - **The disposable pip process inherits no ambient pip configuration.** The `env -u`/`PIP_CONFIG_FILE=/dev/null` prefix plus pip's own `--isolated` mode mean the certificate path (and the index) is chosen by the adapter, not by whatever pip configuration the host happens to carry. Provider child environments still exclude ambient GitHub, cloud, provider-token, and pip settings.
 - **The scope is exactly macOS plus Claude.** Linux Claude runs, and Codex/Antigravity/Muse/Devin CLI on any platform, keep pip's default certificate path and their existing command text (`code_mower.campaign_adapters.claude_macos_certificate_path_required`).
 - **Old pip builds degrade cleanly.** pip added `legacy-certs` in 24.2, the same release that made the platform trust store the default; a pip that rejects the option predates the defect, and the prompt instructs the agent to rerun the identical command without the flag and change nothing else.
-- **A remaining certificate failure is a network failure.** Both the prompt and `classify_package_install_failure` classify blocked trust-store evaluation as `network` (or `package_index` when the index itself served the error), never `sandbox_permission` -- the permission-shaped wording macOS returns describes a trust evaluation, not a filesystem denial.
+- **A remaining certificate failure is a network failure.** Both the prompt and `classify_package_install_failure` classify blocked trust-store evaluation as `network` -- never `sandbox_permission` (the permission-shaped wording macOS returns describes a trust evaluation, not a filesystem denial) and never `package_index` (nothing was served over a connection that was never trusted). A separate index response that is not a certificate failure, such as a 404 or a missing version, still classifies as `package_index`.
 
 Release-qualification note: a macOS Claude cold install of an exact PyPI release is expected to pass inside the maintained restricted sandbox. If it fails certificate verification again, treat it as a provider-sandbox regression: the campaign result reports `package_install` `fail` with `failure_reason: network`, and the evidence stays metadata-only as with any other failure.
 

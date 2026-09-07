@@ -134,6 +134,33 @@ class FailureReasonClassificationTests(unittest.TestCase):
                 self.assertEqual(reason, "network")
                 self.assertIn(reason, migration_install.PACKAGE_INSTALL_FAILURE_REASONS)
 
+    def test_certificate_validation_failure_outranks_index_wording(self) -> None:
+        """A certificate failure is `network` even when index wording is present.
+
+        Nothing was served over a connection whose trust was never
+        established, so `package_index` would misreport the root cause.
+        """
+        reason = migration_install.classify_package_install_failure(
+            exception=RuntimeError("pip install failed"),
+            steps=[
+                {
+                    "stderr_preview": (
+                        "ssl.SSLCertVerificationError: certificate verify failed; "
+                        "HTTP error 404: No matching distribution found"
+                    )
+                }
+            ],
+        )
+        self.assertEqual(reason, "network")
+
+    def test_index_response_without_certificate_wording_stays_package_index(self) -> None:
+        """The certificate rule does not widen: a plain 404 is still `package_index`."""
+        reason = migration_install.classify_package_install_failure(
+            exception=RuntimeError("pip install failed"),
+            steps=[{"stderr_preview": "HTTP error 404: No matching distribution found"}],
+        )
+        self.assertEqual(reason, "package_index")
+
     def test_priority_sandbox_over_network(self) -> None:
         exc = RuntimeError("connection refused")
         steps = [{"stderr_preview": "Permission denied and connection refused"}]

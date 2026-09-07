@@ -196,11 +196,13 @@ def classify_package_install_failure(*, exception: Exception, steps: list[dict[s
     )
 
     # Certificate-validation failures: the transport could not establish trust.
-    # These are checked before the sandbox/permission indicators because a
+    # These are checked ahead of every other category, so a certificate failure
+    # is always `network`. It outranks the permission indicators because a
     # platform trust store evaluated inside a strict OS sandbox (macOS
     # Security.framework reports OSStatus -26276) fails with wording that also
-    # matches "operation not permitted"/EPERM. The root cause is the package
-    # index connection, not a filesystem denial, so it classifies as network.
+    # matches "operation not permitted"/EPERM, and it outranks the index
+    # indicators because an untrusted connection served nothing to classify.
+    # `package_index` stays the reason for a non-certificate index response.
     certificate_indicators = (
         "certificate verify failed",
         "certificate_verify_failed",
