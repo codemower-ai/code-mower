@@ -400,6 +400,149 @@ class ProductivityWindowRejectionTests(unittest.TestCase):
         with self.assertRaisesRegex(CloudBundleError, "active_time_coverage"):
             validate_cloud_event(mismatch)
 
+    def test_defect_coverage_equivalence_accepts_observed_combinations(self) -> None:
+        release = productivity_window_to_event(
+            _fixture()["release_window"], source="unit-test"
+        )
+        validate_cloud_event(release)
+        self.assertEqual(release["dimensions"]["defect_coverage"], "observed")
+
+        # Each defect/revert signal alone sustains observed coverage.
+        for counts in (
+            {"post_merge_defect_count": 1},
+            {"reverted_pr_count": 1},
+        ):
+            event = copy.deepcopy(release)
+            event["metrics"] = {
+                "cycle_time_seconds": event["metrics"]["cycle_time_seconds"],
+                **counts,
+            }
+            validate_cloud_event(event)
+
+        # Absence of both signals sustains unavailable coverage.
+        repo = productivity_window_to_event(
+            _fixture()["repo_window"], source="unit-test"
+        )
+        validate_cloud_event(repo)
+        self.assertEqual(repo["dimensions"]["defect_coverage"], "unavailable")
+
+    def test_defect_coverage_equivalence_rejects_mismatches(self) -> None:
+        repo = productivity_window_to_event(
+            _fixture()["repo_window"], source="unit-test"
+        )
+        claimed = copy.deepcopy(repo)
+        claimed["dimensions"]["defect_coverage"] = "observed"
+        with self.assertRaisesRegex(CloudBundleError, "defect_coverage"):
+            validate_cloud_event(claimed)
+
+        release = productivity_window_to_event(
+            _fixture()["release_window"], source="unit-test"
+        )
+        cycle_only = copy.deepcopy(release)
+        cycle_only["metrics"] = {
+            "cycle_time_seconds": release["metrics"]["cycle_time_seconds"]
+        }
+        cycle_only["dimensions"]["defect_coverage"] = "unavailable"
+        validate_cloud_event(cycle_only)
+
+        unrelated_counts = copy.deepcopy(release)
+        unrelated_counts["metrics"] = {
+            "cycle_time_seconds": release["metrics"]["cycle_time_seconds"],
+            "merged_pr_count": 6,
+        }
+        unrelated_counts["dimensions"]["defect_coverage"] = "unavailable"
+        validate_cloud_event(unrelated_counts)
+
+        hidden = copy.deepcopy(release)
+        hidden["dimensions"]["defect_coverage"] = "unavailable"
+        with self.assertRaisesRegex(CloudBundleError, "defect_coverage"):
+            validate_cloud_event(hidden)
+
+        hidden_revert = copy.deepcopy(release)
+        hidden_revert["metrics"] = {
+            "cycle_time_seconds": release["metrics"]["cycle_time_seconds"],
+            "reverted_pr_count": 1,
+        }
+        hidden_revert["dimensions"]["defect_coverage"] = "unavailable"
+        with self.assertRaisesRegex(CloudBundleError, "defect_coverage"):
+            validate_cloud_event(hidden_revert)
+
+    def test_normalized_window_span_must_match_cycle_time(self) -> None:
+        event = productivity_window_to_event(
+            _fixture()["repo_window"], source="unit-test"
+        )
+        validate_cloud_event(event)
+
+        drifted = copy.deepcopy(event)
+        drifted["metrics"]["cycle_time_seconds"] += 1
+        with self.assertRaisesRegex(CloudBundleError, "must match"):
+            validate_cloud_event(drifted)
+
+        reversed_window = copy.deepcopy(event)
+        reversed_window["dimensions"]["window_start"] = event["dimensions"]["window_end"]
+        reversed_window["dimensions"]["window_end"] = event["dimensions"]["window_start"]
+        with self.assertRaisesRegex(CloudBundleError, "must be after"):
+            validate_cloud_event(reversed_window)
+
+        invalid = copy.deepcopy(event)
+        invalid["dimensions"]["window_start"] = "not-a-timestamp"
+        with self.assertRaisesRegex(CloudBundleError, "ISO 8601"):
+            validate_cloud_event(invalid)
+
+        naive = copy.deepcopy(event)
+        naive["dimensions"]["window_start"] = "2026-08-01T00:00:00"
+        with self.assertRaisesRegex(CloudBundleError, "UTC offset"):
+            validate_cloud_event(naive)
+
+        for bad in (float("inf"), float("nan")):
+            nonfinite = copy.deepcopy(event)
+            nonfinite["metrics"]["cycle_time_seconds"] = bad
+            with self.assertRaisesRegex(CloudBundleError, "finite"):
+                validate_productivity_window_event(nonfinite)
+
+    def test_shared_jsonl_parsing_stays_in_sync(self) -> None:
+        from code_mower.cloud_client import parse_event_file_candidates
+        from code_mower.cloud_client.productivity_windows import (
+            _parsed_window_candidates,
+        )
+
+        source = Path("window.json")
+        self.assertEqual(parse_event_file_candidates("", source), [])
+        self.assertEqual(_parsed_window_candidates("", source), [])
+        single = parse_event_file_candidates('{"a": 1}', source)
+        self.assertEqual(single, [{"a": 1}])
+        self.assertEqual(_parsed_window_candidates('{"a": 1}', source), single)
+        array = parse_event_file_candidates('[{"a": 1}, {"b": 2}]', source)
+        self.assertEqual(array, [{"a": 1}, {"b": 2}])
+        self.assertEqual(
+            _parsed_window_candidates('[{"a": 1}, {"b": 2}]', source), array
+        )
+        jsonl = parse_event_file_candidates('{"a": 1}\n{"b": 2}\n', source)
+        self.assertEqual(jsonl, [{"a": 1}, {"b": 2}])
+        self.assertEqual(
+            _parsed_window_candidates('{"a": 1}\n{"b": 2}\n', source), jsonl
+        )
+        with self.assertRaisesRegex(CloudBundleError, "is not JSON"):
+            parse_event_file_candidates('{"a": 1}\nnope\n', source)
+        with self.assertRaisesRegex(CloudBundleError, "is not JSON"):
+            _parsed_window_candidates('{"a": 1}\nnope\n', source)
+        with self.assertRaisesRegex(CloudBundleError, "object, array, or JSONL"):
+            parse_event_file_candidates("42", source)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            observation = _fixture()["repo_window"]
+            path = Path(tmp) / "windows.jsonl"
+            path.write_text(
+                json.dumps(observation) + "\n" + json.dumps(observation) + "\n",
+                encoding="utf-8",
+            )
+            events = load_productivity_window_events(
+                path, PRODUCTIVITY_EVENT_TYPE, source="unit-test"
+            )
+            self.assertEqual(len(events), 2)
+            for loaded in events:
+                validate_cloud_event(loaded)
+
     def test_unstamped_events_keep_historical_validation(self) -> None:
         legacy = normalize_event(
             {

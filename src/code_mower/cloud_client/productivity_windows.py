@@ -512,28 +512,16 @@ def productivity_window_event_from_dict(
 
 
 def _parsed_window_candidates(text: str, path: Path) -> list[Any]:
-    import json as _json
+    """Parse raw window-file candidates via the shared event-file parser.
 
-    if not text.strip():
-        return []
-    try:
-        parsed = _json.loads(text)
-    except _json.JSONDecodeError:
-        parsed = []
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            if not line.strip():
-                continue
-            try:
-                parsed.append(_json.loads(line))
-            except _json.JSONDecodeError as exc:
-                raise CloudBundleError(
-                    f"event file {path} line {line_number} is not JSON"
-                ) from exc
-    if isinstance(parsed, Mapping):
-        return [parsed]
-    if isinstance(parsed, list):
-        return list(parsed)
-    raise CloudBundleError(f"event file must contain an object, array, or JSONL: {path}")
+    Thin wrapper over :func:`events.parse_event_file_candidates` so JSON/JSONL
+    handling cannot drift; productivity-window-specific candidate conversion
+    and safe diagnostics stay in :func:`load_productivity_window_events`.
+    """
+
+    from .events import parse_event_file_candidates
+
+    return parse_event_file_candidates(text, path)
 
 
 def load_productivity_window_events(
@@ -674,12 +662,35 @@ def validate_productivity_window_event(event: Mapping[str, Any]) -> None:
     defect_emitted = any(
         key in metrics for key in ("post_merge_defect_count", "reverted_pr_count")
     )
-    if defect_emitted and defect_coverage != "observed":
+    if defect_emitted != (defect_coverage == "observed"):
         raise CloudBundleError(
             "productivity_window defect_coverage must be 'observed' "
-            "when defect or revert linkage is emitted"
+            "exactly when defect or revert linkage is emitted"
         )
     if "cycle_time_seconds" not in metrics:
         raise CloudBundleError(
             "productivity_window events must include elapsed cycle_time_seconds"
+        )
+    window_start = _timestamp(dimensions.get("window_start"), "'window_start'")
+    window_end = _timestamp(dimensions.get("window_end"), "'window_end'")
+    if window_end <= window_start:
+        raise CloudBundleError(
+            "productivity_window 'window_end' must be after 'window_start'"
+        )
+    cycle = metrics.get("cycle_time_seconds")
+    if isinstance(cycle, bool) or not isinstance(cycle, int | float):
+        raise CloudBundleError(
+            "productivity_window metric 'cycle_time_seconds' must be numeric"
+        )
+    if not math.isfinite(cycle) or cycle < 0:
+        raise CloudBundleError(
+            "productivity_window metric 'cycle_time_seconds' must be finite "
+            "and non-negative"
+        )
+    expected_span = int((window_end - window_start).total_seconds())
+    if cycle != expected_span:
+        raise CloudBundleError(
+            f"productivity_window cycle_time_seconds {cycle!r} must match "
+            f"window span {expected_span} seconds "
+            "('window_end' minus 'window_start')"
         )

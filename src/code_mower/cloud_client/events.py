@@ -886,16 +886,17 @@ def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
     return validate_cloud_event(normalized)
 
 
-def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
-    source = path.expanduser()
-    if not source.is_file():
-        raise CloudBundleError(f"event file does not exist or is not a file: {source}")
-    try:
-        text = source.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise CloudBundleError(f"event file is not UTF-8 text: {source}") from exc
-    except OSError as exc:
-        raise CloudBundleError(f"unable to read event file {source}: {exc}") from exc
+def parse_event_file_candidates(text: str, path: Path) -> list[Any]:
+    """Parse raw JSON/JSONL event-file candidates.
+
+    Shared by the generic event loader and the productivity-window loader so
+    JSON/JSONL parsing fixes cannot drift between the two paths. Returns the
+    raw decoded items (object for a single document, members for an array or
+    JSONL stream); callers keep their own per-item conversion and safe
+    diagnostics. Raises the normal safe :class:`CloudBundleError` on bad
+    lines or scalar documents.
+    """
+
     if not text.strip():
         return []
     try:
@@ -909,16 +910,28 @@ def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
                 parsed.append(json.loads(line))
             except json.JSONDecodeError as exc:
                 raise CloudBundleError(
-                    f"event file {source} line {line_number} is not JSON"
+                    f"event file {path} line {line_number} is not JSON"
                 ) from exc
     if isinstance(parsed, dict):
-        parsed_events = [parsed]
-    elif isinstance(parsed, list):
-        parsed_events = parsed
-    else:
-        raise CloudBundleError(
-            f"event file must contain an object, array, or JSONL: {source}"
-        )
+        return [parsed]
+    if isinstance(parsed, list):
+        return list(parsed)
+    raise CloudBundleError(
+        f"event file must contain an object, array, or JSONL: {path}"
+    )
+
+
+def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
+    source = path.expanduser()
+    if not source.is_file():
+        raise CloudBundleError(f"event file does not exist or is not a file: {source}")
+    try:
+        text = source.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise CloudBundleError(f"event file is not UTF-8 text: {source}") from exc
+    except OSError as exc:
+        raise CloudBundleError(f"unable to read event file {source}: {exc}") from exc
+    parsed_events = parse_event_file_candidates(text, source)
     events: list[dict[str, Any]] = []
     for item in parsed_events:
         if not isinstance(item, dict):
