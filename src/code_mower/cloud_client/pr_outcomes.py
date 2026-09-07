@@ -254,6 +254,38 @@ def _lane_for_run_event(event: Mapping[str, Any]) -> str:
     return ""
 
 
+def _dedupe_sorted_run_events(
+    run_events: list[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Return run-attempt events in canonical order for deterministic dedup.
+
+    Only ``builder_run`` and ``reviewer_run`` events are returned, sorted by
+    the same canonical serialization used for the evidence digest.  When
+    several rows share a source identity with conflicting content, the row
+    that sorts first wins regardless of input order, so aggregation and
+    fingerprinting resolve duplicate identities identically and input order
+    cannot alter totals without altering observation identity.
+    """
+
+    typed = [
+        event
+        for event in run_events
+        if str(event.get("event_type") or "").strip()
+        in {"builder_run", "reviewer_run"}
+    ]
+    try:
+        typed.sort(
+            key=lambda event: json.dumps(
+                _run_event_canonical(event), sort_keys=True, allow_nan=False
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise CloudBundleError(
+            "pr_outcome run evidence could not be serialized deterministically"
+        ) from exc
+    return typed
+
+
 def _aggregate_run_costs(
     run_events: list[Mapping[str, Any]],
 ) -> tuple[int, int, float, list[str]]:
@@ -268,7 +300,9 @@ def _aggregate_run_costs(
     ``dimensions.spend_run_id`` for converted reviewer-spend rows) are never
     silently dropped; they are counted as expected attempts with unknown cost
     and, when the lane can be determined, recorded in ``missing_lane_sources``.
-    This keeps them from inflating ``complete`` coverage.
+    This keeps them from inflating ``complete`` coverage.  Duplicate
+    identities are resolved in canonical order, so the surviving cost is
+    independent of input ordering.
     """
 
     seen: set[str] = set()
@@ -277,11 +311,7 @@ def _aggregate_run_costs(
     total_cost = 0.0
     missing_lanes: list[str] = []
 
-    for event in run_events:
-        event_type = str(event.get("event_type") or "").strip()
-        if event_type not in {"builder_run", "reviewer_run"}:
-            continue
-
+    for event in _dedupe_sorted_run_events(run_events):
         expected += 1
         identity = _run_event_identity(event)
         if not identity or identity in seen:

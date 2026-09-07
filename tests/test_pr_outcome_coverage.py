@@ -768,6 +768,51 @@ class PrOutcomeUnidentifiedReviewerTests(unittest.TestCase):
         )
         validate_cloud_event(event)
 
+    def test_conflicting_duplicate_rows_resolve_independent_of_order(self) -> None:
+        cheaper = _reviewer_run_event("evt-1", "72", 0.10)
+        cheaper["dimensions"]["spend_run_id"] = "run-1"
+        pricier = _reviewer_run_event("evt-2", "72", 0.20)
+        pricier["dimensions"]["spend_run_id"] = "run-1"
+
+        def _build(rows: list[dict[str, object]]) -> dict[str, object]:
+            return build_pr_outcome_event(
+                repo_slug="owner/repo",
+                pr_number="72",
+                outcome="merged",
+                opened_at="2026-09-03T10:00:00Z",
+                merged_at="2026-09-03T12:00:00Z",
+                run_events=[_builder_run_event("b1", "72", 0.15), *rows],
+                created_at="2026-09-03T13:00:00Z",
+            )
+
+        forward = _build([cheaper, pricier])
+        reversed_event = _build([pricier, cheaper])
+
+        self.assertEqual(forward["metrics"], reversed_event["metrics"])
+        self.assertEqual(
+            forward["dimensions"]["cost_coverage"],
+            reversed_event["dimensions"]["cost_coverage"],
+        )
+        self.assertEqual(
+            forward["dimensions"]["missing_cost_sources"],
+            reversed_event["dimensions"]["missing_cost_sources"],
+        )
+        self.assertEqual(
+            forward["dimensions"]["pr_outcome_observation_version"],
+            reversed_event["dimensions"]["pr_outcome_observation_version"],
+        )
+        self.assertEqual(forward["event_id"], reversed_event["event_id"])
+        self.assertEqual(forward["created_at"], reversed_event["created_at"])
+
+        self.assertEqual(forward["dimensions"]["cost_coverage"], "partial")
+        self.assertEqual(forward["metrics"]["cost_reported_run_count"], 2)
+        self.assertEqual(forward["metrics"]["cost_expected_run_count"], 3)
+        self.assertAlmostEqual(
+            forward["metrics"]["reported_cost_usd"], 0.25
+        )
+        validate_cloud_event(forward)
+        validate_cloud_event(reversed_event)
+
     def test_non_finite_cost_on_missing_id_is_bundle_error(self) -> None:
         bad = _reviewer_run_event("", "71", float("nan"))
         with self.assertRaises(CloudBundleError):
