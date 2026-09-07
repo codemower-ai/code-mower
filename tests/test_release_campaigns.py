@@ -14863,6 +14863,58 @@ class LinkedReleasePrResultDiscoveryTests(unittest.TestCase):
             )
             self.assertNotIn(secret, stored)
 
+    def test_superseded_attempt_keeps_its_result_source_in_history(self) -> None:
+        """A superseded attempt's surface survives in history, not on the entry.
+
+        A result discovered on the linked release PR and later superseded by a
+        manually recorded one must stay auditable: the archived metadata-only
+        summary keeps the pull-request provenance, while the live entry stops
+        naming a surface for evidence it no longer holds.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            runner = _surface_gh_runner(
+                pr_comments=[_cursor_result_comment(campaign, provider)],
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+            self.assertEqual(entry["result_source"]["surface"], "pull_request")
+            self.assertEqual(entry["result_source"]["number"], "786")
+            self.assertEqual(entry.get("attempt_history", []), [])
+
+            stored = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert stored is not None
+            release_campaigns.record_manual_result(
+                stored,
+                "cursor_cloud_agent",
+                _mock_adoption_result(provider="cursor_cloud_agent", outcome="fail"),
+                campaigns_dir=campaigns_dir,
+            )
+            saved = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert saved is not None
+            superseded = saved["providers"][0]
+
+            self.assertEqual(superseded["adoption_result"]["outcome"], "fail")
+            history = superseded.get("attempt_history")
+            assert isinstance(history, list)
+            self.assertEqual(len(history), 1)
+            self.assertEqual(
+                history[0]["result_source"],
+                {
+                    "surface": "pull_request",
+                    "number": "786",
+                    "duplicate_surfaces": 0,
+                    "conflicting_surfaces": 0,
+                },
+            )
+            # The recorded result came from no polled surface, so the live
+            # entry names none: the earlier provenance lives in history alone.
+            self.assertNotIn("result_source", superseded)
+
     def test_watch_completes_on_a_linked_release_pr_result(self) -> None:
         """The acceptance path: watch alone finishes a PR-answered qualification."""
         with tempfile.TemporaryDirectory() as tmp:

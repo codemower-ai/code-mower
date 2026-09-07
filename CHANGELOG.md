@@ -19,7 +19,12 @@ later entries are regular releases.
   both surfaces are deduplicated, the source surface is kept as metadata only
   (no issue or comment body text), an unreadable surface stays the retryable
   `github_poll_unavailable`, and discovery is never widened to arbitrary
-  repository issues or pull requests (issue #791).
+  repository issues or pull requests (issue #791). When a later attempt
+  supersedes a discovered result, that result's source surface is archived
+  with it in the bounded metadata-only `attempt_history` instead of being
+  dropped or left describing evidence the entry no longer holds, so earlier
+  issue-versus-pull-request provenance stays auditable across a retry,
+  redispatch, or `--record-result` recovery.
 
 ## v1.0.14
 

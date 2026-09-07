@@ -3020,6 +3020,56 @@ def _sanitize_history_timestamp(value: Any) -> str | None:
     return value
 
 
+# The only fields a discovered result's source record may carry, whether it
+# describes the current attempt or a superseded one archived in history:
+# which allowed surface carried the result, that surface's bounded GitHub
+# number, and how many additional surfaces carried identical (or differing)
+# evidence. Never issue, pull request, or comment body text.
+RESULT_SOURCE_FIELDS = frozenset(
+    {"surface", "number", "duplicate_surfaces", "conflicting_surfaces"}
+)
+
+# A result is discovered across the allowed surfaces only, so no count of
+# additional surfaces can exceed how many surfaces there are.
+MAX_RESULT_SOURCE_SURFACE_COUNT = len(_RESULT_SURFACE_GH_COMMAND)
+
+
+def _sanitize_result_source(value: Any) -> dict[str, Any] | None:
+    """Rebuild one result-source record from its closed bounded fields, or None.
+
+    Stored campaign files are untrusted input, so a source record -- like a
+    retained history entry -- is rebuilt rather than copied: the surface must
+    name one of the allowed discovery surfaces, the number must match the
+    bounded positive-number grammar every polled surface number is held to,
+    and the counts degrade to 0 and are capped. A record that cannot name
+    both a surface and its number carries no usable provenance and returns
+    None, which callers omit rather than store.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    surface = value.get("surface")
+    if not isinstance(surface, str) or surface not in _RESULT_SURFACE_GH_COMMAND:
+        return None
+    raw_number = value.get("number")
+    if isinstance(raw_number, bool) or not isinstance(raw_number, (str, int)):
+        return None
+    number = str(raw_number).strip()
+    if RELEASE_PR_PATTERN.fullmatch(number) is None:
+        return None
+    counts: dict[str, int] = {}
+    for count_field in ("duplicate_surfaces", "conflicting_surfaces"):
+        count = value.get(count_field)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            count = 0
+        counts[count_field] = min(count, MAX_RESULT_SOURCE_SURFACE_COUNT)
+    return {
+        "surface": surface,
+        "number": number,
+        "duplicate_surfaces": counts["duplicate_surfaces"],
+        "conflicting_surfaces": counts["conflicting_surfaces"],
+    }
+
+
 def _prior_attempt_summary(provider_data: Mapping[str, Any]) -> dict[str, Any] | None:
     """Summarize the stored attempt in metadata-only form, or None when no attempt exists."""
     stored_result = provider_data.get("adoption_result")
@@ -3045,7 +3095,7 @@ def _prior_attempt_summary(provider_data: Mapping[str, Any]) -> dict[str, Any] |
     if not isinstance(state, str) or state not in VALID_PROVIDER_STATES:
         state = ""
     dispatched_at = provider_data.get("dispatched_at")
-    return {
+    summary = {
         "attempted_at": _sanitize_history_timestamp(attempted_at),
         "dispatched_at": _sanitize_history_timestamp(dispatched_at),
         "completed_at": _sanitize_history_timestamp(completed_at),
@@ -3054,11 +3104,25 @@ def _prior_attempt_summary(provider_data: Mapping[str, Any]) -> dict[str, Any] |
         "error": error,
         "elapsed_seconds": round(float(elapsed), 2),
     }
+    # Which allowed surface carried this attempt's result is part of the
+    # attempt being superseded, so it is archived with it: once a later
+    # attempt replaces the stored result, history is the only place the
+    # earlier issue-versus-pull-request provenance survives. The key is
+    # omitted (not stored as None) for an attempt with no usable source
+    # record, so summaries for attempts that were never discovered on a
+    # surface -- local adapter output, a manually recorded result, campaigns
+    # written before result sources existed -- keep their existing shape.
+    source = _sanitize_result_source(provider_data.get("result_source"))
+    if source is not None:
+        summary["result_source"] = source
+    return summary
 
 
 # The only fields an attempt-history entry may carry. Everything else --
-# result bodies, output, paths, secrets, nested mappings -- is dropped when
-# retained entries are rebuilt.
+# result bodies, output, paths, secrets, unknown nested mappings -- is
+# dropped when retained entries are rebuilt. ``result_source`` is the one
+# nested field, and it is itself rebuilt from its own closed bounded
+# contract (see RESULT_SOURCE_FIELDS).
 ATTEMPT_HISTORY_FIELDS = frozenset(
     {
         "attempted_at",
@@ -3068,6 +3132,7 @@ ATTEMPT_HISTORY_FIELDS = frozenset(
         "outcome",
         "error",
         "elapsed_seconds",
+        "result_source",
     }
 )
 
@@ -3077,12 +3142,14 @@ def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
 
     Stored campaign files are untrusted input: a retained entry may have been
     hand-edited to carry result bodies, output, paths, secrets, nested
-    values, or arbitrarily large strings. Only the bounded scalar history
-    fields survive, each validated and coerced exactly as
-    :func:`_prior_attempt_summary` validates fresh summaries; unknown and
-    nested fields are discarded. Returns None for malformed entries (not a
-    mapping, or a mapping with none of the allowed fields), which the caller
-    drops instead of preserving.
+    values, or arbitrarily large strings. Only the bounded history fields
+    survive, each validated and coerced exactly as
+    :func:`_prior_attempt_summary` validates fresh summaries -- including the
+    archived ``result_source``, which is rebuilt from its own closed contract
+    and omitted when it carries no usable provenance; unknown and nested
+    fields are discarded. Returns None for malformed entries (not a mapping,
+    or a mapping with none of the allowed fields), which the caller drops
+    instead of preserving.
     """
     if not isinstance(entry, Mapping):
         return None
@@ -3106,7 +3173,7 @@ def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
         or elapsed < 0
     ):
         elapsed = 0.0
-    return {
+    sanitized: dict[str, Any] = {
         "attempted_at": _sanitize_history_timestamp(entry.get("attempted_at")),
         "dispatched_at": _sanitize_history_timestamp(entry.get("dispatched_at")),
         "completed_at": _sanitize_history_timestamp(entry.get("completed_at")),
@@ -3115,15 +3182,27 @@ def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
         "error": error,
         "elapsed_seconds": round(float(elapsed), 2),
     }
+    source = _sanitize_result_source(entry.get("result_source"))
+    if source is not None:
+        sanitized["result_source"] = source
+    return sanitized
 
 
 def _record_attempt_history(provider_data: dict[str, Any]) -> None:
-    """Append the superseded attempt's bounded summary, keeping history bounded.
+    """Archive the superseded attempt's bounded summary, keeping history bounded.
 
     Retained history is always sanitized and capped, even when there is no
     new current-attempt summary to append: a queued provider with no
     timestamps/result can still carry hand-edited malicious or unbounded
     ``attempt_history``, and an explicit retry must not preserve it verbatim.
+
+    The live ``result_source`` describes the attempt being superseded, so it
+    moves into that attempt's summary rather than staying on the entry: every
+    caller either clears the stored result outright or replaces it with
+    evidence of its own (a hosted discovery restamps the source it just read;
+    a local result file or a manually recorded result has no surface
+    provenance at all), and a source left behind would describe a result the
+    entry no longer holds.
     """
     history = provider_data.get("attempt_history")
     if not isinstance(history, list):
@@ -3139,6 +3218,7 @@ def _record_attempt_history(provider_data: dict[str, Any]) -> None:
     summary = _prior_attempt_summary(provider_data)
     if summary is not None:
         history.append(summary)
+    provider_data.pop("result_source", None)
     provider_data["attempt_history"] = history[-MAX_ATTEMPT_HISTORY_ENTRIES:]
 
 
