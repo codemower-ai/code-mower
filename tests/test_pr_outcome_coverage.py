@@ -9,11 +9,15 @@ from pathlib import Path
 from unittest import mock
 
 import code_mower.cloud as cloud_module
+from code_mower import reviewer_spend
 from code_mower.cloud_client import (
     PR_OUTCOME_EVENT_TYPE,
     PR_OUTCOME_SCHEMA,
     CloudBundleError,
     build_pr_outcome_event,
+    load_pr_outcome_observations,
+    pr_outcome_observation_key,
+    pr_outcome_observation_record,
     pr_outcomes_upload,
     run_gh_pr_list,
     validate_cloud_event,
@@ -582,6 +586,88 @@ class PrOutcomeIdentityTests(unittest.TestCase):
         self.assertEqual(original["created_at"], corrected["created_at"])
         validate_cloud_event(corrected)
 
+    def test_prior_state_unchanged_retry_is_idempotent(self) -> None:
+        run_events = [
+            _builder_run_event("b1", "66", 0.15),
+            _reviewer_run_event("r1", "66", 0.10),
+        ]
+        original = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="66",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=run_events,
+            created_at="2026-09-03T13:00:00Z",
+        )
+        prior = pr_outcome_observation_record(original)
+        retry = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="66",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=run_events,
+            created_at="2026-09-03T13:00:00Z",
+            prior_observation=prior,
+        )
+
+        self.assertEqual(original["event_id"], retry["event_id"])
+        self.assertEqual(original["created_at"], retry["created_at"])
+        validate_cloud_event(retry)
+
+    def test_prior_state_corrected_evidence_is_chronologically_newer(self) -> None:
+        original = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="67",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "67", 0.15)],
+            created_at="2026-09-03T13:00:00Z",
+        )
+        prior = pr_outcome_observation_record(original)
+        corrected = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="67",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "67", 0.25)],
+            created_at="2026-09-03T13:00:00Z",
+            prior_observation=prior,
+        )
+
+        self.assertNotEqual(original["event_id"], corrected["event_id"])
+        self.assertNotEqual(
+            original["dimensions"]["pr_outcome_observation_version"],
+            corrected["dimensions"]["pr_outcome_observation_version"],
+        )
+        self.assertGreater(corrected["created_at"], original["created_at"])
+        self.assertAlmostEqual(corrected["metrics"]["reported_cost_usd"], 0.25)
+        validate_cloud_event(corrected)
+
+    def test_nonzero_offset_run_timestamp_converts_to_utc(self) -> None:
+        event = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="68",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[
+                _builder_run_event(
+                    "b1",
+                    "68",
+                    0.15,
+                    created_at="2026-09-03T10:00:00-07:00",
+                )
+            ],
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertEqual(event["created_at"], "2026-09-03T17:00:00Z")
+        validate_cloud_event(event)
+
 
 class PrOutcomeUnidentifiedReviewerTests(unittest.TestCase):
     def test_missing_reviewer_run_id_does_not_report_cost(self) -> None:
@@ -630,6 +716,187 @@ class PrOutcomeUnidentifiedReviewerTests(unittest.TestCase):
             {"claude-audit"},
         )
         validate_cloud_event(event)
+
+    def test_missing_spend_run_id_overrides_generated_event_id(self) -> None:
+        spend_like = _reviewer_run_event("generated-uuid", "69", 0.10)
+        spend_like["dimensions"]["spend_run_id"] = ""
+        event = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="69",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[
+                _builder_run_event("b1", "69", 0.15),
+                spend_like,
+            ],
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertEqual(event["dimensions"]["cost_coverage"], "partial")
+        self.assertEqual(event["metrics"]["cost_reported_run_count"], 1)
+        self.assertEqual(event["metrics"]["cost_expected_run_count"], 2)
+        self.assertAlmostEqual(event["metrics"]["reported_cost_usd"], 0.15)
+        self.assertEqual(
+            event["dimensions"]["missing_cost_sources"],
+            ["claude-audit"],
+        )
+        validate_cloud_event(event)
+
+    def test_duplicate_spend_run_ids_do_not_inflate_completeness(self) -> None:
+        first = _reviewer_run_event("evt-1", "70", 0.10)
+        first["dimensions"]["spend_run_id"] = "run-1"
+        second = _reviewer_run_event("evt-2", "70", 0.20)
+        second["dimensions"]["spend_run_id"] = "run-1"
+        event = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="70",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "70", 0.15), first, second],
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertEqual(event["dimensions"]["cost_coverage"], "partial")
+        self.assertEqual(event["metrics"]["cost_reported_run_count"], 2)
+        self.assertEqual(event["metrics"]["cost_expected_run_count"], 3)
+        self.assertAlmostEqual(event["metrics"]["reported_cost_usd"], 0.25)
+        self.assertEqual(
+            event["dimensions"]["missing_cost_sources"],
+            ["claude-audit"],
+        )
+        validate_cloud_event(event)
+
+    def test_non_finite_cost_on_missing_id_is_bundle_error(self) -> None:
+        bad = _reviewer_run_event("", "71", float("nan"))
+        with self.assertRaises(CloudBundleError):
+            build_pr_outcome_event(
+                repo_slug="owner/repo",
+                pr_number="71",
+                outcome="merged",
+                opened_at="2026-09-03T10:00:00Z",
+                merged_at="2026-09-03T12:00:00Z",
+                run_events=[_builder_run_event("b1", "71", 0.15), bad],
+                created_at="2026-09-03T13:00:00Z",
+            )
+
+
+class PrOutcomeObservationStateTests(unittest.TestCase):
+    def _run_upload(
+        self,
+        repo_path: Path,
+        output_dir: Path,
+        pr_records: list[dict[str, object]],
+    ) -> dict[str, object]:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=pr_records,
+        ):
+            out = StringIO()
+            with redirect_stdout(out):
+                code = cloud_module.main(
+                    [
+                        "pr-outcomes",
+                        "--repo-path",
+                        str(repo_path),
+                        "--repo-slug",
+                        "owner/repo",
+                        "--output-dir",
+                        str(output_dir),
+                        "--endpoint",
+                        "https://codemower.example.com/api/upload",
+                        "--json",
+                    ]
+                )
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def test_bundle_path_missing_run_id_and_corrected_ordering(self) -> None:
+        pr_records = [
+            {
+                "number": "1",
+                "state": "MERGED",
+                "createdAt": "2026-09-03T10:00:00Z",
+                "mergedAt": "2026-09-03T12:00:00Z",
+                "updatedAt": "2026-09-03T13:00:00Z",
+            }
+        ]
+        spend_run = {
+            "lane": "claude-audit",
+            "repo": "owner/repo",
+            "pr_number": 1,
+            "head_sha": "abc123",
+            "model": "sonnet",
+            "wall_seconds": 1.0,
+            "verdict": "PASS",
+            "created_at": "2026-09-03T11:00:00Z",
+            "cost_usd": 0.05,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_path = repo_path / ".code-mower" / "reviewer-spend.json"
+            spend_path.parent.mkdir(parents=True)
+            spend_path.write_text(
+                json.dumps({"schema": reviewer_spend.SPEND_SCHEMA, "runs": [spend_run]}),
+                encoding="utf-8",
+            )
+
+            first = self._run_upload(repo_path, repo_path / "bundle-1", pr_records)
+            self.assertEqual(first["status"], "dry_run")
+            self.assertEqual(first["event_count"], 1)
+            self.assertEqual(first["errors"], [])
+
+            manifest_path = Path(first["export"]["manifest"])
+            first_event = json.loads(manifest_path.read_text(encoding="utf-8"))[
+                "events"
+            ][0]
+            self.assertEqual(
+                first_event["dimensions"]["cost_coverage"], "unknown"
+            )
+            self.assertEqual(
+                first_event["dimensions"]["missing_cost_sources"],
+                ["claude-audit"],
+            )
+            self.assertNotIn("reported_cost_usd", first_event["metrics"])
+
+            state_path = repo_path / ".code-mower" / "pr-outcome-observations.json"
+            observations = load_pr_outcome_observations(state_path)
+            key = pr_outcome_observation_key("owner/repo", "1")
+            self.assertIn(key, observations)
+            self.assertEqual(
+                observations[key]["created_at"], first_event["created_at"]
+            )
+
+            spend_run["cost_usd"] = 0.07
+            spend_path.write_text(
+                json.dumps({"schema": reviewer_spend.SPEND_SCHEMA, "runs": [spend_run]}),
+                encoding="utf-8",
+            )
+            second = self._run_upload(repo_path, repo_path / "bundle-2", pr_records)
+            self.assertEqual(second["status"], "dry_run")
+            self.assertEqual(second["errors"], [])
+            second_event = json.loads(
+                Path(second["export"]["manifest"]).read_text(encoding="utf-8")
+            )["events"][0]
+
+            self.assertNotEqual(
+                first_event["event_id"], second_event["event_id"]
+            )
+            self.assertGreater(
+                second_event["created_at"], first_event["created_at"]
+            )
+
+            third = self._run_upload(repo_path, repo_path / "bundle-3", pr_records)
+            third_event = json.loads(
+                Path(third["export"]["manifest"]).read_text(encoding="utf-8")
+            )["events"][0]
+            self.assertEqual(
+                second_event["event_id"], third_event["event_id"]
+            )
+            self.assertEqual(
+                second_event["created_at"], third_event["created_at"]
+            )
 
 
 if __name__ == "__main__":

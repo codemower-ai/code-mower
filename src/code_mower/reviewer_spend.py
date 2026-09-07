@@ -251,7 +251,7 @@ def spend_runs_to_events(
         model = str(run.get("model") or "")
         event = {
             "schema": EVENT_SCHEMA,
-            "event_id": str(run.get("run_id") or ""),
+            "event_id": str(run.get("run_id") or uuid.uuid4()),
             "event_type": "reviewer_run",
             "created_at": str(run.get("created_at") or utc_now()),
             "repo_slug": str(run.get("repo") or repo_slug),

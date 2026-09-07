@@ -150,6 +150,10 @@ from .pr_outcomes import (
     PR_OUTCOME_SCHEMA,
     PR_OUTCOME_VALUES,
     build_pr_outcome_event,
+    load_pr_outcome_observations,
+    pr_outcome_observation_key,
+    pr_outcome_observation_record,
+    save_pr_outcome_observations,
     validate_pr_outcome_payload,
 )
 from .upload import (
@@ -207,6 +211,10 @@ __all__ = [
     "PR_OUTCOME_SCHEMA",
     "PR_OUTCOME_VALUES",
     "build_pr_outcome_event",
+    "load_pr_outcome_observations",
+    "pr_outcome_observation_key",
+    "pr_outcome_observation_record",
+    "save_pr_outcome_observations",
     "WORK_TYPE_SCHEMA",
     "WORK_TYPE_SUPPORTED_EVENT_TYPES",
     "WORK_TYPE_VALUES",

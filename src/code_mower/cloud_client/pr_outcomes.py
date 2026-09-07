@@ -6,7 +6,9 @@ import datetime as dt
 import hashlib
 import json
 import math
+import os
 import uuid
+from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import CloudBundleError
@@ -14,6 +16,8 @@ from .errors import CloudBundleError
 
 PR_OUTCOME_EVENT_TYPE = "pr_outcome"
 PR_OUTCOME_SCHEMA = "code_mower.prOutcome.v1"
+PR_OUTCOME_OBSERVATION_STATE_SCHEMA = "code_mower.prOutcomeObservations.v1"
+DEFAULT_OBSERVATION_STATE_PATH = Path(".code-mower") / "pr-outcome-observations.json"
 # ``reverted`` is reserved for producers that hold rollback evidence.
 # GitHub's PR-list ``state`` field can only prove open, merged, or closed.
 PR_OUTCOME_VALUES = ("open", "merged", "closed_unmerged", "reverted")
@@ -76,13 +80,27 @@ def _count(metrics: Mapping[str, Any], field: str, *, required: bool = False) ->
     return value
 
 
+def _run_event_identity(event: Mapping[str, Any]) -> str:
+    """Return the source identity used for dedup and evidence versioning.
+
+    Reviewer-spend rows converted to ``reviewer_run`` events keep their source
+    ``run_id`` in ``dimensions.spend_run_id``; the envelope ``event_id`` may be
+    a generated fallback, so the spend identity wins whenever it is present.
+    """
+
+    dimensions = _as_mapping(event.get("dimensions"))
+    if "spend_run_id" in dimensions:
+        return str(dimensions.get("spend_run_id") or "").strip()
+    return str(event.get("event_id") or "").strip()
+
+
 def _run_event_canonical(event: Mapping[str, Any]) -> dict[str, Any]:
     """Return a stable, metadata-only representation for evidence versioning."""
 
     dimensions = _as_mapping(event.get("dimensions"))
     metrics = _as_mapping(event.get("metrics"))
     item: dict[str, Any] = {
-        "event_id": str(event.get("event_id") or "").strip(),
+        "event_id": _run_event_identity(event),
         "event_type": str(event.get("event_type") or "").strip(),
         "provider": str(event.get("provider") or "").strip(),
         "lens": str(event.get("lens") or "").strip(),
@@ -94,7 +112,17 @@ def _run_event_canonical(event: Mapping[str, Any]) -> dict[str, Any]:
         "head_sha": str(dimensions.get("head_sha") or "").strip(),
     }
     if "cost_usd" in metrics:
-        item["cost_usd"] = metrics["cost_usd"]
+        cost = metrics["cost_usd"]
+        if (
+            isinstance(cost, bool)
+            or not isinstance(cost, int | float)
+            or not math.isfinite(cost)
+            or cost < 0
+        ):
+            raise CloudBundleError(
+                "pr_outcome run event cost_usd must be finite and non-negative"
+            )
+        item["cost_usd"] = cost
     return item
 
 
@@ -106,22 +134,63 @@ def _run_events_digest(run_events: list[Mapping[str, Any]]) -> str:
     """
 
     canonical = [_run_event_canonical(event) for event in run_events]
-    canonical.sort(key=lambda item: json.dumps(item, sort_keys=True, allow_nan=False))
-    encoded = json.dumps(canonical, sort_keys=True, allow_nan=False, separators=(",", ":"))
+    try:
+        canonical.sort(
+            key=lambda item: json.dumps(item, sort_keys=True, allow_nan=False)
+        )
+        encoded = json.dumps(
+            canonical, sort_keys=True, allow_nan=False, separators=(",", ":")
+        )
+    except (TypeError, ValueError) as exc:
+        raise CloudBundleError(
+            "pr_outcome run evidence could not be serialized deterministically"
+        ) from exc
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _observation_fingerprint(
+    *,
+    outcome: str,
+    opened_at: str,
+    merged_at: str,
+    closed_at: str,
+    reverted_at: str,
+    evidence_digest: str,
+) -> str:
+    """Return a deterministic fingerprint of the full observation content."""
+
+    payload = {
+        "outcome": outcome,
+        "opened_at": opened_at,
+        "merged_at": merged_at,
+        "closed_at": closed_at,
+        "reverted_at": reverted_at,
+        "evidence_digest": evidence_digest,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _observed_at(
     created_at: str,
     run_events: list[Mapping[str, Any]],
+    *,
+    fingerprint: str,
+    prior_observation: Mapping[str, Any] | None = None,
 ) -> str:
     """Return a deterministic observation timestamp for this pr_outcome.
 
     The observation timestamp is the latest of the supplied ``created_at`` and
-    the latest run event ``created_at``.  This gives late-arriving local spend
-    evidence a later ``created_at`` even when the GitHub ``updatedAt`` did not
-    change, while the ``pr_outcome_observation_version`` digest provides a
-    stable versioning tie-breaker for corrected evidence.
+    the latest run event ``created_at``, converted to UTC.  This gives
+    late-arriving local spend evidence a later ``created_at`` even when the
+    GitHub ``updatedAt`` did not change.
+
+    ``prior_observation`` carries the locally recorded ``fingerprint`` and
+    ``created_at`` of the last emitted observation for this PR, when known.
+    An unchanged fingerprint reproduces the prior ``created_at`` so retries
+    stay byte-for-byte idempotent; a changed fingerprint never moves the
+    timestamp backwards, so corrected evidence with unchanged source
+    timestamps is still chronologically selectable by greatest ``created_at``.
     """
 
     base_text = created_at or _utc_now()
@@ -142,7 +211,23 @@ def _observed_at(
         if parsed > latest:
             latest = parsed
 
-    latest = latest.replace(microsecond=0, tzinfo=dt.UTC)
+    latest = latest.astimezone(dt.UTC).replace(microsecond=0)
+
+    prior = _as_mapping(prior_observation) if prior_observation else {}
+    prior_fingerprint = str(prior.get("fingerprint") or "").strip()
+    prior_text = str(prior.get("created_at") or "").strip()
+    if prior_fingerprint and prior_text:
+        try:
+            prior_at = _timestamp(prior_text, "prior observation created_at")
+        except CloudBundleError:
+            prior_at = None
+        if prior_at is not None:
+            prior_at = prior_at.astimezone(dt.UTC).replace(microsecond=0)
+            if prior_fingerprint == fingerprint:
+                return prior_at.isoformat().replace("+00:00", "Z")
+            if prior_at >= latest:
+                latest = prior_at + dt.timedelta(seconds=1)
+
     return latest.isoformat().replace("+00:00", "Z")
 
 
@@ -179,10 +264,11 @@ def _aggregate_run_costs(
     are considered; other event types are ignored.  Missing cost is counted as
     an expected attempt with no reported cost, preserving unknown as unknown.
 
-    Attempts with missing or duplicate ``event_id`` values are never silently
-    dropped; they are counted as expected attempts with unknown cost and, when
-    the lane can be determined, recorded in ``missing_lane_sources``.  This
-    keeps them from inflating ``complete`` coverage.
+    Attempts with missing or duplicate source identities (``event_id``, or
+    ``dimensions.spend_run_id`` for converted reviewer-spend rows) are never
+    silently dropped; they are counted as expected attempts with unknown cost
+    and, when the lane can be determined, recorded in ``missing_lane_sources``.
+    This keeps them from inflating ``complete`` coverage.
     """
 
     seen: set[str] = set()
@@ -197,13 +283,13 @@ def _aggregate_run_costs(
             continue
 
         expected += 1
-        event_id = str(event.get("event_id") or "").strip()
-        if not event_id or event_id in seen:
+        identity = _run_event_identity(event)
+        if not identity or identity in seen:
             lane = _lane_for_run_event(event)
             if lane:
                 missing_lanes.append(lane)
             continue
-        seen.add(event_id)
+        seen.add(identity)
 
         metrics = _as_mapping(event.get("metrics"))
         cost = metrics.get("cost_usd")
@@ -250,6 +336,7 @@ def build_pr_outcome_event(
     source: str = "code-mower cloud pr-outcomes",
     created_at: str = "",
     tool: Mapping[str, Any] | None = None,
+    prior_observation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one metadata-only ``pr_outcome`` event from observed attempts.
 
@@ -260,6 +347,12 @@ def build_pr_outcome_event(
 
     The ``reverted`` outcome is reserved for producers that can demonstrate a
     rollback; it must not be inferred from a GitHub PR-list state alone.
+
+    ``prior_observation`` optionally carries the locally recorded
+    ``fingerprint``/``created_at`` of the last emitted observation for this PR
+    (see ``pr_outcome_observation_record``).  Supplying it keeps unchanged
+    retries idempotent and makes corrected evidence chronologically newer even
+    when no source timestamp advanced.
     """
 
     from code_mower import __version__
@@ -304,10 +397,23 @@ def build_pr_outcome_event(
     if missing_sources:
         dimensions["missing_cost_sources"] = missing_sources
 
-    created_at_value = _observed_at(created_at, run_events)
+    fingerprint = _observation_fingerprint(
+        outcome=outcome,
+        opened_at=opened_at,
+        merged_at=merged_at,
+        closed_at=closed_at,
+        reverted_at=reverted_at,
+        evidence_digest=evidence_digest,
+    )
+    created_at_value = _observed_at(
+        created_at,
+        run_events,
+        fingerprint=fingerprint,
+        prior_observation=prior_observation,
+    )
     event_id_seed = (
         f"code-mower-pr-outcome:{repo_slug}:{pr_number}:{created_at_value}:"
-        f"{evidence_digest}"
+        f"{fingerprint}"
     )
     event: dict[str, Any] = {
         "schema": "code_mower.benchmarkEvent.v1",
@@ -332,6 +438,86 @@ def build_pr_outcome_event(
         "dimensions": dimensions,
     }
     return event
+
+
+def pr_outcome_observation_key(repo_slug: str, pr_number: str) -> str:
+    """Return the local observation-state key for one repository PR."""
+
+    return f"{repo_slug}#{pr_number}"
+
+
+def pr_outcome_observation_record(event: Mapping[str, Any]) -> dict[str, str]:
+    """Return the local metadata-only state entry for an emitted event."""
+
+    dimensions = _as_mapping(event.get("dimensions"))
+    fingerprint = _observation_fingerprint(
+        outcome=str(dimensions.get("outcome") or ""),
+        opened_at=str(dimensions.get("opened_at") or ""),
+        merged_at=str(dimensions.get("merged_at") or ""),
+        closed_at=str(dimensions.get("closed_at") or ""),
+        reverted_at=str(dimensions.get("reverted_at") or ""),
+        evidence_digest=str(
+            dimensions.get("pr_outcome_observation_version") or ""
+        ),
+    )
+    return {
+        "fingerprint": fingerprint,
+        "created_at": str(event.get("created_at") or ""),
+    }
+
+
+def load_pr_outcome_observations(path: Path) -> dict[str, dict[str, str]]:
+    """Load local pr_outcome observation state; never raises on bad data."""
+
+    try:
+        payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    observations = payload.get("observations")
+    if not isinstance(observations, Mapping):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for key, item in observations.items():
+        if not isinstance(item, Mapping):
+            continue
+        fingerprint = str(item.get("fingerprint") or "").strip()
+        created_at = str(item.get("created_at") or "").strip()
+        if fingerprint and created_at:
+            result[str(key)] = {
+                "fingerprint": fingerprint,
+                "created_at": created_at,
+            }
+    return result
+
+
+def save_pr_outcome_observations(
+    path: Path,
+    observations: Mapping[str, Mapping[str, str]],
+) -> None:
+    """Atomically persist local pr_outcome observation state."""
+
+    destination = Path(path).expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": PR_OUTCOME_OBSERVATION_STATE_SCHEMA,
+        "observations": {
+            str(key): {
+                "fingerprint": str(item.get("fingerprint") or ""),
+                "created_at": str(item.get("created_at") or ""),
+            }
+            for key, item in sorted(observations.items())
+        },
+    }
+    tmp_path = destination.with_name(
+        f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    tmp_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(destination)
 
 
 def validate_pr_outcome_payload(event: Mapping[str, Any]) -> None:

@@ -23,7 +23,14 @@ from .events import (
     run_gh_run_list,
     validate_cloud_event,
 )
-from .pr_outcomes import build_pr_outcome_event
+from .pr_outcomes import (
+    DEFAULT_OBSERVATION_STATE_PATH,
+    build_pr_outcome_event,
+    load_pr_outcome_observations,
+    pr_outcome_observation_key,
+    pr_outcome_observation_record,
+    save_pr_outcome_observations,
+)
 from .export import build_cloud_bundle
 from .git_metadata import detect_repo_slug
 from .tokens import (
@@ -836,6 +843,11 @@ def pr_outcomes_upload(
 
     events: list[dict[str, Any]] = []
     errors: list[str] = []
+    # Local metadata-only observation state keeps retries idempotent and makes
+    # corrected evidence chronologically newer even when no source timestamp
+    # (GitHub ``updatedAt`` or run ``created_at``) advanced.
+    observation_state_path = repo_path / DEFAULT_OBSERVATION_STATE_PATH
+    observations = load_pr_outcome_observations(observation_state_path)
     # ``reverted`` is intentionally absent: GitHub's PR-list ``state`` field
     # cannot prove a rollback, so ``reverted`` is reserved for callers that
     # supply explicit rollback evidence (``reverted_at``).
@@ -857,6 +869,9 @@ def pr_outcomes_upload(
             continue
         merged_at = str(pr.get("mergedAt") or "").strip()
         closed_at = str(pr.get("closedAt") or "").strip()
+        observation_key = pr_outcome_observation_key(
+            detected_repo_slug, pr_number
+        )
         try:
             event = build_pr_outcome_event(
                 repo_slug=detected_repo_slug,
@@ -870,12 +885,20 @@ def pr_outcomes_upload(
                 install_id=resolved_install_id,
                 source=source,
                 created_at=str(pr.get("updatedAt") or opened_at).strip(),
+                prior_observation=observations.get(observation_key),
             )
             validate_cloud_event(event)
         except CloudBundleError as exc:
             errors.append(f"PR {pr_number}: {exc}")
             continue
         events.append(event)
+        observations[observation_key] = pr_outcome_observation_record(event)
+
+    if events:
+        try:
+            save_pr_outcome_observations(observation_state_path, observations)
+        except OSError as exc:
+            errors.append(f"observation state could not be persisted: {exc}")
 
     if not events:
         return {

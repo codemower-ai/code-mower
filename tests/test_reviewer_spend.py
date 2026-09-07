@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from code_mower import claude_audit_pr, codex_audit_pr, reviewer_spend
+from code_mower.cloud_client import validate_cloud_event
 
 
 def test_reviewer_spend_append_preserves_profiles_and_exports_event() -> None:
@@ -258,12 +259,13 @@ def test_spend_runs_to_events_preserves_missing_run_id() -> None:
     )
 
     assert len(events) == 1
-    assert events[0]["event_id"] == ""
+    assert events[0]["event_id"]
     assert events[0]["dimensions"]["spend_run_id"] == ""
     assert events[0]["metrics"]["cost_usd"] == 0.05
+    validate_cloud_event(events[0])
 
 
-def test_spend_runs_to_events_does_not_uuid_duplicate_missing_run_ids() -> None:
+def test_spend_runs_to_events_missing_run_ids_get_unique_event_ids() -> None:
     run = {
         "lane": "claude-audit",
         "repo": "owner/repo",
@@ -274,12 +276,15 @@ def test_spend_runs_to_events_does_not_uuid_duplicate_missing_run_ids() -> None:
         "verdict": "PASS",
         "cost_usd": 0.05,
     }
-    payload = {"runs": [run, run]}
+    payload = {"runs": [run, dict(run)]}
     events = reviewer_spend.spend_runs_to_events(
         payload,
         repo_slug="owner/repo",
     )
 
     assert len(events) == 2
-    assert all(event["event_id"] == "" for event in events)
-    assert len({event["event_id"] for event in events}) == 1
+    assert all(event["event_id"] for event in events)
+    assert len({event["event_id"] for event in events}) == 2
+    assert all(event["dimensions"]["spend_run_id"] == "" for event in events)
+    for event in events:
+        validate_cloud_event(event)

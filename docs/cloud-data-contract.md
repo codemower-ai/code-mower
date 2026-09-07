@@ -207,12 +207,20 @@ remain valid.
 The `code-mower cloud pr-outcomes` command joins local `builder_run` events
 (from `.code-mower/builder-runs/*.cloud-event.json`), `reviewer_run` events
 derived from reviewer-spend rows, and the live GitHub PR list to produce one
-`pr_outcome` event per PR.  Attempts are deduplicated by `event_id` for cost
-totals, but attempts with missing or duplicate `event_id` values are still
-counted as expected attempts with unknown cost so they cannot inflate
-`complete` coverage. Outcome event identifiers are stable for the same GitHub
-PR `updatedAt` value, making repeated uploads idempotent while allowing a later
-PR state change to produce a new observation.  Cost coverage is
+`pr_outcome` event per PR.  Attempts are deduplicated by their source identity
+(`event_id`, or `dimensions.spend_run_id` for converted reviewer-spend rows)
+for cost totals, but attempts with missing or duplicate source identities are
+still counted as expected attempts with unknown cost so they cannot inflate
+`complete` coverage. Outcome event identifiers are stable for unchanged
+observation content, making repeated uploads idempotent, while a deterministic
+digest of the observed run evidence is reported as
+`dimensions.pr_outcome_observation_version` and included in the `event_id`.
+The command records a local metadata-only observation state
+(`.code-mower/pr-outcome-observations.json`, fingerprints and timestamps only)
+so an unchanged retry reproduces the same `created_at` and `event_id`, and
+corrected or late-arriving local evidence produces a new `event_id` whose
+`created_at` never regresses below the previously emitted observation — even
+when GitHub `updatedAt` and the run timestamps did not advance.  Cost coverage is
 `complete` when every observed builder/reviewer attempt reports `cost_usd`,
 `partial` when at least one but not all attempts report cost, and `unknown`
 when no attempt reports cost.  The optional
