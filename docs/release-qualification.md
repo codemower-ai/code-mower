@@ -459,6 +459,37 @@ Sessions API v3.
   organization repository target. `DEVIN_ORG_ID` is not a GitHub owner name.
 - A one-hour response deadline is configured by default.
 
+##### Persistent Provider Credentials
+
+For long-running campaigns or process restarts, Devin credentials can be stored
+in a protected local configuration file instead of requiring ambient environment
+variables across every process.
+
+**File Location and Naming:**
+- Code Mower checks `~/.config/code-mower/` (or the directory given by `--provider-config-dir` or `CODE_MOWER_PROVIDER_CONFIG_DIR`).
+- The default profile is `devin.env`.
+- Named profiles follow `devin.<profile>.env` or `<profile>.env` (for example, `devin.prod.env`).
+
+**Resolution Precedence:**
+1. **Ambient Environment:** Explicit environment variables (`DEVIN_API_KEY`, `DEVIN_ORG_ID`, `CODE_MOWER_DEVIN_REPOSITORIES`) always win. If `DEVIN_API_KEY` is present in the ambient environment, automatic discovery is bypassed.
+2. **Explicit Profile or Credential File:** Configured via CLI flags (`--provider-credential-file <path>`, `--provider-profile <name>`) or environment variables (`CODE_MOWER_DEVIN_CREDENTIAL_FILE`, `CODE_MOWER_DEVIN_PROFILE`).
+3. **Safe Automatic Discovery:** If neither ambient env nor explicit options are provided, Code Mower inspects `~/.config/code-mower/` for matching profile files.
+
+**Required Permissions (Fail-Closed):**
+- Credential files must be owner-protected (POSIX mode `0600` or `0400`).
+- Any profile file readable or writable by group or other (`st_mode & 0o077 != 0`) is rejected with an `insecure_permissions` warning or error.
+- Remediate with:
+  ```bash
+  chmod 600 ~/.config/code-mower/devin.env
+  ```
+
+**Ambiguous Profiles:**
+- If multiple candidate files match during automatic discovery without an explicit profile name, Code Mower fails closed (`ambiguous`). It reports candidate filenames only (never secret contents or local user paths) and requests disambiguation via `--provider-profile <name>` or `--provider-credential-file <path>`.
+
+**Security & Rotation:**
+- Resolved credentials remain in-memory only. They are never written to campaign state JSON, never uploaded, and never leaked in doctor reports or CLI output.
+- To rotate credentials, update the values in `~/.config/code-mower/devin.env` or switch profiles.
+
 The API call, not a GitHub comment, is the execution trigger. If `--issue` is
 supplied, Code Mower posts the existing campaign marker to the issue as audit
 evidence, but it does not post `@devin run` or rely on a bot comment. The

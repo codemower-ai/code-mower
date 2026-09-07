@@ -260,6 +260,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="actionlint",
         help="actionlint executable used by --runner generated-workflow checks",
     )
+    parser.add_argument(
+        "--provider-credential-file",
+        type=Path,
+        default=None,
+        help="explicit provider credential env file for campaign/adoption checks",
+    )
+    parser.add_argument(
+        "--provider-profile",
+        default="",
+        help="stored provider profile selector in ~/.config/code-mower for campaign/adoption checks",
+    )
+    parser.add_argument(
+        "--provider-config-dir",
+        type=Path,
+        default=None,
+        help="directory with provider credential profiles (defaults to ~/.config/code-mower)",
+    )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -309,6 +326,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             http_timeout=args.http_timeout,
             actions_cost_sample=args.actions_cost_sample,
             actionlint_bin=args.actionlint_bin,
+            provider_credential_file=args.provider_credential_file,
+            provider_profile=args.provider_profile,
+            provider_config_dir=args.provider_config_dir,
         )
     except (code_mower_config.ConfigError, ValueError) as exc:
         print(_doctor_config_error_message(exc, config_arg=args.config), file=sys.stderr)

@@ -1314,6 +1314,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             "timeout, defaults to 20.0)"
         ),
     )
+    campaign.add_argument(
+        "--provider-credential-file",
+        type=Path,
+        default=None,
+        help="Explicit provider credential env file",
+    )
+    campaign.add_argument(
+        "--provider-profile",
+        default="",
+        help="Stored provider profile selector in ~/.config/code-mower",
+    )
+    campaign.add_argument(
+        "--provider-config-dir",
+        type=Path,
+        default=None,
+        help="Directory with provider credential profiles (defaults to ~/.config/code-mower)",
+    )
     campaign.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
@@ -1413,6 +1430,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timeout=args.timeout,
                 interval=args.interval,
                 emit_json=args.json,
+                provider_credential_file=args.provider_credential_file,
+                provider_profile=args.provider_profile,
+                provider_config_dir=args.provider_config_dir,
             )
         except ValueError as e:
             print(f"error: {e}", file=sys.stderr)

@@ -1645,6 +1645,90 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertEqual(providers_by_name["devin"]["state"], "unavailable")
             self.assertIn("DEVIN_API_KEY", providers_by_name["devin"]["next_action"])
 
+    def test_campaign_devin_insecure_profile_fails_closed(self) -> None:
+        """Insecurely permissioned profile fails closed with chmod 600 next action."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text("DEVIN_API_KEY=dummy-key\nDEVIN_ORG_ID=org-test\n")
+            profile.chmod(0o644)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertIn("chmod 600", entry["next_action"])
+
+    def test_campaign_devin_ambiguous_profiles_fails_closed(self) -> None:
+        """Multiple candidate profiles without selector fail closed with profile next action."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            (config_dir / "devin.alpha.env").write_text("DEVIN_API_KEY=alpha\n")
+            (config_dir / "devin.alpha.env").chmod(0o600)
+            (config_dir / "devin.beta.env").write_text("DEVIN_API_KEY=beta\n")
+            (config_dir / "devin.beta.env").chmod(0o600)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertIn("--provider-profile", entry["next_action"])
+
+    def test_campaign_devin_stored_profile_resolves_and_no_secrets_in_json(self) -> None:
+        """Stored profile resolves credentials and campaign state JSON never persists secrets."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text(
+                "DEVIN_API_KEY=dummy-token\n"
+                "DEVIN_ORG_ID=org-stored\n"
+                "CODE_MOWER_DEVIN_REPOSITORIES=owner/repo\n"
+            )
+            profile.chmod(0o600)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved_path = campaigns_dir / "campaign-v1.0.0.json"
+            self.assertTrue(saved_path.is_file())
+            raw_json = saved_path.read_text(encoding="utf-8")
+            self.assertNotIn("dummy-token", raw_json)
+            self.assertNotIn("org-stored", raw_json)
+            self.assertNotIn(str(config_dir), raw_json)
+
     def test_github_dispatch_failure_persists_only_a_safe_error_code(self) -> None:
         """GitHub dispatch failure leaves useful local status without persisting raw gh output."""
         with tempfile.TemporaryDirectory() as tmp:

@@ -446,10 +446,18 @@ def _check_credentials(
     lane: ProviderLane,
     *,
     env: Mapping[str, str] | None = None,
+    credential_file: Path | None = None,
+    profile: str = "",
+    config_dir: Path | None = None,
 ) -> tuple[bool, str]:
     current_env = os.environ if env is None else env
     if lane.provider_config.get("campaign_transport") == "devin_api_v3":
-        _api_key, _org_id, missing = devin_api.credentials_from_env(current_env)
+        _api_key, _org_id, missing = devin_api.credentials_from_env(
+            current_env,
+            credential_file=credential_file,
+            profile=profile,
+            config_dir=config_dir,
+        )
         return not missing, missing
     if lane.token_env:
         found = any(current_env.get(token) for token in lane.token_env)
@@ -466,6 +474,9 @@ def _check_hosted_transport(
     *,
     env: Mapping[str, str] | None = None,
     repo_slug: str = "",
+    credential_file: Path | None = None,
+    profile: str = "",
+    config_dir: Path | None = None,
 ) -> tuple[bool, str]:
     """Read an explicit acknowledgement when GitHub cannot verify an App transport."""
     if _is_devin_api_lane(lane):
@@ -473,7 +484,16 @@ def _check_hosted_transport(
             lane.provider_config.get("campaign_repository_scope_env")
             or devin_api.DEVIN_REPOSITORIES_ENV
         )
-        return devin_api.repository_scope_acknowledged(repo_slug, env=env), variable
+        return (
+            devin_api.repository_scope_acknowledged(
+                repo_slug,
+                env=env,
+                credential_file=credential_file,
+                profile=profile,
+                config_dir=config_dir,
+            ),
+            variable,
+        )
     variable = str(lane.provider_config.get("campaign_transport_ready_env") or "")
     if not variable:
         return True, ""
@@ -539,28 +559,47 @@ def _devin_dispatch_profile(
     *,
     env: Mapping[str, str] | None = None,
     repo_slug: str = "",
+    credential_file: Path | None = None,
+    profile: str = "",
+    config_dir: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Closed dispatch profile for the hosted Devin v3 API transport."""
+    from .provider_credentials import resolve_provider_credentials
+
     current_env = os.environ if env is None else env
-    has_credentials, missing_variable = _check_credentials(lane, env=current_env)
-    profile: dict[str, dict[str, Any]] = {}
-    profile["auth"] = {
-        "ready": has_credentials,
-        "detail": (
-            "Devin API credentials present"
-            if has_credentials
-            else "Devin API credentials missing or invalid"
-        ),
-        "remediation": (
-            ""
-            if has_credentials
-            else f"set a valid {missing_variable} in the environment"
-        ),
-    }
-    target_ready, scope_variable = _check_hosted_transport(
-        lane, env=current_env, repo_slug=repo_slug
+    cred_res = resolve_provider_credentials(
+        "devin",
+        credential_file=credential_file,
+        profile=profile,
+        config_dir=config_dir,
+        env=current_env,
     )
-    profile["installation"] = {
+    has_credentials = cred_res.has_credentials
+    auth_detail = (
+        "Devin API credentials present"
+        if has_credentials
+        else (cred_res.message or "Devin API credentials missing or invalid")
+    )
+    auth_remediation = "" if has_credentials else cred_res.remediation
+
+    prof: dict[str, dict[str, Any]] = {}
+    prof["auth"] = {
+        "ready": has_credentials,
+        "detail": auth_detail,
+        "remediation": auth_remediation,
+        "source": cred_res.source,
+        "status": cred_res.status,
+    }
+    effective_env = cred_res.apply_to_env(current_env) if has_credentials else current_env
+    target_ready, scope_variable = _check_hosted_transport(
+        lane,
+        env=effective_env,
+        repo_slug=repo_slug,
+        credential_file=credential_file,
+        profile=profile,
+        config_dir=config_dir,
+    )
+    prof["installation"] = {
         "ready": target_ready,
         "detail": (
             f"exact Devin repository target acknowledged: {repo_slug}"
@@ -573,18 +612,18 @@ def _devin_dispatch_profile(
             else f"add the exact OWNER/REPO target to {scope_variable}"
         ),
     }
-    profile["trigger"] = {
+    prof["trigger"] = {
         "ready": True,
         "detail": "Devin Sessions API create transport configured",
         "remediation": "",
     }
-    profile["trusted_responder"] = {
+    prof["trusted_responder"] = {
         "ready": True,
         "detail": "validated Devin API structured result configured",
         "remediation": "",
     }
     timeout_ready = _configured_hosted_response_timeout(lane) is not None
-    profile["result_return"] = {
+    prof["result_return"] = {
         "ready": timeout_ready,
         "detail": (
             "bounded result-return wait configured"
@@ -597,7 +636,7 @@ def _devin_dispatch_profile(
             else "configure a positive campaign_response_timeout_seconds for devin"
         ),
     }
-    return profile
+    return prof
 
 
 def hosted_dispatch_profile(
@@ -605,6 +644,9 @@ def hosted_dispatch_profile(
     *,
     env: Mapping[str, str] | None = None,
     repo_slug: str = "",
+    credential_file: Path | None = None,
+    profile: str = "",
+    config_dir: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Evaluate the closed hosted dispatch profile for one lane.
 
@@ -615,11 +657,24 @@ def hosted_dispatch_profile(
     """
     current_env = os.environ if env is None else env
     if _is_devin_api_lane(lane):
-        return _devin_dispatch_profile(lane, env=current_env, repo_slug=repo_slug)
-    profile: dict[str, dict[str, Any]] = {}
+        return _devin_dispatch_profile(
+            lane,
+            env=current_env,
+            repo_slug=repo_slug,
+            credential_file=credential_file,
+            profile=profile,
+            config_dir=config_dir,
+        )
+    prof: dict[str, dict[str, Any]] = {}
 
-    has_creds, missing_cred = _check_credentials(lane, env=current_env)
-    profile["auth"] = {
+    has_creds, missing_cred = _check_credentials(
+        lane,
+        env=current_env,
+        credential_file=credential_file,
+        profile=profile,
+        config_dir=config_dir,
+    )
+    prof["auth"] = {
         "ready": has_creds,
         "detail": "dispatch token present" if has_creds else "dispatch token missing",
         "remediation": (
@@ -630,16 +685,21 @@ def hosted_dispatch_profile(
     }
 
     transport_ready, transport_var = _check_hosted_transport(
-        lane, env=current_env, repo_slug=repo_slug
+        lane,
+        env=current_env,
+        repo_slug=repo_slug,
+        credential_file=credential_file,
+        profile=profile,
+        config_dir=config_dir,
     )
     if not transport_var:
-        profile["installation"] = {
+        prof["installation"] = {
             "ready": True,
             "detail": "no separate installation acknowledgement configured",
             "remediation": "",
         }
     else:
-        profile["installation"] = {
+        prof["installation"] = {
             "ready": transport_ready,
             "detail": (
                 "provider App installation verified"
@@ -658,7 +718,7 @@ def hosted_dispatch_profile(
 
     trigger_comments = tuple(lane.provider_config.get("trigger_comments") or ())
     trigger_ready = bool(trigger_comments)
-    profile["trigger"] = {
+    prof["trigger"] = {
         "ready": trigger_ready,
         "detail": (
             "builder trigger configured"
@@ -677,7 +737,7 @@ def hosted_dispatch_profile(
 
     trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
     responder_ready = bool(trusted_authors)
-    profile["trusted_responder"] = {
+    prof["trusted_responder"] = {
         "ready": responder_ready,
         "detail": (
             "trusted responder allowlist configured"
@@ -695,7 +755,7 @@ def hosted_dispatch_profile(
     }
 
     timeout_ready = _configured_hosted_response_timeout(lane) is not None
-    profile["result_return"] = {
+    prof["result_return"] = {
         "ready": timeout_ready,
         "detail": (
             "bounded result-return wait configured"
@@ -711,7 +771,7 @@ def hosted_dispatch_profile(
             )
         ),
     }
-    return profile
+    return prof
 
 
 def hosted_dispatch_blockers(profile: Mapping[str, Mapping[str, Any]]) -> list[str]:
@@ -787,6 +847,7 @@ def _provider_next_action(
     adapter_configured: bool = True,
     error: str = "",
     error_code: str = "",
+    remediation: str = "",
 ) -> tuple[str, str]:
     if state == "complete":
         return "none", ""
@@ -816,6 +877,8 @@ def _provider_next_action(
             cmd = lane.provider_config.get("command") or provider
             return f"install {cmd} CLI on PATH or record manual result", error or f"command not found: {cmd}"
         if lane.driver in {"hosted_bridge", "saas_event"} and not has_credentials:
+            if remediation:
+                return f"{remediation} or record manual result", error
             token = error or (lane.token_env[0] if lane.token_env else "credentials")
             return f"set {token} or record manual result", error
         if lane.driver in {"saas_event", "hosted_bridge"} and not has_issue:
@@ -1519,6 +1582,9 @@ def _poll_devin_running(
     env: Mapping[str, str],
     now_utc: str,
     api_runner: devin_api.ApiRunner | None,
+    credential_file: Path | None = None,
+    profile: str = "",
+    config_dir: Path | None = None,
 ) -> None:
     """Read one Devin session snapshot and update the campaign participant."""
     raw_ref = provider_data.get("dispatch_ref")
@@ -1536,7 +1602,12 @@ def _poll_devin_running(
         provider_data["next_detail"] = "session creation outcome is unknown"
         return
 
-    api_key, org_id, missing = devin_api.credentials_from_env(env)
+    api_key, org_id, missing = devin_api.credentials_from_env(
+        env,
+        credential_file=credential_file,
+        profile=profile,
+        config_dir=config_dir,
+    )
     if missing:
         provider_data["state"] = "running"
         provider_data["error"] = _safe_error("missing_credentials")
@@ -1656,6 +1727,9 @@ def _dispatch_devin_api(
     env: Mapping[str, str],
     command_runner: lane_status.CommandRunner,
     api_runner: devin_api.ApiRunner | None,
+    credential_file: Path | None = None,
+    profile: str = "",
+    config_dir: Path | None = None,
 ) -> str:
     """Checkpoint and create one Devin v3 session.
 
@@ -1663,10 +1737,21 @@ def _dispatch_devin_api(
     after POST but before the session id is saved, ordinary resume reports an
     unknown creation outcome and never repeats paid work.
     """
-    api_key, org_id, missing = devin_api.credentials_from_env(env)
+    api_key, org_id, missing = devin_api.credentials_from_env(
+        env,
+        credential_file=credential_file,
+        profile=profile,
+        config_dir=config_dir,
+    )
     if missing:
         return _safe_error("missing_credentials")
-    if not devin_api.repository_scope_acknowledged(repo_slug, env=env):
+    if not devin_api.repository_scope_acknowledged(
+        repo_slug,
+        env=env,
+        credential_file=credential_file,
+        profile=profile,
+        config_dir=config_dir,
+    ):
         return _safe_error("hosted_transport_unverified")
     if qualification_context == "upgrade" and not starting_version:
         return _safe_error("campaign_identity_incomplete")
@@ -2993,6 +3078,9 @@ def dispatch_or_advance_campaign(
     repo_slug_override: str = "",
     poll_only: bool = False,
     api_runner: devin_api.ApiRunner | None = None,
+    provider_credential_file: Path | None = None,
+    provider_profile: str = "",
+    provider_config_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Execute dispatch, polling, or status progression on a campaign.
 
@@ -3008,6 +3096,17 @@ def dispatch_or_advance_campaign(
     between "already attempted" and "never dispatched".
     """
     current_env = os.environ if env is None else env
+    from .provider_credentials import resolve_provider_credentials
+
+    devin_cred_res = resolve_provider_credentials(
+        "devin",
+        credential_file=provider_credential_file,
+        profile=provider_profile,
+        config_dir=provider_config_dir,
+        env=current_env,
+    )
+    if devin_cred_res.has_credentials:
+        current_env = devin_cred_res.apply_to_env(current_env)
     campaign_before_poll = copy.deepcopy(campaign) if poll_only else None
     repo_path = repo_path or Path.cwd()
     campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)
@@ -3135,6 +3234,9 @@ def dispatch_or_advance_campaign(
                 env=current_env,
                 now_utc=now_utc,
                 api_runner=api_runner,
+                credential_file=provider_credential_file,
+                profile=provider_profile,
+                config_dir=provider_config_dir,
             )
             _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
             if not (is_explicit_retry and _devin_retry_is_safe(provider_data)):
@@ -3499,15 +3601,33 @@ def dispatch_or_advance_campaign(
 
         # 4. Check capabilities and readiness
         cmd_found = _find_command(lane, which_fn=which_fn)
-        has_creds, missing_cred = _check_credentials(lane, env=current_env)
+        has_creds, missing_cred = _check_credentials(
+            lane,
+            env=current_env,
+            credential_file=provider_credential_file,
+            profile=provider_profile,
+            config_dir=provider_config_dir,
+        )
         transport_ready, _ = _check_hosted_transport(
-            lane, env=current_env, repo_slug=repo_slug
+            lane,
+            env=current_env,
+            repo_slug=repo_slug,
+            credential_file=provider_credential_file,
+            profile=provider_profile,
+            config_dir=provider_config_dir,
         )
         # Closed hosted dispatch profile: auth, installation, trigger,
         # trusted responder, and result return are judged independently, so
         # one verified dimension can never mask another.
         dispatch_profile = (
-            hosted_dispatch_profile(lane, env=current_env, repo_slug=repo_slug)
+            hosted_dispatch_profile(
+                lane,
+                env=current_env,
+                repo_slug=repo_slug,
+                credential_file=provider_credential_file,
+                profile=provider_profile,
+                config_dir=provider_config_dir,
+            )
             if lane.driver in {"hosted_bridge", "saas_event"}
             else {}
         )
@@ -3559,6 +3679,8 @@ def dispatch_or_advance_campaign(
                 )
             elif lane.driver in {"hosted_bridge", "saas_event"} and not has_creds:
                 provider_data["state"] = "unavailable"
+                auth_rem = str(dispatch_profile.get("auth", {}).get("remediation") or "")
+                auth_err = str(dispatch_profile.get("auth", {}).get("status") or "")
                 action, detail = _provider_next_action(
                     provider,
                     lane,
@@ -3567,7 +3689,8 @@ def dispatch_or_advance_campaign(
                     has_credentials=False,
                     has_issue=has_issue,
                     dry_run=True,
-                    error=missing_cred,
+                    error=auth_err or missing_cred,
+                    remediation=auth_rem,
                 )
             elif lane.driver in {"hosted_bridge", "saas_event"} and (
                 not repo_slug or (not _is_devin_api_lane(lane) and not issue_number)
@@ -3785,6 +3908,9 @@ def dispatch_or_advance_campaign(
                     env=current_env,
                     command_runner=command_runner,
                     api_runner=api_runner,
+                    credential_file=provider_credential_file,
+                    profile=provider_profile,
+                    config_dir=provider_config_dir,
                 )
                 if err:
                     provider_data["state"] = "unavailable"
@@ -4934,6 +5060,9 @@ def campaign_watch(
     adapter_runner: AdapterRunner = run_local_adapter_command,
     api_runner: devin_api.ApiRunner | None = None,
     env: Mapping[str, str] | None = None,
+    provider_credential_file: Path | None = None,
+    provider_profile: str = "",
+    provider_config_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Poll a stored release campaign at a positive interval and bounded timeout.
 
@@ -5194,6 +5323,9 @@ def campaign_watch(
                 env=env,
                 repo_slug_override=watch_repo_slug,
                 poll_only=True,
+                provider_credential_file=provider_credential_file,
+                provider_profile=provider_profile,
+                provider_config_dir=provider_config_dir,
             )
             initial_transitions = _describe_transitions(
                 initial_snapshot,
@@ -5302,6 +5434,9 @@ def campaign_watch(
                         env=env,
                         repo_slug_override=watch_repo_slug,
                         poll_only=True,
+                        provider_credential_file=provider_credential_file,
+                        provider_profile=provider_profile,
+                        provider_config_dir=provider_config_dir,
                     )
 
                 now_after_poll = time_fn()
@@ -6370,6 +6505,9 @@ def campaign_command(
     sleep_fn: Callable[[float], None] = time.sleep,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
+    provider_credential_file: Path | None = None,
+    provider_profile: str = "",
+    provider_config_dir: Path | None = None,
 ) -> int:
     """Create, inspect, advance, or publish a release qualification campaign.
 
@@ -6588,6 +6726,9 @@ def campaign_command(
             sleep_fn=sleep_fn,
             stdout=stdout,
             stderr=stderr,
+            provider_credential_file=provider_credential_file,
+            provider_profile=provider_profile,
+            provider_config_dir=provider_config_dir,
         )
         if not explicit_campaigns_dir:
             assert identity is not None
@@ -6640,6 +6781,9 @@ def _campaign_command_impl(
     sleep_fn: Callable[[float], None] = time.sleep,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
+    provider_credential_file: Path | None = None,
+    provider_profile: str = "",
+    provider_config_dir: Path | None = None,
 ) -> int:
     """Body of :func:`campaign_command`.
 
@@ -6704,6 +6848,9 @@ def _campaign_command_impl(
             adapter_runner=adapter_runner,
             api_runner=api_runner,
             env=env,
+            provider_credential_file=provider_credential_file,
+            provider_profile=provider_profile,
+            provider_config_dir=provider_config_dir,
         )
         if emit_json:
             out = stdout if stdout is not None else sys.stdout
@@ -6892,6 +7039,9 @@ def _campaign_command_impl(
             api_runner=api_runner,
             env=env,
             retry_provider=retry_canonical,
+            provider_credential_file=provider_credential_file,
+            provider_profile=provider_profile,
+            provider_config_dir=provider_config_dir,
         )
         if emit_json:
             print(json.dumps(updated, indent=2, sort_keys=True))
@@ -6974,6 +7124,9 @@ def _campaign_command_impl(
         api_runner=api_runner,
         env=env,
         retry_provider=retry_canonical,
+        provider_credential_file=provider_credential_file,
+        provider_profile=provider_profile,
+        provider_config_dir=provider_config_dir,
     )
 
     if emit_json:

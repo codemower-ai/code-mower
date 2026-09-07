@@ -602,6 +602,9 @@ def check_adoption_campaign_readiness(
     capability_runner: Any = None,
     token_dir: Path | None = None,
     providers: Sequence[str] = DEFAULT_CAMPAIGN_PROVIDERS,
+    provider_credential_file: Path | None = None,
+    provider_profile: str = "",
+    provider_config_dir: Path | None = None,
 ) -> tuple[DoctorCheck, ...]:
     """Validate release campaign readiness across configured providers and storage."""
     from code_mower import lane_status
@@ -931,14 +934,53 @@ def check_adoption_campaign_readiness(
                     )
 
         elif lane.driver in {"hosted_bridge", "saas_event"}:
-            has_credentials, missing_var = _check_credentials(lane, env=current_env)
+            cred_res = None
+            if lane.provider_config.get("campaign_transport") == "devin_api_v3":
+                from code_mower.provider_credentials import resolve_provider_credentials
+
+                cred_res = resolve_provider_credentials(
+                    "devin",
+                    credential_file=provider_credential_file,
+                    profile=provider_profile,
+                    config_dir=provider_config_dir,
+                    env=current_env,
+                )
+                has_credentials = cred_res.has_credentials
+                missing_var = (
+                    cred_res.missing_variables[0]
+                    if cred_res.missing_variables
+                    else "DEVIN_API_KEY"
+                )
+                effective_env = cred_res.apply_to_env(current_env) if has_credentials else current_env
+            else:
+                has_credentials, missing_var = _check_credentials(
+                    lane,
+                    env=current_env,
+                    credential_file=provider_credential_file,
+                    profile=provider_profile,
+                    config_dir=provider_config_dir,
+                )
+                effective_env = current_env
+
             transport_ready, transport_var = _check_hosted_transport(
-                lane, env=current_env, repo_slug=repo_slug
+                lane,
+                env=effective_env,
+                repo_slug=repo_slug,
+                credential_file=provider_credential_file,
+                profile=provider_profile,
+                config_dir=provider_config_dir,
             )
             # Closed dispatch profile: auth, installation, trigger,
             # trusted responder, and result return are reported
             # independently, so one verified dimension never masks another.
-            dispatch_profile = hosted_dispatch_profile(lane, env=current_env, repo_slug=repo_slug)
+            dispatch_profile = hosted_dispatch_profile(
+                lane,
+                env=effective_env,
+                repo_slug=repo_slug,
+                credential_file=provider_credential_file,
+                profile=provider_profile,
+                config_dir=provider_config_dir,
+            )
             dispatch_blockers = hosted_dispatch_blockers(dispatch_profile)
             dispatch_summary = {
                 name: bool(entry.get("ready")) for name, entry in dispatch_profile.items()
@@ -951,7 +993,7 @@ def check_adoption_campaign_readiness(
             if cmd_ready:
                 auth_state = "ready"
             elif not has_credentials:
-                auth_state = "missing_credentials"
+                auth_state = cred_res.status if cred_res is not None else "missing_credentials"
             elif not has_repo:
                 auth_state = "missing_repo"
             else:
@@ -964,28 +1006,110 @@ def check_adoption_campaign_readiness(
             }
 
             if not has_credentials:
-                detail = {
-                    "provider": canonical,
-                    "lane": lane.lane_id,
-                    "driver": lane.driver,
-                    "missing_variable": missing_var,
-                    "repo_slug": repo_slug,
-                    "enabled": is_enabled,
-                    "actionable": is_enabled,
-                    "optional": not is_enabled,
-                }
-                if is_enabled:
-                    detail["owner_action"] = True
-                checks.append(
-                    DoctorCheck(
-                        name="doctor.campaign.credentials",
-                        status=STATUS_WARN,
-                        lane=canonical,
-                        message=f"{canonical} hosted credentials missing ({missing_var})",
-                        detail=detail,
-                        remediation=f"Set {missing_var} in environment for {canonical} campaign dispatch.",
+                if cred_res is not None and cred_res.status == "insecure_permissions":
+                    detail = {
+                        "provider": canonical,
+                        "lane": lane.lane_id,
+                        "driver": lane.driver,
+                        "status": "insecure_permissions",
+                        "error": "insecure_permissions",
+                        "candidate_files": list(cred_res.candidate_files),
+                        "repo_slug": repo_slug,
+                        "enabled": is_enabled,
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
+                    }
+                    if is_enabled:
+                        detail["owner_action"] = True
+                    checks.append(
+                        DoctorCheck(
+                            name="doctor.campaign.credentials",
+                            status=STATUS_WARN,
+                            lane=canonical,
+                            message=cred_res.message,
+                            detail=detail,
+                            remediation=cred_res.remediation,
+                        )
                     )
-                )
+                elif cred_res is not None and cred_res.status == "ambiguous":
+                    detail = {
+                        "provider": canonical,
+                        "lane": lane.lane_id,
+                        "driver": lane.driver,
+                        "status": "ambiguous",
+                        "error": "ambiguous",
+                        "candidate_files": list(cred_res.candidate_files),
+                        "repo_slug": repo_slug,
+                        "enabled": is_enabled,
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
+                    }
+                    if is_enabled:
+                        detail["owner_action"] = True
+                    checks.append(
+                        DoctorCheck(
+                            name="doctor.campaign.credentials",
+                            status=STATUS_WARN,
+                            lane=canonical,
+                            message=cred_res.message,
+                            detail=detail,
+                            remediation=cred_res.remediation,
+                        )
+                    )
+                elif cred_res is not None and cred_res.status == "malformed":
+                    detail = {
+                        "provider": canonical,
+                        "lane": lane.lane_id,
+                        "driver": lane.driver,
+                        "status": "malformed",
+                        "error": "malformed",
+                        "candidate_files": list(cred_res.candidate_files),
+                        "missing_variables": list(cred_res.missing_variables),
+                        "repo_slug": repo_slug,
+                        "enabled": is_enabled,
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
+                    }
+                    if is_enabled:
+                        detail["owner_action"] = True
+                    checks.append(
+                        DoctorCheck(
+                            name="doctor.campaign.credentials",
+                            status=STATUS_WARN,
+                            lane=canonical,
+                            message=cred_res.message,
+                            detail=detail,
+                            remediation=cred_res.remediation,
+                        )
+                    )
+                else:
+                    detail = {
+                        "provider": canonical,
+                        "lane": lane.lane_id,
+                        "driver": lane.driver,
+                        "missing_variable": missing_var,
+                        "repo_slug": repo_slug,
+                        "enabled": is_enabled,
+                        "actionable": is_enabled,
+                        "optional": not is_enabled,
+                    }
+                    if is_enabled:
+                        detail["owner_action"] = True
+                    remediation = (
+                        cred_res.remediation
+                        if cred_res is not None and cred_res.remediation
+                        else f"Set {missing_var} in environment for {canonical} campaign dispatch."
+                    )
+                    checks.append(
+                        DoctorCheck(
+                            name="doctor.campaign.credentials",
+                            status=STATUS_WARN,
+                            lane=canonical,
+                            message=f"{canonical} hosted credentials missing ({missing_var})",
+                            detail=detail,
+                            remediation=remediation,
+                        )
+                    )
             elif not has_repo:
                 detail = {
                     "provider": canonical,
@@ -1093,22 +1217,25 @@ def check_adoption_campaign_readiness(
                     )
                 )
             else:
+                pass_detail = {
+                    "provider": canonical,
+                    "lane": lane.lane_id,
+                    "driver": lane.driver,
+                    "repo_slug": repo_slug,
+                    "has_credentials": True,
+                    "transport_verified": True,
+                    "dispatch_profile": dispatch_summary,
+                    "enabled": is_enabled,
+                }
+                if cred_res is not None:
+                    pass_detail["credentials_source"] = cred_res.source
                 checks.append(
                     DoctorCheck(
                         name="doctor.campaign.credentials",
                         status=STATUS_PASS,
                         lane=canonical,
                         message=f"{canonical} hosted credentials and repository target ready",
-                        detail={
-                            "provider": canonical,
-                            "lane": lane.lane_id,
-                            "driver": lane.driver,
-                            "repo_slug": repo_slug,
-                            "has_credentials": True,
-                            "transport_verified": True,
-                            "dispatch_profile": dispatch_summary,
-                            "enabled": is_enabled,
-                        },
+                        detail=pass_detail,
                     )
                 )
                 if not structured_capability:
