@@ -1922,13 +1922,21 @@ class ClaudeMacosCertificatePathTests(unittest.TestCase):
             ".venv/bin/python -m pip --isolated --use-deprecated=legacy-certs install",
             prompt,
         )
-        # TLS verification stays on: no trusted-host, no verification bypass,
-        # and no route out of the sandbox.
-        self.assertNotIn("--trusted-host", prompt)
-        self.assertNotIn("--cert ", prompt)
-        self.assertNotIn("PYTHONHTTPSVERIFY", prompt)
-        self.assertNotIn("CURL_CA_BUNDLE=", prompt)
+        # TLS verification stays on: the command the agent runs carries no
+        # trusted-host, no certificate override, and no verification bypass.
+        pip_command = campaign_adapters.build_qualification_pip_command(
+            provider="claude", platform_system="Darwin"
+        )
+        for bypass in ("--trusted-host", "--cert", "PYTHONHTTPSVERIFY", "CURL_CA_BUNDLE"):
+            self.assertNotIn(bypass, pip_command)
+            # The prompt names a bypass only to forbid it, never on a command line.
+            for install_line in [
+                line for line in prompt.splitlines() if line.lstrip().startswith(("2.", "3."))
+            ]:
+                self.assertNotIn(bypass, install_line)
         self.assertIn("Certificate verification", prompt)
+        self.assertIn("never disable or skip TLS verification", prompt)
+        self.assertIn("Never add\n`--trusted-host`", prompt)
 
     def test_macos_claude_upgrade_and_testpypi_plans_use_the_same_pip_command(self) -> None:
         legacy = campaign_adapters.PIP_LEGACY_CERTS_FLAG
