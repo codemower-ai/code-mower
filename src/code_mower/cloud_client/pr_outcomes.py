@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import uuid
 from typing import Any, Mapping
 
 from .errors import CloudBundleError
@@ -32,7 +33,16 @@ PR_OUTCOME_DIMENSIONS = (
     "reverted_at",
     "outcome",
     "cost_coverage",
+    "missing_cost_sources",
 )
+
+
+def _utc_now() -> str:
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _required_text(value: object, field: str) -> str:
@@ -59,6 +69,178 @@ def _count(metrics: Mapping[str, Any], field: str, *, required: bool = False) ->
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise CloudBundleError(f"pr_outcome metric {field!r} must be a non-negative integer")
     return value
+
+
+def _lane_for_run_event(event: Mapping[str, Any]) -> str:
+    """Return a safe lane/provider identifier for an observed spend attempt."""
+
+    event_type = str(event.get("event_type") or "").strip()
+    dimensions = _as_mapping(event.get("dimensions"))
+    if event_type == "builder_run":
+        return str(
+            dimensions.get("builder_provider")
+            or event.get("provider")
+            or ""
+        ).strip()
+    if event_type == "reviewer_run":
+        return str(
+            dimensions.get("lane")
+            or dimensions.get("lane_id")
+            or dimensions.get("audit_comment_lane_id")
+            or event.get("lens")
+            or event.get("provider")
+            or ""
+        ).strip()
+    return ""
+
+
+def _aggregate_run_costs(
+    run_events: list[Mapping[str, Any]],
+) -> tuple[int, int, float, list[str]]:
+    """Deduplicate attempts by event_id and classify cost reporting.
+
+    Returns (expected_attempts, reported_attempts, total_cost_usd,
+    missing_lane_sources).  Only ``builder_run`` and ``reviewer_run`` events
+    are considered; other event types are ignored.  Missing cost is counted as
+    an expected attempt with no reported cost, preserving unknown as unknown.
+    """
+
+    seen: set[str] = set()
+    expected = 0
+    reported = 0
+    total_cost = 0.0
+    missing_lanes: list[str] = []
+
+    for event in run_events:
+        event_type = str(event.get("event_type") or "").strip()
+        if event_type not in {"builder_run", "reviewer_run"}:
+            continue
+        event_id = str(event.get("event_id") or "").strip()
+        if not event_id or event_id in seen:
+            continue
+        seen.add(event_id)
+
+        metrics = _as_mapping(event.get("metrics"))
+        cost = metrics.get("cost_usd")
+        if cost is not None:
+            if (
+                isinstance(cost, bool)
+                or not isinstance(cost, int | float)
+                or not math.isfinite(cost)
+                or cost < 0
+            ):
+                raise CloudBundleError(
+                    "pr_outcome run event cost_usd must be finite and non-negative"
+                )
+            reported += 1
+            total_cost += float(cost)
+        else:
+            lane = _lane_for_run_event(event)
+            if lane:
+                missing_lanes.append(lane)
+        expected += 1
+
+    # Preserve order while removing duplicate lane labels from the diagnostic.
+    seen_lanes: set[str] = set()
+    unique_missing: list[str] = []
+    for lane in missing_lanes:
+        if lane not in seen_lanes:
+            seen_lanes.add(lane)
+            unique_missing.append(lane)
+
+    return expected, reported, total_cost, unique_missing
+
+
+def build_pr_outcome_event(
+    *,
+    repo_slug: str,
+    pr_number: str,
+    outcome: str,
+    opened_at: str,
+    merged_at: str = "",
+    closed_at: str = "",
+    reverted_at: str = "",
+    run_events: list[Mapping[str, Any]],
+    team_id: str = "",
+    install_id: str = "",
+    source: str = "code-mower cloud pr-outcomes",
+    created_at: str = "",
+    tool: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build one metadata-only ``pr_outcome`` event from observed attempts.
+
+    ``run_events`` should be the builder/reviewer run events (or spend rows
+    converted to ``reviewer_run`` events) that belong to this PR.  Cost is
+    preserved as reported; attempts without reported cost stay missing so
+    coverage remains ``unknown`` rather than zero.
+    """
+
+    from code_mower import __version__
+    from code_mower.providers.provenance import build_code_mower_tool_provenance
+
+    expected, reported, total_cost, missing_sources = _aggregate_run_costs(
+        run_events
+    )
+
+    if reported > 0 and reported == expected:
+        cost_coverage = "complete"
+    elif reported > 0:
+        cost_coverage = "partial"
+    else:
+        cost_coverage = "unknown"
+
+    metrics: dict[str, Any] = {
+        "pr_count": 1,
+        "cost_reported_run_count": reported,
+        "cost_expected_run_count": expected,
+        "cost_covered_pr_count": 1 if cost_coverage == "complete" else 0,
+    }
+    if cost_coverage in ("complete", "partial"):
+        metrics["reported_cost_usd"] = round(total_cost, 6)
+
+    dimensions: dict[str, Any] = {
+        "pr_outcome_schema": PR_OUTCOME_SCHEMA,
+        "pr_number": pr_number,
+        "opened_at": opened_at,
+        "outcome": outcome,
+        "cost_coverage": cost_coverage,
+    }
+    if merged_at:
+        dimensions["merged_at"] = merged_at
+    if closed_at:
+        dimensions["closed_at"] = closed_at
+    if reverted_at:
+        dimensions["reverted_at"] = reverted_at
+    if missing_sources:
+        dimensions["missing_cost_sources"] = missing_sources
+
+    created_at_value = created_at or _utc_now()
+    event_id_seed = (
+        f"code-mower-pr-outcome:{repo_slug}:{pr_number}:{created_at_value}"
+    )
+    event: dict[str, Any] = {
+        "schema": "code_mower.benchmarkEvent.v1",
+        "event_id": str(uuid.uuid5(uuid.NAMESPACE_URL, event_id_seed)),
+        "event_type": PR_OUTCOME_EVENT_TYPE,
+        "created_at": created_at_value,
+        "repo_slug": repo_slug,
+        "team_id": team_id,
+        "install_id": install_id,
+        "source": source,
+        "provider": "code-mower",
+        "lens": "outcome",
+        "status": "observed",
+        "tool": tool
+        if tool is not None
+        else build_code_mower_tool_provenance(
+            source=source,
+            version=__version__,
+            role="reporter",
+        ),
+        "metrics": metrics,
+        "dimensions": dimensions,
+    }
+    return event
 
 
 def validate_pr_outcome_payload(event: Mapping[str, Any]) -> None:
@@ -119,6 +301,15 @@ def validate_pr_outcome_payload(event: Mapping[str, Any]) -> None:
     blockers = _count(metrics, "blocking_bug_count")
     if catches is not None and blockers is not None and blockers > catches:
         raise CloudBundleError("pr_outcome blocking_bug_count cannot exceed reviewer_catch_count")
+
+    if "missing_cost_sources" in dimensions:
+        missing = dimensions["missing_cost_sources"]
+        if not isinstance(missing, list) or not all(
+            isinstance(item, str) and item.strip() for item in missing
+        ):
+            raise CloudBundleError(
+                "pr_outcome dimension 'missing_cost_sources' must be a list of non-empty strings"
+            )
 
     coverage = _required_text(dimensions.get("cost_coverage"), "dimension 'cost_coverage'")
     if coverage not in PR_COST_COVERAGE_VALUES:

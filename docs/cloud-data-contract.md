@@ -203,6 +203,22 @@ only merged observations with `cost_coverage=complete` and computes
 uploaded. Events that omit `pr_outcome`, including v0.6 through v1.0 uploads,
 remain valid.
 
+The `code-mower cloud pr-outcomes` command joins local `builder_run` events
+(from `.code-mower/builder-runs/*.cloud-event.json`), `reviewer_run` events
+derived from reviewer-spend rows, and the live GitHub PR list to produce one
+`pr_outcome` event per PR.  Attempts are deduplicated by `event_id` so
+duplicate ledger rows do not double-count attempts. Outcome event identifiers
+are stable for the same GitHub PR `updatedAt` value, making repeated uploads
+idempotent while allowing a later PR state change to produce a new observation.
+Cost coverage is
+`complete` when every observed builder/reviewer attempt reports `cost_usd`,
+`partial` when at least one but not all attempts report cost, and `unknown`
+when no attempt reports cost.  The optional
+`dimensions.missing_cost_sources` list names observed lane/provider
+identifiers that did not report cost; it is metadata-only and must never
+contain commands, paths, auth output, or secrets.  Missing cost is omitted,
+never serialized as zero.
+
 The event contains identifiers, timestamps, categorical outcomes, and numeric
 counts/cost only. Its dimension and metric names are closed in v1, so undeclared
 fields are rejected rather than becoming accidental prose channels. It must not

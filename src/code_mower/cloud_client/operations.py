@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -18,8 +19,11 @@ from .events import (
     build_dogfood_event,
     build_provider_catalog_snapshot_events,
     build_workflow_run_event,
+    run_gh_pr_list,
     run_gh_run_list,
+    validate_cloud_event,
 )
+from .pr_outcomes import build_pr_outcome_event
 from .export import build_cloud_bundle
 from .git_metadata import detect_repo_slug
 from .tokens import (
@@ -736,6 +740,221 @@ def reviewer_runs_upload(
     }
 
 
+def _builder_run_events(repo_path: Path) -> list[dict[str, Any]]:
+    """Load local builder_run events from the default builder-runs directory."""
+
+    builder_dir = repo_path / ".code-mower" / "builder-runs"
+    if not builder_dir.is_dir():
+        return []
+    events: list[dict[str, Any]] = []
+    for path in sorted(builder_dir.glob("*.cloud-event.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("event_type") == "builder_run":
+            events.append(payload)
+    return events
+
+
+def _pr_number_from_run_event(event: Mapping[str, Any]) -> str:
+    dimensions = event.get("dimensions")
+    if isinstance(dimensions, Mapping):
+        number = str(dimensions.get("pr_number") or "").strip()
+        if number:
+            return number
+    return str(event.get("pr_number") or "").strip()
+
+
+def pr_outcomes_upload(
+    *,
+    repo_path: Path,
+    output_dir: Path,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+    limit: int,
+    endpoint: str,
+    token_env: str,
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
+    yes: bool,
+    timeout: float,
+    spend_path: Path | None = None,
+) -> dict[str, Any]:
+    """Build and optionally upload per-PR spend coverage observations."""
+
+    if limit < 1 or limit > MAX_EVENT_COUNT:
+        raise CloudBundleError(f"--limit must be between 1 and {MAX_EVENT_COUNT}")
+    repo_path = repo_path.expanduser().resolve()
+    detected_repo_slug = repo_slug or detect_repo_slug(repo_path)
+    if not detected_repo_slug:
+        raise CloudBundleError(
+            "unable to detect repo slug; pass --repo-slug OWNER/REPO"
+        )
+    token_resolution, resolved_endpoint = _resolve_upload_profile(
+        endpoint=endpoint,
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    resolved_team_id, resolved_install_id = resolve_cloud_identity(
+        team_id=team_id,
+        install_id=install_id,
+        resolution=token_resolution,
+    )
+
+    pr_records = run_gh_pr_list(
+        repo_slug=detected_repo_slug,
+        limit=limit,
+        repo_path=repo_path,
+    )
+    builder_events = _builder_run_events(repo_path)
+    spend_events = _reviewer_spend_events(
+        repo_path=repo_path,
+        spend_path=spend_path,
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        source=f"{source}-spend",
+    )
+
+    run_events: list[dict[str, Any]] = []
+    for event in [*builder_events, *spend_events]:
+        if str(event.get("repo_slug") or "").strip() != detected_repo_slug:
+            continue
+        run_events.append(event)
+
+    events_by_pr: dict[str, list[dict[str, Any]]] = {}
+    for event in run_events:
+        pr_number = _pr_number_from_run_event(event)
+        if not pr_number:
+            continue
+        events_by_pr.setdefault(pr_number, []).append(event)
+
+    events: list[dict[str, Any]] = []
+    errors: list[str] = []
+    state_to_outcome = {
+        "open": "open",
+        "merged": "merged",
+        "closed": "closed_unmerged",
+    }
+    for pr in pr_records:
+        pr_number = str(pr.get("number") or "").strip()
+        if not pr_number:
+            continue
+        state = str(pr.get("state") or "").strip().lower()
+        outcome = state_to_outcome.get(state)
+        if not outcome:
+            continue
+        opened_at = str(pr.get("createdAt") or "").strip()
+        if not opened_at:
+            continue
+        merged_at = str(pr.get("mergedAt") or "").strip()
+        closed_at = str(pr.get("closedAt") or "").strip()
+        event = build_pr_outcome_event(
+            repo_slug=detected_repo_slug,
+            pr_number=pr_number,
+            outcome=outcome,
+            opened_at=opened_at,
+            merged_at=merged_at,
+            closed_at=closed_at,
+            run_events=events_by_pr.get(pr_number, []),
+            team_id=resolved_team_id,
+            install_id=resolved_install_id,
+            source=source,
+            created_at=str(pr.get("updatedAt") or opened_at).strip(),
+        )
+        try:
+            validate_cloud_event(event)
+        except CloudBundleError as exc:
+            errors.append(str(exc))
+            continue
+        events.append(event)
+
+    if not events:
+        return {
+            "mode": "cloud-pr-outcomes",
+            "status": "no_events",
+            "repo_slug": detected_repo_slug,
+            "event_count": 0,
+            "pr_count": len(pr_records),
+            "errors": errors,
+        }
+
+    if len(events) > MAX_EVENT_COUNT:
+        events = events[:MAX_EVENT_COUNT]
+
+    export_result = build_cloud_bundle(
+        reports=[],
+        events=events,
+        output_dir=output_dir,
+        repo_slug=detected_repo_slug,
+        team_id=resolved_team_id,
+        install_id=resolved_install_id,
+        anonymous=False,
+    )
+    doctor_result = run_cloud_doctor(
+        bundle_dir=output_dir,
+        endpoint=resolved_endpoint,
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+        require_token=yes,
+    )
+    if doctor_result["failures"]:
+        return {
+            "mode": "cloud-pr-outcomes",
+            "status": "doctor_failed",
+            "repo_slug": detected_repo_slug,
+            "event_count": len(events),
+            "pr_count": len(pr_records),
+            "errors": errors,
+            "export": export_result,
+            "doctor": doctor_result,
+        }
+    payload = build_upload_payload(bundle_dir=output_dir, include_reports=False)
+    if not yes:
+        return {
+            "mode": "cloud-pr-outcomes",
+            "status": "dry_run",
+            "repo_slug": detected_repo_slug,
+            "event_count": len(events),
+            "pr_count": len(pr_records),
+            "errors": errors,
+            "export": export_result,
+            "doctor": doctor_result,
+            "upload": build_dogfood_dry_run_preview(
+                endpoint=resolved_endpoint,
+                payload=payload,
+            ),
+        }
+    token = require_upload_token(
+        endpoint=resolved_endpoint,
+        resolution=token_resolution,
+        local_endpoint=is_local_http_endpoint(resolved_endpoint),
+    )
+    return {
+        "mode": "cloud-pr-outcomes",
+        "status": "uploaded",
+        "repo_slug": detected_repo_slug,
+        "event_count": len(events),
+        "pr_count": len(pr_records),
+        "errors": errors,
+        "export": export_result,
+        "doctor": doctor_result,
+        "upload": post_upload_payload(
+            payload=payload,
+            endpoint=resolved_endpoint,
+            token=token,
+            timeout=timeout,
+        ),
+    }
+
+
 def parse_repo_sync_spec(spec: str) -> tuple[str, Path]:
     if "=" not in spec:
         return "", Path(spec)
@@ -779,6 +998,11 @@ def build_repo_sync_data_class_summary(
             "events": 0,
             "description": "metadata-only reviewer verdict artifacts",
         },
+        "pr_outcome_evidence": {
+            "steps": 0,
+            "events": 0,
+            "description": "per-PR spend coverage observations",
+        },
     }
     for repo in repos:
         steps = repo.get("steps")
@@ -804,6 +1028,10 @@ def build_repo_sync_data_class_summary(
                     target["events"] += int(step.get("run_count") or 0)
             elif mode == "cloud-reviewer-runs":
                 target = summary["reviewer_evidence"]
+                target["steps"] += 1
+                target["events"] += int(step.get("event_count") or 0)
+            elif mode == "cloud-pr-outcomes":
+                target = summary["pr_outcome_evidence"]
                 target["steps"] += 1
                 target["events"] += int(step.get("event_count") or 0)
     return summary
@@ -897,6 +1125,23 @@ def repo_sync_upload(
                         yes=yes,
                         timeout=timeout,
                         include_git_ref=include_git_ref,
+                        spend_path=None,
+                    )
+                elif mode == "pr-outcomes":
+                    step_result = pr_outcomes_upload(
+                        repo_path=repo_path,
+                        output_dir=repo_output_dir / "pr-outcomes",
+                        repo_slug=repo_slug,
+                        team_id=team_id,
+                        install_id=install_id,
+                        source=f"{source_prefix}-pr-outcomes",
+                        limit=limit,
+                        endpoint=endpoint,
+                        token_env=token_env,
+                        token_file=token_file,
+                        token_dir=token_dir,
+                        yes=yes,
+                        timeout=timeout,
                         spend_path=None,
                     )
                 else:  # pragma: no cover - argparse constrains modes.
