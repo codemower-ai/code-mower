@@ -7,6 +7,18 @@ later entries are regular releases.
 
 ## Unreleased
 
+No changes yet.
+
+## v1.0.13
+
+This patch makes automatic campaign runtime selection sandbox-safe. When
+`CODE_MOWER_PYTHON` is not set, Code Mower prefers a supported versioned Python
+on `PATH` outside the user home before falling back to its own running
+interpreter, so a pipx- or uv-contained interpreter under a denied home tree is
+no longer chosen ahead of an available Homebrew/system runtime. It preserves
+supervised pilot gate semantics, Python 3.12+, provider posture, and the
+metadata-only privacy boundary.
+
 ### Fixed
 
 - Release qualification now prefers a supported versioned Python on `PATH`
@@ -14,7 +26,7 @@ later entries are regular releases.
   interpreter. A pipx- or uv-installed CLI can therefore select an available
   Homebrew/system runtime that remains readable inside Claude's strict macOS
   sandbox. Explicit `CODE_MOWER_PYTHON` overrides remain authoritative, and a
-  home-contained runtime remains a supported fallback (#778).
+  home-contained runtime remains a supported fallback (#778, PR #779).
 
 ## v1.0.12
 
