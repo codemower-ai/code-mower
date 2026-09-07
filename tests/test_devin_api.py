@@ -209,6 +209,24 @@ class DevinApiModuleTests(unittest.TestCase):
             ("failed", None, "devin_session_failed"),
         )
 
+    def test_poll_keeps_owner_approval_ahead_of_structured_output(self) -> None:
+        runner = _FakeApiRunner(
+            [
+                {
+                    "status": "running",
+                    "status_detail": "waiting_for_approval",
+                    "structured_output": _adoption_result(),
+                }
+            ]
+        )
+
+        self.assertEqual(
+            devin_api.poll_devin_session(
+                "org-test", "devin-1", "key", api_runner=runner
+            ),
+            ("owner_action", None, "devin_waiting_for_owner"),
+        )
+
 
 class DevinCampaignApiTests(unittest.TestCase):
     def _campaign(

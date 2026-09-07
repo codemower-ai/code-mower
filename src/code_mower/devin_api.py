@@ -249,10 +249,12 @@ def poll_devin_session(
         "total_session_limit_exceeded",
     }:
         return "failed", None, "devin_session_failed"
+    if detail == "waiting_for_approval":
+        return "owner_action", None, "devin_waiting_for_owner"
     result = data.get("structured_output")
     if isinstance(result, dict):
         return "complete", dict(result), ""
-    if detail in {"waiting_for_user", "waiting_for_approval"}:
+    if detail == "waiting_for_user":
         return "owner_action", None, "devin_waiting_for_owner"
     if status == "exit" or detail == "finished":
         return "failed", None, "hosted_result_rejected"
