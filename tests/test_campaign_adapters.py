@@ -393,6 +393,10 @@ class ArgvBuilderTests(unittest.TestCase):
         for step_id in ("board", "doctor", "lanes_status", "overhead", "package_install"):
             self.assertIn(step_id, prompt)
         self.assertIn("<namespace>__<name>", prompt)
+        self.assertIn(
+            "total elapsed_seconds to the sum of\nthe step elapsed_seconds values",
+            prompt,
+        )
 
     def test_guidance_schema_enforces_step_id_taxonomy(self) -> None:
         step_id_schema = campaign_adapters.ADOPTION_RESULT_JSON_SCHEMA[
@@ -1917,6 +1921,10 @@ class ClaudeMacosCertificatePathTests(unittest.TestCase):
 
     def test_macos_claude_cold_install_uses_legacy_certs_without_ambient_pip_config(self) -> None:
         prompt = self._prompt("claude", "Darwin")
+        self.assertIn("Code Mower already created this workspace", prompt)
+        self.assertIn("do not create or change into\nanother temporary directory", prompt)
+        self.assertNotIn("a disposable environment you create", prompt)
+        self.assertNotIn("inside a fresh temporary directory", prompt)
         self.assertIn(
             "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null "
             ".venv/bin/python -m pip --isolated --use-deprecated=legacy-certs install",
