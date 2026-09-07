@@ -184,7 +184,8 @@ Required dimensions are `pr_outcome_schema`, positive integer-string
 or `unknown`). Merged and reverted outcomes require `merged_at`, closed-unmerged
 requires `closed_at`, and reverted requires `reverted_at`. Timestamps include a
 UTC offset and cannot precede `opened_at`; `reverted_at` cannot precede
-`merged_at`.
+`merged_at`. The `reverted` outcome is reserved for producers that hold
+rollback evidence; GitHub's PR-list `state` field alone cannot infer it.
 
 Metrics are atomic values, never precomputed dashboard rates:
 
@@ -206,11 +207,12 @@ remain valid.
 The `code-mower cloud pr-outcomes` command joins local `builder_run` events
 (from `.code-mower/builder-runs/*.cloud-event.json`), `reviewer_run` events
 derived from reviewer-spend rows, and the live GitHub PR list to produce one
-`pr_outcome` event per PR.  Attempts are deduplicated by `event_id` so
-duplicate ledger rows do not double-count attempts. Outcome event identifiers
-are stable for the same GitHub PR `updatedAt` value, making repeated uploads
-idempotent while allowing a later PR state change to produce a new observation.
-Cost coverage is
+`pr_outcome` event per PR.  Attempts are deduplicated by `event_id` for cost
+totals, but attempts with missing or duplicate `event_id` values are still
+counted as expected attempts with unknown cost so they cannot inflate
+`complete` coverage. Outcome event identifiers are stable for the same GitHub
+PR `updatedAt` value, making repeated uploads idempotent while allowing a later
+PR state change to produce a new observation.  Cost coverage is
 `complete` when every observed builder/reviewer attempt reports `cost_usd`,
 `partial` when at least one but not all attempts report cost, and `unknown`
 when no attempt reports cost.  The optional

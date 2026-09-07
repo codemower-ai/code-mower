@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
 from unittest import mock
 
+import code_mower.cloud as cloud_module
 from code_mower.cloud_client import (
     PR_OUTCOME_EVENT_TYPE,
     PR_OUTCOME_SCHEMA,
     CloudBundleError,
     build_pr_outcome_event,
+    pr_outcomes_upload,
     run_gh_pr_list,
     validate_cloud_event,
 )
@@ -167,7 +173,7 @@ class PrOutcomeCoverageTests(unittest.TestCase):
         self.assertNotIn("reported_cost_usd", event["metrics"])
         validate_cloud_event(event)
 
-    def test_duplicate_event_ids_are_deduped(self) -> None:
+    def test_duplicate_event_ids_are_counted_conservatively(self) -> None:
         event = build_pr_outcome_event(
             repo_slug="owner/repo",
             pr_number="46",
@@ -181,10 +187,39 @@ class PrOutcomeCoverageTests(unittest.TestCase):
             created_at="2026-09-03T13:00:00Z",
         )
 
-        self.assertEqual(event["dimensions"]["cost_coverage"], "complete")
+        self.assertEqual(event["dimensions"]["cost_coverage"], "partial")
         self.assertEqual(event["metrics"]["cost_reported_run_count"], 1)
-        self.assertEqual(event["metrics"]["cost_expected_run_count"], 1)
+        self.assertEqual(event["metrics"]["cost_expected_run_count"], 2)
+        self.assertEqual(event["metrics"]["cost_covered_pr_count"], 0)
         self.assertAlmostEqual(event["metrics"]["reported_cost_usd"], 0.15)
+        self.assertEqual(event["dimensions"]["missing_cost_sources"], ["devin"])
+        validate_cloud_event(event)
+
+    def test_missing_event_id_counts_as_expected_unknown_cost(self) -> None:
+        event = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="49",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[
+                _builder_run_event("b1", "49", 0.15),
+                {
+                    "event_id": "",
+                    "event_type": "builder_run",
+                    "repo_slug": "owner/repo",
+                    "dimensions": {"builder_provider": "devin", "pr_number": "49"},
+                },
+            ],
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertEqual(event["dimensions"]["cost_coverage"], "partial")
+        self.assertEqual(event["metrics"]["cost_reported_run_count"], 1)
+        self.assertEqual(event["metrics"]["cost_expected_run_count"], 2)
+        self.assertEqual(event["metrics"]["cost_covered_pr_count"], 0)
+        self.assertAlmostEqual(event["metrics"]["reported_cost_usd"], 0.15)
+        self.assertEqual(event["dimensions"]["missing_cost_sources"], ["devin"])
         validate_cloud_event(event)
 
     def test_non_build_or_review_events_ignored(self) -> None:
@@ -223,6 +258,39 @@ class PrOutcomeCoverageTests(unittest.TestCase):
                 ],
                 created_at="2026-09-03T13:00:00Z",
             )
+
+    def test_rejects_non_finite_cost(self) -> None:
+        for cost in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(cost=cost):
+                with self.assertRaises(CloudBundleError):
+                    build_pr_outcome_event(
+                        repo_slug="owner/repo",
+                        pr_number="48",
+                        outcome="merged",
+                        opened_at="2026-09-03T10:00:00Z",
+                        merged_at="2026-09-03T12:00:00Z",
+                        run_events=[
+                            _builder_run_event("b1", "48", cost),
+                        ],
+                        created_at="2026-09-03T13:00:00Z",
+                    )
+
+    def test_rejects_json_parsed_non_finite_cost(self) -> None:
+        parsed = json.loads('{"nan": NaN, "inf": Infinity, "neg_inf": -Infinity}')
+        for field, cost in parsed.items():
+            with self.subTest(field=field):
+                with self.assertRaises(CloudBundleError):
+                    build_pr_outcome_event(
+                        repo_slug="owner/repo",
+                        pr_number="48",
+                        outcome="merged",
+                        opened_at="2026-09-03T10:00:00Z",
+                        merged_at="2026-09-03T12:00:00Z",
+                        run_events=[
+                            _builder_run_event("b1", "48", cost),
+                        ],
+                        created_at="2026-09-03T13:00:00Z",
+                    )
 
 
 class GhPrListTests(unittest.TestCase):
@@ -272,6 +340,104 @@ class GhPrListTests(unittest.TestCase):
                     limit=10,
                     repo_path=__import__("pathlib").Path("."),
                 )
+
+
+class PackagePathRegressionTests(unittest.TestCase):
+    def test_cloud_module_imports_pr_outcomes_upload_in_package_path(self) -> None:
+        self.assertIs(
+            cloud_module._pr_outcomes_upload,
+            pr_outcomes_upload,
+        )
+
+    def test_pr_outcomes_command_routes_to_upload_helper(self) -> None:
+        with mock.patch.object(
+            cloud_module, "_pr_outcomes_upload", return_value={
+                "mode": "cloud-pr-outcomes",
+                "status": "no_events",
+                "repo_slug": "owner/repo",
+                "event_count": 0,
+                "pr_count": 0,
+                "errors": [],
+            }
+        ) as upload:
+            out = StringIO()
+            with redirect_stdout(out):
+                code = cloud_module.main(
+                    ["pr-outcomes", "--repo-slug", "owner/repo", "--json"]
+                )
+        self.assertEqual(code, 0)
+        upload.assert_called_once()
+
+    def test_non_finite_local_cost_is_recorded_per_pr_without_aborting_others(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (builder_dir / "pr-1.cloud-event.json").write_text(
+                json.dumps({
+                    "event_id": "bad-cost",
+                    "event_type": "builder_run",
+                    "repo_slug": "owner/repo",
+                    "metrics": {"cost_usd": float("nan")},
+                    "dimensions": {"builder_provider": "devin", "pr_number": "1"},
+                }),
+                encoding="utf-8",
+            )
+            (builder_dir / "pr-2.cloud-event.json").write_text(
+                json.dumps({
+                    "event_id": "good-cost",
+                    "event_type": "builder_run",
+                    "repo_slug": "owner/repo",
+                    "metrics": {"cost_usd": 0.10},
+                    "dimensions": {"builder_provider": "devin", "pr_number": "2"},
+                }),
+                encoding="utf-8",
+            )
+
+            pr_records = [
+                {
+                    "number": "1",
+                    "state": "MERGED",
+                    "createdAt": "2026-09-03T10:00:00Z",
+                    "mergedAt": "2026-09-03T12:00:00Z",
+                    "updatedAt": "2026-09-03T13:00:00Z",
+                },
+                {
+                    "number": "2",
+                    "state": "MERGED",
+                    "createdAt": "2026-09-03T10:00:00Z",
+                    "mergedAt": "2026-09-03T12:00:00Z",
+                    "updatedAt": "2026-09-03T13:00:00Z",
+                },
+            ]
+            with mock.patch(
+                "code_mower.cloud_client.operations.run_gh_pr_list",
+                return_value=pr_records,
+            ):
+                out = StringIO()
+                with redirect_stdout(out):
+                    code = cloud_module.main(
+                        [
+                            "pr-outcomes",
+                            "--repo-path",
+                            str(repo_path),
+                            "--repo-slug",
+                            "owner/repo",
+                            "--output-dir",
+                            str(repo_path / "bundle"),
+                            "--endpoint",
+                            "https://codemower.example.com/api/upload",
+                            "--json",
+                        ]
+                    )
+
+        self.assertEqual(code, 0)
+        result = json.loads(out.getvalue())
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["pr_count"], 2)
+        self.assertEqual(result["event_count"], 1)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("PR 1", result["errors"][0])
 
 
 if __name__ == "__main__":

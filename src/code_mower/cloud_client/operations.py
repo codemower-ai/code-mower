@@ -836,6 +836,9 @@ def pr_outcomes_upload(
 
     events: list[dict[str, Any]] = []
     errors: list[str] = []
+    # ``reverted`` is intentionally absent: GitHub's PR-list ``state`` field
+    # cannot prove a rollback, so ``reverted`` is reserved for callers that
+    # supply explicit rollback evidence (``reverted_at``).
     state_to_outcome = {
         "open": "open",
         "merged": "merged",
@@ -854,23 +857,23 @@ def pr_outcomes_upload(
             continue
         merged_at = str(pr.get("mergedAt") or "").strip()
         closed_at = str(pr.get("closedAt") or "").strip()
-        event = build_pr_outcome_event(
-            repo_slug=detected_repo_slug,
-            pr_number=pr_number,
-            outcome=outcome,
-            opened_at=opened_at,
-            merged_at=merged_at,
-            closed_at=closed_at,
-            run_events=events_by_pr.get(pr_number, []),
-            team_id=resolved_team_id,
-            install_id=resolved_install_id,
-            source=source,
-            created_at=str(pr.get("updatedAt") or opened_at).strip(),
-        )
         try:
+            event = build_pr_outcome_event(
+                repo_slug=detected_repo_slug,
+                pr_number=pr_number,
+                outcome=outcome,
+                opened_at=opened_at,
+                merged_at=merged_at,
+                closed_at=closed_at,
+                run_events=events_by_pr.get(pr_number, []),
+                team_id=resolved_team_id,
+                install_id=resolved_install_id,
+                source=source,
+                created_at=str(pr.get("updatedAt") or opened_at).strip(),
+            )
             validate_cloud_event(event)
         except CloudBundleError as exc:
-            errors.append(str(exc))
+            errors.append(f"PR {pr_number}: {exc}")
             continue
         events.append(event)
 

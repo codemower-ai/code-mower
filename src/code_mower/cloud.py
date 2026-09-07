@@ -105,6 +105,7 @@ else:  # pragma: no cover - exercised after package extraction.
         repo_slug_from_remote as _repo_slug_from_remote,
         repo_sync_output_name as _repo_sync_output_name,
         repo_sync_upload as _repo_sync_upload,
+        pr_outcomes_upload as _pr_outcomes_upload,
         resolve_setup_token as _resolve_setup_token,
         reviewer_runs_upload as _reviewer_runs_upload,
         run_cloud_doctor,
@@ -515,7 +516,6 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="directory with Code Mower Cloud token profiles",
     )
-    pr_outcomes.add_argument("--include-reports", action="store_true")
     pr_outcomes.add_argument(
         "--yes",
         action="store_true",

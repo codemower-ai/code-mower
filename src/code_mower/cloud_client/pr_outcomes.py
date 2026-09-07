@@ -12,6 +12,8 @@ from .errors import CloudBundleError
 
 PR_OUTCOME_EVENT_TYPE = "pr_outcome"
 PR_OUTCOME_SCHEMA = "code_mower.prOutcome.v1"
+# ``reverted`` is reserved for producers that hold rollback evidence.
+# GitHub's PR-list ``state`` field can only prove open, merged, or closed.
 PR_OUTCOME_VALUES = ("open", "merged", "closed_unmerged", "reverted")
 PR_COST_COVERAGE_VALUES = ("complete", "partial", "unknown")
 PR_OUTCOME_COUNT_METRICS = (
@@ -103,6 +105,11 @@ def _aggregate_run_costs(
     missing_lane_sources).  Only ``builder_run`` and ``reviewer_run`` events
     are considered; other event types are ignored.  Missing cost is counted as
     an expected attempt with no reported cost, preserving unknown as unknown.
+
+    Attempts with missing or duplicate ``event_id`` values are never silently
+    dropped; they are counted as expected attempts with unknown cost and, when
+    the lane can be determined, recorded in ``missing_lane_sources``.  This
+    keeps them from inflating ``complete`` coverage.
     """
 
     seen: set[str] = set()
@@ -115,8 +122,13 @@ def _aggregate_run_costs(
         event_type = str(event.get("event_type") or "").strip()
         if event_type not in {"builder_run", "reviewer_run"}:
             continue
+
+        expected += 1
         event_id = str(event.get("event_id") or "").strip()
         if not event_id or event_id in seen:
+            lane = _lane_for_run_event(event)
+            if lane:
+                missing_lanes.append(lane)
             continue
         seen.add(event_id)
 
@@ -138,7 +150,6 @@ def _aggregate_run_costs(
             lane = _lane_for_run_event(event)
             if lane:
                 missing_lanes.append(lane)
-        expected += 1
 
     # Preserve order while removing duplicate lane labels from the diagnostic.
     seen_lanes: set[str] = set()
@@ -173,6 +184,9 @@ def build_pr_outcome_event(
     converted to ``reviewer_run`` events) that belong to this PR.  Cost is
     preserved as reported; attempts without reported cost stay missing so
     coverage remains ``unknown`` rather than zero.
+
+    The ``reverted`` outcome is reserved for producers that can demonstrate a
+    rollback; it must not be inferred from a GitHub PR-list state alone.
     """
 
     from code_mower import __version__
