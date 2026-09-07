@@ -226,11 +226,14 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         trigger_policy="manual",
         spend_policy="paid",
         provider_config={
-            "bot_authors": ("devin-ai-integration", "devin-ai-integration[bot]"),
-            "bot_authors_env": "DEVIN_BOT_AUTHORS",
-            "trigger_comments": ("@devin run", "devin run"),
-            "campaign_transport_ready_env": "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY",
+            "campaign_transport": "devin_api_v3",
+            "campaign_required_env_all": ("DEVIN_API_KEY", "DEVIN_ORG_ID"),
+            "campaign_repository_scope_env": "CODE_MOWER_DEVIN_REPOSITORIES",
             "campaign_response_timeout_seconds": 3600,
+            "status": (
+                "hosted Devin v3 Sessions API transport; "
+                "issue marker is optional audit evidence"
+            ),
         },
     ),
     "greptile": ProviderLane(

@@ -911,9 +911,10 @@ class FirstCompletionHistoryTests(unittest.TestCase):
                 release_campaigns.campaign_command(
                     release_tag="v1.0.0",
                     package_spec="code-mower==1.0.0",
-                    providers=["devin"],
+                    providers=["cursor_cloud_agent"],
                     campaigns_dir=campaigns_dir,
                     repo_slug="owner/repo",
+                    issue="99",
                 )
             path = campaigns_dir / "campaign-v1.0.0.json"
             stored = json.loads(path.read_text(encoding="utf-8"))
@@ -932,11 +933,11 @@ class FirstCompletionHistoryTests(unittest.TestCase):
             )
             assert campaign is not None
             idempotency_key = campaign["providers"][0]["idempotency_key"]
-            adoption_res = _mock_result("devin", "pass")
+            adoption_res = _mock_result("cursor_cloud_agent", "pass")
             wrapper = {
                 "schema": release_campaigns.RESULT_MARKER_SCHEMA,
                 "campaign_id": "campaign-v1.0.0",
-                "provider": "devin",
+                "provider": "cursor_cloud_agent",
                 "release_tag": "v1.0.0",
                 "idempotency_key": idempotency_key,
                 "adoption_result": adoption_res,
@@ -947,7 +948,7 @@ class FirstCompletionHistoryTests(unittest.TestCase):
                 return {
                     "comments": [
                         {
-                            "author": {"login": "devin-ai-integration[bot]"},
+                            "author": {"login": "cursor[bot]"},
                             "body": marker,
                         }
                     ]

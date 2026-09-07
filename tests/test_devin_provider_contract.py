@@ -120,6 +120,15 @@ class TestDevinRegistryContract(unittest.TestCase):
         self.assertTrue(lane.merge_authority)
         self.assertEqual(lane.token_env, ("DEVIN_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"))
         self.assertEqual(lane.labels.needs, "needs-devin-audit")
+        self.assertEqual(lane.provider_config["campaign_transport"], "devin_api_v3")
+        self.assertEqual(
+            lane.provider_config["campaign_required_env_all"],
+            ("DEVIN_API_KEY", "DEVIN_ORG_ID"),
+        )
+        self.assertEqual(
+            lane.provider_config["campaign_repository_scope_env"],
+            "CODE_MOWER_DEVIN_REPOSITORIES",
+        )
 
     def test_devin_cli_is_local_and_informational(self) -> None:
         lane = REFERENCE_PROVIDERS["devin_cli"]
@@ -715,8 +724,8 @@ class TestDevinHostedDoctor(unittest.TestCase):
             repo_slug="owner/repo",
             providers=["devin_cloud"],
             env={
-                "DEVIN_AUDIT_LABEL_TOKEN": "present",
-                "GITHUB_TOKEN": "present",
+                "DEVIN_API_KEY": "present",
+                "DEVIN_ORG_ID": "org-test",
             },
         )
         readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
@@ -730,8 +739,8 @@ class TestDevinHostedDoctor(unittest.TestCase):
             repo_slug="owner/repo",
             providers=["devin"],
             env={
-                "DEVIN_AUDIT_LABEL_TOKEN": "present",
-                "GITHUB_TOKEN": "present",
+                "DEVIN_API_KEY": "present",
+                "DEVIN_ORG_ID": "org-test",
             },
         )
         readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")

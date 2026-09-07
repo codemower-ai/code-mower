@@ -335,8 +335,9 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                 repo_root=repo_root,
                 repo_slug="owner/repo",
                 env={
-                    "DEVIN_AUDIT_LABEL_TOKEN": "secret-token",
-                    "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+                    "DEVIN_API_KEY": "secret-token",
+                    "DEVIN_ORG_ID": "org-test",
+                    "CODE_MOWER_DEVIN_REPOSITORIES": "owner/repo",
                 },
                 providers=["devin"],
             )
@@ -356,7 +357,10 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                 config={},
                 repo_root=Path(tmp),
                 repo_slug="owner/repo",
-                env={"DEVIN_AUDIT_LABEL_TOKEN": "secret-token"},
+                env={
+                    "DEVIN_API_KEY": "secret-token",
+                    "DEVIN_ORG_ID": "org-test",
+                },
                 providers=["devin"],
             )
 
@@ -367,7 +371,7 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertFalse(check.detail.get("transport_verified"))
             self.assertEqual(
                 check.detail.get("verification_variable"),
-                "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY",
+                "CODE_MOWER_DEVIN_REPOSITORIES",
             )
             self.assertNotIn("secret-token", str(check.detail))
 
@@ -385,7 +389,7 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertEqual(len(cred_checks), 1)
             check = cred_checks[0]
             self.assertEqual(check.status, STATUS_WARN)
-            self.assertEqual(check.detail.get("missing_variable"), "DEVIN_AUDIT_LABEL_TOKEN")
+            self.assertEqual(check.detail.get("missing_variable"), "DEVIN_API_KEY")
             self.assertFalse(check.detail.get("actionable"))
             self.assertTrue(check.detail.get("optional"))
 
@@ -396,7 +400,7 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                 config={},
                 repo_root=repo_root,
                 repo_slug="",
-                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+                env={"DEVIN_API_KEY": "token", "DEVIN_ORG_ID": "org-test"},
                 providers=["devin"],
             )
             cred_checks = [c for c in checks if c.name == "doctor.campaign.credentials"]
@@ -757,8 +761,9 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                     config={"lanes": {"devin": {"enabled": True}}},
                     repo_root=Path(tmp),
                     env={
-                        "DEVIN_AUDIT_LABEL_TOKEN": "dummy-token",
-                        "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+                        "DEVIN_API_KEY": "dummy-token",
+                        "DEVIN_ORG_ID": "org-test",
+                        "CODE_MOWER_DEVIN_REPOSITORIES": "codemower-ai/code-mower",
                     },
                     repo_slug="codemower-ai/code-mower",
                     providers=["devin"],
@@ -910,8 +915,9 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                     which_fn=lambda cmd: f"/bin/{cmd}" if cmd == "codex" else None,
                     env={
                         "CODE_MOWER_CAMPAIGN_AUTH_PROBE": "0",
-                        "DEVIN_AUDIT_LABEL_TOKEN": "dummy-token",
-                        "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+                        "DEVIN_API_KEY": "dummy-token",
+                        "DEVIN_ORG_ID": "org-test",
+                        "CODE_MOWER_DEVIN_REPOSITORIES": "codemower-ai/code-mower",
                     },
                     repo_slug="codemower-ai/code-mower",
                     providers=["codex", "devin"],

@@ -33,6 +33,7 @@ if __package__ in {None, ""}:
         resolve_repo_identity,
     )
     from code_mower.file_locks import FileLockError, exclusive_file_lock
+    from code_mower import devin_api
     from code_mower.provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from code_mower.release_qualify import (
         ADOPTION_RESULT_FIELDS,
@@ -61,6 +62,7 @@ else:
         resolve_repo_identity,
     )
     from .file_locks import FileLockError, exclusive_file_lock
+    from . import devin_api
     from .provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from .release_qualify import (
         ADOPTION_RESULT_FIELDS,
@@ -193,6 +195,10 @@ SAFE_ERROR_CODES = frozenset(
         "command_not_found",
         "missing_credentials",
         "missing_issue_number",
+        "missing_repository_scope",
+        "operator_cancelled",
+        "provider_transport_unavailable",
+        "repository_scope_unavailable",
         "no_campaign_adapter_configured",
         "adapter_configuration_invalid",
         "adapter_timeout",
@@ -201,6 +207,10 @@ SAFE_ERROR_CODES = frozenset(
         "adapter_result_invalid",
         "adapter_result_mismatch",
         "campaign_identity_incomplete",
+        "devin_api_rejected",
+        "devin_api_unavailable",
+        "devin_session_failed",
+        "devin_waiting_for_owner",
         "github_dispatch_failed",
         "github_poll_unavailable",
         "hosted_response_timeout",
@@ -438,6 +448,9 @@ def _check_credentials(
     env: Mapping[str, str] | None = None,
 ) -> tuple[bool, str]:
     current_env = os.environ if env is None else env
+    if lane.provider_config.get("campaign_transport") == "devin_api_v3":
+        _api_key, _org_id, missing = devin_api.credentials_from_env(current_env)
+        return not missing, missing
     if lane.token_env:
         found = any(current_env.get(token) for token in lane.token_env)
         if not found:
@@ -452,8 +465,15 @@ def _check_hosted_transport(
     lane: ProviderLane,
     *,
     env: Mapping[str, str] | None = None,
+    repo_slug: str = "",
 ) -> tuple[bool, str]:
     """Read an explicit acknowledgement when GitHub cannot verify an App transport."""
+    if _is_devin_api_lane(lane):
+        variable = str(
+            lane.provider_config.get("campaign_repository_scope_env")
+            or devin_api.DEVIN_REPOSITORIES_ENV
+        )
+        return devin_api.repository_scope_acknowledged(repo_slug, env=env), variable
     variable = str(lane.provider_config.get("campaign_transport_ready_env") or "")
     if not variable:
         return True, ""
@@ -485,6 +505,10 @@ def _hosted_response_timeout(lane: ProviderLane) -> int:
     return _configured_hosted_response_timeout(lane) or DEFAULT_HOSTED_RESPONSE_TIMEOUT_SECONDS
 
 
+def _is_devin_api_lane(lane: ProviderLane) -> bool:
+    return lane.provider_config.get("campaign_transport") == "devin_api_v3"
+
+
 # Closed hosted dispatch profile: the five independent readiness checks a
 # hosted (`hosted_bridge`/`saas_event`) release qualification must pass
 # before a paid dispatch. Each check is judged on its own signal so one
@@ -510,10 +534,77 @@ HOSTED_DISPATCH_PROFILE_CHECKS = (
 )
 
 
+def _devin_dispatch_profile(
+    lane: ProviderLane,
+    *,
+    env: Mapping[str, str] | None = None,
+    repo_slug: str = "",
+) -> dict[str, dict[str, Any]]:
+    """Closed dispatch profile for the hosted Devin v3 API transport."""
+    current_env = os.environ if env is None else env
+    has_credentials, missing_variable = _check_credentials(lane, env=current_env)
+    profile: dict[str, dict[str, Any]] = {}
+    profile["auth"] = {
+        "ready": has_credentials,
+        "detail": (
+            "Devin API credentials present"
+            if has_credentials
+            else "Devin API credentials missing or invalid"
+        ),
+        "remediation": (
+            ""
+            if has_credentials
+            else f"set a valid {missing_variable} in the environment"
+        ),
+    }
+    target_ready, scope_variable = _check_hosted_transport(
+        lane, env=current_env, repo_slug=repo_slug
+    )
+    profile["installation"] = {
+        "ready": target_ready,
+        "detail": (
+            f"exact Devin repository target acknowledged: {repo_slug}"
+            if target_ready
+            else "exact Devin repository target is not acknowledged"
+        ),
+        "remediation": (
+            ""
+            if target_ready
+            else f"add the exact OWNER/REPO target to {scope_variable}"
+        ),
+    }
+    profile["trigger"] = {
+        "ready": True,
+        "detail": "Devin Sessions API create transport configured",
+        "remediation": "",
+    }
+    profile["trusted_responder"] = {
+        "ready": True,
+        "detail": "validated Devin API structured result configured",
+        "remediation": "",
+    }
+    timeout_ready = _configured_hosted_response_timeout(lane) is not None
+    profile["result_return"] = {
+        "ready": timeout_ready,
+        "detail": (
+            "bounded result-return wait configured"
+            if timeout_ready
+            else "result-return wait is not a positive integer"
+        ),
+        "remediation": (
+            ""
+            if timeout_ready
+            else "configure a positive campaign_response_timeout_seconds for devin"
+        ),
+    }
+    return profile
+
+
 def hosted_dispatch_profile(
     lane: ProviderLane,
     *,
     env: Mapping[str, str] | None = None,
+    repo_slug: str = "",
 ) -> dict[str, dict[str, Any]]:
     """Evaluate the closed hosted dispatch profile for one lane.
 
@@ -523,6 +614,8 @@ def hosted_dispatch_profile(
     environment variable names, never secret values, paths, or output.
     """
     current_env = os.environ if env is None else env
+    if _is_devin_api_lane(lane):
+        return _devin_dispatch_profile(lane, env=current_env, repo_slug=repo_slug)
     profile: dict[str, dict[str, Any]] = {}
 
     has_creds, missing_cred = _check_credentials(lane, env=current_env)
@@ -536,7 +629,9 @@ def hosted_dispatch_profile(
         ),
     }
 
-    transport_ready, transport_var = _check_hosted_transport(lane, env=current_env)
+    transport_ready, transport_var = _check_hosted_transport(
+        lane, env=current_env, repo_slug=repo_slug
+    )
     if not transport_var:
         profile["installation"] = {
             "ready": True,
@@ -621,7 +716,11 @@ def hosted_dispatch_profile(
 
 def hosted_dispatch_blockers(profile: Mapping[str, Mapping[str, Any]]) -> list[str]:
     """Name the dispatch-profile checks that are not ready, in closed order."""
-    return [name for name in HOSTED_DISPATCH_PROFILE_CHECKS if not profile.get(name, {}).get("ready")]
+    return [
+        name
+        for name in HOSTED_DISPATCH_PROFILE_CHECKS
+        if not profile.get(name, {}).get("ready")
+    ]
 
 
 def _response_deadline(started_at: str, timeout_seconds: int) -> str:
@@ -694,6 +793,8 @@ def _provider_next_action(
     if state == "blocked":
         return f"inspect {provider} qualification failures", error
     if state == "running":
+        if _is_devin_api_lane(lane):
+            return f"poll {provider} API session", ""
         if lane.driver in {"saas_event", "hosted_bridge"}:
             return f"poll {provider} remote progress marker", ""
         return f"poll {provider} local process", ""
@@ -1370,6 +1471,294 @@ def _extract_bound_adoption_result(
         package_source=package_source,
     )
     return result
+
+
+def _bind_devin_adoption_result(
+    result: Any,
+    *,
+    provider: str,
+    release_tag: str,
+    qualification_context: str,
+    starting_version: str,
+    package_identity: str,
+) -> dict[str, Any] | None:
+    """Bind and validate a Devin v3 structured-output adoption result.
+
+    The API returns a raw ``code_mower.adoptionResult.v1`` document. This
+    function enforces the same binding the comment-extraction path uses:
+    provider, release_tag, qualification_context, and starting_version must
+    match the campaign. The local closed validator then checks schema and
+    package-identity. Never persist raw errors or response bodies.
+    """
+    if not isinstance(result, dict):
+        return None
+    if (
+        result.get("provider") != provider
+        or result.get("release_tag") != release_tag
+        or result.get("qualification_context") != qualification_context
+        or str(result.get("starting_version") or "") != starting_version
+    ):
+        return None
+    try:
+        validate_adoption_result_payload(
+            result, expected_package_identity=package_identity
+        )
+    except ValueError:
+        return None
+    return result
+
+
+def _poll_devin_running(
+    provider_data: dict[str, Any],
+    lane: ProviderLane,
+    *,
+    release_tag: str,
+    qualification_context: str,
+    starting_version: str,
+    package_identity: str,
+    env: Mapping[str, str],
+    now_utc: str,
+    api_runner: devin_api.ApiRunner | None,
+) -> None:
+    """Read one Devin session snapshot and update the campaign participant."""
+    raw_ref = provider_data.get("dispatch_ref")
+    dispatch_ref = raw_ref if isinstance(raw_ref, Mapping) else {}
+    session_id = str(dispatch_ref.get("session_id") or "")
+    if not session_id:
+        # The create request may have crossed the network before an interrupted
+        # process could persist its response. Never infer that no paid session
+        # exists, and never create another one on ordinary resume.
+        provider_data["state"] = "running"
+        provider_data["error"] = _safe_error("devin_api_unavailable")
+        provider_data["next_action"] = (
+            "reconcile the Devin API session or explicitly dispose/retry this attempt"
+        )
+        provider_data["next_detail"] = "session creation outcome is unknown"
+        return
+
+    api_key, org_id, missing = devin_api.credentials_from_env(env)
+    if missing:
+        provider_data["state"] = "running"
+        provider_data["error"] = _safe_error("missing_credentials")
+        provider_data["next_action"] = f"set {missing} to poll the Devin API session"
+        provider_data["next_detail"] = "the paid attempt remains active and was not retried"
+        return
+
+    poll_state, result, err = devin_api.poll_devin_session(
+        org_id,
+        session_id,
+        api_key,
+        api_runner=api_runner,
+    )
+    if poll_state == "running":
+        deadline = provider_data.get("response_deadline_at")
+        if not isinstance(deadline, str) or not deadline:
+            deadline = _response_deadline(now_utc, _hosted_response_timeout(lane))
+            provider_data["response_deadline_at"] = deadline
+        if _response_deadline_expired(deadline, now_utc):
+            provider_data["state"] = "unavailable"
+            provider_data["error"] = _safe_error("hosted_response_timeout")
+            provider_data["next_action"] = (
+                f"record a manual result or explicitly dispose/retry {lane.provider}"
+            )
+            provider_data["next_detail"] = "Devin returned no result before its deadline"
+        else:
+            provider_data["state"] = "running"
+            provider_data["error"] = ""
+            provider_data["next_action"] = "poll devin API session"
+            provider_data["next_detail"] = ""
+        return
+    if poll_state == "owner_action":
+        provider_data["state"] = "blocked"
+        provider_data["error"] = _safe_error("devin_waiting_for_owner")
+        provider_data["next_action"] = "open the Devin session and provide input or approval"
+        provider_data["next_detail"] = "Devin is waiting for an owner action"
+        return
+    if poll_state == "failed":
+        safe = err if err in SAFE_ERROR_CODES else "devin_api_unavailable"
+        if safe in {"devin_api_rejected", "devin_api_unavailable"}:
+            # A polling outage says nothing about the already-created session.
+            provider_data["state"] = "running"
+            provider_data["error"] = _safe_error(safe)
+            provider_data["next_action"] = "restore Devin API access and poll the existing session"
+            provider_data["next_detail"] = "the paid attempt was not retried"
+        else:
+            provider_data["state"] = "unavailable"
+            provider_data["error"] = _safe_error(safe)
+            provider_data["next_action"] = (
+                f"inspect Devin, then explicitly dispose or retry {lane.provider}"
+            )
+            provider_data["next_detail"] = "the Devin session ended without a usable result"
+        return
+
+    bound = _bind_devin_adoption_result(
+        result,
+        provider=lane.provider,
+        release_tag=release_tag,
+        qualification_context=qualification_context,
+        starting_version=starting_version,
+        package_identity=package_identity,
+    )
+    if bound:
+        prior = provider_data.get("adoption_result")
+        if prior != bound and isinstance(prior, Mapping) and prior:
+            _record_attempt_history(provider_data)
+        provider_data["completed_at"] = now_utc
+        provider_data["adoption_result"] = bound
+        provider_data["elapsed_seconds"] = float(bound.get("elapsed_seconds") or 0.0)
+        provider_data["error"] = ""
+        outcome = bound.get("outcome")
+        if outcome in {"pass", "pass_with_warnings"}:
+            provider_data["state"] = "complete"
+            provider_data["next_action"] = "none"
+            provider_data["next_detail"] = ""
+        else:
+            provider_data["state"] = "blocked"
+            provider_data["next_action"] = (
+                f"inspect {lane.provider} qualification failures"
+            )
+            provider_data["next_detail"] = _extract_failure_detail(bound)
+        return
+
+    provider_data["state"] = "blocked"
+    provider_data["error"] = _safe_error("hosted_result_rejected")
+    provider_data["next_action"] = "inspect the rejected Devin qualification result"
+    provider_data["next_detail"] = "structured output did not match this campaign"
+
+
+def _dispatch_devin_api(
+    provider_data: dict[str, Any],
+    campaign: dict[str, Any],
+    lane: ProviderLane,
+    *,
+    campaign_id: str,
+    release_tag: str,
+    package_spec: str,
+    qualification_context: str,
+    starting_version: str,
+    package_source: str,
+    repo_slug: str,
+    issue_number: str | int,
+    posture: str,
+    idempotency_key: str,
+    now_utc: str,
+    campaigns_dir: Path,
+    env: Mapping[str, str],
+    command_runner: lane_status.CommandRunner,
+    api_runner: devin_api.ApiRunner | None,
+) -> str:
+    """Checkpoint and create one Devin v3 session.
+
+    The checkpoint precedes every external side effect. If the process exits
+    after POST but before the session id is saved, ordinary resume reports an
+    unknown creation outcome and never repeats paid work.
+    """
+    api_key, org_id, missing = devin_api.credentials_from_env(env)
+    if missing:
+        return _safe_error("missing_credentials")
+    if not devin_api.repository_scope_acknowledged(repo_slug, env=env):
+        return _safe_error("hosted_transport_unverified")
+    if qualification_context == "upgrade" and not starting_version:
+        return _safe_error("campaign_identity_incomplete")
+    try:
+        package_identity, normalized_version = _parse_exact_package_spec(
+            package_spec
+        )
+    except ValueError:
+        return _safe_error("campaign_identity_incomplete")
+
+    _record_attempt_history(provider_data)
+    provider_data["adoption_result"] = None
+    provider_data["completed_at"] = None
+    provider_data["dispatched_at"] = None
+    provider_data["elapsed_seconds"] = 0.0
+    provider_data["attempted_at"] = now_utc
+    provider_data["state"] = "running"
+    provider_data["error"] = ""
+    provider_data["dispatch_ref"] = {
+        "session_id": "",
+        "transport_kind": "devin_api_v3",
+        "repo_slug": repo_slug,
+        "issue_marker_posted": False,
+    }
+    provider_data["trigger_posted"] = True
+    provider_data["response_deadline_at"] = _response_deadline(
+        now_utc, _hosted_response_timeout(lane)
+    )
+    provider_data["next_action"] = "create Devin API session"
+    provider_data["next_detail"] = "paid dispatch checkpointed; ordinary resume will not repeat it"
+    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+
+    try:
+        payload = devin_api.build_devin_session_payload(
+            campaign_id=campaign_id,
+            release_tag=release_tag,
+            package_spec=package_spec,
+            package_identity=package_identity,
+            normalized_version=normalized_version,
+            qualification_context=qualification_context,
+            starting_version=starting_version,
+            package_source=package_source,
+            repo_slug=repo_slug,
+        )
+    except ValueError:
+        provider_data["state"] = "unavailable"
+        provider_data["error"] = _safe_error("campaign_identity_incomplete")
+        provider_data["next_action"] = "fix campaign repository identity before retrying Devin"
+        provider_data["next_detail"] = "no API request was sent"
+        _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+        return ""
+
+    session_id, create_error = devin_api.create_devin_session(
+        org_id, payload, api_key, api_runner=api_runner
+    )
+    if create_error:
+        provider_data["error"] = _safe_error(create_error)
+        if create_error == "devin_api_rejected":
+            provider_data["state"] = "unavailable"
+            provider_data["next_action"] = "fix Devin API credentials or repository access, then retry"
+            provider_data["next_detail"] = "the API rejected the create request"
+        else:
+            provider_data["state"] = "running"
+            provider_data["next_action"] = (
+                "reconcile the Devin session or explicitly dispose/retry this attempt"
+            )
+            provider_data["next_detail"] = "session creation outcome is unknown"
+        _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+        return ""
+
+    provider_data["dispatch_ref"]["session_id"] = session_id
+    provider_data["dispatched_at"] = now_utc
+    provider_data["state"] = "running"
+    provider_data["error"] = ""
+    provider_data["next_action"] = "poll devin API session"
+    provider_data["next_detail"] = ""
+    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+
+    # The issue marker is optional audit evidence, never the execution
+    # trigger. Post it only after the session id is safely persisted so a
+    # GitHub failure cannot obscure or prevent a pollable paid attempt.
+    if issue_number:
+        ok, _ref, _err = _dispatch_github_comment(
+            repo_slug,
+            issue_number,
+            campaign_id,
+            release_tag,
+            package_spec,
+            "devin",
+            qualification_context,
+            idempotency_key,
+            posture=posture,
+            starting_version=starting_version,
+            package_source=package_source,
+            trigger_comments=(),
+            reconciliation_key=idempotency_key,
+            command_runner=command_runner,
+        )
+        provider_data["dispatch_ref"]["issue_marker_posted"] = ok
+        provider_data["dispatch_ref"]["issue_number"] = str(issue_number)
+        _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+    return ""
 
 
 def _dispatch_github_comment(
@@ -2570,6 +2959,7 @@ def dispatch_or_advance_campaign(
     retry_provider: str = "",
     repo_slug_override: str = "",
     poll_only: bool = False,
+    api_runner: devin_api.ApiRunner | None = None,
 ) -> dict[str, Any]:
     """Execute dispatch, polling, or status progression on a campaign.
 
@@ -2692,8 +3082,28 @@ def dispatch_or_advance_campaign(
                 provider_data["next_action"] = "none"
             continue
 
-        # 3. If running, check trigger status and retry if needed, then poll
-        if current_state == "running":
+        # Devin API polling is one bounded GET per advance/watch tick. An
+        # ordinary resume never reaches the paid create path; an explicit
+        # retry may fall through after this final result check.
+        if current_state == "running" and _is_devin_api_lane(lane):
+            _poll_devin_running(
+                provider_data,
+                lane,
+                release_tag=release_tag,
+                qualification_context=context,
+                starting_version=starting_version,
+                package_identity=package_identity,
+                env=current_env,
+                now_utc=now_utc,
+                api_runner=api_runner,
+            )
+            _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+            if not is_explicit_retry or provider_data.get("state") != "running":
+                continue
+
+        # 3. If another hosted transport is running, reconcile its issue
+        # trigger and trusted result marker before considering an explicit retry.
+        if current_state == "running" and not _is_devin_api_lane(lane):
             raw_dispatch_ref = provider_data.get("dispatch_ref", {})
             dispatch_ref = dict(raw_dispatch_ref) if isinstance(raw_dispatch_ref, Mapping) else {}
             ref_issue = dispatch_ref.get("issue_number") or issue_number
@@ -2705,6 +3115,8 @@ def dispatch_or_advance_campaign(
                     ref_issue,
                     gh_json_runner=gh_json_runner,
                 )
+            else:
+                comments, poll_error = [], ""
 
             # A completed result is authoritative and must be consumed before
             # considering any retry side effect. Otherwise a missing trigger
@@ -3039,12 +3451,14 @@ def dispatch_or_advance_campaign(
         # 4. Check capabilities and readiness
         cmd_found = _find_command(lane, which_fn=which_fn)
         has_creds, missing_cred = _check_credentials(lane, env=current_env)
-        transport_ready, _ = _check_hosted_transport(lane, env=current_env)
+        transport_ready, _ = _check_hosted_transport(
+            lane, env=current_env, repo_slug=repo_slug
+        )
         # Closed hosted dispatch profile: auth, installation, trigger,
         # trusted responder, and result return are judged independently, so
         # one verified dimension can never mask another.
         dispatch_profile = (
-            hosted_dispatch_profile(lane, env=current_env)
+            hosted_dispatch_profile(lane, env=current_env, repo_slug=repo_slug)
             if lane.driver in {"hosted_bridge", "saas_event"}
             else {}
         )
@@ -3061,7 +3475,7 @@ def dispatch_or_advance_campaign(
         )
         if lane.driver in {"hosted_bridge", "saas_event"}:
             provider_data["transport_verified"] = transport_ready
-        has_issue = bool(issue_number)
+        has_issue = bool(issue_number) or _is_devin_api_lane(lane)
         effective_argv_template, _, adapter_config_error, _ = _resolve_campaign_adapter_config(
             lane, repo_path
         )
@@ -3107,28 +3521,33 @@ def dispatch_or_advance_campaign(
                     error=missing_cred,
                 )
             elif lane.driver in {"hosted_bridge", "saas_event"} and (
-                not issue_number or not repo_slug
+                not repo_slug or (not _is_devin_api_lane(lane) and not issue_number)
             ):
                 # Same prerequisite the applied path enforces below: a hosted
-                # dispatch is a comment on a specific GitHub issue, so without
-                # an issue number (and the repo slug that addresses it) there
-                # is nothing --apply could dispatch. The preview must say so
-                # rather than report the provider queued and ready, which sent
-                # the operator to an --apply run that only ever came back
-                # unavailable. Evaluating this needs no network call: both
-                # values are already in hand.
+                # dispatch needs the exact repo slug; the optional issue marker
+                # for Devin is not required. The preview must say so rather
+                # than report the provider queued and ready, which sent the
+                # operator to an --apply run that only ever came back
+                # unavailable. Evaluating this needs no network call.
                 provider_data["state"] = "unavailable"
-                provider_data["error"] = _safe_error("missing_issue_number")
-                action, detail = _provider_next_action(
-                    provider,
-                    lane,
-                    "unavailable",
-                    command_available=True,
-                    has_credentials=True,
-                    has_issue=False,
-                    dry_run=True,
-                    error="missing issue number",
-                )
+                if not repo_slug:
+                    provider_data["error"] = _safe_error("missing_repository_scope")
+                    action = (
+                        f"provide repository target via --repo-slug for {provider} dispatch"
+                    )
+                    detail = "missing repo slug"
+                else:
+                    provider_data["error"] = _safe_error("missing_issue_number")
+                    action, detail = _provider_next_action(
+                        provider,
+                        lane,
+                        "unavailable",
+                        command_available=True,
+                        has_credentials=True,
+                        has_issue=False,
+                        dry_run=True,
+                        error="missing issue number",
+                    )
             elif lane.driver in {"hosted_bridge", "saas_event"} and dispatch_blockers:
                 # A paid dispatch must never preview as queued while any
                 # closed dispatch-profile check fails: the preview judges
@@ -3297,6 +3716,51 @@ def dispatch_or_advance_campaign(
                 and (provider_data.get("dispatch_ref") or {}).get("issue_number")
                 else "unavailable"
             )
+            if _is_devin_api_lane(lane):
+                err = _dispatch_devin_api(
+                    provider_data,
+                    campaign,
+                    lane,
+                    campaign_id=campaign_id,
+                    release_tag=release_tag,
+                    package_spec=package_spec,
+                    qualification_context=context,
+                    starting_version=starting_version,
+                    package_source=package_source,
+                    repo_slug=repo_slug,
+                    issue_number=issue_number,
+                    posture=_provider_posture(provider_data),
+                    idempotency_key=str(provider_data.get("idempotency_key") or ""),
+                    now_utc=now_utc,
+                    campaigns_dir=campaigns_dir,
+                    env=current_env,
+                    command_runner=command_runner,
+                    api_runner=api_runner,
+                )
+                if err:
+                    provider_data["state"] = "unavailable"
+                    provider_data["error"] = _safe_error(err)
+                    if err == "hosted_transport_unverified":
+                        provider_data["next_action"] = (
+                            "add the exact OWNER/REPO target to "
+                            f"{devin_api.DEVIN_REPOSITORIES_ENV}"
+                        )
+                        provider_data["next_detail"] = err
+                    else:
+                        provider_data["next_action"], provider_data["next_detail"] = (
+                            _provider_next_action(
+                                "devin",
+                                lane,
+                                "unavailable",
+                                command_available=True,
+                                has_credentials=has_creds,
+                                has_issue=True,
+                                dry_run=False,
+                                error=missing_cred or err,
+                            )
+                        )
+                    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+                continue
             if not has_creds:
                 provider_data["state"] = unmet_prerequisite_state
                 provider_data["error"] = _safe_error("missing_credentials")
@@ -3310,7 +3774,14 @@ def dispatch_or_advance_campaign(
                     dry_run=False,
                     error=missing_cred,
                 )
-            elif not issue_number or not repo_slug:
+            elif not repo_slug:
+                provider_data["state"] = unmet_prerequisite_state
+                provider_data["error"] = _safe_error("missing_repository_scope")
+                provider_data["next_action"] = (
+                    f"provide repository target via --repo-slug for {provider} dispatch"
+                )
+                provider_data["next_detail"] = "missing repo slug"
+            elif not issue_number:
                 provider_data["state"] = unmet_prerequisite_state
                 provider_data["error"] = _safe_error("missing_issue_number")
                 provider_data["next_action"], provider_data["next_detail"] = _provider_next_action(
@@ -3508,6 +3979,51 @@ def dispatch_or_advance_campaign(
 
     if not poll_only or campaign != campaign_before_poll:
         _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+    return campaign
+
+
+def dispose_informational_provider(
+    campaign: dict[str, Any],
+    provider: str,
+    reason: str,
+    *,
+    campaigns_dir: Path,
+) -> dict[str, Any]:
+    """Stop waiting for one attempted informational provider without inventing evidence."""
+    try:
+        canonical, _ = resolve_provider_lane(provider)
+    except ValueError as exc:
+        raise ValueError("--dispose-provider is not a recognized provider") from exc
+    if reason not in PROVIDER_DISPOSITION_REASONS:
+        allowed = ", ".join(sorted(PROVIDER_DISPOSITION_REASONS))
+        raise ValueError(f"--unavailable-reason must be one of: {allowed}")
+
+    entry = next(
+        (
+            item
+            for item in campaign.get("providers", [])
+            if isinstance(item, dict) and item.get("provider") == canonical
+        ),
+        None,
+    )
+    if entry is None:
+        raise ValueError(f"provider {canonical!r} is not part of this campaign")
+    if _provider_posture(entry) != "informational":
+        raise ValueError("only an informational provider can be disposed")
+    if entry.get("state") != "running" or not entry.get("attempted_at"):
+        raise ValueError("only an attempted, currently running provider can be disposed")
+
+    now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    entry["state"] = "unavailable"
+    entry["error"] = _safe_error(reason)
+    entry["completed_at"] = now_utc
+    entry["response_deadline_at"] = None
+    entry["next_action"] = "none"
+    entry["next_detail"] = f"operator disposition: {reason}"
+    # Deliberately preserve attempted_at, dispatch_ref, attempt_history, and an
+    # empty adoption_result. The record says paid work was attempted and the
+    # operator stopped waiting; it never says the provider produced evidence.
+    _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
     return campaign
 
 
@@ -4367,6 +4883,7 @@ def campaign_watch(
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     adapter_runner: AdapterRunner = run_local_adapter_command,
+    api_runner: devin_api.ApiRunner | None = None,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Poll a stored release campaign at a positive interval and bounded timeout.
@@ -4624,6 +5141,7 @@ def campaign_watch(
                 command_runner=command_runner,
                 gh_json_runner=watch_gh_json,
                 adapter_runner=adapter_runner,
+                api_runner=api_runner,
                 env=env,
                 repo_slug_override=watch_repo_slug,
                 poll_only=True,
@@ -4731,6 +5249,7 @@ def campaign_watch(
                         command_runner=command_runner,
                         gh_json_runner=watch_gh_json,
                         adapter_runner=adapter_runner,
+                        api_runner=api_runner,
                         env=env,
                         repo_slug_override=watch_repo_slug,
                         poll_only=True,
@@ -5257,7 +5776,23 @@ def _validate_retry_provider(
     return canonical, ""
 
 
-CAMPAIGN_ACTIONS = ("create", "status", "resume", "dispatch", "upload", "watch")
+CAMPAIGN_ACTIONS = (
+    "create",
+    "status",
+    "resume",
+    "dispatch",
+    "dispose",
+    "upload",
+    "watch",
+)
+
+PROVIDER_DISPOSITION_REASONS = frozenset(
+    {
+        "operator_cancelled",
+        "provider_transport_unavailable",
+        "repository_scope_unavailable",
+    }
+)
 
 # The boolean flags that are older spellings of an action, and the action each
 # one asks for. Both remain supported: `--status` is the original spelling of
@@ -5278,6 +5813,8 @@ _LEGACY_ACTION_FLAGS: tuple[tuple[str, str], ...] = (
 #   dispatch   |    no    |   yes     -- `dispatch` and `--resume` are two
 #                                        spellings of "advance the existing
 #                                        campaign" and route identically
+#   dispose    |    no    |    no     -- terminal operator disposition for
+#                                        one informational provider
 #   upload     |    no    |    no     -- upload publishes evidence the campaign
 #                                        already has; it never advances one
 #   watch      |    no    |    no     -- watch monitors an existing campaign
@@ -5290,6 +5827,7 @@ _COMPATIBLE_LEGACY_FLAGS: Mapping[str, frozenset[str]] = {
     "status": frozenset({"--status"}),
     "resume": frozenset({"--resume"}),
     "dispatch": frozenset({"--resume"}),
+    "dispose": frozenset(),
     "upload": frozenset(),
     "watch": frozenset(),
 }
@@ -5460,10 +5998,45 @@ def _required_providers_intent_conflict(
     required_providers: Any = None,
 ) -> str:
     """Report an option-scope conflict when --required-providers is passed to read-only actions."""
-    if required_providers is not None and (status or action in {"status", "watch", "upload"}):
+    if required_providers is not None and (
+        status or action in {"status", "watch", "upload", "dispose"}
+    ):
         return (
             "--required-providers applies only to campaign creation, resume, and dispatch; "
             "re-run as `campaign create`, `campaign resume`, or `campaign dispatch`"
+        )
+    return ""
+
+
+def _disposition_intent_conflict(
+    *,
+    action: str | None,
+    dispose_provider: str,
+    unavailable_reason: str,
+    apply: bool,
+    record_result: Path | None,
+    retry_provider: str,
+) -> str:
+    if action == "dispose":
+        conflicting = []
+        if record_result is not None:
+            conflicting.append("--record-result")
+        if retry_provider:
+            conflicting.append("--retry-provider")
+        if conflicting:
+            return f"dispose cannot be combined with {', '.join(conflicting)}"
+        if not dispose_provider:
+            return "dispose requires --dispose-provider"
+        if unavailable_reason not in PROVIDER_DISPOSITION_REASONS:
+            allowed = ", ".join(sorted(PROVIDER_DISPOSITION_REASONS))
+            return f"dispose requires --unavailable-reason set to one of: {allowed}"
+        if not apply:
+            return "dispose mutates campaign state and requires --apply"
+        return ""
+    if dispose_provider or unavailable_reason:
+        return (
+            "--dispose-provider and --unavailable-reason apply only to the "
+            "'dispose' action"
         )
     return ""
 
@@ -5480,6 +6053,8 @@ def _command_intent_conflict(
     interval: float | None = None,
     timeout: float | None = None,
     required_providers: Any = None,
+    dispose_provider: str = "",
+    unavailable_reason: str = "",
 ) -> str:
     """Report the one bounded reason this invocation states conflicting intents.
 
@@ -5724,6 +6299,8 @@ def campaign_command(
     record_result: Path | None = None,
     record_provider: str = "",
     retry_provider: str = "",
+    dispose_provider: str = "",
+    unavailable_reason: str = "",
     yes: bool = False,
     endpoint: str = "",
     token_env: str = "",
@@ -5738,6 +6315,7 @@ def campaign_command(
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     which_fn: Callable[[str], str | None] = shutil.which,
     adapter_runner: AdapterRunner = run_local_adapter_command,
+    api_runner: devin_api.ApiRunner | None = None,
     env: Mapping[str, str] | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -5757,8 +6335,8 @@ def campaign_command(
     *before* the first read, the second command necessarily reloads after the
     first has finished and observes the ``attempted_at`` it wrote, so it
     declines the repeat exactly as an ordinary sequential resume would. That
-    covers create, implicit create/advance, resume, dispatch, ``--record-result``,
-    ``--retry-provider``, and the repository-slug fill.
+    covers create, implicit create/advance, resume, dispatch, dispose,
+    ``--record-result``, ``--retry-provider``, and the repository-slug fill.
 
     A status invocation -- ``status=True`` or ``action="status"`` --, an
     ``upload`` invocation, and a ``watch`` invocation take no lock at top level.
@@ -5827,9 +6405,22 @@ def campaign_command(
         interval=interval,
         timeout=timeout,
         required_providers=required_providers,
+        dispose_provider=dispose_provider,
+        unavailable_reason=unavailable_reason,
     )
     if conflict:
         print(f"error: {conflict}", file=err)
+        return 1
+    disposition_conflict = _disposition_intent_conflict(
+        action=action,
+        dispose_provider=dispose_provider,
+        unavailable_reason=unavailable_reason,
+        apply=apply,
+        record_result=record_result,
+        retry_provider=retry_provider,
+    )
+    if disposition_conflict:
+        print(f"error: {disposition_conflict}", file=err)
         return 1
 
     parsed_required_providers: tuple[str, ...] | None = None
@@ -5926,6 +6517,8 @@ def campaign_command(
             record_result=record_result,
             record_provider=record_provider,
             retry_provider=retry_provider,
+            dispose_provider=dispose_provider,
+            unavailable_reason=unavailable_reason,
             yes=yes,
             endpoint=endpoint,
             token_env=token_env,
@@ -5940,6 +6533,7 @@ def campaign_command(
             gh_json_runner=gh_json_runner,
             which_fn=which_fn,
             adapter_runner=adapter_runner,
+            api_runner=api_runner,
             env=env,
             time_fn=time_fn,
             sleep_fn=sleep_fn,
@@ -5975,6 +6569,8 @@ def _campaign_command_impl(
     record_result: Path | None = None,
     record_provider: str = "",
     retry_provider: str = "",
+    dispose_provider: str = "",
+    unavailable_reason: str = "",
     yes: bool = False,
     endpoint: str = "",
     token_env: str = "",
@@ -5989,6 +6585,7 @@ def _campaign_command_impl(
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     which_fn: Callable[[str], str | None] = shutil.which,
     adapter_runner: AdapterRunner = run_local_adapter_command,
+    api_runner: devin_api.ApiRunner | None = None,
     env: Mapping[str, str] | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -6032,6 +6629,7 @@ def _campaign_command_impl(
     is_status = status or action == "status"
     is_resume = resume or action == "resume"
     is_dispatch = action == "dispatch"
+    is_dispose = action == "dispose"
     is_create = action == "create"
     is_upload = action == "upload"
     is_watch = action == "watch"
@@ -6055,6 +6653,7 @@ def _campaign_command_impl(
             command_runner=command_runner,
             gh_json_runner=gh_json_runner,
             adapter_runner=adapter_runner,
+            api_runner=api_runner,
             env=env,
         )
         if emit_json:
@@ -6075,6 +6674,30 @@ def _campaign_command_impl(
     if identifier_error:
         print(f"error: {identifier_error}", file=sys.stderr)
         return 1
+
+    if is_dispose:
+        if existing is None:
+            target = f" for {identifier!r}" if identifier else ""
+            print(
+                f"error: no existing campaign{target} to dispose; create one first",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            updated = dispose_informational_provider(
+                existing,
+                dispose_provider,
+                unavailable_reason,
+                campaigns_dir=campaigns_dir,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if emit_json:
+            print(json.dumps(updated, indent=2, sort_keys=True))
+        else:
+            print(render_campaign_text(updated))
+        return 0
 
     if record_result:
         if not existing:
@@ -6217,6 +6840,7 @@ def _campaign_command_impl(
             command_runner=command_runner,
             gh_json_runner=gh_json_runner,
             adapter_runner=adapter_runner,
+            api_runner=api_runner,
             env=env,
             retry_provider=retry_canonical,
         )
@@ -6298,6 +6922,7 @@ def _campaign_command_impl(
         command_runner=command_runner,
         gh_json_runner=gh_json_runner,
         adapter_runner=adapter_runner,
+        api_runner=api_runner,
         env=env,
         retry_provider=retry_canonical,
     )

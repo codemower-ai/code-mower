@@ -276,6 +276,7 @@ PACKAGE_FILES = (
     ("tools/code_mower_prompts.py", "src/code_mower/prompts.py", "core"),
     ("src/code_mower/release_qualify.py", "src/code_mower/release_qualify.py", "core"),
     ("src/code_mower/release_campaigns.py", "src/code_mower/release_campaigns.py", "core"),
+    ("src/code_mower/devin_api.py", "src/code_mower/devin_api.py", "core"),
     ("src/code_mower/campaign_discovery.py", "src/code_mower/campaign_discovery.py", "core"),
     ("src/code_mower/campaign_adapters.py", "src/code_mower/campaign_adapters.py", "core"),
     ("src/code_mower/release_readiness.py", "src/code_mower/release_readiness.py", "core"),

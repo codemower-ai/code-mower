@@ -442,6 +442,10 @@ or informational until your own calibration data proves it is useful: Gitar,
 Antigravity/Gemini, Muse, Hermes, CodeRabbit CLI, Cursor
 BugBot, Qodo, Greptile, Devin, local LLMs, and future ACP bridges.
 
+Hosted Devin dispatches use the Devin Sessions API v3. They require a service-user
+`DEVIN_API_KEY`, its opaque `DEVIN_ORG_ID`, and an exact repository acknowledgement
+in `CODE_MOWER_DEVIN_REPOSITORIES`; see `docs/release-qualification.md` for setup.
+
 Gemini CLI and Antigravity are distinct lane ids even though both are Google
 surfaces and may use Gemini model infrastructure. Keep their auth, model
 provenance, calibration evidence, and release notes separate.
