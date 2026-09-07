@@ -78,7 +78,7 @@ class DevinApiModuleTests(unittest.TestCase):
         )
 
     def test_repository_scope_requires_exact_owner_and_repo(self) -> None:
-        env = {"CODE_MOWER_DEVIN_REPOSITORIES": "jeffhuber/code-mower,other/repo"}
+        env = {"CODE_MOWER_DEVIN_REPOSITORIES": "personal-owner/code-mower,other/repo"}
         self.assertFalse(
             devin_api.repository_scope_acknowledged("codemower-ai/code-mower", env=env)
         )
@@ -259,7 +259,7 @@ class DevinCampaignApiTests(unittest.TestCase):
                 apply=True,
                 repo_path=Path(tmp),
                 campaigns_dir=Path(tmp) / "campaigns",
-                env=self._env("jeffhuber/code-mower"),
+                env=self._env("personal-owner/code-mower"),
                 api_runner=api,
             )
             entry = self._entry(updated)
