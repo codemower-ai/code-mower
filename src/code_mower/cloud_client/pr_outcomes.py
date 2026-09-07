@@ -32,6 +32,10 @@ PR_OUTCOME_COUNT_METRICS = (
     "cost_covered_pr_count",
 )
 PR_OUTCOME_COST_METRICS = ("reported_cost_usd",)
+# Metadata-only lane label used when a run attempt is known to exist but its
+# evidence could not be read or attributed.  It is a fixed constant so it can
+# never carry paths, file contents, or secrets.
+UNATTRIBUTED_EVIDENCE_LANE = "unreadable-evidence"
 PR_OUTCOME_DIMENSIONS = (
     "pr_outcome_schema",
     "pr_number",
@@ -367,6 +371,7 @@ def build_pr_outcome_event(
     created_at: str = "",
     tool: Mapping[str, Any] | None = None,
     prior_observation: Mapping[str, Any] | None = None,
+    evidence_incomplete: bool = False,
 ) -> dict[str, Any]:
     """Build one metadata-only ``pr_outcome`` event from observed attempts.
 
@@ -383,6 +388,11 @@ def build_pr_outcome_event(
     (see ``pr_outcome_observation_record``).  Supplying it keeps unchanged
     retries idempotent and makes corrected evidence chronologically newer even
     when no source timestamp advanced.
+
+    ``evidence_incomplete`` marks that part of the attempt inventory could
+    not be loaded and could not be attributed to a specific PR.  It records
+    one additional expected attempt with unknown cost so ``complete``
+    coverage can never be emitted while evidence is known to be missing.
     """
 
     from code_mower import __version__
@@ -391,6 +401,10 @@ def build_pr_outcome_event(
     expected, reported, total_cost, missing_sources = _aggregate_run_costs(
         run_events
     )
+    if evidence_incomplete:
+        expected += 1
+        if UNATTRIBUTED_EVIDENCE_LANE not in missing_sources:
+            missing_sources.append(UNATTRIBUTED_EVIDENCE_LANE)
 
     evidence_digest = _run_events_digest(run_events)
 

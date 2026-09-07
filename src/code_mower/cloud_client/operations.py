@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -25,6 +26,7 @@ from .events import (
 )
 from .pr_outcomes import (
     DEFAULT_OBSERVATION_STATE_PATH,
+    UNATTRIBUTED_EVIDENCE_LANE,
     build_pr_outcome_event,
     load_pr_outcome_observations,
     pr_outcome_observation_key,
@@ -747,21 +749,60 @@ def reviewer_runs_upload(
     }
 
 
-def _builder_run_events(repo_path: Path) -> list[dict[str, Any]]:
-    """Load local builder_run events from the default builder-runs directory."""
+# Builder evidence filenames embed ``pr-<number>`` when the run is tied to a
+# pull request; used only to attribute an unreadable file to a PR.
+_BUILDER_EVIDENCE_PR_PATTERN = re.compile(r"(?:^|-)pr-([0-9]+)")
+
+
+def _builder_evidence_pr_number(filename: str) -> str:
+    """Return the PR number encoded in a builder evidence filename, or ""."""
+
+    match = _BUILDER_EVIDENCE_PR_PATTERN.search(filename)
+    return match.group(1) if match else ""
+
+
+def _builder_run_events(
+    repo_path: Path,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Load local builder_run events; never drop unreadable evidence silently.
+
+    Returns ``(events, unreadable_pr_numbers)``.  ``unreadable_pr_numbers``
+    carries one entry per ``*.cloud-event.json`` file that could not be read,
+    parsed, or recognized as a ``builder_run`` event: the PR number encoded in
+    the filename when the failure can be attributed to a PR, or ``""`` when it
+    cannot.  Entries are PR numbers only -- never paths or file contents.
+    """
 
     builder_dir = repo_path / ".code-mower" / "builder-runs"
     if not builder_dir.is_dir():
-        return []
+        # ``is_dir`` swallows OSError, so an existing-but-unreadable directory
+        # is indistinguishable from a missing one.  When the entry exists but
+        # cannot be confirmed as a readable directory, record one
+        # unattributable failure so coverage cannot be reported as complete.
+        try:
+            exists = builder_dir.exists()
+        except OSError:
+            exists = True
+        if exists:
+            return [], [""]
+        return [], []
     events: list[dict[str, Any]] = []
-    for path in sorted(builder_dir.glob("*.cloud-event.json")):
+    unreadable: list[str] = []
+    try:
+        paths = sorted(builder_dir.glob("*.cloud-event.json"))
+    except OSError:
+        return events, [""]
+    for path in paths:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            unreadable.append(_builder_evidence_pr_number(path.name))
             continue
         if isinstance(payload, dict) and payload.get("event_type") == "builder_run":
             events.append(payload)
-    return events
+        else:
+            unreadable.append(_builder_evidence_pr_number(path.name))
+    return events, unreadable
 
 
 def _pr_number_from_run_event(event: Mapping[str, Any]) -> str:
@@ -818,7 +859,7 @@ def pr_outcomes_upload(
         limit=limit,
         repo_path=repo_path,
     )
-    builder_events = _builder_run_events(repo_path)
+    builder_events, unreadable_builder_prs = _builder_run_events(repo_path)
     spend_events = _reviewer_spend_events(
         repo_path=repo_path,
         spend_path=spend_path,
@@ -843,6 +884,41 @@ def pr_outcomes_upload(
 
     events: list[dict[str, Any]] = []
     errors: list[str] = []
+    # Fail closed on unreadable builder evidence.  A failure attributed to a
+    # PR is represented on that PR as an expected attempt with unknown cost
+    # (plus a bounded per-PR error), so ``complete`` coverage cannot be
+    # emitted while other healthy PRs are still processed.  An unattributable
+    # failure suppresses ``complete`` coverage for every emitted outcome
+    # because the missing attempt cannot be proven to belong elsewhere.
+    attributed_failures: set[str] = set()
+    unattributed_failures = 0
+    for failed_pr_number in unreadable_builder_prs:
+        if not failed_pr_number:
+            unattributed_failures += 1
+            continue
+        if failed_pr_number not in attributed_failures:
+            attributed_failures.add(failed_pr_number)
+            errors.append(
+                f"PR {failed_pr_number}: builder evidence unreadable or "
+                "malformed; attempt counted with unknown cost"
+            )
+        events_by_pr.setdefault(failed_pr_number, []).append(
+            {
+                "event_id": "",
+                "event_type": "builder_run",
+                "repo_slug": detected_repo_slug,
+                "dimensions": {
+                    "builder_provider": UNATTRIBUTED_EVIDENCE_LANE,
+                    "pr_number": failed_pr_number,
+                },
+            }
+        )
+    if unattributed_failures:
+        errors.append(
+            f"{unattributed_failures} builder evidence file(s) unreadable or "
+            "malformed and not attributable to a PR; complete spend coverage "
+            "suppressed"
+        )
     # Local metadata-only observation state keeps retries idempotent and makes
     # corrected evidence chronologically newer even when no source timestamp
     # (GitHub ``updatedAt`` or run ``created_at``) advanced.
@@ -886,6 +962,7 @@ def pr_outcomes_upload(
                 source=source,
                 created_at=str(pr.get("updatedAt") or opened_at).strip(),
                 prior_observation=observations.get(observation_key),
+                evidence_incomplete=unattributed_failures > 0,
             )
             validate_cloud_event(event)
         except CloudBundleError as exc:
@@ -898,7 +975,17 @@ def pr_outcomes_upload(
         try:
             save_pr_outcome_observations(observation_state_path, observations)
         except OSError as exc:
-            errors.append(f"observation state could not be persisted: {exc}")
+            # Correction ordering for every emitted outcome depends on this
+            # state: without it, a later correction could tie on created_at.
+            # Fail closed before export/upload.  ``strerror`` carries the OS
+            # reason only -- never a path -- so diagnostics stay metadata-only.
+            reason = getattr(exc, "strerror", None) or "write failed"
+            raise CloudBundleError(
+                "unable to persist pr_outcome observation state "
+                f"({reason}); aborting export/upload so a later correction "
+                "cannot tie on created_at. Restore write access to the "
+                "repository state directory and retry."
+            ) from exc
 
     if not events:
         return {

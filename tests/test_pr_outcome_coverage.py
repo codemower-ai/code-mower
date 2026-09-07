@@ -944,5 +944,211 @@ class PrOutcomeObservationStateTests(unittest.TestCase):
             )
 
 
+class PrOutcomeFailClosedTests(unittest.TestCase):
+    def _run_upload(
+        self,
+        repo_path: Path,
+        output_dir: Path,
+        pr_records: list[dict[str, object]],
+    ) -> dict[str, object]:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=pr_records,
+        ):
+            out = StringIO()
+            with redirect_stdout(out):
+                code = cloud_module.main(
+                    [
+                        "pr-outcomes",
+                        "--repo-path",
+                        str(repo_path),
+                        "--repo-slug",
+                        "owner/repo",
+                        "--output-dir",
+                        str(output_dir),
+                        "--endpoint",
+                        "https://codemower.example.com/api/upload",
+                        "--json",
+                    ]
+                )
+        return code, out.getvalue()
+
+    def _merged_pr(self, number: str) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "MERGED",
+            "createdAt": "2026-09-03T10:00:00Z",
+            "mergedAt": "2026-09-03T12:00:00Z",
+            "updatedAt": "2026-09-03T13:00:00Z",
+        }
+
+    def _emitted_events(self, result: dict[str, object]) -> dict[str, dict]:
+        manifest = json.loads(
+            Path(result["export"]["manifest"]).read_text(encoding="utf-8")
+        )
+        return {
+            event["dimensions"]["pr_number"]: event
+            for event in manifest["events"]
+        }
+
+    def test_unreadable_builder_evidence_blocks_complete_and_isolates_prs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (builder_dir / "devin-local-pr-1-aa11.cloud-event.json").write_text(
+                '{"event_id": "b1", "event_type": "builder_',
+                encoding="utf-8",
+            )
+            (builder_dir / "devin-local-pr-2-bb22.cloud-event.json").write_text(
+                json.dumps(_builder_run_event("b2", "2", 0.10)),
+                encoding="utf-8",
+            )
+
+            code, raw = self._run_upload(
+                repo_path,
+                repo_path / "bundle",
+                [self._merged_pr("1"), self._merged_pr("2")],
+            )
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["event_count"], 2)
+
+            events = self._emitted_events(result)
+            pr1 = events["1"]
+            self.assertEqual(
+                pr1["dimensions"]["cost_coverage"], "unknown"
+            )
+            self.assertEqual(pr1["metrics"]["cost_expected_run_count"], 1)
+            self.assertEqual(pr1["metrics"]["cost_reported_run_count"], 0)
+            self.assertEqual(
+                pr1["dimensions"]["missing_cost_sources"],
+                ["unreadable-evidence"],
+            )
+            self.assertNotIn("reported_cost_usd", pr1["metrics"])
+            validate_cloud_event(pr1)
+
+            # Per-PR isolation: the healthy PR still emits complete coverage.
+            pr2 = events["2"]
+            self.assertEqual(pr2["dimensions"]["cost_coverage"], "complete")
+            self.assertEqual(pr2["metrics"]["cost_covered_pr_count"], 1)
+            validate_cloud_event(pr2)
+
+            errors = result["errors"]
+            self.assertEqual(len(errors), 1)
+            self.assertIn("PR 1", errors[0])
+            self.assertNotIn(str(repo_path), " ".join(errors))
+            self.assertNotIn("builder_", " ".join(errors))
+
+    def test_unattributed_unreadable_evidence_suppresses_complete_coverage(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (builder_dir / "corrupt.cloud-event.json").write_text(
+                "not json at all {", encoding="utf-8"
+            )
+            (builder_dir / "devin-local-pr-2-bb22.cloud-event.json").write_text(
+                json.dumps(_builder_run_event("b2", "2", 0.10)),
+                encoding="utf-8",
+            )
+
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle", [self._merged_pr("2")]
+            )
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            self.assertEqual(result["status"], "dry_run")
+
+            events = self._emitted_events(result)
+            pr2 = events["2"]
+            self.assertEqual(pr2["dimensions"]["cost_coverage"], "partial")
+            self.assertEqual(pr2["metrics"]["cost_reported_run_count"], 1)
+            self.assertEqual(pr2["metrics"]["cost_expected_run_count"], 2)
+            self.assertIn(
+                "unreadable-evidence",
+                pr2["dimensions"]["missing_cost_sources"],
+            )
+            validate_cloud_event(pr2)
+
+            errors = result["errors"]
+            self.assertEqual(len(errors), 1)
+            self.assertIn("not attributable", errors[0])
+            self.assertNotIn(str(repo_path), " ".join(errors))
+
+    def test_malformed_non_builder_payload_counts_as_evidence_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (builder_dir / "devin-local-pr-3-cc33.cloud-event.json").write_text(
+                json.dumps({"event_id": "x", "event_type": "other"}),
+                encoding="utf-8",
+            )
+
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle", [self._merged_pr("3")]
+            )
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            events = self._emitted_events(result)
+            self.assertEqual(
+                events["3"]["dimensions"]["cost_coverage"], "unknown"
+            )
+            self.assertEqual(
+                events["3"]["metrics"]["cost_expected_run_count"], 1
+            )
+            self.assertTrue(any("PR 3" in e for e in result["errors"]))
+
+    def test_unwritable_observation_state_aborts_before_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            # ``.code-mower`` exists as a regular file, so the observation
+            # state location can never be created or written.
+            (repo_path / ".code-mower").write_text("blocked", encoding="utf-8")
+
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle", [self._merged_pr("1")]
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(raw.strip(), "")
+
+    def test_unwritable_observation_state_raises_bounded_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            (repo_path / ".code-mower").write_text("blocked", encoding="utf-8")
+            with mock.patch(
+                "code_mower.cloud_client.operations.run_gh_pr_list",
+                return_value=[self._merged_pr("1")],
+            ), mock.patch(
+                "code_mower.cloud_client.operations.build_cloud_bundle"
+            ) as bundle:
+                with self.assertRaises(CloudBundleError) as ctx:
+                    pr_outcomes_upload(
+                        repo_path=repo_path,
+                        output_dir=repo_path / "bundle",
+                        repo_slug="owner/repo",
+                        team_id="",
+                        install_id="",
+                        source="unit-test",
+                        limit=10,
+                        endpoint="https://codemower.example.com/api/upload",
+                        token_env="CODE_MOWER_TEST_TOKEN",
+                        yes=False,
+                        timeout=1.0,
+                    )
+            bundle.assert_not_called()
+            message = str(ctx.exception)
+            self.assertIn("observation state", message)
+            self.assertNotIn(str(repo_path), message)
+
+
 if __name__ == "__main__":
     unittest.main()

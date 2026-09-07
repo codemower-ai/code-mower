@@ -229,6 +229,17 @@ identifiers that did not report cost; it is metadata-only and must never
 contain commands, paths, auth output, or secrets.  Missing cost is omitted,
 never serialized as zero.
 
+Builder evidence fails closed: a `*.cloud-event.json` file that cannot be
+read, parsed, or recognized as a `builder_run` event is never silently
+omitted.  A failure attributable to a PR via its filename is recorded on that
+PR as an expected attempt with unknown cost under the fixed
+`unreadable-evidence` source label and surfaced as a bounded per-PR error;
+a failure that cannot be attributed suppresses `complete` coverage for every
+emitted outcome.  Diagnostics carry PR numbers and fixed labels only — never
+paths or file contents.  If the observation-state file cannot be persisted,
+the command aborts before export/upload so a later correction cannot tie on
+`created_at`.
+
 The event contains identifiers, timestamps, categorical outcomes, and numeric
 counts/cost only. Its dimension and metric names are closed in v1, so undeclared
 fields are rejected rather than becoming accidental prose channels. It must not
