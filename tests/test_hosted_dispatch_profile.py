@@ -84,8 +84,11 @@ def _fixture_env(fixture: dict[str, Any]) -> dict[str, str]:
     env: dict[str, str] = {}
     if fixture.get("token_present"):
         env[str(fixture["token_env"])] = "token"
+        if fixture.get("provider") == "devin":
+            env["DEVIN_ORG_ID"] = "org-test"
     if fixture.get("transport_acknowledged"):
-        env[str(fixture["transport_env"])] = "1"
+        value = str(fixture.get("repo_slug") or "") if fixture.get("provider") == "devin" else "1"
+        env[str(fixture["transport_env"])] = value
     return env
 
 
@@ -154,8 +157,9 @@ class HostedDispatchProfileTests(unittest.TestCase):
         profile = release_campaigns.hosted_dispatch_profile(
             lane,
             env={
-                "DEVIN_AUDIT_LABEL_TOKEN": "token",
-                "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+                "DEVIN_API_KEY": "token",
+                "DEVIN_ORG_ID": "org-test",
+                "CODE_MOWER_DEVIN_REPOSITORIES": "owner/repo",
             },
         )
         self.assertTrue(profile["result_return"]["ready"])
@@ -180,6 +184,17 @@ class HostedDispatchProfileTests(unittest.TestCase):
             self.assertIn('"@cursor"', text)
             self.assertNotIn('"@cursor run"', text)
             self.assertNotIn('"cursor run"', text)
+
+    def test_devin_catalogs_declare_the_api_campaign_transport(self) -> None:
+        for relative in (
+            "templates/providers/devin.yml",
+            "templates/providers.yml",
+            "src/code_mower/templates/providers.yml",
+        ):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn('campaign_transport: "devin_api_v3"', text)
+            self.assertIn('campaign_repository_scope_env: "CODE_MOWER_DEVIN_REPOSITORIES"', text)
+            self.assertNotIn("CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY", text)
 
 
 class HostedDispatchFixtureCampaignTests(unittest.TestCase):
@@ -421,7 +436,7 @@ class HostedDoctorProfileTests(unittest.TestCase):
                 config={},
                 repo_root=Path(tmp),
                 repo_slug="owner/repo",
-                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+                env={"DEVIN_API_KEY": "token", "DEVIN_ORG_ID": "org-test"},
                 providers=["devin"],
             )
             transport = [c for c in checks if c.name == "doctor.campaign.transport"]
@@ -441,8 +456,9 @@ class HostedDoctorProfileTests(unittest.TestCase):
                 repo_root=Path(tmp),
                 repo_slug="owner/repo",
                 env={
-                    "DEVIN_AUDIT_LABEL_TOKEN": "token",
-                    "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+                    "DEVIN_API_KEY": "token",
+                    "DEVIN_ORG_ID": "org-test",
+                    "CODE_MOWER_DEVIN_REPOSITORIES": "owner/repo",
                 },
                 providers=["devin"],
             )
@@ -454,13 +470,13 @@ class HostedDoctorProfileTests(unittest.TestCase):
             self.assertNotIn("token", json.dumps(creds[0].detail))
 
 
-def _devin_lane_without(
+def _comment_lane_without(
     *,
     trigger_comments: bool = True,
     trusted_responders: bool = True,
 ):
-    """Return the devin lane minus trigger text and/or the responder allowlist."""
-    base = REFERENCE_PROVIDERS["devin"]
+    """Return the Cursor lane minus trigger text and/or the responder allowlist."""
+    base = REFERENCE_PROVIDERS["cursor_cloud_agent"]
     config = dict(base.provider_config)
     if not trigger_comments:
         config["trigger_comments"] = ()
@@ -470,26 +486,29 @@ def _devin_lane_without(
     return dataclasses.replace(base, provider_config=config)
 
 
-def _verified_devin_env() -> dict[str, str]:
+def _verified_comment_env() -> dict[str, str]:
     return {
-        "DEVIN_AUDIT_LABEL_TOKEN": "s3cret-token-value",
-        "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+        "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "s3cret-token-value",
+        "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY": "1",
     }
 
 
 class HostedDispatchBlockerTests(unittest.TestCase):
     """Trigger and trusted-responder blockers fail closed in dry-run and doctor."""
 
-    def _dry_run_devin(self, lane, env) -> dict[str, Any]:
+    def _dry_run_comment_lane(self, lane, env) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             command_runner = mock.MagicMock()
             gh_json_runner = mock.MagicMock()
-            with mock.patch.dict(release_campaigns.REFERENCE_PROVIDERS, {"devin": lane}):
+            with mock.patch.dict(
+                release_campaigns.REFERENCE_PROVIDERS,
+                {"cursor_cloud_agent": lane},
+            ):
                 ret = release_campaigns.campaign_command(
                     release_tag="v1.0.0",
                     package_spec="code-mower==1.0.0",
-                    providers=["devin"],
+                    providers=["cursor_cloud_agent"],
                     campaigns_dir=campaigns_dir,
                     repo_slug="owner/repo",
                     issue="42",
@@ -524,35 +543,35 @@ class HostedDispatchBlockerTests(unittest.TestCase):
         self.assertNotIn("s3cret-token-value", json.dumps(saved))
 
     def test_dry_run_trigger_blocker_is_unavailable(self) -> None:
-        lane = _devin_lane_without(trigger_comments=False)
+        lane = _comment_lane_without(trigger_comments=False)
         profile = release_campaigns.hosted_dispatch_profile(
-            lane, env=_verified_devin_env()
+            lane, env=_verified_comment_env()
         )
         self.assertEqual(release_campaigns.hosted_dispatch_blockers(profile), ["trigger"])
-        saved = self._dry_run_devin(lane, _verified_devin_env())
+        saved = self._dry_run_comment_lane(lane, _verified_comment_env())
         self._assert_blocked_dry_run(
             saved, blocker="trigger", remediation_marker="builder trigger"
         )
 
     def test_dry_run_trusted_responder_blocker_is_unavailable(self) -> None:
-        lane = _devin_lane_without(trusted_responders=False)
+        lane = _comment_lane_without(trusted_responders=False)
         profile = release_campaigns.hosted_dispatch_profile(
-            lane, env=_verified_devin_env()
+            lane, env=_verified_comment_env()
         )
         self.assertEqual(
             release_campaigns.hosted_dispatch_blockers(profile), ["trusted_responder"]
         )
-        saved = self._dry_run_devin(lane, _verified_devin_env())
+        saved = self._dry_run_comment_lane(lane, _verified_comment_env())
         self._assert_blocked_dry_run(
             saved, blocker="trusted_responder", remediation_marker="bot_authors"
         )
 
     def test_dry_run_reports_every_blocker_remediation(self) -> None:
-        lane = _devin_lane_without(
+        lane = _comment_lane_without(
             trigger_comments=False,
             trusted_responders=False,
         )
-        saved = self._dry_run_devin(lane, _verified_devin_env())
+        saved = self._dry_run_comment_lane(lane, _verified_comment_env())
         entry = saved["providers"][0]
         for blocker in ("trigger", "trusted_responder"):
             self.assertIn(blocker, entry["next_detail"])
@@ -562,13 +581,16 @@ class HostedDispatchBlockerTests(unittest.TestCase):
 
     def _doctor_checks(self, lane) -> tuple:
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.dict(release_campaigns.REFERENCE_PROVIDERS, {"devin": lane}):
+            with mock.patch.dict(
+                release_campaigns.REFERENCE_PROVIDERS,
+                {"cursor_cloud_agent": lane},
+            ):
                 return check_adoption_campaign_readiness(
                     config={},
                     repo_root=Path(tmp),
                     repo_slug="owner/repo",
-                    env=_verified_devin_env(),
-                    providers=["devin"],
+                    env=_verified_comment_env(),
+                    providers=["cursor_cloud_agent"],
                 )
 
     def _assert_blocked_doctor(
@@ -588,21 +610,21 @@ class HostedDispatchBlockerTests(unittest.TestCase):
         passes = [
             c
             for c in checks
-            if c.name == "doctor.campaign.credentials" and c.lane == "devin"
+            if c.name == "doctor.campaign.credentials" and c.lane == "cursor_cloud_agent"
         ]
         self.assertEqual(passes, [])
         readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
-        self.assertNotIn("devin", readiness.detail.get("ready_providers", []))
+        self.assertNotIn("cursor_cloud_agent", readiness.detail.get("ready_providers", []))
         self.assertNotIn("s3cret-token-value", json.dumps(checks, default=str))
 
     def test_doctor_trigger_blocker_warns_without_pass(self) -> None:
-        checks = self._doctor_checks(_devin_lane_without(trigger_comments=False))
+        checks = self._doctor_checks(_comment_lane_without(trigger_comments=False))
         self._assert_blocked_doctor(
             checks, blocker="trigger", remediation_marker="builder trigger"
         )
 
     def test_doctor_trusted_responder_blocker_warns_without_pass(self) -> None:
-        checks = self._doctor_checks(_devin_lane_without(trusted_responders=False))
+        checks = self._doctor_checks(_comment_lane_without(trusted_responders=False))
         self._assert_blocked_doctor(
             checks, blocker="trusted_responder", remediation_marker="bot_authors"
         )

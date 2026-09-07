@@ -140,6 +140,7 @@ def _fake_local_cli_lane(*, command: str = "fake-provider-cli") -> ProviderLane:
 
 def _fake_hosted_bridge_lane(
     *,
+    provider: str = "devin",
     bot_authors: tuple[str, ...] = (),
     response_timeout: int | None = None,
 ) -> ProviderLane:
@@ -148,7 +149,7 @@ def _fake_hosted_bridge_lane(
         lane_id="fake_hosted",
         lane_type="audit",
         driver="hosted_bridge",
-        provider="devin",
+        provider=provider,
         labels=LaneLabels(needs="needs-fake", done="fake-done", blocked="fake-blocked"),
         trigger_policy="manual",
         provider_config={
@@ -1642,7 +1643,7 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertIn("install agy CLI", providers_by_name["antigravity"]["next_action"])
 
             self.assertEqual(providers_by_name["devin"]["state"], "unavailable")
-            self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", providers_by_name["devin"]["next_action"])
+            self.assertIn("DEVIN_API_KEY", providers_by_name["devin"]["next_action"])
 
     def test_github_dispatch_failure_persists_only_a_safe_error_code(self) -> None:
         """GitHub dispatch failure leaves useful local status without persisting raw gh output."""
@@ -2229,13 +2230,22 @@ class ReleaseCampaignTests(unittest.TestCase):
             campaign.providers[0]["dispatch_ref"] = {"issue_number": "99"}
             release_campaigns.save_campaign(campaign, campaigns_dir)
 
-            release_campaigns.campaign_command(
-                release_tag="v1.0.0",
-                campaigns_dir=campaigns_dir,
-                resume=True,
-                repo_slug="owner/repo",
-                gh_json_runner=mock_gh_json,
+            fake_lane = _fake_hosted_bridge_lane(
+                provider="cursor_cloud_agent",
+                bot_authors=("cursor[bot]",),
             )
+            with mock.patch.object(
+                release_campaigns,
+                "resolve_provider_lane",
+                return_value=("cursor_cloud_agent", fake_lane),
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    repo_slug="owner/repo",
+                    gh_json_runner=mock_gh_json,
+                )
 
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
@@ -2277,13 +2287,22 @@ class ReleaseCampaignTests(unittest.TestCase):
                     ]
                 }, ""
 
-            release_campaigns.campaign_command(
-                release_tag="v1.0.0",
-                campaigns_dir=campaigns_dir,
-                resume=True,
-                repo_slug="owner/repo",
-                gh_json_runner=mock_gh_json,
+            fake_lane = _fake_hosted_bridge_lane(
+                provider="cursor_cloud_agent",
+                bot_authors=("cursor[bot]",),
             )
+            with mock.patch.object(
+                release_campaigns,
+                "resolve_provider_lane",
+                return_value=("cursor_cloud_agent", fake_lane),
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    repo_slug="owner/repo",
+                    gh_json_runner=mock_gh_json,
+                )
 
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
@@ -2645,13 +2664,21 @@ class ReleaseCampaignTests(unittest.TestCase):
             def mock_gh_json(args, **kwargs):
                 return {"comments": [{"author": {"login": "devin-ai-integration[bot]"}, "body": marker}]}, ""
 
-            release_campaigns.campaign_command(
-                release_tag="v1.0.0",
-                campaigns_dir=campaigns_dir,
-                resume=True,
-                repo_slug="owner/repo",
-                gh_json_runner=mock_gh_json,
+            fake_lane = _fake_hosted_bridge_lane(
+                bot_authors=("devin-ai-integration[bot]",)
             )
+            with mock.patch.object(
+                release_campaigns,
+                "resolve_provider_lane",
+                return_value=("devin", fake_lane),
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    repo_slug="owner/repo",
+                    gh_json_runner=mock_gh_json,
+                )
 
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
@@ -2688,13 +2715,21 @@ class ReleaseCampaignTests(unittest.TestCase):
             def mock_gh_json(args, **kwargs):
                 return {"comments": [{"author": {"login": "random-attacker"}, "body": marker}]}, ""
 
-            release_campaigns.campaign_command(
-                release_tag="v1.0.0",
-                campaigns_dir=campaigns_dir,
-                resume=True,
-                repo_slug="owner/repo",
-                gh_json_runner=mock_gh_json,
+            fake_lane = _fake_hosted_bridge_lane(
+                bot_authors=("devin-ai-integration[bot]",)
             )
+            with mock.patch.object(
+                release_campaigns,
+                "resolve_provider_lane",
+                return_value=("devin", fake_lane),
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    repo_slug="owner/repo",
+                    gh_json_runner=mock_gh_json,
+                )
 
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
@@ -2732,14 +2767,21 @@ class ReleaseCampaignTests(unittest.TestCase):
             def mock_gh_json(args, **kwargs):
                 return {"comments": [{"author": {"login": "self-hosted-devin-runner"}, "body": marker}]}, ""
 
-            release_campaigns.campaign_command(
-                release_tag="v1.0.0",
-                campaigns_dir=campaigns_dir,
-                resume=True,
-                repo_slug="owner/repo",
-                gh_json_runner=mock_gh_json,
-                env={"DEVIN_BOT_AUTHORS": "self-hosted-devin-runner"},
+            fake_lane = _fake_hosted_bridge_lane(
+                bot_authors=("self-hosted-devin-runner",)
             )
+            with mock.patch.object(
+                release_campaigns,
+                "resolve_provider_lane",
+                return_value=("devin", fake_lane),
+            ):
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    repo_slug="owner/repo",
+                    gh_json_runner=mock_gh_json,
+                )
 
             saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert saved is not None
@@ -2891,11 +2933,16 @@ class ReleaseCampaignTests(unittest.TestCase):
             assert saved is not None
             self.assertEqual(saved["providers"][0]["state"], "complete")
 
-    def test_devin_dispatch_includes_trigger_comments(self) -> None:
-        """Devin dispatch body includes trigger_comments so the remote knows how to start."""
+    def test_devin_api_dispatch_uses_optional_issue_marker_without_trigger(self) -> None:
+        """The issue comment is audit evidence; the API call starts Devin."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             bodies: list[str] = []
+
+            def api_runner(method, url, body, headers):
+                self.assertEqual(method, "POST")
+                self.assertEqual(body["repos"], ["owner/repo"])
+                return {"session_id": "devin-test"}
 
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
@@ -2906,22 +2953,18 @@ class ReleaseCampaignTests(unittest.TestCase):
                 issue="99",
                 apply=True,
                 command_runner=_capturing_dispatch_command_runner(bodies),
-                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+                api_runner=api_runner,
+                env={
+                    "DEVIN_API_KEY": "token",
+                    "DEVIN_ORG_ID": "org-test",
+                    "CODE_MOWER_DEVIN_REPOSITORIES": "owner/repo",
+                },
             )
 
-            self.assertEqual(len(bodies), 2)
+            self.assertEqual(len(bodies), 1)
             dispatch_body = bodies[0]
-            trigger_body = bodies[1]
-
-            # Dispatch body should document the trigger commands
-            self.assertIn("@devin run", dispatch_body)
-            self.assertIn("devin run", dispatch_body)
-            self.assertIn("**Trigger comments:**", dispatch_body)
-            self.assertIn("`@devin run`, `devin run`", dispatch_body)
-
-            # Trigger body should be just the trigger command itself
-            self.assertEqual(trigger_body.splitlines()[0], "@devin run")
-            self.assertIn("CODE_MOWER_RELEASE_TRIGGER", trigger_body)
+            self.assertIn("CODE_MOWER_RELEASE_CAMPAIGN", dispatch_body)
+            self.assertNotIn("CODE_MOWER_RELEASE_TRIGGER", dispatch_body)
 
     def test_cursor_cloud_agent_dispatch_posts_trigger_comment(self) -> None:
         """Cursor Cloud Agent dispatch posts the trigger command as a separate actionable comment."""
@@ -3170,8 +3213,9 @@ class ReleaseCampaignTests(unittest.TestCase):
             resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
             assert resumed is not None
             action = resumed["providers"][0]["next_action"]
-            self.assertIn("reconciliation", action)
-            self.assertNotIn("retry the dispatch", action)
+            self.assertIn("reconcile", action)
+            self.assertIn("dispose/retry", action)
+            self.assertNotIn("redispatch", action)
 
     def test_resume_reconciles_posted_trigger_marker_without_reposting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4020,7 +4064,7 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
 
 
 class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
-    """A hosted dry-run preview must judge the --issue prerequisite exactly as --apply does.
+    """An issue-comment dry run must judge --issue exactly as --apply does.
 
     Hosted dispatch is a comment on a specific GitHub issue, so a hosted
     provider with valid credentials but no issue number can never be
@@ -4045,7 +4089,6 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
         gh_json_runner = mock.MagicMock()
         adapter_runner = mock.MagicMock()
         transport_vars = {
-            "devin": "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY",
             "cursor_cloud_agent": "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY",
         }
         ret = release_campaigns.campaign_command(
@@ -4081,7 +4124,6 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
     def test_hosted_dry_run_without_issue_is_unavailable(self) -> None:
         """Credentials alone are not readiness: the preview names the missing --issue."""
         for provider, token_env in (
-            ("devin", "DEVIN_AUDIT_LABEL_TOKEN"),
             ("cursor_cloud_agent", "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN"),
         ):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
@@ -4120,7 +4162,10 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             saved, command_runner, gh_json_runner, adapter_runner = self._preview(
-                campaigns_dir, provider="devin", token_env="DEVIN_AUDIT_LABEL_TOKEN", issue="42"
+                campaigns_dir,
+                provider="cursor_cloud_agent",
+                token_env="CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
+                issue="42",
             )
 
             entry = saved["providers"][0]
@@ -4145,7 +4190,6 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
         dispatch. An explicit --apply remains the operator's own choice.
         """
         for provider, token_env, transport_var in (
-            ("devin", "DEVIN_AUDIT_LABEL_TOKEN", "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY"),
             (
                 "cursor_cloud_agent",
                 "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
@@ -4191,16 +4235,16 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
             campaigns_dir = Path(tmp) / "campaigns"
             saved, command_runner, gh_json_runner, adapter_runner = self._preview(
                 campaigns_dir,
-                provider="devin",
-                token_env="DEVIN_AUDIT_LABEL_TOKEN",
+                provider="cursor_cloud_agent",
+                token_env="CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
                 issue="42",
                 repo_slug="",
             )
 
             entry = saved["providers"][0]
             self.assertEqual(entry["state"], "unavailable")
-            self.assertEqual(entry["error"], "missing_issue_number")
-            self.assertIn("--issue", entry["next_action"])
+            self.assertEqual(entry["error"], "missing_repository_scope")
+            self.assertIn("--repo-slug", entry["next_action"])
             self._assert_no_dispatch(entry, command_runner, gh_json_runner, adapter_runner)
 
     def test_missing_credentials_still_reported_before_the_issue_check(self) -> None:
@@ -4212,7 +4256,7 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
             release_campaigns.campaign_command(
                 release_tag="v1.0.0",
                 package_spec="code-mower==1.0.0",
-                providers=["devin"],
+                providers=["cursor_cloud_agent"],
                 campaigns_dir=campaigns_dir,
                 repo_slug="owner/repo",
                 apply=False,
@@ -4224,7 +4268,7 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
             assert saved is not None
             entry = saved["providers"][0]
             self.assertEqual(entry["state"], "unavailable")
-            self.assertIn("DEVIN_AUDIT_LABEL_TOKEN", entry["next_action"])
+            self.assertIn("CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN", entry["next_action"])
             self._assert_no_dispatch(entry, command_runner, gh_json_runner)
 
     def test_dry_run_preview_matches_the_applied_outcome(self) -> None:
@@ -4232,7 +4276,9 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             preview, command_runner, gh_json_runner, _ = self._preview(
-                campaigns_dir, provider="devin", token_env="DEVIN_AUDIT_LABEL_TOKEN"
+                campaigns_dir,
+                provider="cursor_cloud_agent",
+                token_env="CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
             )
             preview_entry = preview["providers"][0]
 
@@ -4244,7 +4290,7 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
                 repo_slug="owner/repo",
                 apply=True,
                 command_runner=applied_runner,
-                env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
             )
             applied_runner.assert_not_called()
             applied = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
@@ -4264,13 +4310,16 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             self._preview(
-                campaigns_dir, provider="devin", token_env="DEVIN_AUDIT_LABEL_TOKEN", issue="42"
+                campaigns_dir,
+                provider="cursor_cloud_agent",
+                token_env="CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
+                issue="42",
             )
 
             resumed, command_runner, gh_json_runner, adapter_runner = self._preview(
                 campaigns_dir,
-                provider="devin",
-                token_env="DEVIN_AUDIT_LABEL_TOKEN",
+                provider="cursor_cloud_agent",
+                token_env="CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
                 resume=True,
             )
             entry = resumed["providers"][0]
@@ -4281,8 +4330,8 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
 
             requeued, command_runner, gh_json_runner, adapter_runner = self._preview(
                 campaigns_dir,
-                provider="devin",
-                token_env="DEVIN_AUDIT_LABEL_TOKEN",
+                provider="cursor_cloud_agent",
+                token_env="CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
                 issue="42",
                 resume=True,
             )
@@ -4404,11 +4453,14 @@ class CampaignAggregateStatusHonestyTests(unittest.TestCase):
         scenarios = (
             (
                 "missing_issue",
-                "devin",
+                "cursor_cloud_agent",
                 dict(
-                    providers=["devin"],
+                    providers=["cursor_cloud_agent"],
                     repo_slug="owner/repo",
-                    env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+                    env={
+                        "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token",
+                        "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY": "1",
+                    },
                 ),
             ),
             (
@@ -4418,7 +4470,7 @@ class CampaignAggregateStatusHonestyTests(unittest.TestCase):
                     providers=["devin"],
                     repo_slug="",
                     issue="42",
-                    env={"DEVIN_AUDIT_LABEL_TOKEN": "token"},
+                    env={"DEVIN_API_KEY": "token", "DEVIN_ORG_ID": "org-test"},
                 ),
             ),
             (
@@ -4473,8 +4525,9 @@ class CampaignAggregateStatusHonestyTests(unittest.TestCase):
                 issue="42",
                 which_fn=lambda cmd: "/bin/aider" if cmd == "aider" else None,
                 env={
-                    "DEVIN_AUDIT_LABEL_TOKEN": "token",
-                    "CODE_MOWER_DEVIN_CAMPAIGN_TRANSPORT_READY": "1",
+                    "DEVIN_API_KEY": "token",
+                    "DEVIN_ORG_ID": "org-test",
+                    "CODE_MOWER_DEVIN_REPOSITORIES": "owner/repo",
                 },
             )
             states = {p["provider"]: p["state"] for p in saved["providers"]}
@@ -7688,6 +7741,9 @@ class ContradictoryCampaignIntentTests(unittest.TestCase):
             ("resume", True, True),
             ("dispatch", True, False),
             ("dispatch", True, True),
+            ("dispose", False, True),
+            ("dispose", True, False),
+            ("dispose", True, True),
             ("upload", False, True),
             ("upload", True, False),
             ("upload", True, True),
@@ -10677,11 +10733,11 @@ class CampaignWatchTests(unittest.TestCase):
                     "elapsed_seconds": 10.0,
                 },
                 {
-                    "provider": "devin",
+                    "provider": "cursor_cloud_agent",
                     "state": "unavailable",
                     "environment": "hosted",
                     "elapsed_seconds": 0.0,
-                    "next_action": "configure DEVIN_AUDIT_LABEL_TOKEN",
+                    "next_action": "configure Cursor campaign transport",
                 },
             ],
         )
@@ -10746,14 +10802,14 @@ class CampaignWatchTests(unittest.TestCase):
         self._seed_campaign(
             providers=[
                 {
-                    "provider": "devin",
+                    "provider": "cursor_cloud_agent",
                     "lane_id": "fake_hosted",
                     "driver": "hosted_bridge",
                     "state": "running",
                     "environment": "hosted",
                     "elapsed_seconds": 0.0,
                     "dispatch_ref": {"issue_number": "123"},
-                    "idempotency_key": "idemp-devin",
+                    "idempotency_key": "idemp-cursor",
                 }
             ]
         )
@@ -10808,14 +10864,14 @@ class CampaignWatchTests(unittest.TestCase):
         self._seed_campaign(
             providers=[
                 {
-                    "provider": "devin",
+                    "provider": "cursor_cloud_agent",
                     "lane_id": "fake_hosted",
                     "driver": "hosted_bridge",
                     "state": "running",
                     "environment": "hosted",
                     "elapsed_seconds": 10.0,
                     "dispatch_ref": {"issue_number": "123"},
-                    "idempotency_key": "idemp-devin",
+                    "idempotency_key": "idemp-cursor",
                 }
             ]
         )
@@ -10864,14 +10920,14 @@ class CampaignWatchTests(unittest.TestCase):
         self._seed_campaign(
             providers=[
                 {
-                    "provider": "devin",
+                    "provider": "cursor_cloud_agent",
                     "lane_id": "fake_hosted",
                     "driver": "hosted_bridge",
                     "state": "running",
                     "environment": "hosted",
                     "elapsed_seconds": 10.0,
                     "dispatch_ref": {"issue_number": "123"},
-                    "idempotency_key": "idemp-devin",
+                    "idempotency_key": "idemp-cursor",
                 }
             ]
         )
@@ -10985,14 +11041,14 @@ class CampaignWatchTests(unittest.TestCase):
         self._seed_campaign(
             providers=[
                 {
-                    "provider": "devin",
+                    "provider": "cursor_cloud_agent",
                     "lane_id": "fake_hosted",
                     "driver": "hosted_bridge",
                     "state": "running",
                     "environment": "hosted",
                     "elapsed_seconds": 10.0,
                     "dispatch_ref": {"issue_number": "123"},
-                    "idempotency_key": "idemp-devin",
+                    "idempotency_key": "idemp-cursor",
                 }
             ]
         )
@@ -11065,14 +11121,14 @@ class CampaignWatchTests(unittest.TestCase):
         self._seed_campaign(
             providers=[
                 {
-                    "provider": "devin",
+                    "provider": "cursor_cloud_agent",
                     "lane_id": "fake_hosted",
                     "driver": "hosted_bridge",
                     "state": "running",
                     "environment": "hosted",
                     "elapsed_seconds": 10.0,
                     "dispatch_ref": {"issue_number": "123"},
-                    "idempotency_key": "idemp-devin",
+                    "idempotency_key": "idemp-cursor",
                 }
             ]
         )

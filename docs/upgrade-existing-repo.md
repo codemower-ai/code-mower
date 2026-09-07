@@ -151,37 +151,44 @@ code-mower --version
 
 Code Mower now distinguishes these Devin identities:
 
-- `devin` — the canonical hosted Devin lane.
-- `devin_cloud` — an accepted alias that resolves to the existing `devin` hosted
-  lane. It has the same labels, token env names, trusted authors, trigger text,
-  response timeout, and merge posture as `devin`.
+- `devin` — the canonical hosted Devin lane. It now uses the Devin Sessions API
+  v3 instead of GitHub issue-comment triggering. Read credentials from
+  `DEVIN_API_KEY` and `DEVIN_ORG_ID`; require the exact repository in
+  `CODE_MOWER_DEVIN_REPOSITORIES` before dispatch.
+- `devin_cloud` — an accepted alias that resolves to the same `devin` hosted
+  lane. It uses the same API credentials and response timeout.
 - `devin_cli` — the local Devin CLI lane, informational and not merge authority.
 
 Existing `code-mower.yml` files that select `devin` continue to work unchanged.
-The builder provenance identity stays `builder:devin` for all three identities, so
-branch ownership, trailer prefixes, and dispatch label logic keep working.
+The builder provenance identity stays `builder:devin` for hosted and local
+identities, so branch ownership, trailer prefixes, and dispatch label logic keep
+working.
 
 To adopt the new identities:
 
 | Goal | Action |
 |---|---|
-| Keep using hosted Devin unchanged | Leave `devin` in `code-mower.yml` as-is. |
-| Make hosted Devin explicit | Select `devin` in your profile and set `DEVIN_AUDIT_LABEL_TOKEN` and `GITHUB_TOKEN`. The `devin_cloud` alias resolves to the same lane in campaigns and telemetry. |
+| Keep using hosted Devin | Leave `devin` in `code-mower.yml` as-is. |
+| Make hosted Devin explicit | Select `devin` in your profile; set service-user `DEVIN_API_KEY`, opaque `DEVIN_ORG_ID`, and the exact `OWNER/REPO` in `CODE_MOWER_DEVIN_REPOSITORIES`. The `devin_cloud` alias resolves to the same lane in campaigns and telemetry. |
 | Try local Devin CLI | Select `devin_cli` in your profile, install `devin` on PATH, and set `CODE_MOWER_DEVIN_CLI_MODEL` or `DEVIN_CLI_MODEL`. |
 
-`devin_cli` is disabled by default and reports version and auth status with
-bounded, privacy-safe output. Doctor never persists raw `devin auth status` output
-or account identity, and it records only the executable basename for this lane —
-never a local filesystem path, even when `CODE_MOWER_DEVIN_CLI_COMMAND` points at
-an absolute path. Because Devin CLI uses the ambient login state,
-doctor describes the auth probe as the ambient Devin CLI session rather than an
-isolated campaign home. As of this PR, `devin_cli` participates in release
-campaigns through the maintained `code_mower.campaign_adapters` adapter (it
-declares `campaign_eligible: true`). It is still not a selectable local audit
-lane in `init` (`local_audit_eligible: false`) until #746 lands the local audit
-wrapper. To use it in a campaign, install `devin` on PATH, run `devin auth login`
-in a trusted environment, and set `CODE_MOWER_DEVIN_CLI_MODEL` or
-`DEVIN_CLI_MODEL`.
+`devin_cli` remains disabled by default and reports version and auth status with
+bounded, privacy-safe output. Doctor never persists raw `devin auth status`
+output or account identity, and records only the executable basename for this
+lane, never a local filesystem path. Because Devin CLI uses the ambient login
+state, doctor describes the auth probe as the ambient Devin CLI session rather
+than an isolated campaign home. It participates in release campaigns through
+the maintained `code_mower.campaign_adapters` adapter and is eligible for the
+local audit and builder runner when explicitly selected. Install `devin` on
+PATH, run `devin auth login` in a trusted environment, and set
+`CODE_MOWER_DEVIN_CLI_MODEL` or `DEVIN_CLI_MODEL` before enabling it.
+
+`devin` is now an API-first campaign transport. The `--issue` parameter is
+optional and only records an audit marker; the `DEVIN_API_KEY` and
+`DEVIN_ORG_ID` credentials are the dispatch trigger. The full slug must also
+appear in `CODE_MOWER_DEVIN_REPOSITORIES`; a same-name personal fork therefore
+cannot satisfy the intended organization target. The opaque `org-*`
+`DEVIN_ORG_ID` is not compared with the GitHub owner name.
 
 ## Local Devin Builder Lane
 

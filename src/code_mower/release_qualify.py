@@ -1040,7 +1040,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Run or manage multi-provider release qualification campaign",
         description=(
             "Run or manage a multi-provider release qualification campaign. "
-            "Mutating invocations (create, resume, dispatch, --record-result, "
+            "Mutating invocations (create, resume, dispatch, dispose, --record-result, "
             "--retry-provider) are serialized: each takes an exclusive advisory "
             "lock on the campaign directory and holds it while it loads state, "
             "claims a provider attempt, invokes an adapter or posts a hosted "
@@ -1069,11 +1069,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "action",
         nargs="?",
         default=None,
-        choices=["create", "status", "resume", "dispatch", "upload", "watch"],
+        choices=["create", "status", "resume", "dispatch", "dispose", "upload", "watch"],
         help=(
             "Optional campaign action. create: start a new campaign (fails if one "
             "already exists for the identifier). status: inspect only. "
             "resume/dispatch: advance an existing campaign (fails if none exists). "
+            "dispose: stop waiting for one attempted informational provider without "
+            "creating a qualification result. "
             "watch: poll a stored campaign at a positive interval and bounded timeout "
             "(--interval, --timeout). "
             "upload: convert every completed provider's qualification result into "
@@ -1235,6 +1237,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     campaign.add_argument(
+        "--dispose-provider",
+        default="",
+        help=(
+            "Provider to mark terminally unavailable for the `dispose` action. "
+            "The provider must be informational, attempted, and currently running"
+        ),
+    )
+    campaign.add_argument(
+        "--unavailable-reason",
+        default="",
+        choices=[
+            "operator_cancelled",
+            "provider_transport_unavailable",
+            "repository_scope_unavailable",
+        ],
+        help=(
+            "Closed metadata-only reason for the `dispose` action. No provider "
+            "result is synthesized"
+        ),
+    )
+    campaign.add_argument(
         "--yes",
         action="store_true",
         help=(
@@ -1378,6 +1401,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 record_result=args.record_result,
                 record_provider=args.record_provider,
                 retry_provider=args.retry_provider,
+                dispose_provider=args.dispose_provider,
+                unavailable_reason=args.unavailable_reason,
                 yes=args.yes,
                 endpoint=args.endpoint,
                 token_env=args.token_env,

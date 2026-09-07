@@ -274,7 +274,14 @@ provider_templates:
       - "GITHUB_TOKEN"
     token_env_any: []
     trigger_policy: "manual"
-    provider_config: {}
+    provider_config:
+      campaign_transport: "devin_api_v3"
+      campaign_required_env_all:
+        - "DEVIN_API_KEY"
+        - "DEVIN_ORG_ID"
+      campaign_repository_scope_env: "CODE_MOWER_DEVIN_REPOSITORIES"
+      campaign_response_timeout_seconds: 3600
+      status: "hosted Devin v3 Sessions API transport; issue marker is optional audit evidence"
     review_hygiene:
       workflow: ".github/workflows/devin-clear-stale.yml"
       token_env: "GITHUB_TOKEN"

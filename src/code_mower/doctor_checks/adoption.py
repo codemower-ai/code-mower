@@ -933,12 +933,12 @@ def check_adoption_campaign_readiness(
         elif lane.driver in {"hosted_bridge", "saas_event"}:
             has_credentials, missing_var = _check_credentials(lane, env=current_env)
             transport_ready, transport_var = _check_hosted_transport(
-                lane, env=current_env
+                lane, env=current_env, repo_slug=repo_slug
             )
             # Closed dispatch profile: auth, installation, trigger,
             # trusted responder, and result return are reported
             # independently, so one verified dimension never masks another.
-            dispatch_profile = hosted_dispatch_profile(lane, env=current_env)
+            dispatch_profile = hosted_dispatch_profile(lane, env=current_env, repo_slug=repo_slug)
             dispatch_blockers = hosted_dispatch_blockers(dispatch_profile)
             dispatch_summary = {
                 name: bool(entry.get("ready")) for name, entry in dispatch_profile.items()
@@ -1034,8 +1034,12 @@ def check_adoption_campaign_readiness(
                         message=f"{canonical} hosted campaign transport is not verified",
                         detail=detail,
                         remediation=(
-                            f"Verify the {canonical} GitHub integration can answer campaign "
-                            f"comments, then set {transport_var}=1."
+                            str(
+                                dispatch_profile.get("installation", {}).get(
+                                    "remediation"
+                                )
+                            )
+                            or f"Verify {canonical} transport for {repo_slug}."
                         ),
                     )
                 )
