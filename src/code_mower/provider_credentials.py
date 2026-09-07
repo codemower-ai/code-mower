@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .devin_api import validate_devin_org_id
+
 DEFAULT_CONFIG_DIR = Path("~/.config/code-mower")
 SAFE_CONFIG_DIR = "~/.config/code-mower"
 
@@ -24,8 +26,9 @@ PROVIDER_CREDENTIAL_SPECS: dict[str, dict[str, Any]] = {
     "devin": {
         "required_env": ("DEVIN_API_KEY", "DEVIN_ORG_ID"),
         "optional_env": ("CODE_MOWER_DEVIN_REPOSITORIES", "DEVIN_REPOSITORIES"),
+        "alias_groups": (("CODE_MOWER_DEVIN_REPOSITORIES", "DEVIN_REPOSITORIES"),),
         "validators": {
-            "DEVIN_ORG_ID": lambda val: val.startswith("org-") and len(val) > 4,
+            "DEVIN_ORG_ID": validate_devin_org_id,
         },
         "file_prefix": "devin",
     }
@@ -71,10 +74,45 @@ class ProviderCredentialResolution:
         Ambient environment values win over stored credentials.
         """
         current = dict(os.environ if env is None else env)
+        spec = PROVIDER_CREDENTIAL_SPECS.get(self.provider, {})
+        alias_groups = spec.get("alias_groups", ())
+        for group in alias_groups:
+            effective = ""
+            for alias in group:
+                val = str(current.get(alias) or "").strip()
+                if val:
+                    effective = val
+                    break
+            if effective:
+                for alias in group:
+                    if not current.get(alias):
+                        current[alias] = effective
+
         for key, val in self.credentials.items():
             if not current.get(key):
                 current[key] = val
         return current
+
+
+def normalize_provider_aliases(
+    provider: str,
+    mapping: Mapping[str, str],
+) -> dict[str, str]:
+    """Normalize alias groups within a mapping so primary and aliases share values."""
+    spec = PROVIDER_CREDENTIAL_SPECS.get(provider, {})
+    alias_groups = spec.get("alias_groups", ())
+    result = dict(mapping)
+    for group in alias_groups:
+        effective = ""
+        for alias in group:
+            val = str(result.get(alias) or "").strip()
+            if val:
+                effective = val
+                break
+        if effective:
+            for alias in group:
+                result[alias] = effective
+    return result
 
 
 def default_config_dir() -> Path:
@@ -135,7 +173,8 @@ def parse_env_file(path: Path) -> dict[str, str]:
     except UnicodeDecodeError as exc:
         raise ValueError("file is not UTF-8 text") from exc
     except OSError as exc:
-        raise ValueError(f"unable to read file: {exc}") from exc
+        reason = exc.strerror if getattr(exc, "strerror", None) else "I/O error"
+        raise ValueError(f"unable to read file ({reason})") from exc
 
     assignments: dict[str, str] = {}
     for line in text.splitlines():
@@ -283,8 +322,9 @@ def resolve_provider_credentials(
             )
 
         # Complete and valid ambient credentials
+        norm_env = normalize_provider_aliases(provider, current_env)
         for opt in optional_vars:
-            val = str(current_env.get(opt) or "").strip()
+            val = str(norm_env.get(opt) or "").strip()
             if val:
                 ambient_creds[opt] = val
         return ProviderCredentialResolution(
@@ -348,25 +388,39 @@ def resolve_provider_credentials(
         try:
             parsed = parse_env_file(path)
         except ValueError as exc:
+            safe_exc = str(exc)
+            if str(path) in safe_exc:
+                safe_exc = safe_exc.replace(
+                    str(path), display_profile_path(path, resolved_config_dir)
+                )
+            is_read_err = "unable to read file" in safe_exc
+            rem = (
+                f"Ensure {display_profile_path(path, resolved_config_dir)} is readable."
+                if is_read_err
+                else f"Fix syntax errors in {display_profile_path(path, resolved_config_dir)}."
+            )
             return ProviderCredentialResolution(
                 status="malformed",
                 provider=provider,
                 source=source_label,
                 profile_file=path,
                 candidate_files=(path.name,),
-                message=f"{provider.capitalize()} credential profile is malformed: {exc}",
-                remediation=f"Fix syntax errors in {display_profile_path(path, resolved_config_dir)}.",
+                message=f"{provider.capitalize()} credential profile is malformed: {safe_exc}",
+                remediation=rem,
             )
 
         # Ambient values override stored values, strictly limited to the provider spec
+        norm_env = normalize_provider_aliases(provider, current_env)
+        norm_parsed = normalize_provider_aliases(provider, parsed)
+
         merged: dict[str, str] = {}
         allowed_keys = set(required_vars) | set(optional_vars)
         for key in allowed_keys:
-            amb = str(current_env.get(key) or "").strip()
+            amb = str(norm_env.get(key) or "").strip()
             if amb:
                 merged[key] = amb
-            elif key in parsed:
-                val = parsed[key].strip()
+            elif key in norm_parsed:
+                val = norm_parsed[key].strip()
                 if val:
                     merged[key] = val
 

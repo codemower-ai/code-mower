@@ -1625,6 +1625,8 @@ class ReleaseCampaignTests(unittest.TestCase):
         """Missing prerequisites degrade gracefully to unavailable with actionable next steps."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
+            empty_config_dir = Path(tmp) / "empty_config"
+            empty_config_dir.mkdir()
 
             # Neither a configured adapter, CLI binary, nor tokens are available
             release_campaigns.campaign_command(
@@ -1632,6 +1634,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 package_spec="code-mower==1.0.0",
                 providers=["antigravity", "devin"],
                 campaigns_dir=campaigns_dir,
+                provider_config_dir=empty_config_dir,
                 apply=True,
                 which_fn=lambda _cmd: None,
                 env={},
@@ -1834,6 +1837,83 @@ class ReleaseCampaignTests(unittest.TestCase):
                     child_env = campaign_adapters.build_adapter_child_env(prov)
                     self.assertNotIn("DEVIN_API_KEY", child_env)
                     self.assertNotIn("DEVIN_ORG_ID", child_env)
+
+    def test_devin_org_id_invalid_fails_campaign_preview_auth(self) -> None:
+        """Invalid DEVIN_ORG_ID fails campaign readiness preview and identifies DEVIN_ORG_ID."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text(
+                "DEVIN_API_KEY=token\nDEVIN_ORG_ID=org-bad/path\nCODE_MOWER_DEVIN_REPOSITORIES=owner/repo\n"
+            )
+            profile.chmod(0o600)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertIn("DEVIN_ORG_ID", entry.get("error", "") + entry.get("next_action", ""))
+
+    def test_devin_conflicting_repository_aliases_ambient_precedence_in_campaign(self) -> None:
+        """Ambient repository scope overrides stored profile across alias names in campaign preview."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text(
+                "DEVIN_API_KEY=token\nDEVIN_ORG_ID=org-valid\nCODE_MOWER_DEVIN_REPOSITORIES=disk/repo\n"
+            )
+            profile.chmod(0o600)
+
+            # Ambient DEVIN_REPOSITORIES specifies ambient/repo
+            ambient_env = {"DEVIN_REPOSITORIES": "ambient/repo"}
+
+            # 1. Targeting ambient/repo succeeds: target acknowledged
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="ambient/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env=ambient_env,
+            )
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry["state"], "queued")
+            self.assertIn("run with --apply", entry.get("next_action", ""))
+
+            # 2. Targeting disk/repo fails: ambient scope overrode disk scope, so disk/repo is rejected
+            campaigns_dir2 = Path(tmp) / "campaigns2"
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="disk/repo",
+                campaigns_dir=campaigns_dir2,
+                provider_config_dir=config_dir,
+                env=ambient_env,
+            )
+            saved2 = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir2)
+            assert saved2 is not None
+            entry2 = next(p for p in saved2["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry2["state"], "unavailable")
+            self.assertEqual(entry2.get("error"), "hosted_transport_unverified")
+            self.assertIn("add the exact OWNER/REPO target to CODE_MOWER_DEVIN_REPOSITORIES", entry2.get("next_action", ""))
 
     def test_github_dispatch_failure_persists_only_a_safe_error_code(self) -> None:
         """GitHub dispatch failure leaves useful local status without persisting raw gh output."""

@@ -439,6 +439,219 @@ class ProviderCredentialsTests(unittest.TestCase):
             self.assertEqual(org, "")
             self.assertEqual(missing, "DEVIN_ORG_ID")
 
+    def test_devin_org_id_strict_validation_agreement(self) -> None:
+        """DEVIN_ORG_ID validation is identical between provider_credentials and devin_api dispatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            profile_file = config_dir / "devin.env"
+            profile_file.write_text(
+                "DEVIN_API_KEY=file-token\nDEVIN_ORG_ID=org-bad/path\n"
+            )
+            profile_file.chmod(0o600)
+
+            # 1. Invalid org_id in stored profile fails closed and identifies DEVIN_ORG_ID
+            res_stored = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={},
+            )
+            self.assertFalse(res_stored.has_credentials)
+            self.assertEqual(res_stored.status, "malformed")
+            self.assertEqual(res_stored.missing_variables, ("DEVIN_ORG_ID",))
+            self.assertIn("DEVIN_ORG_ID", res_stored.message)
+
+            key, org, missing = devin_api.credentials_from_env(
+                config_dir=config_dir,
+                env={},
+            )
+            self.assertEqual(key, "")
+            self.assertEqual(org, "")
+            self.assertEqual(missing, "DEVIN_ORG_ID")
+
+            # 2. Invalid org_id in ambient env fails closed and identifies DEVIN_ORG_ID
+            res_ambient = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": "sk-token", "DEVIN_ORG_ID": "org-bad/path"},
+            )
+            self.assertFalse(res_ambient.has_credentials)
+            self.assertEqual(res_ambient.status, "malformed")
+            self.assertEqual(res_ambient.missing_variables, ("DEVIN_ORG_ID",))
+            self.assertIn("DEVIN_ORG_ID is invalid", res_ambient.message)
+
+            key_amb, org_amb, missing_amb = devin_api.credentials_from_env(
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": "sk-token", "DEVIN_ORG_ID": "org-bad/path"},
+            )
+            self.assertEqual(key_amb, "")
+            self.assertEqual(org_amb, "")
+            self.assertEqual(missing_amb, "DEVIN_ORG_ID")
+
+            # 3. Valid org_id with allowed chars passes in both
+            res_valid = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": "sk-token", "DEVIN_ORG_ID": "org-Valid_123-abc"},
+            )
+            self.assertTrue(res_valid.has_credentials)
+            self.assertEqual(res_valid.status, "ok")
+            key_ok, org_ok, missing_ok = devin_api.credentials_from_env(
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": "sk-token", "DEVIN_ORG_ID": "org-Valid_123-abc"},
+            )
+            self.assertEqual(key_ok, "sk-token")
+            self.assertEqual(org_ok, "org-Valid_123-abc")
+            self.assertEqual(missing_ok, "")
+
+    def test_file_read_oserror_redaction(self) -> None:
+        """OSError during profile read produces a bounded diagnostic without leaking local path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            cred_file = config_dir / "devin.env"
+            cred_file.write_text("DEVIN_API_KEY=key\nDEVIN_ORG_ID=org-123\n")
+            cred_file.chmod(0o600)
+
+            # Simulate an OSError from read_text whose str(exc) includes the absolute path
+            fake_oserror = PermissionError(13, "Permission denied", str(cred_file))
+            with mock.patch.object(Path, "read_text", side_effect=fake_oserror):
+                res = provider_credentials.resolve_provider_credentials(
+                    "devin",
+                    credential_file=cred_file,
+                    env={},
+                )
+                self.assertFalse(res.has_credentials)
+                self.assertEqual(res.status, "malformed")
+                # Bounded diagnostic must not contain raw absolute filesystem path
+                self.assertNotIn(str(cred_file), res.message)
+                self.assertNotIn(str(config_dir), res.message)
+                self.assertIn("unable to read file", res.message)
+                self.assertIn("Permission denied", res.message)
+
+                # Remediation and safe_detail must use display_profile_path, not raw path
+                self.assertNotIn(str(config_dir), res.remediation)
+                safe = res.safe_detail()
+                self.assertNotIn(str(config_dir), str(safe))
+
+    def test_repository_aliases_conflicting_ambient_precedence(self) -> None:
+        """Aliases are normalized so ambient repository scope overrides stored profiles consistently."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+
+            # Case 1: Conflicting alias - ambient uses DEVIN_REPOSITORIES, stored uses CODE_MOWER_DEVIN_REPOSITORIES
+            cred_file1 = config_dir / "devin.env"
+            cred_file1.write_text(
+                "DEVIN_API_KEY=key-1\n"
+                "DEVIN_ORG_ID=org-1\n"
+                "CODE_MOWER_DEVIN_REPOSITORIES=disk/repo\n"
+            )
+            cred_file1.chmod(0o600)
+
+            ambient_env = {"DEVIN_REPOSITORIES": "ambient/repo"}
+            res1 = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env=ambient_env,
+            )
+            self.assertTrue(res1.has_credentials)
+            # Ambient repository scope wins across both aliases
+            self.assertEqual(
+                res1.credentials.get("CODE_MOWER_DEVIN_REPOSITORIES"), "ambient/repo"
+            )
+            self.assertEqual(
+                res1.credentials.get("DEVIN_REPOSITORIES"), "ambient/repo"
+            )
+
+            # Applied environment preserves ambient repository scope on both aliases
+            applied1 = res1.apply_to_env(ambient_env)
+            self.assertEqual(
+                applied1.get("CODE_MOWER_DEVIN_REPOSITORIES"), "ambient/repo"
+            )
+            self.assertEqual(
+                applied1.get("DEVIN_REPOSITORIES"), "ambient/repo"
+            )
+
+            # Devin repository scope acknowledgement accepts ambient and rejects disk
+            self.assertTrue(
+                devin_api.repository_scope_acknowledged(
+                    "ambient/repo",
+                    env=applied1,
+                )
+            )
+            self.assertFalse(
+                devin_api.repository_scope_acknowledged(
+                    "disk/repo",
+                    env=applied1,
+                )
+            )
+
+            # Case 2: Reverse conflict - ambient uses CODE_MOWER_DEVIN_REPOSITORIES, stored uses DEVIN_REPOSITORIES
+            cred_file2 = config_dir / "devin.staging.env"
+            cred_file2.write_text(
+                "DEVIN_API_KEY=key-2\n"
+                "DEVIN_ORG_ID=org-2\n"
+                "DEVIN_REPOSITORIES=disk/other\n"
+            )
+            cred_file2.chmod(0o600)
+
+            ambient_env2 = {"CODE_MOWER_DEVIN_REPOSITORIES": "ambient/primary"}
+            res2 = provider_credentials.resolve_provider_credentials(
+                "devin",
+                profile="staging",
+                config_dir=config_dir,
+                env=ambient_env2,
+            )
+            self.assertTrue(res2.has_credentials)
+            self.assertEqual(
+                res2.credentials.get("CODE_MOWER_DEVIN_REPOSITORIES"), "ambient/primary"
+            )
+            self.assertEqual(
+                res2.credentials.get("DEVIN_REPOSITORIES"), "ambient/primary"
+            )
+
+            applied2 = res2.apply_to_env(ambient_env2)
+            self.assertTrue(
+                devin_api.repository_scope_acknowledged(
+                    "ambient/primary",
+                    env=applied2,
+                )
+            )
+            self.assertFalse(
+                devin_api.repository_scope_acknowledged(
+                    "disk/other",
+                    env=applied2,
+                )
+            )
+
+            # Case 3: Stored profile alias normalized when ambient has no repository scope
+            cred_file3 = config_dir / "devin.stored_alias.env"
+            cred_file3.write_text(
+                "DEVIN_API_KEY=key-3\n"
+                "DEVIN_ORG_ID=org-3\n"
+                "DEVIN_REPOSITORIES=stored/alias-repo\n"
+            )
+            cred_file3.chmod(0o600)
+
+            res3 = provider_credentials.resolve_provider_credentials(
+                "devin",
+                profile="stored_alias",
+                config_dir=config_dir,
+                env={},
+            )
+            self.assertTrue(res3.has_credentials)
+            self.assertEqual(
+                res3.credentials.get("CODE_MOWER_DEVIN_REPOSITORIES"), "stored/alias-repo"
+            )
+            self.assertEqual(
+                res3.credentials.get("DEVIN_REPOSITORIES"), "stored/alias-repo"
+            )
+            applied3 = res3.apply_to_env({})
+            self.assertTrue(
+                devin_api.repository_scope_acknowledged(
+                    "stored/alias-repo",
+                    env=applied3,
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

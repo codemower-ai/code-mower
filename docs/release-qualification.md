@@ -454,7 +454,7 @@ Sessions API v3.
   [Teams API quick start](https://docs.devin.ai/api-reference/getting-started/teams-quickstart)
   to create the service user and key.
 - The exact target repository in both `--repo-slug OWNER/REPO` and the
-  comma-separated `CODE_MOWER_DEVIN_REPOSITORIES` acknowledgement. Matching is
+  comma-separated `CODE_MOWER_DEVIN_REPOSITORIES` (or `DEVIN_REPOSITORIES`) acknowledgement. Matching is
   against the full slug, so a same-name personal fork does not satisfy an
   organization repository target. `DEVIN_ORG_ID` is not a GitHub owner name.
 - A one-hour response deadline is configured by default.
@@ -471,7 +471,7 @@ variables across every process.
 - Named profiles follow `devin.<profile>.env` or `<profile>.env` (for example, `devin.prod.env`).
 
 **Resolution Precedence:**
-1. **Ambient Environment:** Explicit environment variables (`DEVIN_API_KEY`, `DEVIN_ORG_ID`, `CODE_MOWER_DEVIN_REPOSITORIES`) take highest precedence. If any required credential variable is present in the ambient environment, discovery is bypassed: the ambient set must be complete and valid. If the ambient set is partial or invalid, resolution fails closed with actionable remediation and does not consult or mix in stored profile values.
+1. **Ambient Environment:** Explicit environment variables (`DEVIN_API_KEY`, `DEVIN_ORG_ID`, `CODE_MOWER_DEVIN_REPOSITORIES` or `DEVIN_REPOSITORIES`) take highest precedence. Repository-scope aliases are normalized before merging so ambient repository scope overrides stored profiles consistently. If any required credential variable is present in the ambient environment, discovery is bypassed: the ambient set must be complete and valid. If the ambient set is partial or invalid, resolution fails closed with actionable remediation and does not consult or mix in stored profile values.
 2. **Explicit Profile or Credential File:** Configured via CLI flags (`--provider-credential-file <path>`, `--provider-profile <name>`) or environment variables (`CODE_MOWER_DEVIN_CREDENTIAL_FILE`, `CODE_MOWER_DEVIN_PROFILE`).
 3. **Safe Automatic Discovery:** If neither ambient env nor explicit options are provided, Code Mower inspects `~/.config/code-mower/` for matching profile files.
 

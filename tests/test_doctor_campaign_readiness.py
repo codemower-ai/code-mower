@@ -378,12 +378,15 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
     def test_campaign_credentials_warns_when_missing_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            empty_config_dir = Path(tmp) / "empty_config"
+            empty_config_dir.mkdir()
             checks = check_adoption_campaign_readiness(
                 config={},
                 repo_root=repo_root,
                 repo_slug="owner/repo",
                 env={},
                 providers=["devin"],
+                provider_config_dir=empty_config_dir,
             )
             cred_checks = [c for c in checks if c.name == "doctor.campaign.credentials"]
             self.assertEqual(len(cred_checks), 1)
@@ -530,6 +533,88 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             check = cred_checks[0]
             self.assertEqual(check.status, STATUS_PASS)
             self.assertEqual(check.detail.get("credentials_source"), "profile")
+
+    def test_campaign_credentials_warns_on_invalid_devin_org_id(self) -> None:
+        """Invalid DEVIN_ORG_ID fails doctor readiness with actionable warning identifying DEVIN_ORG_ID."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "repo"
+            repo_root.mkdir()
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile_file = config_dir / "devin.env"
+            profile_file.write_text("DEVIN_API_KEY=token\nDEVIN_ORG_ID=org-bad/path\n")
+            profile_file.chmod(0o600)
+
+            checks = check_adoption_campaign_readiness(
+                config={},
+                repo_root=repo_root,
+                repo_slug="owner/repo",
+                env={},
+                providers=["devin"],
+                provider_config_dir=config_dir,
+            )
+            cred_checks = [c for c in checks if c.name == "doctor.campaign.credentials"]
+            self.assertEqual(len(cred_checks), 1)
+            check = cred_checks[0]
+            self.assertEqual(check.status, STATUS_WARN)
+            self.assertIn("DEVIN_ORG_ID", check.message)
+            self.assertEqual(check.detail.get("error"), "malformed")
+            self.assertEqual(check.detail.get("missing_variables"), ["DEVIN_ORG_ID"])
+
+    def test_campaign_credentials_conflicting_aliases_ambient_precedence_in_doctor(self) -> None:
+        """Ambient repository scope overrides stored profile across alias names in doctor readiness."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "repo"
+            repo_root.mkdir()
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile_file = config_dir / "devin.env"
+            profile_file.write_text(
+                "DEVIN_API_KEY=token\nDEVIN_ORG_ID=org-valid\nCODE_MOWER_DEVIN_REPOSITORIES=disk/repo\n"
+            )
+            profile_file.chmod(0o600)
+
+            # Ambient DEVIN_REPOSITORIES specifies ambient/repo
+            ambient_env = {"DEVIN_REPOSITORIES": "ambient/repo"}
+            config = {"lanes": {"devin": {"enabled": True}}}
+
+            # Targeting ambient/repo: credentials pass, transport is verified, devin is ready
+            checks_ambient = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=repo_root,
+                repo_slug="ambient/repo",
+                env=ambient_env,
+                providers=["devin"],
+                provider_config_dir=config_dir,
+            )
+            cred_ambient = next(
+                c for c in checks_ambient if c.name == "doctor.campaign.credentials" and c.lane == "devin"
+            )
+            self.assertEqual(cred_ambient.status, STATUS_PASS)
+            transport_warns = [
+                c for c in checks_ambient if c.name == "doctor.campaign.transport" and c.lane == "devin"
+            ]
+            self.assertEqual(len(transport_warns), 0)
+
+            readiness_ambient = next(c for c in checks_ambient if c.name == "doctor.campaign.readiness")
+            self.assertIn("devin", readiness_ambient.detail.get("ready_providers", []))
+
+            # Targeting disk/repo: transport check warns and provider is not ready
+            checks_disk = check_adoption_campaign_readiness(
+                config=config,
+                repo_root=repo_root,
+                repo_slug="disk/repo",
+                env=ambient_env,
+                providers=["devin"],
+                provider_config_dir=config_dir,
+            )
+            transport_disk = next(
+                c for c in checks_disk if c.name == "doctor.campaign.transport" and c.lane == "devin"
+            )
+            self.assertEqual(transport_disk.status, STATUS_WARN)
+
+            readiness_disk = next(c for c in checks_disk if c.name == "doctor.campaign.readiness")
+            self.assertNotIn("devin", readiness_disk.detail.get("ready_providers", []))
 
     def test_campaign_storage_passes_and_preserves_privacy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

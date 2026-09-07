@@ -54,8 +54,12 @@ class DevinApiError(Exception):
         super().__init__(self.code)
 
 
-def _validate_org_id(org_id: str) -> bool:
+def validate_devin_org_id(org_id: str) -> bool:
+    """Validate that org_id matches Devin's required format."""
     return bool(_ORG_ID_RE.fullmatch(org_id))
+
+
+_validate_org_id = validate_devin_org_id
 
 
 def _validate_session_id(session_id: str) -> bool:
