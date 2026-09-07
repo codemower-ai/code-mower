@@ -3096,17 +3096,6 @@ def dispatch_or_advance_campaign(
     between "already attempted" and "never dispatched".
     """
     current_env = os.environ if env is None else env
-    from .provider_credentials import resolve_provider_credentials
-
-    devin_cred_res = resolve_provider_credentials(
-        "devin",
-        credential_file=provider_credential_file,
-        profile=provider_profile,
-        config_dir=provider_config_dir,
-        env=current_env,
-    )
-    if devin_cred_res.has_credentials:
-        current_env = devin_cred_res.apply_to_env(current_env)
     campaign_before_poll = copy.deepcopy(campaign) if poll_only else None
     repo_path = repo_path or Path.cwd()
     campaigns_dir = campaigns_dir or default_campaigns_dir(repo_path)

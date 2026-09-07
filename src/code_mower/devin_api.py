@@ -120,11 +120,6 @@ def credentials_from_env(
 ) -> tuple[str, str, str]:
     """Return ``(api_key, org_id, missing_variable)`` without logging values."""
     current_env = os.environ if env is None else env
-    api_key = str(current_env.get(DEVIN_API_KEY_ENV) or "").strip()
-    org_id = str(current_env.get(DEVIN_ORG_ID_ENV) or "").strip()
-    if api_key and org_id and _validate_org_id(org_id):
-        return api_key, org_id, ""
-
     from .provider_credentials import resolve_provider_credentials
 
     c_file = Path(credential_file) if credential_file else None
@@ -145,7 +140,7 @@ def credentials_from_env(
     missing = (
         resolution.missing_variables[0]
         if resolution.missing_variables
-        else (DEVIN_ORG_ID_ENV if api_key and not (org_id and _validate_org_id(org_id)) else DEVIN_API_KEY_ENV)
+        else DEVIN_API_KEY_ENV
     )
     return "", "", missing
 

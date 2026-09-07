@@ -244,21 +244,45 @@ def resolve_provider_credentials(
     optional_vars = tuple(spec.get("optional_env", ()))
     validators: dict[str, Callable[[str], bool]] = spec.get("validators", {})
 
-    # 1. Ambient environment wins
+    # 1. Ambient environment check
+    ambient_present: list[str] = []
+    ambient_missing: list[str] = []
+    ambient_invalid: list[str] = []
     ambient_creds: dict[str, str] = {}
-    all_required_ambient = bool(required_vars)
+
     for var in required_vars:
         val = str(current_env.get(var) or "").strip()
         if not val:
-            all_required_ambient = False
-            break
-        validator = validators.get(var)
-        if validator and not validator(val):
-            all_required_ambient = False
-            break
-        ambient_creds[var] = val
+            ambient_missing.append(var)
+        else:
+            ambient_present.append(var)
+            validator = validators.get(var)
+            if validator and not validator(val):
+                ambient_invalid.append(var)
+            else:
+                ambient_creds[var] = val
 
-    if all_required_ambient:
+    if ambient_present:
+        if ambient_missing or ambient_invalid:
+            # Partial or invalid ambient credentials: fail closed, do not consult stored profiles.
+            missing_var = ambient_missing[0] if ambient_missing else ambient_invalid[0]
+            status = "missing" if ambient_missing else "malformed"
+            if ambient_missing:
+                msg = f"{provider.capitalize()} ambient credentials incomplete: {missing_var} is not set"
+                rem = f"Set {missing_var} in environment or unset ambient {provider.capitalize()} variables to use stored profiles."
+            else:
+                msg = f"{provider.capitalize()} ambient credentials invalid: {missing_var} is invalid"
+                rem = f"Set a valid {missing_var} in environment or unset ambient {provider.capitalize()} variables to use stored profiles."
+            return ProviderCredentialResolution(
+                status=status,
+                provider=provider,
+                source="env",
+                missing_variables=tuple(ambient_missing + ambient_invalid),
+                message=msg,
+                remediation=rem,
+            )
+
+        # Complete and valid ambient credentials
         for opt in optional_vars:
             val = str(current_env.get(opt) or "").strip()
             if val:
@@ -287,7 +311,10 @@ def resolve_provider_credentials(
     ).strip()
     selected_profile = profile or explicit_profile_env
 
-    explicit_config_dir_env = str(current_env.get("CODE_MOWER_CONFIG_DIR") or "").strip()
+    explicit_config_dir_env = (
+        str(current_env.get("CODE_MOWER_PROVIDER_CONFIG_DIR") or "").strip()
+        or str(current_env.get("CODE_MOWER_CONFIG_DIR") or "").strip()
+    )
     resolved_config_dir = (
         config_dir
         or (Path(explicit_config_dir_env) if explicit_config_dir_env else default_config_dir())
@@ -331,15 +358,17 @@ def resolve_provider_credentials(
                 remediation=f"Fix syntax errors in {display_profile_path(path, resolved_config_dir)}.",
             )
 
-        # Ambient values override stored values
+        # Ambient values override stored values, strictly limited to the provider spec
         merged: dict[str, str] = {}
-        all_candidate_keys = set(required_vars) | set(optional_vars) | set(parsed.keys())
-        for key in all_candidate_keys:
+        allowed_keys = set(required_vars) | set(optional_vars)
+        for key in allowed_keys:
             amb = str(current_env.get(key) or "").strip()
             if amb:
                 merged[key] = amb
             elif key in parsed:
-                merged[key] = parsed[key].strip()
+                val = parsed[key].strip()
+                if val:
+                    merged[key] = val
 
         # Validate required variables
         for var in required_vars:

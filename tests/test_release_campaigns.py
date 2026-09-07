@@ -17,13 +17,20 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from code_mower import board, file_locks, release_campaigns, release_qualify
+from code_mower import (
+    board,
+    campaign_adapters,
+    file_locks,
+    provider_credentials,
+    release_campaigns,
+    release_qualify,
+)
 from code_mower.provider_registry import LaneLabels, ProviderLane
 
 
@@ -1728,6 +1735,105 @@ class ReleaseCampaignTests(unittest.TestCase):
             self.assertNotIn("dummy-token", raw_json)
             self.assertNotIn("org-stored", raw_json)
             self.assertNotIn(str(config_dir), raw_json)
+
+    def test_campaign_without_devin_does_no_devin_credential_discovery(self) -> None:
+        """A campaign that does not select Devin does no Devin credential discovery or disk reads."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            # An insecure devin.env would fail closed with insecure_permissions if discovered
+            profile = config_dir / "devin.env"
+            profile.write_text("DEVIN_API_KEY=token\nDEVIN_ORG_ID=org-test\n")
+            profile.chmod(0o644)
+
+            with mock.patch(
+                "code_mower.provider_credentials.resolve_provider_credentials",
+                wraps=provider_credentials.resolve_provider_credentials,
+            ) as mock_resolve:
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    provider_config_dir=config_dir,
+                    env={},
+                )
+                # Devin credentials must never be queried or discovered
+                for call in mock_resolve.call_args_list:
+                    prov = call.args[0] if call.args else call.kwargs.get("provider")
+                    self.assertNotEqual(prov, "devin")
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "codex")
+            self.assertNotIn("insecure_permissions", entry.get("error", ""))
+            self.assertNotIn("chmod 600", entry.get("next_action", ""))
+
+    def test_unrelated_local_provider_subprocess_cannot_see_devin_credentials(self) -> None:
+        """Unrelated local provider subprocess environments cannot see Devin credentials from disk or profiles."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text(
+                "DEVIN_API_KEY=devin-token\n"
+                "DEVIN_ORG_ID=org-secret\n"
+                "CODE_MOWER_DEVIN_REPOSITORIES=owner/repo\n"
+            )
+            profile.chmod(0o600)
+
+            seen_env: dict[str, str] = {}
+
+            def spying_adapter_runner(argv: Sequence[str], timeout: int) -> subprocess.CompletedProcess[str]:
+                proc = subprocess.run(
+                    [sys.executable, "-c", "import json, os; print(json.dumps(dict(os.environ)))"],
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                )
+                child_env = json.loads(proc.stdout)
+                seen_env.update(child_env)
+
+                out_idx = argv.index("--output")
+                out_path = Path(argv[out_idx + 1])
+                out_path.write_text(
+                    json.dumps(_mock_adoption_result("v1.0.0", provider="codex", outcome="pass")),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            # Even in a campaign containing both devin and codex with --apply
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin", "codex"],
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                apply=True,
+                adapter_runner=spying_adapter_runner,
+                api_runner=lambda method, url, body, headers: {"session_id": "devin-test"},
+                env={},
+            )
+
+            # The subprocess that ran for Codex must NOT see Devin credentials
+            self.assertNotIn("DEVIN_API_KEY", seen_env)
+            self.assertNotIn("DEVIN_ORG_ID", seen_env)
+            self.assertNotIn("devin-token", str(seen_env))
+            self.assertNotIn("org-secret", str(seen_env))
+
+            # Additionally verify build_adapter_child_env strips them even if in ambient env
+            for prov in ("codex", "claude", "antigravity", "muse"):
+                with mock.patch.dict(
+                    os.environ,
+                    {"DEVIN_API_KEY": "devin-token", "DEVIN_ORG_ID": "org-secret"},
+                ):
+                    child_env = campaign_adapters.build_adapter_child_env(prov)
+                    self.assertNotIn("DEVIN_API_KEY", child_env)
+                    self.assertNotIn("DEVIN_ORG_ID", child_env)
 
     def test_github_dispatch_failure_persists_only_a_safe_error_code(self) -> None:
         """GitHub dispatch failure leaves useful local status without persisting raw gh output."""

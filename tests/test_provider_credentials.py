@@ -292,6 +292,153 @@ class ProviderCredentialsTests(unittest.TestCase):
                 ok = provider_credentials.check_file_permissions(cred_file)
                 self.assertTrue(ok)
 
+    def test_provider_config_dir_environment_variable(self) -> None:
+        """The documented CODE_MOWER_PROVIDER_CONFIG_DIR variable is honored consistently."""
+        with tempfile.TemporaryDirectory() as tmp:
+            custom_dir = Path(tmp) / "custom_config"
+            custom_dir.mkdir()
+            cred_file = custom_dir / "devin.env"
+            cred_file.write_text("DEVIN_API_KEY=cfg-dir-token\nDEVIN_ORG_ID=org-cfg-dir\n")
+            cred_file.chmod(0o600)
+
+            # 1. CODE_MOWER_PROVIDER_CONFIG_DIR works
+            res = provider_credentials.resolve_provider_credentials(
+                "devin",
+                env={"CODE_MOWER_PROVIDER_CONFIG_DIR": str(custom_dir)},
+            )
+            self.assertTrue(res.has_credentials)
+            self.assertEqual(res.status, "ok")
+            self.assertEqual(res.credentials.get("DEVIN_API_KEY"), "cfg-dir-token")
+            self.assertEqual(res.credentials.get("DEVIN_ORG_ID"), "org-cfg-dir")
+
+            # 2. Legacy alias CODE_MOWER_CONFIG_DIR works as fallback
+            res_legacy = provider_credentials.resolve_provider_credentials(
+                "devin",
+                env={"CODE_MOWER_CONFIG_DIR": str(custom_dir)},
+            )
+            self.assertTrue(res_legacy.has_credentials)
+            self.assertEqual(res_legacy.status, "ok")
+            self.assertEqual(res_legacy.credentials.get("DEVIN_API_KEY"), "cfg-dir-token")
+
+            # 3. CODE_MOWER_PROVIDER_CONFIG_DIR takes precedence over CODE_MOWER_CONFIG_DIR
+            other_dir = Path(tmp) / "other_config"
+            other_dir.mkdir()
+            other_file = other_dir / "devin.env"
+            other_file.write_text("DEVIN_API_KEY=other-token\nDEVIN_ORG_ID=org-other\n")
+            other_file.chmod(0o600)
+
+            res_precedence = provider_credentials.resolve_provider_credentials(
+                "devin",
+                env={
+                    "CODE_MOWER_PROVIDER_CONFIG_DIR": str(custom_dir),
+                    "CODE_MOWER_CONFIG_DIR": str(other_dir),
+                },
+            )
+            self.assertEqual(res_precedence.credentials.get("DEVIN_API_KEY"), "cfg-dir-token")
+
+    def test_extra_profile_keys_cannot_enter_resolved_environment(self) -> None:
+        """Loaded profile values are restricted strictly to provider spec required/optional keys."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            profile_file = config_dir / "devin.env"
+            profile_file.write_text(
+                "DEVIN_API_KEY=token-from-file\n"
+                "DEVIN_ORG_ID=org-spec-test\n"
+                "CODE_MOWER_DEVIN_REPOSITORIES=spec/repo\n"
+                "GITHUB_TOKEN=ghp_dummy\n"
+                "ANTHROPIC_API_KEY=sk-dummy\n"
+                "CODE_MOWER_STATE_DIR=/unwanted/path\n"
+            )
+            profile_file.chmod(0o600)
+
+            res = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={},
+            )
+            self.assertTrue(res.has_credentials)
+            self.assertEqual(res.status, "ok")
+            self.assertEqual(res.credentials.get("DEVIN_API_KEY"), "token-from-file")
+            self.assertEqual(res.credentials.get("DEVIN_ORG_ID"), "org-spec-test")
+            self.assertEqual(
+                res.credentials.get("CODE_MOWER_DEVIN_REPOSITORIES"), "spec/repo"
+            )
+            # Unrelated keys must NOT be present in credentials
+            self.assertNotIn("GITHUB_TOKEN", res.credentials)
+            self.assertNotIn("ANTHROPIC_API_KEY", res.credentials)
+            self.assertNotIn("CODE_MOWER_STATE_DIR", res.credentials)
+
+            # Unrelated keys must NOT enter applied environment
+            applied = res.apply_to_env({})
+            self.assertEqual(applied.get("DEVIN_API_KEY"), "token-from-file")
+            self.assertEqual(applied.get("DEVIN_ORG_ID"), "org-spec-test")
+            self.assertNotIn("GITHUB_TOKEN", applied)
+            self.assertNotIn("ANTHROPIC_API_KEY", applied)
+            self.assertNotIn("CODE_MOWER_STATE_DIR", applied)
+
+    def test_partial_ambient_credentials_do_not_mix_with_disk_credentials(self) -> None:
+        """If any required credential is in ambient env but set is incomplete/invalid, fail closed without mixing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            profile_file = config_dir / "devin.env"
+            profile_file.write_text(
+                "DEVIN_API_KEY=disk-token\n"
+                "DEVIN_ORG_ID=org-from-disk\n"
+                "CODE_MOWER_DEVIN_REPOSITORIES=disk/repo\n"
+            )
+            profile_file.chmod(0o600)
+
+            # Case 1: DEVIN_API_KEY set ambiently, DEVIN_ORG_ID missing -> fails closed, no disk mix
+            res_missing_org = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": "ambient-token"},
+            )
+            self.assertFalse(res_missing_org.has_credentials)
+            self.assertEqual(res_missing_org.status, "missing")
+            self.assertEqual(res_missing_org.source, "env")
+            self.assertEqual(res_missing_org.missing_variables, ("DEVIN_ORG_ID",))
+            self.assertIn("DEVIN_ORG_ID is not set", res_missing_org.message)
+            self.assertIn("unset ambient Devin variables", res_missing_org.remediation)
+            self.assertEqual(dict(res_missing_org.credentials), {})
+            self.assertNotIn("org-from-disk", str(res_missing_org.credentials))
+            self.assertNotIn("disk-token", str(res_missing_org.credentials))
+
+            # Case 2: DEVIN_ORG_ID set ambiently, DEVIN_API_KEY missing -> fails closed, no disk mix
+            res_missing_key = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={"DEVIN_ORG_ID": "org-ambient"},
+            )
+            self.assertFalse(res_missing_key.has_credentials)
+            self.assertEqual(res_missing_key.status, "missing")
+            self.assertEqual(res_missing_key.source, "env")
+            self.assertEqual(res_missing_key.missing_variables, ("DEVIN_API_KEY",))
+            self.assertIn("DEVIN_API_KEY is not set", res_missing_key.message)
+            self.assertEqual(dict(res_missing_key.credentials), {})
+
+            # Case 3: DEVIN_API_KEY set ambiently, DEVIN_ORG_ID invalid -> fails closed with malformed
+            res_invalid_org = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": "ambient-token", "DEVIN_ORG_ID": "not-an-org"},
+            )
+            self.assertFalse(res_invalid_org.has_credentials)
+            self.assertEqual(res_invalid_org.status, "malformed")
+            self.assertEqual(res_invalid_org.source, "env")
+            self.assertEqual(res_invalid_org.missing_variables, ("DEVIN_ORG_ID",))
+            self.assertIn("DEVIN_ORG_ID is invalid", res_invalid_org.message)
+            self.assertEqual(dict(res_invalid_org.credentials), {})
+
+            # Case 4: devin_api.credentials_from_env integration with partial ambient env
+            key, org, missing = devin_api.credentials_from_env(
+                env={"DEVIN_API_KEY": "ambient-token"},
+                config_dir=config_dir,
+            )
+            self.assertEqual(key, "")
+            self.assertEqual(org, "")
+            self.assertEqual(missing, "DEVIN_ORG_ID")
+
 
 if __name__ == "__main__":
     unittest.main()

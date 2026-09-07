@@ -466,12 +466,12 @@ in a protected local configuration file instead of requiring ambient environment
 variables across every process.
 
 **File Location and Naming:**
-- Code Mower checks `~/.config/code-mower/` (or the directory given by `--provider-config-dir` or `CODE_MOWER_PROVIDER_CONFIG_DIR`).
+- Code Mower checks `~/.config/code-mower/` (or the directory given by `--provider-config-dir`, `CODE_MOWER_PROVIDER_CONFIG_DIR`, or legacy compatibility alias `CODE_MOWER_CONFIG_DIR`).
 - The default profile is `devin.env`.
 - Named profiles follow `devin.<profile>.env` or `<profile>.env` (for example, `devin.prod.env`).
 
 **Resolution Precedence:**
-1. **Ambient Environment:** Explicit environment variables (`DEVIN_API_KEY`, `DEVIN_ORG_ID`, `CODE_MOWER_DEVIN_REPOSITORIES`) always win. If `DEVIN_API_KEY` is present in the ambient environment, automatic discovery is bypassed.
+1. **Ambient Environment:** Explicit environment variables (`DEVIN_API_KEY`, `DEVIN_ORG_ID`, `CODE_MOWER_DEVIN_REPOSITORIES`) take highest precedence. If any required credential variable is present in the ambient environment, discovery is bypassed: the ambient set must be complete and valid. If the ambient set is partial or invalid, resolution fails closed with actionable remediation and does not consult or mix in stored profile values.
 2. **Explicit Profile or Credential File:** Configured via CLI flags (`--provider-credential-file <path>`, `--provider-profile <name>`) or environment variables (`CODE_MOWER_DEVIN_CREDENTIAL_FILE`, `CODE_MOWER_DEVIN_PROFILE`).
 3. **Safe Automatic Discovery:** If neither ambient env nor explicit options are provided, Code Mower inspects `~/.config/code-mower/` for matching profile files.
 
@@ -488,6 +488,8 @@ variables across every process.
 
 **Security & Rotation:**
 - Resolved credentials remain in-memory only. They are never written to campaign state JSON, never uploaded, and never leaked in doctor reports or CLI output.
+- Loaded profile assignments are strictly restricted to that provider spec's required and optional variables (`DEVIN_API_KEY`, `DEVIN_ORG_ID`, `CODE_MOWER_DEVIN_REPOSITORIES`, `DEVIN_REPOSITORIES`). Unrelated assignments in a profile (such as `GITHUB_TOKEN` or other lane settings) are ignored and cannot alter other lanes or enter the environment.
+- Credentials are scoped exclusively to Devin API checks, dispatch, and polling. They never enter subprocess environments for Codex, Claude, Muse, Antigravity, Cursor, or any other provider, and campaigns that do not select Devin perform no Devin credential discovery.
 - To rotate credentials, update the values in `~/.config/code-mower/devin.env` or switch profiles.
 
 The API call, not a GitHub comment, is the execution trigger. If `--issue` is
