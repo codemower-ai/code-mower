@@ -9,6 +9,26 @@ later entries are regular releases.
 
 No changes yet.
 
+## v1.0.14
+
+This patch corrects hosted Devin release-qualification result precedence. A
+valid closed structured result is now accepted even while the session still
+reports `running` / `waiting_for_user`, so a finished informational Devin
+attempt is no longer recorded as owner-blocked. Explicit terminal API failures
+and `waiting_for_approval` sessions still win over any structured output. It
+preserves supervised pilot gate semantics, Python 3.12+, provider posture, and
+the metadata-only privacy boundary.
+
+### Fixed
+
+- Hosted Devin polling now checks explicit terminal failure statuses first,
+  then `waiting_for_approval`, then a valid structured result, before falling
+  back to `waiting_for_user` owner action. A completed Devin session that
+  returned the requested `code_mower.adoptionResult.v1` payload while still
+  reporting an in-progress status is therefore accepted instead of being
+  discarded as owner-blocked or rejected as `hosted_result_rejected`
+  (PR #783).
+
 ## v1.0.13
 
 This patch makes automatic campaign runtime selection sandbox-safe. When
