@@ -75,6 +75,11 @@ PACKAGE_FILES = (
     ("src/code_mower/cloud_client/operations.py", "src/code_mower/cloud_client/operations.py", "core"),
     ("src/code_mower/cloud_client/pr_outcomes.py", "src/code_mower/cloud_client/pr_outcomes.py", "core"),
     ("src/code_mower/cloud_client/productivity.py", "src/code_mower/cloud_client/productivity.py", "core"),
+    (
+        "src/code_mower/cloud_client/productivity_windows.py",
+        "src/code_mower/cloud_client/productivity_windows.py",
+        "core",
+    ),
     ("src/code_mower/cloud_client/reports.py", "src/code_mower/cloud_client/reports.py", "core"),
     ("src/code_mower/cloud_client/setup.py", "src/code_mower/cloud_client/setup.py", "core"),
     ("src/code_mower/cloud_client/tokens.py", "src/code_mower/cloud_client/tokens.py", "core"),
