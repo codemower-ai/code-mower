@@ -172,6 +172,43 @@ class DevinApiModuleTests(unittest.TestCase):
             ("failed", None, "devin_session_failed"),
         )
 
+    def test_poll_accepts_structured_result_while_devin_waits_for_user(self) -> None:
+        result = _adoption_result()
+        runner = _FakeApiRunner(
+            [
+                {
+                    "status": "running",
+                    "status_detail": "waiting_for_user",
+                    "structured_output": result,
+                }
+            ]
+        )
+
+        self.assertEqual(
+            devin_api.poll_devin_session(
+                "org-test", "devin-1", "key", api_runner=runner
+            ),
+            ("complete", result, ""),
+        )
+
+    def test_poll_keeps_terminal_failure_ahead_of_structured_output(self) -> None:
+        runner = _FakeApiRunner(
+            [
+                {
+                    "status": "error",
+                    "status_detail": "out_of_credits",
+                    "structured_output": _adoption_result(),
+                }
+            ]
+        )
+
+        self.assertEqual(
+            devin_api.poll_devin_session(
+                "org-test", "devin-1", "key", api_runner=runner
+            ),
+            ("failed", None, "devin_session_failed"),
+        )
+
 
 class DevinCampaignApiTests(unittest.TestCase):
     def _campaign(

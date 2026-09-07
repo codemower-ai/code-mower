@@ -491,6 +491,10 @@ session only after the prior session is known terminal or its response deadline
 has expired; an active or owner-blocked session is polled but never duplicated.
 Every accepted retry preserves bounded attempt history.
 
+Devin can return the requested structured result while the session still reports
+`running` / `waiting_for_user`. Code Mower treats that result as complete unless
+the API also reports an explicit terminal failure.
+
 If an informational Devin attempt remains active but cannot be completed, an
 operator may record a terminal, metadata-only disposition without inventing a
 result or contacting Devin again:
